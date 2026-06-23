@@ -1,0 +1,26 @@
+package security
+
+var DefaultPermissions = []string{
+	"users.read", "users.create", "users.update", "users.disable", "users.delete", "users.reset_password", "users.manage_mfa",
+	"roles.read", "roles.create", "roles.update", "roles.delete", "roles.assign",
+	"streams.read", "streams.create", "streams.update", "streams.start", "streams.stop", "streams.retry_upload", "streams.delete",
+	"encoder_profiles.read", "encoder_profiles.create", "encoder_profiles.update", "encoder_profiles.delete",
+	"archive_profiles.read", "archive_profiles.create", "archive_profiles.update", "archive_profiles.delete",
+	"caption_profiles.read", "caption_profiles.create", "caption_profiles.update", "caption_profiles.delete",
+	"overlay_profiles.read", "overlay_profiles.create", "overlay_profiles.update", "overlay_profiles.delete",
+	"discord_configs.read", "discord_configs.create", "discord_configs.update", "discord_configs.delete",
+	"youtube_outputs.read", "youtube_outputs.create", "youtube_outputs.update", "youtube_outputs.delete",
+	"services.assign", "services.unassign", "services.disable",
+	"workers.read", "workers.assign", "workers.unassign", "workers.restart", "workers.disable",
+	"archives.read", "archives.download", "archives.delete", "archives.retry_upload",
+	"logs.read", "logs.export", "audit_logs.read", "audit_logs.export",
+	"secrets.read_status", "secrets.create", "secrets.update", "secrets.delete",
+	"api_tokens.read", "api_tokens.create", "api_tokens.revoke",
+	"system_settings.read", "system_settings.update",
+	"incidents.read", "incidents.acknowledge", "incidents.resolve",
+	"diagnostics.read", "diagnostics.run",
+	"remediation.read", "remediation.approve", "remediation.execute",
+	"notification_channels.read", "notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test",
+	"integrations.read", "integrations.create", "integrations.update", "integrations.delete",
+	"metrics.read", "service_health.read",
+}

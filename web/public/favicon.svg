@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AutoStream">
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <path d="M18 42V22l18 10-18 10Z" fill="#38bdf8"/>
+  <path d="M38 20h8v24h-8z" fill="#22c55e"/>
+  <path d="M50 20h4v24h-4z" fill="#f97316"/>
+</svg>

@@ -41,8 +41,8 @@ npm run build
 ## Deployment
 
 - Docker / Compose: `Dockerfile`、`docker-compose.yml`
-- Host install: `docs/deployment/host.md`
 - systemd unit: `systemd/autostream-control-panel.service.example`
+- Detailed deployment and security documentation is maintained in the `autostream-docs` repository.
 
 ## Security
 
