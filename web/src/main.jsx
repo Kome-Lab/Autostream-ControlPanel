@@ -391,13 +391,35 @@ const pages = [
 ];
 
 const observabilityPages = new Set(['monitoring', 'incidents', 'diagnostics', 'remediation', 'notifications', 'metrics']);
+const appPageIDs = new Set(pages.map((page) => page.id));
+const authRoutePaths = new Set(['/', '/login', '/setup']);
+
+function pageFromPathname(pathname) {
+  const page = String(pathname || '').replace(/^\/+|\/+$/g, '');
+  return appPageIDs.has(page) ? page : '';
+}
+
+function pathForPage(page) {
+  return `/${appPageIDs.has(page) ? page : 'dashboard'}`;
+}
+
+function replaceAppPath(pathname) {
+  if (window.location.pathname === pathname) return;
+  window.history.replaceState({}, '', pathname);
+}
+
+function pushAppPath(pathname) {
+  if (window.location.pathname === pathname) return;
+  window.history.pushState({}, '', pathname);
+}
 
 function App() {
   const { t } = useI18n();
-  const [activePage, setActivePage] = useState('dashboard');
+  const [activePage, setActivePageState] = useState(() => pageFromPathname(window.location.pathname) || 'dashboard');
   const [auditSeed, setAuditSeed] = useState({ actionGroup: 'service_assignment', result: 'all', query: '', nonce: 0 });
   const [serviceHealthFocus, setServiceHealthFocus] = useState({ streamID: '', serviceID: '', nonce: 0 });
   const [streamFocus, setStreamFocus] = useState({ streamID: '', nonce: 0 });
+  const [setupStatus] = useAPI('/setup/status', true, 'object');
   const [me] = useAPI('/auth/me', true, 'object');
   const apiEnabled = demoAPIEnabled || Boolean(me.data?.user);
   const [streams] = useAPI('/streams', apiEnabled && (activePage === 'dashboard' || activePage === 'streams' || activePage === 'workers' || activePage === 'health'));
@@ -428,7 +450,47 @@ function App() {
   const [notificationChannels] = useAPI('/observability/notification-channels', apiEnabled && activePage === 'notifications');
 
   const isLoggedIn = Boolean(me.data?.user);
-  if (!demoAPIEnabled && !me.loading && !isLoggedIn) {
+  const setupReady = demoAPIEnabled || setupStatus.loaded || setupStatus.error;
+  const authReady = demoAPIEnabled || me.loaded || me.error;
+  const setupRequired = !demoAPIEnabled && Boolean(setupStatus.data?.setup_required);
+
+  useEffect(() => {
+    const syncPageFromLocation = () => {
+      const page = pageFromPathname(window.location.pathname);
+      if (page) setActivePageState(page);
+    };
+    window.addEventListener('popstate', syncPageFromLocation);
+    return () => window.removeEventListener('popstate', syncPageFromLocation);
+  }, []);
+
+  useEffect(() => {
+    if (demoAPIEnabled || !setupReady) return;
+    if (setupRequired) {
+      replaceAppPath('/setup');
+      return;
+    }
+    if (!authReady) return;
+    if (!isLoggedIn) {
+      if (window.location.pathname !== '/login') replaceAppPath('/login');
+      return;
+    }
+    if (authRoutePaths.has(window.location.pathname)) {
+      replaceAppPath(pathForPage(activePage));
+    }
+  }, [activePage, authReady, isLoggedIn, setupReady, setupRequired]);
+
+  const setActivePage = (page) => {
+    setActivePageState(page);
+    pushAppPath(pathForPage(page));
+  };
+
+  if (!demoAPIEnabled && (!setupReady || (!setupRequired && !authReady))) {
+    return <AuthLoadingView />;
+  }
+  if (setupRequired) {
+    return <SetupView setupStatus={setupStatus} me={me} />;
+  }
+  if (!demoAPIEnabled && !isLoggedIn) {
     return <LoginView me={me} />;
   }
 
@@ -540,18 +602,18 @@ const profileExamples = {
 };
 
 function useAPI(path, enabled, shape = 'array') {
-  const [state, setState] = useState({ loading: false, data: initialAPIData(shape), error: '' });
+  const [state, setState] = useState(() => ({ loading: Boolean(enabled), loaded: false, data: initialAPIData(shape), error: '' }));
   const load = useMemo(() => async () => {
     if (!enabled) return;
     if (demoAPIEnabled) {
-      setState({ loading: false, data: demoAPIData(path, shape), error: '' });
+      setState({ loading: false, loaded: true, data: demoAPIData(path, shape), error: '' });
       return;
     }
     setState((current) => ({ ...current, loading: true, error: '' }));
     try {
       const response = await fetch(path, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
       if (!response.ok) {
-        setState({ loading: false, data: initialAPIData(shape), error: response.status === 503 ? 'Observability is not configured.' : `Request failed: ${response.status}` });
+        setState({ loading: false, loaded: true, data: initialAPIData(shape), error: response.status === 503 ? 'Observability is not configured.' : `Request failed: ${response.status}` });
         return;
       }
       const body = await response.json();
@@ -559,9 +621,9 @@ function useAPI(path, enabled, shape = 'array') {
       if (shape === 'object') data = body || {};
       else if (shape === 'secrets') data = Array.isArray(body?.secrets) ? body.secrets : [];
       else data = Array.isArray(body) ? body : [];
-      setState({ loading: false, data, error: '' });
+      setState({ loading: false, loaded: true, data, error: '' });
     } catch {
-      setState({ loading: false, data: initialAPIData(shape), error: 'Unable to reach the Control Panel API.' });
+      setState({ loading: false, loaded: true, data: initialAPIData(shape), error: 'Unable to reach the Control Panel API.' });
     }
   }, [enabled, path]);
 
@@ -580,6 +642,107 @@ function initialAPIData(shape) {
 
 function passkeySupported() {
   return Boolean(window.PublicKeyCredential && navigator.credentials);
+}
+
+function AuthLoadingView() {
+  const { t } = useI18n();
+  return (
+    <main className="login-shell">
+      <section className="login-panel">
+        <div className="login-brand">
+          <Radio size={28} />
+          <div>
+            <h1>AutoStream</h1>
+            <span>{t('Control Panel')}</span>
+          </div>
+          <LanguageSwitcher />
+        </div>
+        <Message text="Loading" tone="neutral" />
+      </section>
+    </main>
+  );
+}
+
+function SetupView({ setupStatus, me }) {
+  const { t } = useI18n();
+  const [setupToken, setSetupToken] = useState('');
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('');
+  const [message, setMessage] = useState(setupStatus.error || '');
+  const [loading, setLoading] = useState(false);
+
+  const createFirstAdmin = async (event) => {
+    event.preventDefault();
+    setMessage('');
+    setLoading(true);
+    try {
+      const response = await fetch('/setup/first-admin', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ setup_token: setupToken.trim(), username: username.trim(), password }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        setMessage(controlPanelErrorMessage(body, response.status, 'Initial admin creation failed.'));
+        return;
+      }
+
+      const loginResponse = await fetch('/auth/login', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      const loginBody = await loginResponse.json().catch(() => null);
+      await setupStatus.reload?.();
+      if (!loginResponse.ok) {
+        replaceAppPath('/login');
+        setMessage('Initial admin created. Sign in with the new account.');
+        return;
+      }
+      setCSRFToken(loginBody?.csrf_token || '');
+      await me.reload?.();
+      replaceAppPath('/dashboard');
+    } catch {
+      setMessage('Unable to reach the Control Panel API.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main className="login-shell">
+      <section className="login-panel">
+        <div className="login-brand">
+          <Radio size={28} />
+          <div>
+            <h1>AutoStream</h1>
+            <span>{t('Control Panel')}</span>
+          </div>
+          <LanguageSwitcher />
+        </div>
+        <form onSubmit={createFirstAdmin} className="login-form">
+          <label>
+            <span>Setup token</span>
+            <input autoComplete="one-time-code" value={setupToken} onChange={(event) => setSetupToken(event.target.value)} />
+          </label>
+          <label>
+            <span>{t('Username')}</span>
+            <input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} />
+          </label>
+          <label>
+            <span>{t('Password')}</span>
+            <input autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          </label>
+          {message && <Message text={message} tone={message.includes('created') ? 'ok' : 'warning'} />}
+          <button className="command-btn" type="submit" disabled={loading || !setupToken.trim() || !username.trim() || !password}>
+            {loading ? 'Creating...' : 'Create first admin'}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
 }
 
 function base64URLToBuffer(value) {

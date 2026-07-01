@@ -19,6 +19,8 @@ import (
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
+const defaultStaticWebDir = "/usr/share/autostream-control-panel"
+
 func main() {
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -50,7 +52,7 @@ func main() {
 		httpapi.WithRuntimeSecretLeaseStore(store.NewMariaDBRuntimeSecretLeaseStore(db)),
 		httpapi.WithOAuthLoginStore(store.NewMariaDBOAuthLoginStore(db)),
 	)
-	handler := withStaticFiles(srv, os.Getenv("AUTOSTREAM_WEB_DIR"))
+	handler := withStaticFiles(srv, staticWebDir())
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -85,6 +87,17 @@ func main() {
 			}
 		}
 	}
+}
+
+func staticWebDir() string {
+	dir := strings.TrimSpace(os.Getenv("AUTOSTREAM_WEB_DIR"))
+	if dir != "" {
+		return dir
+	}
+	if info, err := os.Stat(defaultStaticWebDir); err == nil && info.IsDir() {
+		return defaultStaticWebDir
+	}
+	return ""
 }
 
 func durationFromEnv(name string, fallback time.Duration) time.Duration {
@@ -168,10 +181,34 @@ func (h staticFilesHandler) serveStatic(w http.ResponseWriter, r *http.Request) 
 	}
 	info, err := os.Stat(full)
 	if err != nil || info.IsDir() {
+		if isHTMLNavigationRequest(r) && isControlPanelUIPath(cleanPath) {
+			http.ServeFile(w, r, filepath.Join(h.dir, "index.html"))
+			return true
+		}
 		return false
 	}
 	http.ServeFile(w, r, full)
 	return true
+}
+
+func isHTMLNavigationRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if path.Ext(r.URL.Path) != "" {
+		return false
+	}
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "text/html")
+}
+
+func isControlPanelUIPath(cleanPath string) bool {
+	switch cleanPath {
+	case "/login", "/setup", "/dashboard":
+		return true
+	default:
+		return false
+	}
 }
 
 func setStaticSecurityHeaders(w http.ResponseWriter) {

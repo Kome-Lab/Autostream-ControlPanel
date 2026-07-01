@@ -20,7 +20,7 @@ sudo install -o root -g root -m 0644 systemd/autostream-control-panel.service.ex
 sudo install -o root -g root -m 0640 .env.example /etc/autostream/control-panel.env
 ```
 
-Edit `/etc/autostream/control-panel.env` with real environment-specific values, then run:
+Edit `/etc/autostream/control-panel.env` with real environment-specific values. Keep `AUTOSTREAM_WEB_DIR=/usr/share/autostream-control-panel` unless you installed the web assets somewhere else, then run:
 
 ```bash
 sudo systemctl daemon-reload

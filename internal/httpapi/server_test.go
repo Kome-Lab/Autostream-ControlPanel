@@ -8712,6 +8712,39 @@ func TestSetupFirstAdmin(t *testing.T) {
 	}
 }
 
+func TestSetupStatusReportsFirstAdminRequired(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithSetupToken("setup-token"))
+
+	req := httptest.NewRequest(http.MethodGet, "/setup/status", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"setup_required":true`) || !strings.Contains(res.Body.String(), `"setup_enabled":true`) {
+		t.Fatalf("empty setup status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"setup_required":false`) || !strings.Contains(res.Body.String(), `"setup_enabled":true`) {
+		t.Fatalf("post-user setup status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestSetupStatusRespectsDisabledSetupToken(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithSetupToken(""))
+
+	req := httptest.NewRequest(http.MethodGet, "/setup/status", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"setup_required":false`) || !strings.Contains(res.Body.String(), `"setup_enabled":false`) {
+		t.Fatalf("disabled setup status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestSetupFirstAdminUsesConfiguredPasswordMinimum(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	settings := store.NewMemorySecuritySettingsStore()

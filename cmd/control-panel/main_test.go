@@ -35,6 +35,68 @@ func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 	}
 }
 
+func TestStaticFilesHandlerServesIndexForRootAndHTMLNavigation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>app</main>"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := staticFilesHandler{
+		app: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "api fallback", http.StatusTeapot)
+		}),
+		dir: root,
+	}
+
+	for _, path := range []string{"/", "/login", "/setup", "/dashboard"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html")
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusOK || res.Body.String() != "<main>app</main>" {
+			t.Fatalf("path %q static response = %d body=%q", path, res.Code, res.Body.String())
+		}
+	}
+}
+
+func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>app</main>"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := staticFilesHandler{
+		app: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "api fallback", http.StatusTeapot)
+		}),
+		dir: root,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/streams", nil)
+	req.Header.Set("Accept", "application/json")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusTeapot {
+		t.Fatalf("JSON API request should fall through, status = %d body=%q", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
+	req.Header.Set("Accept", "*/*")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusTeapot {
+		t.Fatalf("missing asset request should fall through, status = %d body=%q", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Accept", "text/html")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusTeapot {
+		t.Fatalf("API route should not be treated as SPA navigation, status = %d body=%q", res.Code, res.Body.String())
+	}
+}
+
 func TestStaticFilesHandlerRejectsTraversalBeforeFallback(t *testing.T) {
 	root := t.TempDir()
 	handler := staticFilesHandler{

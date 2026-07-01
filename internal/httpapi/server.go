@@ -244,6 +244,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.health)
+	s.mux.HandleFunc("GET /setup/status", s.setupStatus)
 	s.mux.HandleFunc("POST /setup/first-admin", s.setupFirstAdmin)
 	s.mux.HandleFunc("POST /auth/login", s.login)
 	s.mux.HandleFunc("GET /auth/oauth/providers", s.listOAuthLoginProviders)
@@ -460,6 +461,23 @@ func oauthStateTokenCookieMatches(r *http.Request, stateToken string) bool {
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "control-panel"})
+}
+
+func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
+	setupEnabled := s.auth != nil && s.setupToken != ""
+	if s.auth == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"setup_enabled": false, "setup_required": false})
+		return
+	}
+	count, err := s.auth.CountUsers(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "count_users_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"setup_enabled":  setupEnabled,
+		"setup_required": setupEnabled && count == 0,
+	})
 }
 
 func (s *Server) setupFirstAdmin(w http.ResponseWriter, r *http.Request) {
