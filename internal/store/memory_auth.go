@@ -618,6 +618,12 @@ func auditEventMatchesFilter(event AuditEvent, filter AuditFilter) bool {
 	if filter.Result != "" && event.Result != filter.Result {
 		return false
 	}
+	if !filter.From.IsZero() && event.Timestamp.Before(filter.From) {
+		return false
+	}
+	if !filter.To.IsZero() && !event.Timestamp.Before(filter.To) {
+		return false
+	}
 	if filter.Query == "" {
 		return true
 	}

@@ -5638,12 +5638,35 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].Action != "services.assign" || filtered[0].ResourceID != "enc-01" {
 		t.Fatalf("unexpected filtered audit events: %#v", filtered)
 	}
+	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Timestamp: time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC), Action: "streams.start", ResourceType: "stream", ResourceID: "dated-in", Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Timestamp: time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC), Action: "streams.start", ResourceType: "stream", ResourceID: "dated-out", Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	dateReq := httptest.NewRequest(http.MethodGet, "/audit-logs?from=2026-07-01&to=2026-07-01&q=dated", nil)
+	dateReq.AddCookie(cookie)
+	dateRes := httptest.NewRecorder()
+	handler.ServeHTTP(dateRes, dateReq)
+	if dateRes.Code != http.StatusOK {
+		t.Fatalf("audit date filter status = %d body = %s", dateRes.Code, dateRes.Body.String())
+	}
+	var dated []store.AuditEvent
+	if err := json.NewDecoder(dateRes.Body).Decode(&dated); err != nil {
+		t.Fatal(err)
+	}
+	if len(dated) != 1 || dated[0].ResourceID != "dated-in" {
+		t.Fatalf("unexpected date-filtered audit events: %#v", dated)
+	}
 	exportReq := httptest.NewRequest(http.MethodGet, "/audit-logs/export", nil)
 	exportReq.AddCookie(cookie)
 	exportRes := httptest.NewRecorder()
 	handler.ServeHTTP(exportRes, exportReq)
 	if exportRes.Code != http.StatusOK || !strings.Contains(exportRes.Body.String(), "auth.login") || !strings.Contains(exportRes.Header().Get("Content-Type"), "text/csv") {
 		t.Fatalf("audit export status = %d headers = %#v body = %s", exportRes.Code, exportRes.Header(), exportRes.Body.String())
+	}
+	if !strings.Contains(exportRes.Body.String(), "user_agent") {
+		t.Fatalf("audit export header missing user_agent: %s", exportRes.Body.String())
 	}
 	if strings.Contains(exportRes.Body.String(), "raw-secret-token") || strings.Contains(exportRes.Body.String(), "super-raw-discord-token") {
 		t.Fatalf("audit export leaked metadata secret: %s", exportRes.Body.String())
@@ -8173,6 +8196,115 @@ func TestCreateServiceTokenRejectsEmptyScopes(t *testing.T) {
 	}
 }
 
+func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read", "service_health.read", "audit_logs.read"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"worker","node_id":"studio-worker-01","name":"Studio Worker 01","public_url":"https://worker.example.com","version":"0.1.0","capabilities":{"runtime_config":true,"token":"must-redact"}}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create node token status = %d body = %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("node registration token response should be no-store, got %q", got)
+	}
+	var body struct {
+		ID               string                  `json:"id"`
+		Token            string                  `json:"token"`
+		NodeType         string                  `json:"node_type"`
+		Scopes           []string                `json:"scopes"`
+		ConfigureCommand string                  `json:"configure_command"`
+		Node             store.RegisteredService `json:"node"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Token == "" || body.ID == "" || body.Node.ServiceID != "studio-worker-01" || body.NodeType != "worker" {
+		t.Fatalf("unexpected node registration response: %#v", body)
+	}
+	if !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token") || !strings.Contains(body.ConfigureCommand, "--node") {
+		t.Fatalf("missing configure command fields: %s", body.ConfigureCommand)
+	}
+	if !stringSliceContains(body.Scopes, "service.register") || !stringSliceContains(body.Scopes, "worker.events.write") || stringSliceContains(body.Scopes, "service.secret.resolve") {
+		t.Fatalf("unexpected default node scopes: %#v", body.Scopes)
+	}
+	if _, ok := body.Node.Capabilities["token"]; ok || strings.Contains(res.Body.String(), "must-redact") || strings.Contains(res.Body.String(), `"token_id"`) {
+		t.Fatalf("node response leaked secret-like capability or token binding: %s", res.Body.String())
+	}
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/service-health", nil)
+	healthReq.AddCookie(cookie)
+	healthRes := httptest.NewRecorder()
+	handler.ServeHTTP(healthRes, healthReq)
+	if healthRes.Code != http.StatusOK || !strings.Contains(healthRes.Body.String(), "studio-worker-01") {
+		t.Fatalf("service health missing precreated node: status=%d body=%s", healthRes.Code, healthRes.Body.String())
+	}
+	if strings.Contains(healthRes.Body.String(), body.Token) || strings.Contains(healthRes.Body.String(), body.ID) {
+		t.Fatalf("service health leaked node registration token material: %s", healthRes.Body.String())
+	}
+
+	auditReq := httptest.NewRequest(http.MethodGet, "/audit-logs?action=nodes.registration_token.create", nil)
+	auditReq.AddCookie(cookie)
+	auditRes := httptest.NewRecorder()
+	handler.ServeHTTP(auditRes, auditReq)
+	if auditRes.Code != http.StatusOK {
+		t.Fatalf("audit log status = %d body = %s", auditRes.Code, auditRes.Body.String())
+	}
+	auditBody := auditRes.Body.String()
+	if !strings.Contains(auditBody, "nodes.registration_token.create") || !strings.Contains(auditBody, "studio-worker-01") {
+		t.Fatalf("audit log missing node registration event: %s", auditBody)
+	}
+	if strings.Contains(auditBody, body.Token) || strings.Contains(auditBody, body.ID) {
+		t.Fatalf("audit log leaked node registration token material: %s", auditBody)
+	}
+	if strings.Contains(auditBody, `"token_id"`) && !strings.Contains(auditBody, `"\u003credacted\u003e"`) {
+		t.Fatalf("audit log token binding was not redacted: %s", auditBody)
+	}
+}
+
+func TestCreateNodeRegistrationTokenRejectsSecretScopeEscalation(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"encoder_recorder","node_id":"encoder-01","name":"Encoder 01","public_url":"https://encoder.example.com","version":"0.1.0","allow_runtime_secrets":true}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("secret scope escalation status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "permission_escalation") {
+		t.Fatalf("unexpected response: %s", res.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api-tokens", nil)
+	listReq.AddCookie(cookie)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list token status = %d body = %s", listRes.Code, listRes.Body.String())
+	}
+	var tokens []store.ServiceToken
+	if err := json.NewDecoder(listRes.Body).Decode(&tokens); err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("denied node registration should not create token: %#v", tokens)
+	}
+}
+
 func TestServiceRegisterRejectsWrongServiceType(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
@@ -8793,7 +8925,7 @@ func TestRootRedirectsToLoginWhenSetupCompleteAndUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestRootRedirectsToDashboardWhenAuthenticated(t *testing.T) {
+func TestRootRedirectsToAdminWhenAuthenticated(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"streams.read"}); err != nil {
 		t.Fatal(err)
@@ -8805,7 +8937,7 @@ func TestRootRedirectsToDashboardWhenAuthenticated(t *testing.T) {
 	req.AddCookie(cookie)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusFound || res.Header().Get("Location") != "/dashboard" {
+	if res.Code != http.StatusFound || res.Header().Get("Location") != "/admin" {
 		t.Fatalf("root redirect = %d location=%q body=%s", res.Code, res.Header().Get("Location"), res.Body.String())
 	}
 }

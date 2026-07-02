@@ -327,6 +327,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api-tokens", s.requirePermission("api_tokens.create", s.createServiceToken))
 	s.mux.HandleFunc("POST /api-tokens/{id}/rotate", s.requirePermission("api_tokens.create", s.rotateServiceToken))
 	s.mux.HandleFunc("DELETE /api-tokens/{id}", s.requirePermission("api_tokens.revoke", s.revokeServiceToken))
+	s.mux.HandleFunc("POST /nodes/registration-tokens", s.requirePermission("api_tokens.create", s.createNodeRegistrationToken))
 	s.mux.HandleFunc("GET /service-health", s.requirePermission("service_health.read", s.listServices))
 	s.mux.HandleFunc("GET /service-health/{id}/runtime-config", s.requirePermission("service_health.read", s.adminServiceRuntimeConfig))
 	s.mux.HandleFunc("POST /services/{id}/assign", s.requirePermission("services.assign", s.assignService))
@@ -479,7 +480,7 @@ func (s *Server) rootRedirect(w http.ResponseWriter, r *http.Request) {
 		if s.setupToken != "" && count == 0 {
 			target = "/setup"
 		} else if _, ok := s.authenticate(r); ok {
-			target = "/dashboard"
+			target = "/admin"
 		}
 	}
 	http.Redirect(w, r, target, http.StatusFound)
@@ -3526,6 +3527,135 @@ func (s *Server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "api_tokens.create", ResourceType: "service_token", ResourceID: token.ID, Result: "success", Metadata: metadata})
 	writeOneTimeSecretJSON(w, http.StatusCreated, token)
+}
+
+func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NodeType            string         `json:"node_type"`
+		ServiceType         string         `json:"service_type"`
+		NodeID              string         `json:"node_id"`
+		ServiceID           string         `json:"service_id"`
+		Name                string         `json:"name"`
+		ServiceName         string         `json:"service_name"`
+		PublicURL           string         `json:"public_url"`
+		Version             string         `json:"version"`
+		Capabilities        map[string]any `json:"capabilities,omitempty"`
+		AllowRuntimeSecrets bool           `json:"allow_runtime_secrets"`
+		AllowRemediation    bool           `json:"allow_remediation"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	serviceType := strings.TrimSpace(body.NodeType)
+	if serviceType == "" {
+		serviceType = strings.TrimSpace(body.ServiceType)
+	}
+	serviceID := strings.TrimSpace(body.NodeID)
+	if serviceID == "" {
+		serviceID = strings.TrimSpace(body.ServiceID)
+	}
+	serviceName := strings.TrimSpace(body.Name)
+	if serviceName == "" {
+		serviceName = strings.TrimSpace(body.ServiceName)
+	}
+	scopes := nodeRegistrationScopes(serviceType, body.AllowRuntimeSecrets, body.AllowRemediation)
+	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, scopes); err != nil {
+		status := http.StatusBadRequest
+		code := "invalid_node_scope"
+		if errors.Is(err, store.ErrPermissionEscalation) {
+			status = http.StatusForbidden
+			code = "permission_escalation"
+		}
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	token, err := s.services.CreateServiceToken(r.Context(), serviceType, scopes)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "create_node_registration_token_failed"})
+		return
+	}
+	service, err := s.services.PrecreateService(r.Context(), token, store.ServiceRegistration{
+		ServiceID:    serviceID,
+		ServiceType:  serviceType,
+		ServiceName:  serviceName,
+		PublicURL:    strings.TrimSpace(body.PublicURL),
+		Version:      strings.TrimSpace(body.Version),
+		Capabilities: body.Capabilities,
+	})
+	if err != nil {
+		_ = s.services.RevokeServiceToken(r.Context(), token.ID)
+		if errors.Is(err, store.ErrAlreadyExists) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "node_already_exists"})
+			return
+		}
+		if errors.Is(err, store.ErrInvalidServiceRegistration) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_registration"})
+			return
+		}
+		if errors.Is(err, store.ErrForbidden) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "node_type_mismatch"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "precreate_node_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{
+		ActorUserID:   current.User.ID,
+		ActorUsername: current.User.Username,
+		Action:        "nodes.registration_token.create",
+		ResourceType:  "node",
+		ResourceID:    service.ServiceID,
+		Result:        "success",
+		Metadata:      map[string]any{"node_type": service.ServiceType, "token_id": token.ID, "scopes": token.Scopes},
+	})
+	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
+		"id":                token.ID,
+		"service_type":      token.ServiceType,
+		"node_type":         token.ServiceType,
+		"scopes":            token.Scopes,
+		"token":             token.RawToken,
+		"created_at":        token.CreatedAt,
+		"node":              service,
+		"configure_command": nodeConfigureCommand(r, service.ServiceID, token.RawToken),
+	})
+}
+
+func nodeRegistrationScopes(serviceType string, allowRuntimeSecrets, allowRemediation bool) []string {
+	scopes := []string{"service.register", "service.heartbeat", "service.config.read", "service.logs.write", "service.status.write"}
+	switch serviceType {
+	case "discord_bot":
+		scopes = append(scopes, "discord.status.write")
+	case "encoder_recorder":
+		scopes = append(scopes, "encoder.status.write")
+	case "worker":
+		scopes = append(scopes, "worker.events.write")
+	case "observability":
+		scopes = append(scopes, "observability.ingest")
+		if allowRemediation {
+			scopes = append(scopes, "remediation.execute")
+		}
+	}
+	if allowRuntimeSecrets {
+		scopes = append(scopes, "service.secret.resolve")
+	}
+	return scopes
+}
+
+func nodeConfigureCommand(r *http.Request, nodeID, rawToken string) string {
+	panelURL := "https://control.example.com"
+	if r != nil && r.Host != "" {
+		scheme := "https"
+		if r.TLS == nil {
+			scheme = "http"
+		}
+		if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded == "https" || forwarded == "http" {
+			scheme = forwarded
+		}
+		panelURL = scheme + "://" + r.Host
+	}
+	return "autostream-node configure --panel-url " + strconv.Quote(panelURL) + " --token " + strconv.Quote(rawToken) + " --node " + strconv.Quote(nodeID)
 }
 
 func validateServiceTokenScopePermissions(actorPermissions, scopes []string) error {
@@ -7099,9 +7229,9 @@ func (s *Server) exportAuditLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="autostream-audit-logs.csv"`)
 	w.WriteHeader(http.StatusOK)
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"id", "timestamp", "actor_user_id", "actor_username", "actor_ip", "action", "resource_type", "resource_id", "result", "request_id"})
+	_ = writer.Write([]string{"id", "timestamp", "actor_user_id", "actor_username", "actor_ip", "user_agent", "action", "resource_type", "resource_id", "result", "request_id"})
 	for _, event := range events {
-		_ = writer.Write([]string{safeCSVCell(event.ID), event.Timestamp.Format(time.RFC3339), safeCSVCell(event.ActorUserID), safeCSVCell(event.ActorUsername), safeCSVCell(event.ActorIP), safeCSVCell(event.Action), safeCSVCell(event.ResourceType), safeCSVCell(event.ResourceID), safeCSVCell(event.Result), safeCSVCell(event.RequestID)})
+		_ = writer.Write([]string{safeCSVCell(event.ID), event.Timestamp.Format(time.RFC3339), safeCSVCell(event.ActorUserID), safeCSVCell(event.ActorUsername), safeCSVCell(event.ActorIP), safeCSVCell(event.UserAgent), safeCSVCell(event.Action), safeCSVCell(event.ResourceType), safeCSVCell(event.ResourceID), safeCSVCell(event.Result), safeCSVCell(event.RequestID)})
 	}
 	writer.Flush()
 }
@@ -7121,7 +7251,7 @@ func safeCSVCell(value string) string {
 
 var auditActionGroups = map[string][]string{
 	"service_assignment": {"services.assign", "services.unassign", "workers.assign", "workers.unassign"},
-	"service_runtime":    {"services.register", "services.heartbeat", "archive.artifacts.reported"},
+	"service_runtime":    {"services.register", "services.heartbeat", "archive.artifacts.reported", "nodes.registration_token.create"},
 	"stream_lifecycle":   {"streams.create", "streams.start", "streams.stop", "streams.mark_failed", "streams.retry_upload"},
 	"security":           {"auth.login", "auth.logout", "auth.change_password", "users.create", "users.update", "users.disable", "users.lock", "users.unlock", "users.reset_password", "users.force_password_change", "roles.create", "roles.update", "roles.delete"},
 	"secrets":            {"secrets.update", "security.settings.update", "api_tokens.create", "api_tokens.revoke", "api_tokens.rotate"},
@@ -7134,6 +7264,8 @@ func auditFilterFromRequest(r *http.Request, defaultLimit int) store.AuditFilter
 		Limit:  parseLimit(r, defaultLimit),
 		Result: query.Get("result"),
 		Query:  query.Get("q"),
+		From:   parseAuditBoundary(query.Get("from"), false),
+		To:     parseAuditBoundary(query.Get("to"), true),
 	}
 	if group := query.Get("action_group"); group != "" && group != "all" {
 		filter.Actions = append(filter.Actions, auditActionGroups[group]...)
@@ -7145,6 +7277,23 @@ func auditFilterFromRequest(r *http.Request, defaultLimit int) store.AuditFilter
 		}
 	}
 	return filter
+}
+
+func parseAuditBoundary(value string, exclusiveEnd bool) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC()
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		if exclusiveEnd {
+			return parsed.Add(24 * time.Hour).UTC()
+		}
+		return parsed.UTC()
+	}
+	return time.Time{}
 }
 
 func publicAuditEvents(events []store.AuditEvent) []store.AuditEvent {

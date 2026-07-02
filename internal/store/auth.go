@@ -112,6 +112,8 @@ type AuditFilter struct {
 	Actions []string
 	Result  string
 	Query   string
+	From    time.Time
+	To      time.Time
 }
 
 type AuthStore interface {
@@ -941,6 +943,14 @@ func (s MariaDBAuditStore) ListAudit(ctx context.Context, filter AuditFilter) ([
 	if filter.Result != "" {
 		where = append(where, "result = ?")
 		args = append(args, filter.Result)
+	}
+	if !filter.From.IsZero() {
+		where = append(where, "timestamp >= ?")
+		args = append(args, filter.From)
+	}
+	if !filter.To.IsZero() {
+		where = append(where, "timestamp < ?")
+		args = append(args, filter.To)
 	}
 	if filter.Query != "" {
 		like := "%" + filter.Query + "%"

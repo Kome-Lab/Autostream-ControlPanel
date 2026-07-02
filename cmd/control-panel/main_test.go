@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,7 +49,8 @@ func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 	if res.Code != http.StatusOK || appCalled || res.Body.String() != "console.log('ok')" {
 		t.Fatalf("static response = %d appCalled=%v body=%q", res.Code, appCalled, res.Body.String())
 	}
-	if res.Header().Get("Content-Security-Policy") != "default-src 'self'" || res.Header().Get("X-Frame-Options") != "DENY" {
+	csp := res.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "object-src 'none'") || res.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("static security headers are missing: %#v", res.Header())
 	}
 }
@@ -93,6 +95,11 @@ func TestStaticFilesHandlerServesIndexForHTMLNavigation(t *testing.T) {
 	for _, path := range []string{
 		"/login",
 		"/setup",
+		"/admin",
+		"/admin/streams",
+		"/admin/workers",
+		"/admin/audit-logs",
+		"/admin/nodes",
 		"/dashboard",
 		"/streams",
 		"/encoder",
@@ -124,6 +131,35 @@ func TestStaticFilesHandlerServesIndexForHTMLNavigation(t *testing.T) {
 		if res.Code != http.StatusOK || res.Body.String() != "<main>app</main>" {
 			t.Fatalf("path %q static response = %d body=%q", path, res.Code, res.Body.String())
 		}
+	}
+}
+
+func TestStaticFilesHandlerServesNestedNextIndexForHTMLNavigation(t *testing.T) {
+	root := t.TempDir()
+	adminStreams := filepath.Join(root, "admin", "streams")
+	if err := os.MkdirAll(adminStreams, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adminStreams, "index.html"), []byte("<main>streams</main>"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>root</main>"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := staticFilesHandler{
+		app: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "api fallback", http.StatusTeapot)
+		}),
+		dir: root,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/streams", nil)
+	req.Header.Set("Accept", "text/html")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || res.Body.String() != "<main>streams</main>" {
+		t.Fatalf("nested Next index response = %d body=%q", res.Code, res.Body.String())
 	}
 }
 

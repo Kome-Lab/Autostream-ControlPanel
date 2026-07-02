@@ -94,7 +94,11 @@ func staticWebDir() string {
 }
 
 func staticWebDirCandidates() []string {
-	candidates := []string{defaultStaticWebDir}
+	candidates := []string{
+		defaultStaticWebDir,
+		filepath.Clean(filepath.Join("web", "out")),
+		filepath.Clean(filepath.Join("web", "dist")),
+	}
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
 		candidates = append(candidates,
@@ -202,8 +206,21 @@ func (h staticFilesHandler) serveStatic(w http.ResponseWriter, r *http.Request) 
 		return true
 	}
 	info, err := os.Stat(full)
-	if err != nil || info.IsDir() {
+	if err == nil && info.IsDir() {
+		if h.serveStaticIndex(w, r, rel) {
+			return true
+		}
 		if isHTMLNavigationRequest(r) && isControlPanelUIPath(cleanPath) {
+			http.ServeFile(w, r, filepath.Join(h.dir, "index.html"))
+			return true
+		}
+		return false
+	}
+	if err != nil {
+		if isHTMLNavigationRequest(r) && isControlPanelUIPath(cleanPath) {
+			if h.serveStaticIndex(w, r, rel) {
+				return true
+			}
 			http.ServeFile(w, r, filepath.Join(h.dir, "index.html"))
 			return true
 		}
@@ -211,6 +228,19 @@ func (h staticFilesHandler) serveStatic(w http.ResponseWriter, r *http.Request) 
 	}
 	http.ServeFile(w, r, full)
 	return true
+}
+
+func (h staticFilesHandler) serveStaticIndex(w http.ResponseWriter, r *http.Request, rel string) bool {
+	indexRel := path.Join(rel, "index.html")
+	indexFull, ok := safeStaticPath(h.dir, indexRel)
+	if !ok {
+		return false
+	}
+	if indexInfo, err := os.Stat(indexFull); err == nil && !indexInfo.IsDir() {
+		http.ServeFile(w, r, indexFull)
+		return true
+	}
+	return false
 }
 
 func isHTMLNavigationRequest(r *http.Request) bool {
@@ -225,6 +255,9 @@ func isHTMLNavigationRequest(r *http.Request) bool {
 }
 
 func isControlPanelUIPath(cleanPath string) bool {
+	if cleanPath == "/admin" || strings.HasPrefix(cleanPath, "/admin/") {
+		return true
+	}
 	_, ok := controlPanelUIPaths[cleanPath]
 	return ok
 }
@@ -232,6 +265,7 @@ func isControlPanelUIPath(cleanPath string) bool {
 var controlPanelUIPaths = map[string]struct{}{
 	"/login":          {},
 	"/setup":          {},
+	"/admin":          {},
 	"/dashboard":      {},
 	"/streams":        {},
 	"/encoder":        {},
@@ -258,7 +292,7 @@ var controlPanelUIPaths = map[string]struct{}{
 }
 
 func setStaticSecurityHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", "default-src 'self'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; form-action 'self'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
