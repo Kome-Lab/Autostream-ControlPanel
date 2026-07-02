@@ -1,49 +1,150 @@
 "use client";
 
+import type { ComponentType, ReactNode } from "react";
+import { useEffect } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { BarChart3, ClipboardList, Languages, Menu, Moon, Network, PlaySquare, RadioTower, ServerCog, Sun } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import {
+  Activity,
+  AlertTriangle,
+  Archive,
+  BarChart3,
+  Bell,
+  Captions,
+  ClipboardList,
+  FileText,
+  Gauge,
+  HardDrive,
+  KeyRound,
+  Languages,
+  Layers,
+  LineChart,
+  Menu,
+  MessageCircle,
+  Moon,
+  Network,
+  PlaySquare,
+  Plug,
+  RadioTower,
+  ServerCog,
+  Settings,
+  Shield,
+  Sun,
+  Users,
+  Video,
+  Wrench,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/components/admin/i18n-provider";
-import { useCurrentUser } from "@/features/queries";
-import type { Locale } from "@/types/domain";
-import { useEffect, useState } from "react";
+import { useTheme } from "@/components/admin/theme-provider";
+import { apiGet } from "@/lib/api/client";
+import { useAppSettings, useCurrentUser } from "@/features/queries";
+import type { Locale, SetupStatus } from "@/types/domain";
+import type { TranslationKey } from "@/lib/i18n";
 
-const navItems = [
-  { href: "/admin/", key: "dashboard", icon: BarChart3 },
-  { href: "/admin/streams/", key: "streams", icon: PlaySquare },
-  { href: "/admin/workers/", key: "workers", icon: ServerCog },
-  { href: "/admin/audit-logs/", key: "auditLogs", icon: ClipboardList },
-  { href: "/admin/nodes/", key: "nodeRegistration", icon: Network },
-] as const;
+type NavItem = {
+  href: string;
+  key: TranslationKey;
+  icon: ComponentType<{ className?: string }>;
+};
 
-export function AdminShell({ children }: { children: React.ReactNode }) {
-	const pathname = usePathname();
-	const { locale, setLocale, t } = useI18n();
-	const currentUser = useCurrentUser();
-	const [dark, setDark] = useState(() => {
-		if (typeof window === "undefined") return false;
-		const stored = window.localStorage.getItem("autostream.theme");
-		return stored ? stored === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
-	});
+type NavSection = {
+  key: TranslationKey;
+  items: NavItem[];
+};
 
-	useEffect(() => {
-		document.documentElement.classList.toggle("dark", dark);
-	}, [dark]);
+const navSections: NavSection[] = [
+  {
+    key: "navOperations",
+    items: [
+      { href: "/admin/", key: "dashboard", icon: BarChart3 },
+      { href: "/admin/streams/", key: "streams", icon: PlaySquare },
+      { href: "/admin/workers/", key: "workers", icon: ServerCog },
+      { href: "/admin/service-health/", key: "serviceHealth", icon: Activity },
+      { href: "/admin/logs/", key: "logs", icon: FileText },
+    ],
+  },
+  {
+    key: "navProfiles",
+    items: [
+      { href: "/admin/encoder/", key: "encoder", icon: Gauge },
+      { href: "/admin/discord/", key: "discord", icon: MessageCircle },
+      { href: "/admin/youtube/", key: "youtube", icon: Video },
+      { href: "/admin/caption/", key: "caption", icon: Captions },
+      { href: "/admin/overlay/", key: "overlay", icon: Layers },
+      { href: "/admin/archive/", key: "archive", icon: Archive },
+      { href: "/admin/integrations/", key: "integrations", icon: Plug },
+    ],
+  },
+  {
+    key: "navMonitoring",
+    items: [
+      { href: "/admin/monitoring/", key: "monitoring", icon: LineChart },
+      { href: "/admin/incidents/", key: "incidents", icon: AlertTriangle },
+      { href: "/admin/diagnostics/", key: "diagnostics", icon: Wrench },
+      { href: "/admin/remediation/", key: "remediation", icon: HardDrive },
+      { href: "/admin/notifications/", key: "notifications", icon: Bell },
+      { href: "/admin/metrics/", key: "metrics", icon: BarChart3 },
+    ],
+  },
+  {
+    key: "navAdministration",
+    items: [
+      { href: "/admin/users/", key: "users", icon: Users },
+      { href: "/admin/roles/", key: "roles", icon: Shield },
+      { href: "/admin/audit-logs/", key: "auditLogs", icon: ClipboardList },
+      { href: "/admin/security/", key: "security", icon: KeyRound },
+      { href: "/admin/nodes/", key: "nodeRegistration", icon: Network },
+      { href: "/admin/settings/", key: "settings", icon: Settings },
+    ],
+  },
+];
 
-  const toggleTheme = () => {
-    const next = !dark;
-    setDark(next);
-    window.localStorage.setItem("autostream.theme", next ? "dark" : "light");
-    document.documentElement.classList.toggle("dark", next);
-  };
+const navItems = navSections.flatMap((section) => section.items);
+
+export function AdminShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { locale, setLocale, t } = useI18n();
+  const { dark, toggleTheme } = useTheme();
+  const currentUser = useCurrentUser();
+  const appSettings = useAppSettings();
+
+  useEffect(() => {
+    if (!currentUser.isError) return;
+    let active = true;
+    apiGet<SetupStatus>("/setup/status")
+      .then((status) => {
+        if (!active) return;
+        router.replace(status.setup_required ? "/setup" : "/login");
+      })
+      .catch(() => {
+        if (active) router.replace("/login");
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser.isError, router]);
+
+  if (currentUser.isLoading || currentUser.isError || !currentUser.data) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background p-6">
+        <div className="w-full max-w-md space-y-4">
+          <Skeleton className="h-10 w-48" />
+          <Skeleton className="h-36 w-full" />
+        </div>
+      </main>
+    );
+  }
 
   const nav = <Navigation pathname={pathname} />;
+  const appName = appSettings.data?.app_name || t("appName");
 
   return (
     <div className="min-h-screen bg-background">
@@ -53,7 +154,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             <RadioTower className="size-5" />
           </div>
           <div>
-            <div className="font-semibold">{t("appName")}</div>
+            <div className="font-semibold">{appName}</div>
             <div className="text-xs text-sidebar-foreground/70">Control Panel</div>
           </div>
         </div>
@@ -73,7 +174,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 <SheetTitle className="sr-only">Navigation</SheetTitle>
                 <div className="flex h-16 items-center gap-3 border-b px-5">
                   <RadioTower className="size-5" />
-                  <span className="font-semibold">{t("appName")}</span>
+                  <span className="font-semibold">{appName}</span>
                 </div>
                 <div className="p-3">{nav}</div>
               </SheetContent>
@@ -99,7 +200,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             </Button>
             <Separator orientation="vertical" className="hidden h-8 sm:block" />
             <div className="hidden text-right text-sm sm:block">
-              <div className="font-medium">{currentUser.data?.user.username || "demo-admin"}</div>
+              <div className="font-medium">{currentUser.data.user.username}</div>
               <div className="text-xs text-muted-foreground">{t("currentUser")}</div>
             </div>
           </div>
@@ -113,26 +214,31 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 function Navigation({ pathname }: { pathname: string }) {
   const { t } = useI18n();
   return (
-    <nav className="space-y-1">
-      {navItems.map((item) => {
-        const Icon = item.icon;
-        const active = pathname === item.href || (item.href !== "/admin/" && pathname.startsWith(item.href));
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-              active
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "text-sidebar-foreground/78 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
-            )}
-          >
-            <Icon className="size-4" />
-            {t(item.key)}
-          </Link>
-        );
-      })}
+    <nav className="space-y-5">
+      {navSections.map((section) => (
+        <div key={section.key} className="space-y-1">
+          <div className="px-3 text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-sidebar-foreground/45">{t(section.key)}</div>
+          {section.items.map((item) => {
+            const Icon = item.icon;
+            const active = pathname === item.href || (item.href !== "/admin/" && pathname.startsWith(item.href));
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/78 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                )}
+              >
+                <Icon className="size-4" />
+                {t(item.key)}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 }

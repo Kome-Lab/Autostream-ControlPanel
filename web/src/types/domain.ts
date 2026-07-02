@@ -77,6 +77,16 @@ export type CurrentUser = {
   permissions: string[];
 };
 
+export type SetupStatus = {
+  setup_enabled: boolean;
+  setup_required: boolean;
+};
+
+export type AppSettings = {
+  app_name: string;
+  updated_at?: string;
+};
+
 export type NodeRegistrationResponse = {
   id: string;
   service_type: string;

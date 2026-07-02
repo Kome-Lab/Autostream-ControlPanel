@@ -1,4 +1,4 @@
-import type { AuditLog, CurrentUser, MetricPoint, NodeRegistrationResponse, Stream, WorkerNode } from "@/types/domain";
+import type { AppSettings, AuditLog, CurrentUser, MetricPoint, NodeRegistrationResponse, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 const baseTime = "2026-07-02T09:00:00+09:00";
 
@@ -191,15 +191,109 @@ export const mockWorkerMetrics: MetricPoint[] = [
   { timestamp: "09:00", cpu_percent: 32, memory_percent: 41, network_mbps: 5.1 },
 ];
 
+export const mockSetupStatus: SetupStatus = {
+  setup_enabled: true,
+  setup_required: false,
+};
+
+export let mockAppSettings: AppSettings = {
+  app_name: "AutoStream",
+  updated_at: baseTime,
+};
+
+const mockResourceData: Record<string, unknown[]> = {
+  "/profiles/encoder": [
+    { id: "enc-profile-1080p", name: "1080p60 標準", width: 1920, height: 1080, fps: 60, bitrate_kbps: 7800, updated_at: baseTime },
+    { id: "enc-profile-mobile", name: "現場回線向け 720p", width: 1280, height: 720, fps: 30, bitrate_kbps: 3500, updated_at: "2026-07-02T08:35:00+09:00" },
+  ],
+  "/profiles/caption": [
+    { id: "caption-live-ja", name: "日本語ライブ字幕", language: "ja-JP", provider: "Deepgram", delay_ms: 800, updated_at: baseTime },
+    { id: "caption-manual", name: "手動字幕", language: "ja-JP", provider: "operator", delay_ms: 0, updated_at: "2026-07-01T18:20:00+09:00" },
+  ],
+  "/profiles/overlay": [
+    { id: "overlay-lower-third", name: "自治体テロップ", safe_area: "16:9 lower", theme: "public", updated_at: baseTime },
+    { id: "overlay-event", name: "イベント進行", safe_area: "full", theme: "event", updated_at: "2026-07-01T17:00:00+09:00" },
+  ],
+  "/profiles/archive": [
+    { id: "archive-shared-drive", name: "共有Drive保存", format: "mp4", retention_days: 180, upload_enabled: true, updated_at: baseTime },
+    { id: "archive-local", name: "ローカル一時保存", format: "mkv", retention_days: 30, upload_enabled: false, updated_at: "2026-07-01T10:00:00+09:00" },
+  ],
+  "/discord/configs": [
+    { id: "discord-main", name: "制作連絡チャンネル", service_id: "discord-01", guild_id: "guild-main", audio_forward_enabled: true, updated_at: baseTime },
+    { id: "discord-city", name: "自治体通知", service_id: "discord-city", guild_id: "guild-city", audio_forward_enabled: false, updated_at: "2026-07-01T15:40:00+09:00" },
+  ],
+  "/youtube/outputs": [
+    { id: "yt-regional-news", name: "地域ニュース配信", mode: "live_api_dry_run", privacy_status: "public", rtmp_url: "rtmps://example.youtube.com/live2", updated_at: baseTime },
+    { id: "yt-private-event", name: "限定公開イベント", mode: "stream_key", privacy_status: "unlisted", rtmp_url: "rtmps://example.youtube.com/live2", updated_at: "2026-07-01T13:00:00+09:00" },
+  ],
+  "/archive/destinations": [
+    { id: "drive-city", name: "自治体広報 Drive", auth_mode: "oauth2", folder_id_configured: true, updated_at: baseTime },
+    { id: "drive-bpo", name: "BPO案件別 Drive", auth_mode: "service_account", folder_id_configured: true, updated_at: "2026-07-01T12:00:00+09:00" },
+  ],
+  "/integrations/oauth-providers": [
+    { id: "google-main", provider_type: "google", name: "Google Workspace", enabled: true, redirect_uri: "https://control.example.jp/integrations/oauth-accounts/callback" },
+    { id: "github-login", provider_type: "github", name: "GitHub Login", enabled: false, redirect_uri: "https://control.example.jp/auth/oauth/callback" },
+  ],
+  "/integrations/oauth-accounts": [
+    { id: "acct-drive", provider_type: "google", account_label: "広報 Drive", email: "archive@example.jp", status: "connected", updated_at: baseTime },
+    { id: "acct-youtube", provider_type: "google", account_label: "YouTube 管理", email: "live@example.jp", status: "connected", updated_at: "2026-07-01T16:10:00+09:00" },
+  ],
+  "/users": [
+    { id: "user-admin", username: "admin", status: "active", roles: ["super_admin"], last_login_at: baseTime },
+    { id: "user-operator", username: "operator", status: "active", roles: ["operator"], last_login_at: "2026-07-02T08:20:00+09:00" },
+  ],
+  "/roles": [
+    { id: "role-super-admin", name: "super_admin", permissions: ["*"], updated_at: baseTime },
+    { id: "role-operator", name: "operator", permissions: ["streams.read", "streams.start", "streams.stop"], updated_at: "2026-07-01T09:00:00+09:00" },
+  ],
+  "/permissions": [
+    { id: "streams.read", name: "streams.read", group: "streams" },
+    { id: "system_settings.update", name: "system_settings.update", group: "settings" },
+  ],
+  "/security/settings": [
+    { id: "password_min_length", name: "Password minimum length", value: 12 },
+    { id: "mfa_mode", name: "MFA mode", value: "disabled" },
+    { id: "session_idle_timeout_min", name: "Session idle timeout", value: 30 },
+  ],
+  "/secrets/status": [
+    { name: "discord_bot_token", configured: true, fingerprint: "sha256:8f7c..." },
+    { name: "youtube_stream_key", configured: true, fingerprint: "sha256:1ab2..." },
+    { name: "observability_token", configured: false },
+  ],
+  "/observability/incidents": [
+    { id: "inc-1", severity: "warning", status: "acknowledged", title: "現場Encoderのハートビート遅延", service_id: "encoder-field", updated_at: baseTime },
+    { id: "inc-2", severity: "info", status: "resolved", title: "YouTube API dry-run retry", service_id: "worker-main", updated_at: "2026-07-02T07:50:00+09:00" },
+  ],
+  "/observability/diagnostics": [
+    { id: "diag-1", check: "audio_status", status: "pass", target: "stream-cable-morning", updated_at: baseTime },
+    { id: "diag-2", check: "encoder_preflight", status: "warning", target: "encoder-field", updated_at: "2026-07-02T08:58:00+09:00" },
+  ],
+  "/observability/remediation-actions": [
+    { id: "rem-1", status: "pending_approval", action: "restart_encoder", target: "encoder-field", created_at: baseTime },
+    { id: "rem-2", status: "executed", action: "switch_worker", target: "worker-standby", created_at: "2026-07-02T08:30:00+09:00" },
+  ],
+  "/observability/notification-deliveries": [
+    { id: "ntf-1", status: "success", channel: "discord", incident_id: "inc-1", sent_at: baseTime },
+    { id: "ntf-2", status: "retrying", channel: "email", incident_id: "inc-2", sent_at: "2026-07-02T08:40:00+09:00" },
+  ],
+  "/observability/notification-channels": [
+    { id: "chn-1", name: "制作Discord", type: "discord", enabled: true, masked_webhook_url: "https://example.jp/<WEBHOOK_PATH>" },
+    { id: "chn-2", name: "運用メール", type: "email", enabled: true, masked_email_target: "o***s@example.jp" },
+  ],
+};
+
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
   const dataByPath: Record<string, unknown> = {
     "/auth/me": mockCurrentUser,
+    "/setup/status": mockSetupStatus,
+    "/settings/app": mockAppSettings,
     "/streams": mockStreams,
     "/workers": mockWorkers,
     "/service-health": mockWorkers,
     "/audit-logs": mockAuditLogs,
     "/observability/metrics": mockWorkerMetrics,
+    ...mockResourceData,
   };
   return dataByPath[normalizedPath] ?? [];
 }
@@ -237,6 +331,31 @@ export function mockPost(path: string, body?: unknown): unknown {
     return response;
   }
   return { ok: true };
+}
+
+export function mockPut(path: string, body?: unknown): unknown {
+  if (stripQuery(path) === "/settings/app") {
+    const request = body as Partial<AppSettings>;
+    mockAppSettings = { app_name: request.app_name || mockAppSettings.app_name, updated_at: baseTime };
+    return mockAppSettings;
+  }
+  return { ok: true };
+}
+
+export function mockPathExists(path: string) {
+  const normalizedPath = stripQuery(path);
+  return new Set([
+    "/auth/me",
+    "/setup/status",
+    "/settings/app",
+    "/streams",
+    "/workers",
+    "/service-health",
+    "/audit-logs",
+    "/observability/metrics",
+    "/nodes/registration-tokens",
+    ...Object.keys(mockResourceData),
+  ]).has(normalizedPath);
 }
 
 function stripQuery(path: string) {

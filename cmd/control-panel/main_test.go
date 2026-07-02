@@ -115,6 +115,7 @@ func TestStaticFilesHandlerServesIndexForHTMLNavigation(t *testing.T) {
 		"/roles",
 		"/audit",
 		"/security",
+		"/settings",
 		"/tokens",
 		"/service-health",
 		"/monitoring",
@@ -184,6 +185,16 @@ func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
 		t.Fatalf("JSON API request should fall through, status = %d body=%q", res.Code, res.Body.String())
 	}
 
+	for _, path := range []string{"/service-health", "/settings/app", "/services/runtime-config", "/observability/metrics"} {
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "application/json")
+		res = httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusTeapot {
+			t.Fatalf("API request %q should fall through, status = %d body=%q", path, res.Code, res.Body.String())
+		}
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
 	req.Header.Set("Accept", "*/*")
 	res = httptest.NewRecorder()
@@ -198,6 +209,14 @@ func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusTeapot {
 		t.Fatalf("API route should not be treated as SPA navigation, status = %d body=%q", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/settings/app", nil)
+	req.Header.Set("Accept", "text/html")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusTeapot {
+		t.Fatalf("nested settings API route should not be treated as SPA navigation, status = %d body=%q", res.Code, res.Body.String())
 	}
 }
 

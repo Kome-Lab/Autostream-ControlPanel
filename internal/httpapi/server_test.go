@@ -8975,6 +8975,42 @@ func TestSetupStatusRespectsDisabledSetupToken(t *testing.T) {
 	}
 }
 
+func TestAppSettingsCanBeReadWithoutSession(t *testing.T) {
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(store.NewMemoryAuthStore()), WithAppSettingsStore(store.NewMemoryAppSettingsStore()))
+	req := httptest.NewRequest(http.MethodGet, "/settings/app", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"AutoStream"`) {
+		t.Fatalf("app settings status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestAppSettingsUpdatePersistsWithPermission(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"Kome Panel"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"Kome Panel"`) {
+		t.Fatalf("update app settings status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/settings/app", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"Kome Panel"`) {
+		t.Fatalf("persisted app settings status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestSetupFirstAdminUsesConfiguredPasswordMinimum(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	settings := store.NewMemorySecuritySettingsStore()

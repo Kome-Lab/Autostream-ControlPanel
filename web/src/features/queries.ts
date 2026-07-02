@@ -1,11 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api/client";
-import type { AuditLog, CurrentUser, MetricPoint, Stream, WorkerNode } from "@/types/domain";
+import type { AppSettings, AuditLog, CurrentUser, MetricPoint, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 export function useCurrentUser() {
   return useQuery({
     queryKey: ["auth", "me"],
     queryFn: () => apiGet<CurrentUser>("/auth/me"),
+    retry: false,
+  });
+}
+
+export function useSetupStatus() {
+  return useQuery({
+    queryKey: ["setup", "status"],
+    queryFn: () => apiGet<SetupStatus>("/setup/status"),
+    retry: false,
+  });
+}
+
+export function useAppSettings() {
+  return useQuery({
+    queryKey: ["settings", "app"],
+    queryFn: () => apiGet<AppSettings>("/settings/app"),
   });
 }
 
@@ -47,5 +63,12 @@ export function useWorkerMetrics() {
   return useQuery({
     queryKey: ["observability", "metrics"],
     queryFn: () => apiGet<MetricPoint[]>("/observability/metrics"),
+  });
+}
+
+export function useResourceData<T = unknown>(path: string) {
+  return useQuery({
+    queryKey: ["resource", path],
+    queryFn: () => apiGet<T>(path),
   });
 }

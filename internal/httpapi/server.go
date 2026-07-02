@@ -55,6 +55,7 @@ type Server struct {
 	profiles       store.ProfileStore
 	integrations   store.IntegrationStore
 	settings       store.SecuritySettingsStore
+	appSettings    store.AppSettingsStore
 	secrets        store.SecretStore
 	runtimeLeases  store.RuntimeSecretLeaseStore
 	remediation    store.RemediationExecutionStore
@@ -116,6 +117,10 @@ func WithIntegrationStore(integrations store.IntegrationStore) ServerOption {
 
 func WithSecuritySettingsStore(settings store.SecuritySettingsStore) ServerOption {
 	return func(s *Server) { s.settings = settings }
+}
+
+func WithAppSettingsStore(settings store.AppSettingsStore) ServerOption {
+	return func(s *Server) { s.appSettings = settings }
 }
 
 func WithSecretStore(secrets store.SecretStore) ServerOption {
@@ -200,6 +205,9 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	}
 	if s.settings == nil {
 		s.settings = store.NewMemorySecuritySettingsStore()
+	}
+	if s.appSettings == nil {
+		s.appSettings = store.NewMemoryAppSettingsStore()
 	}
 	if s.secrets == nil {
 		s.secrets = store.NewMemorySecretStore()
@@ -359,6 +367,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /audit-logs/export", s.requirePermission("audit_logs.export", s.exportAuditLogs))
 	s.mux.HandleFunc("GET /security/settings", s.requirePermission("system_settings.read", s.securitySettings))
 	s.mux.HandleFunc("PUT /security/settings", s.requirePermission("system_settings.update", s.updateSecuritySettings))
+	s.mux.HandleFunc("GET /settings/app", s.appSettingsView)
+	s.mux.HandleFunc("PUT /settings/app", s.requirePermission("system_settings.update", s.updateAppSettings))
 	s.mux.HandleFunc("GET /secrets/status", s.requirePermission("secrets.read_status", s.secretStatus))
 	s.mux.HandleFunc("PUT /secrets/{name}", s.requirePermission("secrets.update", s.updateSecret))
 	s.mux.HandleFunc("GET /observability/incidents", s.requirePermission("incidents.read", s.observabilityGet("/incidents")))
@@ -7399,6 +7409,36 @@ func (s *Server) updateSecuritySettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "security.settings.update", ResourceType: "security_settings", Result: "success"})
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) appSettingsView(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.appSettings.GetAppSettings(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) updateAppSettings(w http.ResponseWriter, r *http.Request) {
+	var body store.AppSettings
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	settings, err := s.appSettings.UpdateAppSettings(r.Context(), body)
+	if errors.Is(err, store.ErrInvalidSettings) {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "failure", Metadata: map[string]any{"reason": "invalid_settings"}})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_app_settings"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_update_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "success"})
 	writeJSON(w, http.StatusOK, settings)
 }
 
