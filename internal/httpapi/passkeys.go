@@ -181,17 +181,12 @@ func (s *Server) startPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := strings.TrimSpace(body.Username)
-	settings, err := s.settings.GetSecuritySettings(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "security_settings_unavailable"})
-		return
-	}
 	failureKeyName := username
 	if failureKeyName == "" {
 		failureKeyName = "passkey"
 	}
-	failureKey := loginFailureKey(failureKeyName, clientIP(r))
-	if !s.loginFailures.allow(failureKey, settings.LoginLockoutThreshold) {
+	failureKey := loginFailureKey("passkey:start:"+failureKeyName, clientIP(r))
+	if !s.loginFailures.allow(failureKey, sensitiveActionAttemptThreshold) {
 		w.Header().Set("Retry-After", "300")
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "login_rate_limited"})
 		return
@@ -217,6 +212,7 @@ func (s *Server) startPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "passkey_login_challenge_failed"})
 		return
 	}
+	s.loginFailures.record(failureKey)
 	s.writeAudit(r, store.AuditEvent{Action: "auth.passkey.login.start", ResourceType: "passkey", Result: "success"})
 	writeOneTimeSecretJSON(w, http.StatusOK, passkeyLoginStartResponse{ChallengeToken: saved.Token, ExpiresAt: saved.ExpiresAt, PublicKey: assertion.Response})
 }

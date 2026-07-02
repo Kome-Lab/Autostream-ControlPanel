@@ -17,6 +17,9 @@ func TestRegisterServiceRejectsServiceIDTakeoverByDifferentToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := auth.PrecreateService(ctx, first, ServiceRegistration{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "Worker 01", PublicURL: "https://worker-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate service: %v", err)
+	}
 	if _, err := auth.RegisterService(ctx, first, ServiceRegistration{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "Worker 01", PublicURL: "https://worker-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
 		t.Fatalf("initial registration failed: %v", err)
 	}
@@ -32,6 +35,14 @@ func TestRegisterServiceRejectsServiceIDTakeoverByDifferentToken(t *testing.T) {
 	}
 	if _, err := auth.RegisterService(ctx, first, ServiceRegistration{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "Worker 01b", PublicURL: "https://worker-01b.example.com", Version: "0.1.1", Capabilities: map[string]any{"updated": true}}); err != nil {
 		t.Fatalf("same-token update should be allowed: %v", err)
+	}
+}
+
+func TestCreateServiceTokenRequiresAtLeastOneScope(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	if _, err := auth.CreateServiceToken(ctx, "worker", nil); err == nil {
+		t.Fatal("expected empty service token scopes to be rejected")
 	}
 }
 
@@ -77,6 +88,9 @@ func TestHeartbeatWithoutCurrentStreamPreservesAssignment(t *testing.T) {
 	token, err := auth.CreateServiceToken(ctx, "encoder_recorder", []string{"service.register", "service.heartbeat"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate service: %v", err)
 	}
 	if _, err := auth.RegisterService(ctx, token, ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
 		t.Fatalf("register service: %v", err)

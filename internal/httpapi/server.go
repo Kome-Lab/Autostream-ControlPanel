@@ -41,6 +41,7 @@ var requiredWorkerEventServiceTypes = []string{"worker"}
 const serviceHeartbeatStaleAfter = 90 * time.Second
 const runtimeSecretLeaseTTL = 60 * time.Second
 const youtubeCompleteRetryDefaultInterval = 60 * time.Second
+const sensitiveActionAttemptThreshold = 6
 
 type Server struct {
 	mux            *http.ServeMux
@@ -243,6 +244,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /{$}", s.rootRedirect)
 	s.mux.HandleFunc("GET /health", s.health)
 	s.mux.HandleFunc("GET /setup/status", s.setupStatus)
 	s.mux.HandleFunc("POST /setup/first-admin", s.setupFirstAdmin)
@@ -409,7 +411,10 @@ func sessionCookieSecure() bool {
 		return true
 	}
 	if override == "false" || override == "0" || override == "no" {
-		return publicHTTPS
+		return !productionEnvironment() && publicHTTPS
+	}
+	if productionEnvironment() {
+		return true
 	}
 	return publicHTTPS
 }
@@ -463,6 +468,23 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "control-panel"})
 }
 
+func (s *Server) rootRedirect(w http.ResponseWriter, r *http.Request) {
+	target := "/login"
+	if s.auth != nil {
+		count, err := s.auth.CountUsers(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "count_users_failed"})
+			return
+		}
+		if s.setupToken != "" && count == 0 {
+			target = "/setup"
+		} else if _, ok := s.authenticate(r); ok {
+			target = "/dashboard"
+		}
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
 func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
 	setupEnabled := s.auth != nil && s.setupToken != ""
 	if s.auth == nil {
@@ -494,7 +516,14 @@ func (s *Server) setupFirstAdmin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	setupAttemptKey := loginFailureKey("setup:first-admin", clientIP(r))
+	if !s.loginFailures.allow(setupAttemptKey, sensitiveActionAttemptThreshold) {
+		w.Header().Set("Retry-After", "300")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "setup_rate_limited"})
+		return
+	}
 	if !security.VerifyTokenHash(body.SetupToken, security.HashToken(s.setupToken)) {
+		s.loginFailures.record(setupAttemptKey)
 		s.writeAudit(r, store.AuditEvent{Action: "setup.first_admin", ResourceType: "user", Result: "failure", Metadata: map[string]any{"reason": "invalid_setup_token"}})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "invalid_setup_token"})
 		return
@@ -522,6 +551,7 @@ func (s *Server) setupFirstAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "setup.first_admin", ResourceType: "user", ResourceID: user.ID, Result: "success"})
+	s.loginFailures.clear(setupAttemptKey)
 	writeJSON(w, http.StatusCreated, map[string]any{"user": publicUser(user)})
 }
 
@@ -664,6 +694,12 @@ func (s *Server) startOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_redirect_uri_invalid"})
 		return
 	}
+	oauthStartKey := loginFailureKey("oauth:start:"+provider.ID, clientIP(r))
+	if !s.loginFailures.allow(oauthStartKey, sensitiveActionAttemptThreshold) {
+		w.Header().Set("Retry-After", "300")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "oauth_start_rate_limited"})
+		return
+	}
 	state, err := s.oauthLogin.CreateOAuthLoginState(r.Context(), store.OAuthLoginState{
 		ProviderID:    provider.ID,
 		ProviderType:  provider.ProviderType,
@@ -673,6 +709,7 @@ func (s *Server) startOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "oauth_state_create_failed"})
 		return
 	}
+	s.loginFailures.record(oauthStartKey)
 	authorizationURL, err := oauthAuthorizationURL(provider, state)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_login"})
@@ -763,7 +800,7 @@ func (s *Server) finishOAuthLogin(w http.ResponseWriter, r *http.Request, body o
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "oauth_identity_verification_failed"})
 		return
 	}
-	if identity.ProviderID != provider.ID || identity.Subject == "" || !emailAllowedForProvider(identity.Email, provider.AllowedDomains) {
+	if identity.ProviderID != provider.ID || identity.Subject == "" || !identityAllowedForProvider(provider, identity) {
 		s.writeAudit(r, store.AuditEvent{Action: "auth.oauth.login", ResourceType: "oauth_provider", ResourceID: provider.ID, Result: "failure", Metadata: map[string]any{"reason": "identity_not_allowed", "provider_type": provider.ProviderType}})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "oauth_identity_not_allowed"})
 		return
@@ -1107,11 +1144,19 @@ func (s *Server) mfaEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cfg.Enabled {
+		attemptKey := loginFailureKey("mfa:enroll:"+current.User.ID, clientIP(r))
+		if !s.loginFailures.allow(attemptKey, sensitiveActionAttemptThreshold) {
+			w.Header().Set("Retry-After", "300")
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "mfa_rate_limited"})
+			return
+		}
 		if _, ok := s.verifyMFAConfigCode(r.Context(), current.User.ID, cfg, body.Code); !ok {
+			s.loginFailures.record(attemptKey)
 			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "mfa.enroll", ResourceType: "mfa", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "invalid_current_code"}})
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_mfa_code"})
 			return
 		}
+		s.loginFailures.clear(attemptKey)
 	}
 	secret, err := security.GenerateTOTPSecret()
 	if err != nil {
@@ -1175,7 +1220,14 @@ func (s *Server) mfaVerifyEnrollment(w http.ResponseWriter, r *http.Request, cur
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "mfa_enrollment_not_pending"})
 		return
 	}
+	attemptKey := loginFailureKey("mfa:verify:"+current.User.ID, clientIP(r))
+	if !s.loginFailures.allow(attemptKey, sensitiveActionAttemptThreshold) {
+		w.Header().Set("Retry-After", "300")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "mfa_rate_limited"})
+		return
+	}
 	if !security.VerifyTOTP(cfg.PendingTOTPSecret, code, time.Now()) {
+		s.loginFailures.record(attemptKey)
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "mfa.verify", ResourceType: "mfa", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "invalid_code"}})
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_mfa_code"})
 		return
@@ -1184,6 +1236,7 @@ func (s *Server) mfaVerifyEnrollment(w http.ResponseWriter, r *http.Request, cur
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "mfa_verify_failed"})
 		return
 	}
+	s.loginFailures.clear(attemptKey)
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "mfa.verify", ResourceType: "mfa", ResourceID: current.User.ID, Result: "success", Metadata: map[string]any{"method": "totp"}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "mfa_enabled", "method": "totp"})
 }
@@ -1243,7 +1296,14 @@ func (s *Server) mfaDisable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "mfa_not_enabled"})
 		return
 	}
+	attemptKey := loginFailureKey("mfa:disable:"+current.User.ID, clientIP(r))
+	if !s.loginFailures.allow(attemptKey, sensitiveActionAttemptThreshold) {
+		w.Header().Set("Retry-After", "300")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "mfa_rate_limited"})
+		return
+	}
 	if _, ok := s.verifyMFAConfigCode(r.Context(), current.User.ID, cfg, body.Code); !ok {
+		s.loginFailures.record(attemptKey)
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "mfa.disable", ResourceType: "mfa", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "invalid_code"}})
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_mfa_code"})
 		return
@@ -1252,6 +1312,7 @@ func (s *Server) mfaDisable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "mfa_disable_failed"})
 		return
 	}
+	s.loginFailures.clear(attemptKey)
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "mfa.disable", ResourceType: "mfa", ResourceID: current.User.ID, Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "mfa_disabled"})
 }
@@ -1273,7 +1334,14 @@ func (s *Server) mfaRegenerateRecoveryCodes(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "mfa_not_enabled"})
 		return
 	}
+	attemptKey := loginFailureKey("mfa:recovery-regenerate:"+current.User.ID, clientIP(r))
+	if !s.loginFailures.allow(attemptKey, sensitiveActionAttemptThreshold) {
+		w.Header().Set("Retry-After", "300")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "mfa_rate_limited"})
+		return
+	}
 	if _, ok := s.verifyMFAConfigCode(r.Context(), current.User.ID, cfg, body.Code); !ok {
+		s.loginFailures.record(attemptKey)
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "mfa.recovery_codes.regenerate", ResourceType: "mfa", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "invalid_code"}})
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_mfa_code"})
 		return
@@ -1287,6 +1355,7 @@ func (s *Server) mfaRegenerateRecoveryCodes(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "recovery_codes_failed"})
 		return
 	}
+	s.loginFailures.clear(attemptKey)
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "mfa.recovery_codes.regenerate", ResourceType: "mfa", ResourceID: current.User.ID, Result: "success", Metadata: map[string]any{"recovery_codes_issued": len(codes)}})
 	writeOneTimeSecretJSON(w, http.StatusOK, map[string]any{"recovery_codes": codes, "message": "Recovery codes are shown only once."})
 }
@@ -1561,6 +1630,14 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusForbidden
 				code = "cannot_assign_super_admin"
 			}
+			if errors.Is(err, store.ErrPermissionEscalation) {
+				status = http.StatusForbidden
+				code = "permission_escalation"
+			}
+			if errors.Is(err, store.ErrUnknownPermission) {
+				status = http.StatusBadRequest
+				code = "invalid_permissions"
+			}
 			if errors.Is(err, errInvalidRoleAssignment) {
 				status = http.StatusBadRequest
 				code = "invalid_role_assignment"
@@ -1632,7 +1709,19 @@ func (s *Server) validateRoleAssignments(ctx context.Context, roleIDs []string) 
 		}
 		roles = append(roles, role)
 	}
-	return store.ValidateRoleAssignment(currentFromContext(ctx).User, roles)
+	current := currentFromContext(ctx)
+	if err := store.ValidateRoleAssignment(current.User, roles); err != nil {
+		return err
+	}
+	if userHasRoleName(current.User, "super_admin") {
+		return nil
+	}
+	for _, role := range roles {
+		if err := store.ValidateRolePermissions(current.Permissions, role.Permissions); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeRoleAssignmentError(w http.ResponseWriter, err error) {
@@ -1641,8 +1730,13 @@ func writeRoleAssignmentError(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrSuperAdminAssignmentForbidden) {
 		status = http.StatusForbidden
 		code = "cannot_assign_super_admin"
-	}
-	if errors.Is(err, errInvalidRoleAssignment) {
+	} else if errors.Is(err, store.ErrPermissionEscalation) {
+		status = http.StatusForbidden
+		code = "permission_escalation"
+	} else if errors.Is(err, store.ErrUnknownPermission) {
+		status = http.StatusBadRequest
+		code = "invalid_permissions"
+	} else if errors.Is(err, errInvalidRoleAssignment) {
 		status = http.StatusBadRequest
 		code = "invalid_role_assignment"
 	}
@@ -1682,7 +1776,21 @@ func (s *Server) forcePasswordChange(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status, action string) {
-	user, err := s.users.SetUserStatus(r.Context(), r.PathValue("id"), status)
+	target, err := s.users.GetUser(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_user_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	if err := store.ValidateUserStatusActor(current.User, target); errors.Is(err, store.ErrSuperAdminStatusForbidden) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "cannot_change_super_admin_status"})
+		return
+	}
+	user, err := s.users.SetUserStatus(r.Context(), target.ID, status)
 	if errors.Is(err, store.ErrLastSuperAdmin) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "last_super_admin"})
 		return
@@ -1695,7 +1803,6 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status, a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "set_user_status_failed"})
 		return
 	}
-	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: action, ResourceType: "user", ResourceID: user.ID, Result: "success", Metadata: map[string]any{"status": status}})
 	writeJSON(w, http.StatusOK, publicUser(user))
 }
@@ -1718,9 +1825,24 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := currentFromContext(r.Context())
-	if err := store.ValidatePasswordResetActor(current.User, target); errors.Is(err, store.ErrSuperAdminPasswordResetForbidden) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"code": "cannot_reset_super_admin_password"})
+	if err := store.ValidatePasswordResetActor(current.User, target); err != nil {
+		code := "permission_escalation"
+		if errors.Is(err, store.ErrSuperAdminPasswordResetForbidden) {
+			code = "cannot_reset_super_admin_password"
+		}
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": code})
 		return
+	}
+	if !userHasRoleName(current.User, "super_admin") {
+		targetPermissions, err := s.auth.GetUserPermissions(r.Context(), target.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_user_permissions_failed"})
+			return
+		}
+		if err := store.ValidateRolePermissions(current.Permissions, targetPermissions); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+			return
+		}
 	}
 	if !s.passwordMeetsConfiguredPolicy(w, r, body.TemporaryPassword) {
 		return
@@ -1840,7 +1962,35 @@ func (s *Server) updateRole(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteRole(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := s.roles.DeleteRole(r.Context(), id)
+	existing, err := s.roles.GetRole(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_role_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	if existing.Name == "super_admin" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "protected_super_admin_role"})
+		return
+	}
+	if !userHasRoleName(current.User, "super_admin") && userHasRoleName(current.User, existing.Name) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "cannot_delete_own_role"})
+		return
+	}
+	if err := store.ValidateRolePermissions(current.Permissions, existing.Permissions); err != nil {
+		status := http.StatusBadRequest
+		code := "invalid_permissions"
+		if errors.Is(err, store.ErrPermissionEscalation) {
+			status = http.StatusForbidden
+			code = "permission_escalation"
+		}
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	err = s.roles.DeleteRole(r.Context(), id)
 	if errors.Is(err, store.ErrLastSuperAdmin) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "last_super_admin"})
 		return
@@ -1853,7 +2003,6 @@ func (s *Server) deleteRole(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_role_failed"})
 		return
 	}
-	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "roles.delete", ResourceType: "role", ResourceID: id, Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -3010,7 +3159,7 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "oauth_connect_failed"})
 		return
 	}
-	if connected.Identity.ProviderID != provider.ID || connected.Identity.Subject == "" || !emailAllowedForProvider(connected.Identity.Email, provider.AllowedDomains) {
+	if connected.Identity.ProviderID != provider.ID || connected.Identity.Subject == "" || !identityAllowedForProvider(provider, connected.Identity) {
 		s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.connect", ResourceType: "oauth_provider", ResourceID: provider.ID, Result: "failure", Metadata: map[string]any{"reason": "identity_not_allowed", "provider_type": provider.ProviderType}})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "oauth_identity_not_allowed"})
 		return
@@ -3321,8 +3470,22 @@ func (s *Server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.ServiceID = strings.TrimSpace(body.ServiceID)
+	if stringSliceContains(body.Scopes, "service.register") && body.ServiceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "service_id_required"})
+		return
+	}
 	if body.ServiceID != "" && !stringSliceContains(body.Scopes, "service.register") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "service_register_scope_required"})
+		return
+	}
+	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, body.Scopes); err != nil {
+		status := http.StatusBadRequest
+		code := "invalid_service_scope"
+		if errors.Is(err, store.ErrPermissionEscalation) {
+			status = http.StatusForbidden
+			code = "permission_escalation"
+		}
+		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
 	token, err := s.services.CreateServiceToken(r.Context(), body.ServiceType, body.Scopes)
@@ -3363,6 +3526,23 @@ func (s *Server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "api_tokens.create", ResourceType: "service_token", ResourceID: token.ID, Result: "success", Metadata: metadata})
 	writeOneTimeSecretJSON(w, http.StatusCreated, token)
+}
+
+func validateServiceTokenScopePermissions(actorPermissions, scopes []string) error {
+	required := map[string]string{
+		"service.secret.resolve": "secrets.update",
+		"remediation.execute":    "remediation.execute",
+	}
+	for _, scope := range scopes {
+		permission := required[strings.TrimSpace(scope)]
+		if permission == "" {
+			continue
+		}
+		if !security.HasPermission(actorPermissions, permission) {
+			return store.ErrPermissionEscalation
+		}
+	}
+	return nil
 }
 
 func (s *Server) revokeServiceToken(w http.ResponseWriter, r *http.Request) {
@@ -4307,15 +4487,18 @@ func (s *Server) runtimeIntegrationSecretAllowedForService(ctx context.Context, 
 	if !primaryAssigned {
 		return false, nil
 	}
+	stream, err := s.streams.GetStream(ctx, streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	streamArchiveProfileID := strings.TrimSpace(stream.ArchiveProfileID)
 	if strings.TrimSpace(archiveProfileID) == "" {
-		stream, err := s.streams.GetStream(ctx, streamID)
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		archiveProfileID = stream.ArchiveProfileID
+		archiveProfileID = streamArchiveProfileID
+	} else if strings.TrimSpace(archiveProfileID) != streamArchiveProfileID {
+		return false, nil
 	}
 	if strings.TrimSpace(archiveProfileID) == "" {
 		return false, nil
@@ -4349,15 +4532,15 @@ func (s *Server) runtimeArchiveProfileSecretAllowed(ctx context.Context, service
 	if !primaryAssigned {
 		return false, nil
 	}
-	if strings.TrimSpace(requestedProfileID) != "" {
-		return requestedProfileID == profileID, nil
-	}
 	stream, err := s.streams.GetStream(ctx, streamID)
 	if errors.Is(err, store.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if strings.TrimSpace(requestedProfileID) != "" && strings.TrimSpace(requestedProfileID) != strings.TrimSpace(stream.ArchiveProfileID) {
+		return false, nil
 	}
 	return stream.ArchiveProfileID == profileID, nil
 }
@@ -4816,6 +4999,19 @@ type serviceRemediationExecuteRequest struct {
 	StreamID   string `json:"stream_id"`
 }
 
+func (s *Server) serviceTokenRegisteredForType(ctx context.Context, token store.ServiceToken, serviceType string) (bool, error) {
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, service := range services {
+		if service.TokenID == token.ID && service.ServiceType == serviceType && strings.TrimSpace(service.Status) != "pending" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *Server) serviceRemediationExecute(w http.ResponseWriter, r *http.Request) {
 	token, ok := s.authenticateService(w, r, "remediation.execute")
 	if !ok {
@@ -4823,6 +5019,15 @@ func (s *Server) serviceRemediationExecute(w http.ResponseWriter, r *http.Reques
 	}
 	if token.ServiceType != "observability" {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_type_not_allowed"})
+		return
+	}
+	registered, err := s.serviceTokenRegisteredForType(r.Context(), token, "observability")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_services_failed"})
+		return
+	}
+	if !registered {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_token_not_registered"})
 		return
 	}
 	var body serviceRemediationExecuteRequest
@@ -5302,6 +5507,9 @@ func (s *Server) validateStreamSettingsReferences(ctx context.Context, settings 
 			return err
 		}
 	}
+	if err := validateEncoderInputURL(settings.EncoderInputURL); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5311,9 +5519,40 @@ func streamSettingsReferenceCode(err error) string {
 		return "discord_config_required"
 	case errors.Is(err, errDiscordConfigNotFound):
 		return "discord_config_not_found"
+	case errors.Is(err, errEncoderInputURLBlocked):
+		return "encoder_input_url_blocked"
 	default:
 		return "invalid_stream_settings_reference"
 	}
+}
+
+func validateEncoderInputURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return errEncoderInputURLBlocked
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "srt", "rtmp", "rtmps", "http", "https":
+	default:
+		return errEncoderInputURLBlocked
+	}
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(parsed.Hostname()), "."))
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return errEncoderInputURLBlocked
+	}
+	if ip := net.ParseIP(host); ip != nil && unsafeEncoderInputIP(ip) {
+		return errEncoderInputURLBlocked
+	}
+	return nil
+}
+
+func unsafeEncoderInputIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
 }
 
 func applyStreamSettingsDefaults(stream store.Stream, req *servicecall.StartRequest) {
@@ -5367,6 +5606,12 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyStreamSettingsDefaults(stream, &body)
+	if err := validateEncoderInputURL(body.EncoderInputURL); err != nil {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "encoder_input_url_blocked"}})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "encoder_input_url_blocked"})
+		return
+	}
 	if err := s.validateYouTubeOutputReadiness(r.Context(), stream, &body); err != nil {
 		current := currentFromContext(r.Context())
 		code := youtubeOutputCode(err)
@@ -5472,6 +5717,7 @@ var (
 	errDiscordConfigNotFound             = errors.New("discord_config_not_found")
 	errDiscordConfigInvalid              = errors.New("discord_config_invalid")
 	errDiscordConfigServiceMismatch      = errors.New("discord_config_service_mismatch")
+	errEncoderInputURLBlocked            = errors.New("encoder_input_url_blocked")
 )
 
 func (s *Server) applyDiscordConfig(ctx context.Context, assignments []store.RegisteredService, req *servicecall.StartRequest) error {
@@ -5548,6 +5794,10 @@ func (s *Server) applyYouTubeOutput(ctx context.Context, stream store.Stream, re
 	}
 }
 
+func youtubeOutputRTMPURL(profile store.Profile) string {
+	return strings.TrimSpace(configString(profile.Config, "rtmp_url"))
+}
+
 func (s *Server) youtubeOutputReadinessIssues(ctx context.Context, stream store.Stream, req *servicecall.StartRequest) []servicecall.ReadinessIssue {
 	if err := s.validateYouTubeOutputReadiness(ctx, stream, req); err != nil {
 		return []servicecall.ReadinessIssue{{
@@ -5575,7 +5825,7 @@ func (s *Server) validateYouTubeOutputReadiness(ctx context.Context, stream stor
 	if mode == "" {
 		return errYouTubeOutputInvalidConfig
 	}
-	if value := strings.TrimSpace(configString(profile.Config, "rtmp_url")); value != "" {
+	if value := youtubeOutputRTMPURL(profile); value != "" {
 		req.EncoderRTMPURL = value
 	}
 	switch mode {
@@ -5597,7 +5847,12 @@ func (s *Server) validateYouTubeOutputReadiness(ctx context.Context, stream stor
 }
 
 func (s *Server) validateYouTubeStreamKeyReadiness(ctx context.Context, profile store.Profile, req *servicecall.StartRequest) error {
-	if strings.TrimSpace(req.EncoderRTMPURL) == "" {
+	rtmpURL := youtubeOutputRTMPURL(profile)
+	if rtmpURL == "" {
+		return errYouTubeOutputInvalidConfig
+	}
+	req.EncoderRTMPURL = rtmpURL
+	if !isSecureRTMPSURL(req.EncoderRTMPURL) {
 		return errYouTubeOutputInvalidConfig
 	}
 	secretName := firstNonEmpty(configString(profile.Config, "stream_key_secret_name"), configString(profile.Config, "streamKeySecretName"))
@@ -5740,6 +5995,11 @@ func (s *Server) youtubeOAuthCredentials(ctx context.Context, oauthAccountID str
 }
 
 func (s *Server) applyYouTubeStreamKeyOutput(ctx context.Context, profile store.Profile, req *servicecall.StartRequest) error {
+	rtmpURL := youtubeOutputRTMPURL(profile)
+	if rtmpURL == "" {
+		return errYouTubeOutputInvalidConfig
+	}
+	req.EncoderRTMPURL = rtmpURL
 	if !isSecureRTMPSURL(req.EncoderRTMPURL) {
 		return errYouTubeOutputInvalidConfig
 	}
@@ -6841,9 +7101,22 @@ func (s *Server) exportAuditLogs(w http.ResponseWriter, r *http.Request) {
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{"id", "timestamp", "actor_user_id", "actor_username", "actor_ip", "action", "resource_type", "resource_id", "result", "request_id"})
 	for _, event := range events {
-		_ = writer.Write([]string{event.ID, event.Timestamp.Format(time.RFC3339), event.ActorUserID, event.ActorUsername, event.ActorIP, event.Action, event.ResourceType, event.ResourceID, event.Result, event.RequestID})
+		_ = writer.Write([]string{safeCSVCell(event.ID), event.Timestamp.Format(time.RFC3339), safeCSVCell(event.ActorUserID), safeCSVCell(event.ActorUsername), safeCSVCell(event.ActorIP), safeCSVCell(event.Action), safeCSVCell(event.ResourceType), safeCSVCell(event.ResourceID), safeCSVCell(event.Result), safeCSVCell(event.RequestID)})
 	}
 	writer.Flush()
+}
+
+func safeCSVCell(value string) string {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if trimmed == "" {
+		return value
+	}
+	switch trimmed[0] {
+	case '=', '+', '-', '@':
+		return "'" + value
+	default:
+		return value
+	}
 }
 
 var auditActionGroups = map[string][]string{
@@ -7963,6 +8236,32 @@ func emailAllowedForProvider(email string, allowedDomains []string) bool {
 			continue
 		}
 		if domain == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func identityAllowedForProvider(provider store.OAuthProvider, identity oauthlogin.Identity) bool {
+	if len(provider.AllowedDomains) == 0 {
+		return true
+	}
+	if !identity.EmailVerified {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(provider.ProviderType), "google") && strings.TrimSpace(identity.HostedDomain) != "" {
+		return domainAllowedForProvider(identity.HostedDomain, provider.AllowedDomains)
+	}
+	return emailAllowedForProvider(identity.Email, provider.AllowedDomains)
+}
+
+func domainAllowedForProvider(domain string, allowedDomains []string) bool {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return false
+	}
+	for _, allowed := range allowedDomains {
+		if domain == strings.ToLower(strings.TrimSpace(allowed)) {
 			return true
 		}
 	}

@@ -8,4 +8,4 @@ CREATE TABLE IF NOT EXISTS webauthn_ceremony_sessions (
   INDEX idx_webauthn_ceremony_sessions_user (user_id),
   INDEX idx_webauthn_ceremony_sessions_expires (expires_at),
   CONSTRAINT fk_webauthn_ceremony_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB;
+);

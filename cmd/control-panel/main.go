@@ -90,12 +90,35 @@ func main() {
 }
 
 func staticWebDir() string {
-	dir := strings.TrimSpace(os.Getenv("AUTOSTREAM_WEB_DIR"))
-	if dir != "" {
+	return staticWebDirFromCandidates(os.Getenv("AUTOSTREAM_WEB_DIR"), staticWebDirCandidates())
+}
+
+func staticWebDirCandidates() []string {
+	candidates := []string{defaultStaticWebDir}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Clean(filepath.Join(exeDir, "..", "share", "autostream-control-panel")),
+			filepath.Join(exeDir, "share", "autostream-control-panel"),
+		)
+	}
+	return candidates
+}
+
+func staticWebDirFromCandidates(envDir string, candidates []string) string {
+	if dir := strings.TrimSpace(envDir); dir != "" {
 		return dir
 	}
-	if info, err := os.Stat(defaultStaticWebDir); err == nil && info.IsDir() {
-		return defaultStaticWebDir
+	seen := map[string]bool{}
+	for _, dir := range candidates {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
 	}
 	return ""
 }
@@ -170,8 +193,7 @@ func (h staticFilesHandler) serveStatic(w http.ResponseWriter, r *http.Request) 
 	}
 	cleanPath := path.Clean("/" + r.URL.Path)
 	if cleanPath == "/" {
-		http.ServeFile(w, r, filepath.Join(h.dir, "index.html"))
-		return true
+		return false
 	}
 	rel := strings.TrimPrefix(cleanPath, "/")
 	full, ok := safeStaticPath(h.dir, rel)
@@ -203,12 +225,36 @@ func isHTMLNavigationRequest(r *http.Request) bool {
 }
 
 func isControlPanelUIPath(cleanPath string) bool {
-	switch cleanPath {
-	case "/login", "/setup", "/dashboard":
-		return true
-	default:
-		return false
-	}
+	_, ok := controlPanelUIPaths[cleanPath]
+	return ok
+}
+
+var controlPanelUIPaths = map[string]struct{}{
+	"/login":          {},
+	"/setup":          {},
+	"/dashboard":      {},
+	"/streams":        {},
+	"/encoder":        {},
+	"/discord":        {},
+	"/youtube":        {},
+	"/caption":        {},
+	"/overlay":        {},
+	"/archive":        {},
+	"/integrations":   {},
+	"/workers":        {},
+	"/logs":           {},
+	"/users":          {},
+	"/roles":          {},
+	"/audit":          {},
+	"/security":       {},
+	"/tokens":         {},
+	"/service-health": {},
+	"/monitoring":     {},
+	"/incidents":      {},
+	"/diagnostics":    {},
+	"/remediation":    {},
+	"/notifications":  {},
+	"/metrics":        {},
 }
 
 func setStaticSecurityHeaders(w http.ResponseWriter) {

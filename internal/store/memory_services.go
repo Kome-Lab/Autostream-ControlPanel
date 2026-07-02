@@ -170,18 +170,21 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 		svc.Capabilities = map[string]any{}
 	}
 	s.mu.Lock()
-	if existing, ok := s.services[svc.ServiceID]; ok {
-		if existing.ServiceType != svc.ServiceType || existing.TokenID != token.ID {
-			s.mu.Unlock()
-			return RegisteredService{}, ErrForbidden
-		}
-		svc.CreatedAt = existing.CreatedAt
-		svc.LastHeartbeatAt = existing.LastHeartbeatAt
-		svc.CurrentStreamID = existing.CurrentStreamID
-		svc.Metrics = existing.Metrics
-		if existing.Status == "assigned" || existing.Status == "restart_requested" {
-			svc.Status = existing.Status
-		}
+	existing, ok := s.services[svc.ServiceID]
+	if !ok {
+		s.mu.Unlock()
+		return RegisteredService{}, ErrForbidden
+	}
+	if existing.ServiceType != svc.ServiceType || existing.TokenID != token.ID {
+		s.mu.Unlock()
+		return RegisteredService{}, ErrForbidden
+	}
+	svc.CreatedAt = existing.CreatedAt
+	svc.LastHeartbeatAt = existing.LastHeartbeatAt
+	svc.CurrentStreamID = existing.CurrentStreamID
+	svc.Metrics = existing.Metrics
+	if existing.Status == "assigned" || existing.Status == "restart_requested" {
+		svc.Status = existing.Status
 	}
 	s.services[svc.ServiceID] = svc
 	s.mu.Unlock()

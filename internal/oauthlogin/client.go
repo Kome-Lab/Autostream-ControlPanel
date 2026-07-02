@@ -17,10 +17,12 @@ import (
 )
 
 type Identity struct {
-	ProviderID   string
-	ProviderType string
-	Subject      string
-	Email        string
+	ProviderID    string
+	ProviderType  string
+	Subject       string
+	Email         string
+	EmailVerified bool
+	HostedDomain  string
 }
 
 type ConnectedAccount struct {
@@ -105,13 +107,15 @@ func (v HTTPVerifier) connectGoogle(ctx context.Context, req ConnectRequest) (Co
 			return ConnectedAccount{}, err
 		}
 		var body struct {
-			Sub   string `json:"sub"`
-			Email string `json:"email"`
+			Sub           string `json:"sub"`
+			Email         string `json:"email"`
+			EmailVerified bool   `json:"email_verified"`
+			HostedDomain  string `json:"hd"`
 		}
 		if err := v.getJSON(ctx, "https://openidconnect.googleapis.com/v1/userinfo", token.AccessToken, &body); err != nil {
 			return ConnectedAccount{}, err
 		}
-		identity, err = normalizeIdentity(req.Provider, body.Sub, body.Email)
+		identity, err = normalizeIdentity(req.Provider, body.Sub, body.Email, body.EmailVerified, body.HostedDomain)
 		if err != nil {
 			return ConnectedAccount{}, err
 		}
@@ -140,7 +144,11 @@ func (v HTTPVerifier) verifyGitHub(ctx context.Context, req VerifyRequest) (Iden
 	if body.ID == 0 {
 		subject = body.Login
 	}
-	return normalizeIdentity(req.Provider, subject, body.Email)
+	email, verified, err := v.githubVerifiedEmail(ctx, token.AccessToken, body.Email)
+	if err != nil {
+		return Identity{}, err
+	}
+	return normalizeIdentity(req.Provider, subject, email, verified, "")
 }
 
 func (v HTTPVerifier) verifyDiscord(ctx context.Context, req VerifyRequest) (Identity, error) {
@@ -149,13 +157,14 @@ func (v HTTPVerifier) verifyDiscord(ctx context.Context, req VerifyRequest) (Ide
 		return Identity{}, err
 	}
 	var body struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
+		ID       string `json:"id"`
+		Email    string `json:"email"`
+		Verified bool   `json:"verified"`
 	}
 	if err := v.getJSON(ctx, "https://discord.com/api/users/@me", token.AccessToken, &body); err != nil {
 		return Identity{}, err
 	}
-	return normalizeIdentity(req.Provider, body.ID, body.Email)
+	return normalizeIdentity(req.Provider, body.ID, body.Email, body.Verified, "")
 }
 
 type tokenResponse struct {
@@ -223,17 +232,47 @@ func (v HTTPVerifier) doJSON(req *http.Request, out any) error {
 	return nil
 }
 
-func normalizeIdentity(provider store.OAuthProvider, subject, email string) (Identity, error) {
+func normalizeIdentity(provider store.OAuthProvider, subject, email string, emailVerified bool, hostedDomain string) (Identity, error) {
 	subject = strings.TrimSpace(subject)
 	if subject == "" {
 		return Identity{}, errors.New("oauth subject unavailable")
 	}
 	return Identity{
-		ProviderID:   provider.ID,
-		ProviderType: provider.ProviderType,
-		Subject:      subject,
-		Email:        strings.TrimSpace(email),
+		ProviderID:    provider.ID,
+		ProviderType:  provider.ProviderType,
+		Subject:       subject,
+		Email:         strings.TrimSpace(email),
+		EmailVerified: emailVerified,
+		HostedDomain:  strings.TrimSpace(hostedDomain),
 	}, nil
+}
+
+func (v HTTPVerifier) githubVerifiedEmail(ctx context.Context, accessToken, fallbackEmail string) (string, bool, error) {
+	var emails []struct {
+		Email    string `json:"email"`
+		Primary  bool   `json:"primary"`
+		Verified bool   `json:"verified"`
+	}
+	if err := v.getJSON(ctx, "https://api.github.com/user/emails", accessToken, &emails); err != nil {
+		return "", false, err
+	}
+	fallbackEmail = strings.TrimSpace(fallbackEmail)
+	for _, item := range emails {
+		email := strings.TrimSpace(item.Email)
+		if email == "" || !item.Verified {
+			continue
+		}
+		if fallbackEmail != "" && strings.EqualFold(email, fallbackEmail) {
+			return email, true, nil
+		}
+	}
+	for _, item := range emails {
+		email := strings.TrimSpace(item.Email)
+		if email != "" && item.Verified && item.Primary {
+			return email, true, nil
+		}
+	}
+	return strings.TrimSpace(fallbackEmail), false, nil
 }
 
 var validateGoogleIDToken = func(ctx context.Context, rawIDToken, audience string, client *http.Client) (*idtoken.Payload, error) {
@@ -278,7 +317,9 @@ func googleIdentityFromIDTokenPayload(provider store.OAuthProvider, payload *idt
 		return Identity{}, errors.New("oauth id token nonce invalid")
 	}
 	email, _ := payload.Claims["email"].(string)
-	return normalizeIdentity(provider, payload.Subject, email)
+	emailVerified, _ := payload.Claims["email_verified"].(bool)
+	hd, _ := payload.Claims["hd"].(string)
+	return normalizeIdentity(provider, payload.Subject, email, emailVerified, hd)
 }
 
 func splitScope(value string) []string {

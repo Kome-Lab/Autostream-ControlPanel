@@ -52,6 +52,9 @@ func TestPasskeyCeremonySessionUserForeignKeyMatchesUsersTable(t *testing.T) {
 	if strings.Contains(createText, "DEFAULT CHARSET") {
 		t.Fatalf("webauthn ceremony table must inherit the database charset/collation used by users:\n%s", createText)
 	}
+	if strings.Contains(createText, "ENGINE=") {
+		t.Fatalf("webauthn ceremony table must inherit the database storage engine used by users:\n%s", createText)
+	}
 
 	alterBody, err := embeddedMigrations.ReadFile("migrations/018_webauthn_ceremony_sessions_nullable_user.sql")
 	if err != nil {

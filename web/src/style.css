@@ -412,11 +412,13 @@ header p {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  min-width: 0;
 }
 
 label {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 label span {
@@ -433,7 +435,9 @@ textarea {
   color: #18202a;
   font: inherit;
   min-height: 36px;
+  min-width: 0;
   padding: 7px 9px;
+  width: 100%;
 }
 
 textarea {
@@ -494,6 +498,103 @@ textarea {
   padding: 0;
 }
 
+.connect-steps {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.connect-step {
+  align-items: start;
+  border: 1px solid #d9dde5;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 28px 1fr;
+  min-height: 88px;
+  padding: 10px;
+}
+
+.connect-step-index {
+  align-items: center;
+  background: #0f766e;
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.connect-step strong,
+.service-type-option strong {
+  color: #111827;
+  display: block;
+  font-size: 13px;
+}
+
+.connect-step small,
+.service-type-option span,
+.advanced-permissions p,
+.copy-status {
+  color: #526070;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.service-type-selector {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.service-type-option {
+  background: #fff;
+  border: 1px solid #cfd5df;
+  border-radius: 6px;
+  cursor: pointer;
+  display: grid;
+  gap: 5px;
+  min-height: 92px;
+  padding: 11px;
+  text-align: left;
+}
+
+.service-type-option:hover {
+  border-color: #0f766e;
+}
+
+.service-type-option.active {
+  background: #ecfdf5;
+  border-color: #0f766e;
+  box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.28);
+}
+
+.advanced-permissions {
+  border: 1px solid #d9dde5;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.advanced-permissions summary {
+  color: #111827;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.advanced-permissions p {
+  margin: 8px 0 10px;
+}
+
+.token-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .token-once {
   background: #f8fafc;
   border: 1px solid #cfd5df;
@@ -525,6 +626,51 @@ textarea {
   overflow: auto;
   padding: 10px;
   white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  section {
+    padding: 18px 14px;
+  }
+
+  header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+  }
+
+  header > div:nth-child(2) {
+    flex: 1 1 calc(100% - 44px);
+    min-width: 180px;
+  }
+
+  h2 {
+    font-size: 21px;
+    overflow-wrap: anywhere;
+  }
+
+  .header-actions {
+    justify-content: flex-start;
+    margin-left: 0;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .user-menu {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .user-menu span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .connect-step,
+  .service-type-option {
+    min-height: auto;
+  }
 }
 
 .secondary-btn,
@@ -1717,7 +1863,43 @@ dd {
   }
 
   aside {
+    min-width: 0;
+    overflow-x: hidden;
+    padding: 14px;
     position: static;
+  }
+
+  aside h1 {
+    margin-bottom: 10px;
+  }
+
+  nav {
+    display: grid;
+    gap: 6px;
+    grid-auto-columns: max-content;
+    grid-auto-flow: column;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    width: 100%;
+  }
+
+  nav button {
+    min-height: 34px;
+    padding: 7px 9px;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 760px) {
+  .connect-steps,
+  .service-type-selector {
+    grid-template-columns: 1fr;
+  }
+
+  .connect-step {
+    grid-template-columns: 28px minmax(0, 1fr);
   }
 }
 
@@ -1810,7 +1992,10 @@ dd {
   .action-summary strong,
   .remediation-result strong,
   .readiness-issues code,
-  .external-e2e-remediation code {
+  .external-e2e-remediation code,
+  .connect-step strong,
+  .service-type-option strong,
+  .advanced-permissions summary {
     color: #f8fafc;
   }
 
@@ -1843,10 +2028,30 @@ dd {
   .remediation-result,
   .readiness-issues,
   .readiness-issues li,
+  .connect-step,
+  .service-type-option,
+  .advanced-permissions,
   .token-once {
     background: #171b23;
     border-color: #303847;
     color: #e5e7eb;
+  }
+
+  .connect-step small,
+  .service-type-option span,
+  .advanced-permissions p,
+  .copy-status {
+    color: #aab6c7;
+  }
+
+  .service-type-option:hover {
+    border-color: #14b8a6;
+  }
+
+  .service-type-option.active {
+    background: #102a27;
+    border-color: #14b8a6;
+    box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.35);
   }
 
   .stream-ops-row,

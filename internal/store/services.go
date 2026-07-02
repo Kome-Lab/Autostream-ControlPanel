@@ -289,13 +289,14 @@ func (s MariaDBAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	defer tx.Rollback()
 	var existingTokenID, existingType string
 	err = tx.QueryRowContext(ctx, `SELECT token_id, service_type FROM services WHERE service_id = ? FOR UPDATE`, registration.ServiceID).Scan(&existingTokenID, &existingType)
-	if err != nil && err != sql.ErrNoRows {
+	if err == sql.ErrNoRows {
+		return RegisteredService{}, ErrForbidden
+	}
+	if err != nil {
 		return RegisteredService{}, err
 	}
-	if err == nil {
-		if existingType != registration.ServiceType || existingTokenID != token.ID {
-			return RegisteredService{}, ErrForbidden
-		}
+	if existingType != registration.ServiceType || existingTokenID != token.ID {
+		return RegisteredService{}, ErrForbidden
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO services (service_id, service_type, service_name, public_url, version, status, capabilities, metrics, token_id, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?)
@@ -819,6 +820,9 @@ func validateServiceType(serviceType string) error {
 }
 
 func validateServiceScopes(scopes []string) error {
+	if len(scopes) == 0 {
+		return errors.New("service token requires at least one scope")
+	}
 	allowed := map[string]bool{
 		"service.register": true, "service.heartbeat": true, "service.logs.write": true, "service.status.write": true, "service.config.read": true, "service.secret.resolve": true,
 		"worker.events.write": true, "encoder.status.write": true, "discord.status.write": true, "observability.ingest": true,

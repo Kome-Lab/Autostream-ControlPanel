@@ -47,6 +47,7 @@ var (
 	ErrPermissionEscalation             = errors.New("requested permissions exceed actor permissions")
 	ErrSuperAdminAssignmentForbidden    = errors.New("only super_admin may assign the super_admin role")
 	ErrSuperAdminPasswordResetForbidden = errors.New("only super_admin may reset a super_admin password")
+	ErrSuperAdminStatusForbidden        = errors.New("only super_admin may change a super_admin status")
 	ErrUnknownPermission                = errors.New("unknown permission")
 )
 
@@ -81,6 +82,13 @@ func ValidateRolePermissions(actorPermissions, requestedPermissions []string) er
 func ValidatePasswordResetActor(actor, target User) error {
 	if hasRole(target, "super_admin") && !hasRole(actor, "super_admin") {
 		return ErrSuperAdminPasswordResetForbidden
+	}
+	return nil
+}
+
+func ValidateUserStatusActor(actor, target User) error {
+	if hasRole(target, "super_admin") && !hasRole(actor, "super_admin") {
+		return ErrSuperAdminStatusForbidden
 	}
 	return nil
 }

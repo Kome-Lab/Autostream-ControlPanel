@@ -223,7 +223,7 @@ func TestOAuthLoginRedirectCallbackCreatesSessionAndRedirects(t *testing.T) {
 	if _, err := oauthStore.LinkOAuthUser(t.Context(), store.OAuthUserLink{UserID: "user-oauth-redirect", ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "operator@example.com"}); err != nil {
 		t.Fatal(err)
 	}
-	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "operator@example.com"}}
+	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "operator@example.com", EmailVerified: true}}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(oauthStore), WithOAuthVerifier(verifier))
 
 	startReq := httptest.NewRequest(http.MethodPost, "/auth/oauth/"+provider.ID+"/start", bytes.NewBufferString(`{"redirect_after":"/streams"}`))
@@ -309,7 +309,7 @@ func TestOAuthLoginCallbackAutoProvisionsAllowedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	oauthStore := store.NewMemoryOAuthLoginStore()
-	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "operator@example.com"}}
+	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "operator@example.com", EmailVerified: true}}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(oauthStore), WithOAuthVerifier(verifier))
 
 	state, oauthCookie := startOAuthForTest(t, handler, provider.ID)
@@ -371,7 +371,7 @@ func TestOAuthLoginAutoProvisionedUserStillRequiresMFAWhenRoleScoped(t *testing.
 		t.Fatal(err)
 	}
 	oauthStore := store.NewMemoryOAuthLoginStore()
-	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-mfa", Email: "operator@example.com"}}
+	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-mfa", Email: "operator@example.com", EmailVerified: true}}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(oauthStore), WithOAuthVerifier(verifier), WithSecuritySettingsStore(settings), WithMFAStore(auth))
 
 	state, oauthCookie := startOAuthForTest(t, handler, provider.ID)
@@ -1203,7 +1203,7 @@ func TestStartStreamResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1216,6 +1216,50 @@ func TestStartStreamResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	}
 	if dispatcher.startRequest.EncoderRTMPURL != "rtmps://youtube.example.com/live2" || dispatcher.startRequest.EncoderStreamKey != "" || dispatcher.startRequest.EncoderStreamKeySecretName != "youtube_stream_key_main" {
 		t.Fatalf("youtube output was not dispatched as a runtime secret reference: %#v", dispatcher.startRequest)
+	}
+}
+
+func TestStartStreamRejectsYouTubeOutputWithoutProfileRTMPURL(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "legacy youtube stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), "youtube_stream_key_legacy", "runtime-secret-stream-key"); err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "legacy youtube discord", "discord_bot-01", "guild-youtube", "voice-youtube", "")
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "legacy-output", map[string]any{
+		"mode":                   "stream_key",
+		"stream_key_secret_name": "youtube_stream_key_legacy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("start status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "youtube_output_invalid_config") {
+		t.Fatalf("expected youtube_output_invalid_config: %s", res.Body.String())
+	}
+	if dispatcher.startCalls != 0 {
+		t.Fatalf("dispatcher must not be called for youtube output without profile RTMP URL: %#v", dispatcher.startRequest)
 	}
 }
 
@@ -2824,9 +2868,7 @@ func TestRetryUploadDispatchesAssignedEncoder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "enc-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "enc-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "enc-01", stream.ID, "test-user"); err != nil {
 		t.Fatal(err)
 	}
@@ -3259,7 +3301,7 @@ func TestStreamWorkerEventsProxiesAssignedEncoder(t *testing.T) {
 			ID:        "event-01",
 			StreamID:  stream.ID,
 			Type:      "caption.telop",
-			Payload:   map[string]any{"text": "こんにちは"},
+			Payload:   map[string]any{"text": "縺薙ｓ縺ｫ縺｡縺ｯ"},
 			Timestamp: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 		}, {
 			ID:       "event-02",
@@ -3366,6 +3408,7 @@ func TestServiceRemediationExecuteDispatchesAssignedEncoder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerServiceWithTokenForTest(t, auth, obsToken, store.ServiceRegistration{ServiceID: "observability-01", ServiceType: "observability", ServiceName: "Observability", PublicURL: "https://observability.example.com"})
 	dispatcher := &fakeServiceDispatcher{}
 	obsClient, closeObs := remediationValidationClient(t, map[string]observability.RemediationDispatchContext{
 		"action-01": {ActionID: "action-01", Action: "retry_package_remux", IncidentID: "inc-01", StreamID: stream.ID, Executable: true},
@@ -3417,6 +3460,7 @@ func TestServiceRemediationExecuteRejectsUnverifiedObservabilityContext(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerServiceWithTokenForTest(t, auth, obsToken, store.ServiceRegistration{ServiceID: "observability-01", ServiceType: "observability", ServiceName: "Observability", PublicURL: "https://observability.example.com"})
 	dispatcher := &fakeServiceDispatcher{}
 	obsClient, closeObs := remediationValidationClient(t, map[string]observability.RemediationDispatchContext{
 		"action-01": {ActionID: "action-01", Action: "retry_package_remux", IncidentID: "different-incident", StreamID: stream.ID, Executable: true},
@@ -3447,6 +3491,7 @@ func TestServiceRemediationExecuteRequiresActionAndIncidentContext(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerServiceWithTokenForTest(t, auth, obsToken, store.ServiceRegistration{ServiceID: "observability-01", ServiceType: "observability", ServiceName: "Observability", PublicURL: "https://observability.example.com"})
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
 	for name, body := range map[string]string{
@@ -3501,6 +3546,21 @@ func TestServiceRemediationExecuteRejectsInvalidServiceToken(t *testing.T) {
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for missing scope, got %d body = %s", res.Code, res.Body.String())
 	}
+
+	pendingToken, err := auth.CreateServiceToken(t.Context(), "observability", []string{"service.register", "remediation.execute"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(t.Context(), pendingToken, store.ServiceRegistration{ServiceID: "observability-pending", ServiceType: "observability", ServiceName: "Observability Pending", PublicURL: "https://observability-pending.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/services/remediation-actions/execute", bytes.NewBufferString(`{"action_id":"action-pending","action":"retry_gdrive_upload","incident_id":"inc-pending","stream_id":"`+stream.ID+`"}`))
+	req.Header.Set("Authorization", "Bearer "+pendingToken.RawToken)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "service_token_not_registered") {
+		t.Fatalf("expected pending observability token to be rejected, got %d body = %s", res.Code, res.Body.String())
+	}
 }
 
 func TestServiceRemediationExecuteRequiresAssignedEncoder(t *testing.T) {
@@ -3515,6 +3575,7 @@ func TestServiceRemediationExecuteRequiresAssignedEncoder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerServiceWithTokenForTest(t, auth, obsToken, store.ServiceRegistration{ServiceID: "observability-01", ServiceType: "observability", ServiceName: "Observability", PublicURL: "https://observability.example.com"})
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
 	req := httptest.NewRequest(http.MethodPost, "/services/remediation-actions/execute", bytes.NewBufferString(`{"action_id":"action-missing-assignment","action":"retry_gdrive_upload","incident_id":"inc-missing-assignment","stream_id":"`+stream.ID+`"}`))
@@ -3547,9 +3608,7 @@ func TestAssignServiceEndpointAllowsNonWorkerServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "enc-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "enc-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 	req := httptest.NewRequest(http.MethodPost, "/services/enc-01/assign", bytes.NewBufferString(`{"stream_id":"`+stream.ID+`"}`))
@@ -3749,12 +3808,8 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), tokenOne, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), tokenTwo, store.ServiceRegistration{ServiceID: "discord-02", ServiceType: "discord_bot", ServiceName: "Discord 02", PublicURL: "https://discord-02.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, tokenOne, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	registerServiceWithTokenForTest(t, auth, tokenTwo, store.ServiceRegistration{ServiceID: "discord-02", ServiceType: "discord_bot", ServiceName: "Discord 02", PublicURL: "https://discord-02.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "discord-01", stream.ID, "test-user"); err != nil {
 		t.Fatal(err)
 	}
@@ -3874,9 +3929,7 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-01", stream.ID, "operator"); err != nil {
 		t.Fatal(err)
 	}
@@ -3969,9 +4022,7 @@ func TestServiceRuntimeConfigIncludesEncoderYouTubeConfigWithoutRawStreamKey(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-youtube-01", ServiceType: "encoder_recorder", ServiceName: "Encoder YouTube 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "encoder-youtube-01", ServiceType: "encoder_recorder", ServiceName: "Encoder YouTube 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-youtube-01", stream.ID, "operator"); err != nil {
 		t.Fatal(err)
 	}
@@ -4050,9 +4101,7 @@ func TestAdminServiceRuntimeConfigPreviewIsSecretSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "discord-preview-01", ServiceType: "discord_bot", ServiceName: "Discord Preview 01", PublicURL: "https://discord-preview.example.com", Version: "0.1.0", Capabilities: map[string]any{"runtime_config": true}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "discord-preview-01", ServiceType: "discord_bot", ServiceName: "Discord Preview 01", PublicURL: "https://discord-preview.example.com", Version: "0.1.0", Capabilities: map[string]any{"runtime_config": true}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "discord-preview-01", stream.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -4358,12 +4407,8 @@ func TestServiceRuntimeSecretResolveIsScopedToRuntimeProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), tokenOne, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), tokenTwo, store.ServiceRegistration{ServiceID: "discord-02", ServiceType: "discord_bot", ServiceName: "Discord 02", PublicURL: "https://discord-02.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, tokenOne, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	registerServiceWithTokenForTest(t, auth, tokenTwo, store.ServiceRegistration{ServiceID: "discord-02", ServiceType: "discord_bot", ServiceName: "Discord 02", PublicURL: "https://discord-02.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord one", map[string]any{
 		"service_id":            "discord-01",
 		"guild_id":              "guild-1",
@@ -4449,9 +4494,7 @@ func TestServiceRuntimeSecretResolveRequiresSecureTransportInProduction(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord one", map[string]any{
 		"service_id":            "discord-01",
 		"guild_id":              "guild-1",
@@ -4514,9 +4557,7 @@ func TestServiceRuntimeSecretLeaseActiveIsCheckedBeforeSecretValue(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord one", map[string]any{
 		"service_id":            "discord-01",
 		"guild_id":              "guild-1",
@@ -4552,9 +4593,7 @@ func TestServiceRuntimeSecretResolveReleasesLeaseWhenSecretIsMissing(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord one", map[string]any{
 		"service_id":            "discord-01",
 		"guild_id":              "guild-1",
@@ -4610,12 +4649,8 @@ func TestServiceRuntimeSecretResolveAllowsAssignedArchiveDestinationSecrets(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder 01", PublicURL: "https://encoder-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), standbyToken, store.ServiceRegistration{ServiceID: "encoder-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder Standby", PublicURL: "https://encoder-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder 01", PublicURL: "https://encoder-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	registerServiceWithTokenForTest(t, auth, standbyToken, store.ServiceRegistration{ServiceID: "encoder-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder Standby", PublicURL: "https://encoder-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-01", stream.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -4640,6 +4675,9 @@ func TestServiceRuntimeSecretResolveAllowsAssignedArchiveDestinationSecrets(t *t
 		"service_account_credentials_secret_name": "google_drive_credentials",
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{ArchiveProfileID: archiveProfile.ID}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(streams, WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithSecretStore(secrets), WithAuditStore(auth))
@@ -4714,12 +4752,8 @@ func TestServiceRuntimeSecretResolveRequiresPrimaryAssignmentForGenericStreamSec
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), primaryToken, store.ServiceRegistration{ServiceID: "encoder-generic-primary", ServiceType: "encoder_recorder", ServiceName: "Encoder Generic Primary", PublicURL: "https://encoder-generic-primary.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), standbyToken, store.ServiceRegistration{ServiceID: "encoder-generic-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder Generic Standby", PublicURL: "https://encoder-generic-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, primaryToken, store.ServiceRegistration{ServiceID: "encoder-generic-primary", ServiceType: "encoder_recorder", ServiceName: "Encoder Generic Primary", PublicURL: "https://encoder-generic-primary.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	registerServiceWithTokenForTest(t, auth, standbyToken, store.ServiceRegistration{ServiceID: "encoder-generic-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder Generic Standby", PublicURL: "https://encoder-generic-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "encoder-generic-primary", stream.ID, "admin", "primary"); err != nil {
 		t.Fatal(err)
 	}
@@ -4792,9 +4826,7 @@ func TestServiceRuntimeSecretResolveRejectsSecretFromWrongProfileKind(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-wrong-kind", ServiceType: "encoder_recorder", ServiceName: "Encoder Wrong Kind", PublicURL: "https://encoder-wrong-kind.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "encoder-wrong-kind", ServiceType: "encoder_recorder", ServiceName: "Encoder Wrong Kind", PublicURL: "https://encoder-wrong-kind.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "encoder-wrong-kind", stream.ID, "admin", "primary"); err != nil {
 		t.Fatal(err)
 	}
@@ -4844,12 +4876,8 @@ func TestEncoderRuntimeProfileSecretRequiresSelectedProfileAndPrimaryAssignment(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), primaryToken, store.ServiceRegistration{ServiceID: "encoder-custom-primary", ServiceType: "encoder_recorder", ServiceName: "Encoder Custom Primary", PublicURL: "https://encoder-custom-primary.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), standbyToken, store.ServiceRegistration{ServiceID: "encoder-custom-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder Custom Standby", PublicURL: "https://encoder-custom-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, primaryToken, store.ServiceRegistration{ServiceID: "encoder-custom-primary", ServiceType: "encoder_recorder", ServiceName: "Encoder Custom Primary", PublicURL: "https://encoder-custom-primary.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	registerServiceWithTokenForTest(t, auth, standbyToken, store.ServiceRegistration{ServiceID: "encoder-custom-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder Custom Standby", PublicURL: "https://encoder-custom-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "encoder-custom-primary", stream.ID, "admin", "primary"); err != nil {
 		t.Fatal(err)
 	}
@@ -4939,12 +4967,8 @@ func TestServiceRuntimeSecretResolveAllowsAssignedOAuthArchiveSecrets(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-oauth-primary", ServiceType: "encoder_recorder", ServiceName: "Encoder OAuth Primary", PublicURL: "https://encoder-oauth-primary.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), standbyToken, store.ServiceRegistration{ServiceID: "encoder-oauth-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder OAuth Standby", PublicURL: "https://encoder-oauth-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "encoder-oauth-primary", ServiceType: "encoder_recorder", ServiceName: "Encoder OAuth Primary", PublicURL: "https://encoder-oauth-primary.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	registerServiceWithTokenForTest(t, auth, standbyToken, store.ServiceRegistration{ServiceID: "encoder-oauth-standby", ServiceType: "encoder_recorder", ServiceName: "Encoder OAuth Standby", PublicURL: "https://encoder-oauth-standby.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-oauth-primary", stream.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -4990,6 +5014,9 @@ func TestServiceRuntimeSecretResolveAllowsAssignedOAuthArchiveSecrets(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{ArchiveProfileID: archiveProfile.ID}); err != nil {
+		t.Fatal(err)
+	}
 	handler := NewServer(streams, WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithAuditStore(auth))
 
 	cases := []struct {
@@ -5031,12 +5058,12 @@ func TestServiceRuntimeSecretResolveAllowsAssignedOAuthArchiveSecrets(t *testing
 				t.Fatalf("standby encoder must not resolve oauth archive runtime secret, status = %d body = %s", standbyRes.Code, standbyRes.Body.String())
 			}
 
-			noProfileReq := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(`{"service_id":"encoder-oauth-primary","stream_id":"`+stream.ID+`","secret_name":"`+tc.secretName+`"}`))
-			noProfileReq.Header.Set("Authorization", "Bearer "+token.RawToken)
-			noProfileRes := httptest.NewRecorder()
-			handler.ServeHTTP(noProfileRes, noProfileReq)
-			if noProfileRes.Code != http.StatusForbidden {
-				t.Fatalf("oauth archive secret without archive profile must be forbidden, status = %d body = %s", noProfileRes.Code, noProfileRes.Body.String())
+			wrongProfileReq := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(`{"service_id":"encoder-oauth-primary","stream_id":"`+stream.ID+`","archive_profile_id":"different-profile","secret_name":"`+tc.secretName+`"}`))
+			wrongProfileReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+			wrongProfileRes := httptest.NewRecorder()
+			handler.ServeHTTP(wrongProfileRes, wrongProfileReq)
+			if wrongProfileRes.Code != http.StatusForbidden {
+				t.Fatalf("oauth archive secret for a different archive profile must be forbidden, status = %d body = %s", wrongProfileRes.Code, wrongProfileRes.Body.String())
 			}
 		})
 	}
@@ -5202,9 +5229,7 @@ func TestDeleteServiceEndpointRemovesRegistryAssignmentAndRevokesToken(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "enc-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "enc-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "enc-01", stream.ID, "test-user"); err != nil {
 		t.Fatal(err)
 	}
@@ -5269,9 +5294,7 @@ func TestServiceStreamEventsRequireDedicatedScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), limitedToken, store.ServiceRegistration{ServiceID: "worker-limited", ServiceType: "worker", ServiceName: "Worker Limited", PublicURL: "https://worker-limited.example.com"}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, limitedToken, store.ServiceRegistration{ServiceID: "worker-limited", ServiceType: "worker", ServiceName: "Worker Limited", PublicURL: "https://worker-limited.example.com"})
 	if _, err := auth.AssignServiceToStream(t.Context(), "worker-limited", stream.ID, "test-user"); err != nil {
 		t.Fatal(err)
 	}
@@ -5288,9 +5311,7 @@ func TestServiceStreamEventsRequireDedicatedScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), workerToken, store.ServiceRegistration{ServiceID: "worker-ok", ServiceType: "worker", ServiceName: "Worker OK", PublicURL: "https://worker-ok.example.com"}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, workerToken, store.ServiceRegistration{ServiceID: "worker-ok", ServiceType: "worker", ServiceName: "Worker OK", PublicURL: "https://worker-ok.example.com"})
 	if _, err := auth.AssignServiceToStream(t.Context(), "worker-ok", stream.ID, "test-user"); err != nil {
 		t.Fatal(err)
 	}
@@ -7639,7 +7660,7 @@ func TestCannotRemoveLastSuperAdminRoleAssignment(t *testing.T) {
 	if err := auth.AddUser(store.User{ID: "admin-id", Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"streams.read"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"admin"}}, "correct horse battery", []string{"users.update", "roles.assign"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"admin"}}, "correct horse battery", []string{"users.update", "roles.assign", "streams.read"}); err != nil {
 		t.Fatal(err)
 	}
 	viewerRole, err := auth.CreateRole(t.Context(), "viewer", []string{"streams.read"})
@@ -7748,7 +7769,7 @@ func TestServiceTokenRegisterHeartbeatAndRevoke(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	createTokenReq := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"worker","scopes":["service.register","service.heartbeat"]}`))
+	createTokenReq := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"worker","scopes":["service.register","service.heartbeat"],"service_id":"worker-01","service_name":"Worker 01","public_url":"https://worker.example.com","version":"0.1.0","capabilities":{}}`))
 	createTokenReq.AddCookie(cookie)
 	createTokenReq.Header.Set("X-CSRF-Token", csrf)
 	createTokenRes := httptest.NewRecorder()
@@ -8063,7 +8084,7 @@ func TestRotateServiceTokenRequiresRevokePermission(t *testing.T) {
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
-	token := createServiceTokenForTest(t, handler, cookie, csrf, "worker", []string{"service.register"})
+	token := createBoundServiceTokenForTest(t, handler, cookie, csrf, "worker", "worker-no-rotate", []string{"service.register"})
 
 	rotateReq := httptest.NewRequest(http.MethodPost, "/api-tokens/"+token.ID+"/rotate", nil)
 	rotateReq.AddCookie(cookie)
@@ -8119,6 +8140,39 @@ func TestCreateServiceTokenPrecreateRequiresRegisterScope(t *testing.T) {
 	}
 }
 
+func TestCreateServiceTokenRejectsEmptyScopes(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"worker","scopes":[]}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api-tokens", nil)
+	listReq.AddCookie(cookie)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list token status = %d body = %s", listRes.Code, listRes.Body.String())
+	}
+	var tokens []store.ServiceToken
+	if err := json.NewDecoder(listRes.Body).Decode(&tokens); err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("empty scope request should not create token: %#v", tokens)
+	}
+}
+
 func TestServiceRegisterRejectsWrongServiceType(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
@@ -8126,7 +8180,7 @@ func TestServiceRegisterRejectsWrongServiceType(t *testing.T) {
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"worker","scopes":["service.register"]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"worker","scopes":["service.register"],"service_id":"worker-01","service_name":"Worker 01","public_url":"https://worker.example.com","version":"0.1.0","capabilities":{}}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8163,7 +8217,7 @@ func TestServiceRegisterRejectsNonHTTPPublicURL(t *testing.T) {
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"worker","scopes":["service.register"]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"worker","scopes":["service.register"],"service_id":"worker-01","service_name":"Worker 01","public_url":"https://worker.example.com","version":"0.1.0","capabilities":{}}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8305,7 +8359,7 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	limited := createServiceTokenForTest(t, handler, cookie, csrf, "encoder_recorder", []string{"service.register"})
+	limited := createBoundServiceTokenForTest(t, handler, cookie, csrf, "encoder_recorder", "encoder-limited", []string{"service.register"})
 	registerServiceForTest(t, handler, limited.RawToken, "encoder-limited", "encoder_recorder")
 	limitedReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(`{"service_id":"encoder-limited","stream_id":"`+stream.ID+`","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/`+stream.ID+`/final.mp4","size_bytes":123}]}`))
 	limitedReq.Header.Set("Authorization", "Bearer "+limited.RawToken)
@@ -8712,6 +8766,50 @@ func TestSetupFirstAdmin(t *testing.T) {
 	}
 }
 
+func TestRootRedirectsToSetupWhenFirstAdminRequired(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithSetupToken("setup-token"))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusFound || res.Header().Get("Location") != "/setup" {
+		t.Fatalf("root redirect = %d location=%q body=%s", res.Code, res.Header().Get("Location"), res.Body.String())
+	}
+}
+
+func TestRootRedirectsToLoginWhenSetupCompleteAndUnauthenticated(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithSetupToken("setup-token"))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusFound || res.Header().Get("Location") != "/login" {
+		t.Fatalf("root redirect = %d location=%q body=%s", res.Code, res.Header().Get("Location"), res.Body.String())
+	}
+}
+
+func TestRootRedirectsToDashboardWhenAuthenticated(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithSetupToken("setup-token"))
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusFound || res.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("root redirect = %d location=%q body=%s", res.Code, res.Header().Get("Location"), res.Body.String())
+	}
+}
+
 func TestSetupStatusReportsFirstAdminRequired(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithSetupToken("setup-token"))
@@ -8812,8 +8910,20 @@ func TestControlAPIRejectsOversizedRequestBody(t *testing.T) {
 }
 
 func createServiceTokenForTest(t *testing.T, handler http.Handler, cookie *http.Cookie, csrf, serviceType string, scopes []string) store.ServiceToken {
+	return createBoundServiceTokenForTest(t, handler, cookie, csrf, serviceType, defaultServiceIDForTest(serviceType), scopes)
+}
+
+func createBoundServiceTokenForTest(t *testing.T, handler http.Handler, cookie *http.Cookie, csrf, serviceType, serviceID string, scopes []string) store.ServiceToken {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"service_type": serviceType, "scopes": scopes})
+	payload := map[string]any{"service_type": serviceType, "scopes": scopes}
+	if stringSliceContains(scopes, "service.register") {
+		payload["service_id"] = serviceID
+		payload["service_name"] = serviceID
+		payload["public_url"] = "https://" + serviceID + ".example.com"
+		payload["version"] = "0.1.0"
+		payload["capabilities"] = map[string]any{}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8830,6 +8940,33 @@ func createServiceTokenForTest(t *testing.T, handler http.Handler, cookie *http.
 		t.Fatal(err)
 	}
 	return token
+}
+
+func defaultServiceIDForTest(serviceType string) string {
+	switch serviceType {
+	case "worker":
+		return "worker-01"
+	case "encoder_recorder":
+		return "encoder-01"
+	case "discord_bot":
+		return "discord-01"
+	case "observability":
+		return "observability-01"
+	default:
+		return serviceType + "-01"
+	}
+}
+
+func registerServiceWithTokenForTest(t *testing.T, auth *store.MemoryAuthStore, token store.ServiceToken, registration store.ServiceRegistration) store.RegisteredService {
+	t.Helper()
+	if _, err := auth.PrecreateService(t.Context(), token, registration); err != nil {
+		t.Fatal(err)
+	}
+	service, err := auth.RegisterService(t.Context(), token, registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }
 
 func registerServiceForTest(t *testing.T, handler http.Handler, rawToken, serviceID, serviceType string) {
@@ -9219,9 +9356,7 @@ func registerServiceInstanceWithCapabilities(t *testing.T, auth *store.MemoryAut
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: serviceID, ServiceType: serviceType, ServiceName: serviceID, PublicURL: "https://" + serviceID + ".example.com", Version: "0.1.0", Capabilities: capabilities}); err != nil {
-		t.Fatal(err)
-	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: serviceID, ServiceType: serviceType, ServiceName: serviceID, PublicURL: "https://" + serviceID + ".example.com", Version: "0.1.0", Capabilities: capabilities})
 }
 
 func assignServiceForTest(t *testing.T, handler http.Handler, cookie *http.Cookie, csrf, serviceID, streamID string) {

@@ -9,6 +9,24 @@ import (
 	"testing"
 )
 
+func TestStaticWebDirUsesConfiguredEnvDir(t *testing.T) {
+	got := staticWebDirFromCandidates(" /custom/web ", []string{t.TempDir()})
+	if got != "/custom/web" {
+		t.Fatalf("static web dir = %q, want configured env dir", got)
+	}
+}
+
+func TestStaticWebDirUsesFirstExistingCandidate(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	want := t.TempDir()
+	other := t.TempDir()
+
+	got := staticWebDirFromCandidates("", []string{missing, want, other})
+	if got != want {
+		t.Fatalf("static web dir = %q, want %q", got, want)
+	}
+}
+
 func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "app.js"), []byte("console.log('ok')"), 0o640); err != nil {
@@ -35,7 +53,31 @@ func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 	}
 }
 
-func TestStaticFilesHandlerServesIndexForRootAndHTMLNavigation(t *testing.T) {
+func TestStaticFilesHandlerLetsRootFallThroughForAppRedirect(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>app</main>"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	appCalled := false
+	handler := staticFilesHandler{
+		app: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			appCalled = true
+			http.Redirect(w, r, "/login", http.StatusFound)
+		}),
+		dir: root,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusFound || res.Header().Get("Location") != "/login" || !appCalled {
+		t.Fatalf("root response = %d location=%q appCalled=%v", res.Code, res.Header().Get("Location"), appCalled)
+	}
+}
+
+func TestStaticFilesHandlerServesIndexForHTMLNavigation(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>app</main>"), 0o640); err != nil {
 		t.Fatal(err)
@@ -48,7 +90,33 @@ func TestStaticFilesHandlerServesIndexForRootAndHTMLNavigation(t *testing.T) {
 		dir: root,
 	}
 
-	for _, path := range []string{"/", "/login", "/setup", "/dashboard"} {
+	for _, path := range []string{
+		"/login",
+		"/setup",
+		"/dashboard",
+		"/streams",
+		"/encoder",
+		"/discord",
+		"/youtube",
+		"/caption",
+		"/overlay",
+		"/archive",
+		"/integrations",
+		"/workers",
+		"/logs",
+		"/users",
+		"/roles",
+		"/audit",
+		"/security",
+		"/tokens",
+		"/service-health",
+		"/monitoring",
+		"/incidents",
+		"/diagnostics",
+		"/remediation",
+		"/notifications",
+		"/metrics",
+	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Accept", "text/html")
 		res := httptest.NewRecorder()

@@ -4,7 +4,7 @@ services:
       AUTOSTREAM_BIND_ADDR: 0.0.0.0:8080
       AUTOSTREAM_PUBLIC_URL: http://localhost:8080
       AUTOSTREAM_DATA_DIR: /var/lib/autostream/control-panel
-      AUTOSTREAM_TRUSTED_PROXIES: 127.0.0.1,10.0.0.0/8
+      AUTOSTREAM_TRUSTED_PROXIES: 127.0.0.1
       AUTOSTREAM_SESSION_SECRET: dev-only-session-secret-change-me-change-me-change-me-123456
       AUTOSTREAM_SECRET_ENCRYPTION_KEY: dev-only-local-secret-encryption-key
       AUTOSTREAM_SETUP_TOKEN: dev-only-control-panel-setup-token

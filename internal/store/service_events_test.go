@@ -8,6 +8,14 @@ func TestWriteStreamEventRestrictsTypeAndRedactsPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.PrecreateService(t.Context(), token, ServiceRegistration{
+		ServiceID:   "worker-01",
+		ServiceType: "worker",
+		ServiceName: "Worker",
+		PublicURL:   "https://worker.example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	service, err := st.RegisterService(t.Context(), token, ServiceRegistration{
 		ServiceID:   "worker-01",
 		ServiceType: "worker",

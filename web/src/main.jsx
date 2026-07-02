@@ -52,6 +52,333 @@ const textByLocale = {
     'Audit Logs': '監査ログ',
     'Security Settings': 'セキュリティ設定',
     'API Tokens': 'API トークン',
+    'Connect Service': 'サービス接続',
+    'Prepare a service slot, issue a one-time token, then paste the bootstrap env into the service host.': 'サービス枠を準備して一度だけ表示されるトークンを発行し、サービスホストに環境変数として貼り付けます。',
+    'Choose service': 'サービス選択',
+    'Create pending service': '待機中サービスを作成',
+    'Copy env': '環境変数をコピー',
+    'Start service': 'サービス起動',
+    'Select the service you want to connect. The required scopes are filled automatically.': '接続するサービスを選択してください。必要なスコープは自動で入ります。',
+    'Enter the service ID, display name, and public URL that this host will use.': 'このホストで使うサービス ID、表示名、公開 URL を入力します。',
+    'Create the token, then copy the generated env before leaving this page.': 'トークンを作成したら、この画面を離れる前に生成された環境変数をコピーしてください。',
+    'Paste the env into the service host, restart it, and confirm heartbeat in Service Health.': 'サービスホストに環境変数を貼り付けて再起動し、サービスヘルスでハートビートを確認してください。',
+    'Service ID': 'サービス ID',
+    'Service name': 'サービス名',
+    'Public URL': '公開 URL',
+    Version: 'バージョン',
+    'Advanced permissions': '高度な権限',
+    'The defaults are the minimum expected for registration, heartbeat, runtime config, and service reporting. Change only when you know the service contract.': '初期値は登録、heartbeat、runtime config、サービス報告に必要な最小構成です。サービス契約を理解している場合だけ変更してください。',
+    'Issue one-time connection token': '一度だけ表示される接続トークンを発行',
+    'One-time token': '一度だけ表示されるトークン',
+    'Bootstrap env for the service host': 'サービスホスト用の起動環境変数',
+    'Copy token': 'トークンをコピー',
+    'Copy env block': '環境変数一式をコピー',
+    'Copied token.': 'トークンをコピーしました。',
+    'Copied env block.': '環境変数一式をコピーしました。',
+    'Clipboard is unavailable. Select the value and copy it manually.': 'クリップボードを使えません。値を選択して手動でコピーしてください。',
+    'Service ID is required.': 'サービス ID が必要です。',
+    'Service name is required.': 'サービス名が必要です。',
+    'Public URL is required.': '公開 URL が必要です。',
+    'Pre-created services require service.register scope.': '事前作成するサービスには service.register スコープが必要です。',
+    'At least one scope is required.': 'スコープを 1 つ以上選択してください。',
+    'Created pending service and one-time token. Copy it now; it will not be shown again.': '待機中サービスと一度だけ表示されるトークンを作成しました。再表示されないため今コピーしてください。',
+    'Rotated token. Copy the new token now; it will not be shown again.': 'トークンをローテーションしました。新しいトークンは再表示されないため今コピーしてください。',
+    'Token revoked.': 'トークンを失効しました。',
+    Rotate: 'ローテーション',
+    Revoke: '失効',
+    'Discord Bot': 'Discord Bot',
+    'Encoder Recorder': 'Encoder Recorder',
+    Worker: 'Worker',
+    Observability: 'Observability',
+    'Select or create a stream job.': '配信ジョブを選択または作成してください。',
+    'Discord Bot, Worker, and Encoder/Recorder are assigned.': 'Discord Bot、Worker、Encoder/Recorder が割り当て済みです。',
+    'Control Panel checks are ready for start dispatch.': 'Control Panel の開始前チェックは開始可能です。',
+    'Encoder/Recorder is not assigned.': 'Encoder/Recorder が割り当てられていません。',
+    'Loading Encoder/Recorder preflight checks.': 'Encoder/Recorder の事前チェックを読み込んでいます。',
+    'FFmpeg, archive path, RTMPS, and uploader prerequisites are ready.': 'FFmpeg、アーカイブパス、RTMPS、アップロード前提条件は準備済みです。',
+    'Preflight has not returned readiness data yet.': '事前チェックの準備状況はまだ返っていません。',
+    'Discord Bot is not assigned.': 'Discord Bot が割り当てられていません。',
+    'VC audio receiving or forward is not active yet.': 'VC 音声の受信または転送がまだ有効ではありません。',
+    'Bridge is not active for the selected stream.': '選択中の配信ではブリッジが有効ではありません。',
+    'Bridge is active, but no Discord packet has arrived.': 'ブリッジは有効ですが、Discord packet はまだ届いていません。',
+    'Worker is not assigned.': 'Worker が割り当てられていません。',
+    'Encoder/Recorder must be assigned to inspect sidecar persistence.': 'sidecar の保存状態を確認するには Encoder/Recorder の割り当てが必要です。',
+    'Loading persisted Worker event sidecar.': '保存済み Worker event sidecar を読み込んでいます。',
+    'No persisted Worker event has been observed yet.': '保存済み Worker event はまだ確認されていません。',
+    'Metrics are not loaded yet.': 'メトリクスはまだ読み込まれていません。',
+    'Loading archive and upload metrics.': 'アーカイブとアップロードのメトリクスを読み込んでいます。',
+    'No archive metrics have been reported for this stream yet.': 'この配信のアーカイブメトリクスはまだ報告されていません。',
+    'No start / stop / retry dispatch has run in this page session.': 'この画面セッションでは start / stop / retry dispatch はまだ実行されていません。',
+    'Discord Bot audio forward': 'Discord Bot 音声転送',
+    'Assign a Discord Bot to inspect VC audio and forward status.': 'VC 音声と転送状態を確認するには Discord Bot を割り当ててください。',
+    'Waiting for heartbeat metrics from Discord Bot.': 'Discord Bot からの heartbeat メトリクスを待っています。',
+    'Forward errors have been reported.': '転送エラーが報告されています。',
+    'Bot is not connected to Discord voice.': 'Bot は Discord voice に接続されていません。',
+    'Bot is not receiving Discord audio packets.': 'Bot は Discord 音声 packet を受信していません。',
+    'Audio forwarding to Encoder/Recorder is not active.': 'Encoder/Recorder への音声転送が有効ではありません。',
+    'Discord Bot is receiving and forwarding audio.': 'Discord Bot は音声を受信して転送しています。',
+    Voice: '音声接続',
+    Receiving: '受信',
+    'Forward active': '転送有効',
+    'Last audio age': '最終音声経過',
+    'Last forward age': '最終転送経過',
+    'Encoder/Recorder preflight': 'Encoder/Recorder 事前チェック',
+    'Assign an Encoder/Recorder to inspect FFmpeg, archive, RTMPS, and Google Drive readiness.': 'FFmpeg、アーカイブ、RTMPS、Google Drive の準備状況を確認するには Encoder/Recorder を割り当ててください。',
+    'Loading Encoder/Recorder host checks...': 'Encoder/Recorder ホストチェックを読み込んでいます...',
+    'Refresh Encoder Preflight': 'Encoder 事前チェックを更新',
+    'Encoder/Recorder host prerequisites are ready.': 'Encoder/Recorder ホストの前提条件は準備済みです。',
+    'Preflight data is available, but readiness is not confirmed.': '事前チェックデータはありますが、準備完了は確認されていません。',
+    'Checked at': '確認日時',
+    'none reported': '報告なし',
+    check: 'チェック',
+    'Archive root': 'アーカイブルート',
+    'Worker event path': 'Worker イベント経路',
+    'Assign a Worker to inspect overlay and caption event status.': 'オーバーレイと字幕 event の状態を確認するには Worker を割り当ててください。',
+    'Waiting for heartbeat metrics from Worker.': 'Worker からの heartbeat メトリクスを待っています。',
+    'Worker event delivery failures have been reported.': 'Worker event の配信失敗が報告されています。',
+    'Worker is generating and sending stream events.': 'Worker は配信 event を生成して送信しています。',
+    'Worker is assigned; no stream event has been generated yet.': 'Worker は割り当て済みですが、配信 event はまだ生成されていません。',
+    Overlay: 'オーバーレイ',
+    Captions: '字幕',
+    'Scene updates': 'シーン更新',
+    'Send failures': '送信失敗',
+    'Worker event test': 'Worker イベントテスト',
+    'Send a lightweight test event through the assigned Worker.': '割り当て済み Worker 経由で軽量なテスト event を送信します。',
+    'Assign a Worker before sending test events.': 'テスト event を送信する前に Worker を割り当ててください。',
+    'Caption text': '字幕テキスト',
+    'Test caption': 'テスト字幕',
+    'Send current time': '現在時刻を送信',
+    'Send caption': '字幕を送信',
+    'Worker event sidecar': 'Worker イベント sidecar',
+    'Assign an Encoder/Recorder to inspect persisted worker events.': '保存済み Worker event を確認するには Encoder/Recorder を割り当ててください。',
+    'Loading Worker event sidecar...': 'Worker event sidecar を読み込んでいます...',
+    'No persisted worker event has been reported yet.': '保存済み Worker event はまだ報告されていません。',
+    'Discord audio bridge': 'Discord 音声ブリッジ',
+    'Assign an Encoder/Recorder to inspect audio ingest status.': '音声取り込み状態を確認するには Encoder/Recorder を割り当ててください。',
+    'Loading Discord audio bridge status...': 'Discord 音声ブリッジ状態を読み込んでいます...',
+    'Bridge is not active.': 'ブリッジは有効ではありません。',
+    'Bridge is active, but no Discord packet has arrived yet.': 'ブリッジは有効ですが、Discord packet はまだ届いていません。',
+    'Discord packet age is stale.': 'Discord packet の経過時間が古くなっています。',
+    'Discord audio packets are reaching Encoder/Recorder.': 'Discord 音声 packet は Encoder/Recorder に届いています。',
+    Bridge: 'ブリッジ',
+    Packets: 'パケット',
+    'RTP forwarded': 'RTP 転送',
+    'Last packet age': '最終パケット経過',
+    'Last packet': '最終パケット',
+    'Stream incident / remediation': '配信インシデント / 修復',
+    'Open Incidents': 'インシデントを開く',
+    'Open Remediation': '修復を開く',
+    'No active incident or pending remediation is linked to this stream.': 'この配信に紐づく未解決インシデントまたは保留中の修復はありません。',
+    'Active incidents': '未解決インシデント',
+    'No active incident.': '未解決インシデントはありません。',
+    'No summary.': '概要はありません。',
+    updated: '更新',
+    'Remediation actions': '修復アクション',
+    'No remediation action for linked incidents.': '紐づくインシデントの修復アクションはありません。',
+    'Review diagnostic evidence before executing.': '実行前に診断根拠を確認してください。',
+    'Likely cause': '推定原因',
+    Impact: '影響',
+    'Next checks': '次の確認',
+    'External verification config export': '外部検証設定エクスポート',
+    'External E2E config export': '外部 E2E 設定エクスポート',
+    'Select a stream to inspect its Control Panel confirmation export.': 'Control Panel 確認エクスポートを確認する配信を選択してください。',
+    'Loading external verification config export...': '外部検証設定エクスポートを読み込んでいます...',
+    'External E2E config JSON copied.': '外部 E2E 設定 JSON をコピーしました。',
+    'Clipboard is unavailable. Select the JSON preview and copy it manually.': 'クリップボードを使えません。JSON プレビューを選択して手動でコピーしてください。',
+    'Refresh Export': 'エクスポートを更新',
+    'Copy JSON': 'JSON をコピー',
+    Confirmations: '確認',
+    'Runtime IDs': 'ランタイム ID',
+    'Primary services': 'プライマリサービス',
+    'Runtime config capability': 'ランタイム設定機能',
+    'all primary services expose runtime_config': 'すべてのプライマリサービスが runtime_config を公開しています',
+    'Control Panel setup still required': 'Control Panel 側の設定がまだ必要です',
+    'Stream Discord routing': '配信 Discord ルーティング',
+    'Blank stream fields use the selected Discord Config defaults; non-empty fields are stream-specific overrides.': '空の配信フィールドは選択中の Discord Config 既定値を使い、入力済みフィールドは配信固有の上書きになります。',
+    'any assigned primary Discord Bot': '割り当て済みの任意のプライマリ Discord Bot',
+    'bot mismatch': 'Bot 不一致',
+    'Loading service assignments...': 'サービス割り当てを読み込んでいます...',
+    'Required service types are assigned. Run Check Readiness before Start.': '必要なサービス種別は割り当て済みです。開始前に準備チェックを実行してください。',
+    'Assign the missing services before starting the stream.': '配信を開始する前に不足サービスを割り当ててください。',
+    'Start readiness': '開始準備',
+    'Start preflight checks look ready.': '開始前チェックは準備済みに見えます。',
+    'Assign this service before starting.': '開始前にこのサービスを割り当ててください。',
+    'Encoder public URL': 'Encoder 公開 URL',
+    'Discord Bot public URL': 'Discord Bot 公開 URL',
+    'Worker public URL': 'Worker 公開 URL',
+    'Discord Bot and Worker receive this URL during start dispatch.': '開始 dispatch 時に Discord Bot と Worker がこの URL を受け取ります。',
+    'Control Panel dispatches job start/stop to this URL.': 'Control Panel はこの URL にジョブ start/stop を dispatch します。',
+    'Control Panel dispatches job start/stop and test events to this URL.': 'Control Panel はこの URL にジョブ start/stop とテスト event を dispatch します。',
+    'Discord audio capture': 'Discord 音声キャプチャ',
+    'Discord audio forward': 'Discord 音声転送',
+    'Discord audio bridge mode needs the bot to capture VC audio.': 'Discord 音声ブリッジモードでは Bot が VC 音声をキャプチャする必要があります。',
+    'Discord Bot must forward Opus packets to Encoder/Recorder.': 'Discord Bot は Opus packet を Encoder/Recorder へ転送する必要があります。',
+    'External media input is configured; Discord audio bridge is not required for FFmpeg input.': '外部メディア入力が設定されています。FFmpeg 入力には Discord 音声ブリッジは不要です。',
+    'Service is not assigned.': 'サービスが割り当てられていません。',
+    'public_url is missing.': 'public_url がありません。',
+    'public_url must use http or https.': 'public_url は http または https を使う必要があります。',
+    'public_url must be an absolute URL.': 'public_url は絶対 URL である必要があります。',
+    'Stream assignment planner': '配信サービス割り当てプランナー',
+    'Select a stream to inspect required service assignments.': '必要なサービス割り当てを確認する配信を選択してください。',
+    'all required service types are assigned': '必要なサービス種別はすべて割り当て済みです',
+    'not ready': '未準備',
+    standby: 'スタンバイ',
+    assign: '割り当て',
+    'as standby': 'スタンバイに設定',
+    primary: 'プライマリ',
+    'No registered candidate.': '登録済み候補がありません。',
+    'Operation readiness checks': '運用 readiness チェック',
+    'Open Service Health': 'Service Health を開く',
+    'Open Discord Settings': 'Discord 設定を開く',
+    'Open YouTube Outputs': 'YouTube 出力を開く',
+    'Open Archive Settings': 'アーカイブ設定を開く',
+    'Open Integrations': '連携を開く',
+    'Open Metrics': 'メトリクスを開く',
+    'This check must pass before service dispatch.': 'サービス dispatch 前にこのチェックを通過する必要があります。',
+    'Last service dispatch': '直近のサービス dispatch',
+    'Service Assignment': 'サービス割り当て',
+    'Assignments are unique per service type. Assigning a service can move it from another stream or replace the current service of the same type.': 'サービス種別ごとに割り当ては 1 つだけです。割り当てると、別配信から移動したり同じ種別の現在のサービスを置き換えることがあります。',
+    'Select service': 'サービスを選択',
+    'Select stream': '配信を選択',
+    'Select worker': 'Worker を選択',
+    'Worker Assignment': 'Worker 割り当て',
+    'Assign a primary Worker for dispatch, or standby Workers as failover candidates.': 'dispatch 対象のプライマリ Worker、またはフェイルオーバー候補のスタンバイ Worker を割り当てます。',
+    'Select a worker and stream.': 'Worker と配信を選択してください。',
+    'Select a worker first.': '先に Worker を選択してください。',
+    'Worker unassigned.': 'Worker の割り当てを解除しました。',
+    'Worker restart requested.': 'Worker の再起動をリクエストしました。',
+    'Assign Worker as primary': 'Worker をプライマリとして割り当て',
+    'Assign Worker as standby': 'Worker をスタンバイとして割り当て',
+    'Unassign Worker': 'Worker 割り当てを解除',
+    'Restart Worker': 'Worker を再起動',
+    Restart: '再起動',
+    'Assignment role': '割り当てロール',
+    'primary - dispatch target': 'プライマリ - dispatch 対象',
+    'standby - failover candidate': 'スタンバイ - フェイルオーバー候補',
+    Healthy: '正常',
+    Stale: '古い',
+    Offline: 'オフライン',
+    'Selected stream assignments': '選択中の配信割り当て',
+    'Assignment impact': '割り当ての影響',
+    'Assign Selected Stream': '選択中の配信に割り当て',
+    Unassign: '割り当て解除',
+    Audit: '監査',
+    'Delete Registry': '登録を削除',
+    'Assign as primary': 'プライマリとして割り当て',
+    'Assign as standby': 'スタンバイとして割り当て',
+    'Unassign Service': 'サービス割り当てを解除',
+    'Open Stream Operations': '配信操作を開く',
+    'View Stream Assignment Audit': '配信割り当て監査を見る',
+    'View Service Audit': 'サービス監査を見る',
+    'Delete Service Registry': 'サービス登録を削除',
+    'Runtime config preview': 'Runtime config プレビュー',
+    'Select a service to inspect its effective Control Panel-distributed config.': 'Control Panel から配布される有効な設定を確認するサービスを選択してください。',
+    'Loading runtime config preview...': 'Runtime config プレビューを読み込んでいます...',
+    'Refresh Preview': 'プレビューを更新',
+    Assignments: '割り当て',
+    Profiles: 'プロファイル',
+    'Stream configs': '配信設定',
+    'Select a service and stream.': 'サービスと配信を選択してください。',
+    'Select a service first.': '先にサービスを選択してください。',
+    'Service unassigned. Open Stream Operations and run Check Readiness again if this stream will be started.': 'サービス割り当てを解除しました。この配信を開始する場合は、配信操作を開いて準備チェックを再実行してください。',
+    'Service registry entry deleted and linked token revoked.': 'サービス登録を削除し、紐づく token を失効しました。',
+    'Loading stream incidents and remediation actions...': '配信インシデントと修復アクションを読み込んでいます...',
+    'Open YouTube Outputs, save a stream_key or Live API output, and select it on this stream.': 'YouTube 出力を開き、stream_key または Live API 出力を保存して、この配信で選択してください。',
+    'Open Integrations, save a Drive destination with a write-only folder ID, then link it from the archive profile.': '連携を開き、write-only のフォルダ ID を持つ Drive 保存先を保存してから、アーカイブプロファイルで紐づけてください。',
+    'Open Discord Settings, save a bot config, and assign it to this stream.': 'Discord 設定を開き、Bot config を保存して、この配信に割り当ててください。',
+    'Open Service Health and assign primary Discord Bot, Encoder/Recorder, and Worker services to this stream.': 'Service Health を開き、プライマリ Discord Bot、Encoder/Recorder、Worker をこの配信に割り当ててください。',
+    'Refresh service registrations until each primary service reports runtime_config capability.': '各プライマリサービスが runtime_config capability を報告するまでサービス登録を更新してください。',
+    'Resolve this Control Panel confirmation before exporting pass evidence.': 'pass evidence をエクスポートする前に、この Control Panel 確認を解消してください。',
+    'Select the saved YouTube output on this stream.': 'この配信で保存済み YouTube 出力を選択してください。',
+    'Select an archive profile that references a saved Drive destination.': '保存済み Drive 保存先を参照するアーカイブプロファイルを選択してください。',
+    'Select the saved Discord config on this stream.': 'この配信で保存済み Discord config を選択してください。',
+    'Select the Encoder profile that will receive the real input and output relay settings.': '実際の入力と出力リレー設定を受け取る Encoder プロファイルを選択してください。',
+    'Select the archive profile that performs final.mkv to final.mp4 and Drive upload.': 'final.mkv から final.mp4 への変換と Drive アップロードを行うアーカイブプロファイルを選択してください。',
+    'Fill this Control Panel runtime ID with a saved internal record, not a raw provider value.': 'この Control Panel runtime ID には provider の生値ではなく、保存済み内部レコードを入れてください。',
+    'Assign the Discord Bot instance that owns the selected Discord config as primary.': '選択中の Discord config を所有する Discord Bot instance をプライマリに割り当ててください。',
+    'Assign the Encoder/Recorder instance that can capture audio, write archives, and upload Drive artifacts as primary.': '音声キャプチャ、アーカイブ書き込み、Drive artifact アップロードが可能な Encoder/Recorder instance をプライマリに割り当ててください。',
+    'Assign the Worker instance that publishes the production event stream as primary.': '本番 event stream を発行する Worker instance をプライマリに割り当ててください。',
+    'Assign the required service as primary for this stream.': 'この配信に必要なサービスをプライマリとして割り当ててください。',
+    'Open Service Health and assign the required service to this stream.': 'Service Health を開き、必要なサービスをこの配信に割り当ててください。',
+    'Set SERVICE_CALL_TOKEN on the Control Panel and match it with SERVICE_CONTROL_TOKEN_SHA256 on the service.': 'Control Panel に SERVICE_CALL_TOKEN を設定し、サービス側の SERVICE_CONTROL_TOKEN_SHA256 と一致させてください。',
+    'Fix SERVICE_PUBLIC_URL so the Control Panel can reach the service over an allowed HTTP(S) URL.': 'Control Panel が許可済み HTTP(S) URL 経由でサービスへ到達できるように SERVICE_PUBLIC_URL を修正してください。',
+    'Start the target service host and confirm that heartbeat is running.': '対象サービスホストを起動し、heartbeat が動作していることを確認してください。',
+    'Check Service Health and Metrics for heartbeat age, host status, and network reachability.': 'Service Health と Metrics で heartbeat の経過時間、ホスト状態、ネットワーク到達性を確認してください。',
+    'Check Discord Bot audio capability, Encoder/Recorder public URL, and audio token settings.': 'Discord Bot の音声 capability、Encoder/Recorder 公開 URL、音声 token 設定を確認してください。',
+    'Select a Discord Bot Config on this stream before starting.': '開始前にこの配信で Discord Bot Config を選択してください。',
+    'Open Discord Settings and choose an existing Discord Bot Config for this stream.': 'Discord 設定を開き、この配信用の既存 Discord Bot Config を選択してください。',
+    'Open Discord Settings and verify guild ID and voice channel ID. Stream-level overrides can replace them per stream.': 'Discord 設定を開き、guild ID と voice channel ID を確認してください。配信単位の上書きで置き換えできます。',
+    'Assign the Discord Bot service that owns this config as primary, or select a config owned by the current primary Bot.': 'この config を所有する Discord Bot サービスをプライマリに割り当てるか、現在のプライマリ Bot が所有する config を選択してください。',
+    'Open YouTube Outputs and select an existing output for this stream.': 'YouTube 出力を開き、この配信用の既存出力を選択してください。',
+    'Open YouTube Outputs and verify mode, RTMPS URL, stream key secret, or Live API settings.': 'YouTube 出力を開き、mode、RTMPS URL、stream key secret、Live API 設定を確認してください。',
+    'Open YouTube Outputs and set the write-only stream key. Readiness checks only configured status, not the raw key.': 'YouTube 出力を開き、write-only の stream key を設定してください。readiness は生キーではなく設定済み状態だけを確認します。',
+    'Configure the Control Panel YouTube Live API client or use live_api_dry_run / stream_key mode for validation.': 'Control Panel の YouTube Live API client を設定するか、検証用に live_api_dry_run / stream_key mode を使ってください。',
+    'Open Integrations and connect a Google account with YouTube scope, then select it in YouTube Outputs.': '連携を開き、YouTube scope 付きの Google account を接続してから YouTube 出力で選択してください。',
+    'Open Archive Settings and select an existing archive profile for this stream.': 'アーカイブ設定を開き、この配信用の既存アーカイブプロファイルを選択してください。',
+    'Open Archive Settings and verify the archive profile and linked Drive destination.': 'アーカイブ設定を開き、アーカイブプロファイルと紐づく Drive 保存先を確認してください。',
+    'Open Integrations and create or select the Drive destination referenced by the archive profile.': '連携を開き、アーカイブプロファイルが参照する Drive 保存先を作成または選択してください。',
+    'Open Integrations and set the write-only Drive folder ID. Readiness checks configured status without reading the raw ID.': '連携を開き、write-only の Drive folder ID を設定してください。readiness は生 ID を読まずに設定済み状態を確認します。',
+    'Open Integrations and connect a Google account with Drive scope, refresh token, and provider client secret configured.': '連携を開き、Drive scope、refresh token、provider client secret が設定済みの Google account を接続してください。',
+    'Review Service Health, Metrics, and service logs, then run Check Readiness again.': 'Service Health、Metrics、サービスログを確認してから Check Readiness を再実行してください。',
+    'Not executed yet': '未実行',
+    'Control Panel dispatch executed': 'Control Panel dispatch 実行済み',
+    'Recorded only': '記録のみ',
+    'Control Panel dispatch failed': 'Control Panel dispatch 失敗',
+    'Control Panel dispatch not configured': 'Control Panel dispatch 未設定',
+    'Stream ID required': 'Stream ID が必要です',
+    'Incident context required': 'Incident context が必要です',
+    'Manual approval required': '手動承認が必要です',
+    'Dangerous action blocked': '危険なアクションはブロックされました',
+    'Action is not marked safe': '安全なアクションとしてマークされていません',
+    'Retry archive upload through the assigned Encoder/Recorder.': '割り当て済み Encoder/Recorder 経由でアーカイブアップロードを再試行します。',
+    'Re-run package/remux only when source archive files are intact.': '元のアーカイブファイルが無事な場合だけ package/remux を再実行します。',
+    'Refresh service state and heartbeat-derived health.': 'サービス状態と heartbeat 由来のヘルスを更新します。',
+    'Generate diagnostics again after collecting newer evidence.': '新しい根拠を収集したあとで診断を再生成します。',
+    'Clear a recovered warning after health signals return.': 'ヘルスシグナルが戻ったあとで復旧済み警告をクリアします。',
+    'Manual approval: restart the Discord Bot service.': '手動承認: Discord Bot サービスを再起動します。',
+    'Manual approval: restart the Encoder/Recorder service.': '手動承認: Encoder/Recorder サービスを再起動します。',
+    'Manual approval: restart the Worker service.': '手動承認: Worker サービスを再起動します。',
+    'Manual approval: reconnect Discord voice.': '手動承認: Discord voice に再接続します。',
+    'Manual approval: restart YouTube RTMPS output.': '手動承認: YouTube RTMPS 出力を再起動します。',
+    'Discord voice capture and audio forwarding service.': 'Discord ボイス取得と音声転送を担当するサービスです。',
+    'Recording, RTMPS output, archive packaging, and upload service.': '録画、RTMPS 出力、アーカイブ作成、アップロードを担当するサービスです。',
+    'Overlay, caption, participant state, and stream event worker.': 'オーバーレイ、字幕、参加者状態、配信イベントを担当する Worker です。',
+    'Signal ingestion, diagnostics, remediation, and notification service.': 'シグナル取り込み、診断、修復、通知を担当するサービスです。',
+    'Setup token': 'セットアップトークン',
+    'Creating...': '作成中...',
+    'Create first admin': '初期管理者を作成',
+    'Initial admin creation failed.': '初期管理者の作成に失敗しました。',
+    'Initial admin created. Sign in with the new account.': '初期管理者を作成しました。新しいアカウントでログインしてください。',
+    'Unable to reach the Control Panel API.': 'Control Panel API に接続できません。',
+    'Stream Operations': '配信操作',
+    'New Stream Name': '新しい配信名',
+    Create: '作成',
+    Stream: '配信',
+    'Create Stream With Current Settings': '現在の設定で配信を作成',
+    'Discord Config': 'Discord 設定',
+    'Discord Guild ID Override': 'Discord Guild ID 上書き',
+    'Discord Voice Channel ID Override': 'Discord ボイスチャンネル ID 上書き',
+    'Discord Text Channel ID Override': 'Discord テキストチャンネル ID 上書き',
+    'Encoder Profile': 'エンコーダープロファイル',
+    'Caption Profile': '字幕プロファイル',
+    'Overlay Profile': 'オーバーレイプロファイル',
+    'Archive Profile': 'アーカイブプロファイル',
+    'YouTube Output': 'YouTube 出力',
+    'Encoder Input URL': 'エンコーダー入力 URL',
+    'RTMP URL': 'RTMP URL',
+    'Save Settings': '設定を保存',
+    'Check Readiness': '起動前チェック',
+    Start: '開始',
+    Stop: '停止',
+    'Retry Upload': 'アップロード再試行',
+    'Retry YouTube Complete': 'YouTube 完了処理を再試行',
+    'View Stream Audit': '配信監査を見る',
+    'Stream name is required before creating a new stream.': '新しい配信を作成する前に配信名を入力してください。',
+    'Stream created with the current Control Panel managed settings.': '現在の Control Panel 管理設定で配信を作成しました。',
+    'Start readiness checks passed.': '起動前チェックに合格しました。',
+    'Start readiness checks failed: resolve readiness issues before start.': '起動前チェックに失敗しました。開始前に問題を解消してください。',
+    'Stream settings saved.': '配信設定を保存しました。',
+    'YouTube complete retry accepted.': 'YouTube 完了処理の再試行を受け付けました。',
     'Monitoring Dashboard': '監視ダッシュボード',
     Incidents: 'インシデント',
     Diagnostics: '診断',
@@ -88,6 +415,7 @@ const textByLocale = {
     Stream: '配信',
     'Service Type': 'サービス種別',
     'Bot Service': 'Bot サービス',
+    'Text Channel': 'テキストチャンネル',
     Guild: 'Guild',
     'Voice Channel': 'ボイスチャンネル',
     'Bot Token': 'Bot トークン',
@@ -205,11 +533,13 @@ const textByLocale = {
     'Drive Destination': 'Drive 保存先',
     'Severity Filter': '重要度フィルター',
     active: '有効',
+    connected: '接続済み',
     available: '利用可能',
     blocked: 'ブロック',
     completed: '完了',
     configured: '設定済み',
     critical: '重大',
+    draft: '下書き',
     disabled: '無効',
     enabled: '有効',
     error: 'エラー',
@@ -237,6 +567,8 @@ const textByLocale = {
     success: '成功',
     unknown: '不明',
     unavailable: '利用不可',
+    valid: '有効',
+    invalid: '無効',
     warning: '警告',
     waiting: '待機中',
     yes: 'はい',
@@ -258,13 +590,16 @@ const textByLocale = {
     loading: '読み込み中',
     neutral: '通常',
     none: 'なし',
+    None: 'なし',
     'no metrics': 'メトリクスなし',
     persisted: '保存済み',
     receiving: '受信中',
     retrying: '再試行中',
     'not completed': '未完了',
+    'not connected': '未接続',
     'not receiving': '未受信',
     'No active stream': '稼働中の配信なし',
+    'Active Stream': '稼働中の配信',
     Services: 'サービス',
     'Current User': '現在のユーザー',
     'Open Incidents': '未解決インシデント',
@@ -272,6 +607,305 @@ const textByLocale = {
     'Notification Deliveries': '通知配信',
     'Loading': '読み込み中',
     'No records': 'レコードがありません',
+    'No data': 'データなし',
+    New: '新規',
+    Update: '更新',
+    Delete: '削除',
+    Unlock: 'ロック解除',
+    Lock: 'ロック',
+    Disable: '無効化',
+    Test: 'テスト',
+    'Create new': '新規作成',
+    'Connect new': '新規接続',
+    'Existing record': '既存レコード',
+    'Existing config': '既存設定',
+    'Existing output': '既存出力',
+    'Existing provider': '既存プロバイダー',
+    'Existing account': '既存アカウント',
+    'Existing destination': '既存保存先',
+    'Existing user': '既存ユーザー',
+    'Existing role': '既存ロール',
+    'Existing channel': '既存チャンネル',
+    'Config JSON': '設定 JSON',
+    'Advanced JSON': '高度な JSON',
+    'Raw secrets must be referenced by secret name only. They are never displayed here.': '生のシークレット値はシークレット名でだけ参照します。この画面には表示されません。',
+    'Archive profiles reference Control Panel Drive destinations. Folder IDs and OAuth tokens are never displayed here.': 'アーカイブプロファイルは Control Panel の Drive 保存先を参照します。フォルダー ID や OAuth トークンは表示されません。',
+    'Bot tokens are write-only. Assign each config to the Discord Bot service that is allowed to read its runtime config.': 'Bot トークンは書き込み専用です。各設定は runtime config を読める Discord Bot サービスに割り当てます。',
+    'Stream keys and OAuth tokens are write-only. Select a Control Panel connected account for Live API modes.': 'ストリームキーと OAuth トークンは書き込み専用です。Live API モードでは Control Panel の接続アカウントを選択します。',
+    'Operational OAuth, Drive, YouTube, and notification settings should be managed here instead of service env files. Raw secrets are write-only.': 'OAuth、Drive、YouTube、通知の運用設定はサービスの環境変数ファイルではなくここで管理します。生のシークレットは書き込み専用です。',
+    'Use Google / GitHub / Discord for login providers, and Google for Drive or YouTube connected accounts.': 'ログインプロバイダーには Google / GitHub / Discord、Drive や YouTube の接続アカウントには Google を使います。',
+    'Connected accounts are created only by OAuth callback. Refresh tokens are encrypted and returned only as configured state and fingerprint.': '接続アカウントは OAuth callback だけで作成されます。リフレッシュトークンは暗号化され、設定状態と fingerprint だけが返ります。',
+    'Folder IDs, including shared drive folder IDs, are encrypted and sent to Encoder/Recorder only at dispatch time.': '共有ドライブを含むフォルダー ID は暗号化され、dispatch 時だけ Encoder/Recorder に送られます。',
+    'Password hashes are never returned. Reset uses a temporary password.': 'パスワードハッシュは返されません。リセットには一時パスワードを使います。',
+    'Permissions are enforced server-side and fail closed.': '権限はサーバー側で強制され、未許可時は閉じる動作になります。',
+    'Webhook URLs and SMTP passwords are write-only. The table shows only masked targets.': 'Webhook URL と SMTP パスワードは書き込み専用です。表にはマスク済みの宛先だけを表示します。',
+    'Fail-closed defaults are enforced server-side.': 'fail-closed の既定値はサーバー側で強制されます。',
+    'Register, use, and remove WebAuthn credentials for the current user.': '現在のユーザーの WebAuthn 認証情報を登録、利用、削除します。',
+    'Raw secret values are write-only and are never returned by the API.': '生のシークレット値は書き込み専用で、API から返されることはありません。',
+    'Name is required.': '名前が必要です。',
+    'Config must be valid JSON.': '設定は有効な JSON にしてください。',
+    'Config must be a JSON object.': '設定は JSON オブジェクトにしてください。',
+    'Select a record to delete.': '削除するレコードを選択してください。',
+    'Updated.': '更新しました。',
+    'Created.': '作成しました。',
+    'Retry max and retention days must be positive numbers.': '再試行上限と保持日数は正の数値にしてください。',
+    'Service Account destinations require a credentials secret name such as google_drive_credentials.': 'Service Account の保存先には google_drive_credentials などの認証情報シークレット名が必要です。',
+    'Advanced JSON must be valid JSON.': '高度な JSON は有効な JSON にしてください。',
+    'Advanced JSON must be a JSON object.': '高度な JSON は JSON オブジェクトにしてください。',
+    'Select an archive profile to delete.': '削除するアーカイブプロファイルを選択してください。',
+    'Create a Drive destination in Integrations before enabling Google Drive upload.': 'Google Drive アップロードを有効にする前に、連携で Drive 保存先を作成してください。',
+    'Select a Discord config to delete.': '削除する Discord 設定を選択してください。',
+    'Select an OAuth connected account for YouTube Live API modes.': 'YouTube Live API モードでは OAuth 接続アカウントを選択してください。',
+    'Select an output to delete.': '削除する出力を選択してください。',
+    'Create a Google OAuth connected account in Integrations before using Live API mode.': 'Live API モードを使う前に、連携で Google OAuth 接続アカウントを作成してください。',
+    'None / local archive only': 'なし / ローカルアーカイブのみ',
+    'Drive destination': 'Drive 保存先',
+    'Base path': 'ベースパス',
+    'Service Account credential secret': 'Service Account 認証情報シークレット',
+    'Upload retry max': 'アップロード再試行上限',
+    'Retention days': '保持日数',
+    'Upload final archive': '最終アーカイブをアップロード',
+    'Dry-run upload until external verification is approved': '外部検証が承認されるまでドライランでアップロード',
+    'Bot service ID': 'Bot サービス ID',
+    'Guild ID': 'Guild ID',
+    'Voice channel ID': 'ボイスチャンネル ID',
+    'Text channel ID': 'テキストチャンネル ID',
+    'Bot token': 'Bot トークン',
+    'STT profile ID': 'STT プロファイル ID',
+    'Enable audio forward': '音声転送を有効化',
+    'Reconnect voice automatically': 'ボイスへ自動再接続',
+    'Reconnect attempts': '再接続試行回数',
+    'Reconnect base delay': '再接続の初期待ち時間',
+    'Reconnect max delay': '再接続の最大待ち時間',
+    'Enable captions/STT forwarding': '字幕/STT 転送を有効化',
+    Privacy: '公開範囲',
+    Latency: '遅延',
+    'Broadcast title template': '配信タイトルテンプレート',
+    'Broadcast description': '配信説明',
+    'Enable auto start': '自動開始を有効化',
+    'Enable auto stop': '自動停止を有効化',
+    'Complete broadcast on stream stop': '配信停止時に broadcast を完了',
+    'Existing stream key': '既存ストリームキー',
+    'Live API dry-run': 'Live API ドライラン',
+    'Live API': 'Live API',
+    'Stream key': 'ストリームキー',
+    'OAuth connected account': 'OAuth 接続アカウント',
+    'Select connected account': '接続アカウントを選択',
+    private: '非公開',
+    unlisted: '限定公開',
+    public: '公開',
+    normal: '通常',
+    low: '低遅延',
+    ultra_low: '超低遅延',
+    'Loading OAuth connected accounts...': 'OAuth 接続アカウントを読み込んでいます...',
+    'OAuth connected accounts unavailable': 'OAuth 接続アカウントを利用できません',
+    'Integration Registry': '連携レジストリ',
+    'OAuth providers': 'OAuth プロバイダー',
+    'Connected accounts': '接続アカウント',
+    'Drive destinations': 'Drive 保存先',
+    'Edit OAuth Provider': 'OAuth プロバイダーを編集',
+    'Create OAuth Provider': 'OAuth プロバイダーを作成',
+    'New Provider': '新規プロバイダー',
+    'Provider type': 'プロバイダー種別',
+    'Client ID': 'クライアント ID',
+    'Client secret': 'クライアントシークレット',
+    'Redirect URI': 'リダイレクト URI',
+    'Allowed domains': '許可ドメイン',
+    'Auto-provision first login': '初回ログインを自動プロビジョニング',
+    'Default roles for auto-provisioned users': '自動プロビジョニングユーザーの既定ロール',
+    'Loading roles...': 'ロールを読み込んでいます...',
+    'Auto-provision requires at least one default role and server-side roles.assign permission.': '自動プロビジョニングには 1 つ以上の既定ロールとサーバー側の roles.assign 権限が必要です。',
+    'Update Provider': 'プロバイダーを更新',
+    'Create Provider': 'プロバイダーを作成',
+    'Delete Provider': 'プロバイダーを削除',
+    'Rename OAuth Connected Account': 'OAuth 接続アカウント名を変更',
+    'Connect OAuth Connected Account': 'OAuth 接続アカウントを接続',
+    'New Account': '新規アカウント',
+    'Connection ceremony': '接続手順',
+    'Subject, email, scopes, and refresh token are accepted only from the verified OAuth callback. Manual refresh token entry is disabled.': 'subject、email、scope、refresh token は検証済み OAuth callback からのみ受け付けます。手動での refresh token 入力は無効です。',
+    'Update Label': 'ラベルを更新',
+    'Connect with OAuth': 'OAuth で接続',
+    'Delete Account': 'アカウントを削除',
+    'Edit Google Drive Destination': 'Google Drive 保存先を編集',
+    'Create Google Drive Destination': 'Google Drive 保存先を作成',
+    'New Destination': '新規保存先',
+    'Auth mode': '認証方式',
+    'OAuth account': 'OAuth アカウント',
+    'Select account': 'アカウントを選択',
+    'Shared drive folder': '共有ドライブフォルダー',
+    'Update Destination': '保存先を更新',
+    'Create Destination': '保存先を作成',
+    'Delete Destination': '保存先を削除',
+    'OAuth provider updated.': 'OAuth プロバイダーを更新しました。',
+    'OAuth provider created.': 'OAuth プロバイダーを作成しました。',
+    'Use Connect with OAuth to create connected accounts. Manual refresh token entry is disabled.': '接続アカウントの作成には「OAuth で接続」を使ってください。手動での refresh token 入力は無効です。',
+    'OAuth connected account label updated.': 'OAuth 接続アカウントのラベルを更新しました。',
+    'Select an OAuth provider first.': '先に OAuth プロバイダーを選択してください。',
+    'OAuth authorization URL was not returned.': 'OAuth 認可 URL が返りませんでした。',
+    'Drive destination updated.': 'Drive 保存先を更新しました。',
+    'Drive destination created.': 'Drive 保存先を作成しました。',
+    'Temporary password set and password change forced.': '一時パスワードを設定し、パスワード変更を強制しました。',
+    'OAuth login link deleted.': 'OAuth ログインリンクを削除しました。',
+    'Edit User': 'ユーザーを編集',
+    'Create User': 'ユーザーを作成',
+    'Temporary password for reset': 'リセット用一時パスワード',
+    'Temporary password': '一時パスワード',
+    'Update User': 'ユーザーを更新',
+    'Create User': 'ユーザーを作成',
+    'Force Password Change': 'パスワード変更を強制',
+    'Reset Password': 'パスワードをリセット',
+    'OAuth Login Links': 'OAuth ログインリンク',
+    'Links are created only through the OAuth callback ceremony. Manual subject entry is disabled.': 'リンクは OAuth callback 手順だけで作成されます。subject の手動入力は無効です。',
+    'Use the configured Google, GitHub, or Discord OAuth login flow to link accounts. The Control Panel does not accept manually entered provider subjects.': '設定済みの Google、GitHub、Discord OAuth ログインフローでアカウントを紐づけてください。Control Panel は手入力の provider subject を受け付けません。',
+    'Role name is required.': 'ロール名が必要です。',
+    'Role updated.': 'ロールを更新しました。',
+    'Role created.': 'ロールを作成しました。',
+    'Select a role first.': '先にロールを選択してください。',
+    'Role deleted.': 'ロールを削除しました。',
+    'Edit Role': 'ロールを編集',
+    'Create Role': 'ロールを作成',
+    'Existing role': '既存ロール',
+    'Update Role': 'ロールを更新',
+    'Create Role': 'ロールを作成',
+    'Delete Role': 'ロールを削除',
+    'Channel name is required.': 'チャンネル名が必要です。',
+    'Email recipients, SMTP host, and From address are required.': 'メール宛先、SMTP host、From address が必要です。',
+    'Webhook URL is required for new channels.': '新規チャンネルには Webhook URL が必要です。',
+    'Notification channel updated.': '通知チャンネルを更新しました。',
+    'Notification channel created.': '通知チャンネルを作成しました。',
+    'Select a channel first.': '先にチャンネルを選択してください。',
+    'Notification channel deleted.': '通知チャンネルを削除しました。',
+    'Test notification sent.': 'テスト通知を送信しました。',
+    'Loading notification data...': '通知データを読み込んでいます...',
+    'Edit Notification Channel': '通知チャンネルを編集',
+    'Create Notification Channel': '通知チャンネルを作成',
+    'Webhook URL': 'Webhook URL',
+    Recipients: '宛先',
+    'SMTP Host': 'SMTP Host',
+    'SMTP Port': 'SMTP Port',
+    From: 'From',
+    'SMTP Username': 'SMTP ユーザー名',
+    'SMTP Password': 'SMTP パスワード',
+    'Use TLS': 'TLS を使う',
+    'Update Channel': 'チャンネルを更新',
+    'Create Channel': 'チャンネルを作成',
+    'Test Channel': 'チャンネルをテスト',
+    'Delete Channel': 'チャンネルを削除',
+    'Security settings updated.': 'セキュリティ設定を更新しました。',
+    'Select a secret name.': 'シークレット名を選択してください。',
+    'Secret cleared.': 'シークレットをクリアしました。',
+    'Secret updated. Raw value was not returned.': 'シークレットを更新しました。生の値は返されません。',
+    'TOTP enrollment started. Verify a current code to enable MFA.': 'TOTP 登録を開始しました。現在のコードを確認して MFA を有効化してください。',
+    'Enter the TOTP code from your authenticator app.': '認証アプリの TOTP コードを入力してください。',
+    'TOTP MFA enabled.': 'TOTP MFA を有効化しました。',
+    'Enter a current TOTP or recovery code.': '現在の TOTP またはリカバリーコードを入力してください。',
+    'Recovery codes regenerated. They are shown only once.': 'リカバリーコードを再生成しました。一度だけ表示されます。',
+    'TOTP MFA disabled for the current user.': '現在のユーザーの TOTP MFA を無効化しました。',
+    'Passkey credential deleted.': 'パスキー認証情報を削除しました。',
+    'This browser does not support Passkey / WebAuthn.': 'このブラウザーは Passkey / WebAuthn に対応していません。',
+    'Passkey registered.': 'パスキーを登録しました。',
+    'Passkey registration was cancelled or timed out.': 'パスキー登録がキャンセルまたはタイムアウトしました。',
+    'Passkey registration failed.': 'パスキー登録に失敗しました。',
+    'Password min length': 'パスワード最小長',
+    'Login lockout threshold': 'ログインロックアウトしきい値',
+    'Session idle timeout minutes': 'セッション idle timeout 分',
+    'Session absolute lifetime hours': 'セッション絶対有効期間 時間',
+    'MFA mode': 'MFA モード',
+    'MFA methods': 'MFA 方式',
+    'MFA required roles': 'MFA 必須ロール',
+    'Passkey / WebAuthn': 'Passkey / WebAuthn',
+    'Password hash': 'パスワードハッシュ',
+    'TOTP mode requires TOTP after password or OAuth login. Passkey mode requires targeted users to sign in with a registered WebAuthn credential; password and OAuth login do not issue sessions for those users.': 'TOTP モードではパスワードまたは OAuth ログイン後に TOTP が必要です。パスキーモードでは対象ユーザーが登録済み WebAuthn 認証情報でサインインする必要があり、パスワードや OAuth ログインだけではセッションを発行しません。',
+    'Current User Passkeys': '現在のユーザーのパスキー',
+    'Register Passkey': 'パスキーを登録',
+    'Challenge ready': 'チャレンジ準備完了',
+    'The one-time registration token is held only in this browser response.': '一度だけ使う登録トークンはこのブラウザー応答内だけで保持されます。',
+    'This table never includes raw credential IDs or public key CBOR. Registration/login ceremony data is stored server-side and discarded after use.': 'この表には生の credential ID や public key CBOR は含まれません。登録/ログイン手順データはサーバー側に保存され、使用後に破棄されます。',
+    'Current User MFA': '現在のユーザーの MFA',
+    'One-time secrets are not returned again.': '一度だけ表示されるシークレットは再表示されません。',
+    'Current TOTP or recovery code': '現在の TOTP またはリカバリーコード',
+    'Enrollment verification code': '登録確認コード',
+    'TOTP secret shown once': 'TOTP シークレット（一度だけ表示）',
+    'Provisioning URI': 'Provisioning URI',
+    'Recovery codes shown once': 'リカバリーコード（一度だけ表示）',
+    'TOTP mode must be enabled in Security Settings before enrollment. Recovery codes are hashed server-side and cannot be viewed again.': '登録前にセキュリティ設定で TOTP モードを有効化してください。リカバリーコードはサーバー側でハッシュ化され、再表示できません。',
+    'Start TOTP Enrollment': 'TOTP 登録を開始',
+    'Verify Enrollment': '登録を確認',
+    'Regenerate Recovery Codes': 'リカバリーコードを再生成',
+    'Disable TOTP': 'TOTP を無効化',
+    'Update Secret': 'シークレットを更新',
+    'Secret name': 'シークレット名',
+    'Select secret': 'シークレットを選択',
+    'New value': '新しい値',
+    'Clear Secret': 'シークレットをクリア',
+    'Edit Archive Settings': 'アーカイブ設定を編集',
+    'Create Archive Settings': 'アーカイブ設定を作成',
+    'Edit Discord Bot Config': 'Discord Bot 設定を編集',
+    'Create Discord Bot Config': 'Discord Bot 設定を作成',
+    'Edit YouTube Output': 'YouTube 出力を編集',
+    'Create YouTube Output': 'YouTube 出力を作成',
+    Rename: '名前変更',
+    optional: '任意',
+    default: '既定',
+    'leave blank to keep existing token': '既存トークンを維持する場合は空欄',
+    'leave blank to keep existing key': '既存キーを維持する場合は空欄',
+    'leave blank to keep existing secret': '既存シークレットを維持する場合は空欄',
+    'leave blank to keep existing folder ID': '既存フォルダー ID を維持する場合は空欄',
+    'leave blank to keep existing URL': '既存 URL を維持する場合は空欄',
+    'leave blank to keep existing password': '既存パスワードを維持する場合は空欄',
+    'Select provider': 'プロバイダーを選択',
+    'Service Account': 'Service Account',
+    'Audit Export': '監査エクスポート',
+    'CSV export excludes secret values and password hashes.': 'CSV エクスポートにはシークレット値とパスワードハッシュを含めません。',
+    'Export CSV': 'CSV をエクスポート',
+    'Audit Filters': '監査フィルター',
+    'Service assignment actions are selected by default so assignment changes are easy to inspect.': '割り当て変更を確認しやすいよう、既定ではサービス割り当て操作を選択しています。',
+    'Action group': '操作グループ',
+    'Service runtime': 'サービス runtime',
+    'Stream lifecycle': '配信ライフサイクル',
+    'Security / users / roles': 'セキュリティ / ユーザー / ロール',
+    'Secrets / tokens / settings': 'シークレット / トークン / 設定',
+    'Notification channels': '通知チャンネル',
+    'All actions': 'すべての操作',
+    'All results': 'すべての結果',
+    Search: '検索',
+    'service id, stream id, action, actor': 'service id、stream id、action、actor',
+    failure: '失敗',
+    'Diagnostic Reports': '診断レポート',
+    'Select an incident report and review evidence, impact, and next checks.': 'インシデントレポートを選択し、根拠、影響、次の確認を見ます。',
+    Report: 'レポート',
+    Confidence: '確度',
+    'Manage TOTP enrollment for': 'TOTP 登録の管理対象:',
+    'the current user': '現在のユーザー',
+    'blank = all users, e.g. super_admin, admin': '空欄 = 全ユーザー、例: super_admin, admin',
+    'required for re-enroll, disable, or recovery regeneration': '再登録、無効化、リカバリー再生成時に必要',
+    '6 digit code after scanning': 'スキャン後の 6 桁コード',
+    'write-only secret value': '書き込み専用のシークレット値',
+    'Deleted.': '削除しました。',
+    'Reconnect attempts must be a positive integer.': '再接続試行回数は正の整数にしてください。',
+    'Username is required.': 'ユーザー名が必要です。',
+    'Temporary password is required for new users.': '新規ユーザーには一時パスワードが必要です。',
+    'Select a user first.': '先にユーザーを選択してください。',
+    'Temporary password is required.': '一時パスワードが必要です。',
+    'Discord Config is required before stream-specific guild/channel overrides can be used.': '配信固有の guild/channel 上書きを使う前に Discord Config が必要です。',
+    'No Discord Config selected. Select a Control Panel managed Discord Config before starting the stream.': 'Discord Config が選択されていません。配信開始前に Control Panel 管理の Discord Config を選択してください。',
+    'Loading integrations...': '連携を読み込んでいます...',
+    'Loading encoder metrics...': 'エンコーダーメトリクスを読み込んでいます...',
+    'Loading archive metrics...': 'アーカイブメトリクスを読み込んでいます...',
+    'Loading audio metrics...': '音声メトリクスを読み込んでいます...',
+    'Loading worker metrics...': 'Worker メトリクスを読み込んでいます...',
+    'Loading incidents...': 'インシデントを読み込んでいます...',
+    'No incidents.': 'インシデントはありません。',
+    'Loading remediation actions...': '修復アクションを読み込んでいます...',
+    'No remediation actions.': '修復アクションはありません。',
+    'Loading diagnostics...': '診断を読み込んでいます...',
+    'No diagnostic reports.': '診断レポートはありません。',
+    'Loading metric snapshots...': 'メトリクススナップショットを読み込んでいます...',
+    'Loading security settings...': 'セキュリティ設定を読み込んでいます...',
+    'MFA code is required.': 'MFA コードが必要です。',
+    'Unable to start OAuth login.': 'OAuth ログインを開始できません。',
+    'Audit log export started.': '監査ログのエクスポートを開始しました。',
+    'Audit log export failed.': '監査ログのエクスポートに失敗しました。',
     'Control Panel': 'コントロールパネル',
     Password: 'パスワード',
     'MFA code': 'MFA コード',
@@ -310,8 +944,75 @@ function translateText(locale, value) {
   if (typeof value !== 'string') return value;
   const dictionary = textByLocale[locale] || {};
   if (dictionary[value]) return dictionary[value];
+  if (locale !== 'ja') return value;
   const configured = value.match(/^configured(\s+.+)$/);
   if (locale === 'ja' && configured) return `設定済み${configured[1]}`;
+  const dynamicPatterns = [
+    [/^(.+) \/ (alive|attention|offline|online|ready|stale|unknown)$/i, (match) => `${match[1]} / ${translateText(locale, match[2].toLowerCase())}`],
+    [/^(.+)\/(.+) online$/, (match) => `${match[1]}/${match[2]} ${translateText(locale, 'online')}`],
+    [/^(.+) registered$/, (match) => `${match[1]} ${translateText(locale, 'registered')}`],
+    [/^(.+) snapshots$/, (match) => `${match[1]} ${translateText(locale, 'Metric Snapshots')}`],
+    [/^(.+) \((live|starting|stopping|stopped|completed|failed|draft)\)$/i, (match) => `${match[1]} (${translateText(locale, match[2].toLowerCase())})`],
+    [/^(.+) - (.+)$/, (match) => `${match[1]} - ${translateText(locale, match[2])}`],
+    [/^Missing: (.+)$/, (match) => `不足: ${match[1]}`],
+    [/^missing (.+)$/, (match) => `不足: ${match[1]}`],
+    [/^from (.+)$/, (match) => `${match[1]} から移動`],
+    [/^(.+) assignment$/, (match) => `${match[1]} 割り当て`],
+    [/^(.+) active incident\(s\), (.+) pending remediation action\(s\)$/, (match) => `${match[1]} 件の未解決インシデント、${match[2]} 件の保留中修復アクション`],
+    [/^Secret-safe confirmation JSON for (.+)\. Raw provider values, stream keys, tokens, and session cookies are not returned\.$/, (match) => `${match[1]} の secret-safe 確認 JSON です。provider の生値、stream key、token、session cookie は返されません。`],
+    [/^External verification config export unavailable: (.+)$/, (match) => `外部検証設定エクスポートを利用できません: ${match[1]}`],
+    [/^Re-register or restart the (.+) primary service with runtime_config capability enabled, then refresh service health\.$/, (match) => `${match[1]} プライマリサービスを runtime_config capability 有効で再登録または再起動してから、service health を更新してください。`],
+    [/^(.+) assigned service heartbeat needs attention\.$/, (match) => `${match[1]} 件の割り当て済みサービス heartbeat に注意が必要です。`],
+    [/^(.+) server-side readiness issue\(s\) returned by Control Panel\.$/, (match) => `Control Panel から ${match[1]} 件のサーバー側 readiness issue が返りました。`],
+    [/^(.+) server-side readiness issue\(s\) returned by Control Panel\. See the issue panel below before pressing Start\.$/, (match) => `Control Panel から ${match[1]} 件のサーバー側 readiness issue が返りました。Start を押す前に下の issue パネルを確認してください。`],
+    [/^(.+) blocking check\(s\) before start dispatch\.$/, (match) => `開始 dispatch 前に ${match[1]} 件のブロック中チェックがあります。`],
+    [/^(.+) warning check\(s\); start may still fail in the service\.$/, (match) => `${match[1]} 件の警告チェックがあります。サービス側で開始に失敗する可能性があります。`],
+    [/^(.+) critical Encoder\/Recorder check\(s\) failed\.$/, (match) => `${match[1]} 件の重大な Encoder/Recorder チェックが失敗しました。`],
+    [/^(.+) Encoder\/Recorder warning check\(s\) need review\.$/, (match) => `${match[1]} 件の Encoder/Recorder 警告チェックの確認が必要です。`],
+    [/^Discord Bot heartbeat is (.+)\.$/, (match) => `Discord Bot heartbeat は ${translateText(locale, match[1])} です。`],
+    [/^Heartbeat is (.+)\.$/, (match) => `Heartbeat は ${translateText(locale, match[1])} です。`],
+    [/^(.+) forward error\(s\) reported\.$/, (match) => `${match[1]} 件の転送エラーが報告されています。`],
+    [/^(.+) packet\(s\) forwarded\.$/, (match) => `${match[1]} packet を転送しました。`],
+    [/^Last packet age is (.+)\.$/, (match) => `最後の packet から ${match[1]} 経過しています。`],
+    [/^(.+) packet\(s\) received by Encoder\/Recorder\.$/, (match) => `Encoder/Recorder が ${match[1]} packet を受信しました。`],
+    [/^(.+) event\(s\) persisted in archive sidecar\.$/, (match) => `アーカイブ sidecar に ${match[1]} 件の event が保存されています。`],
+    [/^(.+) upload retries reported\.$/, (match) => `${match[1]} 件のアップロード再試行が報告されています。`],
+    [/^(.+) events persisted by Encoder\/Recorder\.$/, (match) => `Encoder/Recorder に ${match[1]} 件の event が保存されています。`],
+    [/^(.+) preflight check\(s\) need attention before live start\.$/, (match) => `本番開始前に ${match[1]} 件の事前チェック確認が必要です。`],
+    [/^(.+) blocking start checks\.$/, (match) => `${match[1]} 件の開始チェックがブロック中です。`],
+    [/^(.+) start checks need attention\.$/, (match) => `${match[1]} 件の開始チェックに注意が必要です。`],
+    [/^(.+) issue\(s\) must be resolved before start \/ stop \/ retry dispatch\.$/, (match) => `start / stop / retry dispatch 前に ${match[1]} 件の issue を解消してください。`],
+    [/^Assignment is complete, but Start readiness still has (.+) server-side issue\(s\)\.$/, (match) => `割り当ては完了していますが、Start readiness にはまだ ${match[1]} 件のサーバー側 issue があります。`],
+    [/^Assign a (.+) service before start dispatch\.$/, (match) => `開始 dispatch 前に ${match[1]} サービスを割り当ててください。`],
+    [/^Missing stream assignment: (.+)\. Open Service Health and assign the required service before retrying\.$/, (match) => `配信サービス割り当てが不足しています: ${match[1]}。再試行前に Service Health を開き、必要なサービスを割り当ててください。`],
+    [/^Start readiness failed: (.+) issue\(s\) must be resolved before start dispatch\.$/, (match) => `Start readiness に失敗しました。開始 dispatch 前に ${match[1]} 件の issue を解消してください。`],
+    [/^Service dispatch failed: (.+) succeeded, (.+) failed\. Review the dispatch panel and target service health\.$/, (match) => `サービス dispatch に失敗しました。成功 ${match[1]} 件、失敗 ${match[2]} 件です。dispatch パネルと対象サービスヘルスを確認してください。`],
+    [/^Service assigned as (.+)\. Open Stream Operations and run Check Readiness again\.$/, (match) => `サービスを ${translateText(locale, match[1])} として割り当てました。配信操作を開いて準備チェックを再実行してください。`],
+    [/^Worker assigned as (.+)\.$/, (match) => `Worker を ${translateText(locale, match[1])} として割り当てました。`],
+    [/^Selected service health is (.+)\. Confirm the host before assignment or dispatch\.$/, (match) => `選択中サービスのヘルスは ${translateText(locale, match[1])} です。割り当てや dispatch の前にホストを確認してください。`],
+    [/^Effective no-store config for (.+)\. Secret values remain represented by configured status, fingerprints, or secret reference names\.$/, (match) => `${match[1]} の有効な no-store config です。secret 値は設定済み状態、fingerprint、または secret 参照名として表示されます。`],
+    [/^Runtime config preview unavailable: (.+)$/, (match) => `Runtime config プレビューを利用できません: ${match[1]}`],
+    [/^OAuth connected accounts unavailable: (.+)$/, (match) => `OAuth 接続アカウントを利用できません: ${match[1]}`],
+    [/^Role list unavailable: (.+)$/, (match) => `ロール一覧を利用できません: ${match[1]}`],
+    [/^Export failed: (.+)$/, (match) => `エクスポートに失敗しました: ${match[1]}`],
+    [/^Showing (.+) filtered audit events from the server\. Recent loaded events: (.+)\.$/, (match) => `サーバーから取得した監査イベント ${match[1]} 件を表示しています。直近で読み込んだイベントは ${match[2]} 件です。`],
+    [/^(.+) will be unassigned from this stream\.$/, (match) => `${match[1]} はこの配信から割り当て解除されます。`],
+    [/^(.+) will move from (.+)\.$/, (match) => `${match[1]} は ${match[2]} から移動します。`],
+    [/^(.+): (.+) succeeded, (.+) failed\.$/, (match) => `${match[1]}: 成功 ${match[2]} 件、失敗 ${match[3]} 件です。`],
+    [/^(.+): (.+) service request\(s\) succeeded\.$/, (match) => `${match[1]}: ${match[2]} 件のサービスリクエストに成功しました。`],
+    [/^(.+) accepted$/, (match) => `${match[1]} を受け付けました。`],
+    [/^(.+) event sent to Worker\.$/, (match) => `${match[1]} event を Worker に送信しました。`],
+    [/^(.+) \/ HTTP (.+) \/ (.+) succeeded, (.+) failed$/, (match) => `${match[1]} / HTTP ${match[2]} / 成功 ${match[3]} 件、失敗 ${match[4]} 件`],
+    [/^Checked at (.+)$/, (match) => `確認日時 ${match[1]}`],
+    [/^Updated (.+)$/, (match) => `更新日時 ${match[1]}`],
+    [/^Last packet: (.+)$/, (match) => `最終 packet: ${match[1]}`],
+    [/^final\.mp4=(.+) \/ upload=(.+)$/, (match) => `final.mp4=${translateText(locale, match[1])} / upload=${translateText(locale, match[2])}`],
+    [/^package=(.+) \/ upload=(.+)$/, (match) => `package=${translateText(locale, match[1])} / upload=${translateText(locale, match[2])}`],
+  ];
+  for (const [pattern, render] of dynamicPatterns) {
+    const match = value.match(pattern);
+    if (match) return render(match);
+  }
   return value;
 }
 
@@ -393,14 +1094,19 @@ const pages = [
 const observabilityPages = new Set(['monitoring', 'incidents', 'diagnostics', 'remediation', 'notifications', 'metrics']);
 const appPageIDs = new Set(pages.map((page) => page.id));
 const authRoutePaths = new Set(['/', '/login', '/setup']);
+const appPagePaths = {
+  ...Object.fromEntries(pages.map((page) => [page.id, `/${page.id}`])),
+  health: '/service-health',
+};
+const appPageIDsByPath = new Map(Object.entries(appPagePaths).map(([id, pagePath]) => [pagePath, id]));
 
 function pageFromPathname(pathname) {
-  const page = String(pathname || '').replace(/^\/+|\/+$/g, '');
-  return appPageIDs.has(page) ? page : '';
+  const cleanPath = `/${String(pathname || '').replace(/^\/+|\/+$/g, '')}`;
+  return appPageIDsByPath.get(cleanPath) || '';
 }
 
 function pathForPage(page) {
-  return `/${appPageIDs.has(page) ? page : 'dashboard'}`;
+  return appPagePaths[appPageIDs.has(page) ? page : 'dashboard'];
 }
 
 function replaceAppPath(pathname) {
@@ -724,7 +1430,7 @@ function SetupView({ setupStatus, me }) {
         </div>
         <form onSubmit={createFirstAdmin} className="login-form">
           <label>
-            <span>Setup token</span>
+            <span>{t('Setup token')}</span>
             <input autoComplete="one-time-code" value={setupToken} onChange={(event) => setSetupToken(event.target.value)} />
           </label>
           <label>
@@ -737,7 +1443,7 @@ function SetupView({ setupStatus, me }) {
           </label>
           {message && <Message text={message} tone={message.includes('created') ? 'ok' : 'warning'} />}
           <button className="command-btn" type="submit" disabled={loading || !setupToken.trim() || !username.trim() || !password}>
-            {loading ? 'Creating...' : 'Create first admin'}
+            {loading ? t('Creating...') : t('Create first admin')}
           </button>
         </form>
       </section>
@@ -1037,6 +1743,7 @@ const streamColumns = [
 ];
 
 function StreamsView({ streams, reload, services, metrics, incidents, remediation, reloadIncidents, reloadRemediation, profiles, onOpenAudit, onOpenObservability, onOpenServiceHealth, initialFocus }) {
+  const { t } = useI18n();
   const [selectedID, setSelectedID] = useState('');
   const [newStreamName, setNewStreamName] = useState('');
   const [form, setForm] = useState({
@@ -1255,7 +1962,7 @@ function StreamsView({ streams, reload, services, metrics, incidents, remediatio
   return (
     <div className="stack">
       <div className="panel">
-        <h3>Stream Operations</h3>
+        <h3>{t('Stream Operations')}</h3>
         <StreamOperationsOverview
           stream={selectedStream}
           assignment={assignment}
@@ -1277,30 +1984,30 @@ function StreamsView({ streams, reload, services, metrics, incidents, remediatio
         />
         <div className="form-grid">
           <label>
-            <span>New Stream Name</span>
+            <span>{t('New Stream Name')}</span>
             <input value={newStreamName} onChange={(event) => setNewStreamName(event.target.value)} placeholder="Morning Stream" />
           </label>
           <div className="form-action-field">
-            <span>Create</span>
-            <button className="secondary-btn" type="button" onClick={createStream}>Create Stream With Current Settings</button>
+            <span>{t('Create')}</span>
+            <button className="secondary-btn" type="button" onClick={createStream}>{t('Create Stream With Current Settings')}</button>
           </div>
           <label>
-            <span>Stream</span>
+            <span>{t('Stream')}</span>
             <select value={selectedStream?.id || ''} onChange={(event) => setSelectedID(event.target.value)}>
               {streams.data.map((stream) => <option key={stream.id} value={stream.id}>{stream.name} ({stream.status})</option>)}
             </select>
           </label>
           <ProfileSelect label="Discord Config" value={form.discord_config_id} items={profiles.discordConfigs.data} onChange={(value) => setField('discord_config_id', value)} />
           <label>
-            <span>Discord Guild ID Override</span>
+            <span>{t('Discord Guild ID Override')}</span>
             <input value={form.discord_guild_id} onChange={(event) => setField('discord_guild_id', event.target.value)} placeholder="blank = config default" />
           </label>
           <label>
-            <span>Discord Voice Channel ID Override</span>
+            <span>{t('Discord Voice Channel ID Override')}</span>
             <input value={form.discord_voice_channel_id} onChange={(event) => setField('discord_voice_channel_id', event.target.value)} placeholder="blank = config default" />
           </label>
           <label>
-            <span>Discord Text Channel ID Override</span>
+            <span>{t('Discord Text Channel ID Override')}</span>
             <input value={form.discord_text_channel_id} onChange={(event) => setField('discord_text_channel_id', event.target.value)} placeholder="optional / blank = config default" />
           </label>
           <ProfileSelect label="Encoder Profile" value={form.encoder_profile_id} items={profiles.encoderProfiles.data} onChange={(value) => setField('encoder_profile_id', value)} />
@@ -1309,11 +2016,11 @@ function StreamsView({ streams, reload, services, metrics, incidents, remediatio
           <ProfileSelect label="Archive Profile" value={form.archive_profile_id} items={profiles.archiveProfiles.data} onChange={(value) => setField('archive_profile_id', value)} />
           <ProfileSelect label="YouTube Output" value={form.youtube_output_id} items={profiles.youtubeOutputs.data} onChange={(value) => setField('youtube_output_id', value)} />
           <label>
-            <span>Encoder Input URL</span>
+            <span>{t('Encoder Input URL')}</span>
             <input value={form.encoder_input_url} onChange={(event) => setField('encoder_input_url', event.target.value)} placeholder="blank = Discord audio + generated video" />
           </label>
           <label>
-            <span>RTMP URL</span>
+            <span>{t('RTMP URL')}</span>
             <input value={form.encoder_rtmp_url} onChange={(event) => setField('encoder_rtmp_url', event.target.value)} placeholder="rtmps://example.com/live2" />
           </label>
         </div>
@@ -1326,13 +2033,13 @@ function StreamsView({ streams, reload, services, metrics, incidents, remediatio
         />
         <SelectedDiscordConfig config={selectedDiscordConfig} assignment={assignment} overrides={form} />
         <div className="actions">
-          <button className="secondary-btn" disabled={!selectedStream} onClick={saveSettings}>Save Settings</button>
-          <button className="secondary-btn" disabled={!selectedStream} onClick={checkReadiness}>Check Readiness</button>
-          <button className="command-btn" disabled={!selectedStream} onClick={() => run('start')}><Play size={16} />Start</button>
-          <button className="command-btn" disabled={!selectedStream} onClick={() => run('stop')}><Square size={16} />Stop</button>
-          <button className="command-btn" disabled={!selectedStream} onClick={() => run('retry')}><UploadCloud size={16} />Retry Upload</button>
-          <button className="secondary-btn" disabled={!selectedStream} onClick={() => run('youtubeComplete')}>Retry YouTube Complete</button>
-          <button className="secondary-btn" disabled={!selectedStream} onClick={() => onOpenAudit?.({ actionGroup: 'stream_lifecycle', query: selectedStream.id })}>View Stream Audit</button>
+          <button className="secondary-btn" disabled={!selectedStream} onClick={saveSettings}>{t('Save Settings')}</button>
+          <button className="secondary-btn" disabled={!selectedStream} onClick={checkReadiness}>{t('Check Readiness')}</button>
+          <button className="command-btn" disabled={!selectedStream} onClick={() => run('start')}><Play size={16} />{t('Start')}</button>
+          <button className="command-btn" disabled={!selectedStream} onClick={() => run('stop')}><Square size={16} />{t('Stop')}</button>
+          <button className="command-btn" disabled={!selectedStream} onClick={() => run('retry')}><UploadCloud size={16} />{t('Retry Upload')}</button>
+          <button className="secondary-btn" disabled={!selectedStream} onClick={() => run('youtubeComplete')}>{t('Retry YouTube Complete')}</button>
+          <button className="secondary-btn" disabled={!selectedStream} onClick={() => onOpenAudit?.({ actionGroup: 'stream_lifecycle', query: selectedStream.id })}>{t('View Stream Audit')}</button>
         </div>
         <AssignmentReadiness assignment={assignment} loading={services.loading} serverIssueCount={readinessIssues.length} />
         <StartPreflight assignment={assignment} encoderInputURL={form.encoder_input_url} serverIssues={readinessIssues} />
@@ -1367,14 +2074,15 @@ function StreamsView({ streams, reload, services, metrics, incidents, remediatio
 }
 
 function ExternalE2EConfigExport({ stream, config }) {
+  const { t } = useI18n();
   const [copyMessage, setCopyMessage] = useState('');
   if (!stream) {
     return (
       <div className="external-e2e-export neutral">
         <div className="runtime-preview-heading">
           <div>
-            <strong>External verification config export</strong>
-            <span>Select a stream to inspect its Control Panel confirmation export.</span>
+            <strong>{t('External verification config export')}</strong>
+            <span>{t('Select a stream to inspect its Control Panel confirmation export.')}</span>
           </div>
         </div>
       </div>
@@ -1419,51 +2127,51 @@ function ExternalE2EConfigExport({ stream, config }) {
     <div className={`external-e2e-export ${tone}`}>
       <div className="runtime-preview-heading">
         <div>
-          <strong>External E2E config export</strong>
-          <span>Secret-safe confirmation JSON for {stream.name || stream.id}. Raw provider values, stream keys, tokens, and session cookies are not returned.</span>
+          <strong>{t('External E2E config export')}</strong>
+          <span>{localizeRendered(`Secret-safe confirmation JSON for ${stream.name || stream.id}. Raw provider values, stream keys, tokens, and session cookies are not returned.`, t)}</span>
         </div>
         <div className="inline-actions">
-          <button className="secondary-btn" type="button" onClick={() => config.reload?.()}>Refresh Export</button>
-          <button className="secondary-btn" type="button" onClick={copy}><ClipboardList size={16} />Copy JSON</button>
+          <button className="secondary-btn" type="button" onClick={() => config.reload?.()}>{t('Refresh Export')}</button>
+          <button className="secondary-btn" type="button" onClick={copy}><ClipboardList size={16} />{t('Copy JSON')}</button>
         </div>
       </div>
       <div className="runtime-preview-grid">
         <article>
-          <span>Confirmations</span>
+          <span>{t('Confirmations')}</span>
           <strong>{confirmationKeys.length - missingConfirmations.length}/{confirmationKeys.length}</strong>
-          <small>{missingConfirmations.length ? `missing ${missingConfirmations.join(', ')}` : 'ready'}</small>
+          <small>{missingConfirmations.length ? localizeRendered(`missing ${missingConfirmations.join(', ')}`, t) : t('ready')}</small>
         </article>
         <article>
-          <span>Runtime IDs</span>
+          <span>{t('Runtime IDs')}</span>
           <strong>{5 - missingRuntimeIDs.length}/5</strong>
-          <small>{missingRuntimeIDs.length ? `missing ${missingRuntimeIDs.join(', ')}` : 'ready'}</small>
+          <small>{missingRuntimeIDs.length ? localizeRendered(`missing ${missingRuntimeIDs.join(', ')}`, t) : t('ready')}</small>
         </article>
         <article>
-          <span>Primary services</span>
+          <span>{t('Primary services')}</span>
           <strong>{3 - missingServiceIDs.length}/3</strong>
-          <small>{missingServiceIDs.length ? `missing ${missingServiceIDs.join(', ')}` : 'ready'}</small>
+          <small>{missingServiceIDs.length ? localizeRendered(`missing ${missingServiceIDs.join(', ')}`, t) : t('ready')}</small>
         </article>
         <article>
-          <span>Runtime config capability</span>
-          <strong>{missingCapabilities.length ? 'blocked' : 'ready'}</strong>
-          <small>{missingCapabilities.length ? `missing ${missingCapabilities.join(', ')}` : 'all primary services expose runtime_config'}</small>
+          <span>{t('Runtime config capability')}</span>
+          <strong>{t(missingCapabilities.length ? 'blocked' : 'ready')}</strong>
+          <small>{missingCapabilities.length ? localizeRendered(`missing ${missingCapabilities.join(', ')}`, t) : t('all primary services expose runtime_config')}</small>
         </article>
       </div>
       {!ready && remediationItems.length > 0 && (
         <div className="external-e2e-remediation">
-          <strong>Control Panel setup still required</strong>
+          <strong>{t('Control Panel setup still required')}</strong>
           <ul>
             {remediationItems.map((item) => (
               <li key={`${item.group}-${item.key}`}>
                 <code>{item.key}</code>
-                <span>{item.message}</span>
+                <span>{localizeRendered(item.message, t)}</span>
               </li>
             ))}
           </ul>
         </div>
       )}
       <pre>{safeJSON(payload)}</pre>
-      {copyMessage && <small>{copyMessage}</small>}
+      {copyMessage && <small>{localizeRendered(copyMessage, t)}</small>}
     </div>
   );
 }
@@ -1606,7 +2314,7 @@ function StreamOperationsOverview({ stream, assignment, encoderInputURL, encoder
         <div className={`stream-ops-row ${row.tone}`} key={row.id}>
           <div>
             <strong>{t(row.label)}</strong>
-            <span>{row.detail}</span>
+            <span>{localizeRendered(row.detail, t)}</span>
           </div>
           <Badge tone={row.tone === 'critical' ? 'critical' : row.tone === 'warning' ? 'warning' : row.tone === 'ok' ? 'ok' : 'neutral'}>{row.status}</Badge>
         </div>
@@ -1616,6 +2324,7 @@ function StreamOperationsOverview({ stream, assignment, encoderInputURL, encoder
 }
 
 function StreamObservabilityPanel({ stream, incidents, remediation, reloadIncidents, reloadRemediation, onOpenObservability }) {
+  const { t } = useI18n();
   if (!stream) return null;
   if (incidents?.loading || remediation?.loading) return <Message text="Loading stream incidents and remediation actions..." />;
   if (incidents?.error) return <Message text={incidents.error} tone="warning" />;
@@ -1634,47 +2343,47 @@ function StreamObservabilityPanel({ stream, incidents, remediation, reloadIncide
     <div className={`stream-observability-panel ${headlineTone}`}>
       <div className="stream-observability-heading">
         <div>
-          <strong>Stream incident / remediation</strong>
-          <span>{stream.name || stream.id}: {activeIncidents.length} active incident(s), {pendingActions.length} pending remediation action(s)</span>
+          <strong>{t('Stream incident / remediation')}</strong>
+          <span>{stream.name || stream.id}: {localizeRendered(`${activeIncidents.length} active incident(s), ${pendingActions.length} pending remediation action(s)`, t)}</span>
         </div>
         <div className="actions">
-          <button className="secondary-btn" type="button" onClick={() => onOpenObservability?.('incidents')}>Open Incidents</button>
-          <button className="secondary-btn" type="button" onClick={() => onOpenObservability?.('remediation')}>Open Remediation</button>
+          <button className="secondary-btn" type="button" onClick={() => onOpenObservability?.('incidents')}>{t('Open Incidents')}</button>
+          <button className="secondary-btn" type="button" onClick={() => onOpenObservability?.('remediation')}>{t('Open Remediation')}</button>
         </div>
       </div>
       {activeIncidents.length === 0 && pendingActions.length === 0 ? (
-        <span className="muted">No active incident or pending remediation is linked to this stream.</span>
+        <span className="muted">{t('No active incident or pending remediation is linked to this stream.')}</span>
       ) : (
         <div className="stream-observability-grid">
           <div>
-            <h4>Active incidents</h4>
+            <h4>{t('Active incidents')}</h4>
             {activeIncidents.length === 0 ? (
-              <span className="muted">No active incident.</span>
+              <span className="muted">{t('No active incident.')}</span>
             ) : activeIncidents.slice(0, 4).map((incident) => (
               <article className="stream-observability-item" key={incident.id}>
                 <div>
                   <strong>{incident.rule}</strong>
                   <Badge tone={severityTone(incident.severity)}>{incident.severity}</Badge>
                 </div>
-                <span>{incident.summary_ja || 'No summary.'}</span>
+                <span>{incident.summary_ja || t('No summary.')}</span>
                 <IncidentDiagnosticPreview incident={incident} />
-                <small>{incident.service_id || '-'} / updated {formatDateTime(incident.updated_at)}</small>
+                <small>{incident.service_id || '-'} / {t('updated')} {formatDateTime(incident.updated_at)}</small>
                 <IncidentActions incident={incident} reload={reloadIncidents} />
               </article>
             ))}
           </div>
           <div>
-            <h4>Remediation actions</h4>
+            <h4>{t('Remediation actions')}</h4>
             {scopedActions.length === 0 ? (
-              <span className="muted">No remediation action for linked incidents.</span>
+              <span className="muted">{t('No remediation action for linked incidents.')}</span>
             ) : scopedActions.slice(0, 4).map((action) => (
               <article className="stream-observability-item" key={action.id}>
                 <div>
                   <strong>{action.action}</strong>
                   <Badge tone={action.status === 'blocked' ? 'critical' : action.status === 'pending_approval' ? 'warning' : 'ok'}>{action.status}</Badge>
                 </div>
-                <span>{remediationActionHelp[action.action] || 'Review diagnostic evidence before executing.'}</span>
-                <small>{action.requires_approval ? 'Approval required' : action.safe_auto ? 'Safe candidate' : 'Suggested'} / {action.mode}</small>
+                <span>{localizeRendered(remediationActionHelp[action.action] || 'Review diagnostic evidence before executing.', t)}</span>
+                <small>{t(action.requires_approval ? 'Approval required' : action.safe_auto ? 'Safe candidate' : 'Suggested')} / {action.mode}</small>
                 <RemediationResult action={action} />
                 <ActionButtons action={action} reload={reloadRemediation} />
               </article>
@@ -1687,6 +2396,7 @@ function StreamObservabilityPanel({ stream, incidents, remediation, reloadIncide
 }
 
 function IncidentDiagnosticPreview({ incident }) {
+  const { t } = useI18n();
   const report = incident?.diagnostic_report || incident?.report || {};
   const actions = Array.isArray(report.recommended_actions) ? report.recommended_actions : [];
   if (!report.likely_cause && !report.impact && actions.length === 0) return null;
@@ -1694,19 +2404,19 @@ function IncidentDiagnosticPreview({ incident }) {
     <div className="diagnostic-preview">
       {report.likely_cause && (
         <div>
-          <strong>Likely cause</strong>
+          <strong>{t('Likely cause')}</strong>
           <span>{report.likely_cause}</span>
         </div>
       )}
       {report.impact && (
         <div>
-          <strong>Impact</strong>
+          <strong>{t('Impact')}</strong>
           <span>{report.impact}</span>
         </div>
       )}
       {actions.length > 0 && (
         <div>
-          <strong>Next checks</strong>
+          <strong>{t('Next checks')}</strong>
           <span>{actions.slice(0, 2).join(' / ')}</span>
         </div>
       )}
@@ -1896,12 +2606,13 @@ function formatOptionalState(value) {
 }
 
 function DiscordBotAudioStatus({ assignment }) {
+  const { t } = useI18n();
   const bot = assignment.assigned.find((service) => service.service_type === 'discord_bot');
   if (!bot) {
     return (
       <div className="audio-bridge-status warning">
-        <strong>Discord Bot audio forward</strong>
-        <span>Assign a Discord Bot to inspect VC audio and forward status.</span>
+        <strong>{t('Discord Bot audio forward')}</strong>
+        <span>{t('Assign a Discord Bot to inspect VC audio and forward status.')}</span>
       </div>
     );
   }
@@ -1933,8 +2644,8 @@ function DiscordBotAudioStatus({ assignment }) {
   return (
     <div className={`audio-bridge-status ${tone}`}>
       <div>
-        <strong>Discord Bot audio forward</strong>
-        <span>{headline}</span>
+        <strong>{t('Discord Bot audio forward')}</strong>
+        <span>{localizeRendered(headline, t)}</span>
       </div>
       <div className="audio-bridge-grid">
         <MetricChip label="Voice" value={voiceConnected >= 1 ? 'connected' : 'not connected'} />
@@ -1950,26 +2661,27 @@ function DiscordBotAudioStatus({ assignment }) {
 }
 
 function EncoderPreflightStatus({ status, assignment }) {
+  const { t } = useI18n();
   const encoder = assignment.assigned.find((service) => service.service_type === 'encoder_recorder');
   if (!encoder) {
     return (
       <div className="audio-bridge-status warning">
-        <strong>Encoder/Recorder preflight</strong>
-        <span>Assign an Encoder/Recorder to inspect FFmpeg, archive, RTMPS, and Google Drive readiness.</span>
+        <strong>{t('Encoder/Recorder preflight')}</strong>
+        <span>{t('Assign an Encoder/Recorder to inspect FFmpeg, archive, RTMPS, and Google Drive readiness.')}</span>
       </div>
     );
   }
   if (status.loading) {
-    return <div className="audio-bridge-status"><strong>Encoder/Recorder preflight</strong><span>Loading Encoder/Recorder host checks...</span></div>;
+    return <div className="audio-bridge-status"><strong>{t('Encoder/Recorder preflight')}</strong><span>{t('Loading Encoder/Recorder host checks...')}</span></div>;
   }
   if (status.error) {
     return (
       <div className="audio-bridge-status warning">
         <div>
-          <strong>Encoder/Recorder preflight</strong>
+          <strong>{t('Encoder/Recorder preflight')}</strong>
           <span>{status.error}</span>
         </div>
-        <button className="secondary-btn" type="button" onClick={() => status.reload?.()}>Refresh Encoder Preflight</button>
+        <button className="secondary-btn" type="button" onClick={() => status.reload?.()}>{t('Refresh Encoder Preflight')}</button>
       </div>
     );
   }
@@ -1985,17 +2697,17 @@ function EncoderPreflightStatus({ status, assignment }) {
   return (
     <div className={`audio-bridge-status ${tone}`}>
       <div>
-        <strong>Encoder/Recorder preflight</strong>
-        <span>{summary}</span>
-        {data.checked_at && <small className="muted">Checked at {formatDateTime(data.checked_at)}</small>}
+        <strong>{t('Encoder/Recorder preflight')}</strong>
+        <span>{localizeRendered(summary, t)}</span>
+        {data.checked_at && <small className="muted">{t('Checked at')} {formatDateTime(data.checked_at)}</small>}
       </div>
       <div className="audio-bridge-grid">
         {checks.length === 0 ? (
           <MetricChip label="Checks" value="none reported" />
         ) : checks.map((check) => (
           <div className="metric-chip" key={check.id || check.message}>
-            <span>{check.id || 'check'}</span>
-            <strong>{check.status || '-'}</strong>
+            <span>{check.id || t('check')}</span>
+            <strong>{localizeRendered(check.status || '-', t)}</strong>
             <small>{check.message || '-'}</small>
           </div>
         ))}
@@ -2003,7 +2715,7 @@ function EncoderPreflightStatus({ status, assignment }) {
         {data.summary?.archive_root && <MetricChip label="Archive root" value={String(data.summary.archive_root)} />}
       </div>
       <div className="actions">
-        <button className="secondary-btn" type="button" onClick={() => status.reload?.()}>Refresh Encoder Preflight</button>
+        <button className="secondary-btn" type="button" onClick={() => status.reload?.()}>{t('Refresh Encoder Preflight')}</button>
       </div>
     </div>
   );
@@ -2015,12 +2727,13 @@ function preflightCheckFailed(check) {
 }
 
 function WorkerEventStatus({ assignment }) {
+  const { t } = useI18n();
   const worker = assignment.assigned.find((service) => service.service_type === 'worker');
   if (!worker) {
     return (
       <div className="audio-bridge-status warning">
-        <strong>Worker event path</strong>
-        <span>Assign a Worker to inspect overlay and caption event status.</span>
+        <strong>{t('Worker event path')}</strong>
+        <span>{t('Assign a Worker to inspect overlay and caption event status.')}</span>
       </div>
     );
   }
@@ -2044,8 +2757,8 @@ function WorkerEventStatus({ assignment }) {
   return (
     <div className={`audio-bridge-status ${tone}`}>
       <div>
-        <strong>Worker event path</strong>
-        <span>{headline}</span>
+        <strong>{t('Worker event path')}</strong>
+        <span>{localizeRendered(headline, t)}</span>
       </div>
       <div className="audio-bridge-grid">
         <MetricChip label="Overlay" value={formatNumber(overlayEvents, 0)} />
@@ -2058,21 +2771,22 @@ function WorkerEventStatus({ assignment }) {
 }
 
 function WorkerEventTools({ assignment, caption, message, onCaptionChange, onSend, streamSelected }) {
+  const { t } = useI18n();
   const workerAssigned = assignment.assigned.some((service) => service.service_type === 'worker');
   const disabled = !streamSelected || !workerAssigned;
   return (
     <div className={`audio-bridge-status ${workerAssigned ? 'neutral' : 'warning'}`}>
       <div>
-        <strong>Worker event test</strong>
-        <span>{workerAssigned ? 'Send a lightweight test event through the assigned Worker.' : 'Assign a Worker before sending test events.'}</span>
+        <strong>{t('Worker event test')}</strong>
+        <span>{t(workerAssigned ? 'Send a lightweight test event through the assigned Worker.' : 'Assign a Worker before sending test events.')}</span>
       </div>
       <div className="event-test-row">
         <label>
-          <span>Caption text</span>
-          <input value={caption} onChange={(event) => onCaptionChange(event.target.value)} placeholder="Test caption" />
+          <span>{t('Caption text')}</span>
+          <input value={caption} onChange={(event) => onCaptionChange(event.target.value)} placeholder={t('Test caption')} />
         </label>
-        <button className="secondary-btn" disabled={disabled} onClick={() => onSend('current_time')} type="button">Send current time</button>
-        <button className="secondary-btn" disabled={disabled || !caption.trim()} onClick={() => onSend('caption')} type="button">Send caption</button>
+        <button className="secondary-btn" disabled={disabled} onClick={() => onSend('current_time')} type="button">{t('Send current time')}</button>
+        <button className="secondary-btn" disabled={disabled || !caption.trim()} onClick={() => onSend('caption')} type="button">{t('Send caption')}</button>
       </div>
       {message && <Message text={message} tone={message.includes('failed') || message.includes('Request') || message.includes('Unable') ? 'warning' : 'ok'} />}
     </div>
@@ -2080,12 +2794,13 @@ function WorkerEventTools({ assignment, caption, message, onCaptionChange, onSen
 }
 
 function WorkerEventSidecar({ status, assignment }) {
+  const { t } = useI18n();
   const encoderAssigned = assignment.assigned.some((service) => service.service_type === 'encoder_recorder');
   if (!encoderAssigned) {
     return (
       <div className="audio-bridge-status warning">
-        <strong>Worker event sidecar</strong>
-        <span>Assign an Encoder/Recorder to inspect persisted worker events.</span>
+        <strong>{t('Worker event sidecar')}</strong>
+        <span>{t('Assign an Encoder/Recorder to inspect persisted worker events.')}</span>
       </div>
     );
   }
@@ -2093,7 +2808,7 @@ function WorkerEventSidecar({ status, assignment }) {
   if (status.error) {
     return (
       <div className="audio-bridge-status warning">
-        <strong>Worker event sidecar</strong>
+        <strong>{t('Worker event sidecar')}</strong>
         <span>{status.error}</span>
       </div>
     );
@@ -2104,8 +2819,8 @@ function WorkerEventSidecar({ status, assignment }) {
   return (
     <div className={`audio-bridge-status ${tone}`}>
       <div>
-        <strong>Worker event sidecar</strong>
-        <span>{events.length > 0 ? `${events.length} events persisted by Encoder/Recorder.` : 'No persisted worker event has been reported yet.'}</span>
+        <strong>{t('Worker event sidecar')}</strong>
+        <span>{localizeRendered(events.length > 0 ? `${events.length} events persisted by Encoder/Recorder.` : 'No persisted worker event has been reported yet.', t)}</span>
       </div>
       {recent.length > 0 && (
         <div className="event-list">
@@ -2133,12 +2848,13 @@ function eventPreview(event) {
 }
 
 function AudioBridgeStatus({ status, assignment }) {
+  const { t } = useI18n();
   const encoderAssigned = assignment.assigned.some((service) => service.service_type === 'encoder_recorder');
   if (!encoderAssigned) {
     return (
       <div className="audio-bridge-status warning">
-        <strong>Discord audio bridge</strong>
-        <span>Assign an Encoder/Recorder to inspect audio ingest status.</span>
+        <strong>{t('Discord audio bridge')}</strong>
+        <span>{t('Assign an Encoder/Recorder to inspect audio ingest status.')}</span>
       </div>
     );
   }
@@ -2148,7 +2864,7 @@ function AudioBridgeStatus({ status, assignment }) {
   if (status.error) {
     return (
       <div className="audio-bridge-status warning">
-        <strong>Discord audio bridge</strong>
+        <strong>{t('Discord audio bridge')}</strong>
         <span>{status.error}</span>
       </div>
     );
@@ -2168,8 +2884,8 @@ function AudioBridgeStatus({ status, assignment }) {
   return (
     <div className={`audio-bridge-status ${tone}`}>
       <div>
-        <strong>Discord audio bridge</strong>
-        <span>{headline}</span>
+        <strong>{t('Discord audio bridge')}</strong>
+        <span>{localizeRendered(headline, t)}</span>
       </div>
       <div className="audio-bridge-grid">
         <MetricChip label="Bridge" value={bridge.bridge_active ? 'active' : 'inactive'} />
@@ -2177,16 +2893,17 @@ function AudioBridgeStatus({ status, assignment }) {
         <MetricChip label="RTP forwarded" value={formatNumber(forwarded, 0)} />
         <MetricChip label="Last packet age" value={formatDurationSeconds(age)} />
       </div>
-      {bridge.last_packet_at && <small>Last packet: {formatDateTime(bridge.last_packet_at)}</small>}
+      {bridge.last_packet_at && <small>{t('Last packet')}: {formatDateTime(bridge.last_packet_at)}</small>}
     </div>
   );
 }
 
 function MetricChip({ label, value }) {
+  const { t } = useI18n();
   return (
     <span className="metric-chip">
-      <small>{label}</small>
-      <strong>{value}</strong>
+      <small>{t(label)}</small>
+      <strong>{localizeRendered(value, t)}</strong>
     </span>
   );
 }
@@ -2210,15 +2927,16 @@ function streamAssignmentStatus(streamID, services = []) {
 }
 
 function AssignmentReadiness({ assignment, loading, serverIssueCount = 0 }) {
+  const { t } = useI18n();
   if (loading) return <Message text="Loading service assignments..." />;
   const serverBlocked = serverIssueCount > 0;
   return (
     <div className={`assignment-readiness ${assignment.ready ? 'ok' : 'warning'}`}>
       <div>
-        <strong>Service assignment</strong>
-        <span>{assignment.ready ? 'Required service types are assigned. Run Check Readiness before Start.' : 'Assign the missing services before starting the stream.'}</span>
+        <strong>{t('Service assignment')}</strong>
+        <span>{t(assignment.ready ? 'Required service types are assigned. Run Check Readiness before Start.' : 'Assign the missing services before starting the stream.')}</span>
         {assignment.ready && serverBlocked && (
-          <small className="readiness-note critical">Assignment is complete, but Start readiness still has {serverIssueCount} server-side issue(s).</small>
+          <small className="readiness-note critical">{localizeRendered(`Assignment is complete, but Start readiness still has ${serverIssueCount} server-side issue(s).`, t)}</small>
         )}
       </div>
       <div className="assignment-pills">
@@ -2226,7 +2944,7 @@ function AssignmentReadiness({ assignment, loading, serverIssueCount = 0 }) {
           const service = assignment.assigned.find((item) => item.service_type === type);
           return (
                 <span className={`assignment-pill ${service ? 'ok' : 'missing'}`} key={type}>
-                  {type}: {service ? `${service.service_name || service.service_id} (${serviceHealthState(service).label})` : 'missing'}
+                  {type}: {service ? `${service.service_name || service.service_id} (${localizeRendered(serviceHealthState(service).label, t)})` : t('missing')}
                 </span>
           );
         })}
@@ -2243,7 +2961,7 @@ function StartPreflight({ assignment, encoderInputURL, serverIssues = [] }) {
       <div className="start-preflight critical">
         <div className="preflight-heading">
           <strong>{t('Start readiness')}</strong>
-          <span>{serverIssueCount} server-side readiness issue(s) returned by Control Panel. See the issue panel below before pressing Start.</span>
+          <span>{localizeRendered(`${serverIssueCount} server-side readiness issue(s) returned by Control Panel. See the issue panel below before pressing Start.`, t)}</span>
         </div>
       </div>
     );
@@ -2261,7 +2979,7 @@ function StartPreflight({ assignment, encoderInputURL, serverIssues = [] }) {
     <div className={`start-preflight ${tone}`}>
       <div className="preflight-heading">
         <strong>{t('Start readiness')}</strong>
-        <span>{headline}</span>
+        <span>{localizeRendered(headline, t)}</span>
       </div>
       <div className="preflight-grid">
         {checks.map((check) => (
@@ -2270,7 +2988,7 @@ function StartPreflight({ assignment, encoderInputURL, serverIssues = [] }) {
               <strong>{t(check.label)}</strong>
               <Badge tone={check.tone === 'critical' ? 'critical' : check.tone === 'warning' ? 'warning' : 'ok'}>{check.status}</Badge>
             </div>
-            <span>{check.detail}</span>
+            <span>{localizeRendered(check.detail, t)}</span>
           </article>
         ))}
       </div>
@@ -2351,11 +3069,12 @@ function capabilityBool(capabilities, name) {
 }
 
 function ProfileSelect({ label, value, items, onChange }) {
+  const { t } = useI18n();
   return (
     <label>
-      <span>{label}</span>
+      <span>{t(label)}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="">None</option>
+        <option value="">{t('None')}</option>
         {items.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select>
     </label>
@@ -2363,6 +3082,7 @@ function ProfileSelect({ label, value, items, onChange }) {
 }
 
 function SelectedDiscordConfig({ config, assignment, overrides = {} }) {
+  const { t } = useI18n();
   if (!config) {
     if (overrides.discord_guild_id && overrides.discord_voice_channel_id) {
       return <Message text="Discord Config is required before stream-specific guild/channel overrides can be used." tone="critical" />;
@@ -2376,23 +3096,23 @@ function SelectedDiscordConfig({ config, assignment, overrides = {} }) {
   const voiceID = overrides.discord_voice_channel_id || config.voice_channel_id || '-';
   const textID = overrides.discord_text_channel_id || config.text_channel_id || '-';
   const detail = [
-    `Guild: ${guildID}`,
-    `Voice: ${voiceID}`,
-    `Text: ${textID}`,
-    `Bot service: ${config.service_id || 'any assigned primary Discord Bot'}`,
+    `${t('Guild')}: ${guildID}`,
+    `${t('Voice Channel')}: ${voiceID}`,
+    `${t('Text Channel')}: ${textID}`,
+    `${t('Bot Service')}: ${config.service_id || t('any assigned primary Discord Bot')}`,
   ].join(' / ');
   return (
     <div className={`assignment-planner ${tone}`}>
       <div className="assignment-planner-heading">
         <div>
-          <strong>Stream Discord routing</strong>
+          <strong>{t('Stream Discord routing')}</strong>
           <span>{detail}</span>
-          <span>Blank stream fields use the selected Discord Config defaults; non-empty fields are stream-specific overrides.</span>
+          <span>{t('Blank stream fields use the selected Discord Config defaults; non-empty fields are stream-specific overrides.')}</span>
         </div>
         <Badge tone={tone}>{botMatches ? 'ready' : 'bot mismatch'}</Badge>
       </div>
       {!botMatches && (
-        <span>Assign {config.service_id} as the primary Discord Bot, or choose a config for {primaryBot?.service_id || 'the current primary bot'}.</span>
+        <span>{config.service_id} をプライマリ Discord Bot として割り当てるか、{primaryBot?.service_id || '現在のプライマリ Bot'} 用の config を選択してください。</span>
       )}
     </div>
   );
@@ -2430,27 +3150,28 @@ function streamSettingsBody(form) {
 }
 
 function ReadinessIssues({ issues = [], stream, onOpenAudit, onOpenMetrics, onOpenServiceHealth, onOpenPage }) {
+  const { t } = useI18n();
   if (!Array.isArray(issues) || issues.length === 0) return null;
   const actions = readinessIssueActions(issues);
   return (
     <div className="readiness-issues">
       <div className="readiness-heading">
         <div>
-          <strong>Operation readiness checks</strong>
-          <span>{issues.length} issue(s) must be resolved before start / stop / retry dispatch.</span>
+          <strong>{t('Operation readiness checks')}</strong>
+          <span>{localizeRendered(`${issues.length} issue(s) must be resolved before start / stop / retry dispatch.`, t)}</span>
         </div>
         <div className="actions">
           {actions.serviceHealth && (
             <button className="secondary-btn" type="button" onClick={() => onOpenServiceHealth?.({ streamID: stream?.id || '', serviceID: actions.serviceID })}>
-              Open Service Health
+              {t('Open Service Health')}
             </button>
           )}
-          {actions.discord && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('discord')}>Open Discord Settings</button>}
-          {actions.youtube && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('youtube')}>Open YouTube Outputs</button>}
-          {actions.archive && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('archive')}>Open Archive Settings</button>}
-          {actions.integrations && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('integrations')}>Open Integrations</button>}
-          {actions.metrics && <button className="secondary-btn" type="button" onClick={onOpenMetrics}>Open Metrics</button>}
-          {stream?.id && <button className="secondary-btn" type="button" onClick={() => onOpenAudit?.({ actionGroup: 'stream_lifecycle', query: stream.id })}>View Stream Audit</button>}
+          {actions.discord && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('discord')}>{t('Open Discord Settings')}</button>}
+          {actions.youtube && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('youtube')}>{t('Open YouTube Outputs')}</button>}
+          {actions.archive && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('archive')}>{t('Open Archive Settings')}</button>}
+          {actions.integrations && <button className="secondary-btn" type="button" onClick={() => onOpenPage?.('integrations')}>{t('Open Integrations')}</button>}
+          {actions.metrics && <button className="secondary-btn" type="button" onClick={onOpenMetrics}>{t('Open Metrics')}</button>}
+          {stream?.id && <button className="secondary-btn" type="button" onClick={() => onOpenAudit?.({ actionGroup: 'stream_lifecycle', query: stream.id })}>{t('View Stream Audit')}</button>}
         </div>
       </div>
       <ul>
@@ -2462,8 +3183,8 @@ function ReadinessIssues({ issues = [], stream, onOpenAudit, onOpenMetrics, onOp
                 <span>{target}</span>
                 <code>{issue.code || 'readiness_issue'}</code>
               </div>
-              <p>{issue.message || 'This check must pass before service dispatch.'}</p>
-              <small>{readinessIssueHint(issue)}</small>
+              <p>{localizeRendered(issue.message || 'This check must pass before service dispatch.', t)}</p>
+              <small>{localizeRendered(readinessIssueHint(issue), t)}</small>
             </li>
           );
         })}
@@ -2595,14 +3316,15 @@ function dispatchSummary(verb, statusCode, dispatch) {
 }
 
 function DispatchResults({ summary }) {
+  const { t } = useI18n();
   if (!summary || !Array.isArray(summary.rows) || summary.rows.length === 0) return null;
   const tone = summary.failedCount > 0 ? 'warning' : 'ok';
   return (
     <div className={`dispatch-results ${tone}`}>
       <div className="dispatch-heading">
         <div>
-          <strong>Last service dispatch</strong>
-          <span>{summary.verb} / HTTP {summary.statusCode} / {summary.successCount} succeeded, {summary.failedCount} failed</span>
+          <strong>{t('Last service dispatch')}</strong>
+          <span>{localizeRendered(`${summary.verb} / HTTP ${summary.statusCode} / ${summary.successCount} succeeded, ${summary.failedCount} failed`, t)}</span>
         </div>
         <small>{formatDateTime(summary.checkedAt)}</small>
       </div>
@@ -2634,6 +3356,7 @@ function dispatchDetail(row) {
 }
 
 function ProfileManager({ title, endpoint, data, example }) {
+  const { t } = useI18n();
   const [selectedID, setSelectedID] = useState('');
   const [name, setName] = useState('');
   const [configText, setConfigText] = useState(formatConfig(example));
@@ -2713,7 +3436,7 @@ function ProfileManager({ title, endpoint, data, example }) {
     {
       key: 'id',
       label: 'Edit',
-      render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>Edit</button>,
+      render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>{t('Edit')}</button>,
     },
   ];
 
@@ -2722,32 +3445,32 @@ function ProfileManager({ title, endpoint, data, example }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{selectedID ? `Edit ${title}` : `Create ${title}`}</h3>
-            <span>Raw secrets must be referenced by secret name only. They are never displayed here.</span>
+            <h3>{selectedID ? `${t('Edit')} ${t(title)}` : `${t('Create')} ${t(title)}`}</h3>
+            <span>{t('Raw secrets must be referenced by secret name only. They are never displayed here.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={reset}>New</button>
+          <button className="secondary-btn" type="button" onClick={reset}>{t('New')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Name</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="default" />
+            <span>{t('Name')}</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('default')} />
           </label>
           <label>
-            <span>Existing record</span>
+            <span>{t('Existing record')}</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {data.data.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
           <label className="wide">
-            <span>Config JSON</span>
+            <span>{t('Config JSON')}</span>
             <textarea value={configText} onChange={(event) => setConfigText(event.target.value)} spellCheck="false" />
           </label>
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={save}>{selectedID ? 'Update' : 'Create'}</button>
-          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>Delete</button>
+          <button className="command-btn" type="button" onClick={save}>{selectedID ? t('Update') : t('Create')}</button>
+          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>{t('Delete')}</button>
         </div>
       </section>
       <DataTable title={title} data={data} columns={columns} />
@@ -2756,6 +3479,7 @@ function ProfileManager({ title, endpoint, data, example }) {
 }
 
 function ArchiveProfileManager({ data, destinations }) {
+  const { t } = useI18n();
   const blank = {
     name: '',
     drive_destination_id: '',
@@ -2885,7 +3609,7 @@ function ArchiveProfileManager({ data, destinations }) {
     { key: 'archive_upload_enabled', label: 'Upload', render: (_, row) => <Badge tone={row.config?.upload_enabled === false ? 'warning' : 'ok'}>{row.config?.upload_enabled === false ? 'disabled' : 'enabled'}</Badge> },
     { key: 'archive_upload_dry_run', label: 'Dry-run', render: (_, row) => <Badge tone={row.config?.upload_dry_run === false ? 'warning' : 'ok'}>{row.config?.upload_dry_run === false ? 'off' : 'on'}</Badge> },
     { key: 'updated_at', label: 'Updated' },
-    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>Edit</button> },
+    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>{t('Edit')}</button> },
   ];
 
   return (
@@ -2893,68 +3617,68 @@ function ArchiveProfileManager({ data, destinations }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{selectedID ? 'Edit Archive Settings' : 'Create Archive Settings'}</h3>
-            <span>Archive profiles reference Control Panel Drive destinations. Folder IDs and OAuth tokens are never displayed here.</span>
+            <h3>{selectedID ? t('Edit Archive Settings') : t('Create Archive Settings')}</h3>
+            <span>{t('Archive profiles reference Control Panel Drive destinations. Folder IDs and OAuth tokens are never displayed here.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={reset}>New</button>
+          <button className="secondary-btn" type="button" onClick={reset}>{t('New')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing record</span>
+            <span>{t('Existing record')}</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
           <label>
-            <span>Name</span>
+            <span>{t('Name')}</span>
             <input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="Main Archive" />
           </label>
           <label>
-            <span>Drive destination</span>
+            <span>{t('Drive destination')}</span>
             <select value={form.drive_destination_id} onChange={(event) => update('drive_destination_id', event.target.value)}>
-              <option value="">None / local archive only</option>
+              <option value="">{t('None / local archive only')}</option>
               {driveDestinations.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.name} ({item.auth_mode}{item.shared_drive ? ', shared drive' : ''})
+                  {item.name} ({item.auth_mode}{item.shared_drive ? `, ${t('Shared Drive')}` : ''})
                 </option>
               ))}
             </select>
           </label>
           <label>
-            <span>Base path</span>
+            <span>{t('Base path')}</span>
             <input value={form.gdrive_base_path} onChange={(event) => update('gdrive_base_path', event.target.value)} placeholder="AutoStream" />
           </label>
           <label>
-            <span>Service Account credential secret</span>
+            <span>{t('Service Account credential secret')}</span>
             <input value={form.service_account_credentials_secret_name} onChange={(event) => update('service_account_credentials_secret_name', event.target.value)} placeholder="google_drive_credentials" />
           </label>
           <label>
-            <span>Upload retry max</span>
+            <span>{t('Upload retry max')}</span>
             <input value={form.upload_retry_max} onChange={(event) => update('upload_retry_max', event.target.value)} inputMode="numeric" />
           </label>
           <label>
-            <span>Retention days</span>
+            <span>{t('Retention days')}</span>
             <input value={form.retention_days} onChange={(event) => update('retention_days', event.target.value)} inputMode="numeric" />
           </label>
           <label className="checkline">
             <input type="checkbox" checked={Boolean(form.upload_enabled)} onChange={(event) => update('upload_enabled', event.target.checked)} />
-            <span>Upload final archive</span>
+            <span>{t('Upload final archive')}</span>
           </label>
           <label className="checkline">
             <input type="checkbox" checked={Boolean(form.upload_dry_run)} onChange={(event) => update('upload_dry_run', event.target.checked)} />
-            <span>Dry-run upload until external verification is approved</span>
+            <span>{t('Dry-run upload until external verification is approved')}</span>
           </label>
           <label className="wide">
-            <span>Advanced JSON</span>
+            <span>{t('Advanced JSON')}</span>
             <textarea value={form.extra_json} onChange={(event) => update('extra_json', event.target.value)} spellCheck="false" />
           </label>
         </div>
         {driveDestinations.length === 0 && <Message text="Create a Drive destination in Integrations before enabling Google Drive upload." tone="warning" />}
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={save}>{selectedID ? 'Update' : 'Create'}</button>
-          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>Delete</button>
+          <button className="command-btn" type="button" onClick={save}>{selectedID ? t('Update') : t('Create')}</button>
+          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>{t('Delete')}</button>
         </div>
       </section>
       <DataTable title="Archive Settings" data={data} columns={columns} />
@@ -2963,6 +3687,7 @@ function ArchiveProfileManager({ data, destinations }) {
 }
 
 function DiscordConfigManager({ data }) {
+  const { t } = useI18n();
   const blank = {
     name: '',
     service_id: '',
@@ -3074,7 +3799,7 @@ function DiscordConfigManager({ data }) {
     { key: 'audio_forward_enabled', label: 'Audio Forward', render: (value) => <Badge tone={value ? 'ok' : 'warning'}>{value ? 'enabled' : 'disabled'}</Badge> },
     { key: 'reconnect_max_attempts', label: 'Rejoin Attempts', render: (value) => value || '-' },
     { key: 'updated_at', label: 'Updated' },
-    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>Edit</button> },
+    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>{t('Edit')}</button> },
   ];
 
   return (
@@ -3082,76 +3807,76 @@ function DiscordConfigManager({ data }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{selectedID ? 'Edit Discord Bot Config' : 'Create Discord Bot Config'}</h3>
-            <span>Bot tokens are write-only. Assign each config to the Discord Bot service that is allowed to read its runtime config.</span>
+            <h3>{selectedID ? t('Edit Discord Bot Config') : t('Create Discord Bot Config')}</h3>
+            <span>{t('Bot tokens are write-only. Assign each config to the Discord Bot service that is allowed to read its runtime config.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={reset}>New</button>
+          <button className="secondary-btn" type="button" onClick={reset}>{t('New')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing config</span>
+            <span>{t('Existing config')}</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {configs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
           <label>
-            <span>Name</span>
+            <span>{t('Name')}</span>
             <input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="Main Discord Bot" />
           </label>
           <label>
-            <span>Bot service ID</span>
+            <span>{t('Bot service ID')}</span>
             <input value={form.service_id} onChange={(event) => update('service_id', event.target.value)} placeholder="discord-bot-01" />
           </label>
           <label>
-            <span>Guild ID</span>
+            <span>{t('Guild ID')}</span>
             <input value={form.guild_id} onChange={(event) => update('guild_id', event.target.value)} placeholder="<DISCORD_GUILD_ID>" />
           </label>
           <label>
-            <span>Voice channel ID</span>
+            <span>{t('Voice channel ID')}</span>
             <input value={form.voice_channel_id} onChange={(event) => update('voice_channel_id', event.target.value)} placeholder="<VOICE_CHANNEL_ID>" />
           </label>
           <label>
-            <span>Text channel ID</span>
-            <input value={form.text_channel_id} onChange={(event) => update('text_channel_id', event.target.value)} placeholder="optional" />
+            <span>{t('Text channel ID')}</span>
+            <input value={form.text_channel_id} onChange={(event) => update('text_channel_id', event.target.value)} placeholder={t('optional')} />
           </label>
           <label>
-            <span>Bot token</span>
-            <input type="password" value={form.bot_token} onChange={(event) => update('bot_token', event.target.value)} placeholder={selectedID ? 'leave blank to keep existing token' : '<DISCORD_BOT_TOKEN>'} />
+            <span>{t('Bot token')}</span>
+            <input type="password" value={form.bot_token} onChange={(event) => update('bot_token', event.target.value)} placeholder={selectedID ? t('leave blank to keep existing token') : '<DISCORD_BOT_TOKEN>'} />
           </label>
           <label>
-            <span>STT profile ID</span>
-            <input value={form.stt_profile_id} onChange={(event) => update('stt_profile_id', event.target.value)} placeholder="optional" />
+            <span>{t('STT profile ID')}</span>
+            <input value={form.stt_profile_id} onChange={(event) => update('stt_profile_id', event.target.value)} placeholder={t('optional')} />
           </label>
           <label className="check-row">
             <input type="checkbox" checked={form.audio_forward_enabled} onChange={(event) => update('audio_forward_enabled', event.target.checked)} />
-            <span>Enable audio forward</span>
+            <span>{t('Enable audio forward')}</span>
           </label>
           <label className="check-row">
             <input type="checkbox" checked={form.reconnect_enabled} onChange={(event) => update('reconnect_enabled', event.target.checked)} />
-            <span>Reconnect voice automatically</span>
+            <span>{t('Reconnect voice automatically')}</span>
           </label>
           <label>
-            <span>Reconnect attempts</span>
+            <span>{t('Reconnect attempts')}</span>
             <input type="number" min="1" step="1" value={form.reconnect_max_attempts} onChange={(event) => update('reconnect_max_attempts', event.target.value)} />
           </label>
           <label>
-            <span>Reconnect base delay</span>
+            <span>{t('Reconnect base delay')}</span>
             <input value={form.reconnect_base_delay} onChange={(event) => update('reconnect_base_delay', event.target.value)} placeholder="2s" />
           </label>
           <label>
-            <span>Reconnect max delay</span>
+            <span>{t('Reconnect max delay')}</span>
             <input value={form.reconnect_max_delay} onChange={(event) => update('reconnect_max_delay', event.target.value)} placeholder="30s" />
           </label>
           <label className="check-row">
             <input type="checkbox" checked={form.caption_enabled} onChange={(event) => update('caption_enabled', event.target.checked)} />
-            <span>Enable captions/STT forwarding</span>
+            <span>{t('Enable captions/STT forwarding')}</span>
           </label>
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={save}>{selectedID ? 'Update' : 'Create'}</button>
-          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>Delete</button>
+          <button className="command-btn" type="button" onClick={save}>{selectedID ? t('Update') : t('Create')}</button>
+          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>{t('Delete')}</button>
         </div>
       </section>
       <DataTable title="Discord Bot Configs" data={data} columns={columns} />
@@ -3160,6 +3885,7 @@ function DiscordConfigManager({ data }) {
 }
 
 function YouTubeOutputManager({ data, accounts }) {
+  const { t } = useI18n();
   const blank = {
     name: '',
     mode: 'stream_key',
@@ -3269,7 +3995,7 @@ function YouTubeOutputManager({ data, accounts }) {
     { key: 'stream_key_configured', label: 'Stream Key', render: (value, row) => <Badge tone={value ? 'ok' : 'warning'}>{value ? `configured ${row.stream_key_fingerprint || ''}` : 'missing'}</Badge> },
     { key: 'oauth_account_id', label: 'OAuth Account', render: accountLabel },
     { key: 'updated_at', label: 'Updated' },
-    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>Edit</button> },
+    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>{t('Edit')}</button> },
   ];
 
   return (
@@ -3277,96 +4003,96 @@ function YouTubeOutputManager({ data, accounts }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{selectedID ? 'Edit YouTube Output' : 'Create YouTube Output'}</h3>
-            <span>Stream keys and OAuth tokens are write-only. Select a Control Panel connected account for Live API modes.</span>
+            <h3>{selectedID ? t('Edit YouTube Output') : t('Create YouTube Output')}</h3>
+            <span>{t('Stream keys and OAuth tokens are write-only. Select a Control Panel connected account for Live API modes.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={reset}>New</button>
+          <button className="secondary-btn" type="button" onClick={reset}>{t('New')}</button>
         </div>
         {accounts?.loading && <Message text="Loading OAuth connected accounts..." />}
         {accounts?.error && <Message text={`OAuth connected accounts unavailable: ${accounts.error}`} tone="warning" />}
         <div className="form-grid">
           <label>
-            <span>Existing output</span>
+            <span>{t('Existing output')}</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {outputs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
           <label>
-            <span>Name</span>
+            <span>{t('Name')}</span>
             <input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="Main YouTube Output" />
           </label>
           <label>
-            <span>Mode</span>
+            <span>{t('Mode')}</span>
             <select value={form.mode} onChange={(event) => update('mode', event.target.value)}>
-              <option value="stream_key">Existing stream key</option>
-              <option value="live_api_dry_run">Live API dry-run</option>
-              <option value="live_api">Live API</option>
+              <option value="stream_key">{t('Existing stream key')}</option>
+              <option value="live_api_dry_run">{t('Live API dry-run')}</option>
+              <option value="live_api">{t('Live API')}</option>
             </select>
           </label>
           <label>
-            <span>RTMPS URL</span>
+            <span>{t('RTMPS URL')}</span>
             <input value={form.rtmp_url} onChange={(event) => update('rtmp_url', event.target.value)} placeholder="rtmps://a.rtmps.youtube.com/live2" />
           </label>
           {form.mode === 'stream_key' && (
             <label>
-              <span>Stream key</span>
-              <input type="password" value={form.stream_key} onChange={(event) => update('stream_key', event.target.value)} placeholder={selectedID ? 'leave blank to keep existing key' : '<YOUTUBE_STREAM_KEY>'} />
+              <span>{t('Stream key')}</span>
+              <input type="password" value={form.stream_key} onChange={(event) => update('stream_key', event.target.value)} placeholder={selectedID ? t('leave blank to keep existing key') : '<YOUTUBE_STREAM_KEY>'} />
             </label>
           )}
           {form.mode !== 'stream_key' && (
             <label>
-              <span>OAuth connected account</span>
+              <span>{t('OAuth connected account')}</span>
               <select value={form.oauth_account_id} onChange={(event) => update('oauth_account_id', event.target.value)}>
-                <option value="">Select connected account</option>
+                <option value="">{t('Select connected account')}</option>
                 {oauthAccounts.map((account) => (
                   <option key={account.id} value={account.id}>{accountLabel(account.id)}</option>
                 ))}
               </select>
-              {oauthAccounts.length === 0 && <small className="form-note">Create a Google OAuth connected account in Integrations before using Live API mode.</small>}
+              {oauthAccounts.length === 0 && <small className="form-note">{t('Create a Google OAuth connected account in Integrations before using Live API mode.')}</small>}
             </label>
           )}
           <label>
-            <span>Privacy</span>
+            <span>{t('Privacy')}</span>
             <select value={form.privacy_status} onChange={(event) => update('privacy_status', event.target.value)}>
-              <option value="private">private</option>
-              <option value="unlisted">unlisted</option>
-              <option value="public">public</option>
+              <option value="private">{t('private')}</option>
+              <option value="unlisted">{t('unlisted')}</option>
+              <option value="public">{t('public')}</option>
             </select>
           </label>
           <label>
-            <span>Latency</span>
+            <span>{t('Latency')}</span>
             <select value={form.latency_preference} onChange={(event) => update('latency_preference', event.target.value)}>
-              <option value="normal">normal</option>
-              <option value="low">low</option>
-              <option value="ultra_low">ultra_low</option>
+              <option value="normal">{t('normal')}</option>
+              <option value="low">{t('low')}</option>
+              <option value="ultra_low">{t('ultra_low')}</option>
             </select>
           </label>
           <label className="wide">
-            <span>Broadcast title template</span>
+            <span>{t('Broadcast title template')}</span>
             <input value={form.broadcast_title_template} onChange={(event) => update('broadcast_title_template', event.target.value)} placeholder="{{stream_name}}" />
           </label>
           <label className="wide">
-            <span>Broadcast description</span>
+            <span>{t('Broadcast description')}</span>
             <textarea value={form.broadcast_description} onChange={(event) => update('broadcast_description', event.target.value)} />
           </label>
           <label className="check-row">
             <input type="checkbox" checked={form.enable_auto_start} onChange={(event) => update('enable_auto_start', event.target.checked)} />
-            <span>Enable auto start</span>
+            <span>{t('Enable auto start')}</span>
           </label>
           <label className="check-row">
             <input type="checkbox" checked={form.enable_auto_stop} onChange={(event) => update('enable_auto_stop', event.target.checked)} />
-            <span>Enable auto stop</span>
+            <span>{t('Enable auto stop')}</span>
           </label>
           <label className="check-row">
             <input type="checkbox" checked={form.complete_on_stop} onChange={(event) => update('complete_on_stop', event.target.checked)} />
-            <span>Complete broadcast on stream stop</span>
+            <span>{t('Complete broadcast on stream stop')}</span>
           </label>
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={save}>{selectedID ? 'Update' : 'Create'}</button>
-          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>Delete</button>
+          <button className="command-btn" type="button" onClick={save}>{selectedID ? t('Update') : t('Create')}</button>
+          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>{t('Delete')}</button>
         </div>
       </section>
       <DataTable title="YouTube Outputs" data={data} columns={columns} />
@@ -3427,6 +4153,7 @@ const tokenColumns = [
 ];
 
 function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
+  const { t } = useI18n();
   const [providerID, setProviderID] = useState('');
   const [providerForm, setProviderForm] = useState({
     provider_type: 'google',
@@ -3668,14 +4395,14 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
     { key: 'client_secret_configured', label: 'Secret', render: (value, row) => <Badge tone={value ? 'ok' : 'warning'}>{value ? `configured ${row.client_secret_fingerprint || ''}` : 'missing'}</Badge> },
     { key: 'auto_provision', label: 'Auto Provision', render: (value, row) => value ? <Badge tone="ok">{(row.default_role_ids || []).length} role(s)</Badge> : <Badge tone="neutral">disabled</Badge> },
     { key: 'allowed_domains', label: 'Allowed Domains', render: (value) => Array.isArray(value) && value.length ? value.join(', ') : '-' },
-    { key: 'id', label: 'Actions', render: (value) => <button className="link-btn" type="button" onClick={() => setProviderID(value)}>Edit</button> },
+    { key: 'id', label: 'Actions', render: (value) => <button className="link-btn" type="button" onClick={() => setProviderID(value)}>{t('Edit')}</button> },
   ];
   const accountColumns = [
     { key: 'account_label', label: 'Label' },
     { key: 'provider_id', label: 'Provider', render: providerLabel },
     { key: 'email', label: 'Email' },
     { key: 'refresh_token_configured', label: 'Refresh Token', render: (value, row) => <Badge tone={value ? 'ok' : 'warning'}>{value ? `configured ${row.token_fingerprint || ''}` : 'missing'}</Badge> },
-    { key: 'id', label: 'Actions', render: (value) => <button className="link-btn" type="button" onClick={() => setAccountID(value)}>Rename</button> },
+    { key: 'id', label: 'Actions', render: (value) => <button className="link-btn" type="button" onClick={() => setAccountID(value)}>{t('Rename')}</button> },
   ];
   const destinationColumns = [
     { key: 'name', label: 'Name' },
@@ -3684,7 +4411,7 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
     { key: 'masked_folder_id', label: 'Folder ID', render: (value, row) => value || (row.folder_id_configured ? 'configured' : 'missing') },
     { key: 'shared_drive', label: 'Shared Drive', render: (value) => value ? 'yes' : 'no' },
     { key: 'base_path', label: 'Base Path' },
-    { key: 'id', label: 'Actions', render: (value) => <button className="link-btn" type="button" onClick={() => setDestinationID(value)}>Edit</button> },
+    { key: 'id', label: 'Actions', render: (value) => <button className="link-btn" type="button" onClick={() => setDestinationID(value)}>{t('Edit')}</button> },
   ];
 
   if (providers.loading || accounts.loading || destinations.loading) return <Message text="Loading integrations..." />;
@@ -3697,36 +4424,36 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Integration Registry</h3>
-            <span>Operational OAuth, Drive, YouTube, and notification settings should be managed here instead of service env files. Raw secrets are write-only.</span>
+            <h3>{t('Integration Registry')}</h3>
+            <span>{t('Operational OAuth, Drive, YouTube, and notification settings should be managed here instead of service env files. Raw secrets are write-only.')}</span>
           </div>
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="integration-summary">
-          <span className="health-card ok">OAuth providers: {providers.data.length}</span>
-          <span className="health-card ok">Connected accounts: {accounts.data.length}</span>
-          <span className="health-card ok">Drive destinations: {destinations.data.length}</span>
+          <span className="health-card ok">{t('OAuth providers')}: {providers.data.length}</span>
+          <span className="health-card ok">{t('Connected accounts')}: {accounts.data.length}</span>
+          <span className="health-card ok">{t('Drive destinations')}: {destinations.data.length}</span>
         </div>
       </section>
 
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{providerID ? 'Edit OAuth Provider' : 'Create OAuth Provider'}</h3>
-            <span>Use Google / GitHub / Discord for login providers, and Google for Drive or YouTube connected accounts.</span>
+            <h3>{providerID ? t('Edit OAuth Provider') : t('Create OAuth Provider')}</h3>
+            <span>{t('Use Google / GitHub / Discord for login providers, and Google for Drive or YouTube connected accounts.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={resetProvider}>New Provider</button>
+          <button className="secondary-btn" type="button" onClick={resetProvider}>{t('New Provider')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing provider</span>
+            <span>{t('Existing provider')}</span>
             <select value={providerID} onChange={(event) => setProviderID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {providers.data.map((provider) => <option key={provider.id} value={provider.id}>{provider.name} / {provider.provider_type}</option>)}
             </select>
           </label>
           <label>
-            <span>Provider type</span>
+            <span>{t('Provider type')}</span>
             <select value={providerForm.provider_type} onChange={(event) => updateProvider('provider_type', event.target.value)}>
               <option value="google">Google</option>
               <option value="github">GitHub</option>
@@ -3734,40 +4461,40 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
             </select>
           </label>
           <label>
-            <span>Name</span>
+            <span>{t('Name')}</span>
             <input value={providerForm.name} onChange={(event) => updateProvider('name', event.target.value)} placeholder="Google Login" />
           </label>
           <label>
-            <span>Client ID</span>
+            <span>{t('Client ID')}</span>
             <input value={providerForm.client_id} onChange={(event) => updateProvider('client_id', event.target.value)} />
           </label>
           <label>
-            <span>Client secret</span>
-            <input type="password" value={providerForm.client_secret} onChange={(event) => updateProvider('client_secret', event.target.value)} placeholder={providerID ? 'leave blank to keep existing secret' : ''} />
+            <span>{t('Client secret')}</span>
+            <input type="password" value={providerForm.client_secret} onChange={(event) => updateProvider('client_secret', event.target.value)} placeholder={providerID ? t('leave blank to keep existing secret') : ''} />
           </label>
           <label>
-            <span>Redirect URI</span>
+            <span>{t('Redirect URI')}</span>
             <input value={providerForm.redirect_uri} onChange={(event) => updateProvider('redirect_uri', event.target.value)} placeholder="https://control.example.com/auth/oauth/callback" />
           </label>
           <label>
-            <span>Scopes</span>
+            <span>{t('Scopes')}</span>
             <input value={providerForm.scopes} onChange={(event) => updateProvider('scopes', event.target.value)} placeholder="openid,email" />
           </label>
           <label>
-            <span>Allowed domains</span>
+            <span>{t('Allowed domains')}</span>
             <input value={providerForm.allowed_domains} onChange={(event) => updateProvider('allowed_domains', event.target.value)} placeholder="example.com" />
           </label>
           <label className="check-row">
             <input type="checkbox" checked={providerForm.enabled} onChange={(event) => updateProvider('enabled', event.target.checked)} />
-            <span>Enabled</span>
+            <span>{t('Enabled')}</span>
           </label>
           <label className="check-row">
             <input type="checkbox" checked={providerForm.auto_provision} onChange={(event) => updateProvider('auto_provision', event.target.checked)} />
-            <span>Auto-provision first login</span>
+            <span>{t('Auto-provision first login')}</span>
           </label>
           <div className="wide-field">
-            <span className="field-label">Default roles for auto-provisioned users</span>
-            {roles.loading && <small className="form-note">Loading roles...</small>}
+            <span className="field-label">{t('Default roles for auto-provisioned users')}</span>
+            {roles.loading && <small className="form-note">{t('Loading roles...')}</small>}
             {roles.error && <Message text={`Role list unavailable: ${roles.error}`} tone="warning" />}
             <div className="checkbox-grid">
               {roleOptions.map((role) => (
@@ -3777,12 +4504,12 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
                 </label>
               ))}
             </div>
-            <small className="form-note">Auto-provision requires at least one default role and server-side roles.assign permission.</small>
+            <small className="form-note">{t('Auto-provision requires at least one default role and server-side roles.assign permission.')}</small>
           </div>
         </div>
         <div className="actions">
-          <button className="command-btn" type="button" onClick={saveProvider}>{providerID ? 'Update Provider' : 'Create Provider'}</button>
-          <button className="danger-btn" type="button" disabled={!providerID} onClick={() => remove('provider', providerID)}>Delete Provider</button>
+          <button className="command-btn" type="button" onClick={saveProvider}>{providerID ? t('Update Provider') : t('Create Provider')}</button>
+          <button className="danger-btn" type="button" disabled={!providerID} onClick={() => remove('provider', providerID)}>{t('Delete Provider')}</button>
         </div>
       </section>
       <DataTable title="OAuth Providers" data={providers} columns={providerColumns} />
@@ -3790,39 +4517,39 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{accountID ? 'Rename OAuth Connected Account' : 'Connect OAuth Connected Account'}</h3>
-            <span>Connected accounts are created only by OAuth callback. Refresh tokens are encrypted and returned only as configured state and fingerprint.</span>
+            <h3>{accountID ? t('Rename OAuth Connected Account') : t('Connect OAuth Connected Account')}</h3>
+            <span>{t('Connected accounts are created only by OAuth callback. Refresh tokens are encrypted and returned only as configured state and fingerprint.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={resetAccount}>New Account</button>
+          <button className="secondary-btn" type="button" onClick={resetAccount}>{t('New Account')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing account</span>
+            <span>{t('Existing account')}</span>
             <select value={accountID} onChange={(event) => setAccountID(event.target.value)}>
-              <option value="">Connect new</option>
+              <option value="">{t('Connect new')}</option>
               {accounts.data.map((account) => <option key={account.id} value={account.id}>{account.account_label} / {account.email || account.subject}</option>)}
             </select>
           </label>
           <label>
-            <span>Provider</span>
+            <span>{t('Provider')}</span>
             <select value={accountForm.provider_id} disabled={Boolean(accountID)} onChange={(event) => updateAccount('provider_id', event.target.value)}>
-              <option value="">Select provider</option>
+              <option value="">{t('Select provider')}</option>
               {providers.data.map((provider) => <option key={provider.id} value={provider.id}>{provider.name} / {provider.provider_type}</option>)}
             </select>
           </label>
           <label>
-            <span>Label</span>
+            <span>{t('Label')}</span>
             <input value={accountForm.account_label} onChange={(event) => updateAccount('account_label', event.target.value)} placeholder="Main YouTube / Drive Account" />
           </label>
           <div className="wide-field">
-            <span className="field-label">Connection ceremony</span>
-            <small className="form-note">Subject, email, scopes, and refresh token are accepted only from the verified OAuth callback. Manual refresh token entry is disabled.</small>
+            <span className="field-label">{t('Connection ceremony')}</span>
+            <small className="form-note">{t('Subject, email, scopes, and refresh token are accepted only from the verified OAuth callback. Manual refresh token entry is disabled.')}</small>
           </div>
         </div>
         <div className="actions">
-          <button className="command-btn" type="button" disabled={!accountID} onClick={saveAccount}>Update Label</button>
-          <button className="secondary-btn" type="button" onClick={startOAuthAccountConnection}>Connect with OAuth</button>
-          <button className="danger-btn" type="button" disabled={!accountID} onClick={() => remove('account', accountID)}>Delete Account</button>
+          <button className="command-btn" type="button" disabled={!accountID} onClick={saveAccount}>{t('Update Label')}</button>
+          <button className="secondary-btn" type="button" onClick={startOAuthAccountConnection}>{t('Connect with OAuth')}</button>
+          <button className="danger-btn" type="button" disabled={!accountID} onClick={() => remove('account', accountID)}>{t('Delete Account')}</button>
         </div>
       </section>
       <DataTable title="OAuth Connected Accounts" data={accounts} columns={accountColumns} />
@@ -3830,53 +4557,53 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{destinationID ? 'Edit Google Drive Destination' : 'Create Google Drive Destination'}</h3>
-            <span>Folder IDs, including shared drive folder IDs, are encrypted and sent to Encoder/Recorder only at dispatch time.</span>
+            <h3>{destinationID ? t('Edit Google Drive Destination') : t('Create Google Drive Destination')}</h3>
+            <span>{t('Folder IDs, including shared drive folder IDs, are encrypted and sent to Encoder/Recorder only at dispatch time.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={resetDestination}>New Destination</button>
+          <button className="secondary-btn" type="button" onClick={resetDestination}>{t('New Destination')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing destination</span>
+            <span>{t('Existing destination')}</span>
             <select value={destinationID} onChange={(event) => setDestinationID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {destinations.data.map((destination) => <option key={destination.id} value={destination.id}>{destination.name} / {destination.auth_mode}</option>)}
             </select>
           </label>
           <label>
-            <span>Name</span>
+            <span>{t('Name')}</span>
             <input value={destinationForm.name} onChange={(event) => updateDestination('name', event.target.value)} placeholder="Main Shared Drive Archive" />
           </label>
           <label>
-            <span>Auth mode</span>
+            <span>{t('Auth mode')}</span>
             <select value={destinationForm.auth_mode} onChange={(event) => updateDestination('auth_mode', event.target.value)}>
-              <option value="oauth2">OAuth connected account</option>
-              <option value="service_account">Service Account</option>
+              <option value="oauth2">{t('OAuth connected account')}</option>
+              <option value="service_account">{t('Service Account')}</option>
             </select>
           </label>
           <label>
-            <span>OAuth account</span>
+            <span>{t('OAuth account')}</span>
             <select value={destinationForm.oauth_account_id} disabled={destinationForm.auth_mode !== 'oauth2'} onChange={(event) => updateDestination('oauth_account_id', event.target.value)}>
-              <option value="">Select account</option>
+              <option value="">{t('Select account')}</option>
               {accounts.data.map((account) => <option key={account.id} value={account.id}>{account.account_label} / {account.email || account.subject}</option>)}
             </select>
           </label>
           <label>
-            <span>Folder ID</span>
-            <input type="password" value={destinationForm.folder_id} onChange={(event) => updateDestination('folder_id', event.target.value)} placeholder={destinationID ? 'leave blank to keep existing folder ID' : '<GOOGLE_DRIVE_FOLDER_ID>'} />
+            <span>{t('Folder ID')}</span>
+            <input type="password" value={destinationForm.folder_id} onChange={(event) => updateDestination('folder_id', event.target.value)} placeholder={destinationID ? t('leave blank to keep existing folder ID') : '<GOOGLE_DRIVE_FOLDER_ID>'} />
           </label>
           <label>
-            <span>Base path</span>
+            <span>{t('Base path')}</span>
             <input value={destinationForm.base_path} onChange={(event) => updateDestination('base_path', event.target.value)} placeholder="AutoStream" />
           </label>
           <label className="check-row">
             <input type="checkbox" checked={destinationForm.shared_drive} onChange={(event) => updateDestination('shared_drive', event.target.checked)} />
-            <span>Shared drive folder</span>
+            <span>{t('Shared drive folder')}</span>
           </label>
         </div>
         <div className="actions">
-          <button className="command-btn" type="button" onClick={saveDestination}>{destinationID ? 'Update Destination' : 'Create Destination'}</button>
-          <button className="danger-btn" type="button" disabled={!destinationID} onClick={() => remove('destination', destinationID)}>Delete Destination</button>
+          <button className="command-btn" type="button" onClick={saveDestination}>{destinationID ? t('Update Destination') : t('Create Destination')}</button>
+          <button className="danger-btn" type="button" disabled={!destinationID} onClick={() => remove('destination', destinationID)}>{t('Delete Destination')}</button>
         </div>
       </section>
       <DataTable title="Google Drive Destinations" data={destinations} columns={destinationColumns} />
@@ -3885,6 +4612,7 @@ function IntegrationRegistryView({ providers, accounts, destinations, roles }) {
 }
 
 function UsersView({ users, roles }) {
+  const { t } = useI18n();
   const [selectedID, setSelectedID] = useState('');
   const [username, setUsername] = useState('');
   const [temporaryPassword, setTemporaryPassword] = useState('');
@@ -3996,12 +4724,12 @@ function UsersView({ users, roles }) {
     {
       key: 'id',
       label: 'Actions',
-      render: (_, row) => (
-        <div className="actions">
-          <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>Edit</button>
-          <button className="secondary-btn" type="button" onClick={() => setStatus(row.id, 'unlock')}>Unlock</button>
-          <button className="secondary-btn" type="button" onClick={() => setStatus(row.id, 'lock')}>Lock</button>
-          <button className="danger-btn" type="button" onClick={() => setStatus(row.id, 'disable')}>Disable</button>
+        render: (_, row) => (
+          <div className="actions">
+          <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>{t('Edit')}</button>
+          <button className="secondary-btn" type="button" onClick={() => setStatus(row.id, 'unlock')}>{t('Unlock')}</button>
+          <button className="secondary-btn" type="button" onClick={() => setStatus(row.id, 'lock')}>{t('Lock')}</button>
+          <button className="danger-btn" type="button" onClick={() => setStatus(row.id, 'disable')}>{t('Disable')}</button>
         </div>
       ),
     },
@@ -4012,25 +4740,25 @@ function UsersView({ users, roles }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{selectedID ? 'Edit User' : 'Create User'}</h3>
-            <span>Password hashes are never returned. Reset uses a temporary password.</span>
+            <h3>{selectedID ? t('Edit User') : t('Create User')}</h3>
+            <span>{t('Password hashes are never returned. Reset uses a temporary password.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={reset}>New</button>
+          <button className="secondary-btn" type="button" onClick={reset}>{t('New')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing user</span>
+            <span>{t('Existing user')}</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {users.data.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
             </select>
           </label>
           <label>
-            <span>Username</span>
+            <span>{t('Username')}</span>
             <input value={username} onChange={(event) => setUsername(event.target.value)} />
           </label>
           <label>
-            <span>{selectedID ? 'Temporary password for reset' : 'Temporary password'}</span>
+            <span>{selectedID ? t('Temporary password for reset') : t('Temporary password')}</span>
             <input type="password" value={temporaryPassword} onChange={(event) => setTemporaryPassword(event.target.value)} />
           </label>
           <div className="checkbox-grid wide">
@@ -4044,17 +4772,17 @@ function UsersView({ users, roles }) {
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={save}>{selectedID ? 'Update User' : 'Create User'}</button>
-          <button className="secondary-btn" type="button" disabled={!selectedID} onClick={() => setStatus(selectedID, 'force-password-change')}>Force Password Change</button>
-          <button className="secondary-btn" type="button" disabled={!selectedID} onClick={resetPassword}>Reset Password</button>
+          <button className="command-btn" type="button" onClick={save}>{selectedID ? t('Update User') : t('Create User')}</button>
+          <button className="secondary-btn" type="button" disabled={!selectedID} onClick={() => setStatus(selectedID, 'force-password-change')}>{t('Force Password Change')}</button>
+          <button className="secondary-btn" type="button" disabled={!selectedID} onClick={resetPassword}>{t('Reset Password')}</button>
         </div>
       </section>
       {selectedID && (
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h3>OAuth Login Links</h3>
-              <span>Links are created only through the OAuth callback ceremony. Manual subject entry is disabled.</span>
+              <h3>{t('OAuth Login Links')}</h3>
+              <span>{t('Links are created only through the OAuth callback ceremony. Manual subject entry is disabled.')}</span>
             </div>
           </div>
           <Message tone="neutral" text="Use the configured Google, GitHub, or Discord OAuth login flow to link accounts. The Control Panel does not accept manually entered provider subjects." />
@@ -4063,7 +4791,7 @@ function UsersView({ users, roles }) {
             { key: 'subject', label: 'Subject' },
             { key: 'email', label: 'Email' },
             { key: 'created_at', label: 'Created' },
-            { key: 'id', label: 'Actions', render: (value) => <button className="danger-btn" type="button" onClick={() => deleteOAuthLink(value)}>Delete</button> },
+            { key: 'id', label: 'Actions', render: (value) => <button className="danger-btn" type="button" onClick={() => deleteOAuthLink(value)}>{t('Delete')}</button> },
           ]} />
         </section>
       )}
@@ -4073,6 +4801,7 @@ function UsersView({ users, roles }) {
 }
 
 function RolesView({ roles, permissions }) {
+  const { t } = useI18n();
   const [selectedID, setSelectedID] = useState('');
   const [name, setName] = useState('');
   const [selectedPermissions, setSelectedPermissions] = useState([]);
@@ -4136,7 +4865,7 @@ function RolesView({ roles, permissions }) {
 
   const columns = [
     ...roleColumns,
-    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>Edit</button> },
+    { key: 'id', label: 'Edit', render: (_, row) => <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>{t('Edit')}</button> },
   ];
 
   return (
@@ -4144,21 +4873,21 @@ function RolesView({ roles, permissions }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{selectedID ? 'Edit Role' : 'Create Role'}</h3>
-            <span>Permissions are enforced server-side and fail closed.</span>
+            <h3>{selectedID ? t('Edit Role') : t('Create Role')}</h3>
+            <span>{t('Permissions are enforced server-side and fail closed.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={reset}>New</button>
+          <button className="secondary-btn" type="button" onClick={reset}>{t('New')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing role</span>
+            <span>{t('Existing role')}</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {roles.data.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
             </select>
           </label>
           <label>
-            <span>Name</span>
+            <span>{t('Name')}</span>
             <input value={name} onChange={(event) => setName(event.target.value)} />
           </label>
           <div className="checkbox-grid wide">
@@ -4172,8 +4901,8 @@ function RolesView({ roles, permissions }) {
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={save}>{selectedID ? 'Update Role' : 'Create Role'}</button>
-          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>Delete Role</button>
+          <button className="command-btn" type="button" onClick={save}>{selectedID ? t('Update Role') : t('Create Role')}</button>
+          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>{t('Delete Role')}</button>
         </div>
       </section>
       <DataTable title="Roles" data={roles} columns={columns} />
@@ -4182,6 +4911,7 @@ function RolesView({ roles, permissions }) {
 }
 
 function WorkersView({ workers, streams }) {
+  const { t } = useI18n();
   const [workerID, setWorkerID] = useState('');
   const [streamID, setStreamID] = useState('');
   const [assignmentRole, setAssignmentRole] = useState('primary');
@@ -4243,9 +4973,9 @@ function WorkersView({ workers, streams }) {
       label: 'Actions',
       render: (value) => (
         <div className="actions">
-          <button className="link-btn" type="button" onClick={() => { setWorkerID(value); assign(value, assignmentRole); }}>Assign Selected Stream</button>
-          <button className="secondary-btn" type="button" onClick={() => { setWorkerID(value); unassign(value); }}>Unassign</button>
-          <button className="secondary-btn" type="button" onClick={() => restart(value)}>Restart</button>
+          <button className="link-btn" type="button" onClick={() => { setWorkerID(value); assign(value, assignmentRole); }}>{t('Assign Selected Stream')}</button>
+          <button className="secondary-btn" type="button" onClick={() => { setWorkerID(value); unassign(value); }}>{t('Unassign')}</button>
+          <button className="secondary-btn" type="button" onClick={() => restart(value)}>{t('Restart')}</button>
         </div>
       ),
     },
@@ -4256,38 +4986,38 @@ function WorkersView({ workers, streams }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Worker Assignment</h3>
-            <span>Assign a primary Worker for dispatch, or standby Workers as failover candidates.</span>
+            <h3>{t('Worker Assignment')}</h3>
+            <span>{t('Assign a primary Worker for dispatch, or standby Workers as failover candidates.')}</span>
           </div>
         </div>
         <div className="form-grid">
           <label>
-            <span>Worker</span>
+            <span>{t('Worker')}</span>
             <select value={workerID} onChange={(event) => setWorkerID(event.target.value)}>
-              <option value="">Select worker</option>
+              <option value="">{t('Select worker')}</option>
               {workers.data.map((worker) => <option key={worker.service_id} value={worker.service_id}>{worker.service_name || worker.service_id}</option>)}
             </select>
           </label>
           <label>
-            <span>Stream</span>
+            <span>{t('Stream')}</span>
             <select value={streamID} onChange={(event) => setStreamID(event.target.value)}>
-              <option value="">Select stream</option>
+              <option value="">{t('Select stream')}</option>
               {streams.data.map((stream) => <option key={stream.id} value={stream.id}>{stream.name} ({stream.status})</option>)}
             </select>
           </label>
           <label>
-            <span>Assignment role</span>
+            <span>{t('Assignment role')}</span>
             <select value={assignmentRole} onChange={(event) => setAssignmentRole(event.target.value)}>
-              <option value="primary">primary - dispatch target</option>
-              <option value="standby">standby - failover candidate</option>
+              <option value="primary">{t('primary - dispatch target')}</option>
+              <option value="standby">{t('standby - failover candidate')}</option>
             </select>
           </label>
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={() => assign()}>Assign Worker as {assignmentRole}</button>
-          <button className="secondary-btn" type="button" disabled={!workerID} onClick={() => unassign()}>Unassign Worker</button>
-          <button className="secondary-btn" type="button" disabled={!workerID} onClick={() => restart(workerID)}>Restart Worker</button>
+          <button className="command-btn" type="button" onClick={() => assign()}>{t(assignmentRole === 'standby' ? 'Assign Worker as standby' : 'Assign Worker as primary')}</button>
+          <button className="secondary-btn" type="button" disabled={!workerID} onClick={() => unassign()}>{t('Unassign Worker')}</button>
+          <button className="secondary-btn" type="button" disabled={!workerID} onClick={() => restart(workerID)}>{t('Restart Worker')}</button>
         </div>
       </section>
       <DataTable title="Workers" data={workers} columns={columns} />
@@ -4296,6 +5026,7 @@ function WorkersView({ workers, streams }) {
 }
 
 function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperations, initialFocus }) {
+  const { t } = useI18n();
   const [serviceID, setServiceID] = useState('');
   const [streamID, setStreamID] = useState('');
   const [assignmentRole, setAssignmentRole] = useState('primary');
@@ -4404,12 +5135,12 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
         <div className="actions">
           {row.service_type !== 'observability' && (
             <>
-              <button className="link-btn" type="button" onClick={() => { setServiceID(value); assign(value, assignmentRole); }}>Assign Selected Stream</button>
-              <button className="secondary-btn" type="button" disabled={!row.current_stream_id} onClick={() => { setServiceID(value); unassign(value); }}>Unassign</button>
+              <button className="link-btn" type="button" onClick={() => { setServiceID(value); assign(value, assignmentRole); }}>{t('Assign Selected Stream')}</button>
+              <button className="secondary-btn" type="button" disabled={!row.current_stream_id} onClick={() => { setServiceID(value); unassign(value); }}>{t('Unassign')}</button>
             </>
           )}
-          <button className="secondary-btn" type="button" onClick={() => onOpenAudit?.({ actionGroup: 'service_assignment', query: value })}>Audit</button>
-          <button className="danger-btn" type="button" onClick={() => { setServiceID(value); deleteService(value); }}>Delete Registry</button>
+          <button className="secondary-btn" type="button" onClick={() => onOpenAudit?.({ actionGroup: 'service_assignment', query: value })}>{t('Audit')}</button>
+          <button className="danger-btn" type="button" onClick={() => { setServiceID(value); deleteService(value); }}>{t('Delete Registry')}</button>
         </div>
       ),
     },
@@ -4420,15 +5151,15 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Service Assignment</h3>
-            <span>Assignments are unique per service type. Assigning a service can move it from another stream or replace the current service of the same type.</span>
+            <h3>{t('Service Assignment')}</h3>
+            <span>{t('Assignments are unique per service type. Assigning a service can move it from another stream or replace the current service of the same type.')}</span>
           </div>
         </div>
         <div className="form-grid">
           <label>
-            <span>Service</span>
+            <span>{t('Service')}</span>
             <select value={serviceID} onChange={(event) => setServiceID(event.target.value)}>
-              <option value="">Select service</option>
+              <option value="">{t('Select service')}</option>
               {assignableServices.map((service) => (
                 <option key={service.service_id} value={service.service_id}>
                   {service.service_name || service.service_id} ({service.service_type})
@@ -4437,24 +5168,24 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
             </select>
           </label>
           <label>
-            <span>Stream</span>
+            <span>{t('Stream')}</span>
             <select value={streamID} onChange={(event) => setStreamID(event.target.value)}>
-              <option value="">Select stream</option>
+              <option value="">{t('Select stream')}</option>
               {streams.data.map((stream) => <option key={stream.id} value={stream.id}>{stream.name} ({stream.status})</option>)}
             </select>
           </label>
           <label>
-            <span>Assignment role</span>
+            <span>{t('Assignment role')}</span>
             <select value={assignmentRole} onChange={(event) => setAssignmentRole(event.target.value)}>
-              <option value="primary">primary - dispatch target</option>
-              <option value="standby">standby - failover candidate</option>
+              <option value="primary">{t('primary - dispatch target')}</option>
+              <option value="standby">{t('standby - failover candidate')}</option>
             </select>
           </label>
         </div>
         <div className="health-summary">
-          <span className="health-card ok">Healthy: {healthSummary.healthy}</span>
-          <span className="health-card warning">Stale: {healthSummary.stale}</span>
-          <span className="health-card critical">Offline: {healthSummary.offline}</span>
+          <span className="health-card ok">{t('Healthy')}: {healthSummary.healthy}</span>
+          <span className="health-card warning">{t('Stale')}: {healthSummary.stale}</span>
+          <span className="health-card critical">{t('Offline')}: {healthSummary.offline}</span>
         </div>
         <StreamAssignmentPlanner
           stream={selectedStream}
@@ -4473,7 +5204,7 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
         {streamID && (
           <div className="assignment-preview">
             <div>
-              <strong>Selected stream assignments</strong>
+              <strong>{t('Selected stream assignments')}</strong>
               <span>{selectedStream ? selectedStream.name : streamID}</span>
             </div>
             <div className="assignment-pills">
@@ -4481,7 +5212,7 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
                 const service = selectedStreamAssignment.assigned.find((item) => item.service_type === type);
                 return (
                   <span className={`assignment-pill ${service ? (serviceHealthState(service).stale ? 'stale' : 'ok') : 'missing'}`} key={type}>
-                    primary {type}: {service?.service_name || service?.service_id || 'missing'}
+                    {t('primary')} {type}: {service?.service_name || service?.service_id || t('missing')}
                   </span>
                 );
               })}
@@ -4490,7 +5221,7 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
               <div className="assignment-pills">
                 {selectedStreamAssignment.standby.map((service) => (
                   <span className={`assignment-pill ${serviceHealthState(service).stale ? 'stale' : 'ok'}`} key={service.service_id}>
-                    standby {service.service_type}: {service.service_name || service.service_id}
+                    {t('standby')} {service.service_type}: {service.service_name || service.service_id}
                   </span>
                 ))}
               </div>
@@ -4500,19 +5231,19 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
         <RuntimeConfigPreview service={selectedService} preview={runtimePreview} />
         {(replacingService || movingFromStream) && (
           <div className="assignment-impact">
-            <strong>Assignment impact</strong>
-            {replacingService && <span>{replacingService.service_name || replacingService.service_id} will be unassigned from this stream.</span>}
-            {movingFromStream && <span>{selectedService.service_name || selectedService.service_id} will move from {movingFromStream.name}.</span>}
+            <strong>{t('Assignment impact')}</strong>
+            {replacingService && <span>{localizeRendered(`${replacingService.service_name || replacingService.service_id} will be unassigned from this stream.`, t)}</span>}
+            {movingFromStream && <span>{localizeRendered(`${selectedService.service_name || selectedService.service_id} will move from ${movingFromStream.name}.`, t)}</span>}
           </div>
         )}
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={() => assign()}>Assign as {assignmentRole}</button>
-          <button className="secondary-btn" type="button" disabled={!serviceID} onClick={() => unassign()}>Unassign Service</button>
-          <button className="secondary-btn" type="button" disabled={!streamID} onClick={() => onOpenStreamOperations?.({ streamID })}>Open Stream Operations</button>
-          <button className="secondary-btn" type="button" disabled={!streamID} onClick={() => onOpenAudit?.({ actionGroup: 'service_assignment', query: streamID })}>View Stream Assignment Audit</button>
-          <button className="secondary-btn" type="button" disabled={!serviceID} onClick={() => onOpenAudit?.({ actionGroup: 'service_assignment', query: serviceID })}>View Service Audit</button>
-          <button className="danger-btn" type="button" disabled={!serviceID} onClick={() => deleteService()}>Delete Service Registry</button>
+          <button className="command-btn" type="button" onClick={() => assign()}>{t(assignmentRole === 'standby' ? 'Assign as standby' : 'Assign as primary')}</button>
+          <button className="secondary-btn" type="button" disabled={!serviceID} onClick={() => unassign()}>{t('Unassign Service')}</button>
+          <button className="secondary-btn" type="button" disabled={!streamID} onClick={() => onOpenStreamOperations?.({ streamID })}>{t('Open Stream Operations')}</button>
+          <button className="secondary-btn" type="button" disabled={!streamID} onClick={() => onOpenAudit?.({ actionGroup: 'service_assignment', query: streamID })}>{t('View Stream Assignment Audit')}</button>
+          <button className="secondary-btn" type="button" disabled={!serviceID} onClick={() => onOpenAudit?.({ actionGroup: 'service_assignment', query: serviceID })}>{t('View Service Audit')}</button>
+          <button className="danger-btn" type="button" disabled={!serviceID} onClick={() => deleteService()}>{t('Delete Service Registry')}</button>
         </div>
       </section>
       <DataTable title="Service Health" data={services} columns={columns} />
@@ -4521,13 +5252,14 @@ function ServiceHealthView({ services, streams, onOpenAudit, onOpenStreamOperati
 }
 
 function RuntimeConfigPreview({ service, preview }) {
+  const { t } = useI18n();
   if (!service) {
     return (
       <div className="runtime-config-preview neutral">
         <div className="runtime-preview-heading">
           <div>
-            <strong>Runtime config preview</strong>
-            <span>Select a service to inspect its effective Control Panel-distributed config.</span>
+            <strong>{t('Runtime config preview')}</strong>
+            <span>{t('Select a service to inspect its effective Control Panel-distributed config.')}</span>
           </div>
         </div>
       </div>
@@ -4561,24 +5293,24 @@ function RuntimeConfigPreview({ service, preview }) {
     <div className={`runtime-config-preview ${tone}`}>
       <div className="runtime-preview-heading">
         <div>
-          <strong>Runtime config preview</strong>
-          <span>Effective no-store config for {service.service_name || service.service_id}. Secret values remain represented by configured status, fingerprints, or secret reference names.</span>
+          <strong>{t('Runtime config preview')}</strong>
+          <span>{localizeRendered(`Effective no-store config for ${service.service_name || service.service_id}. Secret values remain represented by configured status, fingerprints, or secret reference names.`, t)}</span>
         </div>
-        <button className="secondary-btn" type="button" onClick={() => preview.reload?.()}>Refresh Preview</button>
+        <button className="secondary-btn" type="button" onClick={() => preview.reload?.()}>{t('Refresh Preview')}</button>
       </div>
       <div className="runtime-preview-grid">
         <article>
-          <span>Assignments</span>
+          <span>{t('Assignments')}</span>
           <strong>{assignments.length}</strong>
-          <small>{assignments.map((item) => `${item.stream_id}:${item.assignment_role || 'primary'}`).join(', ') || 'none'}</small>
+          <small>{assignments.map((item) => `${item.stream_id}:${t(item.assignment_role || 'primary')}`).join(', ') || t('none')}</small>
         </article>
         <article>
-          <span>Profiles</span>
+          <span>{t('Profiles')}</span>
           <strong>{Object.keys(profiles).length}</strong>
           <small>{profileCounts}</small>
         </article>
         <article>
-          <span>Stream configs</span>
+          <span>{t('Stream configs')}</span>
           <strong>{streamConfigCount}</strong>
           <small>Discord {discordConfigs.length}, Archive {archiveConfigs.length}, YouTube {youtubeConfigs.length}</small>
         </article>
@@ -4589,11 +5321,12 @@ function RuntimeConfigPreview({ service, preview }) {
 }
 
 function StreamAssignmentPlanner({ stream, assignment, services, streamLabel, onAssign }) {
+  const { t } = useI18n();
   if (!stream) {
     return (
       <div className="assignment-planner neutral">
-        <strong>Stream assignment planner</strong>
-        <span>Select a stream to inspect required service assignments.</span>
+        <strong>{t('Stream assignment planner')}</strong>
+        <span>{t('Select a stream to inspect required service assignments.')}</span>
       </div>
     );
   }
@@ -4604,8 +5337,8 @@ function StreamAssignmentPlanner({ stream, assignment, services, streamLabel, on
     <div className={`assignment-planner ${tone}`}>
       <div className="assignment-planner-heading">
         <div>
-          <strong>Stream assignment planner</strong>
-          <span>{stream.name}: {missing.length === 0 ? 'all required service types are assigned' : `missing ${missing.join(', ')}`}</span>
+          <strong>{t('Stream assignment planner')}</strong>
+          <span>{stream.name}: {missing.length === 0 ? t('all required service types are assigned') : localizeRendered(`missing ${missing.join(', ')}`, t)}</span>
         </div>
         <Badge tone={tone === 'critical' ? 'critical' : tone === 'warning' ? 'warning' : 'ok'}>{tone === 'critical' ? 'not ready' : tone === 'warning' ? 'attention' : 'ready'}</Badge>
       </div>
@@ -4619,14 +5352,14 @@ function StreamAssignmentPlanner({ stream, assignment, services, streamLabel, on
             <div className={`assignment-type-row ${current ? (currentHealth.stale ? 'warning' : 'ok') : 'critical'}`} key={type}>
               <div>
                 <strong>{type}</strong>
-                <span>{current ? `${current.service_name || current.service_id} / ${currentHealth.label}` : 'missing'}</span>
+                <span>{current ? localizeRendered(`${current.service_name || current.service_id} / ${currentHealth.label}`, t) : t('missing')}</span>
                 {standby.length > 0 && (
-                  <small>standby: {standby.map((service) => service.service_name || service.service_id).join(', ')}</small>
+                  <small>{t('standby')}: {standby.map((service) => service.service_name || service.service_id).join(', ')}</small>
                 )}
               </div>
               <div className="assignment-candidates">
                 {candidates.length === 0 ? (
-                  <span className="muted">No registered candidate.</span>
+                  <span className="muted">{t('No registered candidate.')}</span>
                 ) : candidates.map((service) => {
                   const health = serviceHealthState(service);
                   const selected = current?.service_id === service.service_id;
@@ -4642,7 +5375,7 @@ function StreamAssignmentPlanner({ stream, assignment, services, streamLabel, on
                         title={`${service.service_name || service.service_id} / ${health.label}`}
                         type="button"
                       >
-                        {service.service_name || service.service_id} ({health.label}) {selected ? 'primary' : moveLabel}
+                        {service.service_name || service.service_id} ({localizeRendered(health.label, t)}) {selected ? t('primary') : localizeRendered(moveLabel, t)}
                       </button>
                       <button
                         className={standbySelected ? 'secondary-btn' : 'link-btn'}
@@ -4651,7 +5384,7 @@ function StreamAssignmentPlanner({ stream, assignment, services, streamLabel, on
                         title={`${service.service_name || service.service_id} / ${health.label}`}
                         type="button"
                       >
-                        {standbySelected ? 'standby' : 'as standby'}
+                        {standbySelected ? t('standby') : t('as standby')}
                       </button>
                     </span>
                   );
@@ -4676,6 +5409,7 @@ const auditActionGroups = {
 };
 
 function AuditLogsView({ data, initialFilter }) {
+  const { t } = useI18n();
   const [message, setMessage] = useState('');
   const [actionGroup, setActionGroup] = useState('service_assignment');
   const [resultFilter, setResultFilter] = useState('all');
@@ -4735,48 +5469,48 @@ function AuditLogsView({ data, initialFilter }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Audit Export</h3>
-            <span>CSV export excludes secret values and password hashes.</span>
+            <h3>{t('Audit Export')}</h3>
+            <span>{t('CSV export excludes secret values and password hashes.')}</span>
           </div>
-          <button className="command-btn" type="button" onClick={exportCSV}>Export CSV</button>
+          <button className="command-btn" type="button" onClick={exportCSV}>{t('Export CSV')}</button>
         </div>
         {message && <Message text={message} tone="ok" />}
       </section>
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Audit Filters</h3>
-            <span>Service assignment actions are selected by default so assignment changes are easy to inspect.</span>
+            <h3>{t('Audit Filters')}</h3>
+            <span>{t('Service assignment actions are selected by default so assignment changes are easy to inspect.')}</span>
           </div>
         </div>
         <div className="form-grid">
           <label>
-            <span>Action group</span>
+            <span>{t('Action group')}</span>
             <select value={actionGroup} onChange={(event) => setActionGroup(event.target.value)}>
-              <option value="service_assignment">Service assignment</option>
-              <option value="service_runtime">Service runtime</option>
-              <option value="stream_lifecycle">Stream lifecycle</option>
-              <option value="security">Security / users / roles</option>
-              <option value="secrets">Secrets / tokens / settings</option>
-              <option value="notifications">Notification channels</option>
-              <option value="all">All actions</option>
+              <option value="service_assignment">{t('Service assignment')}</option>
+              <option value="service_runtime">{t('Service runtime')}</option>
+              <option value="stream_lifecycle">{t('Stream lifecycle')}</option>
+              <option value="security">{t('Security / users / roles')}</option>
+              <option value="secrets">{t('Secrets / tokens / settings')}</option>
+              <option value="notifications">{t('Notification channels')}</option>
+              <option value="all">{t('All actions')}</option>
             </select>
           </label>
           <label>
-            <span>Result</span>
+            <span>{t('Result')}</span>
             <select value={resultFilter} onChange={(event) => setResultFilter(event.target.value)}>
-              <option value="all">All results</option>
-              <option value="success">success</option>
-              <option value="failure">failure</option>
+              <option value="all">{t('All results')}</option>
+              <option value="success">{t('success')}</option>
+              <option value="failure">{t('failure')}</option>
             </select>
           </label>
           <label>
-            <span>Search</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="service id, stream id, action, actor" />
+            <span>{t('Search')}</span>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('service id, stream id, action, actor')} />
           </label>
         </div>
         <div className="filter-summary">
-          Showing {filteredAudit.data.length} filtered audit events from the server. Recent loaded events: {data.data.length}.
+          {localizeRendered(`Showing ${filteredAudit.data.length} filtered audit events from the server. Recent loaded events: ${data.data.length}.`, t)}
         </div>
       </section>
       <DataTable title="Audit Logs" data={filteredAudit} columns={auditColumns} />
@@ -4784,7 +5518,38 @@ function AuditLogsView({ data, initialFilter }) {
   );
 }
 
-const serviceTypes = ['discord_bot', 'encoder_recorder', 'worker', 'observability'];
+const serviceProfiles = {
+  worker: {
+    label: 'Worker',
+    summary: 'Overlay, caption, participant state, and stream event worker.',
+    serviceID: 'worker-01',
+    serviceName: 'Worker 01',
+    publicURL: 'https://worker.example.com',
+  },
+  encoder_recorder: {
+    label: 'Encoder Recorder',
+    summary: 'Recording, RTMPS output, archive packaging, and upload service.',
+    serviceID: 'encoder-recorder-01',
+    serviceName: 'Encoder Recorder 01',
+    publicURL: 'https://encoder.example.com',
+  },
+  discord_bot: {
+    label: 'Discord Bot',
+    summary: 'Discord voice capture and audio forwarding service.',
+    serviceID: 'discord-bot-01',
+    serviceName: 'Discord Bot 01',
+    publicURL: 'https://discord-bot.example.com',
+  },
+  observability: {
+    label: 'Observability',
+    summary: 'Signal ingestion, diagnostics, remediation, and notification service.',
+    serviceID: 'observability-01',
+    serviceName: 'Observability 01',
+    publicURL: 'https://observability.example.com',
+  },
+};
+
+const serviceTypes = Object.keys(serviceProfiles);
 
 const serviceScopes = [
   'service.register',
@@ -4813,32 +5578,26 @@ const defaultCapabilitiesByServiceType = {
   observability: 'signal_ingest,diagnostics,remediation,notifications',
 };
 
+const runtimeConfigRequiredServices = new Set(['discord_bot', 'encoder_recorder', 'worker']);
+
 function ApiTokensView({ data }) {
+  const { t } = useI18n();
   const [serviceType, setServiceType] = useState('worker');
   const [scopes, setScopes] = useState(defaultScopesByServiceType.worker);
-  const [precreate, setPrecreate] = useState({
-    service_id: '',
-    service_name: '',
-    public_url: '',
-    version: '0.1.0',
-    capabilities: defaultCapabilitiesByServiceType.worker,
-  });
+  const [precreate, setPrecreate] = useState(() => defaultServicePrecreate('worker'));
   const [createdToken, setCreatedToken] = useState('');
   const [createdBootstrap, setCreatedBootstrap] = useState('');
   const [message, setMessage] = useState({ text: '', tone: 'neutral' });
+  const [copyMessage, setCopyMessage] = useState('');
 
   const changeServiceType = (value) => {
     setServiceType(value);
     setScopes(defaultScopesByServiceType[value] || ['service.register', 'service.heartbeat']);
-    setPrecreate((current) => ({
-      ...current,
-      service_id: current.service_id || `${value.replaceAll('_', '-')}-01`,
-      service_name: current.service_name || serviceTypeLabel(value),
-      capabilities: defaultCapabilitiesByServiceType[value] || '',
-    }));
+    setPrecreate(defaultServicePrecreate(value));
     setCreatedToken('');
     setCreatedBootstrap('');
     setMessage({ text: '', tone: 'neutral' });
+    setCopyMessage('');
   };
 
   const toggleScope = (scope) => {
@@ -4849,26 +5608,49 @@ function ApiTokensView({ data }) {
     setPrecreate((current) => ({ ...current, [key]: value }));
   };
 
+  const copyGeneratedValue = async (value, successMessage) => {
+    setCopyMessage('');
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyMessage(successMessage);
+    } catch {
+      setCopyMessage('Clipboard is unavailable. Select the value and copy it manually.');
+    }
+  };
+
   const createToken = async () => {
     setCreatedToken('');
     setCreatedBootstrap('');
+    setCopyMessage('');
     if (!scopes.length) {
       setMessage({ text: 'At least one scope is required.', tone: 'warning' });
       return;
     }
-    const precreateRequested = Boolean(precreate.service_id.trim());
-    if (precreateRequested && !scopes.includes('service.register')) {
+    if (!precreate.service_id.trim()) {
+      setMessage({ text: 'Service ID is required.', tone: 'warning' });
+      return;
+    }
+    if (!precreate.service_name.trim()) {
+      setMessage({ text: 'Service name is required.', tone: 'warning' });
+      return;
+    }
+    if (!precreate.public_url.trim()) {
+      setMessage({ text: 'Public URL is required.', tone: 'warning' });
+      return;
+    }
+    if (!scopes.includes('service.register')) {
       setMessage({ text: 'Pre-created services require service.register scope.', tone: 'warning' });
       return;
     }
-    const body = { service_type: serviceType, scopes };
-    if (precreateRequested) {
-      body.service_id = precreate.service_id.trim();
-      body.service_name = precreate.service_name.trim();
-      body.public_url = precreate.public_url.trim();
-      body.version = precreate.version.trim();
-      body.capabilities = parseCapabilityFlags(precreate.capabilities);
-    }
+    const body = {
+      service_type: serviceType,
+      scopes,
+      service_id: precreate.service_id.trim(),
+      service_name: precreate.service_name.trim(),
+      public_url: precreate.public_url.trim(),
+      version: precreate.version.trim(),
+      capabilities: parseCapabilityFlags(precreate.capabilities),
+    };
     const result = await apiRequest('/api-tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken(), Accept: 'application/json' },
@@ -4879,15 +5661,17 @@ function ApiTokensView({ data }) {
       return;
     }
     setCreatedToken(result.body?.token || '');
-    if (precreateRequested && result.body?.token) {
+    if (result.body?.token) {
       setCreatedBootstrap(serviceBootstrapEnv({
+        serviceType,
         serviceID: body.service_id,
         serviceName: body.service_name || serviceTypeLabel(serviceType),
         publicURL: body.public_url,
+        controlPanelURL: controlPanelOrigin(),
         token: result.body.token,
       }));
     }
-    setMessage({ text: precreateRequested ? 'Created token and pending service. Copy the token now; it will not be shown again.' : 'Created. Copy the token now; it will not be shown again.', tone: 'ok' });
+    setMessage({ text: 'Created pending service and one-time token. Copy it now; it will not be shown again.', tone: 'ok' });
     await data.reload?.();
   };
 
@@ -4907,6 +5691,7 @@ function ApiTokensView({ data }) {
   const rotateToken = async (id) => {
     setCreatedToken('');
     setCreatedBootstrap('');
+    setCopyMessage('');
     const result = await apiRequest(`/api-tokens/${id}/rotate`, {
       method: 'POST',
       headers: { 'X-CSRF-Token': csrfToken(), Accept: 'application/json' },
@@ -4928,76 +5713,112 @@ function ApiTokensView({ data }) {
       render: (_, row) => (
         <div className="row-actions">
           <button className="command-btn" type="button" disabled={Boolean(row.revoked_at)} onClick={() => rotateToken(row.id)}>
-            Rotate
+            {t('Rotate')}
           </button>
           <button className="danger-btn" type="button" disabled={Boolean(row.revoked_at)} onClick={() => revokeToken(row.id)}>
-            Revoke
+            {t('Revoke')}
           </button>
         </div>
       ),
     },
   ];
 
+  const activeProfile = serviceProfiles[serviceType] || serviceProfiles.worker;
+  const connectionSteps = [
+    { title: 'Choose service', body: 'Select the service you want to connect. The required scopes are filled automatically.' },
+    { title: 'Create pending service', body: 'Enter the service ID, display name, and public URL that this host will use.' },
+    { title: 'Copy env', body: 'Create the token, then copy the generated env before leaving this page.' },
+    { title: 'Start service', body: 'Paste the env into the service host, restart it, and confirm heartbeat in Service Health.' },
+  ];
+
   return (
     <div className="stack">
-      <section className="panel">
+      <section className="panel service-connect-panel">
         <div className="panel-heading">
           <div>
-            <h3>Create Service Token</h3>
-            <span>Pre-create a service registry entry, then copy the one-time token into that service host bootstrap env.</span>
+            <h3>{t('Connect Service')}</h3>
+            <span>{t('Prepare a service slot, issue a one-time token, then paste the bootstrap env into the service host.')}</span>
           </div>
+        </div>
+        <div className="connect-steps" aria-label={t('Connect Service')}>
+          {connectionSteps.map((step, index) => (
+            <div className="connect-step" key={step.title}>
+              <span className="connect-step-index">{index + 1}</span>
+              <div>
+                <strong>{t(step.title)}</strong>
+                <small>{t(step.body)}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="service-type-selector" role="list" aria-label={t('Service Type')}>
+          {serviceTypes.map((item) => {
+            const profile = serviceProfiles[item];
+            const active = item === serviceType;
+            return (
+              <button className={`service-type-option${active ? ' active' : ''}`} key={item} type="button" aria-pressed={active} onClick={() => changeServiceType(item)}>
+                <strong>{t(profile.label)}</strong>
+                <span>{t(profile.summary)}</span>
+              </button>
+            );
+          })}
         </div>
         <div className="form-grid">
           <label>
-            <span>Service type</span>
-            <select value={serviceType} onChange={(event) => changeServiceType(event.target.value)}>
-              {serviceTypes.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-          </label>
-          <div className="checkbox-grid wide">
-            {serviceScopes.map((scope) => (
-              <label className="check-row" key={scope}>
-                <input type="checkbox" checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} />
-                <span>{scope}</span>
-              </label>
-            ))}
-          </div>
-          <label>
-            <span>Pre-create service ID</span>
-            <input value={precreate.service_id} onChange={(event) => updatePrecreate('service_id', event.target.value)} placeholder="encoder-recorder-01" />
+            <span>{t('Service ID')}</span>
+            <input value={precreate.service_id} onChange={(event) => updatePrecreate('service_id', event.target.value)} placeholder={activeProfile.serviceID} />
           </label>
           <label>
-            <span>Service name</span>
-            <input value={precreate.service_name} onChange={(event) => updatePrecreate('service_name', event.target.value)} placeholder="Encoder Recorder 01" />
+            <span>{t('Service name')}</span>
+            <input value={precreate.service_name} onChange={(event) => updatePrecreate('service_name', event.target.value)} placeholder={activeProfile.serviceName} />
           </label>
           <label>
-            <span>Public URL</span>
-            <input value={precreate.public_url} onChange={(event) => updatePrecreate('public_url', event.target.value)} placeholder="https://encoder.example.com" />
+            <span>{t('Public URL')}</span>
+            <input value={precreate.public_url} onChange={(event) => updatePrecreate('public_url', event.target.value)} placeholder={activeProfile.publicURL} />
           </label>
           <label>
-            <span>Version</span>
+            <span>{t('Version')}</span>
             <input value={precreate.version} onChange={(event) => updatePrecreate('version', event.target.value)} placeholder="0.1.0" />
           </label>
           <label className="wide">
-            <span>Capabilities</span>
+            <span>{t('Capabilities')}</span>
             <input value={precreate.capabilities} onChange={(event) => updatePrecreate('capabilities', event.target.value)} placeholder="rtmps_output,archive_package,gdrive_upload" />
           </label>
+          <details className="advanced-permissions wide">
+            <summary>{t('Advanced permissions')}</summary>
+            <p>{t('The defaults are the minimum expected for registration, heartbeat, runtime config, and service reporting. Change only when you know the service contract.')}</p>
+            <div className="checkbox-grid">
+              {serviceScopes.map((scope) => (
+                <label className="check-row" key={scope}>
+                  <input type="checkbox" checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} />
+                  <span>{scope}</span>
+                </label>
+              ))}
+            </div>
+          </details>
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         {createdToken && (
           <div className="token-once">
-            <span>One-time token</span>
+            <span>{t('One-time token')}</span>
             <code>{createdToken}</code>
+            <div className="token-copy-actions">
+              <button className="secondary-btn" type="button" onClick={() => copyGeneratedValue(createdToken, 'Copied token.')}><ClipboardList size={16} />{t('Copy token')}</button>
+            </div>
             {createdBootstrap && (
               <>
-                <span>Bootstrap env for the service host</span>
+                <span>{t('Bootstrap env for the service host')}</span>
                 <pre>{createdBootstrap}</pre>
+                <div className="token-copy-actions">
+                  <button className="secondary-btn" type="button" onClick={() => copyGeneratedValue(createdBootstrap, 'Copied env block.')}><ClipboardList size={16} />{t('Copy env block')}</button>
+                </div>
               </>
             )}
+            {copyMessage && <small className="copy-status">{t(copyMessage)}</small>}
           </div>
         )}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={createToken}>Create Token</button>
+          <button className="command-btn" type="button" onClick={createToken}>{t('Issue one-time connection token')}</button>
         </div>
       </section>
       <DataTable title="API Tokens" data={data} columns={columns} />
@@ -5005,19 +5826,42 @@ function ApiTokensView({ data }) {
   );
 }
 
-function serviceTypeLabel(serviceType) {
-  return serviceType.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+function defaultServicePrecreate(serviceType) {
+  const profile = serviceProfiles[serviceType] || serviceProfiles.worker;
+  return {
+    service_id: profile.serviceID,
+    service_name: profile.serviceName,
+    public_url: profile.publicURL,
+    version: '0.1.0',
+    capabilities: defaultCapabilitiesByServiceType[serviceType] || '',
+  };
 }
 
-function serviceBootstrapEnv({ serviceID, serviceName, publicURL, token }) {
-  return [
+function serviceTypeLabel(serviceType) {
+  return serviceProfiles[serviceType]?.label || serviceType.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+}
+
+function controlPanelOrigin() {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+  return 'https://control.example.com';
+}
+
+function serviceBootstrapEnv({ serviceType, serviceID, serviceName, publicURL, controlPanelURL, token }) {
+  const lines = [
     `SERVICE_ID=${serviceID}`,
     `SERVICE_NAME=${serviceName || serviceID}`,
     `SERVICE_PUBLIC_URL=${publicURL || 'https://service.example.com'}`,
-    'CONTROL_PANEL_URL=https://control.example.com',
+    `CONTROL_PANEL_URL=${controlPanelURL || 'https://control.example.com'}`,
     `CONTROL_PANEL_TOKEN=${token}`,
+    'CONTROL_PANEL_HEARTBEAT_INTERVAL_SEC=30',
     'TZ=Asia/Tokyo',
-  ].join('\n');
+  ];
+  if (runtimeConfigRequiredServices.has(serviceType)) {
+    lines.push('AUTOSTREAM_REQUIRE_CONTROL_PANEL_RUNTIME_CONFIG=true');
+  }
+  return lines.join('\n');
 }
 
 function parseCapabilityFlags(value) {
@@ -5090,14 +5934,14 @@ function EncoderMetricSummary({ metrics, compact = false }) {
     <div className="metric-panel">
       <div className="panel-heading">
         <h3>{t('Encoder / Recorder Metrics')}</h3>
-        <span>{metrics.data.length} snapshots</span>
+        <span>{localizeRendered(`${metrics.data.length} snapshots`, t)}</span>
       </div>
       <div className="metric-grid">
         {visible.map((card) => (
           <article className={`metric-card ${card.tone}`} key={card.name}>
             <span>{t(card.label)}</span>
             <strong>{localizeRendered(card.display, t)}</strong>
-            <small>{card.updatedAt ? `Updated ${formatDateTime(card.updatedAt)}` : 'No data'}</small>
+            <small>{card.updatedAt ? localizeRendered(`Updated ${formatDateTime(card.updatedAt)}`, t) : t('No data')}</small>
           </article>
         ))}
       </div>
@@ -5128,14 +5972,14 @@ function ArchiveMetricSummary({ metrics, compact = false }) {
     <div className="metric-panel">
       <div className="panel-heading">
         <h3>{t('Archive / Google Drive Metrics')}</h3>
-        <span>{metrics.data.length} snapshots</span>
+        <span>{localizeRendered(`${metrics.data.length} snapshots`, t)}</span>
       </div>
       <div className="metric-grid">
         {visible.map((card) => (
           <article className={`metric-card ${card.tone}`} key={card.name}>
             <span>{t(card.label)}</span>
             <strong>{localizeRendered(card.display, t)}</strong>
-            <small>{card.updatedAt ? `Updated ${formatDateTime(card.updatedAt)}` : 'No data'}</small>
+            <small>{card.updatedAt ? localizeRendered(`Updated ${formatDateTime(card.updatedAt)}`, t) : t('No data')}</small>
           </article>
         ))}
       </div>
@@ -5161,14 +6005,14 @@ function AudioMetricSummary({ metrics, compact = false }) {
     <div className="metric-panel">
       <div className="panel-heading">
         <h3>{t('Audio / Input Health')}</h3>
-        <span>{metrics.data.length} snapshots</span>
+        <span>{localizeRendered(`${metrics.data.length} snapshots`, t)}</span>
       </div>
       <div className="metric-grid">
         {visible.map((card) => (
           <article className={`metric-card ${card.tone}`} key={card.name}>
             <span>{t(card.label)}</span>
             <strong>{localizeRendered(card.display, t)}</strong>
-            <small>{card.updatedAt ? `Updated ${formatDateTime(card.updatedAt)}` : 'No data'}</small>
+            <small>{card.updatedAt ? localizeRendered(`Updated ${formatDateTime(card.updatedAt)}`, t) : t('No data')}</small>
           </article>
         ))}
       </div>
@@ -5192,14 +6036,14 @@ function WorkerMetricSummary({ metrics, compact = false }) {
     <div className="metric-panel">
       <div className="panel-heading">
         <h3>{t('Worker Event Metrics')}</h3>
-        <span>{metrics.data.length} snapshots</span>
+        <span>{localizeRendered(`${metrics.data.length} snapshots`, t)}</span>
       </div>
       <div className="metric-grid">
         {visible.map((card) => (
           <article className={`metric-card ${card.tone}`} key={card.name}>
             <span>{t(card.label)}</span>
             <strong>{localizeRendered(card.display, t)}</strong>
-            <small>{card.updatedAt ? `Updated ${formatDateTime(card.updatedAt)}` : 'No data'}</small>
+            <small>{card.updatedAt ? localizeRendered(`Updated ${formatDateTime(card.updatedAt)}`, t) : t('No data')}</small>
           </article>
         ))}
       </div>
@@ -5356,14 +6200,15 @@ function Remediation({ data, reload }) {
 }
 
 function RemediationResult({ action }) {
+  const { t } = useI18n();
   const result = action.result || '';
   if (!result) {
-    return <span className="muted">Not executed yet</span>;
+    return <span className="muted">{t('Not executed yet')}</span>;
   }
   const tone = remediationResultTone(action.status, result);
   return (
     <div className={`remediation-result ${tone}`}>
-      <strong>{formatRemediationResult(result)}</strong>
+      <strong>{localizeRendered(formatRemediationResult(result), t)}</strong>
       {action.executed_at && <span>{formatDateTime(action.executed_at)}</span>}
     </div>
   );
@@ -5405,10 +6250,11 @@ const remediationActionHelp = {
 };
 
 function ActionSummary({ actionName }) {
+  const { t } = useI18n();
   return (
     <div className="action-summary">
       <strong>{actionName}</strong>
-      <span>{remediationActionHelp[actionName] || 'Review diagnostic evidence before executing.'}</span>
+      <span>{localizeRendered(remediationActionHelp[actionName] || 'Review diagnostic evidence before executing.', t)}</span>
     </div>
   );
 }
@@ -5473,6 +6319,7 @@ const notificationEventFilters = [
 ];
 
 function Notifications({ deliveries, channels }) {
+  const { t } = useI18n();
   const [selectedID, setSelectedID] = useState('');
   const [name, setName] = useState('');
   const [type, setType] = useState('discord');
@@ -5634,8 +6481,8 @@ function Notifications({ deliveries, channels }) {
       label: 'Actions',
       render: (_, row) => (
         <div className="actions">
-          <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>Edit</button>
-          <button className="secondary-btn" type="button" onClick={() => test(row.id)}>Test</button>
+          <button className="link-btn" type="button" onClick={() => setSelectedID(row.id)}>{t('Edit')}</button>
+          <button className="secondary-btn" type="button" onClick={() => test(row.id)}>{t('Test')}</button>
         </div>
       ),
     },
@@ -5645,70 +6492,70 @@ function Notifications({ deliveries, channels }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>{selectedID ? 'Edit Notification Channel' : 'Create Notification Channel'}</h3>
-            <span>Webhook URLs and SMTP passwords are write-only. The table shows only masked targets.</span>
+            <h3>{selectedID ? t('Edit Notification Channel') : t('Create Notification Channel')}</h3>
+            <span>{t('Webhook URLs and SMTP passwords are write-only. The table shows only masked targets.')}</span>
           </div>
-          <button className="secondary-btn" type="button" onClick={reset}>New</button>
+          <button className="secondary-btn" type="button" onClick={reset}>{t('New')}</button>
         </div>
         <div className="form-grid">
           <label>
-            <span>Existing channel</span>
+            <span>{t('Existing channel')}</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Create new</option>
+              <option value="">{t('Create new')}</option>
               {channels.data.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
             </select>
           </label>
           <label>
-            <span>Name</span>
+            <span>{t('Name')}</span>
             <input value={name} onChange={(event) => setName(event.target.value)} />
           </label>
           <label>
-            <span>Type</span>
+            <span>{t('Type')}</span>
             <select value={type} onChange={(event) => setType(event.target.value)}>
               {notificationChannelTypes.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
           </label>
           {type !== 'email' && (
             <label>
-              <span>Webhook URL</span>
-              <input type="password" value={webhookURL} onChange={(event) => setWebhookURL(event.target.value)} placeholder={selectedID ? 'leave blank to keep existing URL' : 'https://example.com/webhook/<TOKEN>'} />
+              <span>{t('Webhook URL')}</span>
+              <input type="password" value={webhookURL} onChange={(event) => setWebhookURL(event.target.value)} placeholder={selectedID ? t('leave blank to keep existing URL') : 'https://example.com/webhook/<TOKEN>'} />
             </label>
           )}
           {type === 'email' && (
             <>
               <label className="wide">
-                <span>Recipients</span>
+                <span>{t('Recipients')}</span>
                 <textarea value={emailRecipients} onChange={(event) => setEmailRecipients(event.target.value)} placeholder="ops@example.com&#10;alerts@example.com" rows={3} />
               </label>
               <label>
-                <span>SMTP Host</span>
+                <span>{t('SMTP Host')}</span>
                 <input value={smtpHost} onChange={(event) => setSMTPHost(event.target.value)} placeholder="smtp.example.com" />
               </label>
               <label>
-                <span>SMTP Port</span>
+                <span>{t('SMTP Port')}</span>
                 <input type="number" min="1" max="65535" value={smtpPort} onChange={(event) => setSMTPPort(event.target.value)} />
               </label>
               <label>
-                <span>From</span>
+                <span>{t('From')}</span>
                 <input value={smtpFrom} onChange={(event) => setSMTPFrom(event.target.value)} placeholder="autostream@example.com" />
               </label>
               <label>
-                <span>SMTP Username</span>
+                <span>{t('SMTP Username')}</span>
                 <input value={smtpUsername} onChange={(event) => setSMTPUsername(event.target.value)} />
               </label>
               <label>
-                <span>SMTP Password</span>
-                <input type="password" value={smtpPassword} onChange={(event) => setSMTPPassword(event.target.value)} placeholder={selectedID ? 'leave blank to keep existing password' : 'optional'} />
+                <span>{t('SMTP Password')}</span>
+                <input type="password" value={smtpPassword} onChange={(event) => setSMTPPassword(event.target.value)} placeholder={selectedID ? t('leave blank to keep existing password') : t('optional')} />
               </label>
               <label className="check-row">
                 <input type="checkbox" checked={smtpTLS} onChange={(event) => setSMTPTLS(event.target.checked)} />
-                <span>Use TLS</span>
+                <span>{t('Use TLS')}</span>
               </label>
             </>
           )}
           <label className="check-row">
             <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
-            <span>Enabled</span>
+            <span>{t('Enabled')}</span>
           </label>
           <div className="checkbox-grid wide">
             {notificationSeverityFilters.map((severity) => (
@@ -5729,9 +6576,9 @@ function Notifications({ deliveries, channels }) {
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={save}>{selectedID ? 'Update Channel' : 'Create Channel'}</button>
-          <button className="secondary-btn" type="button" disabled={!selectedID} onClick={() => test()}>Test Channel</button>
-          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>Delete Channel</button>
+          <button className="command-btn" type="button" onClick={save}>{selectedID ? t('Update Channel') : t('Create Channel')}</button>
+          <button className="secondary-btn" type="button" disabled={!selectedID} onClick={() => test()}>{t('Test Channel')}</button>
+          <button className="danger-btn" type="button" disabled={!selectedID} onClick={remove}>{t('Delete Channel')}</button>
         </div>
       </section>
       <DataTable title="Notification Channels" data={channels} columns={channelColumns} />
@@ -5747,6 +6594,7 @@ function Notifications({ deliveries, channels }) {
 }
 
 function Diagnostics({ data }) {
+  const { t } = useI18n();
   const [selectedID, setSelectedID] = useState('');
   useEffect(() => {
     if (!selectedID && Array.isArray(data.data) && data.data.length > 0) {
@@ -5766,12 +6614,12 @@ function Diagnostics({ data }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Diagnostic Reports</h3>
-            <span>Select an incident report and review evidence, impact, and next checks.</span>
+            <h3>{t('Diagnostic Reports')}</h3>
+            <span>{t('Select an incident report and review evidence, impact, and next checks.')}</span>
           </div>
         </div>
         <label>
-          <span>Report</span>
+          <span>{t('Report')}</span>
           <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
             {reports.map((item) => {
               const id = item.id || item.incident_id;
@@ -5784,15 +6632,15 @@ function Diagnostics({ data }) {
         <h3>{report.summary || selected.rule}</h3>
         <EvidenceHighlights highlights={highlights} />
         <dl>
-          <dt>Incident</dt>
+          <dt>{t('Incident')}</dt>
           <dd>{selected.incident_id || selected.id || '-'}</dd>
-          <dt>Rule</dt>
+          <dt>{t('Rule')}</dt>
           <dd>{selected.rule || '-'}</dd>
-          <dt>Likely cause</dt>
+          <dt>{t('Likely cause')}</dt>
           <dd>{report.likely_cause || '-'}</dd>
-          <dt>Impact</dt>
+          <dt>{t('Impact')}</dt>
           <dd>{report.impact || '-'}</dd>
-          <dt>Confidence</dt>
+          <dt>{t('Confidence')}</dt>
           <dd>{typeof report.confidence === 'number' ? `${Math.round(report.confidence * 100)}%` : '-'}</dd>
         </dl>
         <RuleHint hint={hint} />
@@ -5857,6 +6705,7 @@ function DataTable({ title, data, columns, compact = false }) {
 }
 
 function SecurityView({ settings, secrets, me }) {
+  const { t } = useI18n();
   const [passkeys] = useAPI('/auth/passkeys');
   const [form, setForm] = useState({
     password_min_length: 12,
@@ -6072,72 +6921,72 @@ function SecurityView({ settings, secrets, me }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Security Settings</h3>
-            <span>Fail-closed defaults are enforced server-side.</span>
+            <h3>{t('Security Settings')}</h3>
+            <span>{t('Fail-closed defaults are enforced server-side.')}</span>
           </div>
-          <span>Updated {formatDateTime(settings.data?.updated_at)}</span>
+          <span>{t('Updated')} {formatDateTime(settings.data?.updated_at)}</span>
         </div>
         <div className="form-grid">
           <label>
-            <span>Password min length</span>
+            <span>{t('Password min length')}</span>
             <input type="number" min="12" value={form.password_min_length} onChange={(event) => updateSetting('password_min_length', event.target.value)} />
           </label>
           <label>
-            <span>Login lockout threshold</span>
+            <span>{t('Login lockout threshold')}</span>
             <input type="number" min="3" value={form.login_lockout_threshold} onChange={(event) => updateSetting('login_lockout_threshold', event.target.value)} />
           </label>
           <label>
-            <span>Session idle timeout minutes</span>
+            <span>{t('Session idle timeout minutes')}</span>
             <input type="number" min="5" value={form.session_idle_timeout_min} onChange={(event) => updateSetting('session_idle_timeout_min', event.target.value)} />
           </label>
           <label>
-            <span>Session absolute lifetime hours</span>
+            <span>{t('Session absolute lifetime hours')}</span>
             <input type="number" min="1" value={form.session_absolute_lifetime_h} onChange={(event) => updateSetting('session_absolute_lifetime_h', event.target.value)} />
           </label>
           <label>
-            <span>MFA mode</span>
+            <span>{t('MFA mode')}</span>
             <select value={form.mfa_mode} onChange={(event) => updateSetting('mfa_mode', event.target.value)}>
-              <option value="disabled">disabled</option>
+              <option value="disabled">{t('disabled')}</option>
               <option value="totp">totp</option>
               <option value="passkey">passkey</option>
             </select>
           </label>
           <label>
-            <span>MFA methods</span>
+            <span>{t('MFA methods')}</span>
             <input value={(settings.data?.mfa_supported_methods || ['totp']).join(', ')} disabled />
           </label>
           <label>
-            <span>MFA required roles</span>
-            <input value={form.mfa_required_roles} onChange={(event) => updateSetting('mfa_required_roles', event.target.value)} placeholder="blank = all users, e.g. super_admin, admin" />
+            <span>{t('MFA required roles')}</span>
+            <input value={form.mfa_required_roles} onChange={(event) => updateSetting('mfa_required_roles', event.target.value)} placeholder={t('blank = all users, e.g. super_admin, admin')} />
           </label>
           <label>
-            <span>Passkey / WebAuthn</span>
+            <span>{t('Passkey / WebAuthn')}</span>
             <input value={settings.data?.passkey_status || 'available'} disabled />
           </label>
           <label>
-            <span>Password hash</span>
+            <span>{t('Password hash')}</span>
             <input value="argon2id" disabled />
           </label>
         </div>
-        <p className="form-note">TOTP mode requires TOTP after password or OAuth login. Passkey mode requires targeted users to sign in with a registered WebAuthn credential; password and OAuth login do not issue sessions for those users.</p>
+        <p className="form-note">{t('TOTP mode requires TOTP after password or OAuth login. Passkey mode requires targeted users to sign in with a registered WebAuthn credential; password and OAuth login do not issue sessions for those users.')}</p>
         <div className="actions">
-          <button className="command-btn" type="button" onClick={saveSettings}>Save Settings</button>
+          <button className="command-btn" type="button" onClick={saveSettings}>{t('Save Settings')}</button>
         </div>
       </section>
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Current User Passkeys</h3>
-            <span>Register, use, and remove WebAuthn credentials for the current user.</span>
+            <h3>{t('Current User Passkeys')}</h3>
+            <span>{t('Register, use, and remove WebAuthn credentials for the current user.')}</span>
           </div>
           <Badge tone="ok">{settings.data?.passkey_status || 'available'}</Badge>
         </div>
         <div className="actions">
-          <button className="command-btn" type="button" onClick={startPasskeyRegistration}>Register Passkey</button>
+          <button className="command-btn" type="button" onClick={startPasskeyRegistration}>{t('Register Passkey')}</button>
         </div>
         {passkeyRegistration && (
           <div className="inline-note">
-            <strong>Challenge ready:</strong> RP {passkeyRegistration.public_key?.rp?.id || '-'} / expires {formatDateTime(passkeyRegistration.expires_at)}. The one-time registration token is held only in this browser response.
+            <strong>{t('Challenge ready')}:</strong> RP {passkeyRegistration.public_key?.rp?.id || '-'} / expires {formatDateTime(passkeyRegistration.expires_at)}. {t('The one-time registration token is held only in this browser response.')}
           </div>
         )}
         <DataTable title="Passkey credentials" data={passkeys} columns={[
@@ -6147,73 +6996,73 @@ function SecurityView({ settings, secrets, me }) {
           { key: 'transports', label: 'Transports', render: (value) => Array.isArray(value) && value.length > 0 ? value.join(', ') : '-' },
           { key: 'last_used_at', label: 'Last Used', render: formatDateTime },
           { key: 'created_at', label: 'Created', render: formatDateTime },
-          { key: 'id', label: 'Actions', render: (value) => <button className="danger-btn" type="button" onClick={() => deletePasskey(value)}>Delete</button> },
+          { key: 'id', label: 'Actions', render: (value) => <button className="danger-btn" type="button" onClick={() => deletePasskey(value)}>{t('Delete')}</button> },
         ]} />
-        <p className="form-note">This table never includes raw credential IDs or public key CBOR. Registration/login ceremony data is stored server-side and discarded after use.</p>
+        <p className="form-note">{t('This table never includes raw credential IDs or public key CBOR. Registration/login ceremony data is stored server-side and discarded after use.')}</p>
       </section>
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Current User MFA</h3>
-            <span>Manage TOTP enrollment for {me.data?.user?.username || 'the current user'}. One-time secrets are not returned again.</span>
+            <h3>{t('Current User MFA')}</h3>
+            <span>{t('Manage TOTP enrollment for')} {me.data?.user?.username || t('the current user')}. {t('One-time secrets are not returned again.')}</span>
           </div>
         </div>
         <div className="form-grid">
           <label>
-            <span>Current TOTP or recovery code</span>
-            <input value={mfaActionCode} onChange={(event) => setMfaActionCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="required for re-enroll, disable, or recovery regeneration" />
+            <span>{t('Current TOTP or recovery code')}</span>
+            <input value={mfaActionCode} onChange={(event) => setMfaActionCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder={t('required for re-enroll, disable, or recovery regeneration')} />
           </label>
           <label>
-            <span>Enrollment verification code</span>
-            <input value={mfaEnrollCode} onChange={(event) => setMfaEnrollCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="6 digit code after scanning" />
+            <span>{t('Enrollment verification code')}</span>
+            <input value={mfaEnrollCode} onChange={(event) => setMfaEnrollCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 digit code after scanning')} />
           </label>
         </div>
         {mfaEnrollment && (
           <div className="token-once">
-            <span>TOTP secret shown once</span>
+            <span>{t('TOTP secret shown once')}</span>
             <code>{mfaEnrollment.secret}</code>
-            <span>Provisioning URI</span>
+            <span>{t('Provisioning URI')}</span>
             <code>{mfaEnrollment.provisioning_uri}</code>
           </div>
         )}
         {mfaRecoveryCodes.length > 0 && (
           <div className="token-once">
-            <span>Recovery codes shown once</span>
+            <span>{t('Recovery codes shown once')}</span>
             <code>{mfaRecoveryCodes.join('  ')}</code>
           </div>
         )}
-        <p className="form-note">TOTP mode must be enabled in Security Settings before enrollment. Recovery codes are hashed server-side and cannot be viewed again.</p>
+        <p className="form-note">{t('TOTP mode must be enabled in Security Settings before enrollment. Recovery codes are hashed server-side and cannot be viewed again.')}</p>
         <div className="actions">
-          <button className="command-btn" type="button" onClick={beginTOTPEnrollment}>Start TOTP Enrollment</button>
-          <button className="secondary-btn" type="button" disabled={!mfaEnrollment} onClick={verifyTOTPEnrollment}>Verify Enrollment</button>
-          <button className="secondary-btn" type="button" onClick={regenerateRecoveryCodes}>Regenerate Recovery Codes</button>
-          <button className="danger-btn" type="button" onClick={disableTOTP}>Disable TOTP</button>
+          <button className="command-btn" type="button" onClick={beginTOTPEnrollment}>{t('Start TOTP Enrollment')}</button>
+          <button className="secondary-btn" type="button" disabled={!mfaEnrollment} onClick={verifyTOTPEnrollment}>{t('Verify Enrollment')}</button>
+          <button className="secondary-btn" type="button" onClick={regenerateRecoveryCodes}>{t('Regenerate Recovery Codes')}</button>
+          <button className="danger-btn" type="button" onClick={disableTOTP}>{t('Disable TOTP')}</button>
         </div>
       </section>
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <h3>Update Secret</h3>
-            <span>Raw secret values are write-only and are never returned by the API.</span>
+            <h3>{t('Update Secret')}</h3>
+            <span>{t('Raw secret values are write-only and are never returned by the API.')}</span>
           </div>
         </div>
         <div className="form-grid">
           <label>
-            <span>Secret name</span>
+            <span>{t('Secret name')}</span>
             <select value={secretName} onChange={(event) => setSecretName(event.target.value)}>
-              <option value="">Select secret</option>
+              <option value="">{t('Select secret')}</option>
               {secrets.data.map((secret) => <option key={secret.name} value={secret.name}>{secret.name}</option>)}
             </select>
           </label>
           <label>
-            <span>New value</span>
-            <input type="password" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder="write-only secret value" />
+            <span>{t('New value')}</span>
+            <input type="password" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder={t('write-only secret value')} />
           </label>
         </div>
         {message.text && <Message text={message.text} tone={message.tone} />}
         <div className="actions">
-          <button className="command-btn" type="button" onClick={() => saveSecret(false)}>Update Secret</button>
-          <button className="danger-btn" type="button" disabled={!secretName} onClick={() => saveSecret(true)}>Clear Secret</button>
+          <button className="command-btn" type="button" onClick={() => saveSecret(false)}>{t('Update Secret')}</button>
+          <button className="danger-btn" type="button" disabled={!secretName} onClick={() => saveSecret(true)}>{t('Clear Secret')}</button>
         </div>
       </section>
       <DataTable title="Secrets" data={secrets} columns={[
@@ -6364,18 +7213,19 @@ function incidentRuleHint(rule) {
 }
 
 function RuleHint({ hint }) {
+  const { t } = useI18n();
   if (!hint || (hint.metrics.length === 0 && hint.checks.length === 0)) return <span>-</span>;
   return (
     <div className="rule-hint">
       {hint.metrics.length > 0 && (
         <div>
-          <strong>Metrics</strong>
+          <strong>{t('Metrics')}</strong>
           <span>{hint.metrics.join(', ')}</span>
         </div>
       )}
       {hint.checks.length > 0 && (
         <div>
-          <strong>Checks</strong>
+          <strong>{t('Checks')}</strong>
           <span>{hint.checks.join(', ')}</span>
         </div>
       )}

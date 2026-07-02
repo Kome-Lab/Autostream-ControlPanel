@@ -77,6 +77,11 @@ func TestVerifyGitHubExchangesCodeAndReadsUserIdentity(t *testing.T) {
 				t.Fatalf("github userinfo authorization header mismatch: %q", req.Header.Get("Authorization"))
 			}
 			return jsonResponse(200, `{"id":9163,"login":"kome-lab","email":"operator@example.com"}`), nil
+		case "https://api.github.com/user/emails":
+			if req.Header.Get("Authorization") != "Bearer github-access-token" {
+				t.Fatalf("github emails authorization header mismatch: %q", req.Header.Get("Authorization"))
+			}
+			return jsonResponse(200, `[{"email":"operator@example.com","primary":true,"verified":true}]`), nil
 		default:
 			t.Fatalf("unexpected GitHub OAuth URL: %s", req.URL.String())
 			return jsonResponse(404, `{}`), nil
@@ -87,7 +92,7 @@ func TestVerifyGitHubExchangesCodeAndReadsUserIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected GitHub identity, got error: %v", err)
 	}
-	if identity.ProviderID != provider.ID || identity.ProviderType != "github" || identity.Subject != "9163" || identity.Email != "operator@example.com" {
+	if identity.ProviderID != provider.ID || identity.ProviderType != "github" || identity.Subject != "9163" || identity.Email != "operator@example.com" || !identity.EmailVerified {
 		t.Fatalf("unexpected GitHub identity: %#v", identity)
 	}
 }
