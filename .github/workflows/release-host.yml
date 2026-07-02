@@ -87,7 +87,8 @@ jobs:
             GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "${root}/bin/${SERVICE_NAME}" ./cmd/control-panel
             cp .env.example "${root}/.env.example"
             cp systemd/*.service.example "${root}/systemd/"
-            cp -R web/dist/. "${root}/share/autostream-control-panel/"
+            test -d web/out
+            cp -R web/out/. "${root}/share/autostream-control-panel/"
             cp release/README.install.md "${root}/README.install.md"
             (cd "${root}" && find . -type f -print0 | sort -z | xargs -0 sha256sum > checksums.txt)
             tar -C staging -czf "artifacts/${artifact}.tar.gz" "${artifact}"
