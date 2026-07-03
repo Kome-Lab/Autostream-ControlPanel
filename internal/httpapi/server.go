@@ -28,9 +28,10 @@ import (
 )
 
 const (
-	sessionCookieName      = "autostream_session"
-	oauthStateCookieName   = "autostream_oauth_state"
-	maxControlRequestBytes = 1 << 20
+	sessionCookieName            = "autostream_session"
+	oauthStateCookieName         = "autostream_oauth_state"
+	maxControlRequestBytes       = 1 << 20
+	defaultNodeConfigureTokenTTL = 24 * time.Hour
 )
 
 var requiredStartServiceTypes = []string{"discord_bot", "worker", "encoder_recorder"}
@@ -38,7 +39,8 @@ var requiredStopServiceTypes = []string{"discord_bot", "worker", "encoder_record
 var requiredRetryUploadServiceTypes = []string{"encoder_recorder"}
 var requiredWorkerEventServiceTypes = []string{"worker"}
 
-const serviceHeartbeatStaleAfter = 90 * time.Second
+const serviceHeartbeatWarningDefault = 60 * time.Second
+const serviceHeartbeatOfflineDefault = 180 * time.Second
 const runtimeSecretLeaseTTL = 60 * time.Second
 const youtubeCompleteRetryDefaultInterval = 60 * time.Second
 const sensitiveActionAttemptThreshold = 6
@@ -268,6 +270,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /services/stream-events", s.serviceStreamEvent)
 	s.mux.HandleFunc("POST /services/stream-artifacts", s.serviceStreamArtifacts)
 	s.mux.HandleFunc("POST /services/remediation-actions/execute", s.serviceRemediationExecute)
+	s.mux.HandleFunc("POST /api/node-agent/configure", s.nodeAgentConfigure)
+	s.mux.HandleFunc("POST /api/node-agent/heartbeat", s.nodeAgentHeartbeat)
+	s.mux.HandleFunc("POST /api/node-agent/report", s.nodeAgentReport)
+	s.mux.HandleFunc("POST /api/node-agent/events", s.serviceStreamEvent)
 	s.mux.HandleFunc("POST /auth/logout", s.requirePermission("", s.logout))
 	s.mux.HandleFunc("GET /auth/me", s.requirePermission("", s.me))
 	s.mux.HandleFunc("POST /auth/change-password", s.requirePermission("", s.changePassword))
@@ -336,6 +342,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api-tokens/{id}/rotate", s.requirePermission("api_tokens.create", s.rotateServiceToken))
 	s.mux.HandleFunc("DELETE /api-tokens/{id}", s.requirePermission("api_tokens.revoke", s.revokeServiceToken))
 	s.mux.HandleFunc("POST /nodes/registration-tokens", s.requirePermission("api_tokens.create", s.createNodeRegistrationToken))
+	s.mux.HandleFunc("GET /nodes/{id}/configuration", s.requirePermission("service_health.read", s.nodeConfiguration))
+	s.mux.HandleFunc("POST /nodes/{id}/configure-token", s.requirePermission("api_tokens.create", s.regenerateNodeConfigureToken))
+	s.mux.HandleFunc("POST /nodes/{id}/rotate-token", s.requirePermission("api_tokens.create", s.rotateNodeRuntimeToken))
 	s.mux.HandleFunc("GET /service-health", s.requirePermission("service_health.read", s.listServices))
 	s.mux.HandleFunc("GET /service-health/{id}/runtime-config", s.requirePermission("service_health.read", s.adminServiceRuntimeConfig))
 	s.mux.HandleFunc("POST /services/{id}/assign", s.requirePermission("services.assign", s.assignService))
@@ -3547,6 +3556,10 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		ServiceID           string         `json:"service_id"`
 		Name                string         `json:"name"`
 		ServiceName         string         `json:"service_name"`
+		Description         string         `json:"description"`
+		Host                string         `json:"host"`
+		Port                int            `json:"port"`
+		SSLEnabled          bool           `json:"ssl_enabled"`
 		PublicURL           string         `json:"public_url"`
 		Version             string         `json:"version"`
 		Capabilities        map[string]any `json:"capabilities,omitempty"`
@@ -3569,6 +3582,22 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 	if serviceName == "" {
 		serviceName = strings.TrimSpace(body.ServiceName)
 	}
+	host := strings.TrimSpace(body.Host)
+	port := body.Port
+	sslEnabled := body.SSLEnabled
+	if host == "" || port == 0 {
+		parsedHost, parsedPort, parsedSSL := nodeEndpointFromURL(strings.TrimSpace(body.PublicURL))
+		if host == "" {
+			host = parsedHost
+		}
+		if port == 0 {
+			port = parsedPort
+		}
+		if parsedHost != "" {
+			sslEnabled = parsedSSL
+		}
+	}
+	publicURL := buildNodeAgentURL(host, port, sslEnabled)
 	scopes := nodeRegistrationScopes(serviceType, body.AllowRuntimeSecrets, body.AllowRemediation)
 	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, scopes); err != nil {
 		status := http.StatusBadRequest
@@ -3589,9 +3618,13 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		ServiceID:    serviceID,
 		ServiceType:  serviceType,
 		ServiceName:  serviceName,
-		PublicURL:    strings.TrimSpace(body.PublicURL),
-		Version:      strings.TrimSpace(body.Version),
-		Capabilities: body.Capabilities,
+		Description:  strings.TrimSpace(body.Description),
+		Host:         host,
+		Port:         port,
+		SSLEnabled:   sslEnabled,
+		PublicURL:    publicURL,
+		Version:      "",
+		Capabilities: map[string]any{},
 	})
 	if err != nil {
 		_ = s.services.RevokeServiceToken(r.Context(), token.ID)
@@ -3610,6 +3643,20 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "precreate_node_failed"})
 		return
 	}
+	service, err = s.persistNodeRuntimeToken(r.Context(), service.ServiceID, token.RawToken)
+	if err != nil {
+		_ = s.services.RevokeServiceToken(r.Context(), token.ID)
+		_ = s.services.DeleteService(r.Context(), service.ServiceID)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
+	configureToken, configureExpiresAt, err := s.issueNodeConfigureToken(r.Context(), service.ServiceID)
+	if err != nil {
+		_ = s.services.RevokeServiceToken(r.Context(), token.ID)
+		_ = s.services.DeleteService(r.Context(), service.ServiceID)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
+		return
+	}
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{
 		ActorUserID:   current.User.ID,
@@ -3621,14 +3668,20 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		Metadata:      map[string]any{"node_type": service.ServiceType, "token_id": token.ID, "scopes": token.Scopes},
 	})
 	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
-		"id":                token.ID,
-		"service_type":      token.ServiceType,
-		"node_type":         token.ServiceType,
-		"scopes":            token.Scopes,
-		"token":             token.RawToken,
-		"created_at":        token.CreatedAt,
-		"node":              service,
-		"configure_command": nodeConfigureCommand(r, service.ServiceID, token.RawToken),
+		"id":                         token.ID,
+		"service_type":               token.ServiceType,
+		"node_type":                  token.ServiceType,
+		"scopes":                     token.Scopes,
+		"token":                      configureToken,
+		"configure_token":            configureToken,
+		"configure_token_expires_at": configureExpiresAt,
+		"runtime_token_id":           token.ID,
+		"runtime_token":              token.RawToken,
+		"created_at":                 token.CreatedAt,
+		"node":                       service,
+		"configure_command":          nodeConfigureCommand(r, service.ServiceID, configureToken, "/etc/autostream-node/config.yml"),
+		"configuration_yaml":         nodeConfigurationYAML(r, service, token.ID, token.RawToken),
+		"systemd_unit":               nodeSystemdUnit(),
 	})
 }
 
@@ -3653,8 +3706,58 @@ func nodeRegistrationScopes(serviceType string, allowRuntimeSecrets, allowRemedi
 	return scopes
 }
 
-func nodeConfigureCommand(r *http.Request, nodeID, rawToken string) string {
-	panelURL := "https://control.example.com"
+func (s *Server) issueNodeConfigureToken(ctx context.Context, nodeID string) (string, time.Time, error) {
+	raw, err := security.RandomToken(32)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	token := "ast_cfg_" + raw
+	expiresAt := time.Now().UTC().Add(nodeConfigureTokenTTL())
+	if _, err := s.services.SetServiceConfigureToken(ctx, nodeID, security.HashToken(token), expiresAt); err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiresAt, nil
+}
+
+func (s *Server) persistNodeRuntimeToken(ctx context.Context, nodeID, rawToken string) (store.RegisteredService, error) {
+	key := strings.TrimSpace(os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))
+	if key == "" || strings.TrimSpace(rawToken) == "" {
+		return store.RegisteredService{}, errors.New("node runtime token encryption key is not configured")
+	}
+	ciphertext, nonce, err := security.EncryptSecret(rawToken, key)
+	if err != nil {
+		return store.RegisteredService{}, err
+	}
+	return s.services.SetServiceNodeTokenSecret(ctx, nodeID, ciphertext, nonce)
+}
+
+func nodeConfigureTokenTTL() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("AUTOSTREAM_NODE_CONFIGURE_TOKEN_TTL"))
+	if raw == "" {
+		return defaultNodeConfigureTokenTTL
+	}
+	ttl, err := time.ParseDuration(raw)
+	if err != nil || ttl <= 0 {
+		return defaultNodeConfigureTokenTTL
+	}
+	return ttl
+}
+
+func nodeConfigureCommand(r *http.Request, nodeID, rawToken, configPath string) string {
+	panelURL := panelBaseURL(r)
+	if panelURL == "" {
+		panelURL = "https://control.example.com"
+	}
+	if configPath == "" {
+		configPath = "/etc/autostream-node/config.yml"
+	}
+	return "sudo autostream-node configure --panel-url " + strconv.Quote(panelURL) + " --token " + strconv.Quote(rawToken) + " --node " + strconv.Quote(nodeID) + " --config " + strconv.Quote(configPath)
+}
+
+func panelBaseURL(r *http.Request) string {
+	if publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("AUTOSTREAM_PUBLIC_URL")), "/"); publicURL != "" {
+		return publicURL
+	}
 	if r != nil && r.Host != "" {
 		scheme := "https"
 		if r.TLS == nil {
@@ -3663,9 +3766,287 @@ func nodeConfigureCommand(r *http.Request, nodeID, rawToken string) string {
 		if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded == "https" || forwarded == "http" {
 			scheme = forwarded
 		}
-		panelURL = scheme + "://" + r.Host
+		return scheme + "://" + r.Host
 	}
-	return "autostream-node configure --panel-url " + strconv.Quote(panelURL) + " --token " + strconv.Quote(rawToken) + " --node " + strconv.Quote(nodeID)
+	return ""
+}
+
+func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tokenID, rawToken string) string {
+	panelURL := panelBaseURL(r)
+	if panelURL == "" {
+		panelURL = "https://control.example.com"
+	}
+	tokenValue := rawToken
+	if tokenValue == "" {
+		tokenValue = "<regenerate-runtime-token>"
+	}
+	tokenIDValue := tokenID
+	if tokenIDValue == "" {
+		tokenIDValue = service.TokenID
+	}
+	return strings.Join([]string{
+		"panel:",
+		"  url: " + yamlQuote(panelURL),
+		"",
+		"node:",
+		"  id: " + yamlQuote(service.ServiceID),
+		"  name: " + yamlQuote(service.ServiceName),
+		"  type: " + yamlQuote(service.ServiceType),
+		"  description: " + yamlQuote(service.Description),
+		"",
+		"api:",
+		"  host: " + yamlQuote(service.Host),
+		"  port: " + strconv.Itoa(service.Port),
+		"  ssl_enabled: " + strconv.FormatBool(service.SSLEnabled),
+		"",
+		"auth:",
+		"  token_id: " + yamlQuote(tokenIDValue),
+		"  token: " + yamlQuote(tokenValue),
+		"",
+		"agent:",
+		"  data_dir: " + yamlQuote("/var/lib/autostream-node"),
+		"  log_dir: " + yamlQuote("/var/log/autostream-node"),
+		"",
+	}, "\n")
+}
+
+func yamlQuote(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return `""`
+	}
+	return string(encoded)
+}
+
+func nodeSystemdUnit() string {
+	return `[Unit]
+Description=AutoStream Node Agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=root
+WorkingDirectory=/etc/autostream-node
+ExecStart=/usr/local/bin/autostream-node --config /etc/autostream-node/config.yml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+`
+}
+
+func buildNodeAgentURL(host string, port int, sslEnabled bool) string {
+	host = strings.TrimSpace(host)
+	if host == "" || port <= 0 {
+		return ""
+	}
+	scheme := "http"
+	if sslEnabled {
+		scheme = "https"
+	}
+	return scheme + "://" + host + ":" + strconv.Itoa(port)
+}
+
+func nodeEndpointFromURL(raw string) (string, int, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return "", 0, false
+	}
+	port := 0
+	if parsed.Port() != "" {
+		if parsedPort, err := strconv.Atoi(parsed.Port()); err == nil {
+			port = parsedPort
+		}
+	}
+	sslEnabled := parsed.Scheme == "https"
+	if port == 0 {
+		if sslEnabled {
+			port = 443
+		} else if parsed.Scheme == "http" {
+			port = 80
+		}
+	}
+	return parsed.Hostname(), port, sslEnabled
+}
+
+func (s *Server) nodeConfiguration(w http.ResponseWriter, r *http.Request) {
+	service, err := s.services.GetService(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"node":               service,
+		"node_api_url":       buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled),
+		"configuration_yaml": nodeConfigurationYAML(r, service, service.TokenID, ""),
+		"configure_command":  nodeConfigureCommand(r, service.ServiceID, "<regenerate-configure-token>", "/etc/autostream-node/config.yml"),
+		"systemd_unit":       nodeSystemdUnit(),
+	})
+}
+
+func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Request) {
+	service, err := s.services.GetService(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	token, expiresAt, err := s.issueNodeConfigureToken(r.Context(), service.ServiceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "nodes.configure_token.rotate", ResourceType: "node", ResourceID: service.ServiceID, Result: "success"})
+	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
+		"node":                       service,
+		"configure_token":            token,
+		"configure_token_expires_at": expiresAt,
+		"configure_command":          nodeConfigureCommand(r, service.ServiceID, token, "/etc/autostream-node/config.yml"),
+	})
+}
+
+func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) {
+	current := currentFromContext(r.Context())
+	if !security.HasPermission(current.Permissions, "api_tokens.revoke") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
+		return
+	}
+	service, err := s.services.GetService(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	token, err := s.services.RotateServiceToken(r.Context(), service.TokenID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "rotate_node_runtime_token_failed"})
+		return
+	}
+	updated, err := s.persistNodeRuntimeToken(r.Context(), service.ServiceID, token.RawToken)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "nodes.runtime_token.rotate", ResourceType: "node", ResourceID: service.ServiceID, Result: "success", Metadata: map[string]any{"token_id": token.ID}})
+	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
+		"node":               updated,
+		"runtime_token_id":   token.ID,
+		"runtime_token":      token.RawToken,
+		"configuration_yaml": nodeConfigurationYAML(r, updated, token.ID, token.RawToken),
+	})
+}
+
+func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NodeID         string `json:"nodeId"`
+		NodeIDSnake    string `json:"node_id"`
+		ConfigureToken string `json:"configureToken"`
+		Token          string `json:"configure_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	nodeID := strings.TrimSpace(body.NodeID)
+	if nodeID == "" {
+		nodeID = strings.TrimSpace(body.NodeIDSnake)
+	}
+	configureToken := strings.TrimSpace(body.ConfigureToken)
+	if configureToken == "" {
+		configureToken = strings.TrimSpace(body.Token)
+	}
+	service, err := s.services.ConsumeServiceConfigureToken(r.Context(), nodeID, configureToken, time.Now().UTC())
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
+		return
+	}
+	if errors.Is(err, store.ErrUnauthorized) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_configure_token"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "consume_configure_token_failed"})
+		return
+	}
+	token, err := s.services.RotateServiceToken(r.Context(), service.TokenID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "rotate_runtime_token_failed"})
+		return
+	}
+	updated, err := s.persistNodeRuntimeToken(r.Context(), service.ServiceID, token.RawToken)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
+	writeOneTimeSecretJSON(w, http.StatusOK, map[string]any{
+		"config":             nodeAgentConfigResponse(r, updated, token.ID, token.RawToken),
+		"config_yml":         nodeConfigurationYAML(r, updated, token.ID, token.RawToken),
+		"configuration_yaml": nodeConfigurationYAML(r, updated, token.ID, token.RawToken),
+	})
+}
+
+func nodeAgentConfigResponse(r *http.Request, service store.RegisteredService, tokenID, rawToken string) map[string]any {
+	panelURL := panelBaseURL(r)
+	if panelURL == "" {
+		panelURL = "https://control.example.com"
+	}
+	return map[string]any{
+		"panel": map[string]any{"url": panelURL},
+		"node":  map[string]any{"id": service.ServiceID, "name": service.ServiceName, "type": service.ServiceType},
+		"api":   map[string]any{"host": service.Host, "port": service.Port, "ssl_enabled": service.SSLEnabled},
+		"auth":  map[string]any{"token_id": tokenID, "token": rawToken},
+		"agent": map[string]any{"data_dir": "/var/lib/autostream-node", "log_dir": "/var/log/autostream-node"},
+	}
+}
+
+func (s *Server) nodeAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	s.serviceHeartbeat(w, r)
+}
+
+func (s *Server) nodeAgentReport(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.authenticateService(w, r, "service.heartbeat")
+	if !ok {
+		return
+	}
+	var body store.ServiceHeartbeat
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	if body.Status == "" {
+		body.Status = "online"
+	}
+	service, err := s.services.Heartbeat(r.Context(), token, body)
+	if errors.Is(err, store.ErrForbidden) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_assigned_to_token"})
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "service_not_registered"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "node_report_failed"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, service)
 }
 
 func validateServiceTokenScopePermissions(actorPermissions, scopes []string) error {
@@ -3760,13 +4141,36 @@ func serviceHealthFields(service store.RegisteredService, now time.Time) (string
 		return "offline", true, heartbeatAge(service.LastHeartbeatAt, now)
 	}
 	if service.LastHeartbeatAt == nil {
-		return "no_heartbeat", true, nil
+		return "unconfigured", true, nil
 	}
 	age := heartbeatAge(service.LastHeartbeatAt, now)
-	if age != nil && time.Duration(*age)*time.Second > serviceHeartbeatStaleAfter {
-		return "stale", true, age
+	if age != nil && time.Duration(*age)*time.Second > heartbeatOfflineAfter() {
+		return "offline", true, age
+	}
+	if age != nil && time.Duration(*age)*time.Second > heartbeatWarningAfter() {
+		return "warning", true, age
 	}
 	return "healthy", false, age
+}
+
+func heartbeatWarningAfter() time.Duration {
+	return durationEnv("AUTOSTREAM_NODE_HEARTBEAT_WARNING_AFTER", serviceHeartbeatWarningDefault)
+}
+
+func heartbeatOfflineAfter() time.Duration {
+	return durationEnv("AUTOSTREAM_NODE_HEARTBEAT_OFFLINE_AFTER", serviceHeartbeatOfflineDefault)
+}
+
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func heartbeatAge(at *time.Time, now time.Time) *int64 {

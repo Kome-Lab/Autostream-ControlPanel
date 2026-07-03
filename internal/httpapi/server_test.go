@@ -7852,7 +7852,7 @@ func TestServiceTokenRegisterHeartbeatAndRevoke(t *testing.T) {
 	if err := json.NewDecoder(healthRes.Body).Decode(&health); err != nil {
 		t.Fatal(err)
 	}
-	if len(health) != 1 || health[0].ServiceID != "worker-01" || health[0].HealthStatus != "no_heartbeat" || !health[0].HeartbeatStale || health[0].HeartbeatAgeSec != nil {
+	if len(health) != 1 || health[0].ServiceID != "worker-01" || health[0].HealthStatus != "unconfigured" || !health[0].HeartbeatStale || health[0].HeartbeatAgeSec != nil {
 		t.Fatalf("unexpected pre-heartbeat health: %#v", health)
 	}
 	if strings.Contains(healthRes.Body.String(), "raw-secret-token") || strings.Contains(healthRes.Body.String(), "password@") || strings.Contains(healthRes.Body.String(), "super-secret-token") || strings.Contains(healthRes.Body.String(), "folder-secret-id") || strings.Contains(healthRes.Body.String(), "webhook_url") || strings.Contains(healthRes.Body.String(), "access_token") || strings.Contains(healthRes.Body.String(), "folder_id") || strings.Contains(healthRes.Body.String(), `"token_id"`) || strings.Contains(healthRes.Body.String(), token.ID) {
@@ -7964,7 +7964,7 @@ func TestCreateServiceTokenCanPrecreateService(t *testing.T) {
 	if err := json.NewDecoder(healthRes.Body).Decode(&health); err != nil {
 		t.Fatal(err)
 	}
-	if len(health) != 1 || health[0].ServiceID != "encoder-01" || health[0].Status != "pending" || health[0].HealthStatus != "no_heartbeat" {
+	if len(health) != 1 || health[0].ServiceID != "encoder-01" || health[0].Status != "pending" || health[0].HealthStatus != "unconfigured" {
 		t.Fatalf("unexpected precreated service health: %#v", health)
 	}
 	if health[0].Capabilities["rtmps"] != true || strings.Contains(healthRes.Body.String(), "must-not-persist") || strings.Contains(healthRes.Body.String(), "stream_key") {
@@ -8197,6 +8197,7 @@ func TestCreateServiceTokenRejectsEmptyScopes(t *testing.T) {
 }
 
 func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read", "service_health.read", "audit_logs.read"}); err != nil {
 		t.Fatal(err)
@@ -8204,7 +8205,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"worker","node_id":"studio-worker-01","name":"Studio Worker 01","public_url":"https://worker.example.com","version":"0.1.0","capabilities":{"runtime_config":true,"token":"must-redact"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"worker","node_id":"studio-worker-01","name":"Studio Worker 01","host":"worker.example.com","port":8443,"ssl_enabled":true,"description":"Studio worker node","version":"must-not-persist","capabilities":{"runtime_config":true,"token":"must-redact"}}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8216,12 +8217,15 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 		t.Fatalf("node registration token response should be no-store, got %q", got)
 	}
 	var body struct {
-		ID               string                  `json:"id"`
-		Token            string                  `json:"token"`
-		NodeType         string                  `json:"node_type"`
-		Scopes           []string                `json:"scopes"`
-		ConfigureCommand string                  `json:"configure_command"`
-		Node             store.RegisteredService `json:"node"`
+		ID                string                  `json:"id"`
+		Token             string                  `json:"token"`
+		ConfigureToken    string                  `json:"configure_token"`
+		RuntimeToken      string                  `json:"runtime_token"`
+		NodeType          string                  `json:"node_type"`
+		Scopes            []string                `json:"scopes"`
+		ConfigureCommand  string                  `json:"configure_command"`
+		ConfigurationYAML string                  `json:"configuration_yaml"`
+		Node              store.RegisteredService `json:"node"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -8229,8 +8233,20 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if body.Token == "" || body.ID == "" || body.Node.ServiceID != "studio-worker-01" || body.NodeType != "worker" {
 		t.Fatalf("unexpected node registration response: %#v", body)
 	}
-	if !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token") || !strings.Contains(body.ConfigureCommand, "--node") {
+	if body.ConfigureToken == "" || body.ConfigureToken != body.Token || body.RuntimeToken == "" {
+		t.Fatalf("expected one-time configure token and runtime token: %#v", body)
+	}
+	if body.Node.PublicURL != "https://worker.example.com:8443" || body.Node.Host != "worker.example.com" || body.Node.Port != 8443 || !body.Node.SSLEnabled {
+		t.Fatalf("node endpoint was not built from host/port/ssl: %#v", body.Node)
+	}
+	if body.Node.Version != "" || body.Node.ReportedVersion != "" || len(body.Node.Capabilities) != 0 || len(body.Node.ReportedCapabilities) != 0 {
+		t.Fatalf("manual version/capabilities must not be stored during node creation: %#v", body.Node)
+	}
+	if !strings.Contains(body.ConfigureCommand, "sudo autostream-node configure") || !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token") || !strings.Contains(body.ConfigureCommand, "--node") || !strings.Contains(body.ConfigureCommand, "--config") {
 		t.Fatalf("missing configure command fields: %s", body.ConfigureCommand)
+	}
+	if !strings.Contains(body.ConfigurationYAML, `ssl_enabled: true`) || !strings.Contains(body.ConfigurationYAML, body.RuntimeToken) || !strings.Contains(body.ConfigurationYAML, `host: "worker.example.com"`) {
+		t.Fatalf("configuration yaml missing node agent settings: %s", body.ConfigurationYAML)
 	}
 	if !stringSliceContains(body.Scopes, "service.register") || !stringSliceContains(body.Scopes, "worker.events.write") || stringSliceContains(body.Scopes, "service.secret.resolve") {
 		t.Fatalf("unexpected default node scopes: %#v", body.Scopes)
@@ -8248,6 +8264,49 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 	if strings.Contains(healthRes.Body.String(), body.Token) || strings.Contains(healthRes.Body.String(), body.ID) {
 		t.Fatalf("service health leaked node registration token material: %s", healthRes.Body.String())
+	}
+
+	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
+	configureRes := httptest.NewRecorder()
+	handler.ServeHTTP(configureRes, configureReq)
+	if configureRes.Code != http.StatusOK {
+		t.Fatalf("node configure status = %d body = %s", configureRes.Code, configureRes.Body.String())
+	}
+	var configureBody struct {
+		Config struct {
+			Auth struct {
+				TokenID string `json:"token_id"`
+				Token   string `json:"token"`
+			} `json:"auth"`
+		} `json:"config"`
+		ConfigYML string `json:"config_yml"`
+	}
+	if err := json.NewDecoder(configureRes.Body).Decode(&configureBody); err != nil {
+		t.Fatal(err)
+	}
+	if configureBody.Config.Auth.TokenID == "" || configureBody.Config.Auth.Token == "" || configureBody.Config.Auth.Token == body.RuntimeToken || !strings.Contains(configureBody.ConfigYML, configureBody.Config.Auth.Token) {
+		t.Fatalf("configure endpoint did not rotate and return runtime token once: %#v", configureBody)
+	}
+	reuseReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
+	reuseRes := httptest.NewRecorder()
+	handler.ServeHTTP(reuseRes, reuseReq)
+	if reuseRes.Code != http.StatusUnauthorized {
+		t.Fatalf("configure token reuse status = %d body = %s", reuseRes.Code, reuseRes.Body.String())
+	}
+
+	heartbeatReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/heartbeat", bytes.NewBufferString(`{"nodeId":"studio-worker-01","status":"online","version":"1.4.2","capabilities":{"streaming":true,"archive_upload":true},"hostname":"studio-worker-01","os":"linux","arch":"amd64","api":{"host":"worker.example.com","port":8443,"sslEnabled":true},"metrics":{"cpuUsage":12.5,"runningJobs":2}}`))
+	heartbeatReq.Header.Set("Authorization", "Bearer "+configureBody.Config.Auth.Token)
+	heartbeatRes := httptest.NewRecorder()
+	handler.ServeHTTP(heartbeatRes, heartbeatReq)
+	if heartbeatRes.Code != http.StatusAccepted {
+		t.Fatalf("node heartbeat status = %d body = %s", heartbeatRes.Code, heartbeatRes.Body.String())
+	}
+	var heartbeatService store.RegisteredService
+	if err := json.NewDecoder(heartbeatRes.Body).Decode(&heartbeatService); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeatService.ReportedVersion != "1.4.2" || heartbeatService.ReportedOS != "linux" || heartbeatService.ReportedArch != "amd64" || heartbeatService.ReportedCapabilities["streaming"] != true {
+		t.Fatalf("node reported fields were not saved: %#v", heartbeatService)
 	}
 
 	auditReq := httptest.NewRequest(http.MethodGet, "/audit-logs?action=nodes.registration_token.create", nil)

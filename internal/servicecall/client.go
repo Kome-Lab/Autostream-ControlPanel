@@ -14,6 +14,7 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/ingesttoken"
 	"github.com/example/autostream-control-panel/internal/netpolicy"
+	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
@@ -23,6 +24,7 @@ type Config struct {
 	URLPolicy             netpolicy.ServiceURLPolicy
 	IngestTokenSigningKey string
 	IngestTokenTTL        time.Duration
+	NodeTokenKey          string
 }
 
 type Client struct {
@@ -288,11 +290,12 @@ func FromEnv() Client {
 		URLPolicy:             netpolicy.ServiceURLPolicyFromEnv(),
 		IngestTokenSigningKey: os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY"),
 		IngestTokenTTL:        envMinutes("AUTOSTREAM_STREAM_INGEST_TOKEN_TTL_MIN", 12*time.Hour),
+		NodeTokenKey:          os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"),
 	}}
 }
 
 func (c Client) Enabled() bool {
-	return strings.TrimSpace(c.Config.Token) != ""
+	return strings.TrimSpace(c.Config.Token) != "" || strings.TrimSpace(c.Config.NodeTokenKey) != ""
 }
 
 func (c Client) StartReadinessIssues(services []store.RegisteredService, req StartRequest, now time.Time) []ReadinessIssue {
@@ -314,6 +317,14 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 				ServiceType: service.ServiceType,
 				Code:        serviceURLIssueCode(err),
 				Message:     serviceURLMessage(err),
+			})
+		}
+		if _, err := c.authToken(service); err != nil {
+			issues = append(issues, ReadinessIssue{
+				ServiceID:   service.ServiceID,
+				ServiceType: service.ServiceType,
+				Code:        "node_runtime_token_missing",
+				Message:     "node runtime token is not available for dispatch.",
 			})
 		}
 		if service.Status == "offline" {
@@ -459,10 +470,33 @@ func (c Client) SendWorkerEvent(ctx context.Context, stream store.Stream, servic
 	return DispatchResult{ServiceType: "worker", Error: "assigned worker service not found"}
 }
 
+func (c Client) authToken(service store.RegisteredService) (string, error) {
+	if strings.TrimSpace(service.NodeTokenCiphertext) != "" && strings.TrimSpace(service.NodeTokenNonce) != "" {
+		key := strings.TrimSpace(c.Config.NodeTokenKey)
+		if key == "" {
+			return "", errors.New("node runtime token encryption key is not configured")
+		}
+		token, err := security.DecryptSecret(service.NodeTokenCiphertext, service.NodeTokenNonce, key)
+		if err != nil || strings.TrimSpace(token) == "" {
+			return "", errors.New("node runtime token could not be decrypted")
+		}
+		return token, nil
+	}
+	if token := strings.TrimSpace(c.Config.Token); token != "" {
+		return token, nil
+	}
+	return "", errors.New("node runtime token is not configured")
+}
+
 func (c Client) post(ctx context.Context, service store.RegisteredService, endpoint string, payload any) DispatchResult {
 	result := DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		return result
+	}
+	authToken, err := c.authToken(service)
+	if err != nil {
+		result.Error = err.Error()
 		return result
 	}
 	if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
@@ -486,7 +520,7 @@ func (c Client) post(ctx context.Context, service store.RegisteredService, endpo
 		result.Error = "build request failed"
 		return result
 	}
-	request.Header.Set("Authorization", "Bearer "+c.Config.Token)
+	request.Header.Set("Authorization", "Bearer "+authToken)
 	request.Header.Set("Content-Type", "application/json")
 	client := c.httpClient()
 	response, err := client.Do(request)
@@ -523,6 +557,11 @@ func (c Client) getWorkerEvents(ctx context.Context, service store.RegisteredSer
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
 		return result
 	}
+	authToken, err := c.authToken(service)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
 	if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
 		result.Error = serviceURLMessage(err)
 		return result
@@ -538,7 +577,7 @@ func (c Client) getWorkerEvents(ctx context.Context, service store.RegisteredSer
 		result.Error = "build request failed"
 		return result
 	}
-	request.Header.Set("Authorization", "Bearer "+c.Config.Token)
+	request.Header.Set("Authorization", "Bearer "+authToken)
 	request.Header.Set("Accept", "application/json")
 	client := c.httpClient()
 	response, err := client.Do(request)
@@ -570,6 +609,11 @@ func (c Client) getEncoderPreflight(ctx context.Context, service store.Registere
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
 		return result
 	}
+	authToken, err := c.authToken(service)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
 	if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
 		result.Error = serviceURLMessage(err)
 		return result
@@ -585,7 +629,7 @@ func (c Client) getEncoderPreflight(ctx context.Context, service store.Registere
 		result.Error = "build request failed"
 		return result
 	}
-	request.Header.Set("Authorization", "Bearer "+c.Config.Token)
+	request.Header.Set("Authorization", "Bearer "+authToken)
 	request.Header.Set("Accept", "application/json")
 	client := c.httpClient()
 	response, err := client.Do(request)
@@ -623,6 +667,11 @@ func (c Client) getAudioStatus(ctx context.Context, service store.RegisteredServ
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
 		return result
 	}
+	authToken, err := c.authToken(service)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
 	if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
 		result.Error = serviceURLMessage(err)
 		return result
@@ -638,7 +687,7 @@ func (c Client) getAudioStatus(ctx context.Context, service store.RegisteredServ
 		result.Error = "build request failed"
 		return result
 	}
-	request.Header.Set("Authorization", "Bearer "+c.Config.Token)
+	request.Header.Set("Authorization", "Bearer "+authToken)
 	request.Header.Set("Accept", "application/json")
 	client := c.httpClient()
 	response, err := client.Do(request)

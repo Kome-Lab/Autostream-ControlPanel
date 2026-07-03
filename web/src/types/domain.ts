@@ -36,16 +36,29 @@ export type WorkerNode = {
   service_id?: string;
   service_type: string;
   service_name: string;
+  description?: string;
   status: string;
   health_status?: string;
   assignment_role?: string;
   current_stream_id?: string;
+  host?: string;
+  port?: number;
+  ssl_enabled?: boolean;
   public_url?: string;
   version?: string;
+  reported_version?: string;
+  reported_hostname?: string;
+  reported_os?: string;
+  reported_arch?: string;
+  last_reported_at?: string;
   last_heartbeat_at?: string;
   heartbeat_age_sec?: number;
   capabilities?: Record<string, unknown>;
+  reported_capabilities?: Record<string, unknown>;
   metrics?: Record<string, number | string>;
+  configure_token_expires_at?: string;
+  configure_token_used_at?: string;
+  node_token_rotated_at?: string;
 };
 
 export type AuditLog = {
@@ -93,7 +106,13 @@ export type NodeRegistrationResponse = {
   node_type: string;
   scopes: string[];
   token: string;
+  configure_token?: string;
+  configure_token_expires_at?: string;
+  runtime_token_id?: string;
+  runtime_token?: string;
   created_at: string;
   configure_command: string;
+  configuration_yaml?: string;
+  systemd_unit?: string;
   node?: WorkerNode;
 };

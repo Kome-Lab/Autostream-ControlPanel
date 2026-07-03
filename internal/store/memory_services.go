@@ -94,6 +94,7 @@ func (s *MemoryAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 	for serviceID, service := range s.services {
 		if service.TokenID == id {
 			service.TokenID = token.ID
+			service.NodeTokenRotatedAt = &now
 			service.UpdatedAt = now
 			s.services[serviceID] = service
 		}
@@ -129,14 +130,16 @@ func (s *MemoryAuthStore) PrecreateService(ctx context.Context, token ServiceTok
 	if registration.ServiceType != token.ServiceType {
 		return RegisteredService{}, ErrForbidden
 	}
+	registration = normalizeServiceRegistration(registration)
 	if err := validateServiceRegistration(registration); err != nil {
 		return RegisteredService{}, err
 	}
 	now := time.Now().UTC()
 	svc := RegisteredService{
 		ServiceID: registration.ServiceID, ServiceType: registration.ServiceType, ServiceName: registration.ServiceName,
-		PublicURL: registration.PublicURL, Version: registration.Version, Status: "pending",
-		Capabilities: sanitizeServiceCapabilities(registration.Capabilities), Metrics: map[string]any{}, TokenID: token.ID, CreatedAt: now, UpdatedAt: now,
+		Description: registration.Description, Host: registration.Host, Port: registration.Port, SSLEnabled: registration.SSLEnabled,
+		PublicURL: registration.PublicURL, Version: registration.Version, ReportedVersion: "", Status: "pending",
+		Capabilities: sanitizeServiceCapabilities(registration.Capabilities), ReportedCapabilities: sanitizeServiceCapabilities(registration.Capabilities), Metrics: map[string]any{}, TokenID: token.ID, NodeTokenRotatedAt: &token.CreatedAt, CreatedAt: now, UpdatedAt: now,
 	}
 	if svc.Capabilities == nil {
 		svc.Capabilities = map[string]any{}
@@ -157,14 +160,19 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	if registration.ServiceType != token.ServiceType {
 		return RegisteredService{}, ErrForbidden
 	}
+	registration = normalizeServiceRegistration(registration)
 	if err := validateServiceRegistration(registration); err != nil {
 		return RegisteredService{}, err
 	}
 	now := time.Now().UTC()
+	capabilities := sanitizeServiceCapabilities(registration.Capabilities)
 	svc := RegisteredService{
 		ServiceID: registration.ServiceID, ServiceType: registration.ServiceType, ServiceName: registration.ServiceName,
-		PublicURL: registration.PublicURL, Version: registration.Version, Status: "registered",
-		Capabilities: sanitizeServiceCapabilities(registration.Capabilities), TokenID: token.ID, CreatedAt: now, UpdatedAt: now,
+		Description: registration.Description, Host: registration.Host, Port: registration.Port, SSLEnabled: registration.SSLEnabled,
+		PublicURL: registration.PublicURL, Version: registration.Version, ReportedVersion: registration.Version, Status: "registered",
+		Capabilities: capabilities, ReportedCapabilities: capabilities, TokenID: token.ID,
+		ReportedHostname: registration.Hostname, ReportedOS: registration.OS, ReportedArch: registration.Arch, LastReportedAt: &now,
+		CreatedAt: now, UpdatedAt: now,
 	}
 	if svc.Capabilities == nil {
 		svc.Capabilities = map[string]any{}
@@ -195,6 +203,12 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	if err := ctx.Err(); err != nil {
 		return RegisteredService{}, err
 	}
+	if heartbeat.ServiceID == "" {
+		heartbeat.ServiceID = strings.TrimSpace(heartbeat.NodeID)
+	}
+	if heartbeat.ServiceID == "" {
+		heartbeat.ServiceID = strings.TrimSpace(heartbeat.NodeIDSnake)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	svc, ok := s.services[heartbeat.ServiceID]
@@ -214,8 +228,91 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		svc.CurrentStreamID = heartbeat.CurrentStreamID
 	}
 	svc.Metrics = sanitizeServiceMetrics(heartbeat.Metrics)
+	if strings.TrimSpace(heartbeat.Version) != "" {
+		svc.Version = strings.TrimSpace(heartbeat.Version)
+		svc.ReportedVersion = svc.Version
+	}
+	if len(heartbeat.Capabilities) > 0 {
+		svc.Capabilities = sanitizeServiceCapabilities(heartbeat.Capabilities)
+		svc.ReportedCapabilities = svc.Capabilities
+	}
+	if strings.TrimSpace(heartbeat.Hostname) != "" {
+		svc.ReportedHostname = strings.TrimSpace(heartbeat.Hostname)
+	}
+	if strings.TrimSpace(heartbeat.OS) != "" {
+		svc.ReportedOS = strings.TrimSpace(heartbeat.OS)
+	}
+	if strings.TrimSpace(heartbeat.Arch) != "" {
+		svc.ReportedArch = strings.TrimSpace(heartbeat.Arch)
+	}
+	if heartbeat.API != nil {
+		apiHost := strings.TrimSpace(heartbeat.API.Host)
+		if apiHost != "" {
+			svc.Host = apiHost
+			svc.Port = heartbeat.API.Port
+			svc.SSLEnabled = heartbeat.API.SSLEnabled
+			svc.PublicURL = buildServiceURL(svc.Host, svc.Port, svc.SSLEnabled)
+		}
+	}
+	if heartbeat.Version != "" || len(heartbeat.Capabilities) > 0 || heartbeat.Hostname != "" || heartbeat.OS != "" || heartbeat.Arch != "" || heartbeat.API != nil {
+		svc.LastReportedAt = &now
+	}
 	svc.UpdatedAt = now
 	s.services[svc.ServiceID] = svc
+	return svc, nil
+}
+
+func (s *MemoryAuthStore) SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return RegisteredService{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	svc, ok := s.services[serviceID]
+	if !ok {
+		return RegisteredService{}, ErrNotFound
+	}
+	svc.ConfigureTokenExpiresAt = &expiresAt
+	svc.ConfigureTokenUsedAt = nil
+	svc.ConfigureTokenHash = tokenHash
+	svc.UpdatedAt = time.Now().UTC()
+	s.services[serviceID] = svc
+	return svc, nil
+}
+
+func (s *MemoryAuthStore) ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return RegisteredService{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	svc, ok := s.services[serviceID]
+	if !ok {
+		return RegisteredService{}, ErrNotFound
+	}
+	if svc.ConfigureTokenHash == "" || svc.ConfigureTokenExpiresAt == nil || svc.ConfigureTokenUsedAt != nil || !now.Before(*svc.ConfigureTokenExpiresAt) || !security.VerifyTokenHash(rawToken, svc.ConfigureTokenHash) {
+		return RegisteredService{}, ErrUnauthorized
+	}
+	svc.ConfigureTokenUsedAt = &now
+	svc.UpdatedAt = now
+	s.services[serviceID] = svc
+	return svc, nil
+}
+
+func (s *MemoryAuthStore) SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return RegisteredService{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	svc, ok := s.services[serviceID]
+	if !ok {
+		return RegisteredService{}, ErrNotFound
+	}
+	svc.NodeTokenCiphertext = ciphertext
+	svc.NodeTokenNonce = nonce
+	svc.UpdatedAt = time.Now().UTC()
+	s.services[serviceID] = svc
 	return svc, nil
 }
 

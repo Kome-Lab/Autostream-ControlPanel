@@ -90,11 +90,18 @@ export const mockWorkers: WorkerNode[] = [
     health_status: "healthy",
     assignment_role: "primary",
     current_stream_id: "stream-cable-morning",
+    host: "worker-main.example.jp",
+    port: 8443,
+    ssl_enabled: true,
     public_url: "https://worker-main.example.jp",
     version: "1.2.0",
+    reported_version: "1.2.0",
+    reported_os: "linux",
+    reported_arch: "amd64",
     last_heartbeat_at: "2026-07-02T09:00:00+09:00",
     heartbeat_age_sec: 4,
     capabilities: { overlay_events: true, caption_events: true, participant_state: true },
+    reported_capabilities: { overlay_events: true, caption_events: true, participant_state: true },
     metrics: { cpu_percent: 32, memory_percent: 41, active_jobs: 2 },
   },
   {
@@ -106,11 +113,18 @@ export const mockWorkers: WorkerNode[] = [
     health_status: "healthy",
     assignment_role: "primary",
     current_stream_id: "stream-cable-morning",
+    host: "encoder-main.example.jp",
+    port: 8443,
+    ssl_enabled: true,
     public_url: "https://encoder-main.example.jp",
     version: "1.2.0",
+    reported_version: "1.2.0",
+    reported_os: "linux",
+    reported_arch: "amd64",
     last_heartbeat_at: "2026-07-02T08:59:58+09:00",
     heartbeat_age_sec: 6,
     capabilities: { rtmps_output: true, archive_upload: true, discord_audio_ingest: true },
+    reported_capabilities: { rtmps_output: true, archive_upload: true, discord_audio_ingest: true },
     metrics: { cpu_percent: 48, memory_percent: 53, output_bitrate_kbps: 7800 },
   },
   {
@@ -122,11 +136,18 @@ export const mockWorkers: WorkerNode[] = [
     health_status: "healthy",
     assignment_role: "standby",
     current_stream_id: "",
+    host: "worker-city.example.jp",
+    port: 8443,
+    ssl_enabled: true,
     public_url: "https://worker-city.example.jp",
     version: "1.1.8",
+    reported_version: "1.1.8",
+    reported_os: "linux",
+    reported_arch: "arm64",
     last_heartbeat_at: "2026-07-02T08:59:54+09:00",
     heartbeat_age_sec: 10,
     capabilities: { overlay_events: true, caption_events: true },
+    reported_capabilities: { overlay_events: true, caption_events: true },
     metrics: { cpu_percent: 18, memory_percent: 29, active_jobs: 0 },
   },
   {
@@ -138,11 +159,18 @@ export const mockWorkers: WorkerNode[] = [
     health_status: "warning",
     assignment_role: "primary",
     current_stream_id: "stream-fm-special",
+    host: "encoder-field.example.jp",
+    port: 8443,
+    ssl_enabled: true,
     public_url: "https://encoder-field.example.jp",
     version: "1.1.4",
+    reported_version: "1.1.4",
+    reported_os: "linux",
+    reported_arch: "amd64",
     last_heartbeat_at: "2026-07-02T08:57:40+09:00",
     heartbeat_age_sec: 140,
     capabilities: { rtmps_output: true, archive_upload: true },
+    reported_capabilities: { rtmps_output: true, archive_upload: true },
     metrics: { cpu_percent: 76, memory_percent: 68, output_bitrate_kbps: 0 },
   },
 ];
@@ -284,6 +312,22 @@ const mockResourceData: Record<string, unknown[]> = {
 
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  const nodeConfiguration = normalizedPath.match(/^\/nodes\/([^/]+)\/configuration$/);
+  if (nodeConfiguration) {
+    const nodeID = decodeURIComponent(nodeConfiguration[1]);
+    const node = mockWorkers.find((item) => (item.service_id || item.id) === nodeID) || mockWorkers[0];
+    const host = node.host || "worker-main.example.jp";
+    const port = node.port || 8443;
+    const sslEnabled = node.ssl_enabled ?? true;
+    const nodeApiUrl = `${sslEnabled ? "https" : "http"}://${host}:${port}`;
+    return {
+      node,
+      node_api_url: nodeApiUrl,
+      configure_command: `sudo autostream-node configure --panel-url "https://control.example.jp" --token "<regenerate-configure-token>" --node "${node.service_id || node.id}" --config "/etc/autostream-node/config.yml"`,
+      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${node.service_id || node.id}"\n  name: "${node.service_name}"\n  type: "${node.service_type}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "<runtime-token-id>"\n  token: "<regenerate-runtime-token>"\n`,
+      systemd_unit: "[Unit]\nDescription=AutoStream Node Agent\n",
+    };
+  }
   const dataByPath: Record<string, unknown> = {
     "/auth/me": mockCurrentUser,
     "/setup/status": mockSetupStatus,
@@ -299,24 +343,49 @@ export function mockGet(path: string): unknown {
 }
 
 export function mockPost(path: string, body?: unknown): unknown {
+  if (stripQuery(path) === "/integrations/oauth-accounts/start") {
+    const request = body as Partial<{ provider_id: string; account_label: string; redirect_after: string }>;
+    const providers = mockResourceData["/integrations/oauth-providers"] as Array<{ id: string; provider_type: string; name: string; enabled: boolean; redirect_uri: string }>;
+    return {
+      provider: providers.find((provider) => provider.id === request.provider_id) || providers[0],
+      authorization_url: request.redirect_after || "/admin/integrations/",
+      state: "mock-oauth-state",
+      nonce: "mock-oauth-nonce",
+      expires_at: baseTime,
+      account_label: request.account_label || "Googleアカウント",
+    };
+  }
   if (stripQuery(path) === "/nodes/registration-tokens") {
     const request = body as Partial<{
       node_type: string;
       node_id: string;
       name: string;
-      public_url: string;
-      version: string;
+      description: string;
+      host: string;
+      port: number;
+      ssl_enabled: boolean;
     }>;
     const nodeID = request.node_id || `${request.node_type || "worker"}-new`;
-    const token = "ast_node_demo_9d2b4b5fd4e3c0a7";
+    const configureToken = "ast_cfg_demo_9d2b4b5fd4e3c0a7";
+    const runtimeToken = "ast_svc_demo_8e1f2c6a4b0d9f7e";
+    const host = request.host || "worker-new.example.jp";
+    const port = request.port || 8081;
+    const sslEnabled = request.ssl_enabled ?? true;
+    const scheme = sslEnabled ? "https" : "http";
     const response: NodeRegistrationResponse = {
       id: "token-demo-node-registration",
       service_type: request.node_type || "worker",
       node_type: request.node_type || "worker",
       scopes: ["service.register", "service.heartbeat", "service.config.read", "service.status.write"],
-      token,
+      token: configureToken,
+      configure_token: configureToken,
+      configure_token_expires_at: baseTime,
+      runtime_token_id: "runtime-token-demo",
+      runtime_token: runtimeToken,
       created_at: baseTime,
-      configure_command: `autostream-node configure --panel-url "https://control.example.jp" --token "${token}" --node "${nodeID}"`,
+      configure_command: `sudo autostream-node configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`,
+      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${nodeID}"\n  name: "${request.name || "新規Node"}"\n  type: "${request.node_type || "worker"}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "runtime-token-demo"\n  token: "${runtimeToken}"\n`,
+      systemd_unit: "[Unit]\nDescription=AutoStream Node Agent\n",
       node: {
         id: nodeID,
         service_id: nodeID,
@@ -324,8 +393,13 @@ export function mockPost(path: string, body?: unknown): unknown {
         service_name: request.name || "新規Node",
         status: "pending",
         health_status: "pending",
-        public_url: request.public_url || "",
-        version: request.version || "",
+        description: request.description || "",
+        host,
+        port,
+        ssl_enabled: sslEnabled,
+        public_url: `${scheme}://${host}:${port}`,
+        reported_version: "",
+        reported_capabilities: {},
       },
     };
     return response;
@@ -344,6 +418,7 @@ export function mockPut(path: string, body?: unknown): unknown {
 
 export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
+  if (/^\/nodes\/[^/]+\/configuration$/.test(normalizedPath)) return true;
   return new Set([
     "/auth/me",
     "/setup/status",
@@ -354,6 +429,7 @@ export function mockPathExists(path: string) {
     "/audit-logs",
     "/observability/metrics",
     "/nodes/registration-tokens",
+    "/integrations/oauth-accounts/start",
     ...Object.keys(mockResourceData),
   ]).has(normalizedPath);
 }

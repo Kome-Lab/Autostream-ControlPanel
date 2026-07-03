@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/netpolicy"
+	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
@@ -95,6 +96,34 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	}
 	if _, ok := payloads["encoder_recorder"]["stream_ingest_token"]; ok {
 		t.Fatalf("encoder start payload must not receive ingest token: %#v", payloads["encoder_recorder"])
+	}
+}
+
+func TestStartUsesEncryptedNodeRuntimeTokenBeforeGlobalFallback(t *testing.T) {
+	var auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	ciphertext, nonce, err := security.EncryptSecret("node-runtime-token", "secret-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := testClient()
+	client.Config.NodeTokenKey = "secret-key"
+	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, []store.RegisteredService{{
+		ServiceID:           "enc-01",
+		ServiceType:         "encoder_recorder",
+		PublicURL:           server.URL,
+		NodeTokenCiphertext: ciphertext,
+		NodeTokenNonce:      nonce,
+	}}, StartRequest{EncoderProfileID: "enc-prof-01"})
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("dispatch failed: %#v", results)
+	}
+	if auth != "Bearer node-runtime-token" {
+		t.Fatalf("unexpected auth: %q", auth)
 	}
 }
 
