@@ -2,14 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Check, Copy, FileCode2, KeyRound, LockKeyhole, RotateCw, Server } from "lucide-react";
+import { AlertCircle, Check, Copy, FileCode2, KeyRound, LockKeyhole, RotateCw, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { apiPost } from "@/lib/api/client";
+import { APIError, apiPost } from "@/lib/api/client";
 import { hasAnyPermission } from "@/lib/auth/permissions";
 import { useCurrentUser } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
@@ -60,6 +60,7 @@ export function NodeRegistrationView() {
         allow_remediation: allowRemediation,
       }),
   });
+  const createError = nodeRegistrationErrorMessage(createToken.error);
 
   const handleTypeChange = (value: string) => {
     setNodeType(value);
@@ -146,9 +147,18 @@ export function NodeRegistrationView() {
           </label>
           <Button className="w-full" disabled={!allowed || createToken.isPending} onClick={() => createToken.mutate()}>
             <KeyRound className="size-4" />
-            Nodeを作成して設定を発行
+            {createToken.isPending ? "Node設定を発行中..." : "Nodeを作成して設定を発行"}
           </Button>
           {!allowed ? <p className="text-sm text-red-600">{t("roleLimited")}</p> : null}
+          {createError ? (
+            <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="polite">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              <div>
+                <div className="font-medium">Node設定を発行できませんでした</div>
+                <div className="mt-1">{createError}</div>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -239,6 +249,29 @@ export function NodeRegistrationView() {
       </Card>
     </div>
   );
+}
+
+function nodeRegistrationErrorMessage(error: unknown) {
+  if (!error) return "";
+  if (error instanceof APIError) {
+    const messages: Record<string, string> = {
+      csrf_failed: "ログイン状態またはCSRF tokenが古くなっています。ページを再読み込みして、もう一度実行してください。",
+      invalid_node_scope: "選択したNode権限の組み合わせが無効です。Runtime SecretsやRemediationのチェックを見直してください。",
+      permission_escalation: "現在の権限では、このNodeに必要なscopeを発行できません。管理者権限または必要な個別権限を付与してください。",
+      node_already_exists: "同じNode IDが既に存在します。別のNode IDにするか、既存NodeのConfigurationから再発行してください。",
+      invalid_node_endpoint: "HostまたはPortが無効です。HostはURL全体ではなくFQDNまたはIPだけを入力してください。",
+      node_endpoint_blocked: "Node Agent API URLがControl Panelのoutbound allowlistに入っていません。Control Panel envの AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS にこのHost、または *.example.jp のようなwildcardを追加して再起動してください。",
+      invalid_node_registration: "Node ID、名前、Host、Portのいずれかが無効です。HostはURL全体ではなくFQDNまたはIPだけを入力し、Control Panelのoutbound allowlistも確認してください。",
+      node_type_mismatch: "既存Nodeと異なるNode typeでは発行できません。Node typeとNode IDの組み合わせを確認してください。",
+      store_node_runtime_token_failed: "Control Panelのenvに AUTOSTREAM_SECRET_ENCRYPTION_KEY が設定されていない、または暗号化設定が不正です。設定後にControl Panelを再起動してください。",
+      create_node_configure_token_failed: "Configure Tokenの保存に失敗しました。database接続とControl Panelのログを確認してください。",
+      create_node_registration_token_failed: "Node Runtime Tokenの作成に失敗しました。Control Panelのログを確認してください。",
+      precreate_node_failed: "Nodeの作成に失敗しました。database接続とControl Panelのログを確認してください。",
+    };
+    return messages[error.code || ""] || `API error: ${error.code || error.message} (HTTP ${error.status})`;
+  }
+  if (error instanceof Error) return error.message;
+  return "不明なエラーが発生しました。Control Panelのログを確認してください。";
 }
 
 function SecretBlock({ label, value, copied, onCopy }: { label: string; value: string; copied: boolean; onCopy: () => void }) {

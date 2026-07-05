@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/autostream-control-panel/internal/netpolicy"
 	"github.com/example/autostream-control-panel/internal/oauthlogin"
 	"github.com/example/autostream-control-panel/internal/observability"
 	"github.com/example/autostream-control-panel/internal/security"
@@ -3600,6 +3601,18 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	publicURL := buildNodeAgentURL(host, port, sslEnabled)
+	if publicURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
+		return
+	}
+	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(publicURL); err != nil {
+		code := "invalid_node_endpoint"
+		if errors.Is(err, netpolicy.ErrBlockedServiceURL) {
+			code = "node_endpoint_blocked"
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
+		return
+	}
 	scopes := nodeRegistrationScopes(serviceType, body.AllowRuntimeSecrets, body.AllowRemediation)
 	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, scopes); err != nil {
 		status := http.StatusBadRequest
@@ -3681,9 +3694,8 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		"runtime_token":              token.RawToken,
 		"created_at":                 token.CreatedAt,
 		"node":                       service,
-		"configure_command":          nodeConfigureCommand(r, service.ServiceID, configureToken, "/etc/autostream-node/config.yml"),
+		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, "/etc/autostream-node/config.yml"),
 		"configuration_yaml":         nodeConfigurationYAML(r, service, token.ID, token.RawToken),
-		"systemd_unit":               nodeSystemdUnit(),
 	})
 }
 
@@ -3745,7 +3757,7 @@ func nodeConfigureTokenTTL() time.Duration {
 	return ttl
 }
 
-func nodeConfigureCommand(r *http.Request, nodeID, rawToken, configPath string) string {
+func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, configPath string) string {
 	panelURL := panelBaseURL(r)
 	if panelURL == "" {
 		panelURL = "https://control.example.com"
@@ -3753,7 +3765,24 @@ func nodeConfigureCommand(r *http.Request, nodeID, rawToken, configPath string) 
 	if configPath == "" {
 		configPath = "/etc/autostream-node/config.yml"
 	}
-	return "sudo autostream-node configure --panel-url " + strconv.Quote(panelURL) + " --token " + strconv.Quote(rawToken) + " --node " + strconv.Quote(nodeID) + " --config " + strconv.Quote(configPath)
+	return "sudo " + nodeConfigureBinary(serviceType) +
+		" configure --panel-url " + strconv.Quote(panelURL) +
+		" --token " + strconv.Quote(rawToken) +
+		" --node " + strconv.Quote(nodeID) +
+		" --config " + strconv.Quote(configPath)
+}
+
+func nodeConfigureBinary(serviceType string) string {
+	switch serviceType {
+	case "encoder_recorder":
+		return "autostream-encoder-recorder"
+	case "discord_bot":
+		return "autostream-discord-bot"
+	case "observability":
+		return "autostream-observability"
+	default:
+		return "autostream-worker"
+	}
 }
 
 func panelBaseURL(r *http.Request) string {
@@ -3820,25 +3849,6 @@ func yamlQuote(value string) string {
 	return string(encoded)
 }
 
-func nodeSystemdUnit() string {
-	return `[Unit]
-Description=AutoStream Node Agent
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-User=root
-WorkingDirectory=/etc/autostream-node
-ExecStart=/usr/local/bin/autostream-node --config /etc/autostream-node/config.yml
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=4096
-
-[Install]
-WantedBy=multi-user.target
-`
-}
-
 func buildNodeAgentURL(host string, port int, sslEnabled bool) string {
 	host = strings.TrimSpace(host)
 	if host == "" || port <= 0 {
@@ -3887,8 +3897,7 @@ func (s *Server) nodeConfiguration(w http.ResponseWriter, r *http.Request) {
 		"node":               service,
 		"node_api_url":       buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled),
 		"configuration_yaml": nodeConfigurationYAML(r, service, service.TokenID, ""),
-		"configure_command":  nodeConfigureCommand(r, service.ServiceID, "<regenerate-configure-token>", "/etc/autostream-node/config.yml"),
-		"systemd_unit":       nodeSystemdUnit(),
+		"configure_command":  nodeConfigureCommand(r, service.ServiceType, service.ServiceID, "<regenerate-configure-token>", "/etc/autostream-node/config.yml"),
 	})
 }
 
@@ -3913,7 +3922,7 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 		"node":                       service,
 		"configure_token":            token,
 		"configure_token_expires_at": expiresAt,
-		"configure_command":          nodeConfigureCommand(r, service.ServiceID, token, "/etc/autostream-node/config.yml"),
+		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, token, "/etc/autostream-node/config.yml"),
 	})
 }
 

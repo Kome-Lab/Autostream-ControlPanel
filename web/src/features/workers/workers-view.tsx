@@ -22,7 +22,7 @@ type NodeConfigurationResponse = {
   node_api_url: string;
   configuration_yaml: string;
   configure_command: string;
-  systemd_unit: string;
+  systemd_unit?: string;
 };
 
 export function WorkersView() {
@@ -152,7 +152,9 @@ export function WorkersView() {
             <SecretBlock label="Node Agent API URL" value={configuration.node_api_url || "-"} copied={copied === "api"} onCopy={() => copyValue("api", configuration.node_api_url)} />
             <SecretBlock label="Auto Configure" value={configuration.configure_command} copied={copied === "command"} onCopy={() => copyValue("command", configuration.configure_command)} />
             <SecretBlock label="config.yml" value={configuration.configuration_yaml} copied={copied === "yaml"} onCopy={() => copyValue("yaml", configuration.configuration_yaml)} />
-            <SecretBlock label="systemd" value={configuration.systemd_unit} copied={copied === "systemd"} onCopy={() => copyValue("systemd", configuration.systemd_unit)} />
+            {configuration.systemd_unit ? (
+              <SecretBlock label="systemd" value={configuration.systemd_unit} copied={copied === "systemd"} onCopy={() => copyValue("systemd", configuration.systemd_unit)} />
+            ) : null}
           </CardContent>
         </Card>
       ) : null}

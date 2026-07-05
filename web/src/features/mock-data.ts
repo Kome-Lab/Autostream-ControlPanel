@@ -323,9 +323,8 @@ export function mockGet(path: string): unknown {
     return {
       node,
       node_api_url: nodeApiUrl,
-      configure_command: `sudo autostream-node configure --panel-url "https://control.example.jp" --token "<regenerate-configure-token>" --node "${node.service_id || node.id}" --config "/etc/autostream-node/config.yml"`,
+      configure_command: mockConfigureCommand(node.service_type, node.service_id || node.id, "<regenerate-configure-token>"),
       configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${node.service_id || node.id}"\n  name: "${node.service_name}"\n  type: "${node.service_type}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "<runtime-token-id>"\n  token: "<regenerate-runtime-token>"\n`,
-      systemd_unit: "[Unit]\nDescription=AutoStream Node Agent\n",
     };
   }
   const dataByPath: Record<string, unknown> = {
@@ -383,9 +382,8 @@ export function mockPost(path: string, body?: unknown): unknown {
       runtime_token_id: "runtime-token-demo",
       runtime_token: runtimeToken,
       created_at: baseTime,
-      configure_command: `sudo autostream-node configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`,
+      configure_command: mockConfigureCommand(request.node_type || "worker", nodeID, configureToken),
       configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${nodeID}"\n  name: "${request.name || "新規Node"}"\n  type: "${request.node_type || "worker"}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "runtime-token-demo"\n  token: "${runtimeToken}"\n`,
-      systemd_unit: "[Unit]\nDescription=AutoStream Node Agent\n",
       node: {
         id: nodeID,
         service_id: nodeID,
@@ -405,6 +403,23 @@ export function mockPost(path: string, body?: unknown): unknown {
     return response;
   }
   return { ok: true };
+}
+
+function mockConfigureCommand(serviceType: string, nodeID: string, configureToken: string) {
+  return `sudo ${mockConfigureBinary(serviceType)} configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`;
+}
+
+function mockConfigureBinary(serviceType: string) {
+  switch (serviceType) {
+    case "encoder_recorder":
+      return "autostream-encoder-recorder";
+    case "discord_bot":
+      return "autostream-discord-bot";
+    case "observability":
+      return "autostream-observability";
+    default:
+      return "autostream-worker";
+  }
 }
 
 export function mockPut(path: string, body?: unknown): unknown {

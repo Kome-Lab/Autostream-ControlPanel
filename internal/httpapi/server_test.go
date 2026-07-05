@@ -8316,6 +8316,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 		Scopes            []string                `json:"scopes"`
 		ConfigureCommand  string                  `json:"configure_command"`
 		ConfigurationYAML string                  `json:"configuration_yaml"`
+		SystemdUnit       string                  `json:"systemd_unit"`
 		Node              store.RegisteredService `json:"node"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
@@ -8333,8 +8334,11 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if body.Node.Version != "" || body.Node.ReportedVersion != "" || len(body.Node.Capabilities) != 0 || len(body.Node.ReportedCapabilities) != 0 {
 		t.Fatalf("manual version/capabilities must not be stored during node creation: %#v", body.Node)
 	}
-	if !strings.Contains(body.ConfigureCommand, "sudo autostream-node configure") || !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token") || !strings.Contains(body.ConfigureCommand, "--node") || !strings.Contains(body.ConfigureCommand, "--config") {
+	if !strings.Contains(body.ConfigureCommand, "sudo autostream-worker configure") || !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token "+strconv.Quote(body.ConfigureToken)) || !strings.Contains(body.ConfigureCommand, "--node \"studio-worker-01\"") || !strings.Contains(body.ConfigureCommand, "--config \"/etc/autostream-node/config.yml\"") {
 		t.Fatalf("missing configure command fields: %s", body.ConfigureCommand)
+	}
+	if strings.Contains(body.ConfigureCommand, "sudo autostream-node") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/autostream-node") || strings.Contains(body.ConfigureCommand, "config_path=") || body.SystemdUnit != "" {
+		t.Fatalf("node registration should not reference a non-existent autostream-node binary or systemd unit: command=%s unit=%s", body.ConfigureCommand, body.SystemdUnit)
 	}
 	if !strings.Contains(body.ConfigurationYAML, `ssl_enabled: true`) || !strings.Contains(body.ConfigurationYAML, body.RuntimeToken) || !strings.Contains(body.ConfigurationYAML, `host: "worker.example.com"`) {
 		t.Fatalf("configuration yaml missing node agent settings: %s", body.ConfigurationYAML)
@@ -8416,6 +8420,30 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 	if strings.Contains(auditBody, `"token_id"`) && !strings.Contains(auditBody, `"\u003credacted\u003e"`) {
 		t.Fatalf("audit log token binding was not redacted: %s", auditBody)
+	}
+}
+
+func TestCreateNodeRegistrationTokenReportsBlockedEndpoint(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "")
+	t.Setenv("AUTOSTREAM_REQUIRE_SERVICE_PUBLIC_ALLOWED_HOSTS", "true")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"worker","node_id":"studio-worker-01","name":"Studio Worker 01","host":"worker.example.jp","port":8443,"ssl_enabled":true}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("blocked node endpoint status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "node_endpoint_blocked") {
+		t.Fatalf("blocked endpoint should return actionable code: %s", res.Body.String())
 	}
 }
 
