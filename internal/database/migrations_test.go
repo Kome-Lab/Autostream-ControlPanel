@@ -68,3 +68,16 @@ func TestPasskeyCeremonySessionUserForeignKeyMatchesUsersTable(t *testing.T) {
 		t.Fatalf("migration 018 must rebuild the FK around the compatible user_id type:\n%s", alterText)
 	}
 }
+
+func TestNodeAgentRegistrationMigrationIsIdempotent(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/025_node_agent_registration.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range splitSQLStatements(string(body)) {
+		normalized := strings.ToUpper(stmt)
+		if strings.HasPrefix(normalized, "ALTER TABLE SERVICES ADD COLUMN ") && !strings.Contains(normalized, "ADD COLUMN IF NOT EXISTS ") {
+			t.Fatalf("node agent registration migration must tolerate partially upgraded services tables:\n%s", stmt)
+		}
+	}
+}
