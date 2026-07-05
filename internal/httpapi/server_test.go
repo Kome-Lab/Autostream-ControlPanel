@@ -1101,6 +1101,97 @@ func TestStartStreamUsesSavedDiscordConfigSetting(t *testing.T) {
 	}
 }
 
+func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "discord service start stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	discordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	if _, err := auth.AssignServiceToStream(t.Context(), "discord-01", stream.ID, "test-user"); err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	config := createDiscordConfigForTest(t, profiles, "service start discord", "discord-01", "guild-saved", "voice-saved", "text-saved")
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override"}); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+
+	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"attacker-config","discord_guild_id":"attacker-guild","discord_voice_channel_id":"attacker-voice"}`))
+	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("service start status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.startCalls != 1 {
+		t.Fatalf("expected one start dispatch, got %d", dispatcher.startCalls)
+	}
+	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "guild-stream-override" || dispatcher.startRequest.DiscordVoiceChannelID != "voice-stream-override" {
+		t.Fatalf("service start must use saved settings and ignore request overrides: %#v", dispatcher.startRequest)
+	}
+	if dispatcher.startRequest.DiscordTextChannelID != "text-saved" {
+		t.Fatalf("service start should preserve profile text channel default: %#v", dispatcher.startRequest)
+	}
+	events := auth.AuditEvents()
+	foundStartAudit := false
+	for _, event := range events {
+		if event.Action == "streams.start" && event.ResourceID == stream.ID && event.Result == "success" {
+			foundStartAudit = event.ActorUserID == "service:discord-01" && event.ActorUsername == "discord-01"
+		}
+	}
+	if !foundStartAudit {
+		t.Fatalf("service start audit missing service actor: %#v", events)
+	}
+
+	duplicateReq := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
+	duplicateReq.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	duplicateRes := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateRes, duplicateReq)
+	if duplicateRes.Code != http.StatusOK || !strings.Contains(duplicateRes.Body.String(), "already_active") {
+		t.Fatalf("duplicate service start status = %d body = %s", duplicateRes.Code, duplicateRes.Body.String())
+	}
+	if dispatcher.startCalls != 1 {
+		t.Fatalf("active stream must not be dispatched again, got %d calls", dispatcher.startCalls)
+	}
+}
+
+func TestServiceStartStreamRequiresPrimaryDiscordBotToken(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "discord service forbidden stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+	discordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-02", ServiceType: "discord_bot", ServiceName: "Discord 02", PublicURL: "https://discord-02.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+
+	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
+	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "service_not_primary_assignment") {
+		t.Fatalf("unassigned service start status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.startCalls != 0 {
+		t.Fatalf("unassigned discord token must not dispatch start")
+	}
+}
+
 func TestStartStreamRejectsSavedDiscordChannelOverridesWithoutConfig(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start"}); err != nil {
@@ -8361,6 +8452,113 @@ func TestCreateNodeRegistrationTokenRejectsSecretScopeEscalation(t *testing.T) {
 	}
 	if len(tokens) != 0 {
 		t.Fatalf("denied node registration should not create token: %#v", tokens)
+	}
+}
+
+func TestCreateDiscordNodeRegistrationTokenRequiresStartPermission(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "limited", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	limitedCookie, limitedCSRF := loginForTest(t, handler, "limited", "correct horse battery")
+
+	limitedReq := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"discord_bot","node_id":"discord-01","name":"Discord 01","host":"discord.example.com","port":8443,"ssl_enabled":true}`))
+	limitedReq.AddCookie(limitedCookie)
+	limitedReq.Header.Set("X-CSRF-Token", limitedCSRF)
+	limitedRes := httptest.NewRecorder()
+	handler.ServeHTTP(limitedRes, limitedReq)
+	if limitedRes.Code != http.StatusForbidden || !strings.Contains(limitedRes.Body.String(), "permission_escalation") {
+		t.Fatalf("limited discord node status = %d body = %s", limitedRes.Code, limitedRes.Body.String())
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, handler, "admin", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"discord_bot","node_id":"discord-01","name":"Discord 01","host":"discord.example.com","port":8443,"ssl_enabled":true}`))
+	req.AddCookie(adminCookie)
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("admin discord node status = %d body = %s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(body.Scopes, "streams.start") || !stringSliceContains(body.Scopes, "discord.status.write") {
+		t.Fatalf("discord node scopes missing auto-start permissions: %#v", body.Scopes)
+	}
+}
+
+func TestCreateWorkerNodeRegistrationTokenIncludesObservabilityIngest(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"worker","node_id":"worker-01","name":"Worker 01","host":"worker.example.com","port":8443,"ssl_enabled":true}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("worker node status = %d body = %s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(body.Scopes, "observability.ingest") || !stringSliceContains(body.Scopes, "worker.events.write") {
+		t.Fatalf("worker node scopes missing observability ingest: %#v", body.Scopes)
+	}
+}
+
+func TestServiceObservabilitySignalProxiesWithRegisteredNodeIdentity(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	var gotAuth string
+	var gotPayload map[string]any
+	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/signals" {
+			t.Fatalf("unexpected observability path: %s", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"signal":{"id":"sig-01"}}`))
+	}))
+	defer obs.Close()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithObservabilityClient(observability.Client{BaseURL: obs.URL, Token: "admin-token", Timeout: time.Second}))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+	token := createBoundServiceTokenForTest(t, handler, cookie, csrf, "worker", "worker-01", []string{"service.register", "service.heartbeat", "observability.ingest"})
+	registerServiceForTest(t, handler, token.RawToken, "worker-01", "worker")
+
+	req := httptest.NewRequest(http.MethodPost, "/services/observability/signals", bytes.NewBufferString(`{"type":"metric","name":"worker.event_send_failures_total","service_id":"attacker","service_type":"encoder_recorder","stream_id":"stream-01","value":1}`))
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("proxy signal status = %d body = %s", res.Code, res.Body.String())
+	}
+	if gotAuth != "Bearer admin-token" {
+		t.Fatalf("observability proxy used wrong auth: %q", gotAuth)
+	}
+	if gotPayload["service_id"] != "worker-01" || gotPayload["service_type"] != "worker" {
+		t.Fatalf("service identity was not enforced by proxy: %#v", gotPayload)
 	}
 }
 

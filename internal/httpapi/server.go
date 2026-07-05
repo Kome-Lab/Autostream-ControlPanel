@@ -267,6 +267,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /services/runtime-config", s.serviceRuntimeConfig)
 	s.mux.HandleFunc("POST /services/runtime-secrets/resolve", s.serviceRuntimeSecretResolve)
 	s.mux.HandleFunc("POST /services/heartbeat", s.serviceHeartbeat)
+	s.mux.HandleFunc("POST /services/streams/{id}/start", s.serviceStartStream)
+	s.mux.HandleFunc("POST /services/observability/signals", s.serviceObservabilitySignal)
 	s.mux.HandleFunc("POST /services/stream-events", s.serviceStreamEvent)
 	s.mux.HandleFunc("POST /services/stream-artifacts", s.serviceStreamArtifacts)
 	s.mux.HandleFunc("POST /services/remediation-actions/execute", s.serviceRemediationExecute)
@@ -3689,11 +3691,11 @@ func nodeRegistrationScopes(serviceType string, allowRuntimeSecrets, allowRemedi
 	scopes := []string{"service.register", "service.heartbeat", "service.config.read", "service.logs.write", "service.status.write"}
 	switch serviceType {
 	case "discord_bot":
-		scopes = append(scopes, "discord.status.write")
+		scopes = append(scopes, "discord.status.write", "streams.start")
 	case "encoder_recorder":
-		scopes = append(scopes, "encoder.status.write")
+		scopes = append(scopes, "encoder.status.write", "observability.ingest")
 	case "worker":
-		scopes = append(scopes, "worker.events.write")
+		scopes = append(scopes, "worker.events.write", "observability.ingest")
 	case "observability":
 		scopes = append(scopes, "observability.ingest")
 		if allowRemediation {
@@ -4053,6 +4055,7 @@ func validateServiceTokenScopePermissions(actorPermissions, scopes []string) err
 	required := map[string]string{
 		"service.secret.resolve": "secrets.update",
 		"remediation.execute":    "remediation.execute",
+		"streams.start":          "streams.start",
 	}
 	for _, scope := range scopes {
 		permission := required[strings.TrimSpace(scope)]
@@ -5556,6 +5559,70 @@ func (s *Server) serviceTokenRegisteredForType(ctx context.Context, token store.
 	return false, nil
 }
 
+func (s *Server) registeredServiceForToken(ctx context.Context, token store.ServiceToken) (store.RegisteredService, bool, error) {
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return store.RegisteredService{}, false, err
+	}
+	for _, service := range services {
+		if service.TokenID == token.ID && service.ServiceType == token.ServiceType && strings.TrimSpace(service.Status) != "pending" {
+			return service, true, nil
+		}
+	}
+	return store.RegisteredService{}, false, nil
+}
+
+func (s *Server) serviceObservabilitySignal(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.authenticateService(w, r, "observability.ingest")
+	if !ok {
+		return
+	}
+	if token.ServiceType != "worker" && token.ServiceType != "encoder_recorder" {
+		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", "", "failure", map[string]any{"reason": "service_type_not_allowed"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_type_not_allowed"})
+		return
+	}
+	service, registered, err := s.registeredServiceForToken(r.Context(), token)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_services_failed"})
+		return
+	}
+	if !registered {
+		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", "", "failure", map[string]any{"reason": "service_token_not_registered"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_token_not_registered"})
+		return
+	}
+	if !s.obs.Enabled() {
+		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "observability_not_configured"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		return
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "bad_request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	payload["service_id"] = service.ServiceID
+	payload["service_type"] = service.ServiceType
+	body, err := s.obs.Post(r.Context(), "/signals", payload)
+	if err != nil {
+		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "observability_request_failed", "signal_name": stringMapValue(payload, "name"), "stream_id": stringMapValue(payload, "stream_id")})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+		return
+	}
+	s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "success", map[string]any{"signal_name": stringMapValue(payload, "name"), "stream_id": stringMapValue(payload, "stream_id")})
+	writeObservabilityJSON(w, http.StatusAccepted, "/signals", body)
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
+}
+
 func (s *Server) serviceRemediationExecute(w http.ResponseWriter, r *http.Request) {
 	token, ok := s.authenticateService(w, r, "remediation.execute")
 	if !ok {
@@ -6129,6 +6196,81 @@ func applyStreamSettingsDefaults(stream store.Stream, req *servicecall.StartRequ
 	}
 	if strings.TrimSpace(req.EncoderInputURL) == "" {
 		req.EncoderInputURL = stream.EncoderInputURL
+	}
+}
+
+func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.authenticateService(w, r, "streams.start")
+	if !ok {
+		return
+	}
+	if token.ServiceType != "discord_bot" {
+		s.writeServiceAudit(r, token, "streams.start", "stream", r.PathValue("id"), "failure", map[string]any{"reason": "service_type_not_allowed"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_type_not_allowed"})
+		return
+	}
+	streamID := strings.TrimSpace(r.PathValue("id"))
+	stream, err := s.streams.GetStream(r.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	service, assigned, err := s.serviceTokenPrimaryAssignedToStream(r.Context(), token, stream.ID, "discord_bot")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
+	if !assigned {
+		s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "failure", map[string]any{"reason": "service_not_primary_assignment"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_primary_assignment"})
+		return
+	}
+	if isActiveStreamStatus(stream.Status) {
+		s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "success", map[string]any{"service_id": service.ServiceID, "skipped": true, "reason": "stream_already_active"})
+		writeJSON(w, http.StatusOK, map[string]any{"stream": stream, "already_active": true})
+		return
+	}
+	r.Body = http.NoBody
+	r = r.WithContext(context.WithValue(r.Context(), currentUserKey{}, serviceCurrentUser(service)))
+	s.startStream(w, r)
+}
+
+func (s *Server) serviceTokenPrimaryAssignedToStream(ctx context.Context, token store.ServiceToken, streamID, serviceType string) (store.RegisteredService, bool, error) {
+	if s.services == nil {
+		return store.RegisteredService{}, false, nil
+	}
+	assignments, err := s.services.ListStreamAssignments(ctx, streamID)
+	if err != nil {
+		return store.RegisteredService{}, false, err
+	}
+	for _, service := range assignments {
+		if strings.TrimSpace(service.TokenID) == token.ID &&
+			strings.TrimSpace(service.ServiceType) == serviceType &&
+			strings.TrimSpace(service.AssignmentRole) == "primary" {
+			return service, true, nil
+		}
+	}
+	return store.RegisteredService{}, false, nil
+}
+
+func serviceCurrentUser(service store.RegisteredService) currentUser {
+	serviceID := strings.TrimSpace(service.ServiceID)
+	if serviceID == "" {
+		serviceID = strings.TrimSpace(service.ServiceType)
+	}
+	return currentUser{User: store.User{ID: "service:" + serviceID, Username: serviceID}}
+}
+
+func isActiveStreamStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "starting", "live", "stopping":
+		return true
+	default:
+		return false
 	}
 }
 

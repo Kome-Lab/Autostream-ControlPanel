@@ -51,13 +51,15 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 			ClientSecret: "youtube-client-secret",
 			RefreshToken: "youtube-refresh-token",
 		},
-		StreamID:       "stream-01",
-		StreamName:     "Morning Stream",
-		OutputID:       "youtube-output-01",
-		Title:          "Private Test",
-		Description:    "AutoStream private test",
-		PrivacyStatus:  "private",
-		ScheduledStart: time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC),
+		StreamID:        "stream-01",
+		StreamName:      "Morning Stream",
+		OutputID:        "youtube-output-01",
+		Title:           "Private Test",
+		Description:     "AutoStream private test",
+		PrivacyStatus:   "private",
+		ScheduledStart:  time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC),
+		EnableAutoStart: true,
+		EnableAutoStop:  true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +86,10 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 	if !strings.Contains(transport.broadcastInsertBody, `"privacyStatus":"private"`) ||
 		!strings.Contains(transport.broadcastInsertBody, `"title":"Private Test"`) {
 		t.Fatalf("broadcast insert body omitted private test metadata: %s", transport.broadcastInsertBody)
+	}
+	if !strings.Contains(transport.broadcastInsertBody, `"enableAutoStart":true`) ||
+		!strings.Contains(transport.broadcastInsertBody, `"enableAutoStop":true`) {
+		t.Fatalf("broadcast insert body omitted YouTube auto start/stop settings: %s", transport.broadcastInsertBody)
 	}
 }
 
