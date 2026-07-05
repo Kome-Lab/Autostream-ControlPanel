@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AlertCircle, Check, Copy, FileCode2, KeyRound, LockKeyhole, RotateCw, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,11 +10,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { DataTable } from "@/components/tables/data-table";
+import { StatusBadge } from "@/components/admin/status-badge";
 import { APIError, apiPost } from "@/lib/api/client";
 import { hasAnyPermission } from "@/lib/auth/permissions";
-import { useCurrentUser } from "@/features/queries";
+import { useCurrentUser, useServiceHealth } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
-import type { NodeRegistrationResponse } from "@/types/domain";
+import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 
 const nodeTypes = [
   { value: "worker", label: "Worker Node Agent", defaultPort: 8081 },
@@ -25,6 +28,8 @@ const nodeTypes = [
 export function NodeRegistrationView() {
   const { t } = useI18n();
   const currentUser = useCurrentUser();
+  const registeredNodes = useServiceHealth();
+  const queryClient = useQueryClient();
   const [nodeType, setNodeType] = useState("worker");
   const selectedType = nodeTypes.find((type) => type.value === nodeType) ?? nodeTypes[0];
   const [nodeID, setNodeID] = useState("worker-tokyo-01");
@@ -59,8 +64,12 @@ export function NodeRegistrationView() {
         allow_runtime_secrets: allowRuntimeSecrets,
         allow_remediation: allowRemediation,
       }),
+    onSuccess: async () => {
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["service-health"] }), queryClient.invalidateQueries({ queryKey: ["workers"] })]);
+    },
   });
   const createError = nodeRegistrationErrorMessage(createToken.error);
+  const registeredRows = registeredNodes.data || [];
 
   const handleTypeChange = (value: string) => {
     setNodeType(value);
@@ -77,9 +86,65 @@ export function NodeRegistrationView() {
     window.setTimeout(() => setCopied(""), 1200);
   };
 
+  const registeredColumns: ColumnDef<WorkerNode>[] = [
+    {
+      accessorKey: "service_name",
+      header: t("name"),
+      cell: ({ row }) => (
+        <div className="min-w-56">
+          <div className="font-medium">{row.original.service_name}</div>
+          <div className="text-xs text-muted-foreground">{row.original.service_id || row.original.id}</div>
+        </div>
+      ),
+    },
+    {
+      accessorKey: "service_type",
+      header: t("nodeType"),
+      cell: ({ row }) => nodeTypeLabel(row.original.service_type),
+    },
+    {
+      id: "endpoint",
+      header: "Node Agent API",
+      cell: ({ row }) => <span className="break-all text-sm">{nodeEndpoint(row.original)}</span>,
+    },
+    {
+      accessorKey: "status",
+      header: t("status"),
+      cell: ({ row }) => <StatusBadge status={row.original.health_status || row.original.status} showDetail />,
+    },
+    {
+      id: "registration",
+      header: "登録状態",
+      cell: ({ row }) => (
+        <div className="text-sm">
+          <div>{row.original.last_heartbeat_at ? "接続済み" : "接続待ち"}</div>
+          <div className="text-xs text-muted-foreground">{row.original.configure_token_used_at ? "Configure済み" : "Configure未実行"}</div>
+        </div>
+      ),
+    },
+    {
+      id: "reported",
+      header: "報告情報",
+      cell: ({ row }) => (
+        <div className="text-sm">
+          <div>Version {row.original.reported_version || row.original.version || "-"}</div>
+          <div className="text-xs text-muted-foreground">
+            {row.original.reported_os || "OS未取得"} / {row.original.reported_arch || "Arch未取得"}
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "heartbeat",
+      header: "Heartbeat",
+      cell: ({ row }) => formatHeartbeat(row.original),
+    },
+  ];
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]">
-      <Card className="min-w-0">
+    <div className="space-y-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]">
+        <Card className="min-w-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Server className="size-5" />
@@ -160,9 +225,9 @@ export function NodeRegistrationView() {
             </div>
           ) : null}
         </CardContent>
-      </Card>
+        </Card>
 
-      <Card className="min-w-0">
+        <Card className="min-w-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <FileCode2 className="size-5" />
@@ -246,9 +311,56 @@ export function NodeRegistrationView() {
             </div>
           </div>
         </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle>登録済みNode</CardTitle>
+              <CardDescription>作成済みNode、Configure実行状況、最終Heartbeatを確認できます。</CardDescription>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => registeredNodes.refetch()} disabled={registeredNodes.isFetching}>
+              <RotateCw className="size-4" />
+              {registeredNodes.isFetching ? "更新中" : "更新"}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {createToken.data?.node ? (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+              {createToken.data.node.service_name} を登録しました。一覧に表示されない場合は「更新」を押してください。
+            </div>
+          ) : null}
+          {registeredNodes.isError ? (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+              登録済みNodeを取得できませんでした。service_health.read 権限とControl Panelのログを確認してください。
+            </div>
+          ) : null}
+          <div className="text-sm text-muted-foreground">登録済み: {registeredRows.length} Node</div>
+          <DataTable columns={registeredColumns} data={registeredRows} filterPlaceholder="Node名、Node ID、種別、状態で検索" getRowId={(row) => row.service_id || row.id} />
+        </CardContent>
       </Card>
     </div>
   );
+}
+
+function nodeTypeLabel(type?: string) {
+  return nodeTypes.find((item) => item.value === type)?.label || type || "-";
+}
+
+function nodeEndpoint(node: WorkerNode) {
+  if (node.host && node.port) {
+    return `${node.ssl_enabled ? "https" : "http"}://${node.host}:${node.port}`;
+  }
+  return node.public_url || "-";
+}
+
+function formatHeartbeat(node: WorkerNode) {
+  if (typeof node.heartbeat_age_sec === "number") return `${node.heartbeat_age_sec} sec`;
+  if (node.last_heartbeat_at) return node.last_heartbeat_at;
+  return "-";
 }
 
 function nodeRegistrationErrorMessage(error: unknown) {

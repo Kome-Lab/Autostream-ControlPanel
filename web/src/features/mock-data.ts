@@ -400,6 +400,14 @@ export function mockPost(path: string, body?: unknown): unknown {
         reported_capabilities: {},
       },
     };
+    const existingIndex = mockWorkers.findIndex((node) => (node.service_id || node.id) === nodeID);
+    if (response.node) {
+      if (existingIndex >= 0) {
+        mockWorkers[existingIndex] = response.node;
+      } else {
+        mockWorkers.unshift(response.node);
+      }
+    }
     return response;
   }
   return { ok: true };
