@@ -3765,8 +3765,12 @@ func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, config
 	if configPath == "" {
 		configPath = "/etc/autostream-node/config.yml"
 	}
-	return "sudo " + nodeConfigureBinary(serviceType) +
-		" configure --panel-url " + strconv.Quote(panelURL) +
+	configureBinary := nodeConfigureBinary(serviceType)
+	installedBinary := nodeInstalledBinary(serviceType)
+	return `bin="$(command -v ` + configureBinary + ` || true)"` + "\n" +
+		`if [ -z "$bin" ] && [ -x ` + strconv.Quote(installedBinary) + ` ]; then bin=` + strconv.Quote(installedBinary) + `; fi` + "\n" +
+		`if [ -z "$bin" ]; then echo "` + configureBinary + ` or ` + installedBinary + ` not found. Install or upgrade the service binary first." >&2; exit 127; fi` + "\n" +
+		`sudo "$bin" configure --panel-url ` + strconv.Quote(panelURL) +
 		" --token " + strconv.Quote(rawToken) +
 		" --node " + strconv.Quote(nodeID) +
 		" --config " + strconv.Quote(configPath)
@@ -3782,6 +3786,19 @@ func nodeConfigureBinary(serviceType string) string {
 		return "autostream-observability"
 	default:
 		return "autostream-worker"
+	}
+}
+
+func nodeInstalledBinary(serviceType string) string {
+	switch serviceType {
+	case "encoder_recorder":
+		return "/usr/local/bin/encoder-recorder"
+	case "discord_bot":
+		return "/usr/local/bin/discord-bot"
+	case "observability":
+		return "/usr/local/bin/observability"
+	default:
+		return "/usr/local/bin/worker"
 	}
 }
 

@@ -8334,7 +8334,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if body.Node.Version != "" || body.Node.ReportedVersion != "" || len(body.Node.Capabilities) != 0 || len(body.Node.ReportedCapabilities) != 0 {
 		t.Fatalf("manual version/capabilities must not be stored during node creation: %#v", body.Node)
 	}
-	if !strings.Contains(body.ConfigureCommand, "sudo autostream-worker configure") || !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token "+strconv.Quote(body.ConfigureToken)) || !strings.Contains(body.ConfigureCommand, "--node \"studio-worker-01\"") || !strings.Contains(body.ConfigureCommand, "--config \"/etc/autostream-node/config.yml\"") {
+	if !strings.Contains(body.ConfigureCommand, "command -v autostream-worker") || !strings.Contains(body.ConfigureCommand, "/usr/local/bin/worker") || !strings.Contains(body.ConfigureCommand, `sudo "$bin" configure`) || !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token "+strconv.Quote(body.ConfigureToken)) || !strings.Contains(body.ConfigureCommand, "--node \"studio-worker-01\"") || !strings.Contains(body.ConfigureCommand, "--config \"/etc/autostream-node/config.yml\"") {
 		t.Fatalf("missing configure command fields: %s", body.ConfigureCommand)
 	}
 	if strings.Contains(body.ConfigureCommand, "sudo autostream-node") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/autostream-node") || strings.Contains(body.ConfigureCommand, "config_path=") || body.SystemdUnit != "" {

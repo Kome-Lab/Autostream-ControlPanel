@@ -414,7 +414,12 @@ export function mockPost(path: string, body?: unknown): unknown {
 }
 
 function mockConfigureCommand(serviceType: string, nodeID: string, configureToken: string) {
-  return `sudo ${mockConfigureBinary(serviceType)} configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`;
+  const configureBinary = mockConfigureBinary(serviceType);
+  const installedBinary = mockInstalledBinary(serviceType);
+  return `bin="$(command -v ${configureBinary} || true)"
+if [ -z "$bin" ] && [ -x "${installedBinary}" ]; then bin="${installedBinary}"; fi
+if [ -z "$bin" ]; then echo "${configureBinary} or ${installedBinary} not found. Install or upgrade the service binary first." >&2; exit 127; fi
+sudo "$bin" configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`;
 }
 
 function mockConfigureBinary(serviceType: string) {
@@ -427,6 +432,19 @@ function mockConfigureBinary(serviceType: string) {
       return "autostream-observability";
     default:
       return "autostream-worker";
+  }
+}
+
+function mockInstalledBinary(serviceType: string) {
+  switch (serviceType) {
+    case "encoder_recorder":
+      return "/usr/local/bin/encoder-recorder";
+    case "discord_bot":
+      return "/usr/local/bin/discord-bot";
+    case "observability":
+      return "/usr/local/bin/observability";
+    default:
+      return "/usr/local/bin/worker";
   }
 }
 
