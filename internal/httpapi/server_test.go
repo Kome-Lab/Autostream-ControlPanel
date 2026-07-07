@@ -8335,15 +8335,21 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if body.Node.Version != "" || body.Node.ReportedVersion != "" || len(body.Node.Capabilities) != 0 || len(body.Node.ReportedCapabilities) != 0 {
 		t.Fatalf("manual version/capabilities must not be stored during node creation: %#v", body.Node)
 	}
-	expectedConfigureCommand := `sudo autostream-worker configure --panel-url "http://example.com" --token ` + strconv.Quote(body.ConfigureToken) + ` --node "studio-worker-01" --config "/etc/autostream-node/config.yml"`
+	expectedConfigureCommand := `sudo autostream-worker configure --panel-url "http://example.com" --token ` + strconv.Quote(body.ConfigureToken) + ` --node "studio-worker-01" --config "/etc/autostream-worker/config.yml"`
 	if body.ConfigureCommand != expectedConfigureCommand {
 		t.Fatalf("missing configure command fields: %s", body.ConfigureCommand)
 	}
-	if strings.Contains(body.ConfigureCommand, "command -v") || strings.Contains(body.ConfigureCommand, "$bin") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/worker") || strings.Contains(body.ConfigureCommand, "sudo autostream-node") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/autostream-node") || strings.Contains(body.ConfigureCommand, "config_path=") || body.SystemdUnit != "" {
-		t.Fatalf("node registration should not reference a non-existent autostream-node binary or systemd unit: command=%s unit=%s", body.ConfigureCommand, body.SystemdUnit)
+	legacyNodeBinary := "sudo autostream-" + "node"
+	legacyNodePath := "/usr/local/bin/autostream-" + "node"
+	if strings.Contains(body.ConfigureCommand, "command -v") || strings.Contains(body.ConfigureCommand, "$bin") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/worker") || strings.Contains(body.ConfigureCommand, legacyNodeBinary) || strings.Contains(body.ConfigureCommand, legacyNodePath) || strings.Contains(body.ConfigureCommand, "config_path=") || body.SystemdUnit != "" {
+		t.Fatalf("node registration should not reference a non-existent shared node binary or systemd unit: command=%s unit=%s", body.ConfigureCommand, body.SystemdUnit)
 	}
 	if !strings.Contains(body.ConfigurationYAML, `ssl_enabled: true`) || !strings.Contains(body.ConfigurationYAML, body.RuntimeToken) || !strings.Contains(body.ConfigurationYAML, `host: "worker.example.com"`) {
 		t.Fatalf("configuration yaml missing node agent settings: %s", body.ConfigurationYAML)
+	}
+	legacyNodeName := "autostream-" + "node"
+	if strings.Contains(body.ConfigureCommand, legacyNodeName) || strings.Contains(body.ConfigurationYAML, legacyNodeName) || !strings.Contains(body.ConfigurationYAML, `/var/lib/autostream/worker`) {
+		t.Fatalf("node configuration should use service-specific paths: command=%s yaml=%s", body.ConfigureCommand, body.ConfigurationYAML)
 	}
 	if !stringSliceContains(body.Scopes, "service.register") || !stringSliceContains(body.Scopes, "worker.events.write") || stringSliceContains(body.Scopes, "service.secret.resolve") {
 		t.Fatalf("unexpected default node scopes: %#v", body.Scopes)

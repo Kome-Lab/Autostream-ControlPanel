@@ -427,7 +427,7 @@ export function mockPost(path: string, body?: unknown): unknown {
 
 function mockConfigureCommand(serviceType: string, nodeID: string, configureToken: string) {
   const configureBinary = mockConfigureBinary(serviceType);
-  return `sudo ${configureBinary} configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`;
+  return `sudo ${configureBinary} configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "${mockConfigPath(serviceType)}"`;
 }
 
 function mockConfigureBinary(serviceType: string) {
@@ -440,6 +440,19 @@ function mockConfigureBinary(serviceType: string) {
       return "autostream-observability";
     default:
       return "autostream-worker";
+  }
+}
+
+function mockConfigPath(serviceType: string) {
+  switch (serviceType) {
+    case "encoder_recorder":
+      return "/etc/autostream-encoder-recorder/config.yml";
+    case "discord_bot":
+      return "/etc/autostream-discord-bot/config.yml";
+    case "observability":
+      return "/etc/autostream-observability/config.yml";
+    default:
+      return "/etc/autostream-worker/config.yml";
   }
 }
 

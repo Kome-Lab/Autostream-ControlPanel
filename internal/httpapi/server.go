@@ -3697,7 +3697,7 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		"runtime_token":              token.RawToken,
 		"created_at":                 token.CreatedAt,
 		"node":                       service,
-		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, "/etc/autostream-node/config.yml"),
+		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, ""),
 		"configuration_yaml":         nodeConfigurationYAML(r, service, token.ID, token.RawToken),
 	})
 }
@@ -3766,7 +3766,7 @@ func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, config
 		panelURL = "https://control.example.com"
 	}
 	if configPath == "" {
-		configPath = "/etc/autostream-node/config.yml"
+		configPath = nodeDefaultConfigPath(serviceType)
 	}
 	configureBinary := nodeConfigureBinary(serviceType)
 	return `sudo ` + configureBinary + ` configure --panel-url ` + strconv.Quote(panelURL) +
@@ -3785,6 +3785,37 @@ func nodeConfigureBinary(serviceType string) string {
 		return "autostream-observability"
 	default:
 		return "autostream-worker"
+	}
+}
+
+func nodeDefaultConfigPath(serviceType string) string {
+	return "/etc/autostream-" + nodeServiceDirectoryName(serviceType) + "/config.yml"
+}
+
+func nodeAgentDataDir(serviceType string) string {
+	return "/var/lib/autostream/" + nodeServiceDirectoryName(serviceType)
+}
+
+func nodeAgentLogDir(serviceType string) string {
+	return "/var/log/autostream/" + nodeServiceDirectoryName(serviceType)
+}
+
+func nodeServiceDirectoryName(serviceType string) string {
+	switch serviceType {
+	case "encoder_recorder":
+		return "encoder-recorder"
+	case "discord_bot":
+		return "discord-bot"
+	case "observability":
+		return "observability"
+	case "worker":
+		return "worker"
+	default:
+		value := strings.Trim(strings.ToLower(strings.ReplaceAll(serviceType, "_", "-")), "-")
+		if value == "" {
+			return "worker"
+		}
+		return value
 	}
 }
 
@@ -3838,8 +3869,8 @@ func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tok
 		"  token: " + yamlQuote(tokenValue),
 		"",
 		"agent:",
-		"  data_dir: " + yamlQuote("/var/lib/autostream-node"),
-		"  log_dir: " + yamlQuote("/var/log/autostream-node"),
+		"  data_dir: " + yamlQuote(nodeAgentDataDir(service.ServiceType)),
+		"  log_dir: " + yamlQuote(nodeAgentLogDir(service.ServiceType)),
 		"",
 	}, "\n")
 }
@@ -3900,7 +3931,7 @@ func (s *Server) nodeConfiguration(w http.ResponseWriter, r *http.Request) {
 		"node":               service,
 		"node_api_url":       buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled),
 		"configuration_yaml": nodeConfigurationYAML(r, service, service.TokenID, ""),
-		"configure_command":  nodeConfigureCommand(r, service.ServiceType, service.ServiceID, "<regenerate-configure-token>", "/etc/autostream-node/config.yml"),
+		"configure_command":  nodeConfigureCommand(r, service.ServiceType, service.ServiceID, "<regenerate-configure-token>", ""),
 	})
 }
 
@@ -3925,7 +3956,7 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 		"node":                       service,
 		"configure_token":            token,
 		"configure_token_expires_at": expiresAt,
-		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, token, "/etc/autostream-node/config.yml"),
+		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, token, ""),
 	})
 }
 
@@ -4026,7 +4057,7 @@ func nodeAgentConfigResponse(r *http.Request, service store.RegisteredService, t
 		"node":  map[string]any{"id": service.ServiceID, "name": service.ServiceName, "type": service.ServiceType},
 		"api":   map[string]any{"host": service.Host, "port": service.Port, "ssl_enabled": service.SSLEnabled},
 		"auth":  map[string]any{"token_id": tokenID, "token": rawToken},
-		"agent": map[string]any{"data_dir": "/var/lib/autostream-node", "log_dir": "/var/log/autostream-node"},
+		"agent": map[string]any{"data_dir": nodeAgentDataDir(service.ServiceType), "log_dir": nodeAgentLogDir(service.ServiceType)},
 	}
 }
 
