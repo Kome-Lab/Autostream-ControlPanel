@@ -25,6 +25,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/version"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
 )
 
@@ -344,6 +345,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api-tokens", s.requirePermission("api_tokens.create", s.createServiceToken))
 	s.mux.HandleFunc("POST /api-tokens/{id}/rotate", s.requirePermission("api_tokens.create", s.rotateServiceToken))
 	s.mux.HandleFunc("DELETE /api-tokens/{id}", s.requirePermission("api_tokens.revoke", s.revokeServiceToken))
+	s.mux.HandleFunc("GET /nodes", s.requirePermission("api_tokens.create", s.listNodes))
 	s.mux.HandleFunc("POST /nodes/registration-tokens", s.requirePermission("api_tokens.create", s.createNodeRegistrationToken))
 	s.mux.HandleFunc("GET /nodes/{id}/configuration", s.requirePermission("service_health.read", s.nodeConfiguration))
 	s.mux.HandleFunc("POST /nodes/{id}/configure-token", s.requirePermission("api_tokens.create", s.regenerateNodeConfigureToken))
@@ -381,6 +383,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /security/settings", s.requirePermission("system_settings.update", s.updateSecuritySettings))
 	s.mux.HandleFunc("GET /settings/app", s.appSettingsView)
 	s.mux.HandleFunc("PUT /settings/app", s.requirePermission("system_settings.update", s.updateAppSettings))
+	s.mux.HandleFunc("GET /version", s.requirePermission("", s.versionInfo))
 	s.mux.HandleFunc("GET /secrets/status", s.requirePermission("secrets.read_status", s.secretStatus))
 	s.mux.HandleFunc("PUT /secrets/{name}", s.requirePermission("secrets.update", s.updateSecret))
 	s.mux.HandleFunc("GET /observability/incidents", s.requirePermission("incidents.read", s.observabilityGet("/incidents")))
@@ -3766,11 +3769,7 @@ func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, config
 		configPath = "/etc/autostream-node/config.yml"
 	}
 	configureBinary := nodeConfigureBinary(serviceType)
-	installedBinary := nodeInstalledBinary(serviceType)
-	return `bin="$(command -v ` + configureBinary + ` || true)"` + "\n" +
-		`if [ -z "$bin" ] && [ -x ` + strconv.Quote(installedBinary) + ` ]; then bin=` + strconv.Quote(installedBinary) + `; fi` + "\n" +
-		`if [ -z "$bin" ]; then echo "` + configureBinary + ` or ` + installedBinary + ` not found. Install or upgrade the service binary first." >&2; exit 127; fi` + "\n" +
-		`sudo "$bin" configure --panel-url ` + strconv.Quote(panelURL) +
+	return `sudo ` + configureBinary + ` configure --panel-url ` + strconv.Quote(panelURL) +
 		" --token " + strconv.Quote(rawToken) +
 		" --node " + strconv.Quote(nodeID) +
 		" --config " + strconv.Quote(configPath)
@@ -3786,19 +3785,6 @@ func nodeConfigureBinary(serviceType string) string {
 		return "autostream-observability"
 	default:
 		return "autostream-worker"
-	}
-}
-
-func nodeInstalledBinary(serviceType string) string {
-	switch serviceType {
-	case "encoder_recorder":
-		return "/usr/local/bin/encoder-recorder"
-	case "discord_bot":
-		return "/usr/local/bin/discord-bot"
-	case "observability":
-		return "/usr/local/bin/observability"
-	default:
-		return "/usr/local/bin/worker"
 	}
 }
 
@@ -4137,6 +4123,80 @@ func (s *Server) rotateServiceToken(w http.ResponseWriter, r *http.Request) {
 		Metadata:      map[string]any{"old_token_id": id, "service_type": token.ServiceType, "scopes": token.Scopes},
 	})
 	writeOneTimeSecretJSON(w, http.StatusCreated, token)
+}
+
+func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
+	services, err := s.services.ListServices(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_nodes_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, nodeListResponses(services, time.Now().UTC()))
+}
+
+type nodeListResponse struct {
+	ID                      string     `json:"id"`
+	ServiceID               string     `json:"service_id"`
+	ServiceType             string     `json:"service_type"`
+	ServiceName             string     `json:"service_name"`
+	Description             string     `json:"description,omitempty"`
+	Host                    string     `json:"host,omitempty"`
+	Port                    int        `json:"port,omitempty"`
+	SSLEnabled              bool       `json:"ssl_enabled"`
+	PublicURL               string     `json:"public_url"`
+	Version                 string     `json:"version"`
+	ReportedVersion         string     `json:"reported_version,omitempty"`
+	Status                  string     `json:"status"`
+	HealthStatus            string     `json:"health_status"`
+	HeartbeatStale          bool       `json:"heartbeat_stale"`
+	HeartbeatAgeSec         *int64     `json:"heartbeat_age_sec,omitempty"`
+	LastHeartbeatAt         *time.Time `json:"last_heartbeat_at,omitempty"`
+	LastReportedAt          *time.Time `json:"last_reported_at,omitempty"`
+	CurrentStreamID         string     `json:"current_stream_id,omitempty"`
+	ReportedHostname        string     `json:"reported_hostname,omitempty"`
+	ReportedOS              string     `json:"reported_os,omitempty"`
+	ReportedArch            string     `json:"reported_arch,omitempty"`
+	ConfigureTokenExpiresAt *time.Time `json:"configure_token_expires_at,omitempty"`
+	ConfigureTokenUsedAt    *time.Time `json:"configure_token_used_at,omitempty"`
+	NodeTokenRotatedAt      *time.Time `json:"node_token_rotated_at,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+}
+
+func nodeListResponses(services []store.RegisteredService, now time.Time) []nodeListResponse {
+	out := make([]nodeListResponse, 0, len(services))
+	for _, service := range services {
+		healthStatus, heartbeatStale, heartbeatAgeSec := serviceHealthFields(service, now)
+		out = append(out, nodeListResponse{
+			ID:                      service.ServiceID,
+			ServiceID:               service.ServiceID,
+			ServiceType:             service.ServiceType,
+			ServiceName:             service.ServiceName,
+			Description:             service.Description,
+			Host:                    service.Host,
+			Port:                    service.Port,
+			SSLEnabled:              service.SSLEnabled,
+			PublicURL:               service.PublicURL,
+			Version:                 service.Version,
+			ReportedVersion:         service.ReportedVersion,
+			Status:                  service.Status,
+			HealthStatus:            healthStatus,
+			HeartbeatStale:          heartbeatStale,
+			HeartbeatAgeSec:         heartbeatAgeSec,
+			LastHeartbeatAt:         service.LastHeartbeatAt,
+			LastReportedAt:          service.LastReportedAt,
+			CurrentStreamID:         service.CurrentStreamID,
+			ReportedHostname:        service.ReportedHostname,
+			ReportedOS:              service.ReportedOS,
+			ReportedArch:            service.ReportedArch,
+			ConfigureTokenExpiresAt: service.ConfigureTokenExpiresAt,
+			ConfigureTokenUsedAt:    service.ConfigureTokenUsedAt,
+			NodeTokenRotatedAt:      service.NodeTokenRotatedAt,
+			CreatedAt:               service.CreatedAt,
+			UpdatedAt:               service.UpdatedAt,
+		})
+	}
+	return out
 }
 
 func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
@@ -8012,6 +8072,137 @@ func (s *Server) updateAppSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "success"})
 	writeJSON(w, http.StatusOK, settings)
+}
+
+type versionInfoResponse struct {
+	Service           string `json:"service"`
+	Version           string `json:"version"`
+	Commit            string `json:"commit"`
+	BuildDate         string `json:"build_date"`
+	LatestVersion     string `json:"latest_version,omitempty"`
+	UpdateAvailable   bool   `json:"update_available"`
+	UpdateCheckSource string `json:"update_check_source"`
+	UpdateCheckError  string `json:"update_check_error,omitempty"`
+}
+
+func (s *Server) versionInfo(w http.ResponseWriter, r *http.Request) {
+	latest, source, checkErr := latestControlPanelVersion(r.Context())
+	writeJSON(w, http.StatusOK, versionInfoResponse{
+		Service:           "control-panel",
+		Version:           version.Current(),
+		Commit:            version.Commit,
+		BuildDate:         version.BuildDate,
+		LatestVersion:     latest,
+		UpdateAvailable:   versionIsNewer(latest, version.Current()),
+		UpdateCheckSource: source,
+		UpdateCheckError:  checkErr,
+	})
+}
+
+func latestControlPanelVersion(ctx context.Context) (string, string, string) {
+	if latest := strings.TrimSpace(os.Getenv("AUTOSTREAM_LATEST_VERSION")); latest != "" {
+		return latest, "env", ""
+	}
+	rawURL := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_URL"))
+	if rawURL == "" {
+		return "", "disabled", ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "url", "invalid update check url"
+	}
+	if parsed.User != nil {
+		return "", "url", "update check url must not include credentials"
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLocalUpdateCheckHost(parsed.Hostname())) {
+		return "", "url", "update check url must use https"
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", "url", "create update check request failed"
+	}
+	req.Header.Set("Accept", "application/json, text/plain")
+	if token := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return "", "url", "update check request failed"
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return "", "url", "read update check response failed"
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "url", "update check returned HTTP " + strconv.Itoa(resp.StatusCode)
+	}
+	if latest := parseLatestVersionResponse(body); latest != "" {
+		return latest, "url", ""
+	}
+	return "", "url", "update check response did not include a version"
+}
+
+func parseLatestVersionResponse(body []byte) string {
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err == nil {
+		for _, key := range []string{"latest_version", "tag_name", "version", "name"} {
+			if value, ok := decoded[key].(string); ok {
+				if normalized := strings.TrimSpace(value); normalized != "" {
+					return normalized
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(string(body))
+}
+
+func versionIsNewer(latest, current string) bool {
+	latestParts, latestOK := parseVersionParts(latest)
+	currentParts, currentOK := parseVersionParts(current)
+	if !latestOK || !currentOK {
+		return false
+	}
+	for i := 0; i < len(latestParts); i++ {
+		if latestParts[i] > currentParts[i] {
+			return true
+		}
+		if latestParts[i] < currentParts[i] {
+			return false
+		}
+	}
+	return false
+}
+
+func parseVersionParts(raw string) ([3]int, bool) {
+	var parts [3]int
+	trimmed := strings.TrimSpace(strings.TrimPrefix(raw, "v"))
+	if trimmed == "" || trimmed == "dev" {
+		return parts, false
+	}
+	for i, field := range strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '.' || r == '-' || r == '+'
+	}) {
+		if i >= len(parts) {
+			break
+		}
+		value, err := strconv.Atoi(field)
+		if err != nil {
+			return parts, false
+		}
+		parts[i] = value
+		if i == len(parts)-1 {
+			return parts, true
+		}
+	}
+	return parts, false
+}
+
+func isLocalUpdateCheckHost(host string) bool {
+	normalized := strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	return normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1"
 }
 
 func productionEnvironment() bool {

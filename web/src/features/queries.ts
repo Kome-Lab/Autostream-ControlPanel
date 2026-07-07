@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api/client";
-import type { AppSettings, AuditLog, CurrentUser, MetricPoint, SetupStatus, Stream, WorkerNode } from "@/types/domain";
+import type { AppSettings, AppVersion, AuditLog, CurrentUser, MetricPoint, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 export function useCurrentUser() {
   return useQuery({
@@ -25,6 +25,13 @@ export function useAppSettings() {
   });
 }
 
+export function useVersion() {
+  return useQuery({
+    queryKey: ["version"],
+    queryFn: () => apiGet<AppVersion>("/version"),
+  });
+}
+
 export function useStreams() {
   return useQuery({
     queryKey: ["streams"],
@@ -43,6 +50,13 @@ export function useServiceHealth() {
   return useQuery({
     queryKey: ["service-health"],
     queryFn: () => apiGet<WorkerNode[]>("/service-health"),
+  });
+}
+
+export function useNodes() {
+  return useQuery({
+    queryKey: ["nodes"],
+    queryFn: () => apiGet<WorkerNode[]>("/nodes"),
   });
 }
 

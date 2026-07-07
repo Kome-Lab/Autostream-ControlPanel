@@ -100,6 +100,17 @@ export type AppSettings = {
   updated_at?: string;
 };
 
+export type AppVersion = {
+  service: string;
+  version: string;
+  commit: string;
+  build_date: string;
+  latest_version?: string;
+  update_available: boolean;
+  update_check_source: string;
+  update_check_error?: string;
+};
+
 export type NodeRegistrationResponse = {
   id: string;
   service_type: string;

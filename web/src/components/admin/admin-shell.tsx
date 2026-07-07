@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
 import { apiGet } from "@/lib/api/client";
-import { useAppSettings, useCurrentUser } from "@/features/queries";
+import { useAppSettings, useCurrentUser, useVersion } from "@/features/queries";
 import type { Locale, SetupStatus } from "@/types/domain";
 import type { TranslationKey } from "@/lib/i18n";
 
@@ -115,6 +115,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const { dark, toggleTheme } = useTheme();
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
+  const appVersion = useVersion();
 
   useEffect(() => {
     if (!currentUser.isError) return;
@@ -145,6 +146,8 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   const nav = <Navigation pathname={pathname} />;
   const appName = appSettings.data?.app_name || t("appName");
+  const versionLabel = appVersion.data?.version || "dev";
+  const updateAvailable = appVersion.data?.update_available && appVersion.data.latest_version;
 
   return (
     <div className="min-h-screen bg-background">
@@ -155,7 +158,8 @@ export function AdminShell({ children }: { children: ReactNode }) {
           </div>
           <div>
             <div className="font-semibold">{appName}</div>
-            <div className="text-xs text-sidebar-foreground/70">Control Panel</div>
+            <div className="text-xs text-sidebar-foreground/70">Control Panel {versionLabel}</div>
+            {updateAvailable ? <div className="text-xs font-medium text-amber-300">新しいバージョン {appVersion.data?.latest_version}</div> : null}
           </div>
         </div>
         <ScrollArea className="h-[calc(100vh-4rem)] px-3 py-4">{nav}</ScrollArea>
@@ -181,7 +185,16 @@ export function AdminShell({ children }: { children: ReactNode }) {
             </Sheet>
             <div>
               <div className="text-sm text-muted-foreground">{t("liveOperations")}</div>
-              <div className="text-lg font-semibold leading-tight">{activeTitle(pathname, t)}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-lg font-semibold leading-tight">{activeTitle(pathname, t)}</div>
+                <span className="rounded-md border px-2 py-0.5 text-xs text-muted-foreground">Control Panel {versionLabel}</span>
+                {updateAvailable ? (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                    <AlertTriangle className="size-3" />
+                    新しいバージョン {appVersion.data?.latest_version}
+                  </span>
+                ) : null}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2">

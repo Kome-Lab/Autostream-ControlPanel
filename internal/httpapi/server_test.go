@@ -20,6 +20,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/version"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
 )
 
@@ -8334,10 +8335,11 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if body.Node.Version != "" || body.Node.ReportedVersion != "" || len(body.Node.Capabilities) != 0 || len(body.Node.ReportedCapabilities) != 0 {
 		t.Fatalf("manual version/capabilities must not be stored during node creation: %#v", body.Node)
 	}
-	if !strings.Contains(body.ConfigureCommand, "command -v autostream-worker") || !strings.Contains(body.ConfigureCommand, "/usr/local/bin/worker") || !strings.Contains(body.ConfigureCommand, `sudo "$bin" configure`) || !strings.Contains(body.ConfigureCommand, "--panel-url") || !strings.Contains(body.ConfigureCommand, "--token "+strconv.Quote(body.ConfigureToken)) || !strings.Contains(body.ConfigureCommand, "--node \"studio-worker-01\"") || !strings.Contains(body.ConfigureCommand, "--config \"/etc/autostream-node/config.yml\"") {
+	expectedConfigureCommand := `sudo autostream-worker configure --panel-url "http://example.com" --token ` + strconv.Quote(body.ConfigureToken) + ` --node "studio-worker-01" --config "/etc/autostream-node/config.yml"`
+	if body.ConfigureCommand != expectedConfigureCommand {
 		t.Fatalf("missing configure command fields: %s", body.ConfigureCommand)
 	}
-	if strings.Contains(body.ConfigureCommand, "sudo autostream-node") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/autostream-node") || strings.Contains(body.ConfigureCommand, "config_path=") || body.SystemdUnit != "" {
+	if strings.Contains(body.ConfigureCommand, "command -v") || strings.Contains(body.ConfigureCommand, "$bin") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/worker") || strings.Contains(body.ConfigureCommand, "sudo autostream-node") || strings.Contains(body.ConfigureCommand, "/usr/local/bin/autostream-node") || strings.Contains(body.ConfigureCommand, "config_path=") || body.SystemdUnit != "" {
 		t.Fatalf("node registration should not reference a non-existent autostream-node binary or systemd unit: command=%s unit=%s", body.ConfigureCommand, body.SystemdUnit)
 	}
 	if !strings.Contains(body.ConfigurationYAML, `ssl_enabled: true`) || !strings.Contains(body.ConfigurationYAML, body.RuntimeToken) || !strings.Contains(body.ConfigurationYAML, `host: "worker.example.com"`) {
@@ -8420,6 +8422,83 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 	if strings.Contains(auditBody, `"token_id"`) && !strings.Contains(auditBody, `"\u003credacted\u003e"`) {
 		t.Fatalf("audit log token binding was not redacted: %s", auditBody)
+	}
+}
+
+func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "node-admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "node-admin", "correct horse battery")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"worker","node_id":"studio-worker-01","name":"Studio Worker 01","host":"worker.example.com","port":8443,"ssl_enabled":true}`))
+	createReq.AddCookie(cookie)
+	createReq.Header.Set("X-CSRF-Token", csrf)
+	createRes := httptest.NewRecorder()
+	handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create node status = %d body = %s", createRes.Code, createRes.Body.String())
+	}
+	var createBody struct {
+		ConfigureToken string `json:"configure_token"`
+	}
+	if err := json.NewDecoder(createRes.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+
+	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+createBody.ConfigureToken+`"}`))
+	configureRes := httptest.NewRecorder()
+	handler.ServeHTTP(configureRes, configureReq)
+	if configureRes.Code != http.StatusOK {
+		t.Fatalf("configure node status = %d body = %s", configureRes.Code, configureRes.Body.String())
+	}
+	var configureBody struct {
+		Config struct {
+			Auth struct {
+				Token string `json:"token"`
+			} `json:"auth"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(configureRes.Body).Decode(&configureBody); err != nil {
+		t.Fatal(err)
+	}
+
+	heartbeatReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/heartbeat", bytes.NewBufferString(`{"nodeId":"studio-worker-01","status":"online","version":"1.4.2","capabilities":{"streaming":true},"hostname":"studio-worker-01","os":"linux","arch":"amd64","api":{"host":"worker.example.com","port":8443,"sslEnabled":true},"metrics":{"cpuUsage":12.5,"runningJobs":2}}`))
+	heartbeatReq.Header.Set("Authorization", "Bearer "+configureBody.Config.Auth.Token)
+	heartbeatRes := httptest.NewRecorder()
+	handler.ServeHTTP(heartbeatRes, heartbeatReq)
+	if heartbeatRes.Code != http.StatusAccepted {
+		t.Fatalf("node heartbeat status = %d body = %s", heartbeatRes.Code, heartbeatRes.Body.String())
+	}
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/service-health", nil)
+	healthReq.AddCookie(cookie)
+	healthRes := httptest.NewRecorder()
+	handler.ServeHTTP(healthRes, healthReq)
+	if healthRes.Code != http.StatusForbidden {
+		t.Fatalf("service-health should still require service_health.read, got %d body = %s", healthRes.Code, healthRes.Body.String())
+	}
+
+	nodesReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	nodesReq.AddCookie(cookie)
+	nodesRes := httptest.NewRecorder()
+	handler.ServeHTTP(nodesRes, nodesReq)
+	if nodesRes.Code != http.StatusOK {
+		t.Fatalf("list nodes status = %d body = %s", nodesRes.Code, nodesRes.Body.String())
+	}
+	body := nodesRes.Body.String()
+	for _, want := range []string{`"service_id":"studio-worker-01"`, `"health_status":"healthy"`, `"reported_version":"1.4.2"`, `"reported_os":"linux"`, `"reported_arch":"amd64"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("node list missing %s: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`"metrics"`, `"capabilities"`, "runningJobs", "cpuUsage", `"token_id"`, createBody.ConfigureToken, configureBody.Config.Auth.Token} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("node list leaked %q: %s", forbidden, body)
+		}
 	}
 }
 
@@ -9293,6 +9372,34 @@ func TestAppSettingsUpdatePersistsWithPermission(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"Kome Panel"`) {
 		t.Fatalf("persisted app settings status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestVersionEndpointShowsBuildInfoAndUpdate(t *testing.T) {
+	previousVersion, previousCommit, previousBuildDate := version.Version, version.Commit, version.BuildDate
+	version.Version, version.Commit, version.BuildDate = "v1.2.3", "abc123", "2026-07-07T00:00:00Z"
+	t.Cleanup(func() {
+		version.Version, version.Commit, version.BuildDate = previousVersion, previousCommit, previousBuildDate
+	})
+	t.Setenv("AUTOSTREAM_LATEST_VERSION", "v1.3.0")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("version status = %d body = %s", res.Code, res.Body.String())
+	}
+	for _, want := range []string{`"service":"control-panel"`, `"version":"v1.2.3"`, `"commit":"abc123"`, `"build_date":"2026-07-07T00:00:00Z"`, `"latest_version":"v1.3.0"`, `"update_available":true`} {
+		if !strings.Contains(res.Body.String(), want) {
+			t.Fatalf("version response missing %s: %s", want, res.Body.String())
+		}
 	}
 }
 

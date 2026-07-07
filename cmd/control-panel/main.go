@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,11 +18,16 @@ import (
 	"github.com/example/autostream-control-panel/internal/database"
 	"github.com/example/autostream-control-panel/internal/httpapi"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/version"
 )
 
 const defaultStaticWebDir = "/usr/share/autostream-control-panel"
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Printf("autostream-control-panel %s\ncommit: %s\nbuild_date: %s\n", version.Current(), version.Commit, version.BuildDate)
+		return
+	}
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

@@ -229,6 +229,16 @@ export let mockAppSettings: AppSettings = {
   updated_at: baseTime,
 };
 
+export const mockAppVersion = {
+  service: "control-panel",
+  version: "v1.2.3",
+  commit: "mock",
+  build_date: baseTime,
+  latest_version: "v1.2.4",
+  update_available: true,
+  update_check_source: "mock",
+};
+
 const mockResourceData: Record<string, unknown[]> = {
   "/profiles/encoder": [
     { id: "enc-profile-1080p", name: "1080p60 標準", width: 1920, height: 1080, fps: 60, bitrate_kbps: 7800, updated_at: baseTime },
@@ -331,8 +341,10 @@ export function mockGet(path: string): unknown {
     "/auth/me": mockCurrentUser,
     "/setup/status": mockSetupStatus,
     "/settings/app": mockAppSettings,
+    "/version": mockAppVersion,
     "/streams": mockStreams,
     "/workers": mockWorkers,
+    "/nodes": mockWorkers,
     "/service-health": mockWorkers,
     "/audit-logs": mockAuditLogs,
     "/observability/metrics": mockWorkerMetrics,
@@ -415,11 +427,7 @@ export function mockPost(path: string, body?: unknown): unknown {
 
 function mockConfigureCommand(serviceType: string, nodeID: string, configureToken: string) {
   const configureBinary = mockConfigureBinary(serviceType);
-  const installedBinary = mockInstalledBinary(serviceType);
-  return `bin="$(command -v ${configureBinary} || true)"
-if [ -z "$bin" ] && [ -x "${installedBinary}" ]; then bin="${installedBinary}"; fi
-if [ -z "$bin" ]; then echo "${configureBinary} or ${installedBinary} not found. Install or upgrade the service binary first." >&2; exit 127; fi
-sudo "$bin" configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`;
+  return `sudo ${configureBinary} configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "/etc/autostream-node/config.yml"`;
 }
 
 function mockConfigureBinary(serviceType: string) {
@@ -432,19 +440,6 @@ function mockConfigureBinary(serviceType: string) {
       return "autostream-observability";
     default:
       return "autostream-worker";
-  }
-}
-
-function mockInstalledBinary(serviceType: string) {
-  switch (serviceType) {
-    case "encoder_recorder":
-      return "/usr/local/bin/encoder-recorder";
-    case "discord_bot":
-      return "/usr/local/bin/discord-bot";
-    case "observability":
-      return "/usr/local/bin/observability";
-    default:
-      return "/usr/local/bin/worker";
   }
 }
 
@@ -464,8 +459,10 @@ export function mockPathExists(path: string) {
     "/auth/me",
     "/setup/status",
     "/settings/app",
+    "/version",
     "/streams",
     "/workers",
+    "/nodes",
     "/service-health",
     "/audit-logs",
     "/observability/metrics",

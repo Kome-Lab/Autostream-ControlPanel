@@ -14,7 +14,7 @@ import { DataTable } from "@/components/tables/data-table";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { APIError, apiPost } from "@/lib/api/client";
 import { hasAnyPermission } from "@/lib/auth/permissions";
-import { useCurrentUser, useServiceHealth } from "@/features/queries";
+import { useCurrentUser, useNodes } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 
@@ -28,7 +28,7 @@ const nodeTypes = [
 export function NodeRegistrationView() {
   const { t } = useI18n();
   const currentUser = useCurrentUser();
-  const registeredNodes = useServiceHealth();
+  const registeredNodes = useNodes();
   const queryClient = useQueryClient();
   const [nodeType, setNodeType] = useState("worker");
   const selectedType = nodeTypes.find((type) => type.value === nodeType) ?? nodeTypes[0];
@@ -65,7 +65,11 @@ export function NodeRegistrationView() {
         allow_remediation: allowRemediation,
       }),
     onSuccess: async () => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["service-health"] }), queryClient.invalidateQueries({ queryKey: ["workers"] })]);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["nodes"] }),
+        queryClient.invalidateQueries({ queryKey: ["service-health"] }),
+        queryClient.invalidateQueries({ queryKey: ["workers"] }),
+      ]);
     },
   });
   const createError = nodeRegistrationErrorMessage(createToken.error);
@@ -335,7 +339,7 @@ export function NodeRegistrationView() {
           ) : null}
           {registeredNodes.isError ? (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
-              登録済みNodeを取得できませんでした。service_health.read 権限とControl Panelのログを確認してください。
+              登録済みNodeを取得できませんでした。api_tokens.create 権限とControl Panelのログを確認してください。
             </div>
           ) : null}
           <div className="text-sm text-muted-foreground">登録済み: {registeredRows.length} Node</div>
