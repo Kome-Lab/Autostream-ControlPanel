@@ -9,8 +9,6 @@ services:
       AUTOSTREAM_SECRET_ENCRYPTION_KEY: dev-only-local-secret-encryption-key
       AUTOSTREAM_SETUP_TOKEN: dev-only-control-panel-setup-token
       DATABASE_URL: mysql://autostream:example_password_change_me@tcp(mariadb:3306)/autostream_control_panel?parseTime=true
-      OBSERVABILITY_URL: http://host.docker.internal:8082
-      OBSERVABILITY_TOKEN: dev-only-observability-admin-token
       SERVICE_CALL_TOKEN: dev-only-control-to-service-token
       AUTOSTREAM_STREAM_INGEST_SIGNING_KEY: dev-only-stream-ingest-signing-key-change-me
       AUTOSTREAM_STREAM_INGEST_TOKEN_TTL_MIN: 720

@@ -96,12 +96,10 @@ func TestClientErrorDoesNotLeakTokenOrBody(t *testing.T) {
 }
 
 func TestFromEnv(t *testing.T) {
-	t.Setenv("OBSERVABILITY_URL", "https://observability.example.com")
-	t.Setenv("OBSERVABILITY_TOKEN", "<SERVICE_TOKEN>")
 	t.Setenv("OBSERVABILITY_TIMEOUT_SEC", "3")
 	client := FromEnv()
-	if err := client.Validate(); err != nil {
-		t.Fatal(err)
+	if client.BaseURL != "" || client.Token != "" {
+		t.Fatalf("FromEnv must not read Observability URL/token fallback: %#v", client)
 	}
 	if client.Timeout != 3*time.Second {
 		t.Fatalf("unexpected timeout: %s", client.Timeout)

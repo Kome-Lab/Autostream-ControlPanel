@@ -3496,17 +3496,17 @@ func TestServiceRemediationExecuteDispatchesAssignedEncoder(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
-	obsToken, err := auth.CreateServiceToken(t.Context(), "observability", []string{"remediation.execute"})
+	obsToken, err := auth.CreateServiceToken(t.Context(), "observability", []string{"service.register", "service.heartbeat", "observability.ingest", "remediation.execute"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registerServiceWithTokenForTest(t, auth, obsToken, store.ServiceRegistration{ServiceID: "observability-01", ServiceType: "observability", ServiceName: "Observability", PublicURL: "https://observability.example.com"})
 	dispatcher := &fakeServiceDispatcher{}
-	obsClient, closeObs := remediationValidationClient(t, map[string]observability.RemediationDispatchContext{
+	obsClient, closeObs := remediationValidationClient(t, obsToken.RawToken, map[string]observability.RemediationDispatchContext{
 		"action-01": {ActionID: "action-01", Action: "retry_package_remux", IncidentID: "inc-01", StreamID: stream.ID, Executable: true},
 	})
 	defer closeObs()
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher), WithObservabilityClient(obsClient))
+	registerObservabilityNodeWithTokenForTest(t, auth, obsToken, obsClient.BaseURL)
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
 	req := httptest.NewRequest(http.MethodPost, "/services/remediation-actions/execute", bytes.NewBufferString(`{"action_id":"action-01","action":"retry_package_remux","incident_id":"inc-01","stream_id":"`+stream.ID+`"}`))
 	req.Header.Set("Authorization", "Bearer "+obsToken.RawToken)
 	res := httptest.NewRecorder()
@@ -3548,17 +3548,17 @@ func TestServiceRemediationExecuteRejectsUnverifiedObservabilityContext(t *testi
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
-	obsToken, err := auth.CreateServiceToken(t.Context(), "observability", []string{"remediation.execute"})
+	obsToken, err := auth.CreateServiceToken(t.Context(), "observability", []string{"service.register", "service.heartbeat", "observability.ingest", "remediation.execute"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registerServiceWithTokenForTest(t, auth, obsToken, store.ServiceRegistration{ServiceID: "observability-01", ServiceType: "observability", ServiceName: "Observability", PublicURL: "https://observability.example.com"})
 	dispatcher := &fakeServiceDispatcher{}
-	obsClient, closeObs := remediationValidationClient(t, map[string]observability.RemediationDispatchContext{
+	obsClient, closeObs := remediationValidationClient(t, obsToken.RawToken, map[string]observability.RemediationDispatchContext{
 		"action-01": {ActionID: "action-01", Action: "retry_package_remux", IncidentID: "different-incident", StreamID: stream.ID, Executable: true},
 	})
 	defer closeObs()
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher), WithObservabilityClient(obsClient))
+	registerObservabilityNodeWithTokenForTest(t, auth, obsToken, obsClient.BaseURL)
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
 	req := httptest.NewRequest(http.MethodPost, "/services/remediation-actions/execute", bytes.NewBufferString(`{"action_id":"action-01","action":"retry_package_remux","incident_id":"inc-01","stream_id":"`+stream.ID+`"}`))
 	req.Header.Set("Authorization", "Bearer "+obsToken.RawToken)
 	res := httptest.NewRecorder()
@@ -7064,10 +7064,10 @@ func toJSONForTest(t *testing.T, value any) string {
 	return string(body)
 }
 
-func remediationValidationClient(t *testing.T, contexts map[string]observability.RemediationDispatchContext) (observability.Client, func()) {
+func remediationValidationClient(t *testing.T, expectedToken string, contexts map[string]observability.RemediationDispatchContext) (observability.Client, func()) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer observability-admin-token" {
+		if r.Header.Get("Authorization") != "Bearer "+expectedToken {
 			t.Fatalf("unexpected observability auth header: %q", r.Header.Get("Authorization"))
 		}
 		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/remediation-actions/") || !strings.HasSuffix(r.URL.Path, "/dispatch-context") {
@@ -7082,7 +7082,7 @@ func remediationValidationClient(t *testing.T, contexts map[string]observability
 		}
 		writeJSON(w, http.StatusOK, context)
 	}))
-	return observability.Client{BaseURL: server.URL, Token: "observability-admin-token", Timeout: time.Second, HTTP: server.Client()}, server.Close
+	return observability.Client{BaseURL: server.URL, Token: expectedToken, Timeout: time.Second, HTTP: server.Client()}, server.Close
 }
 
 func TestUsersAndRolesAPI(t *testing.T) {
@@ -8649,7 +8649,8 @@ func TestServiceObservabilitySignalProxiesWithRegisteredNodeIdentity(t *testing.
 		_, _ = w.Write([]byte(`{"signal":{"id":"sig-01"}}`))
 	}))
 	defer obs.Close()
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithObservabilityClient(observability.Client{BaseURL: obs.URL, Token: "admin-token", Timeout: time.Second}))
+	registerObservabilityNodeForTest(t, auth, "admin-token", obs.URL)
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 	token := createBoundServiceTokenForTest(t, handler, cookie, csrf, "worker", "worker-01", []string{"service.register", "service.heartbeat", "observability.ingest"})
 	registerServiceForTest(t, handler, token.RawToken, "worker-01", "worker")
@@ -9034,7 +9035,8 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"incidents.read", "incidents.acknowledge", "incidents.resolve", "diagnostics.read", "metrics.read", "remediation.read", "remediation.approve", "notification_channels.read", "notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test", "audit_logs.read"}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithObservabilityClient(observability.Client{BaseURL: obs.URL, Token: "secret-token", Timeout: time.Second}))
+	registerObservabilityNodeForTest(t, auth, "secret-token", obs.URL)
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
 	for _, path := range []string{"/observability/incidents", "/observability/diagnostics", "/observability/metrics", "/observability/remediation-actions", "/observability/notification-deliveries", "/observability/notification-channels"} {
@@ -9134,7 +9136,8 @@ func TestObservabilityProxyDoesNotLeakTokenOnUpstreamError(t *testing.T) {
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"incidents.read"}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithObservabilityClient(observability.Client{BaseURL: obs.URL, Token: "secret-token", Timeout: time.Second}))
+	registerObservabilityNodeForTest(t, auth, "secret-token", obs.URL)
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
 	req := httptest.NewRequest(http.MethodGet, "/observability/incidents", nil)
 	req.AddCookie(cookie)
@@ -9217,7 +9220,8 @@ func TestObservabilityProxyRejectsEncodedSlashID(t *testing.T) {
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"notification_channels.read"}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithObservabilityClient(observability.Client{BaseURL: obs.URL, Token: "secret-token", Timeout: time.Second}))
+	registerObservabilityNodeForTest(t, auth, "secret-token", obs.URL)
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
 	req := httptest.NewRequest(http.MethodGet, "/observability/notification-channels/..%2Fmetrics", nil)
 	req.AddCookie(cookie)
@@ -9236,7 +9240,7 @@ func TestObservabilityProxyRequiresPermission(t *testing.T) {
 	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithObservabilityClient(observability.Client{BaseURL: "https://observability.example.com", Token: "secret-token", Timeout: time.Second}))
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, _ := loginForTest(t, handler, "viewer", "correct horse battery")
 	req := httptest.NewRequest(http.MethodGet, "/observability/incidents", nil)
 	req.AddCookie(cookie)
@@ -9523,6 +9527,41 @@ func registerServiceWithTokenForTest(t *testing.T, auth *store.MemoryAuthStore, 
 		t.Fatal(err)
 	}
 	service, err := auth.RegisterService(t.Context(), token, registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func registerObservabilityNodeForTest(t *testing.T, auth *store.MemoryAuthStore, rawToken, publicURL string) store.ServiceToken {
+	t.Helper()
+	token := store.ServiceToken{
+		ID:          "observability-node-token",
+		ServiceType: "observability",
+		RawToken:    rawToken,
+		TokenHash:   security.HashToken(rawToken),
+		Scopes:      []string{"service.register", "service.heartbeat", "observability.ingest", "remediation.execute"},
+		CreatedAt:   time.Now().UTC(),
+	}
+	registerObservabilityNodeWithTokenForTest(t, auth, token, publicURL)
+	return token
+}
+
+func registerObservabilityNodeWithTokenForTest(t *testing.T, auth *store.MemoryAuthStore, token store.ServiceToken, publicURL string) store.RegisteredService {
+	t.Helper()
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SERVICE_ALLOWED_HOSTS", "127.0.0.1")
+	service := registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID:   "observability-01",
+		ServiceType: "observability",
+		ServiceName: "Observability",
+		PublicURL:   publicURL,
+	})
+	ciphertext, nonce, err := security.EncryptSecret(token.RawToken, "test-secret-encryption-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err = auth.SetServiceNodeTokenSecret(t.Context(), service.ServiceID, ciphertext, nonce)
 	if err != nil {
 		t.Fatal(err)
 	}

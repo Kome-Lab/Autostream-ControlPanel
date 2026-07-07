@@ -5678,7 +5678,8 @@ func (s *Server) serviceObservabilitySignal(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_token_not_registered"})
 		return
 	}
-	if !s.obs.Enabled() {
+	obs, configured, err := s.observabilityClient(r.Context())
+	if err != nil || !configured {
 		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "observability_not_configured"})
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
 		return
@@ -5691,7 +5692,7 @@ func (s *Server) serviceObservabilitySignal(w http.ResponseWriter, r *http.Reque
 	}
 	payload["service_id"] = service.ServiceID
 	payload["service_type"] = service.ServiceType
-	body, err := s.obs.Post(r.Context(), "/signals", payload)
+	body, err := obs.Post(r.Context(), "/signals", payload)
 	if err != nil {
 		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "observability_request_failed", "signal_name": stringMapValue(payload, "name"), "stream_id": stringMapValue(payload, "stream_id")})
 		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
@@ -5771,7 +5772,13 @@ func (s *Server) serviceRemediationExecute(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, archiveConfigStatus(err), map[string]string{"code": code})
 		return
 	}
-	if err := s.obs.ValidateRemediationDispatchContext(r.Context(), body.ActionID, body.Action, body.IncidentID, stream.ID); err != nil {
+	obs, configured, err := s.observabilityClient(r.Context())
+	if err != nil || !configured {
+		s.writeAudit(r, serviceRemediationAudit(token, body, "failure", map[string]any{"reason": "observability_not_configured"}))
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		return
+	}
+	if err := obs.ValidateRemediationDispatchContext(r.Context(), body.ActionID, body.Action, body.IncidentID, stream.ID); err != nil {
 		s.writeAudit(r, serviceRemediationAudit(token, body, "failure", map[string]any{"reason": "observability_context_invalid"}))
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "remediation_context_not_verified"})
 		return
@@ -8299,11 +8306,11 @@ func (s *Server) updateSecret(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) observabilityGet(endpoint string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.obs.Enabled() {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		obs, ok := s.observabilityClientForRequest(w, r)
+		if !ok {
 			return
 		}
-		body, err := s.obs.Get(r.Context(), endpoint)
+		body, err := obs.Get(r.Context(), endpoint)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
 			return
@@ -8314,8 +8321,8 @@ func (s *Server) observabilityGet(endpoint string) http.HandlerFunc {
 
 func (s *Server) observabilityGetAction(template string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.obs.Enabled() {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		obs, ok := s.observabilityClientForRequest(w, r)
+		if !ok {
 			return
 		}
 		endpoint, err := replacePathID(template, r.PathValue("id"))
@@ -8323,7 +8330,7 @@ func (s *Server) observabilityGetAction(template string) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_observability_id"})
 			return
 		}
-		body, err := s.obs.Get(r.Context(), endpoint)
+		body, err := obs.Get(r.Context(), endpoint)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
 			return
@@ -8334,8 +8341,8 @@ func (s *Server) observabilityGetAction(template string) http.HandlerFunc {
 
 func (s *Server) observabilityPostAction(template string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.obs.Enabled() {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		obs, ok := s.observabilityClientForRequest(w, r)
+		if !ok {
 			return
 		}
 		endpoint, err := replacePathID(template, r.PathValue("id"))
@@ -8343,7 +8350,7 @@ func (s *Server) observabilityPostAction(template string) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_observability_id"})
 			return
 		}
-		body, err := s.obs.Post(r.Context(), endpoint, map[string]any{})
+		body, err := obs.Post(r.Context(), endpoint, map[string]any{})
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
 			return
@@ -8364,8 +8371,8 @@ func (s *Server) observabilityPostActionWithAudit(template, action, resourceType
 
 func (s *Server) observabilityPostActionWithAuditStatus(template, action, resourceType string, successStatus int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.obs.Enabled() {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		obs, ok := s.observabilityClientForRequest(w, r)
+		if !ok {
 			return
 		}
 		endpoint, err := replacePathID(template, r.PathValue("id"))
@@ -8373,7 +8380,7 @@ func (s *Server) observabilityPostActionWithAuditStatus(template, action, resour
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_observability_id"})
 			return
 		}
-		body, err := s.obs.Post(r.Context(), endpoint, map[string]any{})
+		body, err := obs.Post(r.Context(), endpoint, map[string]any{})
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
 			return
@@ -8407,8 +8414,8 @@ func (s *Server) observabilityPutProxy(template, action, resourceType string) ht
 
 func (s *Server) observabilityDeleteProxy(template, action, resourceType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.obs.Enabled() {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		obs, ok := s.observabilityClientForRequest(w, r)
+		if !ok {
 			return
 		}
 		endpoint, err := replacePathID(template, r.PathValue("id"))
@@ -8416,7 +8423,7 @@ func (s *Server) observabilityDeleteProxy(template, action, resourceType string)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_observability_id"})
 			return
 		}
-		body, err := s.obs.Delete(r.Context(), endpoint)
+		body, err := obs.Delete(r.Context(), endpoint)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
 			return
@@ -8432,8 +8439,8 @@ func (s *Server) observabilityProxyJSON(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Request, method, endpoint, action, resourceType string, successStatus int) {
-	if !s.obs.Enabled() {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+	obs, ok := s.observabilityClientForRequest(w, r)
+	if !ok {
 		return
 	}
 	var payload map[string]any
@@ -8446,9 +8453,9 @@ func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Req
 		err  error
 	)
 	if method == http.MethodPut {
-		body, err = s.obs.Put(r.Context(), endpoint, payload)
+		body, err = obs.Put(r.Context(), endpoint, payload)
 	} else {
-		body, err = s.obs.Post(r.Context(), endpoint, payload)
+		body, err = obs.Post(r.Context(), endpoint, payload)
 	}
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
@@ -8468,6 +8475,64 @@ func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Req
 		},
 	})
 	writeObservabilityJSON(w, successStatus, endpoint, body)
+}
+
+func (s *Server) observabilityClientForRequest(w http.ResponseWriter, r *http.Request) (observability.Client, bool) {
+	client, ok, err := s.observabilityClient(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		return observability.Client{}, false
+	}
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		return observability.Client{}, false
+	}
+	return client, true
+}
+
+func (s *Server) observabilityClient(ctx context.Context) (observability.Client, bool, error) {
+	if s.services == nil {
+		return observability.Client{}, false, nil
+	}
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return observability.Client{}, false, err
+	}
+	for _, service := range services {
+		if service.ServiceType != "observability" || strings.TrimSpace(service.PublicURL) == "" || strings.TrimSpace(service.Status) == "pending" {
+			continue
+		}
+		token, err := nodeRuntimeToken(service)
+		if err != nil {
+			return observability.Client{}, false, err
+		}
+		client := observability.Client{
+			BaseURL: service.PublicURL,
+			Token:   token,
+			Timeout: s.obs.Timeout,
+			HTTP:    s.obs.HTTP,
+		}
+		if client.Timeout <= 0 {
+			client.Timeout = 5 * time.Second
+		}
+		return client, true, nil
+	}
+	return observability.Client{}, false, nil
+}
+
+func nodeRuntimeToken(service store.RegisteredService) (string, error) {
+	if strings.TrimSpace(service.NodeTokenCiphertext) == "" || strings.TrimSpace(service.NodeTokenNonce) == "" {
+		return "", errors.New("node runtime token is not configured")
+	}
+	key := strings.TrimSpace(os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))
+	if key == "" {
+		return "", errors.New("node runtime token encryption key is not configured")
+	}
+	token, err := security.DecryptSecret(service.NodeTokenCiphertext, service.NodeTokenNonce, key)
+	if err != nil || strings.TrimSpace(token) == "" {
+		return "", errors.New("node runtime token could not be decrypted")
+	}
+	return token, nil
 }
 
 func replacePathID(template, id string) (string, error) {

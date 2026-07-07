@@ -33,8 +33,6 @@ type RemediationDispatchContext struct {
 
 func FromEnv() Client {
 	return Client{
-		BaseURL: os.Getenv("OBSERVABILITY_URL"),
-		Token:   os.Getenv("OBSERVABILITY_TOKEN"),
 		Timeout: envDuration("OBSERVABILITY_TIMEOUT_SEC", 5*time.Second),
 	}
 }
@@ -45,23 +43,23 @@ func (c Client) Enabled() bool {
 
 func (c Client) Validate() error {
 	if strings.TrimSpace(c.BaseURL) == "" {
-		return errors.New("OBSERVABILITY_URL is required")
+		return errors.New("observability URL is required")
 	}
 	if strings.TrimSpace(c.Token) == "" {
-		return errors.New("OBSERVABILITY_TOKEN is required")
+		return errors.New("observability token is required")
 	}
 	parsed, err := url.Parse(c.BaseURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return errors.New("OBSERVABILITY_URL must be an absolute URL")
+		return errors.New("observability URL must be an absolute URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("OBSERVABILITY_URL must use http or https")
+		return errors.New("observability URL must use http or https")
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("OBSERVABILITY_URL must not include userinfo, query, or fragment")
+		return errors.New("observability URL must not include userinfo, query, or fragment")
 	}
 	if parsed.Scheme == "http" && !isLocalObservabilityHost(parsed.Hostname()) {
-		return errors.New("OBSERVABILITY_URL must use https for remote hosts")
+		return errors.New("observability URL must use https for remote hosts")
 	}
 	return nil
 }
