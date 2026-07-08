@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DataTable } from "@/components/tables/data-table";
 import { StatusBadge } from "@/components/admin/status-badge";
-import { useAuditLogs } from "@/features/queries";
+import { useAppSettings, useAuditLogs } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
+import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { AuditLog } from "@/types/domain";
 
 export function AuditLogsView() {
@@ -19,12 +20,14 @@ export function AuditLogsView() {
   const [to, setTo] = useState("");
   const [result, setResult] = useState("all");
   const auditLogs = useAuditLogs({ from, to, result });
+  const appSettings = useAppSettings();
+  const timezone = appSettings.data?.timezone;
 
   const columns: ColumnDef<AuditLog>[] = [
     {
       accessorKey: "timestamp",
       header: t("time"),
-      cell: ({ row }) => formatDateTime(row.original.timestamp),
+      cell: ({ row }) => formatDateTime(row.original.timestamp, timezone),
     },
     { accessorKey: "actor_username", header: t("actor") },
     { accessorKey: "action", header: t("action") },
@@ -85,7 +88,6 @@ export function AuditLogsView() {
   );
 }
 
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+function formatDateTime(value?: string, timezone?: string) {
+  return formatDateTimeInTimeZone(value, timezone, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }

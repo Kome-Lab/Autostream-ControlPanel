@@ -23,7 +23,7 @@ func (s *MemoryAuthStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
-func (s *MemoryAuthStore) CreateUser(ctx context.Context, username, temporaryPassword string, roleIDs []string) (User, error) {
+func (s *MemoryAuthStore) CreateUser(ctx context.Context, username, email, temporaryPassword string, roleIDs []string) (User, error) {
 	if err := ctx.Err(); err != nil {
 		return User{}, err
 	}
@@ -31,7 +31,11 @@ func (s *MemoryAuthStore) CreateUser(ctx context.Context, username, temporaryPas
 	if err != nil {
 		return User{}, err
 	}
-	user := User{ID: newUUID(), Username: username, Status: "pending_password_change", PasswordHash: hash}
+	email, err = normalizeUserEmail(email)
+	if err != nil {
+		return User{}, err
+	}
+	user := User{ID: newUUID(), Username: username, Email: email, Status: "pending_password_change", PasswordHash: hash}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.byUsername[username]; exists {
@@ -43,7 +47,7 @@ func (s *MemoryAuthStore) CreateUser(ctx context.Context, username, temporaryPas
 	return publicUserCopy(user), nil
 }
 
-func (s *MemoryAuthStore) CreateOAuthUser(ctx context.Context, username string, roleIDs []string) (User, error) {
+func (s *MemoryAuthStore) CreateOAuthUser(ctx context.Context, username, email string, roleIDs []string) (User, error) {
 	if err := ctx.Err(); err != nil {
 		return User{}, err
 	}
@@ -55,7 +59,11 @@ func (s *MemoryAuthStore) CreateOAuthUser(ctx context.Context, username string, 
 	if err != nil {
 		return User{}, err
 	}
-	user := User{ID: newUUID(), Username: username, Status: "active", PasswordHash: hash}
+	email, err = normalizeUserEmail(email)
+	if err != nil {
+		return User{}, err
+	}
+	user := User{ID: newUUID(), Username: username, Email: email, Status: "active", PasswordHash: hash}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.byUsername[username]; exists {
@@ -82,6 +90,13 @@ func (s *MemoryAuthStore) UpdateUser(ctx context.Context, id string, patch UserP
 		user.Username = patch.Username
 		s.byUsername[user.Username] = user.ID
 	}
+	if patch.Email != nil {
+		email, err := normalizeUserEmail(*patch.Email)
+		if err != nil {
+			return User{}, err
+		}
+		user.Email = email
+	}
 	if patch.RoleIDs != nil {
 		user.Roles = s.roleNamesLocked(patch.RoleIDs)
 	}
@@ -105,6 +120,51 @@ func (s *MemoryAuthStore) SetUserStatus(ctx context.Context, id, status string) 
 	user.Status = status
 	s.users[id] = user
 	return publicUserCopy(user), nil
+}
+
+func (s *MemoryAuthStore) DeleteUser(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user, ok := s.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if hasRole(user, "super_admin") && user.Status == "active" && s.countActiveSuperAdminsLocked() <= 1 {
+		return ErrLastSuperAdmin
+	}
+	delete(s.users, id)
+	delete(s.byUsername, user.Username)
+	delete(s.permissions, id)
+	delete(s.mfaConfigs, id)
+	for challengeID, challenge := range s.mfaChallenges {
+		if challenge.UserID == id {
+			delete(s.mfaChallenges, challengeID)
+		}
+	}
+	for hash, session := range s.sessions {
+		if session.UserID == id {
+			delete(s.sessions, hash)
+		}
+	}
+	for credentialID, credential := range s.passkeys {
+		if credential.UserID == id {
+			delete(s.passkeys, credentialID)
+		}
+	}
+	for challengeID, challenge := range s.passkeyReg {
+		if challenge.UserID == id {
+			delete(s.passkeyReg, challengeID)
+		}
+	}
+	for sessionID, session := range s.passkeySess {
+		if session.UserID == id {
+			delete(s.passkeySess, sessionID)
+		}
+	}
+	return nil
 }
 
 func (s *MemoryAuthStore) ResetPassword(ctx context.Context, id, temporaryPassword string) error {

@@ -6,6 +6,7 @@ export type ResourceDefinition = {
   description: string;
   form?: ResourceFormKind;
   createTemplate?: Record<string, unknown>;
+  deletable?: boolean;
 };
 
 export type ResourceFormKind =
@@ -38,20 +39,22 @@ export const resourcePages = {
         path: "/profiles/encoder",
         description: "Worker / Encoder が配信開始時に参照する映像変換プロファイルです。",
         form: "encoder-profile",
+        deletable: true,
         createTemplate: { name: "1080p60", config: { width: 1920, height: 1080, fps: 60, video_bitrate_kbps: 8000 } },
       },
     ],
   },
   discord: {
     titleKey: "discord",
-    description: "Discord Bot連携、音声転送、通知先を案件単位で管理します。",
+    description: "Discord BOT Nodeの登録情報とBOTトークンを管理します。Guild、VC、Chat Channelは配信枠で指定します。",
     resources: [
       {
-        title: "Discord configs",
+        title: "Discord BOT settings",
         path: "/discord/configs",
-        description: "Discordサービス、ギルド、ボイスチャンネル、再接続ポリシーの設定です。",
+        description: "Discord BOT Node、BOTトークン、音声転送と再接続ポリシーの設定です。",
         form: "discord-config",
-        createTemplate: { name: "main-guild", service_id: "discord-01", guild_id: "guild-01", voice_channel_id: "voice-01", audio_forward_enabled: true },
+        deletable: true,
+        createTemplate: { name: "main-discord-bot", service_id: "discord-01", audio_forward_enabled: true },
       },
     ],
   },
@@ -64,6 +67,7 @@ export const resourcePages = {
         path: "/youtube/outputs",
         description: "配信開始時に使うRTMPまたはYouTube Live API出力です。",
         form: "youtube-output",
+        deletable: true,
         createTemplate: { name: "public-live", mode: "live_api_dry_run", privacy_status: "public", rtmp_url: "rtmps://example.youtube.com/live2" },
       },
     ],
@@ -77,6 +81,7 @@ export const resourcePages = {
         path: "/profiles/caption",
         description: "字幕言語、プロバイダ、遅延補正などの設定です。",
         form: "caption-profile",
+        deletable: true,
         createTemplate: { name: "日本語ライブ字幕", config: { language: "ja-JP", provider: "deepgram", delay_ms: 800 } },
       },
     ],
@@ -90,7 +95,8 @@ export const resourcePages = {
         path: "/profiles/overlay",
         description: "画面上に出す案内や番組情報のテンプレートです。",
         form: "overlay-profile",
-        createTemplate: { name: "lower-third", config: { safe_area: "16:9 lower", theme: "public" } },
+        deletable: true,
+        createTemplate: { name: "lower-third", config: { safe_area: "16:9 lower", theme: "public", watermark_enabled: true, watermark_text: "AutoStream", watermark_position: "bottom_right", watermark_opacity: 0.7 } },
       },
     ],
   },
@@ -103,6 +109,7 @@ export const resourcePages = {
         path: "/profiles/archive",
         description: "録画形式、保存期間、アップロード有無の設定です。",
         form: "archive-profile",
+        deletable: true,
         createTemplate: { name: "shared-drive", config: { format: "mp4", retention_days: 180, upload_enabled: true } },
       },
       {
@@ -110,7 +117,8 @@ export const resourcePages = {
         path: "/archive/destinations",
         description: "Google Driveなどのアーカイブ保存先です。",
         form: "drive-destination",
-        createTemplate: { name: "archive-drive", auth_mode: "oauth2", oauth_account_id: "acct-drive", folder_id: "google-drive-folder-id" },
+        deletable: true,
+        createTemplate: { name: "archive-drive", oauth_account_id: "acct-drive", folder_id: "google-drive-folder-id" },
       },
     ],
   },
@@ -121,15 +129,17 @@ export const resourcePages = {
       {
         title: "OAuth providers",
         path: "/integrations/oauth-providers",
-        description: "ログインや接続アカウントに使うOAuthプロバイダです。",
+        description: "管理画面ログインに使うOAuthプロバイダです。スコープはログイン用途に固定します。",
         form: "oauth-provider",
-        createTemplate: { provider_type: "google", name: "Google Workspace", enabled: true, client_id: "client-id", client_secret: "secret", redirect_uri: "https://control.example.jp/integrations/oauth-accounts/callback" },
+        deletable: true,
+        createTemplate: { provider_type: "google", name: "Google Workspace", enabled: true, client_id: "client-id", client_secret: "secret", redirect_uri: "https://control.example.jp/auth/oauth/callback" },
       },
       {
         title: "OAuth accounts",
         path: "/integrations/oauth-accounts",
         description: "YouTubeやDrive操作に使う接続済みアカウントです。",
         form: "oauth-account-connect",
+        deletable: true,
       },
     ],
   },
@@ -150,6 +160,7 @@ export const resourcePages = {
         path: "/users",
         description: "運用担当者のログインアカウントです。",
         form: "user",
+        deletable: true,
         createTemplate: { username: "operator", temporary_password: "change-me-with-12-chars", role_ids: ["role-operator"] },
       },
     ],
@@ -163,6 +174,7 @@ export const resourcePages = {
         path: "/roles",
         description: "ユーザーに付与する権限セットです。",
         form: "role",
+        deletable: true,
         createTemplate: { name: "operator", permissions: ["streams.read", "streams.start", "streams.stop"] },
       },
       { title: "Permissions", path: "/permissions", description: "利用できる権限一覧です。" },
@@ -212,9 +224,10 @@ export const resourcePages = {
       {
         title: "Notification channels",
         path: "/observability/notification-channels",
-        description: "Discordやメールなどの通知先です。",
+        description: "Discord、Slack、メールなどの通知先です。",
         form: "notification-channel",
-        createTemplate: { name: "ops-discord", type: "discord", webhook_url: "https://discord.com/api/webhooks/...", enabled: true },
+        deletable: true,
+        createTemplate: { name: "ops-slack", type: "slack", webhook_url: "https://hooks.slack.com/services/...", enabled: true },
       },
     ],
   },

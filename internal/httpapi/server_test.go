@@ -336,6 +336,102 @@ func TestOAuthLoginCallbackAutoProvisionsAllowedIdentity(t *testing.T) {
 	}
 }
 
+func TestCurrentUserCanLinkOAuthProviderFromAccountSettings(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "self-user", Username: "operator", Roles: []string{"admin"}}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Login",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"openid", "email"},
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauthStore := store.NewMemoryOAuthLoginStore()
+	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-link", Email: "operator@example.com", EmailVerified: true}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(oauthStore), WithOAuthVerifier(verifier))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	startReq := httptest.NewRequest(http.MethodPost, "/auth/oauth-links/"+provider.ID+"/start", bytes.NewBufferString(`{"redirect_after":"/admin/account/"}`))
+	startReq.AddCookie(cookie)
+	startReq.Header.Set("X-CSRF-Token", csrf)
+	startRes := httptest.NewRecorder()
+	handler.ServeHTTP(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("oauth link start status = %d body = %s", startRes.Code, startRes.Body.String())
+	}
+	var startBody struct {
+		State            string `json:"state"`
+		AuthorizationURL string `json:"authorization_url"`
+	}
+	if err := json.NewDecoder(startRes.Body).Decode(&startBody); err != nil {
+		t.Fatal(err)
+	}
+	if startBody.State == "" || !strings.Contains(startBody.AuthorizationURL, "accounts.google.com") {
+		t.Fatalf("oauth link start missing authorization details: %#v", startBody)
+	}
+	oauthCookie := findCookieForTest(t, startRes.Result().Cookies(), oauthStateCookieName)
+	callbackReq := httptest.NewRequest(http.MethodGet, "/auth/oauth/callback?state="+url.QueryEscape(startBody.State)+"&code=callback-code", nil)
+	callbackReq.AddCookie(cookie)
+	callbackReq.AddCookie(oauthCookie)
+	callbackRes := httptest.NewRecorder()
+	handler.ServeHTTP(callbackRes, callbackReq)
+	if callbackRes.Code != http.StatusSeeOther || callbackRes.Header().Get("Location") != "/admin/account/" {
+		t.Fatalf("oauth link callback status=%d location=%q body=%s", callbackRes.Code, callbackRes.Header().Get("Location"), callbackRes.Body.String())
+	}
+	link, err := oauthStore.FindOAuthUserLink(t.Context(), provider.ID, "google-subject-link")
+	if err != nil {
+		t.Fatalf("oauth user link was not created: %v", err)
+	}
+	if link.UserID != "self-user" || link.Email != "operator@example.com" {
+		t.Fatalf("unexpected oauth link: %#v", link)
+	}
+	if strings.Contains(callbackRes.Body.String(), "raw-google-client-secret") {
+		t.Fatalf("oauth link callback leaked client secret: %s", callbackRes.Body.String())
+	}
+}
+
+func TestOAuthAccountConnectionRejectsLoginStatePurpose(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"admin"}}, "correct horse battery", []string{"integrations.create"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Login",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauthStore := store.NewMemoryOAuthLoginStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(oauthStore))
+	state, oauthCookie := startOAuthForTest(t, handler, provider.ID)
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/integrations/oauth-accounts/callback?state="+url.QueryEscape(state)+"&code=callback-code", nil)
+	req.AddCookie(cookie)
+	req.AddCookie(oauthCookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusUnauthorized || !strings.Contains(res.Body.String(), "invalid_oauth_state") {
+		t.Fatalf("connected account callback should reject login state purpose, status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestOAuthLoginAutoProvisionedUserStillRequiresMFAWhenRoleScoped(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
@@ -426,6 +522,68 @@ func TestCreateOAuthProviderDefaultRolesRequireRoleAssignmentPermission(t *testi
 	}
 }
 
+func TestOAuthLoginProviderScopesAreFixedForLogin(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"integrations.create", "integrations.update"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/integrations/oauth-providers", bytes.NewBufferString(`{"provider_type":"google","name":"Google Login","enabled":true,"client_id":"client-id","client_secret":"client-secret","scopes":["openid","email","https://www.googleapis.com/auth/drive.file","https://www.googleapis.com/auth/youtube"],"redirect_uri":"https://control.example.com/auth/oauth/callback"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create oauth provider status=%d body=%s", res.Code, res.Body.String())
+	}
+	var provider store.OAuthProvider
+	if err := json.NewDecoder(res.Body).Decode(&provider); err != nil {
+		t.Fatal(err)
+	}
+	if !sameStringSet(provider.Scopes, []string{"openid", "email", "profile"}) {
+		t.Fatalf("login provider scopes were not fixed: %#v", provider.Scopes)
+	}
+	authURL, err := oauthAuthorizationURL(store.OAuthProvider{
+		ProviderType: "google",
+		ClientID:     "client-id",
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/youtube"},
+	}, store.OAuthLoginState{StateToken: "state-token", Nonce: "nonce-value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Query().Get("scope"); got != "openid email profile" {
+		t.Fatalf("login authorization URL used non-login scopes: %q", got)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/integrations/oauth-providers/"+provider.ID, bytes.NewBufferString(`{"provider_type":"google","name":"Google Login Updated","enabled":true,"client_id":"client-id","client_secret":"","scopes":["https://www.googleapis.com/auth/drive.file","https://www.googleapis.com/auth/youtube.force-ssl"],"redirect_uri":"https://control.example.com/auth/oauth/callback"}`))
+	updateReq.AddCookie(cookie)
+	updateReq.Header.Set("X-CSRF-Token", csrf)
+	updateRes := httptest.NewRecorder()
+	handler.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusOK {
+		t.Fatalf("update oauth provider status=%d body=%s", updateRes.Code, updateRes.Body.String())
+	}
+	var updated store.OAuthProvider
+	if err := json.NewDecoder(updateRes.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if !sameStringSet(updated.Scopes, []string{"openid", "email", "profile"}) {
+		t.Fatalf("updated login provider scopes were not fixed: %#v", updated.Scopes)
+	}
+	if strings.Contains(updateRes.Body.String(), "drive.file") || strings.Contains(updateRes.Body.String(), "youtube.force-ssl") {
+		t.Fatalf("provider update response exposed non-login scopes: %s", updateRes.Body.String())
+	}
+}
+
 func TestOAuthProviderAPIRejectsUnsafeProviderConfig(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
@@ -460,17 +618,17 @@ func TestOAuthProviderAPIRejectsUnsafeProviderConfig(t *testing.T) {
 		{
 			name: "github cannot use connected account callback",
 			body: `{"provider_type":"github","name":"GitHub Connected","enabled":true,"client_id":"client-id","client_secret":"client-secret","scopes":["read:user"],"redirect_uri":"https://control.example.com/integrations/oauth-accounts/callback"}`,
-			code: "oauth_connected_account_provider_unsupported",
+			code: "oauth_redirect_uri_invalid",
 		},
 		{
-			name: "connected account requires drive or youtube scope",
+			name: "google cannot use connected account callback",
 			body: `{"provider_type":"google","name":"Google Connected","enabled":true,"client_id":"client-id","client_secret":"client-secret","scopes":["openid","email"],"redirect_uri":"https://control.example.com/integrations/oauth-accounts/callback"}`,
-			code: "oauth_connected_account_scope_required",
+			code: "oauth_redirect_uri_invalid",
 		},
 		{
-			name: "connected account cannot auto provision users",
+			name: "connected account callback cannot auto provision users",
 			body: `{"provider_type":"google","name":"Google Connected Auto","enabled":true,"client_id":"client-id","client_secret":"client-secret","scopes":["openid","email","https://www.googleapis.com/auth/drive.file"],"auto_provision":true,"redirect_uri":"https://control.example.com/integrations/oauth-accounts/callback"}`,
-			code: "oauth_connected_account_auto_provision_not_allowed",
+			code: "oauth_redirect_uri_invalid",
 		},
 	}
 
@@ -776,7 +934,7 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	createBody := bytes.NewBufferString(`{"name":"morning stream","discord_config_id":"` + config.ID + `"}`)
+	createBody := bytes.NewBufferString(`{"name":"morning stream","discord_config_id":"` + config.ID + `","discord_guild_id":"guild-life","discord_voice_channel_id":"voice-life"}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/streams", createBody)
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
@@ -889,6 +1047,175 @@ func TestCreateStreamRejectsBlankName(t *testing.T) {
 	}
 }
 
+func TestCreateStreamPersistsSchedule(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"scheduled stream","scheduled_start_at":"2026-07-10T01:00:00Z","scheduled_end_at":"2026-07-10T02:00:00Z"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	}
+	var created store.Stream
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ScheduledStartAt == nil || created.ScheduledStartAt.Format(time.RFC3339) != "2026-07-10T01:00:00Z" {
+		t.Fatalf("scheduled start was not persisted: %#v", created.ScheduledStartAt)
+	}
+	if created.ScheduledEndAt == nil || created.ScheduledEndAt.Format(time.RFC3339) != "2026-07-10T02:00:00Z" {
+		t.Fatalf("scheduled end was not persisted: %#v", created.ScheduledEndAt)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/streams", nil)
+	listReq.AddCookie(cookie)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list status = %d body = %s", listRes.Code, listRes.Body.String())
+	}
+	var listed []store.Stream
+	if err := json.NewDecoder(listRes.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ScheduledStartAt == nil || listed[0].ScheduledEndAt == nil {
+		t.Fatalf("list did not return schedule: %#v", listed)
+	}
+}
+
+func TestCreateStreamAssignsSelectedPrimaryNodes(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	registerServiceInstance(t, auth, "encoder-01", "encoder_recorder")
+	registerServiceInstance(t, auth, "worker-01", "worker")
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"auto ready stream","encoder_service_id":"encoder-01","worker_service_id":"worker-01"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	}
+	var created store.Stream
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := primaryStreamAssignments(assignments)
+	if missing := missingServiceTypes(primary, []string{"encoder_recorder", "worker"}); len(missing) > 0 {
+		t.Fatalf("selected primary nodes were not assigned, missing=%#v assignments=%#v", missing, assignments)
+	}
+	events := auth.AuditEvents()
+	assignAudits := 0
+	for _, event := range events {
+		if event.Action == "services.assign" && event.ResourceID != "" && event.Metadata["source"] == "stream_settings" {
+			assignAudits++
+		}
+	}
+	if assignAudits != 2 {
+		t.Fatalf("expected assignment audit events for stream settings, got %d events=%#v", assignAudits, events)
+	}
+}
+
+func TestCreateStreamRejectsPrimaryNodeAssignmentWithoutPermission(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	registerServiceInstance(t, auth, "encoder-01", "encoder_recorder")
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"blocked stream","encoder_service_id":"encoder-01"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "permission_denied") {
+		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	}
+	items, err := streams.ListStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("stream should not be created when assignment permission is missing: %#v", items)
+	}
+}
+
+func TestCreateStreamRejectsWrongPrimaryNodeType(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	registerServiceInstance(t, auth, "worker-01", "worker")
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"wrong node stream","encoder_service_id":"worker-01"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "encoder_service_type_invalid") {
+		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestCreateStreamRejectsInvalidSchedule(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	for _, tc := range []struct {
+		name string
+		body string
+		code string
+	}{
+		{
+			name: "invalid time",
+			body: `{"name":"bad schedule","scheduled_start_at":"2026/07/10 10:00"}`,
+			code: "schedule_time_invalid",
+		},
+		{
+			name: "end before start",
+			body: `{"name":"bad schedule","scheduled_start_at":"2026-07-10T02:00:00Z","scheduled_end_at":"2026-07-10T01:00:00Z"}`,
+			code: "schedule_end_before_start",
+		},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(tc.body))
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), tc.code) {
+			t.Fatalf("%s status = %d body = %s", tc.name, res.Code, res.Body.String())
+		}
+	}
+}
+
 func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.update", "streams.read"}); err != nil {
@@ -904,9 +1231,17 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	youtubeOutput, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "youtube output", map[string]any{"mode": "rtmp", "rtmp_url": "rtmps://a.rtmps.youtube.com/live2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "archive profile", map[string]any{"format": "mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","discord_guild_id":"guild-create","discord_voice_channel_id":"voice-create","discord_text_channel_id":"text-create","youtube_output_id":"youtube-output-01"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","discord_guild_id":"guild-create","discord_voice_channel_id":"voice-create","discord_text_channel_id":"text-create","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`"}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -918,10 +1253,10 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.DiscordConfigID != discordOne.ID || created.DiscordGuildID != "guild-create" || created.DiscordVoiceID != "voice-create" || created.DiscordTextID != "text-create" || created.YouTubeOutputID != "youtube-output-01" {
+	if created.DiscordConfigID != discordOne.ID || created.DiscordGuildID != "guild-create" || created.DiscordVoiceID != "voice-create" || created.DiscordTextID != "text-create" || created.AutoStartTrigger != "discord_voice_join" || created.YouTubeOutputID != youtubeOutput.ID {
 		t.Fatalf("create did not persist stream settings: %#v", created)
 	}
-	updateReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/settings", bytes.NewBufferString(`{"discord_config_id":"`+discordTwo.ID+`","discord_guild_id":"guild-stream","discord_voice_channel_id":"voice-stream","discord_text_channel_id":"text-stream","archive_profile_id":"archive-profile-01","encoder_input_url":"srt://input.example.com:9000"}`))
+	updateReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/settings", bytes.NewBufferString(`{"discord_config_id":"`+discordTwo.ID+`","discord_guild_id":"guild-stream","discord_voice_channel_id":"voice-stream","discord_text_channel_id":"text-stream","auto_start_trigger":"discord_voice_join","archive_profile_id":"`+archiveProfile.ID+`","encoder_input_url":"srt://input.example.com:9000"}`))
 	updateReq.AddCookie(cookie)
 	updateReq.Header.Set("X-CSRF-Token", csrf)
 	updateRes := httptest.NewRecorder()
@@ -933,15 +1268,126 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err := json.NewDecoder(updateRes.Body).Decode(&updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.DiscordConfigID != discordTwo.ID || updated.DiscordGuildID != "guild-stream" || updated.DiscordVoiceID != "voice-stream" || updated.DiscordTextID != "text-stream" || updated.ArchiveProfileID != "archive-profile-01" || updated.EncoderInputURL == "" || updated.YouTubeOutputID != "" {
+	if updated.DiscordConfigID != discordTwo.ID || updated.DiscordGuildID != "guild-stream" || updated.DiscordVoiceID != "voice-stream" || updated.DiscordTextID != "text-stream" || updated.AutoStartTrigger != "discord_voice_join" || updated.ArchiveProfileID != archiveProfile.ID || updated.EncoderInputURL == "" || updated.YouTubeOutputID != "" {
 		t.Fatalf("unexpected updated stream settings: %#v", updated)
 	}
 	getReq := httptest.NewRequest(http.MethodGet, "/streams/"+created.ID, nil)
 	getReq.AddCookie(cookie)
 	getRes := httptest.NewRecorder()
 	handler.ServeHTTP(getRes, getReq)
-	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), discordTwo.ID) || !strings.Contains(getRes.Body.String(), "guild-stream") || !strings.Contains(getRes.Body.String(), "archive-profile-01") {
+	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), discordTwo.ID) || !strings.Contains(getRes.Body.String(), "guild-stream") || !strings.Contains(getRes.Body.String(), "discord_voice_join") || !strings.Contains(getRes.Body.String(), archiveProfile.ID) {
 		t.Fatalf("get stream did not return settings: status=%d body=%s", getRes.Code, getRes.Body.String())
+	}
+}
+
+func TestCreateStreamRejectsInvalidAutoStartSettings(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	discordProfile, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord", map[string]any{"guild_id": "guild-01", "voice_channel_id": "voice-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	for _, tc := range []struct {
+		name string
+		body string
+		code string
+	}{
+		{
+			name: "unknown trigger",
+			body: `{"name":"bad trigger","auto_start_trigger":"vc_join"}`,
+			code: "auto_start_trigger_invalid",
+		},
+		{
+			name: "missing discord voice target",
+			body: `{"name":"missing discord","discord_config_id":"` + discordProfile.ID + `","discord_guild_id":"guild-01","auto_start_trigger":"discord_voice_join"}`,
+			code: "auto_start_discord_required",
+		},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(tc.body))
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), tc.code) {
+			t.Fatalf("%s status = %d body = %s", tc.name, res.Code, res.Body.String())
+		}
+	}
+}
+
+func TestCreateStreamMaterializesDirectArchiveSettings(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive Direct",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "Drive Direct Account",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+		RefreshToken: "raw-google-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"direct archive stream","archive_oauth_account_id":"`+account.ID+`","archive_folder_id":"raw-drive-folder-id","archive_shared_drive":true,"archive_shared_drive_id":"shared-drive-01"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "raw-drive-folder-id") || strings.Contains(res.Body.String(), "raw-google-refresh-token") || strings.Contains(res.Body.String(), "raw-google-client-secret") {
+		t.Fatalf("direct archive response leaked raw secret: %s", res.Body.String())
+	}
+	var created store.Stream
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ArchiveProfileID == "" || created.ArchiveDriveDestinationID == "" || created.ArchiveOAuthAccountID != account.ID || !created.ArchiveFolderIDConfigured || !created.ArchiveSharedDrive || created.ArchiveSharedDriveID != "shared-drive-01" {
+		t.Fatalf("direct archive settings were not persisted on stream: %#v", created)
+	}
+	if !strings.HasPrefix(created.ArchiveFileName, "direct archive stream-") || !strings.HasSuffix(created.ArchiveFileName, ".mp4") {
+		t.Fatalf("default archive file name was not generated from stream name/date: %#v", created)
+	}
+	destination, err := integrations.GetDriveDestinationForDispatch(t.Context(), created.ArchiveDriveDestinationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if destination.AuthMode != "oauth2" || destination.OAuthAccountID != account.ID || destination.FolderID != "raw-drive-folder-id" || !destination.SharedDrive {
+		t.Fatalf("drive destination was not materialized for dispatch: %#v", destination)
+	}
+	profile, err := profiles.GetProfile(t.Context(), store.ProfileArchive, created.ArchiveProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Config["drive_destination_id"] != destination.ID || profile.Config["stream_archive_direct"] != true || profile.Config["archive_file_name"] != created.ArchiveFileName || profile.Config["shared_drive_id"] != "shared-drive-01" {
+		t.Fatalf("archive profile was not materialized from stream settings: %#v", profile.Config)
 	}
 }
 
@@ -988,6 +1434,53 @@ func TestStreamSettingsRejectUnknownDiscordConfig(t *testing.T) {
 	handler.ServeHTTP(overrideOnlyRes, overrideOnlyReq)
 	if overrideOnlyRes.Code != http.StatusBadRequest || !strings.Contains(overrideOnlyRes.Body.String(), "discord_config_required") {
 		t.Fatalf("override-only update status=%d body=%s", overrideOnlyRes.Code, overrideOnlyRes.Body.String())
+	}
+}
+
+func TestStreamSettingsRejectUnknownSelectableReferences(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.update"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "configured stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	integrations := store.NewMemoryIntegrationStore()
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	for _, tc := range []struct {
+		name string
+		body string
+		code string
+	}{
+		{name: "youtube output", body: `{"name":"bad youtube","youtube_output_id":"missing-youtube"}`, code: "youtube_output_not_found"},
+		{name: "encoder profile", body: `{"name":"bad encoder","encoder_profile_id":"missing-encoder"}`, code: "encoder_profile_not_found"},
+		{name: "caption profile", body: `{"name":"bad caption","caption_profile_id":"missing-caption"}`, code: "caption_profile_not_found"},
+		{name: "overlay profile", body: `{"name":"bad overlay","overlay_profile_id":"missing-overlay"}`, code: "overlay_profile_not_found"},
+		{name: "archive profile", body: `{"name":"bad archive","archive_profile_id":"missing-archive"}`, code: "archive_profile_not_found"},
+		{name: "archive oauth account", body: `{"name":"bad archive oauth","archive_oauth_account_id":"missing-account"}`, code: "drive_oauth_account_unavailable"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(tc.body))
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), tc.code) {
+			t.Fatalf("%s create status=%d body=%s", tc.name, res.Code, res.Body.String())
+		}
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"youtube_output_id":"missing-youtube"}`))
+	updateReq.AddCookie(cookie)
+	updateReq.Header.Set("X-CSRF-Token", csrf)
+	updateRes := httptest.NewRecorder()
+	handler.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusBadRequest || !strings.Contains(updateRes.Body.String(), "youtube_output_not_found") {
+		t.Fatalf("update status=%d body=%s", updateRes.Code, updateRes.Body.String())
 	}
 }
 
@@ -1056,7 +1549,7 @@ func TestStartStreamResolvesDiscordConfigForDispatch(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"manual-guild","discord_voice_channel_id":"manual-voice"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"manual-guild","discord_voice_channel_id":"manual-voice","discord_text_channel_id":"manual-text"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1064,7 +1557,7 @@ func TestStartStreamResolvesDiscordConfigForDispatch(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("start status = %d body = %s", res.Code, res.Body.String())
 	}
-	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "manual-guild" || dispatcher.startRequest.DiscordVoiceChannelID != "manual-voice" || dispatcher.startRequest.DiscordTextChannelID != "text-from-config" {
+	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "manual-guild" || dispatcher.startRequest.DiscordVoiceChannelID != "manual-voice" || dispatcher.startRequest.DiscordTextChannelID != "manual-text" {
 		t.Fatalf("discord config was not resolved into start request: %#v", dispatcher.startRequest)
 	}
 }
@@ -1082,7 +1575,7 @@ func TestStartStreamUsesSavedDiscordConfigSetting(t *testing.T) {
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "saved discord", "discord_bot-01", "guild-saved", "voice-saved", "text-saved")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override", AutoStartTrigger: "discord_voice_join"}); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
@@ -1120,7 +1613,7 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 	}
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "service start discord", "discord-01", "guild-saved", "voice-saved", "text-saved")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override", AutoStartTrigger: "discord_voice_join"}); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
@@ -1139,8 +1632,8 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "guild-stream-override" || dispatcher.startRequest.DiscordVoiceChannelID != "voice-stream-override" {
 		t.Fatalf("service start must use saved settings and ignore request overrides: %#v", dispatcher.startRequest)
 	}
-	if dispatcher.startRequest.DiscordTextChannelID != "text-saved" {
-		t.Fatalf("service start should preserve profile text channel default: %#v", dispatcher.startRequest)
+	if dispatcher.startRequest.DiscordTextChannelID != "text-stream-override" {
+		t.Fatalf("service start should use saved stream text channel: %#v", dispatcher.startRequest)
 	}
 	events := auth.AuditEvents()
 	foundStartAudit := false
@@ -1162,6 +1655,97 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 	}
 	if dispatcher.startCalls != 1 {
 		t.Fatalf("active stream must not be dispatched again, got %d calls", dispatcher.startCalls)
+	}
+}
+
+func TestServiceStartStreamAllowsConfiguredDiscordBotWithoutPriorAssignment(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "discord configured service start stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	discordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	profiles := store.NewMemoryProfileStore()
+	config := createDiscordConfigForTest(t, profiles, "configured service start discord", "discord-01", "guild-saved", "voice-saved", "text-saved")
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override", AutoStartTrigger: "discord_voice_join"}); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+
+	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
+	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("service start status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.startCalls != 1 {
+		t.Fatalf("expected one start dispatch, got %d", dispatcher.startCalls)
+	}
+	foundDiscord := false
+	for _, service := range dispatcher.startedServices {
+		if service.ServiceID == "discord-01" && service.ServiceType == "discord_bot" && service.AssignmentRole == "primary" {
+			foundDiscord = true
+		}
+	}
+	if !foundDiscord {
+		t.Fatalf("configured discord bot was not assigned before dispatch: %#v", dispatcher.startedServices)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := false
+	for _, service := range assignments {
+		if service.ServiceID == "discord-01" && service.ServiceType == "discord_bot" && service.AssignmentRole == "primary" {
+			persisted = true
+		}
+	}
+	if !persisted {
+		t.Fatalf("configured discord bot assignment was not persisted: %#v", assignments)
+	}
+}
+
+func TestServiceStartStreamRequiresAutoStartTrigger(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "discord service start disabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	discordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	if _, err := auth.AssignServiceToStream(t.Context(), "discord-01", stream.ID, "test-user"); err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	config := createDiscordConfigForTest(t, profiles, "service start discord", "discord-01", "guild-saved", "voice-saved", "text-saved")
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override"}); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+
+	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
+	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "stream_auto_start_not_enabled") {
+		t.Fatalf("service start without trigger status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.startCalls != 0 {
+		t.Fatalf("disabled auto-start must not dispatch, got %d calls", dispatcher.startCalls)
 	}
 }
 
@@ -1251,7 +1835,7 @@ func TestStartStreamRejectsDiscordConfigForDifferentPrimaryBot(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1295,7 +1879,7 @@ func TestStartStreamResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1339,7 +1923,7 @@ func TestStartStreamRejectsYouTubeOutputWithoutProfileRTMPURL(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1380,7 +1964,7 @@ func TestStartStreamPreparesYouTubeLiveAPIDryRunWithoutSecretLeak(t *testing.T) 
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1475,7 +2059,7 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1639,7 +2223,7 @@ func TestStopStreamHonorsYouTubeCompleteOnStopFalseAndManualRetryForcesComplete(
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	startReq.AddCookie(cookie)
 	startReq.Header.Set("X-CSRF-Token", csrf)
 	startRes := httptest.NewRecorder()
@@ -1739,7 +2323,7 @@ func TestStopStreamKeepsYouTubeRuntimeWhenLiveAPICompleteFails(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	startReq.AddCookie(cookie)
 	startReq.Header.Set("X-CSRF-Token", csrf)
 	startRes := httptest.NewRecorder()
@@ -1990,7 +2574,7 @@ func TestStartStreamCompletesYouTubeLiveAPIWhenDispatchFails(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2070,7 +2654,7 @@ func TestStartStreamKeepsYouTubeRuntimeWhenDispatchFailureCleanupFails(t *testin
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2234,10 +2818,11 @@ func TestStartStreamDoesNotPrepareYouTubeLiveAPIWhenArchiveReadinessFails(t *tes
 		t.Fatal(err)
 	}
 	destination, err := integrations.CreateDriveDestination(t.Context(), store.DriveDestination{
-		Name:     "service account archive",
-		AuthMode: "service_account",
-		FolderID: "raw-drive-folder-id",
-		BasePath: "AutoStream",
+		Name:           "not ready oauth archive",
+		AuthMode:       "oauth2",
+		OAuthAccountID: account.ID,
+		FolderID:       "raw-drive-folder-id",
+		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2261,12 +2846,12 @@ func TestStartStreamDoesNotPrepareYouTubeLiveAPIWhenArchiveReadinessFails(t *tes
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "archive_profile_invalid_config") {
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "drive_oauth_account_unavailable") {
 		t.Fatalf("expected archive profile invalid config, status = %d body = %s", res.Code, res.Body.String())
 	}
 	if youtubeLive.prepareCalls != 0 {
@@ -2289,12 +2874,35 @@ func TestStartStreamResolvesArchiveDriveDestinationForDispatch(t *testing.T) {
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
 	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "archive account",
+		RefreshToken: "raw-google-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	destination, err := integrations.CreateDriveDestination(t.Context(), store.DriveDestination{
-		Name:        "shared drive archive",
-		AuthMode:    "service_account",
-		FolderID:    "raw-drive-folder-id",
-		SharedDrive: true,
-		BasePath:    "AutoStream",
+		Name:           "shared drive archive",
+		AuthMode:       "oauth2",
+		OAuthAccountID: account.ID,
+		FolderID:       "raw-drive-folder-id",
+		SharedDrive:    true,
+		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2302,8 +2910,7 @@ func TestStartStreamResolvesArchiveDriveDestinationForDispatch(t *testing.T) {
 	profiles := store.NewMemoryProfileStore()
 	discord := createDiscordConfigForTest(t, profiles, "archive discord", "discord_bot-01", "guild-archive", "voice-archive", "")
 	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "archive-main", map[string]any{
-		"drive_destination_id":                    destination.ID,
-		"service_account_credentials_secret_name": "google_drive_credentials",
+		"drive_destination_id": destination.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2312,7 +2919,7 @@ func TestStartStreamResolvesArchiveDriveDestinationForDispatch(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2327,11 +2934,16 @@ func TestStartStreamResolvesArchiveDriveDestinationForDispatch(t *testing.T) {
 		t.Fatalf("archive config leaked raw folder ID to dispatch: %#v", dispatcher.startRequest.ArchiveConfig)
 	}
 	secretName, _ := dispatcher.startRequest.ArchiveConfig["folder_id_secret_name"].(string)
-	if secretName != driveDestinationFolderIDSecretName(destination.ID) || dispatcher.startRequest.ArchiveConfig["shared_drive"] != true || dispatcher.startRequest.ArchiveConfig["service_account_credentials_secret_name"] != "google_drive_credentials" {
+	if secretName != driveDestinationFolderIDSecretName(destination.ID) || dispatcher.startRequest.ArchiveConfig["shared_drive"] != true {
 		t.Fatalf("archive config did not include scoped secret reference: %#v", dispatcher.startRequest.ArchiveConfig)
 	}
-	if _, leaked := dispatcher.startRequest.ArchiveConfig["service_account_json"]; leaked {
-		t.Fatalf("archive config leaked raw service account JSON field: %#v", dispatcher.startRequest.ArchiveConfig)
+	if dispatcher.startRequest.ArchiveConfig["client_secret_secret_name"] != oauthProviderClientSecretSecretName(provider.ID) || dispatcher.startRequest.ArchiveConfig["refresh_token_secret_name"] != oauthAccountRefreshTokenSecretName(account.ID) {
+		t.Fatalf("archive config did not include OAuth secret references: %#v", dispatcher.startRequest.ArchiveConfig)
+	}
+	for _, leaked := range []string{"service_account_json", "service_account_credentials_secret_name", "client_secret", "refresh_token", "folder_id"} {
+		if _, ok := dispatcher.startRequest.ArchiveConfig[leaked]; ok {
+			t.Fatalf("archive config leaked raw or unsupported secret field %q: %#v", leaked, dispatcher.startRequest.ArchiveConfig)
+		}
 	}
 }
 
@@ -2390,7 +3002,7 @@ func TestStartStreamResolvesOAuthDriveDestinationForDispatchWithoutResponseLeak(
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2477,7 +3089,7 @@ func TestStreamStartChecksReadinessBeforeDispatch(t *testing.T) {
 	}}}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2577,7 +3189,7 @@ func TestStreamStartReadinessEndpointReportsServerReadinessIssues(t *testing.T) 
 	}}}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","encoder_input_url":"srt://source.example.com:9000"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","encoder_input_url":"srt://source.example.com:9000"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2625,7 +3237,7 @@ func TestStreamStartReadinessEndpointReportsMissingYouTubeStreamKeyWithoutReadin
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2678,7 +3290,7 @@ func TestStreamStartReadinessEndpointReportsYouTubeLiveAPIAccountIssueWithoutPre
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(store.NewMemoryIntegrationStore()), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2729,7 +3341,7 @@ func TestStreamStartReadinessEndpointReportsMissingDriveDestination(t *testing.T
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(store.NewMemoryIntegrationStore()), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2807,7 +3419,7 @@ func TestStreamStartReadinessEndpointReportsOAuthDriveAccountIssueWithoutRawSecr
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2897,7 +3509,7 @@ func TestStreamDispatchFailureMarksFailed(t *testing.T) {
 	config := createDiscordConfigForTest(t, profiles, "dispatch failure discord", "discord_bot-01", "guild-dispatch", "voice-dispatch", "")
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(&fakeServiceDispatcher{failStart: true}))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2930,7 +3542,7 @@ func TestStreamDispatchFailureDoesNotLeakSecretError(t *testing.T) {
 	config := createDiscordConfigForTest(t, profiles, "secret failure discord", "discord_bot-01", "guild-dispatch", "voice-dispatch", "")
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -2992,20 +3604,42 @@ func TestRetryUploadDispatchesStreamArchiveConfig(t *testing.T) {
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
 	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "archive account",
+		RefreshToken: "raw-google-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	destination, err := integrations.CreateDriveDestination(t.Context(), store.DriveDestination{
-		Name:        "shared drive archive",
-		AuthMode:    "service_account",
-		FolderID:    "raw-drive-folder-id",
-		SharedDrive: true,
-		BasePath:    "AutoStream",
+		Name:           "shared drive archive",
+		AuthMode:       "oauth2",
+		OAuthAccountID: account.ID,
+		FolderID:       "raw-drive-folder-id",
+		SharedDrive:    true,
+		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	profiles := store.NewMemoryProfileStore()
 	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "archive-main", map[string]any{
-		"drive_destination_id":                    destination.ID,
-		"service_account_credentials_secret_name": "google_drive_credentials",
+		"drive_destination_id": destination.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3031,8 +3665,13 @@ func TestRetryUploadDispatchesStreamArchiveConfig(t *testing.T) {
 	if dispatcher.retriedArchiveConfig["folder_id"] == "raw-drive-folder-id" {
 		t.Fatalf("retry archive config leaked raw folder ID: %#v", dispatcher.retriedArchiveConfig)
 	}
-	if dispatcher.retriedArchiveConfig["folder_id_secret_name"] != driveDestinationFolderIDSecretName(destination.ID) || dispatcher.retriedArchiveConfig["service_account_credentials_secret_name"] != "google_drive_credentials" || dispatcher.retriedArchiveConfig["shared_drive"] != true {
+	if dispatcher.retriedArchiveConfig["folder_id_secret_name"] != driveDestinationFolderIDSecretName(destination.ID) || dispatcher.retriedArchiveConfig["client_secret_secret_name"] != oauthProviderClientSecretSecretName(provider.ID) || dispatcher.retriedArchiveConfig["refresh_token_secret_name"] != oauthAccountRefreshTokenSecretName(account.ID) || dispatcher.retriedArchiveConfig["shared_drive"] != true {
 		t.Fatalf("retry archive config missing scoped secret reference: %#v", dispatcher.retriedArchiveConfig)
+	}
+	for _, leaked := range []string{"service_account_json", "service_account_credentials_secret_name", "client_secret", "refresh_token", "folder_id"} {
+		if _, ok := dispatcher.retriedArchiveConfig[leaked]; ok {
+			t.Fatalf("retry archive config leaked raw or unsupported secret field %q: %#v", leaked, dispatcher.retriedArchiveConfig)
+		}
 	}
 }
 
@@ -3859,7 +4498,7 @@ func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 		t.Fatalf("service health did not expose assignment roles: %#v", roles)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -3924,10 +4563,11 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
-		DiscordConfigID: discordOne.ID,
-		DiscordGuildID:  "guild-stream-override",
-		DiscordVoiceID:  "voice-stream-override",
-		DiscordTextID:   "text-stream-override",
+		DiscordConfigID:  discordOne.ID,
+		DiscordGuildID:   "guild-stream-override",
+		DiscordVoiceID:   "voice-stream-override",
+		DiscordTextID:    "text-stream-override",
+		AutoStartTrigger: "discord_voice_join",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3989,6 +4629,9 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 	if resolved.TextChannelID != "text-stream-override" {
 		t.Fatalf("stream text channel override was not applied: %#v", resolved)
 	}
+	if resolved.AutoStartTrigger != "discord_voice_join" {
+		t.Fatalf("stream auto-start trigger was not included: %#v", resolved)
+	}
 	if resolved.CaptionAudioURL != "https://caption.example.com/audio" {
 		t.Fatalf("profile defaults were not preserved for non-overridden fields: %#v", resolved)
 	}
@@ -4005,6 +4648,96 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 	}
 	if _, ok := nested["webhook_url"]; ok {
 		t.Fatalf("raw nested secret-like config should be removed: %#v", sanitized)
+	}
+}
+
+func TestServiceRuntimeConfigIncludesConfiguredDiscordStreamsWithoutAssignments(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	streamA, err := streams.CreateStream(t.Context(), "runtime config waiting stream a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamB, err := streams.CreateStream(t.Context(), "runtime config waiting stream b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	discordProfile, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord assigned by settings", map[string]any{
+		"service_id":            "discord-01",
+		"guild_id":              "guild-default",
+		"voice_channel_id":      "voice-default",
+		"text_channel_id":       "text-default",
+		"caption_audio_url":     "https://caption.example.com/audio",
+		"bot_token_secret_name": "discord-bot-01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "other discord", map[string]any{
+		"service_id":       "discord-02",
+		"guild_id":         "guild-other",
+		"voice_channel_id": "voice-other",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), streamA.ID, store.StreamSettings{
+		DiscordConfigID:  discordProfile.ID,
+		AutoStartTrigger: "discord_voice_join",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), streamB.ID, store.StreamSettings{
+		DiscordConfigID:  discordProfile.ID,
+		DiscordGuildID:   "guild-stream-b",
+		DiscordVoiceID:   "voice-stream-b",
+		DiscordTextID:    "text-stream-b",
+		AutoStartTrigger: "discord_voice_join",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
+
+	req := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=discord-01", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("runtime config status = %d body = %s", res.Code, res.Body.String())
+	}
+	var body serviceRuntimeConfigResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Assignments) != 0 {
+		t.Fatalf("manual assignments should not be required for waiting discord streams: %#v", body.Assignments)
+	}
+	if len(body.StreamDiscordConfigs) != 2 {
+		t.Fatalf("expected two configured stream discord configs, got %#v", body.StreamDiscordConfigs)
+	}
+	byStream := map[string]serviceRuntimeDiscordStreamConfig{}
+	for _, item := range body.StreamDiscordConfigs {
+		byStream[item.StreamID] = item
+		if item.AssignmentRole != "primary" {
+			t.Fatalf("configured discord stream should be presented as primary runtime target: %#v", item)
+		}
+	}
+	if byStream[streamA.ID].GuildID != "guild-default" || byStream[streamA.ID].VoiceChannelID != "voice-default" || byStream[streamA.ID].TextChannelID != "text-default" {
+		t.Fatalf("profile defaults were not applied for unassigned stream: %#v", byStream[streamA.ID])
+	}
+	if byStream[streamB.ID].GuildID != "guild-stream-b" || byStream[streamB.ID].VoiceChannelID != "voice-stream-b" || byStream[streamB.ID].TextChannelID != "text-stream-b" {
+		t.Fatalf("stream overrides were not applied for unassigned stream: %#v", byStream[streamB.ID])
+	}
+	if byStream[streamA.ID].CaptionAudioURL != "https://caption.example.com/audio" {
+		t.Fatalf("profile caption URL was not preserved: %#v", byStream[streamA.ID])
+	}
+	if strings.Contains(res.Body.String(), "guild-other") || strings.Contains(res.Body.String(), "discord-02") || strings.Contains(res.Body.String(), "discord-bot-01") {
+		t.Fatalf("runtime config leaked another service or raw secret: %s", res.Body.String())
 	}
 }
 
@@ -4058,7 +4791,7 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "runtime archive", map[string]any{"drive_destination_id": destination.ID})
+	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "runtime archive", map[string]any{"drive_destination_id": destination.ID, "archive_file_name": "Council Meeting 20260708.mp4", "shared_drive_id": "shared-drive-01"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4092,6 +4825,9 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 	}
 	if cfg.ArchiveConfig["auth_mode"] != "oauth2" || cfg.ArchiveConfig["shared_drive"] != true {
 		t.Fatalf("runtime archive config omitted mode/shared drive: %#v", cfg.ArchiveConfig)
+	}
+	if cfg.ArchiveConfig["archive_file_name"] != "Council Meeting 20260708.mp4" || cfg.ArchiveConfig["shared_drive_id"] != "shared-drive-01" {
+		t.Fatalf("runtime archive config omitted file/shared drive id settings: %#v", cfg.ArchiveConfig)
 	}
 	if cfg.ArchiveConfig["folder_id_secret_name"] != driveDestinationFolderIDSecretName(destination.ID) || cfg.ArchiveConfig["client_secret_secret_name"] != oauthProviderClientSecretSecretName(provider.ID) || cfg.ArchiveConfig["refresh_token_secret_name"] != oauthAccountRefreshTokenSecretName(account.ID) {
 		t.Fatalf("runtime archive config omitted scoped secret references: %#v", cfg.ArchiveConfig)
@@ -4206,7 +4942,7 @@ func TestAdminServiceRuntimeConfigPreviewIsSecretSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: discordProfile.ID}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: discordProfile.ID, DiscordGuildID: "guild-preview", DiscordVoiceID: "voice-preview"}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
@@ -4749,22 +5485,41 @@ func TestServiceRuntimeSecretResolveAllowsAssignedArchiveDestinationSecrets(t *t
 	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "encoder-standby", stream.ID, "admin", "standby"); err != nil {
 		t.Fatal(err)
 	}
-	destination, err := integrations.CreateDriveDestination(t.Context(), store.DriveDestination{
-		Name:        "shared drive archive",
-		AuthMode:    "service_account",
-		FolderID:    "raw-drive-folder-id",
-		SharedDrive: true,
-		BasePath:    "AutoStream",
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := secrets.UpdateSecret(t.Context(), "google_drive_credentials", `{"type":"service_account","client_email":"svc@example.com"}`); err != nil {
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "archive account",
+		RefreshToken: "raw-google-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := integrations.CreateDriveDestination(t.Context(), store.DriveDestination{
+		Name:           "shared drive archive",
+		AuthMode:       "oauth2",
+		OAuthAccountID: account.ID,
+		FolderID:       "raw-drive-folder-id",
+		SharedDrive:    true,
+		BasePath:       "AutoStream",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "archive-main", map[string]any{
-		"drive_destination_id":                    destination.ID,
-		"service_account_credentials_secret_name": "google_drive_credentials",
+		"drive_destination_id": destination.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4793,20 +5548,44 @@ func TestServiceRuntimeSecretResolveAllowsAssignedArchiveDestinationSecrets(t *t
 		t.Fatalf("unexpected resolved archive secret: %#v", resolved)
 	}
 
-	credentialsBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_profile_id":"` + archiveProfile.ID + `","secret_name":"google_drive_credentials"}`
-	credentialsReq := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(credentialsBody))
+	clientSecretBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_profile_id":"` + archiveProfile.ID + `","secret_name":"` + oauthProviderClientSecretSecretName(provider.ID) + `"}`
+	clientSecretReq := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(clientSecretBody))
+	clientSecretReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+	clientSecretRes := httptest.NewRecorder()
+	handler.ServeHTTP(clientSecretRes, clientSecretReq)
+	if clientSecretRes.Code != http.StatusOK {
+		t.Fatalf("runtime OAuth client secret resolve status = %d body = %s", clientSecretRes.Code, clientSecretRes.Body.String())
+	}
+	var resolvedClientSecret serviceRuntimeSecretResolveResponse
+	if err := json.NewDecoder(clientSecretRes.Body).Decode(&resolvedClientSecret); err != nil {
+		t.Fatal(err)
+	}
+	if resolvedClientSecret.Value != "raw-google-client-secret" {
+		t.Fatalf("unexpected resolved OAuth client secret: %#v", resolvedClientSecret)
+	}
+
+	refreshTokenBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_profile_id":"` + archiveProfile.ID + `","secret_name":"` + oauthAccountRefreshTokenSecretName(account.ID) + `"}`
+	refreshTokenReq := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(refreshTokenBody))
+	refreshTokenReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+	refreshTokenRes := httptest.NewRecorder()
+	handler.ServeHTTP(refreshTokenRes, refreshTokenReq)
+	if refreshTokenRes.Code != http.StatusOK {
+		t.Fatalf("runtime OAuth refresh token resolve status = %d body = %s", refreshTokenRes.Code, refreshTokenRes.Body.String())
+	}
+	var resolvedRefreshToken serviceRuntimeSecretResolveResponse
+	if err := json.NewDecoder(refreshTokenRes.Body).Decode(&resolvedRefreshToken); err != nil {
+		t.Fatal(err)
+	}
+	if resolvedRefreshToken.Value != "raw-google-refresh-token" {
+		t.Fatalf("unexpected resolved OAuth refresh token: %#v", resolvedRefreshToken)
+	}
+
+	credentialsReq := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(`{"service_id":"encoder-01","stream_id":"`+stream.ID+`","archive_profile_id":"`+archiveProfile.ID+`","secret_name":"google_drive_credentials"}`))
 	credentialsReq.Header.Set("Authorization", "Bearer "+token.RawToken)
 	credentialsRes := httptest.NewRecorder()
 	handler.ServeHTTP(credentialsRes, credentialsReq)
-	if credentialsRes.Code != http.StatusOK {
-		t.Fatalf("runtime service account credential resolve status = %d body = %s", credentialsRes.Code, credentialsRes.Body.String())
-	}
-	var resolvedCredentials serviceRuntimeSecretResolveResponse
-	if err := json.NewDecoder(credentialsRes.Body).Decode(&resolvedCredentials); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(resolvedCredentials.Value, `"type":"service_account"`) {
-		t.Fatalf("unexpected resolved service account credentials: %#v", resolvedCredentials)
+	if credentialsRes.Code != http.StatusForbidden {
+		t.Fatalf("service account credential secret must not resolve, status = %d body = %s", credentialsRes.Code, credentialsRes.Body.String())
 	}
 
 	standbyBody := `{"service_id":"encoder-standby","stream_id":"` + stream.ID + `","archive_profile_id":"` + archiveProfile.ID + `","secret_name":"` + driveDestinationFolderIDSecretName(destination.ID) + `"}`
@@ -5562,6 +6341,40 @@ func TestMFAEnrollmentIsDisabledByDefault(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "mfa_disabled") {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestMFAStatusReturnsCurrentUserStateWithoutSecrets(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "mfa-user-id", Username: "mfa-user", Roles: []string{"admin"}}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.StartTOTPEnrollment(t.Context(), "mfa-user-id", "SECRET-TOTP-VALUE", []string{"hash-one", "hash-two"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.ConfirmTOTPEnrollment(t.Context(), "mfa-user-id"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, _ := loginForTest(t, handler, "mfa-user", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/mfa/status", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("mfa status = %d body = %s", res.Code, res.Body.String())
+	}
+	body := res.Body.String()
+	for _, want := range []string{`"available":true`, `"enabled":true`, `"method":"totp"`, `"recovery_code_count":2`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("mfa status missing %s: %s", want, body)
+		}
+	}
+	for _, secret := range []string{"SECRET-TOTP-VALUE", "hash-one", "hash-two", "recovery_code_hash"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("mfa status leaked secret-like value %q: %s", secret, body)
+		}
 	}
 }
 
@@ -6387,6 +7200,18 @@ func TestIntegrationRegistryAPIDoesNotReturnRawSecrets(t *testing.T) {
 		t.Fatalf("expected drive destination status: %#v", destination)
 	}
 
+	serviceAccountDriveReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"Legacy Service Account","auth_mode":"service_account","folder_id":"raw-drive-folder-id","shared_drive":true,"base_path":"AutoStream"}`))
+	serviceAccountDriveReq.AddCookie(cookie)
+	serviceAccountDriveReq.Header.Set("X-CSRF-Token", csrf)
+	serviceAccountDriveRes := httptest.NewRecorder()
+	handler.ServeHTTP(serviceAccountDriveRes, serviceAccountDriveReq)
+	if serviceAccountDriveRes.Code != http.StatusBadRequest || !strings.Contains(serviceAccountDriveRes.Body.String(), "drive_destination_auth_mode_unsupported") {
+		t.Fatalf("service account drive destination should be rejected: %d %s", serviceAccountDriveRes.Code, serviceAccountDriveRes.Body.String())
+	}
+	if strings.Contains(serviceAccountDriveRes.Body.String(), "raw-drive-folder-id") {
+		t.Fatalf("service account drive rejection leaked folder id: %s", serviceAccountDriveRes.Body.String())
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/archive/destinations", nil)
 	listReq.AddCookie(cookie)
 	listRes := httptest.NewRecorder()
@@ -6653,6 +7478,106 @@ func TestOAuthAccountDeleteRejectsDriveYouTubeAndRuntimeReferences(t *testing.T)
 	}
 	if _, err := integrations.GetOAuthAccount(t.Context(), account.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected account deletion, err=%v", err)
+	}
+}
+
+func TestDriveDestinationDeleteRejectsStreamAndArchiveProfileReferences(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"integrations.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	profiles := store.NewMemoryProfileStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		RedirectURI:  "https://control.example.com/integrations/oauth-accounts/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "Archive Account",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+		RefreshToken: "raw-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := integrations.CreateDriveDestination(t.Context(), store.DriveDestination{
+		Name:           "Shared Drive",
+		AuthMode:       "oauth2",
+		OAuthAccountID: account.ID,
+		FolderID:       "raw-drive-folder-id",
+		SharedDrive:    true,
+		BasePath:       "AutoStream",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{ArchiveDriveDestinationID: destination.ID, ArchiveOAuthAccountID: account.ID}); err != nil {
+		t.Fatal(err)
+	}
+	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "Shared Drive Archive", map[string]any{
+		"format":               "mp4",
+		"upload_enabled":       true,
+		"drive_destination_id": destination.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithProfileStore(profiles))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/archive/destinations/"+destination.ID, nil)
+	deleteReq.AddCookie(cookie)
+	deleteReq.Header.Set("X-CSRF-Token", csrf)
+	deleteRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRes, deleteReq)
+	body := deleteRes.Body.String()
+	if deleteRes.Code != http.StatusConflict || !strings.Contains(body, "drive_destination_in_use") {
+		t.Fatalf("expected destination in-use conflict, status=%d body=%s", deleteRes.Code, body)
+	}
+	for _, expected := range []string{"stream_archive_settings", "archive_profiles"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("delete conflict missing reference count %q: %s", expected, body)
+		}
+	}
+	for _, raw := range []string{"raw-refresh-token", "raw-google-client-secret", "raw-drive-folder-id"} {
+		if strings.Contains(body, raw) {
+			t.Fatalf("delete conflict leaked secret material %q: %s", raw, body)
+		}
+	}
+	if _, err := integrations.GetDriveDestination(t.Context(), destination.ID); err != nil {
+		t.Fatalf("destination was deleted despite references: %v", err)
+	}
+
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := profiles.DeleteProfile(t.Context(), store.ProfileArchive, archiveProfile.ID); err != nil {
+		t.Fatal(err)
+	}
+	retryReq := httptest.NewRequest(http.MethodDelete, "/archive/destinations/"+destination.ID, nil)
+	retryReq.AddCookie(cookie)
+	retryReq.Header.Set("X-CSRF-Token", csrf)
+	retryRes := httptest.NewRecorder()
+	handler.ServeHTTP(retryRes, retryReq)
+	if retryRes.Code != http.StatusOK {
+		t.Fatalf("destination delete after reference removal failed: %d %s", retryRes.Code, retryRes.Body.String())
+	}
+	if _, err := integrations.GetDriveDestination(t.Context(), destination.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected destination deletion, err=%v", err)
 	}
 }
 
@@ -7064,6 +7989,20 @@ func toJSONForTest(t *testing.T, value any) string {
 	return string(body)
 }
 
+type captureMailer struct {
+	messages  []MailMessage
+	settings  []store.AppSettings
+	passwords []string
+	err       error
+}
+
+func (m *captureMailer) Send(_ context.Context, settings store.AppSettings, password string, message MailMessage) error {
+	m.settings = append(m.settings, settings)
+	m.passwords = append(m.passwords, password)
+	m.messages = append(m.messages, message)
+	return m.err
+}
+
 func remediationValidationClient(t *testing.T, expectedToken string, contexts map[string]observability.RemediationDispatchContext) (observability.Client, func()) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7123,6 +8062,211 @@ func TestUsersAndRolesAPI(t *testing.T) {
 	}
 }
 
+func TestDeleteUserRemovesUserSessionsAndBlocksSelf(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "admin-id", Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"users.read", "users.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{ID: "target-id", Username: "target"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	targetSession, err := auth.CreateSession(t.Context(), "target-id", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/users/target-id", nil)
+	deleteReq.AddCookie(cookie)
+	deleteReq.Header.Set("X-CSRF-Token", csrf)
+	deleteRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("delete user status = %d body = %s", deleteRes.Code, deleteRes.Body.String())
+	}
+	if _, err := auth.GetUser(t.Context(), "target-id"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted user should not be retrievable, got %v", err)
+	}
+	if _, err := auth.GetSession(t.Context(), targetSession.Token); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted user sessions should be removed, got %v", err)
+	}
+	events, err := auth.ListAudit(t.Context(), store.AuditFilter{Actions: []string{"users.delete"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ResourceID != "target-id" || events[0].Result != "success" {
+		t.Fatalf("delete audit missing: %#v", events)
+	}
+
+	selfReq := httptest.NewRequest(http.MethodDelete, "/users/admin-id", nil)
+	selfReq.AddCookie(cookie)
+	selfReq.Header.Set("X-CSRF-Token", csrf)
+	selfRes := httptest.NewRecorder()
+	handler.ServeHTTP(selfRes, selfReq)
+	if selfRes.Code != http.StatusConflict || !strings.Contains(selfRes.Body.String(), "cannot_delete_self") {
+		t.Fatalf("self delete status = %d body = %s", selfRes.Code, selfRes.Body.String())
+	}
+	if _, err := auth.GetUser(t.Context(), "admin-id"); err != nil {
+		t.Fatalf("self delete should not remove admin: %v", err)
+	}
+}
+
+func TestDeleteUserRejectsSuperAdminAndPermissionEscalation(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "operator-id", Username: "operator", Roles: []string{"operator"}}, "correct horse battery", []string{"users.delete", "streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{ID: "super-id", Username: "super", Roles: []string{"super_admin"}}, "correct horse battery", []string{"users.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{ID: "elevated-id", Username: "elevated"}, "correct horse battery", []string{"streams.read", "system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	superReq := httptest.NewRequest(http.MethodDelete, "/users/super-id", nil)
+	superReq.AddCookie(cookie)
+	superReq.Header.Set("X-CSRF-Token", csrf)
+	superRes := httptest.NewRecorder()
+	handler.ServeHTTP(superRes, superReq)
+	if superRes.Code != http.StatusForbidden || !strings.Contains(superRes.Body.String(), "cannot_delete_super_admin") {
+		t.Fatalf("super_admin delete status = %d body = %s", superRes.Code, superRes.Body.String())
+	}
+
+	elevatedReq := httptest.NewRequest(http.MethodDelete, "/users/elevated-id", nil)
+	elevatedReq.AddCookie(cookie)
+	elevatedReq.Header.Set("X-CSRF-Token", csrf)
+	elevatedRes := httptest.NewRecorder()
+	handler.ServeHTTP(elevatedRes, elevatedReq)
+	if elevatedRes.Code != http.StatusForbidden || !strings.Contains(elevatedRes.Body.String(), "permission_escalation") {
+		t.Fatalf("permission escalation delete status = %d body = %s", elevatedRes.Code, elevatedRes.Body.String())
+	}
+	if _, err := auth.GetUser(t.Context(), "super-id"); err != nil {
+		t.Fatalf("super_admin should remain: %v", err)
+	}
+	if _, err := auth.GetUser(t.Context(), "elevated-id"); err != nil {
+		t.Fatalf("elevated user should remain: %v", err)
+	}
+}
+
+func TestCreateUserCanSendWelcomeEmailWithoutLeakingTemporaryPassword(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"users.create"}); err != nil {
+		t.Fatal(err)
+	}
+	appSettings := store.NewMemoryAppSettingsStore()
+	if _, err := appSettings.UpdateAppSettings(t.Context(), store.AppSettings{
+		AppName:                "Kome Panel",
+		Timezone:               "Asia/Tokyo",
+		SMTPEnabled:            true,
+		SMTPHost:               "smtp.example.jp",
+		SMTPPort:               587,
+		SMTPStartTLS:           true,
+		SMTPFrom:               "noreply@example.jp",
+		SMTPUsername:           "autostream",
+		SMTPPasswordConfigured: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppSMTPPasswordSecretName, "raw-smtp-password"); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &captureMailer{}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(appSettings), WithSecretStore(secrets), WithMailer(mailer))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`{"username":"operator","email":"operator@example.jp","temporary_password":"correct horse battery","send_welcome_email":true}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d body = %s", res.Code, res.Body.String())
+	}
+	var user map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&user); err != nil {
+		t.Fatal(err)
+	}
+	if user["email"] != "operator@example.jp" {
+		t.Fatalf("created user email not returned: %#v", user)
+	}
+	if len(mailer.messages) != 1 {
+		t.Fatalf("expected one welcome email, got %#v", mailer.messages)
+	}
+	if mailer.messages[0].To != "operator@example.jp" || !strings.Contains(mailer.messages[0].Subject, "Kome Panel") {
+		t.Fatalf("unexpected welcome email: %#v", mailer.messages[0])
+	}
+	if mailer.passwords[0] != "raw-smtp-password" {
+		t.Fatalf("SMTP password was not resolved for mailer")
+	}
+	if strings.Contains(mailer.messages[0].Text, "correct horse battery") || strings.Contains(res.Body.String(), "correct horse battery") {
+		t.Fatalf("temporary password leaked in welcome flow: body=%s mail=%s", res.Body.String(), mailer.messages[0].Text)
+	}
+}
+
+func TestCurrentUserCanUpdateOwnEmail(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "self-id", Username: "operator", Email: "old@example.jp"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/auth/email", bytes.NewBufferString(`{"email":"new@example.jp"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("update email status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), `"email":"new@example.jp"`) || strings.Contains(res.Body.String(), "PasswordHash") {
+		t.Fatalf("updated public user response is wrong: %s", res.Body.String())
+	}
+	user, err := auth.GetUser(t.Context(), "self-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Email != "new@example.jp" {
+		t.Fatalf("email was not persisted: %#v", user)
+	}
+	events, err := auth.ListAudit(t.Context(), store.AuditFilter{Actions: []string{"auth.email.update"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Result != "success" || events[0].ResourceID != "self-id" {
+		t.Fatalf("email update audit missing: %#v", events)
+	}
+}
+
+func TestCurrentUserEmailUpdateRejectsInvalidEmail(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "self-id", Username: "operator", Email: "old@example.jp"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/auth/email", bytes.NewBufferString("{\"email\":\"new@example.jp\\nBcc: attacker@example.jp\"}"))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_email") {
+		t.Fatalf("invalid email status = %d body = %s", res.Code, res.Body.String())
+	}
+	user, err := auth.GetUser(t.Context(), "self-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Email != "old@example.jp" {
+		t.Fatalf("invalid email should not persist: %#v", user)
+	}
+}
+
 func TestUserRoleAssignmentRequiresRolesAssign(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "limited", Roles: []string{"admin"}}, "correct horse battery", []string{"users.create", "users.update", "roles.read"}); err != nil {
@@ -7132,7 +8276,7 @@ func TestUserRoleAssignmentRequiresRolesAssign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	existing, err := auth.CreateUser(t.Context(), "existing", "correct horse battery", nil)
+	existing, err := auth.CreateUser(t.Context(), "existing", "", "correct horse battery", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7166,7 +8310,7 @@ func TestNonSuperAdminCannotAssignSuperAdminRole(t *testing.T) {
 	if err := auth.AddUser(store.User{ID: "operator-id", Username: "operator", Roles: []string{"admin"}}, "correct horse battery", []string{"users.create", "users.update", "roles.assign"}); err != nil {
 		t.Fatal(err)
 	}
-	target, err := auth.CreateUser(t.Context(), "target", "correct horse battery", nil)
+	target, err := auth.CreateUser(t.Context(), "target", "", "correct horse battery", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7350,7 +8494,7 @@ func TestProfileCRUDAPI(t *testing.T) {
 		t.Fatalf("list profile status = %d body = %s", listRes.Code, listRes.Body.String())
 	}
 
-	discordReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"main-guild","service_id":"discord-01","guild_id":"guild-01","voice_channel_id":"voice-01","audio_forward_enabled":true}`))
+	discordReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"main-guild","service_id":"discord-01","audio_forward_enabled":true}`))
 	discordReq.AddCookie(cookie)
 	discordReq.Header.Set("X-CSRF-Token", csrf)
 	discordRes := httptest.NewRecorder()
@@ -7371,6 +8515,101 @@ func TestProfileCRUDAPI(t *testing.T) {
 	events := auth.AuditEvents()
 	if !strings.Contains(toJSONForTest(t, events), "encoder_profiles.create") || !strings.Contains(toJSONForTest(t, events), "encoder_profiles.delete") {
 		t.Fatalf("profile audit events missing: %#v", events)
+	}
+}
+
+func TestDeleteProfileRejectsStreamReferences(t *testing.T) {
+	tests := []struct {
+		name       string
+		kind       store.ProfileKind
+		path       string
+		permission string
+		settings   func(string) store.StreamSettings
+		config     map[string]any
+	}{
+		{
+			name:       "encoder",
+			kind:       store.ProfileEncoder,
+			path:       "/profiles/encoder/",
+			permission: "encoder_profiles.delete",
+			settings:   func(id string) store.StreamSettings { return store.StreamSettings{EncoderProfileID: id} },
+			config:     map[string]any{"width": 1920, "height": 1080, "fps": 60},
+		},
+		{
+			name:       "archive",
+			kind:       store.ProfileArchive,
+			path:       "/profiles/archive/",
+			permission: "archive_profiles.delete",
+			settings:   func(id string) store.StreamSettings { return store.StreamSettings{ArchiveProfileID: id} },
+			config:     map[string]any{"format": "mp4", "upload_enabled": true},
+		},
+		{
+			name:       "caption",
+			kind:       store.ProfileCaption,
+			path:       "/profiles/caption/",
+			permission: "caption_profiles.delete",
+			settings:   func(id string) store.StreamSettings { return store.StreamSettings{CaptionProfileID: id} },
+			config:     map[string]any{"language": "ja-JP", "provider": "manual"},
+		},
+		{
+			name:       "overlay",
+			kind:       store.ProfileOverlay,
+			path:       "/profiles/overlay/",
+			permission: "overlay_profiles.delete",
+			settings:   func(id string) store.StreamSettings { return store.StreamSettings{OverlayProfileID: id} },
+			config:     map[string]any{"theme": "public", "watermark_enabled": true},
+		},
+		{
+			name:       "discord config",
+			kind:       store.ProfileDiscordConfig,
+			path:       "/discord/configs/",
+			permission: "discord_configs.delete",
+			settings:   func(id string) store.StreamSettings { return store.StreamSettings{DiscordConfigID: id} },
+			config:     map[string]any{"service_id": "discord-01", "audio_forward_enabled": true},
+		},
+		{
+			name:       "youtube output",
+			kind:       store.ProfileYouTubeOutput,
+			path:       "/youtube/outputs/",
+			permission: "youtube_outputs.delete",
+			settings:   func(id string) store.StreamSettings { return store.StreamSettings{YouTubeOutputID: id} },
+			config:     map[string]any{"mode": "stream_key", "rtmp_url": "rtmps://a.rtmps.youtube.com/live2"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"admin"}}, "correct horse battery", []string{tc.permission}); err != nil {
+				t.Fatal(err)
+			}
+			streams := store.NewMemoryStreamStore()
+			profiles := store.NewMemoryProfileStore()
+			profile, err := profiles.CreateProfile(t.Context(), tc.kind, tc.name, tc.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := streams.CreateStream(t.Context(), "referencing stream")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, tc.settings(profile.ID)); err != nil {
+				t.Fatal(err)
+			}
+
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
+			cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+			req := httptest.NewRequest(http.MethodDelete, tc.path+profile.ID, nil)
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "profile_in_use") || !strings.Contains(res.Body.String(), stream.ID) {
+				t.Fatalf("delete referenced profile status = %d body = %s", res.Code, res.Body.String())
+			}
+			if _, err := profiles.GetProfile(t.Context(), tc.kind, profile.ID); err != nil {
+				t.Fatalf("referenced profile was deleted: %v", err)
+			}
+		})
 	}
 }
 
@@ -7397,7 +8636,7 @@ func TestProfileAPIRejectsRawSecretConfigWithAllowedReferences(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode profile secret rejection response: %v body=%s", err, body)
 	}
-	for _, expected := range []string{"google_drive_credentials", "oauth_account:<id>:refresh_token"} {
+	for _, expected := range []string{"drive_destination:<id>:folder_id", "oauth_account:<id>:refresh_token"} {
 		if !stringSliceContains(payload.Allowed, expected) {
 			t.Fatalf("expected allowed reference hint %q in body: %s", expected, body)
 		}
@@ -7534,7 +8773,7 @@ func TestProfileCRUDRejectsRawSecretConfig(t *testing.T) {
 		t.Fatalf("raw discord token leaked in validation response: %s", discordLegacyRes.Body.String())
 	}
 
-	discordAllowedReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"good-discord","service_id":"discord-01","guild_id":"guild-01","voice_channel_id":"voice-01","bot_token":"raw-discord-bot-token","audio_forward_enabled":true}`))
+	discordAllowedReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"good-discord","service_id":"discord-01","guild_id":"guild-01","voice_channel_id":"voice-01","text_channel_id":"text-01","bot_token":"raw-discord-bot-token","audio_forward_enabled":true}`))
 	discordAllowedReq.AddCookie(cookie)
 	discordAllowedReq.Header.Set("X-CSRF-Token", csrf)
 	discordAllowedRes := httptest.NewRecorder()
@@ -7544,6 +8783,9 @@ func TestProfileCRUDRejectsRawSecretConfig(t *testing.T) {
 	}
 	if strings.Contains(discordAllowedRes.Body.String(), "raw-discord-bot-token") || strings.Contains(discordAllowedRes.Body.String(), `"bot_token":"`) {
 		t.Fatalf("raw discord token leaked in discord config response: %s", discordAllowedRes.Body.String())
+	}
+	if strings.Contains(discordAllowedRes.Body.String(), "guild-01") || strings.Contains(discordAllowedRes.Body.String(), "voice-01") || strings.Contains(discordAllowedRes.Body.String(), "text-01") {
+		t.Fatalf("discord config response should not persist stream channel IDs: %s", discordAllowedRes.Body.String())
 	}
 }
 
@@ -7558,7 +8800,7 @@ func TestDiscordConfigRequiresRegisteredDiscordBotService(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	missingReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"missing-service","service_id":"discord-missing","guild_id":"guild-01","voice_channel_id":"voice-01"}`))
+	missingReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"missing-service","service_id":"discord-missing"}`))
 	missingReq.AddCookie(cookie)
 	missingReq.Header.Set("X-CSRF-Token", csrf)
 	missingRes := httptest.NewRecorder()
@@ -7567,7 +8809,7 @@ func TestDiscordConfigRequiresRegisteredDiscordBotService(t *testing.T) {
 		t.Fatalf("missing service status = %d body = %s", missingRes.Code, missingRes.Body.String())
 	}
 
-	wrongTypeReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"wrong-type","service_id":"encoder-01","guild_id":"guild-01","voice_channel_id":"voice-01"}`))
+	wrongTypeReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"wrong-type","service_id":"encoder-01"}`))
 	wrongTypeReq.AddCookie(cookie)
 	wrongTypeReq.Header.Set("X-CSRF-Token", csrf)
 	wrongTypeRes := httptest.NewRecorder()
@@ -7576,7 +8818,7 @@ func TestDiscordConfigRequiresRegisteredDiscordBotService(t *testing.T) {
 		t.Fatalf("wrong service type status = %d body = %s", wrongTypeRes.Code, wrongTypeRes.Body.String())
 	}
 
-	createReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"valid","service_id":"discord-01","guild_id":"guild-01","voice_channel_id":"voice-01"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"valid","service_id":"discord-01"}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -7589,7 +8831,7 @@ func TestDiscordConfigRequiresRegisteredDiscordBotService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updateReq := httptest.NewRequest(http.MethodPut, "/discord/configs/"+created.ID, bytes.NewBufferString(`{"name":"invalid-update","service_id":"encoder-01","guild_id":"guild-01","voice_channel_id":"voice-01"}`))
+	updateReq := httptest.NewRequest(http.MethodPut, "/discord/configs/"+created.ID, bytes.NewBufferString(`{"name":"invalid-update","service_id":"encoder-01"}`))
 	updateReq.AddCookie(cookie)
 	updateReq.Header.Set("X-CSRF-Token", csrf)
 	updateRes := httptest.NewRecorder()
@@ -7726,6 +8968,67 @@ func TestManualOAuthLinkCreationDisabledEvenWithManageMFAPermission(t *testing.T
 	}
 	if len(links) != 0 {
 		t.Fatalf("manual oauth link was created: %#v", links)
+	}
+}
+
+func TestCurrentUserOAuthLinksDoNotRequireUserReadPermission(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "self-id", Username: "self-user"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{ID: "other-id", Username: "other-user"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	oauthStore := store.NewMemoryOAuthLoginStore()
+	selfLink, err := oauthStore.LinkOAuthUser(t.Context(), store.OAuthUserLink{UserID: "self-id", ProviderID: "provider-google", ProviderType: "google", Subject: "self-subject", Email: "self@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherLink, err := oauthStore.LinkOAuthUser(t.Context(), store.OAuthUserLink{UserID: "other-id", ProviderID: "provider-google", ProviderType: "google", Subject: "other-subject", Email: "other@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithOAuthLoginStore(oauthStore))
+	cookie, csrf := loginForTest(t, handler, "self-user", "correct horse battery")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/auth/oauth-links", nil)
+	listReq.AddCookie(cookie)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK || !strings.Contains(listRes.Body.String(), "self@example.com") || strings.Contains(listRes.Body.String(), "other@example.com") {
+		t.Fatalf("self oauth links status=%d body=%s", listRes.Code, listRes.Body.String())
+	}
+
+	crossDeleteReq := httptest.NewRequest(http.MethodDelete, "/auth/oauth-links/"+otherLink.ID, nil)
+	crossDeleteReq.AddCookie(cookie)
+	crossDeleteReq.Header.Set("X-CSRF-Token", csrf)
+	crossDeleteRes := httptest.NewRecorder()
+	handler.ServeHTTP(crossDeleteRes, crossDeleteReq)
+	if crossDeleteRes.Code != http.StatusNotFound {
+		t.Fatalf("cross-user oauth delete status=%d body=%s", crossDeleteRes.Code, crossDeleteRes.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/auth/oauth-links/"+selfLink.ID, nil)
+	deleteReq.AddCookie(cookie)
+	deleteReq.Header.Set("X-CSRF-Token", csrf)
+	deleteRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("self oauth delete status=%d body=%s", deleteRes.Code, deleteRes.Body.String())
+	}
+	remaining, err := oauthStore.ListOAuthUserLinks(t.Context(), "self-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("self oauth link was not deleted: %#v", remaining)
+	}
+	otherRemaining, err := oauthStore.ListOAuthUserLinks(t.Context(), "other-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherRemaining) != 1 {
+		t.Fatalf("cross-user oauth link was modified: %#v", otherRemaining)
 	}
 }
 
@@ -8390,6 +9693,13 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if configureBody.Config.Auth.TokenID == "" || configureBody.Config.Auth.Token == "" || configureBody.Config.Auth.Token == body.RuntimeToken || !strings.Contains(configureBody.ConfigYML, configureBody.Config.Auth.Token) {
 		t.Fatalf("configure endpoint did not rotate and return runtime token once: %#v", configureBody)
 	}
+	configuredNode, err := auth.GetService(t.Context(), "studio-worker-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuredNode.Status != "registered" {
+		t.Fatalf("configure should move pending node to registered, got %#v", configuredNode)
+	}
 	reuseReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
 	reuseRes := httptest.NewRecorder()
 	handler.ServeHTTP(reuseRes, reuseReq)
@@ -8431,6 +9741,97 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 }
 
+func TestNodeAgentConfigurePersistsRuntimeReportBeforeRuntimeTokenSecret(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "")
+	auth := store.NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{
+		ServiceID:   "studio-worker-01",
+		ServiceType: "worker",
+		ServiceName: "Studio Worker 01",
+		Host:        "worker.example.com",
+		Port:        8443,
+		SSLEnabled:  true,
+		PublicURL:   "https://worker.example.com:8443",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configureToken := "ast_cfg_test_runtime_report"
+	if _, err := auth.SetServiceConfigureToken(t.Context(), service.ServiceID, security.HashToken(configureToken), time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+configureToken+`","version":"1.4.1","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "store_node_runtime_token_failed") {
+		t.Fatalf("configure without encryption key status = %d body = %s", res.Code, res.Body.String())
+	}
+	got, err := auth.GetService(t.Context(), service.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedHostname != "studio-worker-01" || got.ReportedOS != "linux" || got.ReportedArch != "amd64" {
+		t.Fatalf("configure runtime report was not persisted before runtime token storage failure: %#v", got)
+	}
+	if got.TokenID != token.ID {
+		t.Fatalf("runtime token should not rotate before encryption is available: old=%s got=%s", token.ID, got.TokenID)
+	}
+}
+
+func TestNodeAgentConfigurePersistsRuntimeReportForSupportedNodeTypes(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	auth := store.NewMemoryAuthStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	for _, serviceType := range []string{"worker", "encoder_recorder", "discord_bot", "observability"} {
+		t.Run(serviceType, func(t *testing.T) {
+			token, err := auth.CreateServiceToken(t.Context(), serviceType, []string{"service.register", "service.heartbeat", "service.config.read"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			serviceID := strings.ReplaceAll(serviceType, "_", "-") + "-01"
+			service, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{
+				ServiceID:   serviceID,
+				ServiceType: serviceType,
+				ServiceName: serviceType + " Node 01",
+				Host:        serviceID + ".example.com",
+				Port:        8443,
+				SSLEnabled:  true,
+				PublicURL:   "https://" + serviceID + ".example.com:8443",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			configureToken := "ast_cfg_test_" + strings.ReplaceAll(serviceType, "_", "-")
+			if _, err := auth.SetServiceConfigureToken(t.Context(), service.ServiceID, security.HashToken(configureToken), time.Now().UTC().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			payload := `{"nodeId":"` + service.ServiceID + `","configureToken":"` + configureToken + `","version":"1.4.1","hostname":"` + service.ServiceID + `","os":"linux","arch":"amd64"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(payload))
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusOK {
+				t.Fatalf("configure node status = %d body = %s", res.Code, res.Body.String())
+			}
+			got, err := auth.GetService(t.Context(), service.ServiceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedHostname != service.ServiceID || got.ReportedOS != "linux" || got.ReportedArch != "amd64" || got.LastReportedAt == nil {
+				t.Fatalf("configure runtime report was not persisted for %s: %#v", serviceType, got)
+			}
+			if got.ConfigureTokenUsedAt == nil {
+				t.Fatalf("configure token was not marked used for %s: %#v", serviceType, got)
+			}
+		})
+	}
+}
+
 func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
 	auth := store.NewMemoryAuthStore()
@@ -8455,7 +9856,7 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+createBody.ConfigureToken+`"}`))
+	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+createBody.ConfigureToken+`","version":"1.4.1","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
 	configureRes := httptest.NewRecorder()
 	handler.ServeHTTP(configureRes, configureReq)
 	if configureRes.Code != http.StatusOK {
@@ -8470,6 +9871,20 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 	}
 	if err := json.NewDecoder(configureRes.Body).Decode(&configureBody); err != nil {
 		t.Fatal(err)
+	}
+
+	nodesBeforeHeartbeatReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	nodesBeforeHeartbeatReq.AddCookie(cookie)
+	nodesBeforeHeartbeatRes := httptest.NewRecorder()
+	handler.ServeHTTP(nodesBeforeHeartbeatRes, nodesBeforeHeartbeatReq)
+	if nodesBeforeHeartbeatRes.Code != http.StatusOK {
+		t.Fatalf("list nodes before heartbeat status = %d body = %s", nodesBeforeHeartbeatRes.Code, nodesBeforeHeartbeatRes.Body.String())
+	}
+	bodyBeforeHeartbeat := nodesBeforeHeartbeatRes.Body.String()
+	for _, want := range []string{`"service_id":"studio-worker-01"`, `"status":"registered"`, `"health_status":"unconfigured"`, `"reported_version":"1.4.1"`, `"reported_os":"linux"`, `"reported_arch":"amd64"`} {
+		if !strings.Contains(bodyBeforeHeartbeat, want) {
+			t.Fatalf("node list before heartbeat missing %s: %s", want, bodyBeforeHeartbeat)
+		}
 	}
 
 	heartbeatReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/heartbeat", bytes.NewBufferString(`{"nodeId":"studio-worker-01","status":"online","version":"1.4.2","capabilities":{"streaming":true},"hostname":"studio-worker-01","os":"linux","arch":"amd64","api":{"host":"worker.example.com","port":8443,"sslEnabled":true},"metrics":{"cpuUsage":12.5,"runningJobs":2}}`))
@@ -8501,7 +9916,12 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 			t.Fatalf("node list missing %s: %s", want, body)
 		}
 	}
-	for _, forbidden := range []string{`"metrics"`, `"capabilities"`, "runningJobs", "cpuUsage", `"token_id"`, createBody.ConfigureToken, configureBody.Config.Auth.Token} {
+	for _, want := range []string{`"capabilities":{"streaming":true}`, `"reported_capabilities":{"streaming":true}`, `"metrics":{"cpuUsage":12.5,"runningJobs":2}`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("node list missing sanitized runtime field %s: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`"token_id"`, createBody.ConfigureToken, configureBody.Config.Auth.Token} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("node list leaked %q: %s", forbidden, body)
 		}
@@ -9013,10 +10433,10 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"id":"ntf-1","status":"success","target":"https://discord.com/api/webhooks/id/upstream-secret-token","message":"bearer upstream-secret-token"}]`))
 		case "/notification-channels":
 			if r.Method == http.MethodPost {
-				_, _ = w.Write([]byte(`{"id":"chn-1","name":"discord","webhook_url":"https://discord.com/api/webhooks/id/upstream-secret-token","masked_webhook_url":"https://example.com/<WEBHOOK_PATH>","smtp_password":"raw-smtp-password","smtp_password_configured":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}`))
+				_, _ = w.Write([]byte(`{"id":"chn-1","name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/upstream-slack-token","masked_webhook_url":"https://hooks.slack.com/<WEBHOOK_PATH>","smtp_password":"raw-smtp-password","smtp_password_configured":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}`))
 				return
 			}
-			_, _ = w.Write([]byte(`[{"id":"chn-1","name":"discord","webhook_url":"https://discord.com/api/webhooks/id/upstream-secret-token","masked_webhook_url":"https://example.com/<WEBHOOK_PATH>"},{"id":"email-1","name":"email","type":"email","email_recipients":["ops@example.com"],"smtp_host":"smtp.example.com","smtp_port":587,"smtp_tls":true,"smtp_from":"autostream@example.com","smtp_username":"autostream","smtp_password":"raw-smtp-password","smtp_password_configured":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}]`))
+			_, _ = w.Write([]byte(`[{"id":"chn-1","name":"discord","webhook_url":"https://discord.com/api/webhooks/id/upstream-secret-token","masked_webhook_url":"https://example.com/<WEBHOOK_PATH>"},{"id":"slack-1","name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/upstream-slack-token","masked_webhook_url":"https://hooks.slack.com/<WEBHOOK_PATH>"},{"id":"email-1","name":"email","type":"email","email_recipients":["ops@example.com"],"smtp_host":"smtp.example.com","smtp_port":587,"smtp_tls":true,"smtp_from":"autostream@example.com","smtp_username":"autostream","smtp_password":"raw-smtp-password","smtp_password_configured":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}]`))
 		case "/notification-channels/chn-1":
 			if r.Method == http.MethodDelete {
 				_, _ = w.Write([]byte(`{"status":"deleted"}`))
@@ -9041,7 +10461,23 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"incidents.read", "incidents.acknowledge", "incidents.resolve", "diagnostics.read", "metrics.read", "remediation.read", "remediation.approve", "notification_channels.read", "notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test", "audit_logs.read"}); err != nil {
 		t.Fatal(err)
 	}
-	registerObservabilityNodeForTest(t, auth, "secret-token", obs.URL)
+	observabilityToken := registerObservabilityNodeForTest(t, auth, "secret-token", obs.URL)
+	if _, err := auth.Heartbeat(t.Context(), observabilityToken, store.ServiceHeartbeat{ServiceID: "observability-01", Status: "online", Metrics: map[string]any{"observability.uptime_seconds": 42}}); err != nil {
+		t.Fatal(err)
+	}
+	workerToken, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, workerToken, store.ServiceRegistration{
+		ServiceID:   "worker-01",
+		ServiceType: "worker",
+		ServiceName: "Worker",
+		PublicURL:   "https://worker.example.com",
+	})
+	if _, err := auth.Heartbeat(t.Context(), workerToken, store.ServiceHeartbeat{ServiceID: "worker-01", Status: "online", Metrics: map[string]any{"worker.active_jobs": 2, "worker.last_error": "do not persist"}}); err != nil {
+		t.Fatal(err)
+	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
@@ -9056,20 +10492,29 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 		if path == "/observability/metrics" && (!strings.Contains(res.Body.String(), "discord.audio_receiving") || !strings.Contains(res.Body.String(), "encoder.audio_clipping_total")) {
 			t.Fatalf("audio metrics were not proxied: %s", res.Body.String())
 		}
-		if strings.Contains(res.Body.String(), "upstream-secret-token") || strings.Contains(res.Body.String(), "upstream-secret") || strings.Contains(res.Body.String(), "api_key=") || strings.Contains(res.Body.String(), "drive-folder-secret-id") || strings.Contains(res.Body.String(), `"webhook_url":"https://discord.com`) || strings.Contains(res.Body.String(), "raw-smtp-password") || strings.Contains(res.Body.String(), "ops@example.com") || strings.Contains(res.Body.String(), "smtp.example.com") || strings.Contains(res.Body.String(), "autostream@example.com") || strings.Contains(res.Body.String(), "smtp-bypass.example.com") || strings.Contains(res.Body.String(), "bypass@example.com") || strings.Contains(res.Body.String(), `"smtp_host"`) || strings.Contains(res.Body.String(), `"email_recipients"`) || strings.Contains(res.Body.String(), `"smtp_from"`) || strings.Contains(res.Body.String(), `"smtp_username"`) || strings.Contains(res.Body.String(), `"smtp_server"`) || strings.Contains(res.Body.String(), `"recipient_list"`) {
+		if path == "/observability/metrics" && (!strings.Contains(res.Body.String(), "observability.uptime_seconds") || !strings.Contains(res.Body.String(), "worker.active_jobs") || strings.Contains(res.Body.String(), "do not persist")) {
+			t.Fatalf("node heartbeat metrics were not safely merged: %s", res.Body.String())
+		}
+		if strings.Contains(res.Body.String(), "upstream-secret-token") || strings.Contains(res.Body.String(), "upstream-slack-token") || strings.Contains(res.Body.String(), "upstream-secret") || strings.Contains(res.Body.String(), "api_key=") || strings.Contains(res.Body.String(), "drive-folder-secret-id") || strings.Contains(res.Body.String(), `"webhook_url":"https://discord.com`) || strings.Contains(res.Body.String(), `"webhook_url":"https://hooks.slack.com`) || strings.Contains(res.Body.String(), "hooks.slack.com/services") || strings.Contains(res.Body.String(), "raw-smtp-password") || strings.Contains(res.Body.String(), "ops@example.com") || strings.Contains(res.Body.String(), "smtp.example.com") || strings.Contains(res.Body.String(), "autostream@example.com") || strings.Contains(res.Body.String(), "smtp-bypass.example.com") || strings.Contains(res.Body.String(), "bypass@example.com") || strings.Contains(res.Body.String(), `"smtp_host"`) || strings.Contains(res.Body.String(), `"email_recipients"`) || strings.Contains(res.Body.String(), `"smtp_from"`) || strings.Contains(res.Body.String(), `"smtp_username"`) || strings.Contains(res.Body.String(), `"smtp_server"`) || strings.Contains(res.Body.String(), `"recipient_list"`) {
 			t.Fatalf("observability proxy leaked upstream notification secret: %s", res.Body.String())
 		}
 		if path == "/observability/notification-channels" && (!strings.Contains(res.Body.String(), `"smtp_password_configured":true`) || !strings.Contains(res.Body.String(), `"masked_email_target":"o***s@example.com"`)) {
 			t.Fatalf("email notification public status was not preserved: %s", res.Body.String())
 		}
+		if path == "/observability/notification-channels" && !strings.Contains(res.Body.String(), `"masked_webhook_url":"https://hooks.slack.com/\u003cWEBHOOK_PATH\u003e"`) {
+			t.Fatalf("slack notification public masked URL was not preserved: %s", res.Body.String())
+		}
 	}
-	createReq := httptest.NewRequest(http.MethodPost, "/observability/notification-channels", bytes.NewBufferString(`{"name":"discord","type":"discord","webhook_url":"https://discord.com/api/webhooks/id/secret-token","enabled":true}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/observability/notification-channels", bytes.NewBufferString(`{"name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/slack-secret-token","enabled":true}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
 	handler.ServeHTTP(createRes, createReq)
-	if createRes.Code != http.StatusCreated || strings.Contains(createRes.Body.String(), "secret-token") || strings.Contains(createRes.Body.String(), `"webhook_url":"https://discord.com`) || strings.Contains(createRes.Body.String(), "raw-smtp-password") {
+	if createRes.Code != http.StatusCreated || strings.Contains(createRes.Body.String(), "slack-secret-token") || strings.Contains(createRes.Body.String(), "upstream-slack-token") || strings.Contains(createRes.Body.String(), `"webhook_url":"https://hooks.slack.com`) || strings.Contains(createRes.Body.String(), "hooks.slack.com/services") || strings.Contains(createRes.Body.String(), "raw-smtp-password") {
 		t.Fatalf("create channel status = %d body = %s", createRes.Code, createRes.Body.String())
+	}
+	if !strings.Contains(createRes.Body.String(), `"type":"slack"`) || !strings.Contains(createRes.Body.String(), `"masked_webhook_url":"https://hooks.slack.com/\u003cWEBHOOK_PATH\u003e"`) {
+		t.Fatalf("create channel response lost public slack status: %s", createRes.Body.String())
 	}
 	if !strings.Contains(createRes.Body.String(), `"smtp_password_configured":true`) || !strings.Contains(createRes.Body.String(), `"masked_email_target":"o***s@example.com"`) {
 		t.Fatalf("create channel response lost public email status: %s", createRes.Body.String())
@@ -9086,7 +10531,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 		t.Fatalf("expected notification channel create audit event, got %#v", events)
 	}
 	metadata, _ := json.Marshal(createAudit.Metadata)
-	if strings.Contains(string(metadata), "secret-token") || strings.Contains(string(metadata), "discord.com/api/webhooks") {
+	if strings.Contains(string(metadata), "slack-secret-token") || strings.Contains(string(metadata), "upstream-slack-token") || strings.Contains(string(metadata), "hooks.slack.com/services") {
 		t.Fatalf("raw webhook leaked in audit metadata: %s", string(metadata))
 	}
 	if createAudit.Metadata["has_webhook_url"] != true {
@@ -9096,7 +10541,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	auditReq.AddCookie(cookie)
 	auditRes := httptest.NewRecorder()
 	handler.ServeHTTP(auditRes, auditReq)
-	if auditRes.Code != http.StatusOK || !strings.Contains(auditRes.Body.String(), "notification_channels.create") || strings.Contains(auditRes.Body.String(), "secret-token") {
+	if auditRes.Code != http.StatusOK || !strings.Contains(auditRes.Body.String(), "notification_channels.create") || strings.Contains(auditRes.Body.String(), "slack-secret-token") || strings.Contains(auditRes.Body.String(), "hooks.slack.com/services") {
 		t.Fatalf("notification audit status = %d body = %s", auditRes.Code, auditRes.Body.String())
 	}
 	testReq := httptest.NewRequest(http.MethodPost, "/observability/notification-channels/chn-1/test", nil)
@@ -9154,6 +10599,39 @@ func TestObservabilityProxyDoesNotLeakTokenOnUpstreamError(t *testing.T) {
 	}
 	if strings.Contains(res.Body.String(), "secret-token") {
 		t.Fatalf("token leaked in response: %s", res.Body.String())
+	}
+}
+
+func TestObservabilityMetricsFallsBackToNodeHeartbeatMetrics(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"metrics.read"}); err != nil {
+		t.Fatal(err)
+	}
+	workerToken, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, workerToken, store.ServiceRegistration{
+		ServiceID:   "worker-01",
+		ServiceType: "worker",
+		ServiceName: "Worker",
+		PublicURL:   "https://worker.example.com",
+	})
+	if _, err := auth.Heartbeat(t.Context(), workerToken, store.ServiceHeartbeat{ServiceID: "worker-01", Status: "online", Metrics: map[string]any{"worker.active_jobs": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/observability/metrics", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("metrics fallback status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), `"name":"worker.active_jobs"`) || !strings.Contains(res.Body.String(), `"service_id":"worker-01"`) {
+		t.Fatalf("node heartbeat metrics were not returned without observability upstream: %s", res.Body.String())
 	}
 }
 
@@ -9354,7 +10832,7 @@ func TestAppSettingsCanBeReadWithoutSession(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/settings/app", nil)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"AutoStream"`) {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"AutoStream"`) || !strings.Contains(res.Body.String(), `"timezone":"Asia/Tokyo"`) {
 		t.Fatalf("app settings status = %d body = %s", res.Code, res.Body.String())
 	}
 }
@@ -9368,20 +10846,94 @@ func TestAppSettingsUpdatePersistsWithPermission(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"Kome Panel"}`))
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"Kome Panel","timezone":"America/Los_Angeles"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"Kome Panel"`) {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"Kome Panel"`) || !strings.Contains(res.Body.String(), `"timezone":"America/Los_Angeles"`) {
 		t.Fatalf("update app settings status = %d body = %s", res.Code, res.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/settings/app", nil)
 	res = httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"Kome Panel"`) {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"app_name":"Kome Panel"`) || !strings.Contains(res.Body.String(), `"timezone":"America/Los_Angeles"`) {
 		t.Fatalf("persisted app settings status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestAppSettingsUpdateStoresSMTPPasswordAsSecret(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	secrets := store.NewMemorySecretStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings), WithSecretStore(secrets))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"Kome Panel","timezone":"Asia/Tokyo","smtp_enabled":true,"smtp_host":"smtp.example.jp","smtp_port":587,"smtp_starttls":true,"smtp_from":"noreply@example.jp","smtp_username":"autostream","smtp_password":"raw-smtp-password"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("update SMTP settings status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), `"smtp_password_configured":true`) {
+		t.Fatalf("SMTP password status was not returned: %s", res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "raw-smtp-password") || strings.Contains(res.Body.String(), `"smtp_password"`) {
+		t.Fatalf("raw SMTP password leaked in settings response: %s", res.Body.String())
+	}
+	value, err := secrets.GetSecretValue(t.Context(), store.AppSMTPPasswordSecretName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "raw-smtp-password" {
+		t.Fatal("unexpected stored SMTP secret value")
+	}
+}
+
+func TestAppSettingsRejectsInvalidSMTPWithoutStoringPassword(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	secrets := store.NewMemorySecretStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings), WithSecretStore(secrets))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"Kome Panel","timezone":"Asia/Tokyo","smtp_enabled":true,"smtp_host":"bad host","smtp_port":587,"smtp_starttls":true,"smtp_from":"noreply@example.jp","smtp_username":"autostream","smtp_password":"raw-smtp-password"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_app_settings") {
+		t.Fatalf("invalid SMTP settings status = %d body = %s", res.Code, res.Body.String())
+	}
+	if _, err := secrets.GetSecretValue(t.Context(), store.AppSMTPPasswordSecretName); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("invalid SMTP settings should not store secret, err = %v", err)
+	}
+}
+
+func TestAppSettingsRejectsInvalidTimezone(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(store.NewMemoryAppSettingsStore()))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"Kome Panel","timezone":"../../etc/passwd"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_app_settings") {
+		t.Fatalf("invalid timezone status = %d body = %s", res.Code, res.Body.String())
 	}
 }
 
@@ -9930,13 +11482,10 @@ func registerAssignedServices(t *testing.T, auth *store.MemoryAuthStore, streamI
 	}
 }
 
-func createDiscordConfigForTest(t *testing.T, profiles *store.MemoryProfileStore, name, serviceID, guildID, voiceChannelID, textChannelID string) store.Profile {
+func createDiscordConfigForTest(t *testing.T, profiles *store.MemoryProfileStore, name, serviceID, _, _, _ string) store.Profile {
 	t.Helper()
 	profile, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, name, map[string]any{
 		"service_id":           serviceID,
-		"guild_id":             guildID,
-		"voice_channel_id":     voiceChannelID,
-		"text_channel_id":      textChannelID,
 		"bot_token_configured": true,
 	})
 	if err != nil {

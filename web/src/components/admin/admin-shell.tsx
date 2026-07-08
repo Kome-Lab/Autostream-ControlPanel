@@ -11,6 +11,7 @@ import {
   BarChart3,
   Bell,
   Captions,
+  CircleUserRound,
   ClipboardList,
   FileText,
   Gauge,
@@ -101,6 +102,7 @@ const navSections: NavSection[] = [
       { href: "/admin/audit-logs/", key: "auditLogs", icon: ClipboardList },
       { href: "/admin/security/", key: "security", icon: KeyRound },
       { href: "/admin/nodes/", key: "nodeRegistration", icon: Network },
+      { href: "/admin/account/", key: "account", icon: CircleUserRound },
       { href: "/admin/settings/", key: "settings", icon: Settings },
     ],
   },
@@ -212,10 +214,10 @@ export function AdminShell({ children }: { children: ReactNode }) {
               {dark ? <Moon /> : <Sun />}
             </Button>
             <Separator orientation="vertical" className="hidden h-8 sm:block" />
-            <div className="hidden text-right text-sm sm:block">
+            <Link href="/admin/account/" className="hidden rounded-md px-2 py-1 text-right text-sm transition-colors hover:bg-muted sm:block">
               <div className="font-medium">{currentUser.data.user.username}</div>
               <div className="text-xs text-muted-foreground">{t("currentUser")}</div>
-            </div>
+            </Link>
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl space-y-6 p-4 lg:p-6">{children}</main>

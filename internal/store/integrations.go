@@ -935,10 +935,13 @@ func normalizeDriveDestination(destination DriveDestination, creating bool) (Dri
 	if destination.Name == "" {
 		return DriveDestination{}, errors.New("drive destination name is required")
 	}
-	if destination.AuthMode != "oauth2" && destination.AuthMode != "service_account" {
+	if destination.AuthMode == "" {
+		destination.AuthMode = "oauth2"
+	}
+	if destination.AuthMode != "oauth2" {
 		return DriveDestination{}, errors.New("invalid drive destination auth_mode")
 	}
-	if destination.AuthMode == "oauth2" && destination.OAuthAccountID == "" {
+	if destination.OAuthAccountID == "" {
 		return DriveDestination{}, errors.New("oauth2 drive destination requires oauth_account_id")
 	}
 	if creating && destination.FolderID == "" {

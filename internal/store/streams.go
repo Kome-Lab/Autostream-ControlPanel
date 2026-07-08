@@ -15,34 +15,52 @@ import (
 )
 
 type Stream struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	Status           string    `json:"status"`
-	DiscordConfigID  string    `json:"discord_config_id,omitempty"`
-	DiscordGuildID   string    `json:"discord_guild_id,omitempty"`
-	DiscordVoiceID   string    `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextID    string    `json:"discord_text_channel_id,omitempty"`
-	EncoderProfileID string    `json:"encoder_profile_id,omitempty"`
-	CaptionProfileID string    `json:"caption_profile_id,omitempty"`
-	OverlayProfileID string    `json:"overlay_profile_id,omitempty"`
-	ArchiveProfileID string    `json:"archive_profile_id,omitempty"`
-	YouTubeOutputID  string    `json:"youtube_output_id,omitempty"`
-	EncoderInputURL  string    `json:"encoder_input_url,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                        string     `json:"id"`
+	Name                      string     `json:"name"`
+	Status                    string     `json:"status"`
+	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt            *time.Time `json:"scheduled_end_at,omitempty"`
+	DiscordConfigID           string     `json:"discord_config_id,omitempty"`
+	DiscordGuildID            string     `json:"discord_guild_id,omitempty"`
+	DiscordVoiceID            string     `json:"discord_voice_channel_id,omitempty"`
+	DiscordTextID             string     `json:"discord_text_channel_id,omitempty"`
+	AutoStartTrigger          string     `json:"auto_start_trigger,omitempty"`
+	EncoderProfileID          string     `json:"encoder_profile_id,omitempty"`
+	CaptionProfileID          string     `json:"caption_profile_id,omitempty"`
+	OverlayProfileID          string     `json:"overlay_profile_id,omitempty"`
+	ArchiveProfileID          string     `json:"archive_profile_id,omitempty"`
+	ArchiveDriveDestinationID string     `json:"archive_drive_destination_id,omitempty"`
+	ArchiveOAuthAccountID     string     `json:"archive_oauth_account_id,omitempty"`
+	ArchiveFolderIDConfigured bool       `json:"archive_folder_id_configured,omitempty"`
+	ArchiveMaskedFolderID     string     `json:"archive_masked_folder_id,omitempty"`
+	ArchiveSharedDrive        bool       `json:"archive_shared_drive,omitempty"`
+	ArchiveSharedDriveID      string     `json:"archive_shared_drive_id,omitempty"`
+	ArchiveFileName           string     `json:"archive_file_name,omitempty"`
+	YouTubeOutputID           string     `json:"youtube_output_id,omitempty"`
+	EncoderInputURL           string     `json:"encoder_input_url,omitempty"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
 }
 
 type StreamSettings struct {
-	DiscordConfigID  string `json:"discord_config_id,omitempty"`
-	DiscordGuildID   string `json:"discord_guild_id,omitempty"`
-	DiscordVoiceID   string `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextID    string `json:"discord_text_channel_id,omitempty"`
-	EncoderProfileID string `json:"encoder_profile_id,omitempty"`
-	CaptionProfileID string `json:"caption_profile_id,omitempty"`
-	OverlayProfileID string `json:"overlay_profile_id,omitempty"`
-	ArchiveProfileID string `json:"archive_profile_id,omitempty"`
-	YouTubeOutputID  string `json:"youtube_output_id,omitempty"`
-	EncoderInputURL  string `json:"encoder_input_url,omitempty"`
+	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt            *time.Time `json:"scheduled_end_at,omitempty"`
+	DiscordConfigID           string     `json:"discord_config_id,omitempty"`
+	DiscordGuildID            string     `json:"discord_guild_id,omitempty"`
+	DiscordVoiceID            string     `json:"discord_voice_channel_id,omitempty"`
+	DiscordTextID             string     `json:"discord_text_channel_id,omitempty"`
+	AutoStartTrigger          string     `json:"auto_start_trigger,omitempty"`
+	EncoderProfileID          string     `json:"encoder_profile_id,omitempty"`
+	CaptionProfileID          string     `json:"caption_profile_id,omitempty"`
+	OverlayProfileID          string     `json:"overlay_profile_id,omitempty"`
+	ArchiveProfileID          string     `json:"archive_profile_id,omitempty"`
+	ArchiveDriveDestinationID string     `json:"archive_drive_destination_id,omitempty"`
+	ArchiveOAuthAccountID     string     `json:"archive_oauth_account_id,omitempty"`
+	ArchiveSharedDrive        bool       `json:"archive_shared_drive,omitempty"`
+	ArchiveSharedDriveID      string     `json:"archive_shared_drive_id,omitempty"`
+	ArchiveFileName           string     `json:"archive_file_name,omitempty"`
+	YouTubeOutputID           string     `json:"youtube_output_id,omitempty"`
+	EncoderInputURL           string     `json:"encoder_input_url,omitempty"`
 }
 
 type StreamLog struct {
@@ -118,13 +136,17 @@ func NewMariaDBStreamStore(db *sql.DB) MariaDBStreamStore {
 }
 
 func (s MariaDBStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.name, s.status,
-  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''),
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
+  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
   COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
   COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
-  COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at
+  COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
+  CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
+  COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
+  COALESCE(ss.archive_file_name, ''), COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at
 FROM streams s
 LEFT JOIN stream_settings ss ON ss.stream_id = s.id
+LEFT JOIN drive_destinations dd ON dd.id = ss.archive_drive_destination_id
 ORDER BY s.created_at DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
@@ -133,9 +155,12 @@ ORDER BY s.created_at DESC LIMIT 100`)
 	var streams []Stream
 	for rows.Next() {
 		var stream Stream
-		if err := rows.Scan(&stream.ID, &stream.Name, &stream.Status, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt); err != nil {
+		var scheduledStart, scheduledEnd sql.NullTime
+		if err := rows.Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt); err != nil {
 			return nil, err
 		}
+		stream.ScheduledStartAt = nullTimePtr(scheduledStart)
+		stream.ScheduledEndAt = nullTimePtr(scheduledEnd)
 		streams = append(streams, stream)
 	}
 	return streams, rows.Err()
@@ -150,18 +175,28 @@ func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stre
 
 func (s MariaDBStreamStore) GetStream(ctx context.Context, id string) (Stream, error) {
 	var stream Stream
-	err := s.db.QueryRowContext(ctx, `SELECT s.id, s.name, s.status,
-  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''),
+	var scheduledStart, scheduledEnd sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
+  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
   COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
   COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
-  COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at
+  COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
+  CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
+  COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
+  COALESCE(ss.archive_file_name, ''), COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at
 FROM streams s
 LEFT JOIN stream_settings ss ON ss.stream_id = s.id
-WHERE s.id = ?`, id).Scan(&stream.ID, &stream.Name, &stream.Status, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt)
+LEFT JOIN drive_destinations dd ON dd.id = ss.archive_drive_destination_id
+WHERE s.id = ?`, id).Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return Stream{}, ErrNotFound
 	}
-	return stream, err
+	if err != nil {
+		return Stream{}, err
+	}
+	stream.ScheduledStartAt = nullTimePtr(scheduledStart)
+	stream.ScheduledEndAt = nullTimePtr(scheduledEnd)
+	return stream, nil
 }
 
 func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string, settings StreamSettings) (Stream, error) {
@@ -169,10 +204,13 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 		return Stream{}, err
 	}
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, encoder_profile_id, caption_profile_id, overlay_profile_id, archive_profile_id, youtube_output_id, encoder_input_url, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), discord_guild_id = VALUES(discord_guild_id), discord_voice_channel_id = VALUES(discord_voice_channel_id), discord_text_channel_id = VALUES(discord_text_channel_id), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), archive_profile_id = VALUES(archive_profile_id), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
-		id, nullEmpty(settings.DiscordConfigID), nullEmpty(settings.DiscordGuildID), nullEmpty(settings.DiscordVoiceID), nullEmpty(settings.DiscordTextID), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
+	if _, err := s.db.ExecContext(ctx, `UPDATE streams SET scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
+		return Stream{}, err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), discord_guild_id = VALUES(discord_guild_id), discord_voice_channel_id = VALUES(discord_voice_channel_id), discord_text_channel_id = VALUES(discord_text_channel_id), auto_start_trigger = VALUES(auto_start_trigger), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), archive_profile_id = VALUES(archive_profile_id), archive_drive_destination_id = VALUES(archive_drive_destination_id), archive_oauth_account_id = VALUES(archive_oauth_account_id), archive_shared_drive = VALUES(archive_shared_drive), archive_shared_drive_id = VALUES(archive_shared_drive_id), archive_file_name = VALUES(archive_file_name), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
+		id, nullEmpty(settings.DiscordConfigID), nullEmpty(settings.DiscordGuildID), nullEmpty(settings.DiscordVoiceID), nullEmpty(settings.DiscordTextID), nullEmpty(settings.AutoStartTrigger), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.ArchiveDriveDestinationID), nullEmpty(settings.ArchiveOAuthAccountID), settings.ArchiveSharedDrive, nullEmpty(settings.ArchiveSharedDriveID), nullEmpty(settings.ArchiveFileName), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
 	if err != nil {
 		return Stream{}, err
 	}
@@ -537,6 +575,21 @@ func nullTime(value time.Time) any {
 		return nil
 	}
 	return value.UTC()
+}
+
+func nullableTime(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return value.UTC()
+}
+
+func nullTimePtr(value sql.NullTime) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	utc := value.Time.UTC()
+	return &utc
 }
 
 func truncateString(value string, maxLen int) string {

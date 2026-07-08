@@ -262,6 +262,45 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	return svc, nil
 }
 
+func (s *MemoryAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report ServiceRuntimeReport) (RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return RegisteredService{}, err
+	}
+	report = normalizeServiceRuntimeReport(report)
+	if report.ServiceID == "" {
+		return RegisteredService{}, ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	svc, ok := s.services[report.ServiceID]
+	if !ok {
+		return RegisteredService{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	if svc.Status == "pending" {
+		svc.Status = "registered"
+	}
+	if report.Version != "" {
+		svc.Version = report.Version
+		svc.ReportedVersion = report.Version
+	}
+	if report.Hostname != "" {
+		svc.ReportedHostname = report.Hostname
+	}
+	if report.OS != "" {
+		svc.ReportedOS = report.OS
+	}
+	if report.Arch != "" {
+		svc.ReportedArch = report.Arch
+	}
+	if report.Version != "" || report.Hostname != "" || report.OS != "" || report.Arch != "" {
+		svc.LastReportedAt = &now
+	}
+	svc.UpdatedAt = now
+	s.services[svc.ServiceID] = svc
+	return svc, nil
+}
+
 func (s *MemoryAuthStore) SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error) {
 	if err := ctx.Err(); err != nil {
 		return RegisteredService{}, err

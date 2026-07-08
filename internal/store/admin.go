@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/security"
@@ -19,16 +21,18 @@ type Role struct {
 
 type UserPatch struct {
 	Username string
+	Email    *string
 	RoleIDs  []string
 }
 
 type UserAdminStore interface {
 	ListUsers(ctx context.Context) ([]User, error)
-	CreateUser(ctx context.Context, username, temporaryPassword string, roleIDs []string) (User, error)
-	CreateOAuthUser(ctx context.Context, username string, roleIDs []string) (User, error)
+	CreateUser(ctx context.Context, username, email, temporaryPassword string, roleIDs []string) (User, error)
+	CreateOAuthUser(ctx context.Context, username, email string, roleIDs []string) (User, error)
 	GetUser(ctx context.Context, id string) (User, error)
 	UpdateUser(ctx context.Context, id string, patch UserPatch) (User, error)
 	SetUserStatus(ctx context.Context, id, status string) (User, error)
+	DeleteUser(ctx context.Context, id string) error
 	ResetPassword(ctx context.Context, id, temporaryPassword string) error
 	CountActiveSuperAdmins(ctx context.Context) (int, error)
 	UserHasRole(ctx context.Context, userID, roleName string) (bool, error)
@@ -94,7 +98,7 @@ func ValidateUserStatusActor(actor, target User) error {
 }
 
 func (s MariaDBAuthStore) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, username, password_hash, status, last_login_at, last_login_ip FROM users ORDER BY username`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -111,8 +115,12 @@ func (s MariaDBAuthStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
-func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, temporaryPassword string, roleIDs []string) (User, error) {
+func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, email, temporaryPassword string, roleIDs []string) (User, error) {
 	hash, err := security.HashPassword(temporaryPassword)
+	if err != nil {
+		return User{}, err
+	}
+	email, err = normalizeUserEmail(email)
 	if err != nil {
 		return User{}, err
 	}
@@ -122,8 +130,8 @@ func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, temporaryPas
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	user := User{ID: newUUID(), Username: username, Status: "pending_password_change", PasswordHash: hash}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, password_hash, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.PasswordHash, user.Status, now, now); err != nil {
+	user := User{ID: newUUID(), Username: username, Email: email, Status: "pending_password_change", PasswordHash: hash}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, email, password_hash, status, created_at, updated_at) VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?)`, user.ID, user.Username, user.Email, user.PasswordHash, user.Status, now, now); err != nil {
 		return User{}, err
 	}
 	for _, roleID := range roleIDs {
@@ -137,7 +145,11 @@ func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, temporaryPas
 	return s.GetUser(ctx, user.ID)
 }
 
-func (s MariaDBAuthStore) CreateOAuthUser(ctx context.Context, username string, roleIDs []string) (User, error) {
+func (s MariaDBAuthStore) CreateOAuthUser(ctx context.Context, username, email string, roleIDs []string) (User, error) {
+	email, err := normalizeUserEmail(email)
+	if err != nil {
+		return User{}, err
+	}
 	password, err := security.RandomToken(48)
 	if err != nil {
 		return User{}, err
@@ -152,8 +164,8 @@ func (s MariaDBAuthStore) CreateOAuthUser(ctx context.Context, username string, 
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	user := User{ID: newUUID(), Username: username, Status: "active", PasswordHash: hash}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, password_hash, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.PasswordHash, user.Status, now, now); err != nil {
+	user := User{ID: newUUID(), Username: username, Email: email, Status: "active", PasswordHash: hash}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, email, password_hash, status, created_at, updated_at) VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?)`, user.ID, user.Username, user.Email, user.PasswordHash, user.Status, now, now); err != nil {
 		return User{}, err
 	}
 	for _, roleID := range roleIDs {
@@ -175,6 +187,15 @@ func (s MariaDBAuthStore) UpdateUser(ctx context.Context, id string, patch UserP
 	defer tx.Rollback()
 	if patch.Username != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET username = ?, updated_at = ? WHERE id = ?`, patch.Username, time.Now().UTC(), id); err != nil {
+			return User{}, err
+		}
+	}
+	if patch.Email != nil {
+		email, err := normalizeUserEmail(*patch.Email)
+		if err != nil {
+			return User{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET email = NULLIF(?, ''), updated_at = ? WHERE id = ?`, email, time.Now().UTC(), id); err != nil {
 			return User{}, err
 		}
 	}
@@ -220,6 +241,53 @@ func (s MariaDBAuthStore) SetUserStatus(ctx context.Context, id, status string) 
 		return User{}, ErrNotFound
 	}
 	return s.GetUser(ctx, id)
+}
+
+func (s MariaDBAuthStore) DeleteUser(ctx context.Context, id string) error {
+	user, err := s.GetUser(ctx, id)
+	if err != nil {
+		return err
+	}
+	if hasRole(user, "super_admin") && user.Status == "active" {
+		count, err := s.CountActiveSuperAdmins(ctx)
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return ErrLastSuperAdmin
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`DELETE FROM sessions WHERE user_id = ?`,
+		`DELETE FROM oauth_user_links WHERE user_id = ?`,
+		`DELETE FROM user_roles WHERE user_id = ?`,
+		`DELETE FROM user_mfa WHERE user_id = ?`,
+		`DELETE FROM mfa_challenges WHERE user_id = ?`,
+		`DELETE FROM webauthn_ceremony_sessions WHERE user_id = ?`,
+		`DELETE FROM webauthn_registration_challenges WHERE user_id = ?`,
+		`DELETE FROM webauthn_credentials WHERE user_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (s MariaDBAuthStore) ResetPassword(ctx context.Context, id, temporaryPassword string) error {
@@ -385,7 +453,7 @@ func scanUser(row userScanner) (User, error) {
 	var user User
 	var lastLoginAt sql.NullTime
 	var lastLoginIP sql.NullString
-	err := row.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
+	err := row.Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
 	if err != nil {
 		return User{}, err
 	}
@@ -396,6 +464,21 @@ func scanUser(row userScanner) (User, error) {
 		user.LastLoginIP = lastLoginIP.String
 	}
 	return user, nil
+}
+
+func normalizeUserEmail(value string) (string, error) {
+	email := strings.TrimSpace(value)
+	if email == "" {
+		return "", nil
+	}
+	if len(email) > 255 || strings.ContainsAny(email, "\r\n\t\x00") {
+		return "", ErrInvalidSettings
+	}
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address == "" || !strings.EqualFold(address.Address, email) {
+		return "", ErrInvalidSettings
+	}
+	return address.Address, nil
 }
 
 func validatePermissions(permissions []string) error {

@@ -81,3 +81,42 @@ func TestNodeAgentRegistrationMigrationIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamArchiveDirectSettingsMigrationIsIdempotent(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/026_stream_archive_direct_settings.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range splitSQLStatements(string(body)) {
+		normalized := strings.ToUpper(stmt)
+		if strings.HasPrefix(normalized, "ALTER TABLE STREAM_SETTINGS ADD COLUMN ") && !strings.Contains(normalized, "ADD COLUMN IF NOT EXISTS ") {
+			t.Fatalf("stream archive direct settings migration must tolerate partially upgraded stream_settings tables:\n%s", stmt)
+		}
+	}
+}
+
+func TestOAuthLoginStateRequestedScopesMigrationIsIdempotent(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/027_oauth_login_state_requested_scopes.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range splitSQLStatements(string(body)) {
+		normalized := strings.ToUpper(stmt)
+		if strings.Contains(normalized, "ADD COLUMN REQUESTED_SCOPES") && !strings.Contains(normalized, "ADD COLUMN IF NOT EXISTS REQUESTED_SCOPES") {
+			t.Fatalf("oauth login state requested scopes migration must tolerate partially upgraded oauth_login_states tables:\n%s", stmt)
+		}
+	}
+}
+
+func TestOAuthLoginStatePurposeMigrationIsIdempotent(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/028_oauth_login_state_purpose.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range splitSQLStatements(string(body)) {
+		normalized := strings.ToUpper(stmt)
+		if strings.Contains(normalized, "ADD COLUMN PURPOSE") && !strings.Contains(normalized, "ADD COLUMN IF NOT EXISTS PURPOSE") {
+			t.Fatalf("oauth login state purpose migration must tolerate partially upgraded oauth_login_states tables:\n%s", stmt)
+		}
+	}
+}

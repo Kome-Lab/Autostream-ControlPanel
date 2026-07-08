@@ -17,6 +17,7 @@ import (
 type User struct {
 	ID          string     `json:"id"`
 	Username    string     `json:"username"`
+	Email       string     `json:"email,omitempty"`
 	Status      string     `json:"status"`
 	Roles       []string   `json:"roles"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
@@ -196,7 +197,7 @@ func (s MariaDBAuthStore) CreateFirstAdmin(ctx context.Context, username, passwo
 	now := time.Now().UTC()
 	user := User{ID: newUUID(), Username: username, Status: "active", Roles: []string{"super_admin"}, PasswordHash: hash}
 	roleID := newUUID()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, password_hash, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)`, user.ID, user.Username, user.PasswordHash, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, email, password_hash, status, created_at, updated_at) VALUES (?, ?, NULL, ?, 'active', ?, ?)`, user.ID, user.Username, user.PasswordHash, now, now); err != nil {
 		return User{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO roles (id, name, created_at) VALUES (?, 'super_admin', ?)`, roleID, now); err != nil {
@@ -220,7 +221,7 @@ func (s MariaDBAuthStore) FindUserByUsername(ctx context.Context, username strin
 	var user User
 	var lastLoginAt sql.NullTime
 	var lastLoginIP sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, password_hash, status, last_login_at, last_login_ip FROM users WHERE username = ?`, username).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
+	err := s.db.QueryRowContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users WHERE username = ?`, username).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
 	if err == sql.ErrNoRows {
 		return User{}, ErrNotFound
 	}
@@ -241,7 +242,7 @@ func (s MariaDBAuthStore) GetUser(ctx context.Context, id string) (User, error) 
 	var user User
 	var lastLoginAt sql.NullTime
 	var lastLoginIP sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, password_hash, status, last_login_at, last_login_ip FROM users WHERE id = ?`, id).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
+	err := s.db.QueryRowContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users WHERE id = ?`, id).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
 	if err == sql.ErrNoRows {
 		return User{}, ErrNotFound
 	}

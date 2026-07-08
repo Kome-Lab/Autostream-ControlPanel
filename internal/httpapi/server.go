@@ -68,6 +68,7 @@ type Server struct {
 	oauthLogin     store.OAuthLoginStore
 	oauthVerifier  oauthlogin.Verifier
 	oauthConnector oauthlogin.Connector
+	mailer         Mailer
 	obs            observability.Client
 	dispatcher     serviceDispatcher
 	youtubeLive    ytlive.LiveClient
@@ -159,6 +160,10 @@ func WithOAuthConnector(connector oauthlogin.Connector) ServerOption {
 	return func(s *Server) { s.oauthConnector = connector }
 }
 
+func WithMailer(mailer Mailer) ServerOption {
+	return func(s *Server) { s.mailer = mailer }
+}
+
 func WithObservabilityClient(client observability.Client) ServerOption {
 	return func(s *Server) { s.obs = client }
 }
@@ -215,6 +220,9 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	}
 	if s.secrets == nil {
 		s.secrets = store.NewMemorySecretStore()
+	}
+	if s.mailer == nil {
+		s.mailer = SMTPMailer{}
 	}
 	if s.runtimeLeases == nil {
 		s.runtimeLeases = store.NewMemoryRuntimeSecretLeaseStore()
@@ -280,7 +288,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/node-agent/events", s.serviceStreamEvent)
 	s.mux.HandleFunc("POST /auth/logout", s.requirePermission("", s.logout))
 	s.mux.HandleFunc("GET /auth/me", s.requirePermission("", s.me))
+	s.mux.HandleFunc("PUT /auth/email", s.requirePermission("", s.updateCurrentUserEmail))
 	s.mux.HandleFunc("POST /auth/change-password", s.requirePermission("", s.changePassword))
+	s.mux.HandleFunc("GET /auth/mfa/status", s.requirePermission("", s.mfaStatus))
 	s.mux.HandleFunc("POST /auth/mfa/enroll", s.requirePermission("", s.mfaEnroll))
 	s.mux.HandleFunc("POST /auth/mfa/verify", s.mfaVerify)
 	s.mux.HandleFunc("POST /auth/mfa/disable", s.requirePermission("", s.mfaDisable))
@@ -291,6 +301,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /auth/passkeys/login/finish", s.finishPasskeyLogin)
 	s.mux.HandleFunc("GET /auth/passkeys", s.requirePermission("", s.listPasskeys))
 	s.mux.HandleFunc("DELETE /auth/passkeys/{id}", s.requirePermission("", s.deletePasskey))
+	s.mux.HandleFunc("GET /auth/oauth-links", s.requirePermission("", s.listCurrentUserOAuthLinks))
+	s.mux.HandleFunc("POST /auth/oauth-links/{id}/start", s.requirePermission("", s.startCurrentUserOAuthLink))
+	s.mux.HandleFunc("DELETE /auth/oauth-links/{id}", s.requirePermission("", s.deleteCurrentUserOAuthLink))
 	s.mux.HandleFunc("GET /permissions", s.requirePermission("roles.read", s.listPermissions))
 	s.mux.HandleFunc("GET /users", s.requirePermission("users.read", s.listUsers))
 	s.mux.HandleFunc("POST /users", s.requirePermission("users.create", s.createUser))
@@ -301,6 +314,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /users/{id}/unlock", s.requirePermission("users.update", s.unlockUser))
 	s.mux.HandleFunc("POST /users/{id}/reset-password", s.requirePermission("users.reset_password", s.resetPassword))
 	s.mux.HandleFunc("POST /users/{id}/force-password-change", s.requirePermission("users.reset_password", s.forcePasswordChange))
+	s.mux.HandleFunc("DELETE /users/{id}", s.requirePermission("users.delete", s.deleteUser))
 	s.mux.HandleFunc("GET /users/{id}/oauth-links", s.requirePermission("users.read", s.listUserOAuthLinks))
 	s.mux.HandleFunc("POST /users/{id}/oauth-links", s.requirePermission("users.manage_mfa", s.createUserOAuthLink))
 	s.mux.HandleFunc("DELETE /users/{id}/oauth-links/{link_id}", s.requirePermission("users.manage_mfa", s.deleteUserOAuthLink))
@@ -388,7 +402,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /secrets/{name}", s.requirePermission("secrets.update", s.updateSecret))
 	s.mux.HandleFunc("GET /observability/incidents", s.requirePermission("incidents.read", s.observabilityGet("/incidents")))
 	s.mux.HandleFunc("GET /observability/diagnostics", s.requirePermission("diagnostics.read", s.observabilityGet("/diagnostics")))
-	s.mux.HandleFunc("GET /observability/metrics", s.requirePermission("metrics.read", s.observabilityGet("/metrics")))
+	s.mux.HandleFunc("GET /observability/metrics", s.requirePermission("metrics.read", s.observabilityMetrics))
 	s.mux.HandleFunc("GET /observability/remediation-actions", s.requirePermission("remediation.read", s.observabilityGet("/remediation-actions")))
 	s.mux.HandleFunc("POST /observability/remediation-actions/{id}/approve", s.requirePermission("remediation.approve", s.observabilityPostAction("/remediation-actions/{id}/approve")))
 	s.mux.HandleFunc("POST /observability/remediation-actions/{id}/execute", s.requirePermission("remediation.execute", s.observabilityPostAction("/remediation-actions/{id}/execute")))
@@ -729,6 +743,7 @@ func (s *Server) startOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	state, err := s.oauthLogin.CreateOAuthLoginState(r.Context(), store.OAuthLoginState{
 		ProviderID:    provider.ID,
 		ProviderType:  provider.ProviderType,
+		Purpose:       "login",
 		RedirectAfter: safeRedirectAfter(body.RedirectAfter),
 	}, 10*time.Minute)
 	if err != nil {
@@ -806,6 +821,11 @@ func (s *Server) finishOAuthLogin(w http.ResponseWriter, r *http.Request, body o
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_oauth_state"})
 		return
 	}
+	if state.Purpose != "login" && state.Purpose != "account_link" {
+		s.writeAudit(r, store.AuditEvent{Action: "auth.oauth.login", ResourceType: "oauth_state", Result: "failure", Metadata: map[string]any{"reason": "state_purpose_mismatch", "purpose": state.Purpose}})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_oauth_state"})
+		return
+	}
 	provider, err := s.integrations.GetOAuthProviderForDispatch(r.Context(), state.ProviderID)
 	if errors.Is(err, store.ErrNotFound) || !provider.Enabled || strings.TrimSpace(provider.ClientSecret) == "" {
 		s.writeAudit(r, store.AuditEvent{Action: "auth.oauth.login", ResourceType: "oauth_provider", ResourceID: state.ProviderID, Result: "failure", Metadata: map[string]any{"reason": "provider_unavailable"}})
@@ -829,6 +849,10 @@ func (s *Server) finishOAuthLogin(w http.ResponseWriter, r *http.Request, body o
 	if identity.ProviderID != provider.ID || identity.Subject == "" || !identityAllowedForProvider(provider, identity) {
 		s.writeAudit(r, store.AuditEvent{Action: "auth.oauth.login", ResourceType: "oauth_provider", ResourceID: provider.ID, Result: "failure", Metadata: map[string]any{"reason": "identity_not_allowed", "provider_type": provider.ProviderType}})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "oauth_identity_not_allowed"})
+		return
+	}
+	if state.Purpose == "account_link" {
+		s.finishCurrentUserOAuthLink(w, r, provider, state, identity, redirectOnSuccess)
 		return
 	}
 	link, err := s.oauthLogin.FindOAuthUserLink(r.Context(), provider.ID, identity.Subject)
@@ -868,6 +892,59 @@ func (s *Server) finishOAuthLogin(w http.ResponseWriter, r *http.Request, body o
 		return
 	}
 	s.continueOAuthLogin(w, r, user, provider, state, redirectOnSuccess)
+}
+
+func (s *Server) finishCurrentUserOAuthLink(w http.ResponseWriter, r *http.Request, provider store.OAuthProvider, state store.OAuthLoginState, identity oauthlogin.Identity, redirectOnSuccess bool) {
+	current, ok := s.authenticate(r)
+	if !ok {
+		s.writeAudit(r, store.AuditEvent{Action: "auth.oauth_link.create", ResourceType: "oauth_provider", ResourceID: provider.ID, Result: "failure", Metadata: map[string]any{"reason": "unauthorized", "provider_type": provider.ProviderType}})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+		return
+	}
+	if current.User.Status == "disabled" || current.User.Status == "locked" {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.oauth_link.create", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "account_unavailable", "provider_type": provider.ProviderType}})
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "account_unavailable"})
+		return
+	}
+	existing, err := s.oauthLogin.FindOAuthUserLink(r.Context(), provider.ID, identity.Subject)
+	if err == nil {
+		if existing.UserID != current.User.ID {
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.oauth_link.create", ResourceType: "oauth_link", ResourceID: existing.ID, Result: "failure", Metadata: map[string]any{"reason": "identity_already_linked", "provider_type": provider.ProviderType}})
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_identity_already_linked"})
+			return
+		}
+		s.finishOAuthLinkResponse(w, r, state, existing, redirectOnSuccess, http.StatusOK)
+		return
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "oauth_link_lookup_failed"})
+		return
+	}
+	link, err := s.oauthLogin.LinkOAuthUser(r.Context(), store.OAuthUserLink{
+		UserID:       current.User.ID,
+		ProviderID:   provider.ID,
+		ProviderType: provider.ProviderType,
+		Subject:      identity.Subject,
+		Email:        identity.Email,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "create_oauth_user_link_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.oauth_link.create", ResourceType: "oauth_link", ResourceID: link.ID, Result: "success", Metadata: map[string]any{"provider_type": provider.ProviderType, "email_present": identity.Email != ""}})
+	s.finishOAuthLinkResponse(w, r, state, link, redirectOnSuccess, http.StatusCreated)
+}
+
+func (s *Server) finishOAuthLinkResponse(w http.ResponseWriter, r *http.Request, state store.OAuthLoginState, link store.OAuthUserLink, redirectOnSuccess bool, status int) {
+	if redirectOnSuccess {
+		target := safeRedirectAfter(state.RedirectAfter)
+		if target == "" {
+			target = "/admin/account/"
+		}
+		http.Redirect(w, r, target, http.StatusSeeOther)
+		return
+	}
+	writeJSON(w, status, link)
 }
 
 func (s *Server) continueOAuthLogin(w http.ResponseWriter, r *http.Request, user store.User, provider store.OAuthProvider, state store.OAuthLoginState, redirectOnSuccess bool) {
@@ -975,7 +1052,7 @@ func (s *Server) autoProvisionOAuthUser(ctx context.Context, provider store.OAut
 		if attempt > 0 {
 			username = base + "-" + strconv.Itoa(attempt+1)
 		}
-		user, err := s.users.CreateOAuthUser(ctx, username, provider.DefaultRoleIDs)
+		user, err := s.users.CreateOAuthUser(ctx, username, identity.Email, provider.DefaultRoleIDs)
 		if err != nil {
 			lastErr = err
 			continue
@@ -1049,6 +1126,54 @@ func (s *Server) completeLoginRedirect(w http.ResponseWriter, r *http.Request, u
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
+func (s *Server) startCurrentUserOAuthLink(w http.ResponseWriter, r *http.Request) {
+	var body oauthStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	provider, err := s.integrations.GetOAuthProvider(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_oauth_provider_failed"})
+		return
+	}
+	if !provider.Enabled || !supportedLoginOAuthProvider(provider.ProviderType) || strings.TrimSpace(provider.ClientID) == "" || strings.TrimSpace(provider.RedirectURI) == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_login"})
+		return
+	}
+	if !validOAuthRedirectURI(provider.RedirectURI, "/auth/oauth/callback") {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_redirect_uri_invalid"})
+		return
+	}
+	state, err := s.oauthLogin.CreateOAuthLoginState(r.Context(), store.OAuthLoginState{
+		ProviderID:    provider.ID,
+		ProviderType:  provider.ProviderType,
+		Purpose:       "account_link",
+		RedirectAfter: safeRedirectAfter(body.RedirectAfter),
+	}, 10*time.Minute)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "oauth_state_create_failed"})
+		return
+	}
+	authorizationURL, err := oauthAuthorizationURL(provider, state)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_login"})
+		return
+	}
+	setOAuthStateCookie(w, state)
+	writeOneTimeSecretJSON(w, http.StatusOK, map[string]any{
+		"provider":          publicOAuthLoginProvider(provider),
+		"authorization_url": authorizationURL,
+		"state":             state.StateToken,
+		"nonce":             state.Nonce,
+		"expires_at":        state.ExpiresAt,
+	})
+}
+
 func (s *Server) listUserOAuthLinks(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("id")
 	if _, err := s.auth.GetUser(r.Context(), userID); errors.Is(err, store.ErrNotFound) {
@@ -1097,6 +1222,43 @@ func (s *Server) deleteUserOAuthLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+func (s *Server) listCurrentUserOAuthLinks(w http.ResponseWriter, r *http.Request) {
+	if s.oauthLogin == nil {
+		writeJSON(w, http.StatusOK, []store.OAuthUserLink{})
+		return
+	}
+	current := currentFromContext(r.Context())
+	links, err := s.oauthLogin.ListOAuthUserLinks(r.Context(), current.User.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_oauth_user_links_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, links)
+}
+
+func (s *Server) deleteCurrentUserOAuthLink(w http.ResponseWriter, r *http.Request) {
+	if s.oauthLogin == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "oauth_link_id_required"})
+		return
+	}
+	if err := s.oauthLogin.DeleteOAuthUserLink(r.Context(), id, current.User.ID); errors.Is(err, store.ErrNotFound) {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.oauth_link.delete", ResourceType: "oauth_link", ResourceID: id, Result: "failure", Metadata: map[string]any{"reason": "not_found"}})
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_oauth_user_link_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.oauth_link.delete", ResourceType: "oauth_link", ResourceID: id, Result: "success"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	current := currentFromContext(r.Context())
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
@@ -1110,6 +1272,34 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	current := currentFromContext(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(current.User), "permissions": current.Permissions})
+}
+
+func (s *Server) updateCurrentUserEmail(w http.ResponseWriter, r *http.Request) {
+	current := currentFromContext(r.Context())
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	if s.users == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "users_not_configured"})
+		return
+	}
+	user, err := s.users.UpdateUser(r.Context(), current.User.ID, store.UserPatch{Email: &body.Email})
+	if errors.Is(err, store.ErrNotFound) {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.email.update", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "not_found"}})
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.email.update", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "invalid_email"}})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_email"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.email.update", ResourceType: "user", ResourceID: current.User.ID, Result: "success", Metadata: map[string]any{"email_present": user.Email != ""}})
+	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "permissions": current.Permissions})
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
@@ -1140,6 +1330,47 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(), Expires: time.Unix(0, 0), MaxAge: -1})
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_changed"})
+}
+
+func (s *Server) mfaStatus(w http.ResponseWriter, r *http.Request) {
+	current := currentFromContext(r.Context())
+	settings, err := s.settings.GetSecuritySettings(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "security_settings_unavailable"})
+		return
+	}
+	if s.mfa == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"available":          false,
+			"enabled":            false,
+			"pending_enrollment": false,
+			"policy_mode":        settings.MFAMode,
+			"required":           mfaRequiredForUser(settings, current.User),
+		})
+		return
+	}
+	cfg, err := s.mfa.GetMFAConfig(r.Context(), current.User.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "mfa_state_unavailable"})
+		return
+	}
+	method := ""
+	if cfg.Enabled || strings.TrimSpace(cfg.PendingTOTPSecret) != "" {
+		method = "totp"
+	}
+	response := map[string]any{
+		"available":           true,
+		"enabled":             cfg.Enabled,
+		"method":              method,
+		"pending_enrollment":  strings.TrimSpace(cfg.PendingTOTPSecret) != "",
+		"recovery_code_count": len(cfg.RecoveryCodeHashes),
+		"policy_mode":         settings.MFAMode,
+		"required":            mfaRequiredForUser(settings, current.User),
+	}
+	if !cfg.UpdatedAt.IsZero() {
+		response["updated_at"] = cfg.UpdatedAt
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) mfaEnroll(w http.ResponseWriter, r *http.Request) {
@@ -1575,8 +1806,10 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username          string   `json:"username"`
+		Email             string   `json:"email"`
 		TemporaryPassword string   `json:"temporary_password"`
 		RoleIDs           []string `json:"role_ids"`
+		SendWelcomeEmail  bool     `json:"send_welcome_email"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
@@ -1600,13 +1833,22 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	user, err := s.users.CreateUser(r.Context(), username, body.TemporaryPassword, body.RoleIDs)
+	user, err := s.users.CreateUser(r.Context(), username, body.Email, body.TemporaryPassword, body.RoleIDs)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "create_user_failed"})
 		return
 	}
 	current := currentFromContext(r.Context())
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "users.create", ResourceType: "user", ResourceID: user.ID, Result: "success", Metadata: map[string]any{"username": user.Username}})
+	emailSent := false
+	if body.SendWelcomeEmail && user.Email != "" {
+		if err := s.sendUserWelcomeEmail(r, user); err != nil {
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "users.email_welcome", ResourceType: "user", ResourceID: user.ID, Result: "failure", Metadata: map[string]any{"reason": safeErrorCode(err)}})
+			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "welcome_email_failed"})
+			return
+		}
+		emailSent = true
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "users.create", ResourceType: "user", ResourceID: user.ID, Result: "success", Metadata: map[string]any{"username": user.Username, "email_present": user.Email != "", "welcome_email_sent": emailSent}})
 	writeJSON(w, http.StatusCreated, publicUser(user))
 }
 
@@ -1626,6 +1868,7 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string   `json:"username"`
+		Email    *string  `json:"email"`
 		RoleIDs  []string `json:"role_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1672,7 +1915,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	user, err := s.users.UpdateUser(r.Context(), r.PathValue("id"), store.UserPatch{Username: strings.TrimSpace(body.Username), RoleIDs: body.RoleIDs})
+	user, err := s.users.UpdateUser(r.Context(), r.PathValue("id"), store.UserPatch{Username: strings.TrimSpace(body.Username), Email: body.Email, RoleIDs: body.RoleIDs})
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -1831,6 +2074,51 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request, status, a
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: action, ResourceType: "user", ResourceID: user.ID, Result: "success", Metadata: map[string]any{"status": status}})
 	writeJSON(w, http.StatusOK, publicUser(user))
+}
+
+func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
+	target, err := s.users.GetUser(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_user_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	if target.ID == current.User.ID {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "cannot_delete_self"})
+		return
+	}
+	if err := store.ValidateUserStatusActor(current.User, target); errors.Is(err, store.ErrSuperAdminStatusForbidden) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "cannot_delete_super_admin"})
+		return
+	}
+	if !userHasRoleName(current.User, "super_admin") {
+		targetPermissions, err := s.auth.GetUserPermissions(r.Context(), target.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_user_permissions_failed"})
+			return
+		}
+		if err := store.ValidateRolePermissions(current.Permissions, targetPermissions); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+			return
+		}
+	}
+	if err := s.users.DeleteUser(r.Context(), target.ID); errors.Is(err, store.ErrLastSuperAdmin) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "last_super_admin"})
+		return
+	} else if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_user_failed"})
+		return
+	}
+	_ = s.auth.DeleteUserSessions(r.Context(), target.ID)
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "users.delete", ResourceType: "user", ResourceID: target.ID, Result: "success", Metadata: map[string]any{"username": target.Username, "roles": target.Roles}})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
@@ -2121,7 +2409,20 @@ func (s *Server) updateProfile(kind store.ProfileKind, action string) http.Handl
 
 func (s *Server) deleteProfile(kind store.ProfileKind, action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := s.profiles.DeleteProfile(r.Context(), kind, r.PathValue("id")); errors.Is(err, store.ErrNotFound) {
+		id := r.PathValue("id")
+		profile, err := s.profiles.GetProfile(r.Context(), kind, id)
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_profile_failed"})
+			return
+		}
+		if s.writeProfileDeleteBlockedIfInUse(w, r, kind, id) {
+			return
+		}
+		if err := s.profiles.DeleteProfile(r.Context(), kind, id); errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 			return
 		} else if err != nil {
@@ -2129,8 +2430,60 @@ func (s *Server) deleteProfile(kind store.ProfileKind, action string) http.Handl
 			return
 		}
 		current := currentFromContext(r.Context())
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: action, ResourceType: string(kind), ResourceID: r.PathValue("id"), Result: "success"})
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: action, ResourceType: string(kind), ResourceID: id, Result: "success", Metadata: map[string]any{"name": profile.Name}})
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	}
+}
+
+func (s *Server) writeProfileDeleteBlockedIfInUse(w http.ResponseWriter, r *http.Request, kind store.ProfileKind, id string) bool {
+	stream, inUse, err := s.streamProfileReferenceInUse(r.Context(), kind, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "profile_reference_check_failed"})
+		return true
+	}
+	if !inUse {
+		return false
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"code":      "profile_in_use",
+		"stream_id": stream.ID,
+	})
+	return true
+}
+
+func (s *Server) streamProfileReferenceInUse(ctx context.Context, kind store.ProfileKind, id string) (store.Stream, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || s.streams == nil {
+		return store.Stream{}, false, nil
+	}
+	streams, err := s.streams.ListStreams(ctx)
+	if err != nil {
+		return store.Stream{}, false, err
+	}
+	for _, stream := range streams {
+		if streamReferencesProfile(stream, kind, id) {
+			return stream, true, nil
+		}
+	}
+	return store.Stream{}, false, nil
+}
+
+func streamReferencesProfile(stream store.Stream, kind store.ProfileKind, id string) bool {
+	switch kind {
+	case store.ProfileEncoder:
+		return stream.EncoderProfileID == id
+	case store.ProfileArchive:
+		return stream.ArchiveProfileID == id
+	case store.ProfileCaption:
+		return stream.CaptionProfileID == id
+	case store.ProfileOverlay:
+		return stream.OverlayProfileID == id
+	case store.ProfileDiscordConfig:
+		return stream.DiscordConfigID == id
+	case store.ProfileYouTubeOutput:
+		return stream.YouTubeOutputID == id
+	default:
+		return false
 	}
 }
 
@@ -2224,7 +2577,7 @@ func allowedProfileSecretReferences(kind store.ProfileKind) []string {
 	case store.ProfileYouTubeOutput:
 		return []string{"youtube_stream_key", "youtube_stream_key_<output_id>"}
 	case store.ProfileArchive:
-		return []string{"google_drive_folder_id", "google_drive_credentials", "google_drive_folder_id_<destination_id>", "google_oauth_refresh_token_<account_id>", "google_service_account_json_<destination_id>", "gdrive_service_account_json_<destination_id>", "drive_destination:<id>:folder_id", "oauth_provider:<id>:client_secret", "oauth_account:<id>:refresh_token"}
+		return []string{"google_drive_folder_id", "google_drive_folder_id_<destination_id>", "google_oauth_refresh_token_<account_id>", "drive_destination:<id>:folder_id", "oauth_provider:<id>:client_secret", "oauth_account:<id>:refresh_token"}
 	case store.ProfileEncoder:
 		return []string{"encoder_runtime_secret_<name>"}
 	case store.ProfileCaption:
@@ -2416,6 +2769,9 @@ func (s *Server) deleteDiscordConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_discord_config_failed"})
 		return
 	}
+	if s.writeProfileDeleteBlockedIfInUse(w, r, store.ProfileDiscordConfig, id) {
+		return
+	}
 	if err := s.profiles.DeleteProfile(r.Context(), store.ProfileDiscordConfig, id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_discord_config_failed"})
 		return
@@ -2438,15 +2794,6 @@ func discordConfigFromRequest(body discordConfigRequest, id string) (map[string]
 	config := map[string]any{}
 	if value := strings.TrimSpace(body.ServiceID); value != "" {
 		config["service_id"] = value
-	}
-	if value := strings.TrimSpace(body.GuildID); value != "" {
-		config["guild_id"] = value
-	}
-	if value := strings.TrimSpace(body.VoiceChannelID); value != "" {
-		config["voice_channel_id"] = value
-	}
-	if value := strings.TrimSpace(body.TextChannelID); value != "" {
-		config["text_channel_id"] = value
 	}
 	if value := strings.TrimSpace(body.STTProfileID); value != "" {
 		config["stt_profile_id"] = value
@@ -2709,6 +3056,9 @@ func (s *Server) deleteYouTubeOutput(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_youtube_output_failed"})
 		return
 	}
+	if s.writeProfileDeleteBlockedIfInUse(w, r, store.ProfileYouTubeOutput, id) {
+		return
+	}
 	if err := s.profiles.DeleteProfile(r.Context(), store.ProfileYouTubeOutput, id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_youtube_output_failed"})
 		return
@@ -2885,9 +3235,10 @@ type oauthAccountRequest struct {
 }
 
 type oauthAccountStartRequest struct {
-	ProviderID    string `json:"provider_id"`
-	AccountLabel  string `json:"account_label"`
-	RedirectAfter string `json:"redirect_after"`
+	ProviderID     string `json:"provider_id"`
+	AccountLabel   string `json:"account_label"`
+	AccountPurpose string `json:"account_purpose"`
+	RedirectAfter  string `json:"redirect_after"`
 }
 
 type oauthAccountCallbackRequest struct {
@@ -2921,6 +3272,7 @@ func (s *Server) createOAuthProvider(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	body.Scopes = oauthProviderRequestScopes(body.ProviderType, body.RedirectURI, body.Scopes)
 	if code := validateOAuthProviderRequest(body); code != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
@@ -2963,6 +3315,7 @@ func (s *Server) updateOAuthProvider(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	body.Scopes = oauthProviderRequestScopes(body.ProviderType, body.RedirectURI, body.Scopes)
 	if code := validateOAuthProviderRequest(body); code != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
@@ -3078,23 +3431,32 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_oauth_provider_failed"})
 		return
 	}
-	if !provider.Enabled || !supportedConnectedAccountProvider(provider.ProviderType) || strings.TrimSpace(provider.ClientID) == "" || strings.TrimSpace(provider.RedirectURI) == "" {
+	if !provider.Enabled || !supportedConnectedAccountProvider(provider.ProviderType) || strings.TrimSpace(provider.ClientID) == "" {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_connected_account"})
 		return
 	}
-	if !validOAuthRedirectURI(provider.RedirectURI, "/integrations/oauth-accounts/callback") {
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_redirect_uri_invalid"})
+	redirectURI := connectedOAuthRedirectURI(r)
+	if !validOAuthRedirectURI(redirectURI, "/integrations/oauth-accounts/callback") {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_connected_account_redirect_uri_unavailable"})
+		return
+	}
+	requestedScopes, code := oauthAccountRequestedScopes(body.AccountPurpose)
+	if code != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
 	}
 	state, err := s.oauthLogin.CreateOAuthLoginState(r.Context(), store.OAuthLoginState{
-		ProviderID:    provider.ID,
-		ProviderType:  provider.ProviderType,
-		RedirectAfter: safeRedirectAfter(body.RedirectAfter),
+		ProviderID:      provider.ID,
+		ProviderType:    provider.ProviderType,
+		Purpose:         "connected_account",
+		RedirectAfter:   safeRedirectAfter(body.RedirectAfter),
+		RequestedScopes: requestedScopes,
 	}, 10*time.Minute)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "oauth_state_create_failed"})
 		return
 	}
+	provider.RedirectURI = redirectURI
 	authorizationURL, err := oauthConnectedAccountAuthorizationURL(provider, state)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_connected_account"})
@@ -3108,6 +3470,7 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		"nonce":             state.Nonce,
 		"expires_at":        state.ExpiresAt,
 		"account_label":     strings.TrimSpace(body.AccountLabel),
+		"scopes":            state.RequestedScopes,
 	})
 }
 
@@ -3161,6 +3524,11 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_oauth_state"})
 		return
 	}
+	if state.Purpose != "connected_account" {
+		s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.connect", ResourceType: "oauth_state", Result: "failure", Metadata: map[string]any{"reason": "state_purpose_mismatch", "purpose": state.Purpose}})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_oauth_state"})
+		return
+	}
 	provider, err := s.integrations.GetOAuthProviderForDispatch(r.Context(), state.ProviderID)
 	if errors.Is(err, store.ErrNotFound) || !provider.Enabled || strings.TrimSpace(provider.ClientSecret) == "" {
 		s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.connect", ResourceType: "oauth_provider", ResourceID: state.ProviderID, Result: "failure", Metadata: map[string]any{"reason": "provider_unavailable"}})
@@ -3179,6 +3547,12 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_connected_account"})
 		return
 	}
+	redirectURI := connectedOAuthRedirectURI(r)
+	if !validOAuthRedirectURI(redirectURI, "/integrations/oauth-accounts/callback") {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_connected_account_redirect_uri_unavailable"})
+		return
+	}
+	provider.RedirectURI = redirectURI
 	connected, err := s.oauthConnector.Connect(r.Context(), oauthlogin.ConnectRequest{Provider: provider, Code: body.Code, Nonce: state.Nonce})
 	if err != nil {
 		s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.connect", ResourceType: "oauth_provider", ResourceID: provider.ID, Result: "failure", Metadata: map[string]any{"reason": "oauth_connect_failed", "provider_type": provider.ProviderType}})
@@ -3190,9 +3564,13 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "oauth_identity_not_allowed"})
 		return
 	}
-	scopes := connected.Scopes
+	scopes := cleanRequestStringSlice(connected.Scopes)
 	if len(scopes) == 0 {
-		scopes = provider.Scopes
+		scopes = state.RequestedScopes
+	}
+	if !oauthScopesContainConnectedAccountAccess(scopes) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_connected_account_scope_required"})
+		return
 	}
 	label := strings.TrimSpace(body.AccountLabel)
 	if label == "" {
@@ -3338,7 +3716,7 @@ func (s *Server) deleteOAuthAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) oauthAccountDeleteReferences(ctx context.Context, id string) (map[string]any, error) {
-	refs := map[string]any{"drive_destinations": 0, "youtube_outputs": 0, "stream_youtube_runtimes": 0}
+	refs := map[string]any{"drive_destinations": 0, "youtube_outputs": 0, "stream_archive_settings": 0, "stream_youtube_runtimes": 0}
 	destinations, err := s.integrations.ListDriveDestinations(ctx)
 	if err != nil {
 		return nil, err
@@ -3355,6 +3733,15 @@ func (s *Server) oauthAccountDeleteReferences(ctx context.Context, id string) (m
 	for _, output := range outputs {
 		if firstNonEmpty(configString(output.Config, "oauth_account_id"), configString(output.Config, "youtube_oauth_account_id")) == id {
 			refs["youtube_outputs"] = refs["youtube_outputs"].(int) + 1
+		}
+	}
+	streams, err := s.streams.ListStreams(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, stream := range streams {
+		if strings.TrimSpace(stream.ArchiveOAuthAccountID) == id {
+			refs["stream_archive_settings"] = refs["stream_archive_settings"].(int) + 1
 		}
 	}
 	if runtimes, ok := s.streams.(store.StreamYouTubeRuntimeStore); ok {
@@ -3396,6 +3783,10 @@ func (s *Server) createDriveDestination(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	if code, status := normalizeDriveDestinationAPIRequest(&body); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
 	if code, status := s.validateDriveDestinationRequest(r.Context(), body); code != "" {
 		writeJSON(w, status, map[string]string{"code": code})
 		return
@@ -3435,6 +3826,10 @@ func (s *Server) updateDriveDestination(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	if code, status := normalizeDriveDestinationAPIRequest(&body); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
 	if code, status := s.validateDriveDestinationRequest(r.Context(), body); code != "" {
 		writeJSON(w, status, map[string]string{"code": code})
 		return
@@ -3460,7 +3855,17 @@ func (s *Server) updateDriveDestination(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) deleteDriveDestination(w http.ResponseWriter, r *http.Request) {
-	if err := s.integrations.DeleteDriveDestination(r.Context(), r.PathValue("id")); errors.Is(err, store.ErrNotFound) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if refs, err := s.driveDestinationDeleteReferences(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_drive_destination_failed"})
+		return
+	} else if oauthReferenceCount(refs) > 0 {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "integrations.drive_destination.delete", ResourceType: "drive_destination", ResourceID: id, Result: "failure", Metadata: map[string]any{"reason": "drive_destination_in_use", "references": refs}})
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "drive_destination_in_use", "references": refs})
+		return
+	}
+	if err := s.integrations.DeleteDriveDestination(r.Context(), id); errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	} else if err != nil {
@@ -3468,8 +3873,31 @@ func (s *Server) deleteDriveDestination(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	current := currentFromContext(r.Context())
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "integrations.drive_destination.delete", ResourceType: "drive_destination", ResourceID: r.PathValue("id"), Result: "success"})
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "integrations.drive_destination.delete", ResourceType: "drive_destination", ResourceID: id, Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) driveDestinationDeleteReferences(ctx context.Context, id string) (map[string]any, error) {
+	refs := map[string]any{"stream_archive_settings": 0, "archive_profiles": 0}
+	streams, err := s.streams.ListStreams(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, stream := range streams {
+		if strings.TrimSpace(stream.ArchiveDriveDestinationID) == id {
+			refs["stream_archive_settings"] = refs["stream_archive_settings"].(int) + 1
+		}
+	}
+	profiles, err := s.profiles.ListProfiles(ctx, store.ProfileArchive)
+	if err != nil {
+		return nil, err
+	}
+	for _, profile := range profiles {
+		if strings.TrimSpace(configString(profile.Config, "drive_destination_id")) == id {
+			refs["archive_profiles"] = refs["archive_profiles"].(int) + 1
+		}
+	}
+	return refs, nil
 }
 
 func (s *Server) listServiceTokens(w http.ResponseWriter, r *http.Request) {
@@ -3737,8 +4165,8 @@ func (s *Server) issueNodeConfigureToken(ctx context.Context, nodeID string) (st
 }
 
 func (s *Server) persistNodeRuntimeToken(ctx context.Context, nodeID, rawToken string) (store.RegisteredService, error) {
-	key := strings.TrimSpace(os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))
-	if key == "" || strings.TrimSpace(rawToken) == "" {
+	key, err := nodeRuntimeTokenEncryptionKey()
+	if err != nil || strings.TrimSpace(rawToken) == "" {
 		return store.RegisteredService{}, errors.New("node runtime token encryption key is not configured")
 	}
 	ciphertext, nonce, err := security.EncryptSecret(rawToken, key)
@@ -3746,6 +4174,14 @@ func (s *Server) persistNodeRuntimeToken(ctx context.Context, nodeID, rawToken s
 		return store.RegisteredService{}, err
 	}
 	return s.services.SetServiceNodeTokenSecret(ctx, nodeID, ciphertext, nonce)
+}
+
+func nodeRuntimeTokenEncryptionKey() (string, error) {
+	key := strings.TrimSpace(os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))
+	if key == "" {
+		return "", errors.New("node runtime token encryption key is not configured")
+	}
+	return key, nil
 }
 
 func nodeConfigureTokenTTL() time.Duration {
@@ -3975,6 +4411,10 @@ func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
 		return
 	}
+	if _, err := nodeRuntimeTokenEncryptionKey(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
 	token, err := s.services.RotateServiceToken(r.Context(), service.TokenID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
@@ -4004,6 +4444,10 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 		NodeIDSnake    string `json:"node_id"`
 		ConfigureToken string `json:"configureToken"`
 		Token          string `json:"configure_token"`
+		Version        string `json:"version"`
+		Hostname       string `json:"hostname"`
+		OS             string `json:"os"`
+		Arch           string `json:"arch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
@@ -4028,6 +4472,21 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "consume_configure_token_failed"})
+		return
+	}
+	service, err = s.services.UpdateServiceRuntimeReport(r.Context(), store.ServiceRuntimeReport{
+		ServiceID: service.ServiceID,
+		Version:   body.Version,
+		Hostname:  body.Hostname,
+		OS:        body.OS,
+		Arch:      body.Arch,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_report_failed"})
+		return
+	}
+	if _, err := nodeRuntimeTokenEncryptionKey(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
 		return
 	}
 	token, err := s.services.RotateServiceToken(r.Context(), service.TokenID)
@@ -4166,32 +4625,35 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 type nodeListResponse struct {
-	ID                      string     `json:"id"`
-	ServiceID               string     `json:"service_id"`
-	ServiceType             string     `json:"service_type"`
-	ServiceName             string     `json:"service_name"`
-	Description             string     `json:"description,omitempty"`
-	Host                    string     `json:"host,omitempty"`
-	Port                    int        `json:"port,omitempty"`
-	SSLEnabled              bool       `json:"ssl_enabled"`
-	PublicURL               string     `json:"public_url"`
-	Version                 string     `json:"version"`
-	ReportedVersion         string     `json:"reported_version,omitempty"`
-	Status                  string     `json:"status"`
-	HealthStatus            string     `json:"health_status"`
-	HeartbeatStale          bool       `json:"heartbeat_stale"`
-	HeartbeatAgeSec         *int64     `json:"heartbeat_age_sec,omitempty"`
-	LastHeartbeatAt         *time.Time `json:"last_heartbeat_at,omitempty"`
-	LastReportedAt          *time.Time `json:"last_reported_at,omitempty"`
-	CurrentStreamID         string     `json:"current_stream_id,omitempty"`
-	ReportedHostname        string     `json:"reported_hostname,omitempty"`
-	ReportedOS              string     `json:"reported_os,omitempty"`
-	ReportedArch            string     `json:"reported_arch,omitempty"`
-	ConfigureTokenExpiresAt *time.Time `json:"configure_token_expires_at,omitempty"`
-	ConfigureTokenUsedAt    *time.Time `json:"configure_token_used_at,omitempty"`
-	NodeTokenRotatedAt      *time.Time `json:"node_token_rotated_at,omitempty"`
-	CreatedAt               time.Time  `json:"created_at"`
-	UpdatedAt               time.Time  `json:"updated_at"`
+	ID                      string         `json:"id"`
+	ServiceID               string         `json:"service_id"`
+	ServiceType             string         `json:"service_type"`
+	ServiceName             string         `json:"service_name"`
+	Description             string         `json:"description,omitempty"`
+	Host                    string         `json:"host,omitempty"`
+	Port                    int            `json:"port,omitempty"`
+	SSLEnabled              bool           `json:"ssl_enabled"`
+	PublicURL               string         `json:"public_url"`
+	Version                 string         `json:"version"`
+	ReportedVersion         string         `json:"reported_version,omitempty"`
+	Status                  string         `json:"status"`
+	HealthStatus            string         `json:"health_status"`
+	HeartbeatStale          bool           `json:"heartbeat_stale"`
+	HeartbeatAgeSec         *int64         `json:"heartbeat_age_sec,omitempty"`
+	LastHeartbeatAt         *time.Time     `json:"last_heartbeat_at,omitempty"`
+	LastReportedAt          *time.Time     `json:"last_reported_at,omitempty"`
+	CurrentStreamID         string         `json:"current_stream_id,omitempty"`
+	ReportedHostname        string         `json:"reported_hostname,omitempty"`
+	ReportedOS              string         `json:"reported_os,omitempty"`
+	ReportedArch            string         `json:"reported_arch,omitempty"`
+	Capabilities            map[string]any `json:"capabilities,omitempty"`
+	ReportedCapabilities    map[string]any `json:"reported_capabilities,omitempty"`
+	Metrics                 map[string]any `json:"metrics,omitempty"`
+	ConfigureTokenExpiresAt *time.Time     `json:"configure_token_expires_at,omitempty"`
+	ConfigureTokenUsedAt    *time.Time     `json:"configure_token_used_at,omitempty"`
+	NodeTokenRotatedAt      *time.Time     `json:"node_token_rotated_at,omitempty"`
+	CreatedAt               time.Time      `json:"created_at"`
+	UpdatedAt               time.Time      `json:"updated_at"`
 }
 
 func nodeListResponses(services []store.RegisteredService, now time.Time) []nodeListResponse {
@@ -4220,6 +4682,9 @@ func nodeListResponses(services []store.RegisteredService, now time.Time) []node
 			ReportedHostname:        service.ReportedHostname,
 			ReportedOS:              service.ReportedOS,
 			ReportedArch:            service.ReportedArch,
+			Capabilities:            service.Capabilities,
+			ReportedCapabilities:    service.ReportedCapabilities,
+			Metrics:                 service.Metrics,
 			ConfigureTokenExpiresAt: service.ConfigureTokenExpiresAt,
 			ConfigureTokenUsedAt:    service.ConfigureTokenUsedAt,
 			NodeTokenRotatedAt:      service.NodeTokenRotatedAt,
@@ -4574,13 +5039,14 @@ type serviceRuntimeConfigService struct {
 }
 
 type serviceRuntimeDiscordStreamConfig struct {
-	StreamID        string `json:"stream_id"`
-	AssignmentRole  string `json:"assignment_role"`
-	DiscordConfigID string `json:"discord_config_id"`
-	GuildID         string `json:"guild_id"`
-	VoiceChannelID  string `json:"voice_channel_id"`
-	TextChannelID   string `json:"text_channel_id,omitempty"`
-	CaptionAudioURL string `json:"caption_audio_url,omitempty"`
+	StreamID         string `json:"stream_id"`
+	AssignmentRole   string `json:"assignment_role"`
+	DiscordConfigID  string `json:"discord_config_id"`
+	GuildID          string `json:"guild_id"`
+	VoiceChannelID   string `json:"voice_channel_id"`
+	TextChannelID    string `json:"text_channel_id,omitempty"`
+	CaptionAudioURL  string `json:"caption_audio_url,omitempty"`
+	AutoStartTrigger string `json:"auto_start_trigger,omitempty"`
 }
 
 type serviceRuntimeArchiveStreamConfig struct {
@@ -4823,7 +5289,7 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 			if !runtimeProfileMatchesService(item.Config, service.ServiceID) {
 				continue
 			}
-			item.Config = sanitizeRuntimeProfileConfig(item.Config)
+			item.Config = sanitizeRuntimeProfileConfigForKind(kind, item.Config)
 			profiles[string(kind)] = append(profiles[string(kind)], item)
 		}
 	}
@@ -4834,18 +5300,13 @@ func (s *Server) runtimeDiscordStreamConfigs(ctx context.Context, service store.
 	if service.ServiceType != "discord_bot" {
 		return nil, nil
 	}
+	streams, err := s.streams.ListStreams(ctx)
+	if err != nil {
+		return nil, err
+	}
+	assignmentRoles := assignmentRoleByStream(assignments, service.ServiceID, "discord_bot")
 	items := make([]serviceRuntimeDiscordStreamConfig, 0)
-	for _, assignment := range assignments {
-		if assignment.ServiceID != service.ServiceID || assignment.ServiceType != "discord_bot" {
-			continue
-		}
-		stream, err := s.streams.GetStream(ctx, assignment.StreamID)
-		if errors.Is(err, store.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
+	for _, stream := range streams {
 		if strings.TrimSpace(stream.DiscordConfigID) == "" {
 			continue
 		}
@@ -4864,17 +5325,37 @@ func (s *Server) runtimeDiscordStreamConfigs(ctx context.Context, service store.
 		if guildID == "" || voiceChannelID == "" {
 			continue
 		}
+		assignmentRole := assignmentRoles[stream.ID]
+		if assignmentRole == "" {
+			assignmentRole = "primary"
+		}
 		items = append(items, serviceRuntimeDiscordStreamConfig{
-			StreamID:        stream.ID,
-			AssignmentRole:  assignment.AssignmentRole,
-			DiscordConfigID: profile.ID,
-			GuildID:         guildID,
-			VoiceChannelID:  voiceChannelID,
-			TextChannelID:   strings.TrimSpace(firstNonEmpty(stream.DiscordTextID, configString(profile.Config, "text_channel_id"))),
-			CaptionAudioURL: strings.TrimSpace(configString(profile.Config, "caption_audio_url")),
+			StreamID:         stream.ID,
+			AssignmentRole:   assignmentRole,
+			DiscordConfigID:  profile.ID,
+			GuildID:          guildID,
+			VoiceChannelID:   voiceChannelID,
+			TextChannelID:    strings.TrimSpace(firstNonEmpty(stream.DiscordTextID, configString(profile.Config, "text_channel_id"))),
+			CaptionAudioURL:  strings.TrimSpace(configString(profile.Config, "caption_audio_url")),
+			AutoStartTrigger: strings.TrimSpace(stream.AutoStartTrigger),
 		})
 	}
 	return items, nil
+}
+
+func assignmentRoleByStream(assignments []store.StreamServiceAssignment, serviceID, serviceType string) map[string]string {
+	roles := make(map[string]string, len(assignments))
+	for _, assignment := range assignments {
+		if strings.TrimSpace(assignment.ServiceID) != serviceID || strings.TrimSpace(assignment.ServiceType) != serviceType {
+			continue
+		}
+		role := normalizeAssignmentRole(assignment.AssignmentRole)
+		if role == "" {
+			role = "primary"
+		}
+		roles[assignment.StreamID] = role
+	}
+	return roles
 }
 
 func (s *Server) runtimeArchiveStreamConfigs(ctx context.Context, service store.RegisteredService, assignments []store.StreamServiceAssignment) ([]serviceRuntimeArchiveStreamConfig, error) {
@@ -5341,11 +5822,8 @@ func runtimeProfileKindAllowsSecret(kind store.ProfileKind, secretName string) b
 		return secretName == "youtube_stream_key" || strings.HasPrefix(secretName, "youtube_stream_key_")
 	case store.ProfileArchive:
 		return secretName == "google_drive_folder_id" ||
-			secretName == "google_drive_credentials" ||
 			strings.HasPrefix(secretName, "google_drive_folder_id_") ||
-			strings.HasPrefix(secretName, "google_oauth_refresh_token_") ||
-			strings.HasPrefix(secretName, "google_service_account_json_") ||
-			strings.HasPrefix(secretName, "gdrive_service_account_json_")
+			strings.HasPrefix(secretName, "google_oauth_refresh_token_")
 	case store.ProfileEncoder:
 		return strings.HasPrefix(secretName, "encoder_runtime_secret_")
 	case store.ProfileCaption:
@@ -5361,8 +5839,6 @@ func streamScopedGenericSecretName(secretName string) bool {
 		"youtube_stream_key_",
 		"google_oauth_refresh_token_",
 		"google_drive_folder_id_",
-		"google_service_account_json_",
-		"gdrive_service_account_json_",
 	} {
 		if strings.HasPrefix(secretName, prefix) {
 			return true
@@ -5411,6 +5887,16 @@ func sanitizeRuntimeProfileConfig(config map[string]any) map[string]any {
 			continue
 		}
 		out[trimmedKey] = sanitizeRuntimeProfileValue(value)
+	}
+	return out
+}
+
+func sanitizeRuntimeProfileConfigForKind(kind store.ProfileKind, config map[string]any) map[string]any {
+	out := sanitizeRuntimeProfileConfig(config)
+	if kind == store.ProfileDiscordConfig {
+		delete(out, "guild_id")
+		delete(out, "voice_channel_id")
+		delete(out, "text_channel_id")
 	}
 	return out
 }
@@ -5892,18 +6378,30 @@ func (s *Server) listStreams(w http.ResponseWriter, r *http.Request) {
 }
 
 type streamSettingsRequest struct {
-	Name             string `json:"name,omitempty"`
-	DiscordConfigID  string `json:"discord_config_id,omitempty"`
-	DiscordGuildID   string `json:"discord_guild_id,omitempty"`
-	DiscordVoiceID   string `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextID    string `json:"discord_text_channel_id,omitempty"`
-	EncoderProfileID string `json:"encoder_profile_id,omitempty"`
-	CaptionProfileID string `json:"caption_profile_id,omitempty"`
-	OverlayProfileID string `json:"overlay_profile_id,omitempty"`
-	ArchiveProfileID string `json:"archive_profile_id,omitempty"`
-	YouTubeOutputID  string `json:"youtube_output_id,omitempty"`
-	EncoderInputURL  string `json:"encoder_input_url,omitempty"`
+	Name                  string `json:"name,omitempty"`
+	ScheduledStartAt      string `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt        string `json:"scheduled_end_at,omitempty"`
+	DiscordConfigID       string `json:"discord_config_id,omitempty"`
+	DiscordGuildID        string `json:"discord_guild_id,omitempty"`
+	DiscordVoiceID        string `json:"discord_voice_channel_id,omitempty"`
+	DiscordTextID         string `json:"discord_text_channel_id,omitempty"`
+	AutoStartTrigger      string `json:"auto_start_trigger,omitempty"`
+	EncoderProfileID      string `json:"encoder_profile_id,omitempty"`
+	CaptionProfileID      string `json:"caption_profile_id,omitempty"`
+	OverlayProfileID      string `json:"overlay_profile_id,omitempty"`
+	ArchiveProfileID      string `json:"archive_profile_id,omitempty"`
+	ArchiveOAuthAccountID string `json:"archive_oauth_account_id,omitempty"`
+	ArchiveFolderID       string `json:"archive_folder_id,omitempty"`
+	ArchiveSharedDrive    bool   `json:"archive_shared_drive,omitempty"`
+	ArchiveSharedDriveID  string `json:"archive_shared_drive_id,omitempty"`
+	ArchiveFileName       string `json:"archive_file_name,omitempty"`
+	YouTubeOutputID       string `json:"youtube_output_id,omitempty"`
+	EncoderInputURL       string `json:"encoder_input_url,omitempty"`
+	EncoderServiceID      string `json:"encoder_service_id,omitempty"`
+	WorkerServiceID       string `json:"worker_service_id,omitempty"`
 }
+
+const autoStartTriggerDiscordVoiceJoin = "discord_voice_join"
 
 func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	var body streamSettingsRequest
@@ -5916,15 +6414,31 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "name_required"})
 		return
 	}
-	settings := streamSettingsFromRequest(body)
+	settings, code := streamSettingsFromRequest(body)
+	if code != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
+		return
+	}
 	if err := s.validateStreamSettingsReferences(r.Context(), settings); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": streamSettingsReferenceCode(err)})
+		return
+	}
+	current := currentFromContext(r.Context())
+	if code, status := s.validateStreamServiceAssignmentRequest(r.Context(), body, current.Permissions); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
 	stream, err := s.streams.CreateStream(r.Context(), body.Name)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_stream_failed"})
 		return
+	}
+	if streamArchiveDirectRequested(body) {
+		settings, err = s.materializeStreamArchiveSettings(r.Context(), stream, settings, body)
+		if err != nil {
+			writeJSON(w, streamArchiveSettingsStatus(err), map[string]string{"code": streamArchiveSettingsCode(err)})
+			return
+		}
 	}
 	if streamSettingsConfigured(settings) {
 		stream, err = s.streams.UpdateStreamSettings(r.Context(), stream.ID, settings)
@@ -5933,8 +6447,11 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	current := currentFromContext(r.Context())
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"name": stream.Name, "discord_config_id": stream.DiscordConfigID, "discord_guild_id": stream.DiscordGuildID, "discord_voice_channel_id": stream.DiscordVoiceID, "discord_text_channel_configured": stream.DiscordTextID != "", "youtube_output_id": stream.YouTubeOutputID, "archive_profile_id": stream.ArchiveProfileID}})
+	if code, status := s.applyStreamServiceAssignments(r, stream.ID, body, current); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
 	writeJSON(w, http.StatusCreated, stream)
 }
 
@@ -6191,12 +6708,38 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	settings := streamSettingsFromRequest(body)
+	settings, code := streamSettingsFromRequest(body)
+	if code != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
+		return
+	}
 	if err := s.validateStreamSettingsReferences(r.Context(), settings); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": streamSettingsReferenceCode(err)})
 		return
 	}
-	stream, err := s.streams.UpdateStreamSettings(r.Context(), r.PathValue("id"), settings)
+	current := currentFromContext(r.Context())
+	if code, status := s.validateStreamServiceAssignmentRequest(r.Context(), body, current.Permissions); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	streamID := r.PathValue("id")
+	existing, err := s.streams.GetStream(r.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	if streamArchiveDirectRequested(body) {
+		settings, err = s.materializeStreamArchiveSettings(r.Context(), existing, settings, body)
+		if err != nil {
+			writeJSON(w, streamArchiveSettingsStatus(err), map[string]string{"code": streamArchiveSettingsCode(err)})
+			return
+		}
+	}
+	stream, err := s.streams.UpdateStreamSettings(r.Context(), streamID, settings)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -6205,33 +6748,297 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_settings_failed"})
 		return
 	}
-	current := currentFromContext(r.Context())
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_settings", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"discord_config_id": stream.DiscordConfigID, "discord_guild_id": stream.DiscordGuildID, "discord_voice_channel_id": stream.DiscordVoiceID, "discord_text_channel_configured": stream.DiscordTextID != "", "youtube_output_id": stream.YouTubeOutputID, "archive_profile_id": stream.ArchiveProfileID}})
+	if code, status := s.applyStreamServiceAssignments(r, stream.ID, body, current); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_settings", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
 	writeJSON(w, http.StatusOK, stream)
 }
 
-func streamSettingsFromRequest(body streamSettingsRequest) store.StreamSettings {
-	return store.StreamSettings{
-		DiscordConfigID:  strings.TrimSpace(body.DiscordConfigID),
-		DiscordGuildID:   strings.TrimSpace(body.DiscordGuildID),
-		DiscordVoiceID:   strings.TrimSpace(body.DiscordVoiceID),
-		DiscordTextID:    strings.TrimSpace(body.DiscordTextID),
-		EncoderProfileID: strings.TrimSpace(body.EncoderProfileID),
-		CaptionProfileID: strings.TrimSpace(body.CaptionProfileID),
-		OverlayProfileID: strings.TrimSpace(body.OverlayProfileID),
-		ArchiveProfileID: strings.TrimSpace(body.ArchiveProfileID),
-		YouTubeOutputID:  strings.TrimSpace(body.YouTubeOutputID),
-		EncoderInputURL:  strings.TrimSpace(body.EncoderInputURL),
+func streamSettingsFromRequest(body streamSettingsRequest) (store.StreamSettings, string) {
+	scheduledStart, code := parseStreamScheduleTime(body.ScheduledStartAt)
+	if code != "" {
+		return store.StreamSettings{}, code
 	}
+	scheduledEnd, code := parseStreamScheduleTime(body.ScheduledEndAt)
+	if code != "" {
+		return store.StreamSettings{}, code
+	}
+	if scheduledStart != nil && scheduledEnd != nil && !scheduledEnd.After(*scheduledStart) {
+		return store.StreamSettings{}, "schedule_end_before_start"
+	}
+	return store.StreamSettings{
+		ScheduledStartAt:      scheduledStart,
+		ScheduledEndAt:        scheduledEnd,
+		DiscordConfigID:       strings.TrimSpace(body.DiscordConfigID),
+		DiscordGuildID:        strings.TrimSpace(body.DiscordGuildID),
+		DiscordVoiceID:        strings.TrimSpace(body.DiscordVoiceID),
+		DiscordTextID:         strings.TrimSpace(body.DiscordTextID),
+		AutoStartTrigger:      normalizeAutoStartTrigger(body.AutoStartTrigger),
+		EncoderProfileID:      strings.TrimSpace(body.EncoderProfileID),
+		CaptionProfileID:      strings.TrimSpace(body.CaptionProfileID),
+		OverlayProfileID:      strings.TrimSpace(body.OverlayProfileID),
+		ArchiveProfileID:      strings.TrimSpace(body.ArchiveProfileID),
+		ArchiveOAuthAccountID: strings.TrimSpace(body.ArchiveOAuthAccountID),
+		ArchiveSharedDrive:    body.ArchiveSharedDrive,
+		ArchiveSharedDriveID:  strings.TrimSpace(body.ArchiveSharedDriveID),
+		ArchiveFileName:       archiveSafeFileName(body.ArchiveFileName),
+		YouTubeOutputID:       strings.TrimSpace(body.YouTubeOutputID),
+		EncoderInputURL:       strings.TrimSpace(body.EncoderInputURL),
+	}, ""
+}
+
+func parseStreamScheduleTime(value string) (*time.Time, string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, ""
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, "schedule_time_invalid"
+	}
+	utc := parsed.UTC()
+	return &utc, ""
 }
 
 func streamSettingsConfigured(settings store.StreamSettings) bool {
-	return settings.DiscordConfigID != "" || settings.DiscordGuildID != "" || settings.DiscordVoiceID != "" || settings.DiscordTextID != "" || settings.EncoderProfileID != "" || settings.CaptionProfileID != "" || settings.OverlayProfileID != "" || settings.ArchiveProfileID != "" || settings.YouTubeOutputID != "" || settings.EncoderInputURL != ""
+	return settings.ScheduledStartAt != nil || settings.ScheduledEndAt != nil || settings.DiscordConfigID != "" || settings.DiscordGuildID != "" || settings.DiscordVoiceID != "" || settings.DiscordTextID != "" || settings.AutoStartTrigger != "" || settings.EncoderProfileID != "" || settings.CaptionProfileID != "" || settings.OverlayProfileID != "" || settings.ArchiveProfileID != "" || settings.ArchiveDriveDestinationID != "" || settings.ArchiveOAuthAccountID != "" || settings.ArchiveSharedDrive || settings.ArchiveSharedDriveID != "" || settings.ArchiveFileName != "" || settings.YouTubeOutputID != "" || settings.EncoderInputURL != ""
+}
+
+func normalizeAutoStartTrigger(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func streamArchiveDirectRequested(body streamSettingsRequest) bool {
+	return strings.TrimSpace(body.ArchiveOAuthAccountID) != "" ||
+		strings.TrimSpace(body.ArchiveFolderID) != "" ||
+		body.ArchiveSharedDrive ||
+		strings.TrimSpace(body.ArchiveSharedDriveID) != "" ||
+		strings.TrimSpace(body.ArchiveFileName) != ""
+}
+
+func (s *Server) materializeStreamArchiveSettings(ctx context.Context, stream store.Stream, settings store.StreamSettings, body streamSettingsRequest) (store.StreamSettings, error) {
+	if s.integrations == nil || s.profiles == nil {
+		return settings, errArchiveSettingsStoreUnavailable
+	}
+	oauthAccountID := strings.TrimSpace(body.ArchiveOAuthAccountID)
+	if oauthAccountID == "" {
+		return settings, errArchiveOAuthAccountRequired
+	}
+	folderID := strings.TrimSpace(body.ArchiveFolderID)
+	destinationID := strings.TrimSpace(stream.ArchiveDriveDestinationID)
+	if destinationID == "" && folderID == "" {
+		return settings, errArchiveFolderIDRequired
+	}
+	sharedDriveID := strings.TrimSpace(body.ArchiveSharedDriveID)
+	if body.ArchiveSharedDrive && sharedDriveID == "" {
+		return settings, errArchiveSharedDriveIDRequired
+	}
+	if err := s.validateDriveOAuthReadiness(ctx, store.DriveDestination{AuthMode: "oauth2", OAuthAccountID: oauthAccountID}); err != nil {
+		return settings, err
+	}
+	destination, err := s.upsertStreamArchiveDriveDestination(ctx, stream, destinationID, oauthAccountID, folderID, body.ArchiveSharedDrive)
+	if err != nil {
+		return settings, err
+	}
+	fileName := archiveSafeFileName(body.ArchiveFileName)
+	if fileName == "" {
+		fileName = defaultArchiveFileName(stream.Name, time.Now())
+	}
+	profileID, err := s.upsertStreamArchiveProfile(ctx, stream, destination.ID, fileName, body.ArchiveSharedDrive, sharedDriveID)
+	if err != nil {
+		return settings, err
+	}
+	settings.ArchiveProfileID = profileID
+	settings.ArchiveDriveDestinationID = destination.ID
+	settings.ArchiveOAuthAccountID = oauthAccountID
+	settings.ArchiveSharedDrive = body.ArchiveSharedDrive
+	settings.ArchiveSharedDriveID = sharedDriveID
+	settings.ArchiveFileName = fileName
+	return settings, nil
+}
+
+func (s *Server) upsertStreamArchiveDriveDestination(ctx context.Context, stream store.Stream, destinationID, oauthAccountID, folderID string, sharedDrive bool) (store.DriveDestination, error) {
+	destination := store.DriveDestination{
+		ID:             strings.TrimSpace(destinationID),
+		Name:           streamArchiveDestinationName(stream),
+		AuthMode:       "oauth2",
+		OAuthAccountID: oauthAccountID,
+		FolderID:       folderID,
+		SharedDrive:    sharedDrive,
+		BasePath:       "AutoStream",
+	}
+	if destination.ID != "" {
+		updated, err := s.integrations.UpdateDriveDestination(ctx, destination)
+		if errors.Is(err, store.ErrNotFound) {
+			destination.ID = ""
+		} else {
+			return updated, err
+		}
+	}
+	return s.integrations.CreateDriveDestination(ctx, destination)
+}
+
+func (s *Server) upsertStreamArchiveProfile(ctx context.Context, stream store.Stream, destinationID, fileName string, sharedDrive bool, sharedDriveID string) (string, error) {
+	config := map[string]any{
+		"drive_destination_id":  strings.TrimSpace(destinationID),
+		"stream_archive_direct": true,
+		"archive_file_name":     archiveSafeFileName(fileName),
+	}
+	if sharedDrive {
+		config["shared_drive"] = true
+	}
+	if sharedDriveID != "" {
+		config["shared_drive_id"] = sharedDriveID
+	}
+	name := streamArchiveProfileName(stream)
+	if profileID, ok := s.directArchiveProfileID(ctx, stream); ok {
+		profile, err := s.profiles.UpdateProfile(ctx, store.ProfileArchive, profileID, name, config)
+		if err != nil {
+			return "", err
+		}
+		return profile.ID, nil
+	}
+	profile, err := s.profiles.CreateProfile(ctx, store.ProfileArchive, name, config)
+	if err != nil {
+		fallbackName := name + "-" + strconv.FormatInt(time.Now().Unix(), 10)
+		profile, err = s.profiles.CreateProfile(ctx, store.ProfileArchive, fallbackName, config)
+	}
+	if err != nil {
+		return "", err
+	}
+	return profile.ID, nil
+}
+
+func (s *Server) directArchiveProfileID(ctx context.Context, stream store.Stream) (string, bool) {
+	profileID := strings.TrimSpace(stream.ArchiveProfileID)
+	if profileID == "" {
+		return "", false
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileArchive, profileID)
+	if err != nil {
+		return "", false
+	}
+	return profile.ID, configBool(profile.Config, "stream_archive_direct")
+}
+
+func streamArchiveDestinationName(stream store.Stream) string {
+	return strings.TrimSpace(stream.Name) + " archive drive " + shortID(stream.ID)
+}
+
+func streamArchiveProfileName(stream store.Stream) string {
+	return strings.TrimSpace(stream.Name) + " archive " + shortID(stream.ID)
+}
+
+func shortID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) > 8 {
+		return id[:8]
+	}
+	if id == "" {
+		return "stream"
+	}
+	return id
+}
+
+func defaultArchiveFileName(streamName string, now time.Time) string {
+	base := archiveSafeFileName(streamName)
+	if base == "" {
+		base = "archive"
+	}
+	if strings.HasSuffix(strings.ToLower(base), ".mp4") {
+		base = base[:len(base)-4]
+	}
+	return archiveSafeFileName(base + "-" + now.Format("20060102") + ".mp4")
+}
+
+func archiveSafeFileName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "/", "_")
+	value = strings.ReplaceAll(value, "\\", "_")
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '_'
+		}
+		return r
+	}, value)
+	value = strings.Trim(value, " .")
+	if value == "" {
+		return ""
+	}
+	if !strings.HasSuffix(strings.ToLower(value), ".mp4") {
+		value += ".mp4"
+	}
+	return value
+}
+
+func streamArchiveSettingsCode(err error) string {
+	switch {
+	case errors.Is(err, errArchiveOAuthAccountRequired):
+		return "archive_oauth_account_required"
+	case errors.Is(err, errArchiveFolderIDRequired):
+		return "archive_folder_id_required"
+	case errors.Is(err, errArchiveSharedDriveIDRequired):
+		return "archive_shared_drive_id_required"
+	case errors.Is(err, errDriveOAuthAccountUnavailable):
+		return "drive_oauth_account_unavailable"
+	case errors.Is(err, store.ErrSecretKeyRequired):
+		return "secret_encryption_key_required"
+	case errors.Is(err, errArchiveSettingsStoreUnavailable):
+		return "archive_settings_store_unavailable"
+	default:
+		return "archive_settings_failed"
+	}
+}
+
+func streamArchiveSettingsStatus(err error) int {
+	switch {
+	case errors.Is(err, store.ErrSecretKeyRequired), errors.Is(err, errArchiveSettingsStoreUnavailable):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, errDriveOAuthAccountUnavailable):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+func streamSettingsAuditMetadata(stream store.Stream) map[string]any {
+	return map[string]any{
+		"name":                               stream.Name,
+		"scheduled_start_at":                 stream.ScheduledStartAt,
+		"scheduled_end_at":                   stream.ScheduledEndAt,
+		"discord_config_id":                  stream.DiscordConfigID,
+		"discord_guild_id":                   stream.DiscordGuildID,
+		"discord_voice_channel_id":           stream.DiscordVoiceID,
+		"discord_text_channel_configured":    stream.DiscordTextID != "",
+		"auto_start_trigger":                 stream.AutoStartTrigger,
+		"youtube_output_id":                  stream.YouTubeOutputID,
+		"archive_profile_id":                 stream.ArchiveProfileID,
+		"archive_drive_destination_id":       stream.ArchiveDriveDestinationID,
+		"archive_oauth_account_id":           stream.ArchiveOAuthAccountID,
+		"archive_folder_id_configured":       stream.ArchiveFolderIDConfigured,
+		"archive_shared_drive":               stream.ArchiveSharedDrive,
+		"archive_shared_drive_id_configured": stream.ArchiveSharedDriveID != "",
+		"archive_file_name":                  stream.ArchiveFileName,
+	}
 }
 
 func (s *Server) validateStreamSettingsReferences(ctx context.Context, settings store.StreamSettings) error {
 	discordConfigID := strings.TrimSpace(settings.DiscordConfigID)
 	hasDiscordOverride := strings.TrimSpace(settings.DiscordGuildID) != "" || strings.TrimSpace(settings.DiscordVoiceID) != "" || strings.TrimSpace(settings.DiscordTextID) != ""
+	switch strings.TrimSpace(settings.AutoStartTrigger) {
+	case "":
+	case autoStartTriggerDiscordVoiceJoin:
+		if discordConfigID == "" || strings.TrimSpace(settings.DiscordGuildID) == "" || strings.TrimSpace(settings.DiscordVoiceID) == "" {
+			return errAutoStartDiscordRequired
+		}
+	default:
+		return errAutoStartTriggerInvalid
+	}
 	if hasDiscordOverride && discordConfigID == "" {
 		return errDiscordConfigRequired
 	}
@@ -6242,18 +7049,138 @@ func (s *Server) validateStreamSettingsReferences(ctx context.Context, settings 
 			return err
 		}
 	}
+	if err := s.validateProfileReference(ctx, settings.YouTubeOutputID, store.ProfileYouTubeOutput, errYouTubeOutputNotFound); err != nil {
+		return err
+	}
+	if err := s.validateProfileReference(ctx, settings.EncoderProfileID, store.ProfileEncoder, errEncoderProfileNotFound); err != nil {
+		return err
+	}
+	if err := s.validateProfileReference(ctx, settings.CaptionProfileID, store.ProfileCaption, errCaptionProfileNotFound); err != nil {
+		return err
+	}
+	if err := s.validateProfileReference(ctx, settings.OverlayProfileID, store.ProfileOverlay, errOverlayProfileNotFound); err != nil {
+		return err
+	}
+	if err := s.validateProfileReference(ctx, settings.ArchiveProfileID, store.ProfileArchive, errArchiveProfileNotFound); err != nil {
+		return err
+	}
+	if strings.TrimSpace(settings.ArchiveOAuthAccountID) != "" {
+		account, err := s.integrations.GetOAuthAccount(ctx, settings.ArchiveOAuthAccountID)
+		if errors.Is(err, store.ErrNotFound) {
+			return errDriveOAuthAccountUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(account.ProviderType, "google") || !oauthScopesContainDriveAccess(account.Scopes) {
+			return errDriveOAuthAccountUnavailable
+		}
+	}
 	if err := validateEncoderInputURL(settings.EncoderInputURL); err != nil {
 		return err
 	}
 	return nil
 }
 
+func (s *Server) validateProfileReference(ctx context.Context, id string, kind store.ProfileKind, notFound error) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	if _, err := s.profiles.GetProfile(ctx, kind, id); errors.Is(err, store.ErrNotFound) {
+		return notFound
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) validateStreamServiceAssignmentRequest(ctx context.Context, body streamSettingsRequest, permissions []string) (string, int) {
+	for _, item := range []struct {
+		serviceID   string
+		serviceType string
+		permission  string
+		notFound    string
+		wrongType   string
+	}{
+		{serviceID: strings.TrimSpace(body.EncoderServiceID), serviceType: "encoder_recorder", permission: "services.assign", notFound: "encoder_service_not_found", wrongType: "encoder_service_type_invalid"},
+		{serviceID: strings.TrimSpace(body.WorkerServiceID), serviceType: "worker", permission: "workers.assign", notFound: "worker_service_not_found", wrongType: "worker_service_type_invalid"},
+	} {
+		if item.serviceID == "" {
+			continue
+		}
+		if !security.HasPermission(permissions, item.permission) {
+			return "permission_denied", http.StatusForbidden
+		}
+		_, code, status := s.assignableStreamService(ctx, item.serviceID, item.serviceType, item.notFound, item.wrongType)
+		if code != "" {
+			return code, status
+		}
+	}
+	return "", 0
+}
+
+func (s *Server) assignableStreamService(ctx context.Context, serviceID, serviceType, notFoundCode, wrongTypeCode string) (store.RegisteredService, string, int) {
+	if s.services == nil {
+		return store.RegisteredService{}, "service_registry_not_configured", http.StatusServiceUnavailable
+	}
+	service, err := s.services.GetService(ctx, serviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.RegisteredService{}, notFoundCode, http.StatusBadRequest
+	}
+	if err != nil {
+		return store.RegisteredService{}, "get_service_failed", http.StatusInternalServerError
+	}
+	if strings.TrimSpace(service.ServiceType) != serviceType {
+		return store.RegisteredService{}, wrongTypeCode, http.StatusBadRequest
+	}
+	return service, "", 0
+}
+
+func (s *Server) applyStreamServiceAssignments(r *http.Request, streamID string, body streamSettingsRequest, current currentUser) (string, int) {
+	for _, item := range []struct {
+		serviceID   string
+		serviceType string
+	}{
+		{serviceID: strings.TrimSpace(body.EncoderServiceID), serviceType: "encoder_recorder"},
+		{serviceID: strings.TrimSpace(body.WorkerServiceID), serviceType: "worker"},
+	} {
+		if item.serviceID == "" {
+			continue
+		}
+		service, err := s.services.AssignServiceToStreamWithRole(r.Context(), item.serviceID, streamID, current.User.ID, "primary")
+		if errors.Is(err, store.ErrNotFound) {
+			return "service_not_found", http.StatusBadRequest
+		}
+		if err != nil {
+			return "assign_service_failed", http.StatusInternalServerError
+		}
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: service.ServiceID, Result: "success", Metadata: map[string]any{"stream_id": streamID, "service_type": item.serviceType, "assignment_role": "primary", "source": "stream_settings"}})
+	}
+	return "", 0
+}
+
 func streamSettingsReferenceCode(err error) string {
 	switch {
+	case errors.Is(err, errAutoStartTriggerInvalid):
+		return "auto_start_trigger_invalid"
+	case errors.Is(err, errAutoStartDiscordRequired):
+		return "auto_start_discord_required"
 	case errors.Is(err, errDiscordConfigRequired):
 		return "discord_config_required"
 	case errors.Is(err, errDiscordConfigNotFound):
 		return "discord_config_not_found"
+	case errors.Is(err, errYouTubeOutputNotFound):
+		return "youtube_output_not_found"
+	case errors.Is(err, errEncoderProfileNotFound):
+		return "encoder_profile_not_found"
+	case errors.Is(err, errCaptionProfileNotFound):
+		return "caption_profile_not_found"
+	case errors.Is(err, errOverlayProfileNotFound):
+		return "overlay_profile_not_found"
+	case errors.Is(err, errArchiveProfileNotFound):
+		return "archive_profile_not_found"
+	case errors.Is(err, errDriveOAuthAccountUnavailable):
+		return "drive_oauth_account_unavailable"
 	case errors.Is(err, errEncoderInputURLBlocked):
 		return "encoder_input_url_blocked"
 	default:
@@ -6348,6 +7275,19 @@ func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return
 	}
+	assignBeforeStart := false
+	if !assigned {
+		configuredService, configured, err := s.discordServiceTokenConfiguredForStream(r.Context(), token, stream)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+			return
+		}
+		if configured {
+			service = configuredService
+			assigned = true
+			assignBeforeStart = true
+		}
+	}
 	if !assigned {
 		s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "failure", map[string]any{"reason": "service_not_primary_assignment"})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_primary_assignment"})
@@ -6358,9 +7298,74 @@ func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"stream": stream, "already_active": true})
 		return
 	}
+	if strings.TrimSpace(stream.AutoStartTrigger) != autoStartTriggerDiscordVoiceJoin {
+		s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "failure", map[string]any{"service_id": service.ServiceID, "reason": "stream_auto_start_not_enabled"})
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_auto_start_not_enabled"})
+		return
+	}
+	if !isAutoStartableStreamStatus(stream.Status) {
+		s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "failure", map[string]any{"service_id": service.ServiceID, "reason": "stream_not_waiting", "status": stream.Status})
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_not_waiting"})
+		return
+	}
+	if assignBeforeStart {
+		assignedService, err := s.services.AssignServiceToStreamWithRole(r.Context(), service.ServiceID, stream.ID, "service:"+service.ServiceID, "primary")
+		if errors.Is(err, store.ErrNotFound) {
+			s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "failure", map[string]any{"service_id": service.ServiceID, "reason": "service_not_registered"})
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_primary_assignment"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_stream_service_failed"})
+			return
+		}
+		service = assignedService
+	}
 	r.Body = http.NoBody
 	r = r.WithContext(context.WithValue(r.Context(), currentUserKey{}, serviceCurrentUser(service)))
 	s.startStream(w, r)
+}
+
+func (s *Server) discordServiceTokenConfiguredForStream(ctx context.Context, token store.ServiceToken, stream store.Stream) (store.RegisteredService, bool, error) {
+	if s.services == nil || s.profiles == nil {
+		return store.RegisteredService{}, false, nil
+	}
+	service, registered, err := s.registeredServiceForToken(ctx, token)
+	if err != nil || !registered {
+		return store.RegisteredService{}, false, err
+	}
+	if service.ServiceType != "discord_bot" {
+		return store.RegisteredService{}, false, nil
+	}
+	matches, err := s.streamDiscordConfigMatchesService(ctx, stream, service.ServiceID)
+	if err != nil || !matches {
+		return store.RegisteredService{}, false, err
+	}
+	assignments, err := s.services.ListStreamAssignments(ctx, stream.ID)
+	if err != nil {
+		return store.RegisteredService{}, false, err
+	}
+	for _, assignedService := range assignments {
+		if strings.TrimSpace(assignedService.ServiceType) == "discord_bot" && normalizeAssignmentRole(assignedService.AssignmentRole) == "primary" && strings.TrimSpace(assignedService.ServiceID) != service.ServiceID {
+			return store.RegisteredService{}, false, nil
+		}
+	}
+	service.AssignmentRole = "primary"
+	return service, true, nil
+}
+
+func (s *Server) streamDiscordConfigMatchesService(ctx context.Context, stream store.Stream, serviceID string) (bool, error) {
+	if s.profiles == nil || strings.TrimSpace(stream.DiscordConfigID) == "" || strings.TrimSpace(serviceID) == "" {
+		return false, nil
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileDiscordConfig, stream.DiscordConfigID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return runtimeProfileMatchesService(profile.Config, serviceID), nil
 }
 
 func (s *Server) serviceTokenPrimaryAssignedToStream(ctx context.Context, token store.ServiceToken, streamID, serviceType string) (store.RegisteredService, bool, error) {
@@ -6392,6 +7397,15 @@ func serviceCurrentUser(service store.RegisteredService) currentUser {
 func isActiveStreamStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "starting", "live", "stopping":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAutoStartableStreamStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "created", "draft", "scheduled", "ready":
 		return true
 	default:
 		return false
@@ -6523,10 +7537,19 @@ var (
 	errDriveDestinationNotFound          = errors.New("drive_destination_not_found")
 	errDriveDestinationUnavailable       = errors.New("drive_destination_unavailable")
 	errDriveOAuthAccountUnavailable      = errors.New("drive_oauth_account_unavailable")
+	errArchiveOAuthAccountRequired       = errors.New("archive_oauth_account_required")
+	errArchiveFolderIDRequired           = errors.New("archive_folder_id_required")
+	errArchiveSharedDriveIDRequired      = errors.New("archive_shared_drive_id_required")
+	errArchiveSettingsStoreUnavailable   = errors.New("archive_settings_store_unavailable")
+	errAutoStartTriggerInvalid           = errors.New("auto_start_trigger_invalid")
+	errAutoStartDiscordRequired          = errors.New("auto_start_discord_required")
 	errDiscordConfigRequired             = errors.New("discord_config_required")
 	errDiscordConfigNotFound             = errors.New("discord_config_not_found")
 	errDiscordConfigInvalid              = errors.New("discord_config_invalid")
 	errDiscordConfigServiceMismatch      = errors.New("discord_config_service_mismatch")
+	errEncoderProfileNotFound            = errors.New("encoder_profile_not_found")
+	errCaptionProfileNotFound            = errors.New("caption_profile_not_found")
+	errOverlayProfileNotFound            = errors.New("overlay_profile_not_found")
 	errEncoderInputURLBlocked            = errors.New("encoder_input_url_blocked")
 )
 
@@ -6549,9 +7572,9 @@ func (s *Server) applyDiscordConfig(ctx context.Context, assignments []store.Reg
 			return errDiscordConfigServiceMismatch
 		}
 	}
-	guildID := firstNonEmpty(req.DiscordGuildID, configString(profile.Config, "guild_id"))
-	voiceChannelID := firstNonEmpty(req.DiscordVoiceChannelID, configString(profile.Config, "voice_channel_id"))
-	textChannelID := firstNonEmpty(req.DiscordTextChannelID, configString(profile.Config, "text_channel_id"))
+	guildID := strings.TrimSpace(req.DiscordGuildID)
+	voiceChannelID := strings.TrimSpace(req.DiscordVoiceChannelID)
+	textChannelID := strings.TrimSpace(req.DiscordTextChannelID)
 	if guildID == "" || voiceChannelID == "" {
 		return errDiscordConfigInvalid
 	}
@@ -6705,7 +7728,7 @@ func (s *Server) validateYouTubeLiveAPIReadiness(ctx context.Context, stream sto
 	if !strings.EqualFold(provider.ProviderType, "google") || !strings.EqualFold(account.ProviderType, "google") {
 		return errYouTubeOAuthAccountUnavailable
 	}
-	if !oauthScopesContainYouTubeAccess(effectiveOAuthAccountScopes(account.Scopes, provider.Scopes)) {
+	if !oauthScopesContainYouTubeAccess(account.Scopes) {
 		return errYouTubeOAuthAccountUnavailable
 	}
 	return nil
@@ -7114,41 +8137,41 @@ func (s *Server) applyArchiveConfig(ctx context.Context, req *servicecall.StartR
 	if strings.TrimSpace(destination.FolderID) == "" {
 		return errDriveDestinationUnavailable
 	}
+	if !strings.EqualFold(strings.TrimSpace(destination.AuthMode), "oauth2") {
+		return errArchiveProfileInvalidConfig
+	}
 	req.ArchiveConfig = map[string]any{
 		"drive_destination_id":  destination.ID,
 		"archive_profile_id":    profile.ID,
-		"auth_mode":             destination.AuthMode,
+		"auth_mode":             "oauth2",
 		"oauth_account_id":      destination.OAuthAccountID,
 		"folder_id_secret_name": driveDestinationFolderIDSecretName(destination.ID),
 		"base_path":             destination.BasePath,
 		"shared_drive":          destination.SharedDrive,
 	}
-	if destination.AuthMode == "service_account" {
-		secretName := serviceAccountCredentialsSecretNameFromConfig(profile.Config)
-		if secretName == "" {
-			return errArchiveProfileInvalidConfig
-		}
-		req.ArchiveConfig["service_account_credentials_secret_name"] = secretName
+	account, err := s.integrations.GetOAuthAccountForDispatch(ctx, destination.OAuthAccountID)
+	if errors.Is(err, store.ErrNotFound) || strings.TrimSpace(account.RefreshToken) == "" {
+		return errDriveOAuthAccountUnavailable
 	}
-	if destination.AuthMode == "oauth2" {
-		account, err := s.integrations.GetOAuthAccountForDispatch(ctx, destination.OAuthAccountID)
-		if errors.Is(err, store.ErrNotFound) || strings.TrimSpace(account.RefreshToken) == "" {
-			return errDriveOAuthAccountUnavailable
-		}
-		if err != nil {
-			return err
-		}
-		provider, err := s.integrations.GetOAuthProviderForDispatch(ctx, account.ProviderID)
-		if errors.Is(err, store.ErrNotFound) || strings.TrimSpace(provider.ClientSecret) == "" {
-			return errDriveOAuthAccountUnavailable
-		}
-		if err != nil {
-			return err
-		}
-		req.ArchiveConfig["oauth_provider_id"] = provider.ID
-		req.ArchiveConfig["client_id"] = provider.ClientID
-		req.ArchiveConfig["client_secret_secret_name"] = oauthProviderClientSecretSecretName(provider.ID)
-		req.ArchiveConfig["refresh_token_secret_name"] = oauthAccountRefreshTokenSecretName(account.ID)
+	if err != nil {
+		return err
+	}
+	provider, err := s.integrations.GetOAuthProviderForDispatch(ctx, account.ProviderID)
+	if errors.Is(err, store.ErrNotFound) || strings.TrimSpace(provider.ClientSecret) == "" {
+		return errDriveOAuthAccountUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	req.ArchiveConfig["oauth_provider_id"] = provider.ID
+	req.ArchiveConfig["client_id"] = provider.ClientID
+	req.ArchiveConfig["client_secret_secret_name"] = oauthProviderClientSecretSecretName(provider.ID)
+	req.ArchiveConfig["refresh_token_secret_name"] = oauthAccountRefreshTokenSecretName(account.ID)
+	if fileName := archiveSafeFileName(configString(profile.Config, "archive_file_name")); fileName != "" {
+		req.ArchiveConfig["archive_file_name"] = fileName
+	}
+	if sharedDriveID := strings.TrimSpace(configString(profile.Config, "shared_drive_id")); sharedDriveID != "" {
+		req.ArchiveConfig["shared_drive_id"] = sharedDriveID
 	}
 	return nil
 }
@@ -7190,24 +8213,10 @@ func (s *Server) validateArchiveConfigReadiness(ctx context.Context, req *servic
 	if !destination.FolderIDConfigured {
 		return errDriveDestinationUnavailable
 	}
-	switch strings.ToLower(strings.TrimSpace(destination.AuthMode)) {
-	case "service_account":
-		if serviceAccountCredentialsSecretNameFromConfig(profile.Config) == "" {
-			return errArchiveProfileInvalidConfig
-		}
-		return nil
-	case "oauth2":
-		return s.validateDriveOAuthReadiness(ctx, destination)
-	default:
+	if !strings.EqualFold(strings.TrimSpace(destination.AuthMode), "oauth2") {
 		return errArchiveProfileInvalidConfig
 	}
-}
-
-func serviceAccountCredentialsSecretNameFromConfig(config map[string]any) string {
-	if secretName := strings.TrimSpace(configString(config, "service_account_credentials_secret_name")); secretName != "" {
-		return secretName
-	}
-	return strings.TrimSpace(configString(config, "service_account_json_secret_name"))
+	return s.validateDriveOAuthReadiness(ctx, destination)
 }
 
 func (s *Server) validateDriveOAuthReadiness(ctx context.Context, destination store.DriveDestination) error {
@@ -7231,7 +8240,7 @@ func (s *Server) validateDriveOAuthReadiness(ctx context.Context, destination st
 	if !strings.EqualFold(provider.ProviderType, "google") || !strings.EqualFold(account.ProviderType, "google") {
 		return errDriveOAuthAccountUnavailable
 	}
-	if !oauthScopesContainDriveAccess(effectiveOAuthAccountScopes(account.Scopes, provider.Scopes)) {
+	if !oauthScopesContainDriveAccess(account.Scopes) {
 		return errDriveOAuthAccountUnavailable
 	}
 	return nil
@@ -8088,17 +9097,52 @@ func (s *Server) appSettingsView(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_failed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, settings)
+	writeJSON(w, http.StatusOK, s.appSettingsWithSecretStatus(r.Context(), settings))
 }
 
 func (s *Server) updateAppSettings(w http.ResponseWriter, r *http.Request) {
-	var body store.AppSettings
+	var body struct {
+		store.AppSettings
+		SMTPPassword string `json:"smtp_password"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
 	current := currentFromContext(r.Context())
-	settings, err := s.appSettings.UpdateAppSettings(r.Context(), body)
+	smtpPassword := strings.TrimSpace(body.SMTPPassword)
+	body.SMTPPasswordConfigured = s.secretConfigured(r.Context(), store.AppSMTPPasswordSecretName)
+	if smtpPassword != "" {
+		body.SMTPPasswordConfigured = true
+	}
+	if !body.SMTPEnabled {
+		body.SMTPPasswordConfigured = false
+	}
+	normalized, err := store.NormalizeAppSettings(body.AppSettings)
+	if errors.Is(err, store.ErrInvalidSettings) {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "failure", Metadata: map[string]any{"reason": "invalid_settings"}})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_app_settings"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_update_failed"})
+		return
+	}
+	if smtpPassword != "" || !normalized.SMTPEnabled {
+		status, err := s.secrets.UpdateSecret(r.Context(), store.AppSMTPPasswordSecretName, smtpPassword)
+		if errors.Is(err, store.ErrSecretKeyRequired) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "secret_encryption_key_required"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "smtp_password_update_failed"})
+			return
+		}
+		normalized.SMTPPasswordConfigured = status.Configured
+	} else {
+		normalized.SMTPPasswordConfigured = s.secretConfigured(r.Context(), store.AppSMTPPasswordSecretName)
+	}
+	settings, err := s.appSettings.UpdateAppSettings(r.Context(), normalized)
 	if errors.Is(err, store.ErrInvalidSettings) {
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "failure", Metadata: map[string]any{"reason": "invalid_settings"}})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_app_settings"})
@@ -8109,7 +9153,25 @@ func (s *Server) updateAppSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "success"})
-	writeJSON(w, http.StatusOK, settings)
+	writeJSON(w, http.StatusOK, s.appSettingsWithSecretStatus(r.Context(), settings))
+}
+
+func (s *Server) appSettingsWithSecretStatus(ctx context.Context, settings store.AppSettings) store.AppSettings {
+	settings.SMTPPasswordConfigured = s.secretConfigured(ctx, store.AppSMTPPasswordSecretName)
+	return settings
+}
+
+func (s *Server) secretConfigured(ctx context.Context, name string) bool {
+	statuses, err := s.secrets.ListSecretStatus(ctx)
+	if err != nil {
+		return false
+	}
+	for _, status := range statuses {
+		if status.Name == name {
+			return status.Configured
+		}
+	}
+	return false
 }
 
 type versionInfoResponse struct {
@@ -8347,6 +9409,160 @@ func (s *Server) observabilityGet(endpoint string) http.HandlerFunc {
 			return
 		}
 		writeObservabilityJSON(w, http.StatusOK, endpoint, body)
+	}
+}
+
+func (s *Server) observabilityMetrics(w http.ResponseWriter, r *http.Request) {
+	localMetrics, localErr := s.serviceMetricSnapshots(r.Context())
+	obs, configured, err := s.observabilityClient(r.Context())
+	if err != nil {
+		if localErr == nil && len(localMetrics) > 0 {
+			writeJSON(w, http.StatusOK, localMetrics)
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		return
+	}
+	if !configured {
+		if localErr == nil && len(localMetrics) > 0 {
+			writeJSON(w, http.StatusOK, localMetrics)
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		return
+	}
+	body, err := obs.Get(r.Context(), "/metrics")
+	if err != nil {
+		if localErr == nil && len(localMetrics) > 0 {
+			writeJSON(w, http.StatusOK, localMetrics)
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+		return
+	}
+	if localErr != nil {
+		writeObservabilityJSON(w, http.StatusOK, "/metrics", body)
+		return
+	}
+	merged, err := mergeMetricSnapshots(sanitizeObservabilityResponse("/metrics", body), localMetrics)
+	if err != nil {
+		writeObservabilityJSON(w, http.StatusOK, "/metrics", body)
+		return
+	}
+	writeJSON(w, http.StatusOK, merged)
+}
+
+func (s *Server) serviceMetricSnapshots(ctx context.Context) ([]map[string]any, error) {
+	if s.services == nil {
+		return nil, nil
+	}
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0)
+	for _, service := range services {
+		if len(service.Metrics) == 0 {
+			continue
+		}
+		metricNames := make([]string, 0, len(service.Metrics))
+		for name := range service.Metrics {
+			metricNames = append(metricNames, name)
+		}
+		sort.Strings(metricNames)
+		updatedAt := service.UpdatedAt
+		if service.LastHeartbeatAt != nil {
+			updatedAt = *service.LastHeartbeatAt
+		}
+		for _, name := range metricNames {
+			value, ok := serviceMetricNumber(service.Metrics[name])
+			if !ok {
+				continue
+			}
+			out = append(out, map[string]any{
+				"name":         name,
+				"service_id":   service.ServiceID,
+				"service_type": service.ServiceType,
+				"status":       service.Status,
+				"value":        value,
+				"updated_at":   updatedAt,
+			})
+		}
+	}
+	return out, nil
+}
+
+func mergeMetricSnapshots(upstream []byte, local []map[string]any) ([]map[string]any, error) {
+	var merged []map[string]any
+	if len(strings.TrimSpace(string(upstream))) > 0 {
+		if err := json.Unmarshal(upstream, &merged); err != nil {
+			return nil, err
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, row := range merged {
+		if key := metricSnapshotKey(row); key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, row := range local {
+		if key := metricSnapshotKey(row); key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		merged = append(merged, row)
+	}
+	return merged, nil
+}
+
+func metricSnapshotKey(row map[string]any) string {
+	serviceID := jsonStringField(row, "service_id")
+	streamID := jsonStringField(row, "stream_id")
+	name := jsonStringField(row, "name")
+	if serviceID == "" || name == "" {
+		return ""
+	}
+	return serviceID + "\x00" + streamID + "\x00" + name
+}
+
+func jsonStringField(row map[string]any, key string) string {
+	value, _ := row[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func serviceMetricNumber(raw any) (float64, bool) {
+	switch value := raw.(type) {
+	case int:
+		return float64(value), true
+	case int8:
+		return float64(value), true
+	case int16:
+		return float64(value), true
+	case int32:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	case uint:
+		return float64(value), true
+	case uint8:
+		return float64(value), true
+	case uint16:
+		return float64(value), true
+	case uint32:
+		return float64(value), true
+	case uint64:
+		return float64(value), true
+	case float32:
+		return float64(value), true
+	case float64:
+		return value, true
+	case json.Number:
+		parsed, err := value.Float64()
+		return parsed, err == nil
+	default:
+		return 0, false
 	}
 }
 
@@ -8949,7 +10165,7 @@ func isOAuthCallbackPath(path string) bool {
 }
 
 func publicUser(user store.User) map[string]any {
-	return map[string]any{"id": user.ID, "username": user.Username, "status": user.Status, "roles": user.Roles, "last_login_at": user.LastLoginAt, "last_login_ip": user.LastLoginIP}
+	return map[string]any{"id": user.ID, "username": user.Username, "email": user.Email, "status": user.Status, "roles": user.Roles, "last_login_at": user.LastLoginAt, "last_login_ip": user.LastLoginIP}
 }
 
 func publicUsers(users []store.User) []map[string]any {
@@ -8965,7 +10181,7 @@ func publicOAuthLoginProvider(provider store.OAuthProvider) map[string]any {
 		"id":            provider.ID,
 		"provider_type": provider.ProviderType,
 		"name":          provider.Name,
-		"scopes":        provider.Scopes,
+		"scopes":        loginOAuthScopes(provider.ProviderType),
 		"redirect_uri":  provider.RedirectURI,
 	}
 }
@@ -8993,35 +10209,70 @@ func validateOAuthProviderRequest(body oauthProviderRequest) string {
 	if !supportedLoginOAuthProvider(providerType) {
 		return "invalid_oauth_provider_type"
 	}
-	if !validConfiguredOAuthRedirectURI(body.RedirectURI) {
+	if !validOAuthRedirectURI(body.RedirectURI, "/auth/oauth/callback") {
 		return "oauth_redirect_uri_invalid"
 	}
-	redirectPath := oauthRedirectURIPath(body.RedirectURI)
-	switch redirectPath {
-	case "/auth/oauth/callback":
-		return ""
-	case "/integrations/oauth-accounts/callback":
-		if !supportedConnectedAccountProvider(providerType) {
-			return "oauth_connected_account_provider_unsupported"
-		}
-		if body.AutoProvision || len(body.DefaultRoleIDs) > 0 {
-			return "oauth_connected_account_auto_provision_not_allowed"
-		}
-		if !oauthScopesContainConnectedAccountAccess(body.Scopes) {
-			return "oauth_connected_account_scope_required"
-		}
-		return ""
+	return ""
+}
+
+func oauthProviderRequestScopes(providerType, redirectURI string, requested []string) []string {
+	_ = redirectURI
+	_ = requested
+	return loginOAuthScopes(providerType)
+}
+
+func loginOAuthScopes(providerType string) []string {
+	switch strings.ToLower(strings.TrimSpace(providerType)) {
+	case "google":
+		return []string{"openid", "email", "profile"}
+	case "github":
+		return []string{"read:user", "user:email"}
+	case "discord":
+		return []string{"identify", "email"}
 	default:
-		return "oauth_redirect_uri_invalid"
+		return []string{}
 	}
 }
 
-func oauthRedirectURIPath(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return ""
+func oauthAccountRequestedScopes(purpose string) ([]string, string) {
+	base := []string{"openid", "email", "profile"}
+	switch normalizeOAuthAccountPurpose(purpose) {
+	case "drive":
+		return append(base, "https://www.googleapis.com/auth/drive.file"), ""
+	case "youtube":
+		return append(base, "https://www.googleapis.com/auth/youtube.force-ssl"), ""
+	case "drive_youtube":
+		return append(base, "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/youtube.force-ssl"), ""
+	default:
+		return nil, "invalid_oauth_account_purpose"
 	}
-	return parsed.Path
+}
+
+func normalizeOAuthAccountPurpose(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "drive_youtube", "both", "all", "stream_archive", "archive_youtube":
+		return "drive_youtube"
+	case "drive", "archive", "google_drive":
+		return "drive"
+	case "youtube", "youtube_live":
+		return "youtube"
+	default:
+		return "invalid"
+	}
+}
+
+func cleanRequestStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func oauthScopesContainConnectedAccountAccess(scopes []string) bool {
@@ -9059,13 +10310,6 @@ func oauthScopesContainYouTubeAccess(scopes []string) bool {
 		}
 	}
 	return false
-}
-
-func effectiveOAuthAccountScopes(accountScopes, providerScopes []string) []string {
-	if len(accountScopes) > 0 {
-		return accountScopes
-	}
-	return providerScopes
 }
 
 func oauthAccountIdentityChanged(body oauthAccountRequest, existing store.OAuthAccount) bool {
@@ -9125,7 +10369,7 @@ func (s *Server) validateOAuthAccountRequest(ctx context.Context, body oauthAcco
 	if !supportedConnectedAccountProvider(provider.ProviderType) {
 		return "oauth_connected_account_provider_unsupported", http.StatusBadRequest
 	}
-	if !oauthScopesContainConnectedAccountAccess(effectiveOAuthAccountScopes(body.Scopes, provider.Scopes)) {
+	if !oauthScopesContainConnectedAccountAccess(body.Scopes) {
 		return "oauth_connected_account_scope_required", http.StatusBadRequest
 	}
 	return "", 0
@@ -9147,6 +10391,15 @@ func (s *Server) validateDriveDestinationRequest(ctx context.Context, body drive
 			return "drive_destination_drive_scope_required", http.StatusBadRequest
 		}
 	}
+	return "", 0
+}
+
+func normalizeDriveDestinationAPIRequest(body *driveDestinationRequest) (string, int) {
+	authMode := strings.TrimSpace(body.AuthMode)
+	if authMode != "" && !strings.EqualFold(authMode, "oauth2") {
+		return "drive_destination_auth_mode_unsupported", http.StatusBadRequest
+	}
+	body.AuthMode = "oauth2"
 	return "", 0
 }
 
@@ -9179,24 +10432,15 @@ func oauthAuthorizationURL(provider store.OAuthProvider, state store.OAuthLoginS
 	values.Set("redirect_uri", provider.RedirectURI)
 	values.Set("response_type", "code")
 	values.Set("state", state.StateToken)
-	scopes := provider.Scopes
+	scopes := loginOAuthScopes(provider.ProviderType)
 	switch strings.ToLower(strings.TrimSpace(provider.ProviderType)) {
 	case "google":
 		endpoint = "https://accounts.google.com/o/oauth2/v2/auth"
-		if len(scopes) == 0 {
-			scopes = []string{"openid", "email", "profile"}
-		}
 		values.Set("nonce", state.Nonce)
 	case "github":
 		endpoint = "https://github.com/login/oauth/authorize"
-		if len(scopes) == 0 {
-			scopes = []string{"read:user", "user:email"}
-		}
 	case "discord":
 		endpoint = "https://discord.com/oauth2/authorize"
-		if len(scopes) == 0 {
-			scopes = []string{"identify", "email"}
-		}
 	default:
 		return "", errors.New("unsupported oauth provider")
 	}
@@ -9217,12 +10461,20 @@ func oauthConnectedAccountAuthorizationURL(provider store.OAuthProvider, state s
 	values.Set("nonce", state.Nonce)
 	values.Set("access_type", "offline")
 	values.Set("prompt", "consent")
-	scopes := provider.Scopes
+	scopes := state.RequestedScopes
 	if len(scopes) == 0 {
-		scopes = []string{"openid", "email", "profile"}
+		scopes, _ = oauthAccountRequestedScopes("")
 	}
 	values.Set("scope", strings.Join(scopes, " "))
 	return "https://accounts.google.com/o/oauth2/v2/auth?" + values.Encode(), nil
+}
+
+func connectedOAuthRedirectURI(r *http.Request) string {
+	base := strings.TrimRight(panelBaseURL(r), "/")
+	if base == "" {
+		return ""
+	}
+	return base + "/integrations/oauth-accounts/callback"
 }
 
 func validOAuthRedirectURI(raw, expectedPath string) bool {
@@ -9254,10 +10506,6 @@ func isLocalOAuthRedirectHost(host string) bool {
 	}
 	ip := net.ParseIP(normalized)
 	return ip != nil && ip.IsLoopback()
-}
-
-func validConfiguredOAuthRedirectURI(raw string) bool {
-	return validOAuthRedirectURI(raw, "/auth/oauth/callback") || validOAuthRedirectURI(raw, "/integrations/oauth-accounts/callback")
 }
 
 func safeRedirectAfter(value string) string {

@@ -27,8 +27,23 @@ export type Stream = {
   updated_at?: string;
   created_at?: string;
   discord_config_id?: string;
+  discord_guild_id?: string;
+  discord_voice_channel_id?: string;
+  discord_text_channel_id?: string;
+  auto_start_trigger?: string;
+  encoder_profile_id?: string;
+  caption_profile_id?: string;
+  overlay_profile_id?: string;
+  encoder_input_url?: string;
   youtube_output_id?: string;
   archive_profile_id?: string;
+  archive_drive_destination_id?: string;
+  archive_oauth_account_id?: string;
+  archive_folder_id_configured?: boolean;
+  archive_masked_folder_id?: string;
+  archive_shared_drive?: boolean;
+  archive_shared_drive_id?: string;
+  archive_file_name?: string;
 };
 
 export type WorkerNode = {
@@ -73,17 +88,89 @@ export type AuditLog = {
   resource_id?: string;
 };
 
-export type MetricPoint = {
-  timestamp: string;
-  cpu_percent: number;
-  memory_percent: number;
-  network_mbps: number;
+export type MetricSnapshot = {
+  name: string;
+  service_id: string;
+  service_type: string;
+  stream_id?: string;
+  status?: string;
+  value?: number;
+  attributes?: Record<string, unknown>;
+  updated_at: string;
+};
+
+export type MFAStatus = {
+  available: boolean;
+  enabled: boolean;
+  method?: string;
+  pending_enrollment: boolean;
+  recovery_code_count?: number;
+  policy_mode?: string;
+  required?: boolean;
+  updated_at?: string;
+};
+
+export type MFAEnrollResponse = {
+  method: "totp" | string;
+  secret: string;
+  provisioning_uri: string;
+  recovery_codes: string[];
+  message?: string;
+};
+
+export type PasskeyCredential = {
+  id: string;
+  user_id: string;
+  name: string;
+  credential_id_hash?: string;
+  sign_count: number;
+  transports?: string[];
+  aaguid?: string;
+  backup_eligible: boolean;
+  backed_up: boolean;
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string;
+};
+
+export type PasskeyRegistrationStart = {
+  registration_token: string;
+  expires_at: string;
+  public_key: Record<string, unknown>;
+};
+
+export type OAuthUserLink = {
+  id: string;
+  user_id: string;
+  provider_id: string;
+  provider_type: string;
+  subject: string;
+  email?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OAuthLoginProvider = {
+  id: string;
+  provider_type: string;
+  name: string;
+  enabled: boolean;
+  redirect_uri?: string;
+};
+
+export type OAuthLinkStartResponse = {
+  provider: OAuthLoginProvider;
+  authorization_url: string;
+  state: string;
+  nonce?: string;
+  expires_at: string;
 };
 
 export type CurrentUser = {
   user: {
     id: string;
     username: string;
+    email?: string;
     status?: string;
     roles?: string[];
   };
@@ -97,6 +184,14 @@ export type SetupStatus = {
 
 export type AppSettings = {
   app_name: string;
+  timezone: string;
+  smtp_enabled?: boolean;
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_starttls?: boolean;
+  smtp_from?: string;
+  smtp_username?: string;
+  smtp_password_configured?: boolean;
   updated_at?: string;
 };
 

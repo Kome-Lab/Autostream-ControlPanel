@@ -2,7 +2,8 @@
 
 import { type ReactNode, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, RefreshCcw } from "lucide-react";
+import { Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { apiPost } from "@/lib/api/client";
+import { APIError, apiDelete, apiPost } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useResourceData } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
@@ -54,9 +55,19 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
 }
 
 function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
+  const queryClient = useQueryClient();
   const query = useResourceData<unknown>(resource.path);
-  const rows = useMemo(() => normalizeRows(query.data), [query.data]);
-  const columns = useMemo(() => visibleColumns(rows), [rows]);
+  const rows = useMemo(() => normalizeRows(query.data).map((row) => enrichResourceRow(resource, row)), [query.data, resource]);
+  const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
+  const [deleteMessage, setDeleteMessage] = useState("");
+  const deleteMutation = useMutation<unknown, Error, ResourceRow>({
+    mutationFn: async (row) => apiDelete(deletePathForResource(resource, row)),
+    onSuccess: async () => {
+      setDeleteMessage("削除しました。");
+      await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+    },
+    onError: (error) => setDeleteMessage(resourceDeleteErrorMessage(error)),
+  });
 
   return (
     <Card>
@@ -75,7 +86,21 @@ function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {resource.form ? <CreateResourceForm resource={resource} /> : null}
-        {query.isLoading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} />}
+        {deleteMessage ? <p className="text-sm text-muted-foreground">{deleteMessage}</p> : null}
+        {query.isLoading ? (
+          <Skeleton className="h-48 w-full" />
+        ) : (
+          <ResourceTable
+            rows={rows}
+            columns={columns}
+            resource={resource}
+            deletePending={deleteMutation.isPending}
+            onDelete={(row) => {
+              setDeleteMessage("");
+              deleteMutation.mutate(row);
+            }}
+          />
+        )}
       </CardContent>
     </Card>
   );
@@ -224,14 +249,9 @@ function EncoderProfileForm({ disabled, submit }: { disabled: boolean; submit: S
 }
 
 function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
-  const [name, setName] = useState("main-guild");
+  const [name, setName] = useState("main-discord-bot");
   const [serviceID, setServiceID] = useState("discord-01");
-  const [guildID, setGuildID] = useState("");
-  const [voiceChannelID, setVoiceChannelID] = useState("");
-  const [textChannelID, setTextChannelID] = useState("");
   const [botToken, setBotToken] = useState("");
-  const [captionEnabled, setCaptionEnabled] = useState(false);
-  const [sttProfileID, setSTTProfileID] = useState("");
   const [reconnectEnabled, setReconnectEnabled] = useState(true);
   const [reconnectMaxAttempts, setReconnectMaxAttempts] = useState("5");
   const [audioForwardEnabled, setAudioForwardEnabled] = useState(true);
@@ -245,12 +265,7 @@ function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: Su
           compactRecord({
             name,
             service_id: serviceID,
-            guild_id: guildID,
-            voice_channel_id: voiceChannelID,
-            text_channel_id: textChannelID,
             bot_token: botToken,
-            caption_enabled: captionEnabled,
-            stt_profile_id: sttProfileID,
             reconnect_enabled: reconnectEnabled,
             reconnect_max_attempts: numberValue(reconnectMaxAttempts, 5),
             reconnect_base_delay: "2s",
@@ -261,19 +276,14 @@ function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: Su
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="設定名" value={name} onChange={setName} required />
+        <TextField label="BOT設定名" value={name} onChange={setName} required />
         <TextField label="Discord Node ID" value={serviceID} onChange={setServiceID} required />
-        <TextField label="Guild ID" value={guildID} onChange={setGuildID} required />
-        <TextField label="Voice Channel ID" value={voiceChannelID} onChange={setVoiceChannelID} required />
-        <TextField label="Text Channel ID" value={textChannelID} onChange={setTextChannelID} />
         <TextField label="Bot Token" value={botToken} onChange={setBotToken} type="password" description="入力した場合のみ保存します。" />
-        <TextField label="字幕プロファイルID" value={sttProfileID} onChange={setSTTProfileID} />
         <NumberField label="再接続最大回数" value={reconnectMaxAttempts} onChange={setReconnectMaxAttempts} min={0} />
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2">
         <SwitchField label="音声転送" checked={audioForwardEnabled} onCheckedChange={setAudioForwardEnabled} />
         <SwitchField label="自動再接続" checked={reconnectEnabled} onCheckedChange={setReconnectEnabled} />
-        <SwitchField label="字幕連携" checked={captionEnabled} onCheckedChange={setCaptionEnabled} />
       </div>
       <FormActions disabled={disabled} />
     </form>
@@ -416,13 +426,27 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
   const [name, setName] = useState("lower-third");
   const [safeArea, setSafeArea] = useState("16:9 lower");
   const [theme, setTheme] = useState("public");
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
+  const [watermarkText, setWatermarkText] = useState("");
+  const [watermarkPosition, setWatermarkPosition] = useState("bottom_right");
+  const [watermarkOpacity, setWatermarkOpacity] = useState("70");
 
   return (
     <form
       className="space-y-3"
       onSubmit={(event) => {
         event.preventDefault();
-        submit({ name, config: { safe_area: safeArea, theme } });
+        submit({
+          name,
+          config: compactRecord({
+            safe_area: safeArea,
+            theme,
+            watermark_enabled: watermarkEnabled,
+            watermark_text: watermarkEnabled ? watermarkText : "",
+            watermark_position: watermarkEnabled ? watermarkPosition : "",
+            watermark_opacity: watermarkEnabled ? numberValue(watermarkOpacity, 70) / 100 : undefined,
+          }),
+        });
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
@@ -448,13 +472,33 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
           ]}
         />
       </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <SwitchField label="ウォーターマークを表示" checked={watermarkEnabled} onCheckedChange={setWatermarkEnabled} />
+        {watermarkEnabled ? (
+          <>
+            <TextField label="ウォーターマーク文字" value={watermarkText} onChange={setWatermarkText} placeholder="自治体名 / 番組名 / 会社名" />
+            <SelectField
+              label="表示位置"
+              value={watermarkPosition}
+              onChange={setWatermarkPosition}
+              options={[
+                { value: "top_left", label: "左上" },
+                { value: "top_right", label: "右上" },
+                { value: "bottom_left", label: "左下" },
+                { value: "bottom_right", label: "右下" },
+              ]}
+            />
+            <NumberField label="不透明度 (%)" value={watermarkOpacity} onChange={setWatermarkOpacity} min={0} />
+          </>
+        ) : null}
+      </div>
       <FormActions disabled={disabled} />
     </form>
   );
 }
 
 function ArchiveProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
-  const driveDestinations = useResourceOptions("/archive/destinations", ["id"], ["name", "id"], ["auth_mode"]);
+  const driveDestinations = useResourceOptions("/archive/destinations", ["id"], ["name", "id"]);
   const [name, setName] = useState("shared-drive");
   const [format, setFormat] = useState("mp4");
   const [retentionDays, setRetentionDays] = useState("180");
@@ -501,12 +545,11 @@ function ArchiveProfileForm({ disabled, submit }: { disabled: boolean; submit: S
 function DriveDestinationForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
   const oauthAccounts = useResourceOptions("/integrations/oauth-accounts", ["id"], ["account_label", "email", "id"], ["email", "provider_type"]);
   const [name, setName] = useState("archive-drive");
-  const [authMode, setAuthMode] = useState("oauth2");
   const [oauthAccountID, setOAuthAccountID] = useState(noneValue);
   const [folderID, setFolderID] = useState("");
   const [sharedDrive, setSharedDrive] = useState(false);
   const [basePath, setBasePath] = useState("autostream");
-  const effectiveOAuthAccountID = authMode === "oauth2" && oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
+  const effectiveOAuthAccountID = oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
 
   return (
     <form
@@ -516,7 +559,7 @@ function DriveDestinationForm({ disabled, submit }: { disabled: boolean; submit:
         submit(
           compactRecord({
             name,
-            auth_mode: authMode,
+            auth_mode: "oauth2",
             oauth_account_id: effectiveOAuthAccountID === noneValue ? "" : effectiveOAuthAccountID,
             folder_id: folderID,
             shared_drive: sharedDrive,
@@ -527,36 +570,26 @@ function DriveDestinationForm({ disabled, submit }: { disabled: boolean; submit:
     >
       <div className="grid gap-3 md:grid-cols-2">
         <TextField label="保存先名" value={name} onChange={setName} required />
-        <SelectField
-          label="認証方式"
-          value={authMode}
-          onChange={setAuthMode}
-          options={[
-            { value: "oauth2", label: "接続済みGoogleアカウント" },
-            { value: "service_account", label: "サービスアカウント" },
-          ]}
-        />
         <SelectField label="OAuthアカウント" value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
-        <TextField label="DriveフォルダID" value={folderID} onChange={setFolderID} required description="URLのfolders/以降にあるIDを入力します。" />
+        <TextField label={sharedDrive ? "共有ドライブ配下のフォルダID" : "DriveフォルダID"} value={folderID} onChange={setFolderID} required description="URLのfolders/以降にあるIDを入力します。" />
         <TextField label="保存先パス" value={basePath} onChange={setBasePath} />
       </div>
       <SwitchField label="共有ドライブを使う" checked={sharedDrive} onCheckedChange={setSharedDrive} />
-      {authMode === "oauth2" && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth accountsでGoogleアカウントを接続してください。</p> : null}
-      <FormActions disabled={disabled || (authMode === "oauth2" && effectiveOAuthAccountID === noneValue)} />
+      {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth accountsでGoogleアカウントを接続してください。</p> : null}
+      <FormActions disabled={disabled || effectiveOAuthAccountID === noneValue} />
     </form>
   );
 }
 
 function OAuthProviderForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
   const roles = useResourceOptions("/roles", ["id"], ["name", "id"], ["permissions"]);
-  const defaultRedirectURI = typeof window === "undefined" ? "https://control.example.jp/integrations/oauth-accounts/callback" : `${window.location.origin}/integrations/oauth-accounts/callback`;
+  const defaultRedirectURI = typeof window === "undefined" ? "https://control.example.jp/auth/oauth/callback" : `${window.location.origin}/auth/oauth/callback`;
   const [providerType, setProviderType] = useState("google");
   const [name, setName] = useState("Google Workspace");
   const [enabled, setEnabled] = useState(true);
   const [clientID, setClientID] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [redirectURI, setRedirectURI] = useState(defaultRedirectURI);
-  const [scopes, setScopes] = useState(["openid", "email", "profile", "https://www.googleapis.com/auth/youtube", "https://www.googleapis.com/auth/drive.file"]);
   const [allowedDomains, setAllowedDomains] = useState("");
   const [autoProvision, setAutoProvision] = useState(false);
   const [defaultRoleIDs, setDefaultRoleIDs] = useState<string[]>([]);
@@ -573,7 +606,6 @@ function OAuthProviderForm({ disabled, submit }: { disabled: boolean; submit: Su
           client_id: clientID,
           client_secret: clientSecret,
           redirect_uri: redirectURI,
-          scopes,
           allowed_domains: splitList(allowedDomains),
           auto_provision: autoProvision,
           default_role_ids: defaultRoleIDs,
@@ -596,7 +628,6 @@ function OAuthProviderForm({ disabled, submit }: { disabled: boolean; submit: Su
         <TextField label="Client Secret" value={clientSecret} onChange={setClientSecret} type="password" description="入力値は保存後に再表示しません。" />
         <TextField label="Redirect URI" value={redirectURI} onChange={setRedirectURI} required />
       </div>
-      <CheckboxList label="OAuthスコープ" values={scopes} onChange={setScopes} items={oauthScopeOptions} />
       <Field label="許可ドメイン" description="複数ある場合は改行またはカンマで区切ります。空なら制限しません。">
         <Textarea value={allowedDomains} onChange={(event) => setAllowedDomains(event.target.value)} className="min-h-20" placeholder="example.jp" />
       </Field>
@@ -626,6 +657,7 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
   );
   const [providerID, setProviderID] = useState(noneValue);
   const [accountLabel, setAccountLabel] = useState("配信・アーカイブ用Google");
+  const [accountPurpose, setAccountPurpose] = useState("drive_youtube");
   const effectiveProviderID = providerID === noneValue && providerOptions[0]?.value ? providerOptions[0].value : providerID;
 
   return (
@@ -637,6 +669,7 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
           {
             provider_id: effectiveProviderID === noneValue ? "" : effectiveProviderID,
             account_label: accountLabel,
+            account_purpose: accountPurpose,
             redirect_after: "/admin/integrations/",
           },
           {
@@ -651,6 +684,16 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
       <div className="grid gap-3 md:grid-cols-2">
         <SelectField label="Google OAuthプロバイダ" value={effectiveProviderID} onChange={setProviderID} options={[{ value: noneValue, label: "未選択" }, ...providerOptions]} />
         <TextField label="アカウント表示名" value={accountLabel} onChange={setAccountLabel} required />
+        <SelectField
+          label="用途"
+          value={accountPurpose}
+          onChange={setAccountPurpose}
+          options={[
+            { value: "drive_youtube", label: "YouTubeとDrive" },
+            { value: "youtube", label: "YouTube Liveのみ" },
+            { value: "drive", label: "Archive保存のみ" },
+          ]}
+        />
       </div>
       {providerOptions.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth providersでGoogleプロバイダを登録し、有効化してください。</p> : null}
       <FormActions label="OAuth接続を開始" disabled={disabled || effectiveProviderID === noneValue} />
@@ -661,23 +704,30 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
 function UserForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
   const roles = useResourceOptions("/roles", ["id"], ["name", "id"], ["permissions"]);
   const [username, setUsername] = useState("operator");
+  const [email, setEmail] = useState("operator@example.jp");
   const [temporaryPassword, setTemporaryPassword] = useState("");
   const [roleIDs, setRoleIDs] = useState<string[]>([]);
+  const [sendWelcomeEmail, setSendWelcomeEmail] = useState(false);
 
   return (
     <form
       className="space-y-3"
       onSubmit={(event) => {
         event.preventDefault();
-        submit({ username, temporary_password: temporaryPassword, role_ids: roleIDs });
+        submit({ username, email, temporary_password: temporaryPassword, role_ids: roleIDs, send_welcome_email: sendWelcomeEmail });
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
         <TextField label="ユーザー名" value={username} onChange={setUsername} required />
+        <TextField label="メールアドレス" value={email} onChange={setEmail} type="email" description="登録完了メールと本人確認用の連絡先です。" />
         <TextField label="初期パスワード" value={temporaryPassword} onChange={setTemporaryPassword} type="password" required description="ログイン後に変更してもらう一時パスワードです。" />
       </div>
+      <label className="flex items-center gap-2 text-sm">
+        <Switch checked={sendWelcomeEmail} onCheckedChange={setSendWelcomeEmail} />
+        登録完了メールを送る
+      </label>
       <CheckboxList label="付与するロール" values={roleIDs} onChange={setRoleIDs} items={roles} emptyText="ロールがありません。" />
-      <FormActions disabled={disabled} />
+      <FormActions disabled={disabled || (sendWelcomeEmail && email.trim() === "")} />
     </form>
   );
 }
@@ -707,8 +757,19 @@ function NotificationChannelForm({ disabled, submit }: { disabled: boolean; subm
   const [name, setName] = useState("ops-discord");
   const [type, setType] = useState("discord");
   const [webhookURL, setWebhookURL] = useState("");
-  const [emailTarget, setEmailTarget] = useState("");
+  const [emailRecipients, setEmailRecipients] = useState("ops@example.jp");
+  const [smtpHost, setSMTPHost] = useState("");
+  const [smtpPort, setSMTPPort] = useState("587");
+  const [smtpTLS, setSMTPTLS] = useState(true);
+  const [smtpFrom, setSMTPFrom] = useState("");
+  const [smtpUsername, setSMTPUsername] = useState("");
+  const [smtpPassword, setSMTPPassword] = useState("");
+  const [severityFilter, setSeverityFilter] = useState<string[]>(["critical", "error", "warning"]);
+  const [eventTypeFilter, setEventTypeFilter] = useState<string[]>(["incident.opened"]);
   const [enabled, setEnabled] = useState(true);
+  const emailRecipientList = splitList(emailRecipients);
+  const webhookRequired = type === "discord" || type === "slack";
+  const emailRequired = type === "email";
 
   return (
     <form
@@ -719,8 +780,16 @@ function NotificationChannelForm({ disabled, submit }: { disabled: boolean; subm
           compactRecord({
             name,
             type,
-            webhook_url: webhookURL,
-            email_target: emailTarget,
+            webhook_url: webhookRequired ? webhookURL : "",
+            email_recipients: emailRequired ? emailRecipientList : undefined,
+            smtp_host: emailRequired ? smtpHost : "",
+            smtp_port: emailRequired ? numberValue(smtpPort, 587) : undefined,
+            smtp_tls: emailRequired ? smtpTLS : undefined,
+            smtp_from: emailRequired ? smtpFrom : "",
+            smtp_username: emailRequired ? smtpUsername : "",
+            smtp_password: emailRequired ? smtpPassword : "",
+            severity_filter: severityFilter,
+            event_type_filter: eventTypeFilter,
             enabled,
           }),
         );
@@ -734,14 +803,62 @@ function NotificationChannelForm({ disabled, submit }: { disabled: boolean; subm
           onChange={setType}
           options={[
             { value: "discord", label: "Discord Webhook" },
+            { value: "slack", label: "Slack Webhook" },
             { value: "email", label: "メール" },
           ]}
         />
-        {type === "discord" ? <TextField label="Webhook URL" value={webhookURL} onChange={setWebhookURL} type="password" required /> : null}
-        {type === "email" ? <TextField label="送信先メール" value={emailTarget} onChange={setEmailTarget} type="email" required /> : null}
+        {webhookRequired ? (
+          <TextField
+            label="Webhook URL"
+            value={webhookURL}
+            onChange={setWebhookURL}
+            type="password"
+            description={type === "slack" ? "Slack は hooks.slack.com のIncoming Webhook URLを指定します。" : "保存後はURLの実値を表示しません。"}
+            required
+          />
+        ) : null}
       </div>
+      {emailRequired ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="送信先メール" description="複数指定する場合は改行またはカンマで区切ります。">
+            <Textarea value={emailRecipients} onChange={(event) => setEmailRecipients(event.target.value)} className="min-h-20" required />
+          </Field>
+          <TextField label="SMTP Host" value={smtpHost} onChange={setSMTPHost} placeholder="smtp.example.jp" required />
+          <NumberField label="SMTP Port" value={smtpPort} onChange={setSMTPPort} min={1} required />
+          <TextField label="From" value={smtpFrom} onChange={setSMTPFrom} type="email" placeholder="autostream@example.jp" required />
+          <TextField label="SMTP Username" value={smtpUsername} onChange={setSMTPUsername} />
+          <TextField label="SMTP Password" value={smtpPassword} onChange={setSMTPPassword} type="password" description="保存後は再表示されません。" />
+          <div className="md:col-span-2">
+            <SwitchField label="STARTTLSを使用する" checked={smtpTLS} onCheckedChange={setSMTPTLS} />
+          </div>
+        </div>
+      ) : null}
+      <CheckboxList
+        label="通知する重要度"
+        values={severityFilter}
+        onChange={setSeverityFilter}
+        items={[
+          { value: "critical", label: "Critical" },
+          { value: "error", label: "Error" },
+          { value: "warning", label: "Warning" },
+          { value: "info", label: "Info" },
+        ]}
+      />
+      <CheckboxList
+        label="通知するイベント"
+        values={eventTypeFilter}
+        onChange={setEventTypeFilter}
+        items={[
+          { value: "incident.opened", label: "Incident opened" },
+          { value: "incident.updated", label: "Incident updated" },
+          { value: "incident.resolved", label: "Incident resolved" },
+          { value: "diagnostic.created", label: "Diagnostic created" },
+          { value: "remediation.pending_approval", label: "Remediation pending approval" },
+          { value: "remediation.executed", label: "Remediation executed" },
+        ]}
+      />
       <SwitchField label="有効化" checked={enabled} onCheckedChange={setEnabled} />
-      <FormActions disabled={disabled} />
+      <FormActions disabled={disabled || (webhookRequired && webhookURL.trim() === "") || (emailRequired && (emailRecipientList.length === 0 || smtpHost.trim() === "" || smtpFrom.trim() === ""))} />
     </form>
   );
 }
@@ -761,6 +878,7 @@ function TextField({
   value,
   onChange,
   description,
+  placeholder,
   type = "text",
   required,
 }: {
@@ -768,12 +886,13 @@ function TextField({
   value: string;
   onChange: (value: string) => void;
   description?: string;
+  placeholder?: string;
   type?: string;
   required?: boolean;
 }) {
   return (
     <Field label={label} description={description}>
-      <Input value={value} onChange={(event) => onChange(event.target.value)} type={type} required={required} />
+      <Input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} type={type} required={required} />
     </Field>
   );
 }
@@ -929,14 +1048,6 @@ function useResourceOptions(path: string, valueKeys: string[], labelKeys: string
   );
 }
 
-const oauthScopeOptions: SelectOption[] = [
-  { value: "openid", label: "OpenID Connect" },
-  { value: "email", label: "メールアドレス" },
-  { value: "profile", label: "プロフィール" },
-  { value: "https://www.googleapis.com/auth/youtube", label: "YouTube Live API" },
-  { value: "https://www.googleapis.com/auth/drive.file", label: "Google Drive ファイル作成" },
-];
-
 function permissionOptionFromRow(row: ResourceRow): SelectOption {
 	const value = rowString(row, ["id", "name", "value"]);
 	return {
@@ -1084,7 +1195,7 @@ function compactRecord(record: Record<string, unknown>) {
 
 function rowString(row: ResourceRow, keys: string[]) {
   for (const key of keys) {
-    const value = row[key];
+    const value = nestedRowValue(row, key);
     if (typeof value === "string" && value.trim() !== "") return value;
     if (typeof value === "number") return String(value);
     if (Array.isArray(value) && value.length > 0) return value.map((item) => String(item)).join(", ");
@@ -1096,33 +1207,85 @@ function firstNonEmpty(...values: string[]) {
   return values.find((value) => value.trim() !== "") || "";
 }
 
-function ResourceTable({ rows, columns }: { rows: Record<string, unknown>[]; columns: string[] }) {
+function ResourceTable({
+  rows,
+  columns,
+  resource,
+  deletePending,
+  onDelete,
+}: {
+  rows: ResourceRow[];
+  columns: string[];
+  resource: ResourceDefinition;
+  deletePending: boolean;
+  onDelete: (row: ResourceRow) => void;
+}) {
   if (rows.length === 0) {
     return <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">データがありません。</div>;
   }
+  const showDelete = Boolean(resource.deletable);
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          {columns.map((column) => (
-            <TableHead key={column}>{column}</TableHead>
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row, index) => (
-          <TableRow key={String(row.id || row.name || index)}>
+    <div className="overflow-x-auto rounded-md border">
+      <Table className="min-w-[720px]">
+        <TableHeader>
+          <TableRow>
             {columns.map((column) => (
-              <TableCell key={column} className="max-w-[280px] overflow-hidden text-ellipsis">
-                {formatCell(row[column])}
-              </TableCell>
+              <TableHead key={column}>{columnLabel(column)}</TableHead>
             ))}
+            {showDelete ? <TableHead className="w-28 min-w-28 text-right">操作</TableHead> : null}
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row, index) => (
+            <TableRow key={String(row.id || row.name || index)}>
+              {columns.map((column) => (
+                <TableCell key={column} className="max-w-[240px] overflow-hidden text-ellipsis">
+                  {formatCell(row[column])}
+                </TableCell>
+              ))}
+              {showDelete ? (
+                <TableCell className="w-28 min-w-28 text-right">
+                  <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row)} onDelete={onDelete} />
+                </TableCell>
+              ) : null}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
+}
+
+function DeleteResourceButton({ row, disabled, onDelete }: { row: ResourceRow; disabled: boolean; onDelete: (row: ResourceRow) => void }) {
+  const label = resourceRowLabel(row);
+  return (
+    <DangerConfirm title={`${label} を削除しますか`} description="削除後は元に戻せません。参照中の設定は削除できない場合があります。" actionLabel="削除" onConfirm={() => onDelete(row)}>
+      <Button variant="destructive" size="icon-sm" disabled={disabled} aria-label={`${label} を削除`}>
+        <Trash2 className="size-4" />
+      </Button>
+    </DangerConfirm>
+  );
+}
+
+function resourceDeleteErrorMessage(error: Error) {
+  if (error instanceof APIError) {
+    const messages: Record<string, string> = {
+      profile_in_use: "削除できません。この設定を参照している配信枠があります。先にStreamsで別の設定へ変更してください。",
+      drive_destination_in_use: "削除できません。この保存先を参照している配信枠またはArchive profileがあります。先にStreamsやArchive Settingsで別の保存先へ変更してください。",
+      oauth_account_in_use: "削除できません。このOAuth accountを参照している保存先、YouTube Output、または配信枠があります。先に参照を外してください。",
+      oauth_provider_in_use: "削除できません。このOAuth providerに接続済みaccountやログイン連携があります。先に関連する連携を削除してください。",
+      cannot_delete_self: "ログイン中の自分自身は削除できません。別の管理者アカウントで操作してください。",
+      cannot_delete_super_admin: "super_adminユーザーはsuper_adminだけが削除できます。",
+      last_super_admin: "最後の有効なsuper_adminは削除できません。先に別のsuper_adminを有効化してください。",
+      permission_escalation: "自分より強い権限を持つユーザーは削除できません。",
+      not_found: "削除対象が見つかりませんでした。画面を更新してください。",
+      csrf_failed: "ログイン状態またはCSRF tokenが古くなっています。ページを再読み込みしてから再実行してください。",
+      forbidden: "削除権限がありません。",
+    };
+    return messages[error.code || ""] || `削除に失敗しました。参照中の設定や権限を確認してください。${error.code ? ` (${error.code})` : ""}`;
+  }
+  return `削除に失敗しました。参照中の設定や権限を確認してください。${error.message ? ` (${error.message})` : ""}`;
 }
 
 function normalizeRows(data: unknown): Record<string, unknown>[] {
@@ -1147,7 +1310,45 @@ function normalizeRow(item: unknown): Record<string, unknown> {
   return { value: item };
 }
 
-function visibleColumns(rows: Record<string, unknown>[]) {
+function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): ResourceRow {
+  if (resource.path.startsWith("/profiles/")) {
+    return { ...row, profile_summary: profileSummary(resource.path, row) };
+  }
+  if (resource.path === "/discord/configs") {
+    return { ...row, bot_summary: compactList([enabledLabel("音声転送", rowValue(row, ["audio_forward_enabled", "config.audio_forward_enabled"])), enabledLabel("自動再接続", rowValue(row, ["reconnect_enabled", "config.reconnect_enabled"])), rowString(row, ["config.reconnect_max_attempts"]) ? `再接続 ${rowString(row, ["config.reconnect_max_attempts"])}回` : ""]) };
+  }
+  if (resource.path === "/youtube/outputs") {
+    return { ...row, output_summary: compactList([labelValue("方式", rowString(row, ["mode", "config.mode"])), labelValue("公開", rowString(row, ["privacy_status", "config.privacy_status"])), enabledLabel("自動開始", rowValue(row, ["enable_auto_start", "config.enable_auto_start"]))]) };
+  }
+  if (resource.path === "/archive/destinations") {
+    return { ...row, destination_summary: compactList([rowValue(row, ["shared_drive"]) === true ? "共有ドライブ" : "マイドライブ", rowValue(row, ["folder_id_configured"]) === true ? "Folder設定済み" : "Folder未設定"]) };
+  }
+  return row;
+}
+
+function profileSummary(path: string, row: ResourceRow) {
+  if (path === "/profiles/encoder") {
+    const width = rowString(row, ["width", "config.width"]);
+    const height = rowString(row, ["height", "config.height"]);
+    return compactList([width && height ? `${width}x${height}` : "", rowString(row, ["fps", "config.fps"]) ? `${rowString(row, ["fps", "config.fps"])}fps` : "", rowString(row, ["video_bitrate_kbps", "bitrate_kbps", "config.video_bitrate_kbps"]) ? `${rowString(row, ["video_bitrate_kbps", "bitrate_kbps", "config.video_bitrate_kbps"])}kbps` : "", rowString(row, ["audio_bitrate_kbps", "config.audio_bitrate_kbps"]) ? `音声 ${rowString(row, ["audio_bitrate_kbps", "config.audio_bitrate_kbps"])}kbps` : ""]);
+  }
+  if (path === "/profiles/caption") {
+    return compactList([labelValue("言語", rowString(row, ["language", "config.language"])), labelValue("方式", rowString(row, ["provider", "config.provider"])), rowString(row, ["delay_ms", "config.delay_ms"]) ? `遅延 ${rowString(row, ["delay_ms", "config.delay_ms"])}ms` : ""]);
+  }
+  if (path === "/profiles/overlay") {
+    return compactList([labelValue("位置", rowString(row, ["safe_area", "config.safe_area"])), labelValue("テーマ", rowString(row, ["theme", "config.theme"])), enabledLabel("ウォーターマーク", rowValue(row, ["watermark_enabled", "config.watermark_enabled"])), rowString(row, ["watermark_text", "config.watermark_text"]) ? `表示 ${rowString(row, ["watermark_text", "config.watermark_text"])}` : ""]);
+  }
+  if (path === "/profiles/archive") {
+    return compactList([labelValue("形式", rowString(row, ["format", "config.format"])), rowString(row, ["retention_days", "config.retention_days"]) ? `${rowString(row, ["retention_days", "config.retention_days"])}日保持` : "", enabledLabel("Upload", rowValue(row, ["upload_enabled", "config.upload_enabled"])), rowString(row, ["drive_destination_id", "config.drive_destination_id"]) ? "Drive保存先あり" : ""]);
+  }
+  return [];
+}
+
+function visibleColumns(rows: Record<string, unknown>[], resource: ResourceDefinition) {
+  const resourcePreferred = resourcePreferredColumns(resource);
+  if (resourcePreferred.length > 0) {
+    return resourcePreferred.filter((column) => rows.some((row) => row[column] !== undefined));
+  }
   const preferred = ["id", "name", "username", "service_id", "service_name", "service_type", "type", "status", "health_status", "title", "action", "target", "updated_at", "created_at"];
   const seen = new Set<string>();
   for (const key of preferred) {
@@ -1163,11 +1364,138 @@ function visibleColumns(rows: Record<string, unknown>[]) {
   return [...seen];
 }
 
-function formatCell(value: unknown) {
+function resourcePreferredColumns(resource: ResourceDefinition) {
+  if (resource.path.startsWith("/profiles/")) return ["id", "name", "profile_summary", "updated_at", "created_at"];
+  if (resource.path === "/discord/configs") return ["id", "name", "service_id", "bot_summary", "updated_at"];
+  if (resource.path === "/integrations/oauth-providers") return ["id", "name", "provider_type", "enabled", "client_secret_configured", "updated_at"];
+  if (resource.path === "/youtube/outputs") return ["id", "name", "output_summary", "updated_at"];
+  if (resource.path === "/archive/destinations") return ["id", "name", "destination_summary", "updated_at"];
+  if (resource.path === "/users") return ["id", "username", "email", "status", "roles", "last_login_at"];
+  return [];
+}
+
+function formatCell(value: unknown): ReactNode {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "string" || typeof value === "number") return String(value);
-  return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "-";
+    return (
+      <div className="flex flex-wrap gap-1">
+        {value.slice(0, 6).map((item, index) => (
+          <Badge key={index} variant="secondary" className="max-w-full text-xs">
+            {formatNestedValue("", item)}
+          </Badge>
+        ))}
+        {value.length > 6 ? <Badge variant="outline">+{value.length - 6}</Badge> : null}
+      </div>
+    );
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value).filter(([, entryValue]) => entryValue !== "" && entryValue !== undefined && entryValue !== null);
+    if (entries.length === 0) return "-";
+    return (
+      <div className="space-y-1 text-xs">
+        {entries.slice(0, 5).map(([key, entryValue]) => (
+          <div key={key} className="grid grid-cols-[minmax(72px,0.45fr)_minmax(0,1fr)] gap-2">
+            <span className="text-muted-foreground">{humanizeKey(key)}</span>
+            <span className="min-w-0 truncate">{formatNestedValue(key, entryValue)}</span>
+          </div>
+        ))}
+        {entries.length > 5 ? <div className="text-muted-foreground">ほか {entries.length - 5} 件</div> : null}
+      </div>
+    );
+  }
+  return String(value);
+}
+
+function formatNestedValue(key: string, value: unknown): string {
+  if (isSensitiveKey(key)) return value ? "設定済み" : "-";
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "boolean") return value ? "有効" : "無効";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.length === 0 ? "-" : value.map((item) => formatNestedValue("", item)).join(", ");
+  if (isRecord(value)) return "設定あり";
+  return String(value);
+}
+
+function rowValue(row: ResourceRow, keys: string[]) {
+  for (const key of keys) {
+    const value = nestedRowValue(row, key);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return undefined;
+}
+
+function nestedRowValue(row: ResourceRow, key: string): unknown {
+  const parts = key.split(".");
+  let current: unknown = row;
+  for (const part of parts) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function labelValue(label: string, value: string) {
+  return value ? `${label}: ${value}` : "";
+}
+
+function enabledLabel(label: string, value: unknown) {
+  if (value === undefined || value === null || value === "") return "";
+  return `${label}: ${value === true ? "有効" : value === false ? "無効" : String(value)}`;
+}
+
+function compactList(values: string[]) {
+  return values.map((value) => value.trim()).filter(Boolean);
+}
+
+function isSensitiveKey(key: string) {
+  return /(secret|token|password|credential|private|key)/i.test(key);
+}
+
+function humanizeKey(key: string) {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function columnLabel(column: string) {
+  const labels: Record<string, string> = {
+    id: "ID",
+    name: "名前",
+    username: "ユーザー名",
+    service_id: "Node ID",
+    service_name: "Node名",
+    service_type: "種別",
+    type: "種別",
+    status: "状態",
+    health_status: "ヘルス",
+    title: "タイトル",
+    action: "操作",
+    target: "対象",
+    updated_at: "更新日時",
+    created_at: "作成日時",
+    profile_summary: "設定内容",
+    bot_summary: "BOT設定",
+    output_summary: "出力設定",
+    destination_summary: "保存先",
+  };
+  return labels[column] || humanizeKey(column);
+}
+
+function resourceRowID(row: ResourceRow) {
+  return rowString(row, ["id"]);
+}
+
+function resourceRowLabel(row: ResourceRow) {
+  return firstNonEmpty(rowString(row, ["name", "service_name", "username", "account_label", "provider_type", "id"]), "この項目");
+}
+
+function deletePathForResource(resource: ResourceDefinition, row: ResourceRow) {
+  const id = resourceRowID(row);
+  if (!id) throw new Error("delete id is missing");
+  return `${resource.path}/${encodeURIComponent(id)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

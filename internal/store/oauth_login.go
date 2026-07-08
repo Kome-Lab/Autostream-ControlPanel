@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -12,14 +13,16 @@ import (
 )
 
 type OAuthLoginState struct {
-	StateToken    string    `json:"-"`
-	StateHash     string    `json:"-"`
-	ProviderID    string    `json:"provider_id"`
-	ProviderType  string    `json:"provider_type"`
-	Nonce         string    `json:"nonce"`
-	RedirectAfter string    `json:"redirect_after,omitempty"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	CreatedAt     time.Time `json:"created_at"`
+	StateToken      string    `json:"-"`
+	StateHash       string    `json:"-"`
+	Purpose         string    `json:"purpose,omitempty"`
+	ProviderID      string    `json:"provider_id"`
+	ProviderType    string    `json:"provider_type"`
+	Nonce           string    `json:"nonce"`
+	RedirectAfter   string    `json:"redirect_after,omitempty"`
+	RequestedScopes []string  `json:"requested_scopes,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type OAuthUserLink struct {
@@ -58,6 +61,8 @@ func (s *MemoryOAuthLoginStore) CreateOAuthLoginState(ctx context.Context, state
 	}
 	state.ProviderID = strings.TrimSpace(state.ProviderID)
 	state.ProviderType = strings.TrimSpace(state.ProviderType)
+	state.Purpose = normalizeOAuthStatePurpose(state.Purpose)
+	state.RequestedScopes = cleanStringSlice(state.RequestedScopes)
 	if state.ProviderID == "" || state.ProviderType == "" {
 		return OAuthLoginState{}, errors.New("oauth state provider is required")
 	}
@@ -100,6 +105,7 @@ func (s *MemoryOAuthLoginStore) ConsumeOAuthLoginState(ctx context.Context, stat
 		return OAuthLoginState{}, ErrNotFound
 	}
 	state.StateToken = stateToken
+	state.Purpose = normalizeOAuthStatePurpose(state.Purpose)
 	return state, nil
 }
 
@@ -187,6 +193,8 @@ func NewMariaDBOAuthLoginStore(db *sql.DB) MariaDBOAuthLoginStore {
 func (s MariaDBOAuthLoginStore) CreateOAuthLoginState(ctx context.Context, state OAuthLoginState, ttl time.Duration) (OAuthLoginState, error) {
 	state.ProviderID = strings.TrimSpace(state.ProviderID)
 	state.ProviderType = strings.TrimSpace(state.ProviderType)
+	state.Purpose = normalizeOAuthStatePurpose(state.Purpose)
+	state.RequestedScopes = cleanStringSlice(state.RequestedScopes)
 	if state.ProviderID == "" || state.ProviderType == "" {
 		return OAuthLoginState{}, errors.New("oauth state provider is required")
 	}
@@ -207,7 +215,11 @@ func (s MariaDBOAuthLoginStore) CreateOAuthLoginState(ctx context.Context, state
 	state.Nonce = nonce
 	state.CreatedAt = now
 	state.ExpiresAt = now.Add(ttl)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_login_states (state_hash, provider_id, provider_type, nonce, redirect_after, expires_at, created_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?)`, state.StateHash, state.ProviderID, state.ProviderType, state.Nonce, state.RedirectAfter, state.ExpiresAt, state.CreatedAt)
+	requestedScopes, err := marshalStringSlice(state.RequestedScopes)
+	if err != nil {
+		return OAuthLoginState{}, err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_login_states (state_hash, provider_id, provider_type, purpose, nonce, redirect_after, requested_scopes, expires_at, created_at) VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, '[]'), ?, ?)`, state.StateHash, state.ProviderID, state.ProviderType, state.Purpose, state.Nonce, state.RedirectAfter, requestedScopes, state.ExpiresAt, state.CreatedAt)
 	if err != nil {
 		return OAuthLoginState{}, err
 	}
@@ -222,8 +234,8 @@ func (s MariaDBOAuthLoginStore) ConsumeOAuthLoginState(ctx context.Context, stat
 	}
 	defer tx.Rollback()
 	var state OAuthLoginState
-	var redirectAfter sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT state_hash, provider_id, provider_type, nonce, redirect_after, expires_at, created_at FROM oauth_login_states WHERE state_hash = ? FOR UPDATE`, hash).Scan(&state.StateHash, &state.ProviderID, &state.ProviderType, &state.Nonce, &redirectAfter, &state.ExpiresAt, &state.CreatedAt)
+	var redirectAfter, requestedScopes sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT state_hash, provider_id, provider_type, purpose, nonce, redirect_after, requested_scopes, expires_at, created_at FROM oauth_login_states WHERE state_hash = ? FOR UPDATE`, hash).Scan(&state.StateHash, &state.ProviderID, &state.ProviderType, &state.Purpose, &state.Nonce, &redirectAfter, &requestedScopes, &state.ExpiresAt, &state.CreatedAt)
 	if err == sql.ErrNoRows {
 		return OAuthLoginState{}, ErrNotFound
 	}
@@ -241,7 +253,12 @@ func (s MariaDBOAuthLoginStore) ConsumeOAuthLoginState(ctx context.Context, stat
 		return OAuthLoginState{}, ErrNotFound
 	}
 	state.StateToken = stateToken
+	state.Purpose = normalizeOAuthStatePurpose(state.Purpose)
 	state.RedirectAfter = redirectAfter.String
+	if requestedScopes.Valid {
+		_ = json.Unmarshal([]byte(requestedScopes.String), &state.RequestedScopes)
+		state.RequestedScopes = cleanStringSlice(state.RequestedScopes)
+	}
 	return state, nil
 }
 
@@ -332,5 +349,14 @@ func validOAuthLoginProviderType(providerType string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func normalizeOAuthStatePurpose(value string) string {
+	switch strings.TrimSpace(value) {
+	case "account_link", "connected_account":
+		return strings.TrimSpace(value)
+	default:
+		return "login"
 	}
 }

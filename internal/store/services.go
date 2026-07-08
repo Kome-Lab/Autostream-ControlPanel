@@ -89,6 +89,14 @@ type ServiceHeartbeat struct {
 	Metrics         map[string]any `json:"metrics,omitempty"`
 }
 
+type ServiceRuntimeReport struct {
+	ServiceID string
+	Version   string
+	Hostname  string
+	OS        string
+	Arch      string
+}
+
 type NodeAgentAPI struct {
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
@@ -119,6 +127,7 @@ type ServiceRegistryStore interface {
 	PrecreateService(ctx context.Context, token ServiceToken, registration ServiceRegistration) (RegisteredService, error)
 	RegisterService(ctx context.Context, token ServiceToken, registration ServiceRegistration) (RegisteredService, error)
 	Heartbeat(ctx context.Context, token ServiceToken, heartbeat ServiceHeartbeat) (RegisteredService, error)
+	UpdateServiceRuntimeReport(ctx context.Context, report ServiceRuntimeReport) (RegisteredService, error)
 	SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error)
 	ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error)
 	SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error)
@@ -399,6 +408,27 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		return RegisteredService{}, ErrForbidden
 	}
 	return s.getService(ctx, heartbeat.ServiceID)
+}
+
+func (s MariaDBAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report ServiceRuntimeReport) (RegisteredService, error) {
+	report = normalizeServiceRuntimeReport(report)
+	if report.ServiceID == "" {
+		return RegisteredService{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ?`,
+		report.Version, report.Version, report.Version, report.Version, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Hostname, report.OS, report.Arch, now, now, report.ServiceID)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	if affected == 0 {
+		return RegisteredService{}, ErrNotFound
+	}
+	return s.getService(ctx, report.ServiceID)
 }
 
 func (s MariaDBAuthStore) SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error) {
@@ -1012,6 +1042,22 @@ func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegis
 		registration.PublicURL = buildServiceURL(registration.Host, registration.Port, registration.SSLEnabled)
 	}
 	return registration
+}
+
+func normalizeServiceRuntimeReport(report ServiceRuntimeReport) ServiceRuntimeReport {
+	report.ServiceID = strings.TrimSpace(report.ServiceID)
+	report.Version = truncateServiceReportedValue(strings.TrimSpace(report.Version), 80)
+	report.Hostname = truncateServiceReportedValue(strings.TrimSpace(report.Hostname), 255)
+	report.OS = truncateServiceReportedValue(strings.TrimSpace(report.OS), 80)
+	report.Arch = truncateServiceReportedValue(strings.TrimSpace(report.Arch), 80)
+	return report
+}
+
+func truncateServiceReportedValue(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[:max]
 }
 
 func buildServiceURL(host string, port int, sslEnabled bool) string {

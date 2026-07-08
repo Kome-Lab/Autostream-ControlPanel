@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertCircle, Check, Copy, FileCode2, KeyRound, LockKeyhole, RotateCw, Server } from "lucide-react";
+import { Activity, AlertCircle, Check, Copy, FileCode2, KeyRound, LockKeyhole, RotateCw, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -133,10 +133,15 @@ export function NodeRegistrationView() {
         <div className="text-sm">
           <div>Version {row.original.reported_version || row.original.version || "-"}</div>
           <div className="text-xs text-muted-foreground">
-            {row.original.reported_os || "OS未取得"} / {row.original.reported_arch || "Arch未取得"}
+            {nodeReportedPlatform(row.original)}
           </div>
         </div>
       ),
+    },
+    {
+      id: "metrics",
+      header: "Metrics",
+      cell: ({ row }) => <NodeMetricsSummary node={row.original} />,
     },
     {
       id: "heartbeat",
@@ -204,7 +209,7 @@ export function NodeRegistrationView() {
           </div>
           <div className="grid gap-2 rounded-md border bg-muted/30 p-3 text-sm">
             <div className="font-medium">Node Agentが自動報告する項目</div>
-            <div className="text-muted-foreground">バージョン、Capability、OS、Architecture、メトリクスは登録時に入力しません。</div>
+            <div className="text-muted-foreground">バージョン、OS、ArchitectureはConfigure実行時または起動後のHeartbeatで報告されます。CapabilityとメトリクスはHeartbeatで更新されます。</div>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox checked={allowRuntimeSecrets} onCheckedChange={(value) => setAllowRuntimeSecrets(value === true)} />
@@ -365,6 +370,80 @@ function formatHeartbeat(node: WorkerNode) {
   if (typeof node.heartbeat_age_sec === "number") return `${node.heartbeat_age_sec} sec`;
   if (node.last_heartbeat_at) return node.last_heartbeat_at;
   return "-";
+}
+
+function nodeReportedPlatform(node: WorkerNode) {
+  const os = node.reported_os || (node.configure_token_used_at ? "OS未取得" : "OS未取得（Configure待ち）");
+  const arch = node.reported_arch || (node.configure_token_used_at ? "Arch未取得" : "Arch未取得（Configure待ち）");
+  return `${os} / ${arch}`;
+}
+
+function NodeMetricsSummary({ node }: { node: WorkerNode }) {
+  const metrics = node.metrics || {};
+  const entries = Object.entries(metrics).filter(([, value]) => value !== "" && value !== null && value !== undefined);
+  if (node.service_type === "observability") {
+    const uptime = metricValue(metrics, ["observability.uptime_seconds"]);
+    const goroutines = metricValue(metrics, ["observability.goroutines"]);
+    const heap = metricValue(metrics, ["observability.heap_alloc_bytes", "observability.heap_sys_bytes"]);
+    return (
+      <div className="min-w-36 text-sm">
+        <div className="flex items-center gap-1.5">
+          <Activity className="size-3.5 text-muted-foreground" />
+          {entries.length > 0 ? `${entries.length}項目` : "未受信"}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          UP {formatMetricDuration(uptime)} / Go {formatMetricCount(goroutines)}
+        </div>
+        <div className="text-xs text-muted-foreground">Heap {formatMetricBytes(heap)}</div>
+      </div>
+    );
+  }
+  const cpu = metricValue(metrics, ["cpu_percent", "cpuUsage", "process.cpu_percent"]);
+  const memory = metricValue(metrics, ["memory_percent", "memoryUsage", "process.memory_percent"]);
+  return (
+    <div className="min-w-36 text-sm">
+      <div className="flex items-center gap-1.5">
+        <Activity className="size-3.5 text-muted-foreground" />
+        {entries.length > 0 ? `${entries.length}項目` : "未受信"}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        CPU {formatMetricPercent(cpu)} / MEM {formatMetricPercent(memory)}
+      </div>
+    </div>
+  );
+}
+
+function metricValue(metrics: Record<string, number | string>, keys: string[]) {
+  for (const key of keys) {
+    const value = metrics[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  }
+  return undefined;
+}
+
+function formatMetricPercent(value?: number) {
+  if (typeof value !== "number") return "-";
+  return `${Math.round(value * 10) / 10}%`;
+}
+
+function formatMetricCount(value?: number) {
+  if (typeof value !== "number") return "-";
+  return String(Math.round(value));
+}
+
+function formatMetricDuration(value?: number) {
+  if (typeof value !== "number") return "-";
+  if (value < 60) return `${Math.round(value)}s`;
+  if (value < 3600) return `${Math.round(value / 60)}m`;
+  return `${Math.round(value / 3600)}h`;
+}
+
+function formatMetricBytes(value?: number) {
+  if (typeof value !== "number") return "-";
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)}KiB`;
+  if (value < 1024 * 1024 * 1024) return `${Math.round((value / 1024 / 1024) * 10) / 10}MiB`;
+  return `${Math.round((value / 1024 / 1024 / 1024) * 10) / 10}GiB`;
 }
 
 function nodeRegistrationErrorMessage(error: unknown) {

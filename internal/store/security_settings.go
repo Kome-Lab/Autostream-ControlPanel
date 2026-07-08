@@ -49,7 +49,7 @@ var (
 	ErrUnknownSecret      = errors.New("unknown secret")
 	ErrInvalidSettings    = errors.New("invalid security settings")
 	ErrSecretKeyRequired  = errors.New("secret encryption key required")
-	allowedSecretNames    = []string{"deepgram_api_key", "discord_bot_token", "google_drive_credentials", "google_drive_folder_id", "observability_token", "youtube_stream_key"}
+	allowedSecretNames    = []string{AppSMTPPasswordSecretName, "deepgram_api_key", "discord_bot_token", "google_drive_folder_id", "observability_token", "youtube_stream_key"}
 	allowedSecretNameSet  = map[string]bool{}
 	defaultSecurityConfig = SecuritySettings{
 		PasswordMinLength:        12,
@@ -355,8 +355,6 @@ func allowedSecretName(name string) bool {
 		"encoder_runtime_secret_",
 		"google_oauth_refresh_token_",
 		"google_drive_folder_id_",
-		"google_service_account_json_",
-		"gdrive_service_account_json_",
 		"webhook_url_",
 		"smtp_password_",
 	} {

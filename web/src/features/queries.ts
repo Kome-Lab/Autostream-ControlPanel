@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api/client";
-import type { AppSettings, AppVersion, AuditLog, CurrentUser, MetricPoint, SetupStatus, Stream, WorkerNode } from "@/types/domain";
+import type { AppSettings, AppVersion, AuditLog, CurrentUser, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 export function useCurrentUser() {
   return useQuery({
@@ -43,6 +43,7 @@ export function useWorkers() {
   return useQuery({
     queryKey: ["workers"],
     queryFn: () => apiGet<WorkerNode[]>("/workers"),
+    refetchInterval: 10_000,
   });
 }
 
@@ -50,6 +51,7 @@ export function useServiceHealth() {
   return useQuery({
     queryKey: ["service-health"],
     queryFn: () => apiGet<WorkerNode[]>("/service-health"),
+    refetchInterval: 10_000,
   });
 }
 
@@ -57,6 +59,7 @@ export function useNodes() {
   return useQuery({
     queryKey: ["nodes"],
     queryFn: () => apiGet<WorkerNode[]>("/nodes"),
+    refetchInterval: 10_000,
   });
 }
 
@@ -76,7 +79,8 @@ export function useAuditLogs(params?: { from?: string; to?: string; action?: str
 export function useWorkerMetrics() {
   return useQuery({
     queryKey: ["observability", "metrics"],
-    queryFn: () => apiGet<MetricPoint[]>("/observability/metrics"),
+    queryFn: () => apiGet<MetricSnapshot[]>("/observability/metrics"),
+    refetchInterval: 10_000,
   });
 }
 

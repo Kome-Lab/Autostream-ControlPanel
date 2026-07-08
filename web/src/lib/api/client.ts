@@ -1,4 +1,4 @@
-import { mockGet, mockPost, mockPut, mockPathExists } from "@/features/mock-data";
+import { mockDelete, mockGet, mockPost, mockPut, mockPathExists } from "@/features/mock-data";
 
 const csrfStorageKey = "autostream.csrf_token";
 
@@ -84,7 +84,29 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  if (forceMock()) return mockDelete(path) as T;
+  try {
+    const response = await fetch(path, {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "X-CSRF-Token": getCSRFToken(),
+      },
+    });
+    return await readJSONResponse<T>(response, path);
+  } catch (error) {
+    if (canUseMockFallback(path)) return mockDelete(path) as T;
+    throw error;
+  }
+}
+
 async function readJSONResponse<T>(response: Response, path: string): Promise<T> {
+  if (response.status === 204) {
+    if (!response.ok) throw new APIError("API request failed.", response.status);
+    return undefined as T;
+  }
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
     if (canUseMockFallback(path)) return mockGet(path) as T;

@@ -1,4 +1,4 @@
-import type { AppSettings, AuditLog, CurrentUser, MetricPoint, NodeRegistrationResponse, SetupStatus, Stream, WorkerNode } from "@/types/domain";
+import type { AppSettings, AuditLog, CurrentUser, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 const baseTime = "2026-07-02T09:00:00+09:00";
 
@@ -6,11 +6,13 @@ export const mockCurrentUser: CurrentUser = {
   user: {
     id: "user-demo-admin",
     username: "demo-admin",
+    email: "demo-admin@example.jp",
     status: "active",
     roles: ["super_admin"],
   },
   permissions: [
     "streams.read",
+    "streams.create",
     "streams.start",
     "streams.stop",
     "streams.update",
@@ -26,6 +28,43 @@ export const mockCurrentUser: CurrentUser = {
   ],
 };
 
+const mockMFAStatus: MFAStatus = {
+  available: true,
+  enabled: false,
+  pending_enrollment: false,
+  recovery_code_count: 0,
+  policy_mode: "totp",
+  required: false,
+};
+
+const mockPasskeys: PasskeyCredential[] = [
+  {
+    id: "passkey-demo-main",
+    user_id: "user-demo-admin",
+    name: "業務PC",
+    sign_count: 8,
+    transports: ["internal"],
+    backup_eligible: true,
+    backed_up: true,
+    created_at: "2026-07-02T08:00:00+09:00",
+    updated_at: "2026-07-02T08:00:00+09:00",
+    last_used_at: "2026-07-02T08:55:00+09:00",
+  },
+];
+
+const mockOAuthLinks: OAuthUserLink[] = [
+  {
+    id: "oauth-link-google-demo",
+    user_id: "user-demo-admin",
+    provider_id: "oauth-google-login",
+    provider_type: "google",
+    subject: "google-demo-user",
+    email: "demo-admin@example.jp",
+    created_at: "2026-07-02T08:00:00+09:00",
+    updated_at: "2026-07-02T08:00:00+09:00",
+  },
+];
+
 export const mockStreams: Stream[] = [
   {
     id: "stream-cable-morning",
@@ -39,8 +78,21 @@ export const mockStreams: Stream[] = [
     scheduled_end_at: "2026-07-02T10:00:00+09:00",
     started_at: "2026-07-02T08:55:10+09:00",
     updated_at: baseTime,
+    discord_config_id: "discord-main",
+    discord_guild_id: "guild-regional",
+    discord_voice_channel_id: "voice-morning",
+    discord_text_channel_id: "chat-morning",
+    auto_start_trigger: "discord_voice_join",
     youtube_output_id: "yt-regional-news",
     archive_profile_id: "archive-shared-drive",
+    archive_drive_destination_id: "drive-city",
+    archive_oauth_account_id: "acct-drive",
+    archive_folder_id_configured: true,
+    archive_masked_folder_id: "fol...ews",
+    archive_shared_drive: true,
+    archive_shared_drive_id: "shared-drive-city",
+    archive_file_name: "朝の地域ニュース-20260702.mp4",
+    overlay_profile_id: "overlay-lower-third",
   },
   {
     id: "stream-city-council",
@@ -211,12 +263,12 @@ export const mockAuditLogs: AuditLog[] = [
   },
 ];
 
-export const mockWorkerMetrics: MetricPoint[] = [
-  { timestamp: "08:20", cpu_percent: 21, memory_percent: 34, network_mbps: 3.4 },
-  { timestamp: "08:30", cpu_percent: 26, memory_percent: 35, network_mbps: 4.1 },
-  { timestamp: "08:40", cpu_percent: 31, memory_percent: 38, network_mbps: 4.7 },
-  { timestamp: "08:50", cpu_percent: 44, memory_percent: 42, network_mbps: 6.2 },
-  { timestamp: "09:00", cpu_percent: 32, memory_percent: 41, network_mbps: 5.1 },
+export const mockWorkerMetrics: MetricSnapshot[] = [
+  { name: "worker.cpu_percent", service_id: "worker-main", service_type: "worker", value: 32, updated_at: "2026-07-02T09:00:00+09:00" },
+  { name: "worker.memory_percent", service_id: "worker-main", service_type: "worker", value: 41, updated_at: "2026-07-02T09:00:00+09:00" },
+  { name: "encoder.process_alive", service_id: "encoder-field", service_type: "encoder_recorder", value: 1, updated_at: "2026-07-02T09:00:00+09:00" },
+  { name: "discord.audio_forward_active", service_id: "discord-main", service_type: "discord_bot", value: 1, updated_at: "2026-07-02T09:00:00+09:00" },
+  { name: "observability.goroutines", service_id: "observability-main", service_type: "observability", value: 18, updated_at: "2026-07-02T09:00:00+09:00" },
 ];
 
 export const mockSetupStatus: SetupStatus = {
@@ -226,6 +278,11 @@ export const mockSetupStatus: SetupStatus = {
 
 export let mockAppSettings: AppSettings = {
   app_name: "AutoStream",
+  timezone: "Asia/Tokyo",
+  smtp_enabled: false,
+  smtp_port: 587,
+  smtp_starttls: true,
+  smtp_password_configured: false,
   updated_at: baseTime,
 };
 
@@ -249,8 +306,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "caption-manual", name: "手動字幕", language: "ja-JP", provider: "operator", delay_ms: 0, updated_at: "2026-07-01T18:20:00+09:00" },
   ],
   "/profiles/overlay": [
-    { id: "overlay-lower-third", name: "自治体テロップ", safe_area: "16:9 lower", theme: "public", updated_at: baseTime },
-    { id: "overlay-event", name: "イベント進行", safe_area: "full", theme: "event", updated_at: "2026-07-01T17:00:00+09:00" },
+    { id: "overlay-lower-third", name: "自治体テロップ", safe_area: "16:9 lower", theme: "public", watermark_enabled: true, watermark_text: "City Public Relations", watermark_position: "bottom_right", watermark_opacity: 0.7, updated_at: baseTime },
+    { id: "overlay-event", name: "イベント進行", safe_area: "full", theme: "event", watermark_enabled: false, updated_at: "2026-07-01T17:00:00+09:00" },
   ],
   "/profiles/archive": [
     { id: "archive-shared-drive", name: "共有Drive保存", format: "mp4", retention_days: 180, upload_enabled: true, updated_at: baseTime },
@@ -266,10 +323,10 @@ const mockResourceData: Record<string, unknown[]> = {
   ],
   "/archive/destinations": [
     { id: "drive-city", name: "自治体広報 Drive", auth_mode: "oauth2", folder_id_configured: true, updated_at: baseTime },
-    { id: "drive-bpo", name: "BPO案件別 Drive", auth_mode: "service_account", folder_id_configured: true, updated_at: "2026-07-01T12:00:00+09:00" },
+    { id: "drive-bpo", name: "BPO案件別 Drive", auth_mode: "oauth2", folder_id_configured: true, shared_drive: true, updated_at: "2026-07-01T12:00:00+09:00" },
   ],
   "/integrations/oauth-providers": [
-    { id: "google-main", provider_type: "google", name: "Google Workspace", enabled: true, redirect_uri: "https://control.example.jp/integrations/oauth-accounts/callback" },
+    { id: "google-main", provider_type: "google", name: "Google Workspace", enabled: true, redirect_uri: "https://control.example.jp/auth/oauth/callback" },
     { id: "github-login", provider_type: "github", name: "GitHub Login", enabled: false, redirect_uri: "https://control.example.jp/auth/oauth/callback" },
   ],
   "/integrations/oauth-accounts": [
@@ -277,8 +334,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "acct-youtube", provider_type: "google", account_label: "YouTube 管理", email: "live@example.jp", status: "connected", updated_at: "2026-07-01T16:10:00+09:00" },
   ],
   "/users": [
-    { id: "user-admin", username: "admin", status: "active", roles: ["super_admin"], last_login_at: baseTime },
-    { id: "user-operator", username: "operator", status: "active", roles: ["operator"], last_login_at: "2026-07-02T08:20:00+09:00" },
+    { id: "user-admin", username: "admin", email: "admin@example.jp", status: "active", roles: ["super_admin"], last_login_at: baseTime },
+    { id: "user-operator", username: "operator", email: "operator@example.jp", status: "active", roles: ["operator"], last_login_at: "2026-07-02T08:20:00+09:00" },
   ],
   "/roles": [
     { id: "role-super-admin", name: "super_admin", permissions: ["*"], updated_at: baseTime },
@@ -316,7 +373,8 @@ const mockResourceData: Record<string, unknown[]> = {
   ],
   "/observability/notification-channels": [
     { id: "chn-1", name: "制作Discord", type: "discord", enabled: true, masked_webhook_url: "https://example.jp/<WEBHOOK_PATH>" },
-    { id: "chn-2", name: "運用メール", type: "email", enabled: true, masked_email_target: "o***s@example.jp" },
+    { id: "chn-2", name: "運用Slack", type: "slack", enabled: true, masked_webhook_url: "https://hooks.slack.com/<WEBHOOK_PATH>", severity_filter: ["critical", "error", "warning"], event_type_filter: ["incident.opened"] },
+    { id: "chn-3", name: "運用メール", type: "email", enabled: true, masked_email_target: "o***s@example.jp", smtp_password_configured: true, severity_filter: ["critical", "error"], event_type_filter: ["incident.opened", "incident.resolved"] },
   ],
 };
 
@@ -339,6 +397,10 @@ export function mockGet(path: string): unknown {
   }
   const dataByPath: Record<string, unknown> = {
     "/auth/me": mockCurrentUser,
+    "/auth/mfa/status": mockMFAStatus,
+    "/auth/passkeys": mockPasskeys,
+    "/auth/oauth-links": mockOAuthLinks,
+    "/auth/oauth/providers": mockLoginOAuthProviders(),
     "/setup/status": mockSetupStatus,
     "/settings/app": mockAppSettings,
     "/version": mockAppVersion,
@@ -354,6 +416,125 @@ export function mockGet(path: string): unknown {
 }
 
 export function mockPost(path: string, body?: unknown): unknown {
+  if (stripQuery(path) === "/auth/change-password") {
+    return { status: "password_changed" };
+  }
+  if (stripQuery(path) === "/auth/mfa/enroll") {
+    mockMFAStatus.pending_enrollment = true;
+    return {
+      method: "totp",
+      secret: "JBSWY3DPEHPK3PXP",
+      provisioning_uri: "otpauth://totp/AutoStream:demo-admin?secret=JBSWY3DPEHPK3PXP&issuer=AutoStream",
+      recovery_codes: ["AS-1111-2222", "AS-3333-4444", "AS-5555-6666"],
+      message: "Verify a TOTP code to enable MFA.",
+    };
+  }
+  if (stripQuery(path) === "/auth/mfa/verify") {
+    mockMFAStatus.enabled = true;
+    mockMFAStatus.pending_enrollment = false;
+    mockMFAStatus.method = "totp";
+    mockMFAStatus.recovery_code_count = 3;
+    return { status: "mfa_enabled", method: "totp" };
+  }
+  if (stripQuery(path) === "/auth/mfa/disable") {
+    mockMFAStatus.enabled = false;
+    mockMFAStatus.method = "";
+    mockMFAStatus.recovery_code_count = 0;
+    return { status: "mfa_disabled" };
+  }
+  if (stripQuery(path) === "/auth/recovery-codes/regenerate") {
+    mockMFAStatus.recovery_code_count = 3;
+    return { recovery_codes: ["AS-7777-8888", "AS-9999-0000", "AS-1212-3434"] };
+  }
+  if (/^\/auth\/oauth-links\/[^/]+\/start$/.test(stripQuery(path))) {
+    const providerID = decodeURIComponent(stripQuery(path).replace(/^\/auth\/oauth-links\//, "").replace(/\/start$/, ""));
+    const request = body as Partial<{ redirect_after: string }>;
+    const provider = mockLoginOAuthProviders().find((item) => item.id === providerID) || mockLoginOAuthProviders()[0];
+    return {
+      provider,
+      authorization_url: request.redirect_after || "/admin/account/",
+      state: "mock-oauth-link-state",
+      nonce: "mock-oauth-link-nonce",
+      expires_at: baseTime,
+    };
+  }
+  if (stripQuery(path) === "/auth/passkeys/register/start") {
+    return {
+      registration_token: "ast_pk_demo_registration",
+      expires_at: baseTime,
+      public_key: {
+        challenge: "ZGVtby1jaGFsbGVuZ2U",
+        rp: { id: "localhost", name: "AutoStream Demo" },
+        user: { id: "dXNlci1kZW1vLWFkbWlu", name: "demo-admin", displayName: "demo-admin" },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        timeout: 60000,
+        attestation: "none",
+      },
+    };
+  }
+  if (stripQuery(path) === "/auth/passkeys/register/finish") {
+    const request = body as Partial<{ name: string }>;
+    const passkey: PasskeyCredential = {
+      id: `passkey-demo-${mockPasskeys.length + 1}`,
+      user_id: "user-demo-admin",
+      name: request.name || "Passkey",
+      sign_count: 0,
+      transports: ["internal"],
+      backup_eligible: true,
+      backed_up: false,
+      created_at: baseTime,
+      updated_at: baseTime,
+    };
+    mockPasskeys.unshift(passkey);
+    return passkey;
+  }
+  if (stripQuery(path) === "/users") {
+    const request = body as Partial<{ username: string; email: string; role_ids: string[] }>;
+    const user = {
+      id: `user-demo-${request.username || mockResourceData["/users"].length + 1}`,
+      username: request.username || "operator",
+      email: request.email || "",
+      status: "pending_password_change",
+      roles: request.role_ids || [],
+      created_at: baseTime,
+      updated_at: baseTime,
+    };
+    (mockResourceData["/users"] as Record<string, unknown>[]).unshift(user);
+    return user;
+  }
+  if (stripQuery(path) === "/streams") {
+    const request = body as Partial<Stream>;
+    const id = `stream-demo-${mockStreams.length + 1}`;
+    const stream: Stream = {
+      id,
+      name: request.name || "新規配信枠",
+      status: "created",
+      discord_config_id: request.discord_config_id,
+      discord_guild_id: request.discord_guild_id,
+      discord_voice_channel_id: request.discord_voice_channel_id,
+      discord_text_channel_id: request.discord_text_channel_id,
+      auto_start_trigger: request.auto_start_trigger,
+      encoder_profile_id: request.encoder_profile_id,
+      caption_profile_id: request.caption_profile_id,
+      overlay_profile_id: request.overlay_profile_id,
+      archive_profile_id: request.archive_profile_id || (request.archive_oauth_account_id ? `archive-${id}` : undefined),
+      archive_drive_destination_id: request.archive_oauth_account_id ? `drive-${id}` : undefined,
+      archive_oauth_account_id: request.archive_oauth_account_id,
+      archive_folder_id_configured: Boolean((request as Partial<Stream> & { archive_folder_id?: string }).archive_folder_id),
+      archive_masked_folder_id: (request as Partial<Stream> & { archive_folder_id?: string }).archive_folder_id ? "fol...ock" : undefined,
+      archive_shared_drive: request.archive_shared_drive,
+      archive_shared_drive_id: request.archive_shared_drive_id,
+      archive_file_name: request.archive_file_name || (request.archive_oauth_account_id ? `${request.name || "新規配信枠"}-20260702.mp4` : undefined),
+      youtube_output_id: request.youtube_output_id,
+      encoder_input_url: request.encoder_input_url,
+      scheduled_start_at: request.scheduled_start_at,
+      scheduled_end_at: request.scheduled_end_at,
+      created_at: baseTime,
+      updated_at: baseTime,
+    };
+    mockStreams.unshift(stream);
+    return stream;
+  }
   if (stripQuery(path) === "/integrations/oauth-accounts/start") {
     const request = body as Partial<{ provider_id: string; account_label: string; redirect_after: string }>;
     const providers = mockResourceData["/integrations/oauth-providers"] as Array<{ id: string; provider_type: string; name: string; enabled: boolean; redirect_uri: string }>;
@@ -457,19 +638,80 @@ function mockConfigPath(serviceType: string) {
 }
 
 export function mockPut(path: string, body?: unknown): unknown {
+  if (stripQuery(path) === "/auth/email") {
+    const request = body as { email?: string };
+    const email = String(request.email || "").trim();
+    if (email && (!email.includes("@") || /[\r\n\t]/.test(email))) {
+      throw new Error("invalid_email");
+    }
+    mockCurrentUser.user.email = email || undefined;
+    return mockCurrentUser;
+  }
   if (stripQuery(path) === "/settings/app") {
-    const request = body as Partial<AppSettings>;
-    mockAppSettings = { app_name: request.app_name || mockAppSettings.app_name, updated_at: baseTime };
+    const request = body as Partial<AppSettings> & { smtp_password?: string };
+    const smtpEnabled = Boolean(request.smtp_enabled);
+    mockAppSettings = {
+      app_name: request.app_name || mockAppSettings.app_name,
+      timezone: request.timezone || mockAppSettings.timezone,
+      smtp_enabled: smtpEnabled,
+      smtp_host: smtpEnabled ? request.smtp_host || "" : undefined,
+      smtp_port: smtpEnabled ? request.smtp_port || 587 : 587,
+      smtp_starttls: smtpEnabled ? request.smtp_starttls ?? true : true,
+      smtp_from: smtpEnabled ? request.smtp_from || "" : undefined,
+      smtp_username: smtpEnabled ? request.smtp_username || "" : undefined,
+      smtp_password_configured: smtpEnabled ? Boolean(request.smtp_password || mockAppSettings.smtp_password_configured) : false,
+      updated_at: baseTime,
+    };
     return mockAppSettings;
   }
   return { ok: true };
 }
 
+export function mockDelete(path: string): unknown {
+  const normalizedPath = stripQuery(path);
+  if (/^\/auth\/passkeys\/[^/]+$/.test(normalizedPath)) {
+    deleteFromArray(mockPasskeys as unknown as Record<string, unknown>[], decodeURIComponent(normalizedPath.replace(/^\/auth\/passkeys\//, "")));
+    return undefined;
+  }
+  if (/^\/auth\/oauth-links\/[^/]+$/.test(normalizedPath)) {
+    deleteFromArray(mockOAuthLinks as unknown as Record<string, unknown>[], decodeURIComponent(normalizedPath.replace(/^\/auth\/oauth-links\//, "")));
+    return { status: "deleted" };
+  }
+  if (/^\/services\/[^/]+$/.test(normalizedPath)) {
+    const id = decodeURIComponent(normalizedPath.replace(/^\/services\//, ""));
+    deleteFromArray(mockWorkers, id);
+    return { status: "deleted" };
+  }
+  const collectionPath = mockDeleteCollectionPath(normalizedPath);
+  if (!collectionPath) return { status: "deleted" };
+  const id = decodeURIComponent(normalizedPath.slice(collectionPath.length + 1));
+  const rows = mockResourceData[collectionPath];
+  if (Array.isArray(rows)) deleteFromArray(rows as Record<string, unknown>[], id);
+  return { status: "deleted" };
+}
+
 export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
   if (/^\/nodes\/[^/]+\/configuration$/.test(normalizedPath)) return true;
+  if (/^\/services\/[^/]+$/.test(normalizedPath)) return true;
+  if (/^\/auth\/passkeys\/[^/]+$/.test(normalizedPath)) return true;
+  if (/^\/auth\/oauth-links\/[^/]+\/start$/.test(normalizedPath)) return true;
+  if (/^\/auth\/oauth-links\/[^/]+$/.test(normalizedPath)) return true;
+  if (mockDeleteCollectionPath(normalizedPath)) return true;
   return new Set([
     "/auth/me",
+    "/auth/email",
+    "/auth/change-password",
+    "/auth/mfa/status",
+    "/auth/mfa/enroll",
+    "/auth/mfa/verify",
+    "/auth/mfa/disable",
+    "/auth/recovery-codes/regenerate",
+    "/auth/passkeys",
+    "/auth/passkeys/register/start",
+    "/auth/passkeys/register/finish",
+    "/auth/oauth-links",
+    "/auth/oauth/providers",
     "/setup/status",
     "/settings/app",
     "/version",
@@ -483,6 +725,28 @@ export function mockPathExists(path: string) {
     "/integrations/oauth-accounts/start",
     ...Object.keys(mockResourceData),
   ]).has(normalizedPath);
+}
+
+function mockLoginOAuthProviders(): OAuthLoginProvider[] {
+  const providers = mockResourceData["/integrations/oauth-providers"] as OAuthLoginProvider[];
+  return providers.filter((provider) => provider.enabled);
+}
+
+function mockDeleteCollectionPath(path: string) {
+  return Object.keys(mockResourceData)
+    .filter((collectionPath) => path.startsWith(`${collectionPath}/`))
+    .sort((a, b) => b.length - a.length)[0];
+}
+
+function deleteFromArray(rows: Record<string, unknown>[], id: string) {
+  const index = rows.findIndex((row) => {
+    for (const key of ["id", "service_id", "name"]) {
+      const value = row[key];
+      if (typeof value === "string" && value === id) return true;
+    }
+    return false;
+  });
+  if (index >= 0) rows.splice(index, 1);
 }
 
 function stripQuery(path: string) {

@@ -67,19 +67,36 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	if !ok {
 		return Stream{}, ErrNotFound
 	}
+	stream.ScheduledStartAt = cloneTimePtr(settings.ScheduledStartAt)
+	stream.ScheduledEndAt = cloneTimePtr(settings.ScheduledEndAt)
 	stream.DiscordConfigID = strings.TrimSpace(settings.DiscordConfigID)
 	stream.DiscordGuildID = strings.TrimSpace(settings.DiscordGuildID)
 	stream.DiscordVoiceID = strings.TrimSpace(settings.DiscordVoiceID)
 	stream.DiscordTextID = strings.TrimSpace(settings.DiscordTextID)
+	stream.AutoStartTrigger = strings.TrimSpace(settings.AutoStartTrigger)
 	stream.EncoderProfileID = strings.TrimSpace(settings.EncoderProfileID)
 	stream.CaptionProfileID = strings.TrimSpace(settings.CaptionProfileID)
 	stream.OverlayProfileID = strings.TrimSpace(settings.OverlayProfileID)
 	stream.ArchiveProfileID = strings.TrimSpace(settings.ArchiveProfileID)
+	stream.ArchiveDriveDestinationID = strings.TrimSpace(settings.ArchiveDriveDestinationID)
+	stream.ArchiveOAuthAccountID = strings.TrimSpace(settings.ArchiveOAuthAccountID)
+	stream.ArchiveSharedDrive = settings.ArchiveSharedDrive
+	stream.ArchiveSharedDriveID = strings.TrimSpace(settings.ArchiveSharedDriveID)
+	stream.ArchiveFileName = strings.TrimSpace(settings.ArchiveFileName)
+	stream.ArchiveFolderIDConfigured = stream.ArchiveDriveDestinationID != ""
 	stream.YouTubeOutputID = strings.TrimSpace(settings.YouTubeOutputID)
 	stream.EncoderInputURL = strings.TrimSpace(settings.EncoderInputURL)
 	stream.UpdatedAt = time.Now().UTC()
 	s.streams[id] = stream
 	return stream, nil
+}
+
+func cloneTimePtr(value *time.Time) *time.Time {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
 }
 
 func (s *MemoryStreamStore) UpdateStreamStatus(ctx context.Context, id, status string) (Stream, error) {

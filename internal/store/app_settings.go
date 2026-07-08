@@ -5,14 +5,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/mail"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type AppSettings struct {
-	AppName   string `json:"app_name"`
-	UpdatedAt string `json:"updated_at,omitempty"`
+	AppName                string `json:"app_name"`
+	Timezone               string `json:"timezone"`
+	SMTPEnabled            bool   `json:"smtp_enabled"`
+	SMTPHost               string `json:"smtp_host,omitempty"`
+	SMTPPort               int    `json:"smtp_port,omitempty"`
+	SMTPStartTLS           bool   `json:"smtp_starttls"`
+	SMTPFrom               string `json:"smtp_from,omitempty"`
+	SMTPUsername           string `json:"smtp_username,omitempty"`
+	SMTPPasswordConfigured bool   `json:"smtp_password_configured,omitempty"`
+	UpdatedAt              string `json:"updated_at,omitempty"`
 }
 
 type AppSettingsStore interface {
@@ -20,7 +31,9 @@ type AppSettingsStore interface {
 	UpdateAppSettings(ctx context.Context, settings AppSettings) (AppSettings, error)
 }
 
-var defaultAppSettings = AppSettings{AppName: "AutoStream"}
+const AppSMTPPasswordSecretName = "app_smtp_password"
+
+var defaultAppSettings = AppSettings{AppName: "AutoStream", Timezone: "Asia/Tokyo", SMTPPort: 587, SMTPStartTLS: true}
 
 type MemoryAppSettingsStore struct {
 	mu       sync.Mutex
@@ -111,5 +124,113 @@ func normalizeAppSettings(settings AppSettings) (AppSettings, error) {
 	if len([]rune(name)) > 80 || strings.ContainsAny(name, "\r\n\t\x00") {
 		return AppSettings{}, ErrInvalidSettings
 	}
-	return AppSettings{AppName: name}, nil
+	timezone := strings.TrimSpace(settings.Timezone)
+	if timezone == "" {
+		timezone = defaultAppSettings.Timezone
+	}
+	if !validTimezoneName(timezone) {
+		return AppSettings{}, ErrInvalidSettings
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return AppSettings{}, ErrInvalidSettings
+	}
+	settings.SMTPHost = strings.TrimSpace(settings.SMTPHost)
+	settings.SMTPFrom = strings.TrimSpace(settings.SMTPFrom)
+	settings.SMTPUsername = strings.TrimSpace(settings.SMTPUsername)
+	if !settings.SMTPEnabled {
+		return AppSettings{AppName: name, Timezone: timezone, SMTPPort: defaultAppSettings.SMTPPort, SMTPStartTLS: defaultAppSettings.SMTPStartTLS}, nil
+	}
+	if settings.SMTPPort == 0 {
+		settings.SMTPPort = defaultAppSettings.SMTPPort
+	}
+	if err := validateSMTPSettings(settings); err != nil {
+		return AppSettings{}, err
+	}
+	return AppSettings{
+		AppName:                name,
+		Timezone:               timezone,
+		SMTPEnabled:            settings.SMTPEnabled,
+		SMTPHost:               settings.SMTPHost,
+		SMTPPort:               settings.SMTPPort,
+		SMTPStartTLS:           settings.SMTPStartTLS,
+		SMTPFrom:               settings.SMTPFrom,
+		SMTPUsername:           settings.SMTPUsername,
+		SMTPPasswordConfigured: settings.SMTPPasswordConfigured,
+	}, nil
+}
+
+func NormalizeAppSettings(settings AppSettings) (AppSettings, error) {
+	return normalizeAppSettings(settings)
+}
+
+func validateSMTPSettings(settings AppSettings) error {
+	if !validSMTPHost(settings.SMTPHost) || settings.SMTPPort < 1 || settings.SMTPPort > 65535 {
+		return ErrInvalidSettings
+	}
+	if settings.SMTPFrom == "" || strings.ContainsAny(settings.SMTPUsername, "\r\n\x00") || len(settings.SMTPUsername) > 255 {
+		return ErrInvalidSettings
+	}
+	address, err := mail.ParseAddress(settings.SMTPFrom)
+	if err != nil || address.Address == "" || !strings.EqualFold(address.Address, settings.SMTPFrom) {
+		return ErrInvalidSettings
+	}
+	if _, err := strconv.Atoi(settings.SMTPHost); err == nil {
+		return ErrInvalidSettings
+	}
+	if settings.SMTPUsername == "" && settings.SMTPPasswordConfigured {
+		return ErrInvalidSettings
+	}
+	if settings.SMTPUsername != "" && !settings.SMTPPasswordConfigured {
+		return ErrInvalidSettings
+	}
+	return nil
+}
+
+func validSMTPHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" || len(host) > 255 || strings.ContainsAny(host, "\r\n\t\x00/") {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if strings.ContainsAny(host, ":@") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, char := range label {
+			if char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func validTimezoneName(value string) bool {
+	if value == "" || len(value) > 64 || strings.HasPrefix(value, "/") || strings.Contains(value, "..") || strings.Contains(value, "\\") {
+		return false
+	}
+	for _, char := range value {
+		if char >= 'A' && char <= 'Z' {
+			continue
+		}
+		if char >= 'a' && char <= 'z' {
+			continue
+		}
+		if char >= '0' && char <= '9' {
+			continue
+		}
+		switch char {
+		case '/', '_', '-', '+':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
