@@ -112,6 +112,11 @@ type StreamStore interface {
 	UpsertStreamArtifacts(ctx context.Context, id string, artifacts []StreamArtifact) error
 }
 
+type StreamArtifactAdminStore interface {
+	DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error
+	RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error)
+}
+
 type StreamArtifactReportStore interface {
 	WriteStreamArtifactReport(ctx context.Context, token ServiceToken, event ServiceStreamEvent, artifacts []StreamArtifact) error
 }
@@ -439,6 +444,66 @@ func (s MariaDBStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 	return tx.Commit()
 }
 
+func (s MariaDBStreamStore) DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error {
+	if _, err := s.GetStream(ctx, streamID); err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM stream_artifacts WHERE stream_id = ? AND id = ?`, streamID, artifactID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s MariaDBStreamStore) RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error) {
+	if !isSafeArtifactFileName(name) {
+		return StreamArtifact{}, ErrInvalidStreamArtifact
+	}
+	artifact, err := s.streamArtifactByID(ctx, streamID, artifactID)
+	if err != nil {
+		return StreamArtifact{}, err
+	}
+	if artifact.Name == name {
+		return artifact, nil
+	}
+	var conflict string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM stream_artifacts WHERE stream_id = ? AND kind = ? AND name = ? LIMIT 1`, streamID, artifact.Kind, name).Scan(&conflict); err == nil {
+		return StreamArtifact{}, ErrAlreadyExists
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return StreamArtifact{}, err
+	}
+	artifact.Name = name
+	artifact.RelativePath = path.Join("final", streamID, name)
+	if !isSafeRelativePath(artifact.RelativePath) {
+		return StreamArtifact{}, ErrInvalidStreamArtifact
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE stream_artifacts SET name = ?, relative_path = ? WHERE stream_id = ? AND id = ?`, artifact.Name, artifact.RelativePath, streamID, artifactID); err != nil {
+		return StreamArtifact{}, err
+	}
+	return artifact, nil
+}
+
+func (s MariaDBStreamStore) streamArtifactByID(ctx context.Context, streamID, artifactID string) (StreamArtifact, error) {
+	if _, err := s.GetStream(ctx, streamID); err != nil {
+		return StreamArtifact{}, err
+	}
+	var artifact StreamArtifact
+	err := s.db.QueryRowContext(ctx, `SELECT id, stream_id, kind, name, relative_path, size_bytes, created_at FROM stream_artifacts WHERE stream_id = ? AND id = ?`, streamID, artifactID).Scan(&artifact.ID, &artifact.StreamID, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StreamArtifact{}, ErrNotFound
+	}
+	if err != nil {
+		return StreamArtifact{}, err
+	}
+	if !isSafeRelativePath(artifact.RelativePath) {
+		return StreamArtifact{}, ErrInvalidStreamArtifact
+	}
+	return artifact, nil
+}
+
 func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token ServiceToken, event ServiceStreamEvent, artifacts []StreamArtifact) error {
 	if event.ServiceID == "" || event.StreamID == "" || event.EventType == "" {
 		return errors.New("missing required stream event field")
@@ -535,6 +600,32 @@ func ValidateStreamArtifactReport(streamID string, artifacts []StreamArtifact) e
 		seen[key] = true
 	}
 	return nil
+}
+
+var ErrInvalidStreamArtifact = errors.New("invalid stream artifact")
+
+func isSafeArtifactFileName(name string) bool {
+	return ValidStreamArtifactFileName(name)
+}
+
+func ValidStreamArtifactFileName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 255 || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	allowedExt := map[string]bool{
+		".mp4": true, ".mkv": true, ".json": true, ".jsonl": true, ".vtt": true,
+	}
+	if !allowedExt[strings.ToLower(path.Ext(name))] {
+		return false
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func NormalizeStreamArtifacts(streamID string, artifacts []StreamArtifact) []StreamArtifact {

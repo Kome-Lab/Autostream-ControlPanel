@@ -123,7 +123,7 @@ export function StreamsView() {
               "-"}
           </div>
           <div className="text-muted-foreground">Drive {row.original.archive_folder_id_configured ? row.original.archive_masked_folder_id || "設定済み" : "-"}</div>
-          <div className="text-muted-foreground">Overlay {optionLabel(overlayProfileLabels, row.original.overlay_profile_id) || "-"}</div>
+          <div className="text-muted-foreground">Watermark {optionLabel(overlayProfileLabels, row.original.overlay_profile_id) || "OFF"}</div>
         </div>
       ),
     },
@@ -239,8 +239,10 @@ function StreamSlotForm({
   const [archiveSharedDrive, setArchiveSharedDrive] = useState(false);
   const [archiveSharedDriveID, setArchiveSharedDriveID] = useState("");
   const [archiveFileName, setArchiveFileName] = useState("");
+  const [archiveRetentionDays, setArchiveRetentionDays] = useState("30");
   const [encoderProfileID, setEncoderProfileID] = useState(noneValue);
   const [captionProfileID, setCaptionProfileID] = useState(noneValue);
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [overlayProfileID, setOverlayProfileID] = useState(noneValue);
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
@@ -278,22 +280,24 @@ function StreamSlotForm({
         archive_shared_drive: archiveSharedDrive,
         archive_shared_drive_id: archiveSharedDriveID,
         archive_file_name: archiveFileName,
+        archive_retention_days: positiveIntOrUndefined(archiveRetentionDays),
         encoder_profile_id: selectedValue(encoderProfileID),
         caption_profile_id: selectedValue(captionProfileID),
-        overlay_profile_id: selectedValue(overlayProfileID),
+        overlay_profile_id: watermarkEnabled ? selectedValue(overlayProfileID) : "",
         encoder_service_id: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : "",
         worker_service_id: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : "",
         encoder_input_url: encoderInputURL,
         scheduled_start_at: dateTimeLocalToISO(scheduledStartAt),
         scheduled_end_at: dateTimeLocalToISO(scheduledEndAt),
       }),
-    [archiveFileName, archiveFolderID, archiveOAuthAccountID, archiveSharedDrive, archiveSharedDriveID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderInputURL, encoderProfileID, guildID, name, overlayProfileID, scheduledEndAt, scheduledStartAt, textChannelID, voiceChannelID, youtubeOutputID],
+    [archiveFileName, archiveFolderID, archiveOAuthAccountID, archiveRetentionDays, archiveSharedDrive, archiveSharedDriveID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderInputURL, encoderProfileID, guildID, name, overlayProfileID, scheduledEndAt, scheduledStartAt, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
   const autoStartReady = !autoStartFromDiscord || (selectedValue(discordConfigID) !== "" && guildID.trim() !== "" && voiceChannelID.trim() !== "");
-  const hasArchiveTarget = selectedValue(archiveOAuthAccountID) !== "" || archiveFolderID.trim() !== "" || archiveSharedDrive || archiveSharedDriveID.trim() !== "" || archiveFileName.trim() !== "";
-  const archiveReady = !hasArchiveTarget || (selectedValue(archiveOAuthAccountID) !== "" && archiveFolderID.trim() !== "" && (!archiveSharedDrive || archiveSharedDriveID.trim() !== ""));
+  const hasArchiveUploadTarget = selectedValue(archiveOAuthAccountID) !== "" || archiveFolderID.trim() !== "" || archiveSharedDrive || archiveSharedDriveID.trim() !== "" || archiveFileName.trim() !== "";
+  const archiveReady = !hasArchiveUploadTarget || (selectedValue(archiveOAuthAccountID) !== "" && archiveFolderID.trim() !== "" && (!archiveSharedDrive || archiveSharedDriveID.trim() !== ""));
+  const watermarkReady = !watermarkEnabled || selectedValue(overlayProfileID) !== "";
   const nodeAssignmentReady = !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
   const nodeAssignmentPermissionLimited = autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
 
@@ -327,9 +331,10 @@ function StreamSlotForm({
             <SelectField label="Archive OAuth account" value={archiveOAuthAccountID} onChange={setArchiveOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
             <TextField label="Drive Folder ID" value={archiveFolderID} onChange={setArchiveFolderID} />
             <TextField label="保存ファイル名" value={archiveFileName} onChange={setArchiveFileName} placeholder="未入力なら 配信枠名-年月日.mp4" />
+            <TextField label="ローカル保持日数" value={archiveRetentionDays} onChange={setArchiveRetentionDays} type="number" />
             <SelectField label="Encoder profile" value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: "未選択" }, ...encoderProfiles]} />
             <SelectField label="Caption profile" value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: "未選択" }, ...captionProfiles]} />
-            <SelectField label="Overlay / watermark profile" value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: "未選択" }, ...overlayProfiles]} />
+            <SelectField label="ウォーターマーク設定" value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: "未選択" }, ...overlayProfiles]} disabled={!watermarkEnabled} />
             {canAssignEncoder ? <SelectField label="Primary Encoder Node" value={effectiveEncoderServiceID} onChange={setEncoderServiceID} options={[{ value: noneValue, label: "未選択" }, ...encoderNodes]} /> : null}
             {canAssignWorker ? <SelectField label="Primary Worker Node" value={effectiveWorkerServiceID} onChange={setWorkerServiceID} options={[{ value: noneValue, label: "未選択" }, ...workerNodes]} /> : null}
             <TextField label="外部入力URL" value={encoderInputURL} onChange={setEncoderInputURL} placeholder="srt://source.example.com:9000" />
@@ -340,6 +345,10 @@ function StreamSlotForm({
             <label className="flex min-h-10 items-center gap-2 self-end text-sm">
               <Checkbox checked={archiveSharedDrive} onCheckedChange={(value) => setArchiveSharedDrive(value === true)} />
               共有ドライブIDを使う
+            </label>
+            <label className="flex min-h-10 items-center gap-2 self-end text-sm">
+              <Checkbox checked={watermarkEnabled} onCheckedChange={(value) => setWatermarkEnabled(value === true)} />
+              ウォーターマークを使う
             </label>
             <TextField label="共有ドライブID" value={archiveSharedDriveID} onChange={setArchiveSharedDriveID} />
           </div>
@@ -356,10 +365,16 @@ function StreamSlotForm({
               Discord VC参加で自動開始する場合は、Discord BOT設定、Guild ID、VC Channel IDを指定してください。
             </div>
           ) : null}
-          {hasArchiveTarget && !archiveReady ? (
+          {hasArchiveUploadTarget && !archiveReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               Archiveを設定する場合は、OAuth accountとDrive Folder IDを指定してください。共有ドライブを使う場合は共有ドライブIDも必要です。
+            </div>
+          ) : null}
+          {watermarkEnabled && !watermarkReady ? (
+            <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              ウォーターマークを使う場合は、ウォーターマーク設定を選択してください。
             </div>
           ) : null}
           {autoStartFromDiscord && canAssignEncoder && canAssignWorker && !nodeAssignmentReady ? (
@@ -377,7 +392,7 @@ function StreamSlotForm({
           {message ? <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">{message}</div> : null}
           {!canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !archiveReady || !nodeAssignmentReady}>
+            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !archiveReady || !watermarkReady || !nodeAssignmentReady}>
               <Plus className="size-4" />
               {createStream.isPending ? "作成中..." : "待機用の配信枠を作成"}
             </Button>
@@ -411,12 +426,12 @@ function TextField({
   );
 }
 
-function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[] }) {
+function SelectField({ label, value, onChange, options, disabled }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[]; disabled?: boolean }) {
   return (
     <label className="grid gap-1.5 text-sm">
       <span className="font-medium">{label}</span>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-full">
+      <Select value={value} onValueChange={onChange} disabled={disabled}>
+        <SelectTrigger className="w-full" disabled={disabled}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -513,6 +528,11 @@ function compactRecord(record: Record<string, unknown>) {
 
 function selectedValue(value: string) {
   return value === noneValue ? "" : value;
+}
+
+function positiveIntOrUndefined(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function singleOptionValue(options: SelectOption[]) {

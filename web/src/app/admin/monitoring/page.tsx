@@ -1,5 +1,5 @@
-import { ResourcePage } from "@/features/resources/resource-page";
+import { MonitoringView } from "@/features/monitoring/monitoring-view";
 
 export default function MonitoringPage() {
-  return <ResourcePage pageId="monitoring" />;
+  return <MonitoringView />;
 }

@@ -1,5 +1,5 @@
-import { ResourcePage } from "@/features/resources/resource-page";
+import { MetricsView } from "@/features/metrics/metrics-view";
 
 export default function MetricsPage() {
-  return <ResourcePage pageId="metrics" />;
+  return <MetricsView />;
 }

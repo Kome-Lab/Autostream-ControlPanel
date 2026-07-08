@@ -4,6 +4,7 @@ import type { ComponentType, ReactNode } from "react";
 import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useMutation } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
@@ -11,7 +12,6 @@ import {
   BarChart3,
   Bell,
   Captions,
-  CircleUserRound,
   ClipboardList,
   FileText,
   Gauge,
@@ -20,6 +20,7 @@ import {
   Languages,
   Layers,
   LineChart,
+  LogOut,
   Menu,
   MessageCircle,
   Moon,
@@ -31,11 +32,13 @@ import {
   Settings,
   Shield,
   Sun,
+  User,
   Users,
   Video,
   Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -44,7 +47,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
-import { apiGet } from "@/lib/api/client";
+import { apiGet, apiPost, clearCSRFToken } from "@/lib/api/client";
 import { useAppSettings, useCurrentUser, useVersion } from "@/features/queries";
 import type { Locale, SetupStatus } from "@/types/domain";
 import type { TranslationKey } from "@/lib/i18n";
@@ -102,7 +105,6 @@ const navSections: NavSection[] = [
       { href: "/admin/audit-logs/", key: "auditLogs", icon: ClipboardList },
       { href: "/admin/security/", key: "security", icon: KeyRound },
       { href: "/admin/nodes/", key: "nodeRegistration", icon: Network },
-      { href: "/admin/account/", key: "account", icon: CircleUserRound },
       { href: "/admin/settings/", key: "settings", icon: Settings },
     ],
   },
@@ -118,6 +120,14 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
   const appVersion = useVersion();
+  const username = currentUser.data?.user.username || "";
+  const logout = useMutation({
+    mutationFn: () => apiPost<{ status: string }>("/auth/logout"),
+    onSettled: () => {
+      clearCSRFToken();
+      router.replace("/login");
+    },
+  });
 
   useEffect(() => {
     if (!currentUser.isError) return;
@@ -135,12 +145,28 @@ export function AdminShell({ children }: { children: ReactNode }) {
     };
   }, [currentUser.isError, router]);
 
-  if (currentUser.isLoading || currentUser.isError || !currentUser.data) {
+  if (currentUser.isLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background p-6">
         <div className="w-full max-w-md space-y-4">
           <Skeleton className="h-10 w-48" />
           <Skeleton className="h-36 w-full" />
+        </div>
+      </main>
+    );
+  }
+
+  if (currentUser.isError || !currentUser.data) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background p-6">
+        <div className="w-full max-w-md rounded-md border bg-card p-5 shadow-sm">
+          <h1 className="text-lg font-semibold">ログイン状態を確認しています</h1>
+          <p className="mt-2 text-sm text-muted-foreground">セッションが切れている場合はログイン画面へ移動します。</p>
+          <div className="mt-4 flex justify-end">
+            <Button asChild variant="outline">
+              <Link href="/login">ログインへ</Link>
+            </Button>
+          </div>
         </div>
       </main>
     );
@@ -214,16 +240,57 @@ export function AdminShell({ children }: { children: ReactNode }) {
               {dark ? <Moon /> : <Sun />}
             </Button>
             <Separator orientation="vertical" className="hidden h-8 sm:block" />
-            <Link href="/admin/account/" className="hidden rounded-md px-2 py-1 text-right text-sm transition-colors hover:bg-muted sm:block">
-              <div className="font-medium">{currentUser.data.user.username}</div>
-              <div className="text-xs text-muted-foreground">{t("currentUser")}</div>
-            </Link>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" className="h-11 gap-2 px-2">
+                  <span className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {userInitial(username)}
+                  </span>
+                  <span className="hidden min-w-0 text-left sm:block">
+                    <span className="block max-w-32 truncate text-sm font-medium">{username}</span>
+                    <span className="block text-xs text-muted-foreground">{t("currentUser")}</span>
+                  </span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel className="flex items-center gap-2">
+                  <span className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {userInitial(username)}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate">{username}</span>
+                    <span className="block text-xs font-normal text-muted-foreground">{currentUser.data.user.email || "メール未設定"}</span>
+                  </span>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/admin/account/">
+                    <User className="size-4" />
+                    ユーザー情報
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    logout.mutate();
+                  }}
+                  disabled={logout.isPending}
+                >
+                  <LogOut className="size-4" />
+                  ログアウト
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl space-y-6 p-4 lg:p-6">{children}</main>
       </div>
     </div>
   );
+}
+
+function userInitial(username: string) {
+  return (username.trim().charAt(0) || "U").toUpperCase();
 }
 
 function Navigation({ pathname }: { pathname: string }) {

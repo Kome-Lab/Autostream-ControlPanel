@@ -225,6 +225,29 @@ export const mockWorkers: WorkerNode[] = [
     reported_capabilities: { rtmps_output: true, archive_upload: true },
     metrics: { cpu_percent: 76, memory_percent: 68, output_bitrate_kbps: 0 },
   },
+  {
+    id: "discord-main",
+    service_id: "discord-main",
+    service_type: "discord_bot",
+    service_name: "制作Discord Bot",
+    status: "online",
+    health_status: "healthy",
+    assignment_role: "primary",
+    current_stream_id: "stream-cable-morning",
+    host: "discord-main.example.jp",
+    port: 8443,
+    ssl_enabled: true,
+    public_url: "https://discord-main.example.jp",
+    version: "1.2.0",
+    reported_version: "1.2.0",
+    reported_os: "linux",
+    reported_arch: "amd64",
+    last_heartbeat_at: "2026-07-02T08:59:59+09:00",
+    heartbeat_age_sec: 5,
+    capabilities: { audio_capture: true, audio_stream_forward: true },
+    reported_capabilities: { audio_capture: true, audio_stream_forward: true },
+    metrics: { audio_forward_active: 1 },
+  },
 ];
 
 export const mockAuditLogs: AuditLog[] = [
@@ -306,8 +329,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "caption-manual", name: "手動字幕", language: "ja-JP", provider: "operator", delay_ms: 0, updated_at: "2026-07-01T18:20:00+09:00" },
   ],
   "/profiles/overlay": [
-    { id: "overlay-lower-third", name: "自治体テロップ", safe_area: "16:9 lower", theme: "public", watermark_enabled: true, watermark_text: "City Public Relations", watermark_position: "bottom_right", watermark_opacity: 0.7, updated_at: baseTime },
-    { id: "overlay-event", name: "イベント進行", safe_area: "full", theme: "event", watermark_enabled: false, updated_at: "2026-07-01T17:00:00+09:00" },
+    { id: "overlay-lower-third", name: "自治体ロゴ", watermark_enabled: true, watermark_image_name: "city-logo.png", watermark_position: "bottom_right", watermark_opacity: 0.7, watermark_width_percent: 14, updated_at: baseTime },
+    { id: "overlay-event", name: "イベントロゴ", watermark_enabled: false, watermark_image_name: "event-logo.webp", watermark_position: "top_left", watermark_opacity: 0.65, watermark_width_percent: 12, updated_at: "2026-07-01T17:00:00+09:00" },
   ],
   "/profiles/archive": [
     { id: "archive-shared-drive", name: "共有Drive保存", format: "mp4", retention_days: 180, upload_enabled: true, updated_at: baseTime },
@@ -378,8 +401,22 @@ const mockResourceData: Record<string, unknown[]> = {
   ],
 };
 
+const mockStreamArtifacts: Record<string, Array<Record<string, unknown>>> = {
+  "stream-cable-morning": [
+    { id: "artifact-morning-final", stream_id: "stream-cable-morning", kind: "archive", name: "final.mp4", relative_path: "final/stream-cable-morning/final.mp4", size_bytes: 734003200, created_at: baseTime },
+    { id: "artifact-morning-metadata", stream_id: "stream-cable-morning", kind: "metadata", name: "metadata.json", relative_path: "final/stream-cable-morning/metadata.json", size_bytes: 4096, created_at: baseTime },
+  ],
+  "stream-council": [
+    { id: "artifact-council-final", stream_id: "stream-council", kind: "archive", name: "council-20260702.mp4", relative_path: "final/stream-council/council-20260702.mp4", size_bytes: 2147483648, created_at: "2026-07-02T16:35:00+09:00" },
+  ],
+};
+
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  const streamArtifacts = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts$/);
+  if (streamArtifacts) {
+    return mockStreamArtifacts[decodeURIComponent(streamArtifacts[1])] || [];
+  }
   const nodeConfiguration = normalizedPath.match(/^\/nodes\/([^/]+)\/configuration$/);
   if (nodeConfiguration) {
     const nodeID = decodeURIComponent(nodeConfiguration[1]);
@@ -517,7 +554,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       encoder_profile_id: request.encoder_profile_id,
       caption_profile_id: request.caption_profile_id,
       overlay_profile_id: request.overlay_profile_id,
-      archive_profile_id: request.archive_profile_id || (request.archive_oauth_account_id ? `archive-${id}` : undefined),
+      archive_profile_id: request.archive_profile_id || (request.archive_oauth_account_id || request.archive_retention_days ? `archive-${id}` : undefined),
       archive_drive_destination_id: request.archive_oauth_account_id ? `drive-${id}` : undefined,
       archive_oauth_account_id: request.archive_oauth_account_id,
       archive_folder_id_configured: Boolean((request as Partial<Stream> & { archive_folder_id?: string }).archive_folder_id),
@@ -525,6 +562,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       archive_shared_drive: request.archive_shared_drive,
       archive_shared_drive_id: request.archive_shared_drive_id,
       archive_file_name: request.archive_file_name || (request.archive_oauth_account_id ? `${request.name || "新規配信枠"}-20260702.mp4` : undefined),
+      archive_retention_days: request.archive_retention_days,
       youtube_output_id: request.youtube_output_id,
       encoder_input_url: request.encoder_input_url,
       scheduled_start_at: request.scheduled_start_at,
@@ -638,6 +676,22 @@ function mockConfigPath(serviceType: string) {
 }
 
 export function mockPut(path: string, body?: unknown): unknown {
+  const artifactUpdate = stripQuery(path).match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)$/);
+  if (artifactUpdate) {
+    const streamID = decodeURIComponent(artifactUpdate[1]);
+    const artifactID = decodeURIComponent(artifactUpdate[2]);
+    const request = body as Partial<{ name: string }>;
+    const name = String(request.name || "").trim();
+    if (!/^[A-Za-z0-9._-]+\.(mp4|mkv|json|jsonl|vtt)$/.test(name) || name.includes("..")) {
+      throw new Error("invalid_stream_artifact");
+    }
+    const artifacts = mockStreamArtifacts[streamID] || [];
+    const artifact = artifacts.find((item) => item.id === artifactID);
+    if (!artifact) throw new Error("not_found");
+    artifact.name = name;
+    artifact.relative_path = `final/${streamID}/${name}`;
+    return artifact;
+  }
   if (stripQuery(path) === "/auth/email") {
     const request = body as { email?: string };
     const email = String(request.email || "").trim();
@@ -669,6 +723,14 @@ export function mockPut(path: string, body?: unknown): unknown {
 
 export function mockDelete(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  const artifactDelete = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)$/);
+  if (artifactDelete) {
+    const streamID = decodeURIComponent(artifactDelete[1]);
+    const artifactID = decodeURIComponent(artifactDelete[2]);
+    const artifacts = mockStreamArtifacts[streamID] || [];
+    mockStreamArtifacts[streamID] = artifacts.filter((item) => item.id !== artifactID);
+    return { status: "deleted" };
+  }
   if (/^\/auth\/passkeys\/[^/]+$/.test(normalizedPath)) {
     deleteFromArray(mockPasskeys as unknown as Record<string, unknown>[], decodeURIComponent(normalizedPath.replace(/^\/auth\/passkeys\//, "")));
     return undefined;
@@ -692,6 +754,7 @@ export function mockDelete(path: string): unknown {
 
 export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
+  if (/^\/streams\/[^/]+\/artifacts(?:\/[^/]+)?(?:\/download)?$/.test(normalizedPath)) return true;
   if (/^\/nodes\/[^/]+\/configuration$/.test(normalizedPath)) return true;
   if (/^\/services\/[^/]+$/.test(normalizedPath)) return true;
   if (/^\/auth\/passkeys\/[^/]+$/.test(normalizedPath)) return true;

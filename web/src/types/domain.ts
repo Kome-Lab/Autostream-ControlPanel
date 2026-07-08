@@ -44,6 +44,7 @@ export type Stream = {
   archive_shared_drive?: boolean;
   archive_shared_drive_id?: string;
   archive_file_name?: string;
+  archive_retention_days?: number;
 };
 
 export type WorkerNode = {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -287,4 +288,62 @@ func (s *MemoryStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 	}
 	s.artifacts[id] = current
 	return nil
+}
+
+func (s *MemoryStreamStore) DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.streams[streamID]; !ok {
+		return ErrNotFound
+	}
+	current := s.artifacts[streamID]
+	filtered := current[:0]
+	deleted := false
+	for _, artifact := range current {
+		if artifact.ID == artifactID {
+			deleted = true
+			continue
+		}
+		filtered = append(filtered, artifact)
+	}
+	if !deleted {
+		return ErrNotFound
+	}
+	s.artifacts[streamID] = filtered
+	return nil
+}
+
+func (s *MemoryStreamStore) RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error) {
+	if err := ctx.Err(); err != nil {
+		return StreamArtifact{}, err
+	}
+	if !isSafeArtifactFileName(name) {
+		return StreamArtifact{}, ErrInvalidStreamArtifact
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.streams[streamID]; !ok {
+		return StreamArtifact{}, ErrNotFound
+	}
+	for _, artifact := range s.artifacts[streamID] {
+		if artifact.ID != artifactID && artifact.Name == name {
+			return StreamArtifact{}, ErrAlreadyExists
+		}
+	}
+	for index, artifact := range s.artifacts[streamID] {
+		if artifact.ID != artifactID {
+			continue
+		}
+		artifact.Name = name
+		artifact.RelativePath = path.Join("final", streamID, name)
+		if !isSafeRelativePath(artifact.RelativePath) {
+			return StreamArtifact{}, ErrInvalidStreamArtifact
+		}
+		s.artifacts[streamID][index] = artifact
+		return artifact, nil
+	}
+	return StreamArtifact{}, ErrNotFound
 }

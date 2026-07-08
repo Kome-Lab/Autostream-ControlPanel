@@ -46,6 +46,8 @@ const serviceHeartbeatOfflineDefault = 180 * time.Second
 const runtimeSecretLeaseTTL = 60 * time.Second
 const youtubeCompleteRetryDefaultInterval = 60 * time.Second
 const sensitiveActionAttemptThreshold = 6
+const defaultArchiveRetentionDays = 30
+const maxArchiveRetentionDays = 3650
 
 type Server struct {
 	mux            *http.ServeMux
@@ -84,6 +86,9 @@ type serviceDispatcher interface {
 	WorkerEvents(ctx context.Context, stream store.Stream, services []store.RegisteredService) servicecall.WorkerEventsResult
 	EncoderPreflight(ctx context.Context, stream store.Stream, services []store.RegisteredService) servicecall.ServicePreflightResult
 	SendWorkerEvent(ctx context.Context, stream store.Stream, services []store.RegisteredService, req servicecall.WorkerEventRequest) servicecall.DispatchResult
+	DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) servicecall.ArchiveArtifactDownloadResult
+	DeleteArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) servicecall.DispatchResult
+	RenameArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, name string) servicecall.DispatchResult
 }
 
 type startReadinessChecker interface {
@@ -391,6 +396,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /streams/{id}/worker-events/test", s.requirePermission("streams.update", s.sendWorkerTestEvent))
 	s.mux.HandleFunc("GET /streams/{id}/logs", s.requirePermission("logs.read", s.streamLogs))
 	s.mux.HandleFunc("GET /streams/{id}/artifacts", s.requirePermission("archives.read", s.streamArtifacts))
+	s.mux.HandleFunc("GET /streams/{id}/artifacts/{artifact_id}/download", s.requirePermission("archives.download", s.downloadStreamArtifact))
+	s.mux.HandleFunc("DELETE /streams/{id}/artifacts/{artifact_id}", s.requirePermission("archives.delete", s.deleteStreamArtifact))
+	s.mux.HandleFunc("PUT /streams/{id}/artifacts/{artifact_id}", s.requirePermission("archives.delete", s.renameStreamArtifact))
 	s.mux.HandleFunc("GET /audit-logs", s.requirePermission("audit_logs.read", s.listAuditLogs))
 	s.mux.HandleFunc("GET /audit-logs/export", s.requirePermission("audit_logs.export", s.exportAuditLogs))
 	s.mux.HandleFunc("GET /security/settings", s.requirePermission("system_settings.read", s.securitySettings))
@@ -6395,6 +6403,7 @@ type streamSettingsRequest struct {
 	ArchiveSharedDrive    bool   `json:"archive_shared_drive,omitempty"`
 	ArchiveSharedDriveID  string `json:"archive_shared_drive_id,omitempty"`
 	ArchiveFileName       string `json:"archive_file_name,omitempty"`
+	ArchiveRetentionDays  int    `json:"archive_retention_days,omitempty"`
 	YouTubeOutputID       string `json:"youtube_output_id,omitempty"`
 	EncoderInputURL       string `json:"encoder_input_url,omitempty"`
 	EncoderServiceID      string `json:"encoder_service_id,omitempty"`
@@ -6815,47 +6824,59 @@ func streamArchiveDirectRequested(body streamSettingsRequest) bool {
 		strings.TrimSpace(body.ArchiveFolderID) != "" ||
 		body.ArchiveSharedDrive ||
 		strings.TrimSpace(body.ArchiveSharedDriveID) != "" ||
-		strings.TrimSpace(body.ArchiveFileName) != ""
+		strings.TrimSpace(body.ArchiveFileName) != "" ||
+		body.ArchiveRetentionDays > 0
 }
 
 func (s *Server) materializeStreamArchiveSettings(ctx context.Context, stream store.Stream, settings store.StreamSettings, body streamSettingsRequest) (store.StreamSettings, error) {
-	if s.integrations == nil || s.profiles == nil {
+	if s.profiles == nil {
 		return settings, errArchiveSettingsStoreUnavailable
 	}
 	oauthAccountID := strings.TrimSpace(body.ArchiveOAuthAccountID)
-	if oauthAccountID == "" {
-		return settings, errArchiveOAuthAccountRequired
-	}
 	folderID := strings.TrimSpace(body.ArchiveFolderID)
 	destinationID := strings.TrimSpace(stream.ArchiveDriveDestinationID)
-	if destinationID == "" && folderID == "" {
-		return settings, errArchiveFolderIDRequired
-	}
 	sharedDriveID := strings.TrimSpace(body.ArchiveSharedDriveID)
-	if body.ArchiveSharedDrive && sharedDriveID == "" {
-		return settings, errArchiveSharedDriveIDRequired
-	}
-	if err := s.validateDriveOAuthReadiness(ctx, store.DriveDestination{AuthMode: "oauth2", OAuthAccountID: oauthAccountID}); err != nil {
-		return settings, err
-	}
-	destination, err := s.upsertStreamArchiveDriveDestination(ctx, stream, destinationID, oauthAccountID, folderID, body.ArchiveSharedDrive)
-	if err != nil {
-		return settings, err
-	}
+	retentionDays := normalizeArchiveRetentionDays(body.ArchiveRetentionDays)
+	driveRequested := oauthAccountID != "" || folderID != "" || body.ArchiveSharedDrive || sharedDriveID != "" || strings.TrimSpace(body.ArchiveFileName) != ""
 	fileName := archiveSafeFileName(body.ArchiveFileName)
-	if fileName == "" {
-		fileName = defaultArchiveFileName(stream.Name, time.Now())
+	if driveRequested {
+		if s.integrations == nil {
+			return settings, errArchiveSettingsStoreUnavailable
+		}
+		if oauthAccountID == "" {
+			return settings, errArchiveOAuthAccountRequired
+		}
+		if destinationID == "" && folderID == "" {
+			return settings, errArchiveFolderIDRequired
+		}
+		if body.ArchiveSharedDrive && sharedDriveID == "" {
+			return settings, errArchiveSharedDriveIDRequired
+		}
+		if err := s.validateDriveOAuthReadiness(ctx, store.DriveDestination{AuthMode: "oauth2", OAuthAccountID: oauthAccountID}); err != nil {
+			return settings, err
+		}
+		destination, err := s.upsertStreamArchiveDriveDestination(ctx, stream, destinationID, oauthAccountID, folderID, body.ArchiveSharedDrive)
+		if err != nil {
+			return settings, err
+		}
+		if fileName == "" {
+			fileName = defaultArchiveFileName(stream.Name, time.Now())
+		}
+		destinationID = destination.ID
+		settings.ArchiveDriveDestinationID = destination.ID
+		settings.ArchiveOAuthAccountID = oauthAccountID
+		settings.ArchiveSharedDrive = body.ArchiveSharedDrive
+		settings.ArchiveSharedDriveID = sharedDriveID
+		settings.ArchiveFileName = fileName
+	} else {
+		destinationID = ""
+		fileName = ""
 	}
-	profileID, err := s.upsertStreamArchiveProfile(ctx, stream, destination.ID, fileName, body.ArchiveSharedDrive, sharedDriveID)
+	profileID, err := s.upsertStreamArchiveProfile(ctx, stream, destinationID, fileName, body.ArchiveSharedDrive && driveRequested, sharedDriveID, retentionDays)
 	if err != nil {
 		return settings, err
 	}
 	settings.ArchiveProfileID = profileID
-	settings.ArchiveDriveDestinationID = destination.ID
-	settings.ArchiveOAuthAccountID = oauthAccountID
-	settings.ArchiveSharedDrive = body.ArchiveSharedDrive
-	settings.ArchiveSharedDriveID = sharedDriveID
-	settings.ArchiveFileName = fileName
 	return settings, nil
 }
 
@@ -6880,11 +6901,16 @@ func (s *Server) upsertStreamArchiveDriveDestination(ctx context.Context, stream
 	return s.integrations.CreateDriveDestination(ctx, destination)
 }
 
-func (s *Server) upsertStreamArchiveProfile(ctx context.Context, stream store.Stream, destinationID, fileName string, sharedDrive bool, sharedDriveID string) (string, error) {
+func (s *Server) upsertStreamArchiveProfile(ctx context.Context, stream store.Stream, destinationID, fileName string, sharedDrive bool, sharedDriveID string, retentionDays int) (string, error) {
 	config := map[string]any{
-		"drive_destination_id":  strings.TrimSpace(destinationID),
 		"stream_archive_direct": true,
-		"archive_file_name":     archiveSafeFileName(fileName),
+		"retention_days":        normalizeArchiveRetentionDays(retentionDays),
+	}
+	if strings.TrimSpace(destinationID) != "" {
+		config["drive_destination_id"] = strings.TrimSpace(destinationID)
+	}
+	if safeFileName := archiveSafeFileName(fileName); safeFileName != "" {
+		config["archive_file_name"] = safeFileName
 	}
 	if sharedDrive {
 		config["shared_drive"] = true
@@ -6929,6 +6955,16 @@ func streamArchiveDestinationName(stream store.Stream) string {
 
 func streamArchiveProfileName(stream store.Stream) string {
 	return strings.TrimSpace(stream.Name) + " archive " + shortID(stream.ID)
+}
+
+func normalizeArchiveRetentionDays(value int) int {
+	if value <= 0 {
+		return defaultArchiveRetentionDays
+	}
+	if value > maxArchiveRetentionDays {
+		return maxArchiveRetentionDays
+	}
+	return value
 }
 
 func shortID(id string) string {
@@ -8123,8 +8159,17 @@ func (s *Server) applyArchiveConfig(ctx context.Context, req *servicecall.StartR
 	if err != nil {
 		return err
 	}
+	archiveConfig := map[string]any{
+		"archive_profile_id": profile.ID,
+	}
+	if retentionDays := configInt(profile.Config, "retention_days"); retentionDays > 0 {
+		archiveConfig["retention_days"] = normalizeArchiveRetentionDays(retentionDays)
+	}
 	destinationID := strings.TrimSpace(configString(profile.Config, "drive_destination_id"))
 	if destinationID == "" {
+		if len(archiveConfig) > 1 {
+			req.ArchiveConfig = archiveConfig
+		}
 		return nil
 	}
 	destination, err := s.integrations.GetDriveDestinationForDispatch(ctx, destinationID)
@@ -8140,15 +8185,13 @@ func (s *Server) applyArchiveConfig(ctx context.Context, req *servicecall.StartR
 	if !strings.EqualFold(strings.TrimSpace(destination.AuthMode), "oauth2") {
 		return errArchiveProfileInvalidConfig
 	}
-	req.ArchiveConfig = map[string]any{
-		"drive_destination_id":  destination.ID,
-		"archive_profile_id":    profile.ID,
-		"auth_mode":             "oauth2",
-		"oauth_account_id":      destination.OAuthAccountID,
-		"folder_id_secret_name": driveDestinationFolderIDSecretName(destination.ID),
-		"base_path":             destination.BasePath,
-		"shared_drive":          destination.SharedDrive,
-	}
+	req.ArchiveConfig = archiveConfig
+	req.ArchiveConfig["drive_destination_id"] = destination.ID
+	req.ArchiveConfig["auth_mode"] = "oauth2"
+	req.ArchiveConfig["oauth_account_id"] = destination.OAuthAccountID
+	req.ArchiveConfig["folder_id_secret_name"] = driveDestinationFolderIDSecretName(destination.ID)
+	req.ArchiveConfig["base_path"] = destination.BasePath
+	req.ArchiveConfig["shared_drive"] = destination.SharedDrive
 	account, err := s.integrations.GetOAuthAccountForDispatch(ctx, destination.OAuthAccountID)
 	if errors.Is(err, store.ErrNotFound) || strings.TrimSpace(account.RefreshToken) == "" {
 		return errDriveOAuthAccountUnavailable
@@ -8889,6 +8932,179 @@ func (s *Server) streamArtifacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, artifacts)
+}
+
+func (s *Server) downloadStreamArtifact(w http.ResponseWriter, r *http.Request) {
+	stream, artifact, assignments, ok := s.prepareStreamArtifactAction(w, r)
+	if !ok {
+		return
+	}
+	result := s.dispatcher.DownloadArchiveArtifact(r.Context(), stream, assignments, artifact)
+	if !result.Success || result.Body == nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "archive_artifact_download_failed", "dispatch": sanitizeArchiveDownloadResult(result)})
+		return
+	}
+	defer result.Body.Close()
+	fileName := artifact.Name
+	if result.FileName != "" {
+		fileName = result.FileName
+	}
+	contentType := result.ContentType
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+sanitizeDownloadFileName(fileName)+`"`)
+	if result.SizeBytes >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(result.SizeBytes, 10))
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.download", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"artifact_id": artifact.ID, "artifact_name": artifact.Name}})
+	_, _ = io.Copy(w, result.Body)
+}
+
+func (s *Server) deleteStreamArtifact(w http.ResponseWriter, r *http.Request) {
+	stream, artifact, assignments, ok := s.prepareStreamArtifactAction(w, r)
+	if !ok {
+		return
+	}
+	result := s.dispatcher.DeleteArchiveArtifact(r.Context(), stream, assignments, artifact)
+	if !result.Success {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "archive_artifact_delete_failed", "dispatch": sanitizeDispatchResults([]servicecall.DispatchResult{result})})
+		return
+	}
+	admin, ok := s.streams.(store.StreamArtifactAdminStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "stream_artifact_admin_not_configured"})
+		return
+	}
+	if err := admin.DeleteStreamArtifact(r.Context(), stream.ID, artifact.ID); errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_stream_artifact_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.delete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"artifact_id": artifact.ID, "artifact_name": artifact.Name}})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) renameStreamArtifact(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	stream, artifact, assignments, ok := s.prepareStreamArtifactAction(w, r)
+	if !ok {
+		return
+	}
+	if !store.ValidStreamArtifactFileName(body.Name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stream_artifact"})
+		return
+	}
+	artifacts, err := s.streams.ListStreamArtifacts(r.Context(), stream.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_artifacts_failed"})
+		return
+	}
+	for _, existing := range artifacts {
+		if existing.ID != artifact.ID && existing.Kind == artifact.Kind && existing.Name == body.Name {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_artifact_exists"})
+			return
+		}
+	}
+	result := s.dispatcher.RenameArchiveArtifact(r.Context(), stream, assignments, artifact, body.Name)
+	if !result.Success {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "archive_artifact_rename_failed", "dispatch": sanitizeDispatchResults([]servicecall.DispatchResult{result})})
+		return
+	}
+	admin, ok := s.streams.(store.StreamArtifactAdminStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "stream_artifact_admin_not_configured"})
+		return
+	}
+	renamed, err := admin.RenameStreamArtifact(r.Context(), stream.ID, artifact.ID, body.Name)
+	if errors.Is(err, store.ErrInvalidStreamArtifact) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stream_artifact"})
+		return
+	}
+	if errors.Is(err, store.ErrAlreadyExists) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_artifact_exists"})
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "rename_stream_artifact_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.rename", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"artifact_id": artifact.ID, "from": artifact.Name, "to": renamed.Name}})
+	writeJSON(w, http.StatusOK, renamed)
+}
+
+func (s *Server) prepareStreamArtifactAction(w http.ResponseWriter, r *http.Request) (store.Stream, store.StreamArtifact, []store.RegisteredService, bool) {
+	stream, err := s.streams.GetStream(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return store.Stream{}, store.StreamArtifact{}, nil, false
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return store.Stream{}, store.StreamArtifact{}, nil, false
+	}
+	artifacts, err := s.streams.ListStreamArtifacts(r.Context(), stream.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_artifacts_failed"})
+		return store.Stream{}, store.StreamArtifact{}, nil, false
+	}
+	artifact, ok := artifactByID(artifacts, r.PathValue("artifact_id"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return store.Stream{}, store.StreamArtifact{}, nil, false
+	}
+	assignments, err := s.streamAssignments(r.Context(), stream.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return store.Stream{}, store.StreamArtifact{}, nil, false
+	}
+	primaryAssignments := primaryStreamAssignments(assignments)
+	if missing := missingServiceTypes(primaryAssignments, requiredRetryUploadServiceTypes); len(missing) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
+		return store.Stream{}, store.StreamArtifact{}, nil, false
+	}
+	return stream, artifact, primaryAssignments, true
+}
+
+func artifactByID(artifacts []store.StreamArtifact, id string) (store.StreamArtifact, bool) {
+	for _, artifact := range artifacts {
+		if artifact.ID == id {
+			return artifact, true
+		}
+	}
+	return store.StreamArtifact{}, false
+}
+
+func sanitizeArchiveDownloadResult(result servicecall.ArchiveArtifactDownloadResult) servicecall.ArchiveArtifactDownloadResult {
+	result.Body = nil
+	return result
+}
+
+func sanitizeDownloadFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "archive"
+	}
+	name = strings.ReplaceAll(name, `"`, "")
+	name = strings.ReplaceAll(name, "\\", "_")
+	name = strings.ReplaceAll(name, "/", "_")
+	return name
 }
 
 func (s *Server) listAuditLogs(w http.ResponseWriter, r *http.Request) {

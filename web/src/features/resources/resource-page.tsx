@@ -1,6 +1,7 @@
 "use client";
 
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
@@ -15,10 +16,11 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { APIError, apiDelete, apiPost } from "@/lib/api/client";
+import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useResourceData } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
+import { cn } from "@/lib/utils";
 
 export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
   const { t } = useI18n();
@@ -77,7 +79,6 @@ function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
           <CardDescription>{resource.description}</CardDescription>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline">{resource.path}</Badge>
           <Button variant="outline" size="sm" onClick={() => query.refetch()}>
             <RefreshCcw className="size-4" />
             更新
@@ -85,7 +86,8 @@ function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {resource.form ? <CreateResourceForm resource={resource} /> : null}
+        {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} /> : null}
+        {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} /> : null}
         {deleteMessage ? <p className="text-sm text-muted-foreground">{deleteMessage}</p> : null}
         {query.isLoading ? (
           <Skeleton className="h-48 w-full" />
@@ -205,6 +207,8 @@ function ResourceFormFields({ resource, disabled, submit }: { resource: Resource
       return <RoleForm disabled={disabled} submit={submit} />;
     case "notification-channel":
       return <NotificationChannelForm disabled={disabled} submit={submit} />;
+    case "security-settings":
+      return null;
     default:
       return <p className="text-sm text-muted-foreground">このリソースは一覧確認のみ対応しています。</p>;
   }
@@ -249,12 +253,14 @@ function EncoderProfileForm({ disabled, submit }: { disabled: boolean; submit: S
 }
 
 function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+  const discordNodes = useRegisteredNodeOptions("discord_bot");
   const [name, setName] = useState("main-discord-bot");
-  const [serviceID, setServiceID] = useState("discord-01");
+  const [serviceID, setServiceID] = useState(noneValue);
   const [botToken, setBotToken] = useState("");
   const [reconnectEnabled, setReconnectEnabled] = useState(true);
   const [reconnectMaxAttempts, setReconnectMaxAttempts] = useState("5");
   const [audioForwardEnabled, setAudioForwardEnabled] = useState(true);
+  const effectiveServiceID = serviceID === noneValue && discordNodes[0]?.value ? discordNodes[0].value : serviceID;
 
   return (
     <form
@@ -264,7 +270,7 @@ function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: Su
         submit(
           compactRecord({
             name,
-            service_id: serviceID,
+            service_id: effectiveServiceID === noneValue ? "" : effectiveServiceID,
             bot_token: botToken,
             reconnect_enabled: reconnectEnabled,
             reconnect_max_attempts: numberValue(reconnectMaxAttempts, 5),
@@ -277,15 +283,22 @@ function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: Su
     >
       <div className="grid gap-3 md:grid-cols-2">
         <TextField label="BOT設定名" value={name} onChange={setName} required />
-        <TextField label="Discord Node ID" value={serviceID} onChange={setServiceID} required />
+        <SelectField
+          key={discordNodes.map((node) => node.value).join("|") || "no-discord-nodes"}
+          label="Discord BOT Node"
+          value={effectiveServiceID}
+          onChange={setServiceID}
+          options={[{ value: noneValue, label: "未選択" }, ...discordNodes]}
+        />
         <TextField label="Bot Token" value={botToken} onChange={setBotToken} type="password" description="入力した場合のみ保存します。" />
         <NumberField label="再接続最大回数" value={reconnectMaxAttempts} onChange={setReconnectMaxAttempts} min={0} />
       </div>
+      {discordNodes.length === 0 ? <p className="text-sm text-muted-foreground">先にNode登録でDiscord Bot Nodeを登録してください。</p> : null}
       <div className="grid gap-3 md:grid-cols-2">
         <SwitchField label="音声転送" checked={audioForwardEnabled} onCheckedChange={setAudioForwardEnabled} />
         <SwitchField label="自動再接続" checked={reconnectEnabled} onCheckedChange={setReconnectEnabled} />
       </div>
-      <FormActions disabled={disabled} />
+      <FormActions disabled={disabled || effectiveServiceID === noneValue} />
     </form>
   );
 }
@@ -375,7 +388,7 @@ function YouTubeOutputForm({ disabled, submit }: { disabled: boolean; submit: Su
         <SwitchField label="自動停止" checked={autoStop} onCheckedChange={setAutoStop} />
         <SwitchField label="停止時に完了扱い" checked={completeOnStop} onCheckedChange={setCompleteOnStop} />
       </div>
-      {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、先にOAuth accountsでGoogleアカウントを接続してください。</p> : null}
+      {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、先にOAuth接続アカウントでGoogleアカウントを接続してください。</p> : null}
       <FormActions disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue)} />
     </form>
   );
@@ -423,13 +436,14 @@ function CaptionProfileForm({ disabled, submit }: { disabled: boolean; submit: S
 }
 
 function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
-  const [name, setName] = useState("lower-third");
-  const [safeArea, setSafeArea] = useState("16:9 lower");
-  const [theme, setTheme] = useState("public");
-  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
-  const [watermarkText, setWatermarkText] = useState("");
+  const [name, setName] = useState("station-logo");
+  const [watermarkEnabled, setWatermarkEnabled] = useState(true);
+  const [watermarkImage, setWatermarkImage] = useState("");
+  const [watermarkFileName, setWatermarkFileName] = useState("");
   const [watermarkPosition, setWatermarkPosition] = useState("bottom_right");
   const [watermarkOpacity, setWatermarkOpacity] = useState("70");
+  const [watermarkWidth, setWatermarkWidth] = useState("14");
+  const [fileMessage, setFileMessage] = useState("");
 
   return (
     <form
@@ -439,44 +453,52 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
         submit({
           name,
           config: compactRecord({
-            safe_area: safeArea,
-            theme,
             watermark_enabled: watermarkEnabled,
-            watermark_text: watermarkEnabled ? watermarkText : "",
+            watermark_image_data_url: watermarkEnabled ? watermarkImage : "",
+            watermark_file_name: watermarkEnabled ? watermarkFileName : "",
             watermark_position: watermarkEnabled ? watermarkPosition : "",
             watermark_opacity: watermarkEnabled ? numberValue(watermarkOpacity, 70) / 100 : undefined,
+            watermark_width_percent: watermarkEnabled ? numberValue(watermarkWidth, 14) : undefined,
           }),
         });
       }}
     >
-      <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="プロファイル名" value={name} onChange={setName} required />
-        <SelectField
-          label="表示位置"
-          value={safeArea}
-          onChange={setSafeArea}
-          options={[
-            { value: "16:9 lower", label: "16:9 下部" },
-            { value: "16:9 upper", label: "16:9 上部" },
-            { value: "full lower", label: "全面 下部" },
-          ]}
-        />
-        <SelectField
-          label="テーマ"
-          value={theme}
-          onChange={setTheme}
-          options={[
-            { value: "public", label: "自治体・公共" },
-            { value: "event", label: "イベント" },
-            { value: "minimal", label: "最小表示" },
-          ]}
-        />
-      </div>
+      <TextField label="プロファイル名" value={name} onChange={setName} required />
       <div className="grid gap-3 md:grid-cols-2">
         <SwitchField label="ウォーターマークを表示" checked={watermarkEnabled} onCheckedChange={setWatermarkEnabled} />
         {watermarkEnabled ? (
           <>
-            <TextField label="ウォーターマーク文字" value={watermarkText} onChange={setWatermarkText} placeholder="自治体名 / 番組名 / 会社名" />
+            <Field label="画像アップロード" description="PNG、JPEG、WebPのみ。1MB以下の画像を保存します。">
+              <Input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+                    setFileMessage("PNG、JPEG、WebPの画像を選択してください。");
+                    setWatermarkImage("");
+                    setWatermarkFileName("");
+                    return;
+                  }
+                  if (file.size > 1024 * 1024) {
+                    setFileMessage("画像は1MB以下にしてください。");
+                    setWatermarkImage("");
+                    setWatermarkFileName("");
+                    return;
+                  }
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    setWatermarkImage(typeof reader.result === "string" ? reader.result : "");
+                    setWatermarkFileName(file.name);
+                    setFileMessage(`${file.name} を読み込みました。`);
+                  };
+                  reader.onerror = () => setFileMessage("画像を読み込めませんでした。");
+                  reader.readAsDataURL(file);
+                }}
+              />
+              {fileMessage ? <p className="mt-1 text-xs text-muted-foreground">{fileMessage}</p> : null}
+            </Field>
             <SelectField
               label="表示位置"
               value={watermarkPosition}
@@ -489,12 +511,51 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
               ]}
             />
             <NumberField label="不透明度 (%)" value={watermarkOpacity} onChange={setWatermarkOpacity} min={0} />
+            <NumberField label="横幅 (%)" value={watermarkWidth} onChange={setWatermarkWidth} min={1} />
           </>
         ) : null}
       </div>
-      <FormActions disabled={disabled} />
+      {watermarkEnabled ? <WatermarkPreview image={watermarkImage} position={watermarkPosition} opacity={numberValue(watermarkOpacity, 70) / 100} widthPercent={numberValue(watermarkWidth, 14)} /> : null}
+      <FormActions disabled={disabled || (watermarkEnabled && !watermarkImage)} />
     </form>
   );
+}
+
+function WatermarkPreview({ image, position, opacity, widthPercent }: { image: string; position: string; opacity: number; widthPercent: number }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">プレビュー</div>
+      <div className="relative aspect-video overflow-hidden rounded-md border bg-slate-950">
+        <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,.08)_25%,transparent_25%,transparent_50%,rgba(255,255,255,.08)_50%,rgba(255,255,255,.08)_75%,transparent_75%,transparent)] bg-[length:24px_24px]" />
+        {image ? (
+          <Image
+            src={image}
+            alt="ウォーターマークプレビュー"
+            width={480}
+            height={270}
+            unoptimized
+            className={cn("absolute max-h-[28%] object-contain", watermarkPositionClass(position))}
+            style={{ opacity, width: `${Math.min(Math.max(widthPercent, 4), 40)}%` }}
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-300">画像を選択するとプレビューされます。</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function watermarkPositionClass(position: string) {
+  switch (position) {
+    case "top_left":
+      return "left-4 top-4";
+    case "top_right":
+      return "right-4 top-4";
+    case "bottom_left":
+      return "bottom-4 left-4";
+    default:
+      return "bottom-4 right-4";
+  }
 }
 
 function ArchiveProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
@@ -575,7 +636,7 @@ function DriveDestinationForm({ disabled, submit }: { disabled: boolean; submit:
         <TextField label="保存先パス" value={basePath} onChange={setBasePath} />
       </div>
       <SwitchField label="共有ドライブを使う" checked={sharedDrive} onCheckedChange={setSharedDrive} />
-      {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth accountsでGoogleアカウントを接続してください。</p> : null}
+      {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth接続アカウントでGoogleアカウントを接続してください。</p> : null}
       <FormActions disabled={disabled || effectiveOAuthAccountID === noneValue} />
     </form>
   );
@@ -695,7 +756,7 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
           ]}
         />
       </div>
-      {providerOptions.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth providersでGoogleプロバイダを登録し、有効化してください。</p> : null}
+      {providerOptions.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuthログインプロバイダでGoogleプロバイダを登録し、有効化してください。</p> : null}
       <FormActions label="OAuth接続を開始" disabled={disabled || effectiveProviderID === noneValue} />
     </form>
   );
@@ -860,6 +921,123 @@ function NotificationChannelForm({ disabled, submit }: { disabled: boolean; subm
       <SwitchField label="有効化" checked={enabled} onCheckedChange={setEnabled} />
       <FormActions disabled={disabled || (webhookRequired && webhookURL.trim() === "") || (emailRequired && (emailRecipientList.length === 0 || smtpHost.trim() === "" || smtpFrom.trim() === ""))} />
     </form>
+  );
+}
+
+type SecuritySettingsPayload = {
+  password_min_length: number;
+  password_hash: "argon2id";
+  login_lockout_threshold: number;
+  session_idle_timeout_min: number;
+  session_absolute_lifetime_h: number;
+  remember_me_enabled: false;
+  mfa_mode: string;
+  mfa_required_roles: string[];
+};
+
+function SecuritySettingsEditor({ resource, data, loading }: { resource: ResourceDefinition; data: unknown; loading: boolean }) {
+  const queryClient = useQueryClient();
+  const roles = useResourceOptions("/roles", ["name"], ["name"], ["permissions"]);
+  const [passwordMinLength, setPasswordMinLength] = useState("12");
+  const [loginLockoutThreshold, setLoginLockoutThreshold] = useState("5");
+  const [sessionIdleTimeout, setSessionIdleTimeout] = useState("30");
+  const [sessionAbsoluteLifetime, setSessionAbsoluteLifetime] = useState("12");
+  const [mfaMode, setMFAMode] = useState("disabled");
+  const [mfaRequiredRoles, setMFARequiredRoles] = useState<string[]>([]);
+  const [message, setMessage] = useState("");
+  const save = useMutation<unknown, Error, SecuritySettingsPayload>({
+    mutationFn: (payload) => apiPut(resource.path, payload),
+    onSuccess: async () => {
+      setMessage("セキュリティ設定を保存しました。");
+      await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+      await queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] });
+    },
+    onError: (error) => {
+      const code = error instanceof APIError ? error.code || "" : "";
+      const details: Record<string, string> = {
+        invalid_security_settings: "入力値がセキュリティポリシーを満たしていません。",
+        production_mfa_required: "本番環境ではMFAを無効化できません。adminまたはsuper_adminをMFA対象にしてください。",
+        forbidden: "セキュリティ設定を更新する権限がありません。",
+        csrf_failed: "ログイン状態が古くなっています。再読み込みしてから保存してください。",
+      };
+      setMessage(details[code] || "セキュリティ設定を保存できませんでした。");
+    },
+  });
+
+  useEffect(() => {
+    if (!isRecord(data)) return;
+    const handle = window.setTimeout(() => {
+      setPasswordMinLength(String(numberSetting(data.password_min_length, 12)));
+      setLoginLockoutThreshold(String(numberSetting(data.login_lockout_threshold, 5)));
+      setSessionIdleTimeout(String(numberSetting(data.session_idle_timeout_min, 30)));
+      setSessionAbsoluteLifetime(String(numberSetting(data.session_absolute_lifetime_h, 12)));
+      setMFAMode(stringSetting(data.mfa_mode, "disabled"));
+      setMFARequiredRoles(Array.isArray(data.mfa_required_roles) ? data.mfa_required_roles.map(String) : []);
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [data]);
+
+  const roleItems = roles.length > 0 ? roles : [{ value: "super_admin", label: "super_admin" }, { value: "admin", label: "admin" }];
+
+  return (
+    <div className="rounded-md border bg-muted/20 p-3">
+      <div className="mb-3">
+        <div className="font-medium">設定を変更</div>
+        <p className="text-sm text-muted-foreground">ログイン保護、セッション期限、MFA適用範囲を保存できます。パスワードハッシュはArgon2id固定です。</p>
+      </div>
+      {loading ? (
+        <Skeleton className="h-36 w-full" />
+      ) : (
+        <form
+          className="space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            save.mutate({
+              password_min_length: numberValue(passwordMinLength, 12),
+              password_hash: "argon2id",
+              login_lockout_threshold: numberValue(loginLockoutThreshold, 5),
+              session_idle_timeout_min: numberValue(sessionIdleTimeout, 30),
+              session_absolute_lifetime_h: numberValue(sessionAbsoluteLifetime, 12),
+              remember_me_enabled: false,
+              mfa_mode: mfaMode,
+              mfa_required_roles: mfaRequiredRoles,
+            });
+          }}
+        >
+          <div className="grid gap-3 md:grid-cols-2">
+            <NumberField label="最小パスワード長" value={passwordMinLength} onChange={setPasswordMinLength} min={12} required />
+            <NumberField label="ロックまでの失敗回数" value={loginLockoutThreshold} onChange={setLoginLockoutThreshold} min={3} required />
+            <NumberField label="アイドルタイムアウト (分)" value={sessionIdleTimeout} onChange={setSessionIdleTimeout} min={5} required />
+            <NumberField label="絶対セッション期限 (時間)" value={sessionAbsoluteLifetime} onChange={setSessionAbsoluteLifetime} min={1} required />
+            <SelectField
+              label="MFAポリシー"
+              value={mfaMode}
+              onChange={setMFAMode}
+              options={[
+                { value: "disabled", label: "無効" },
+                { value: "totp", label: "TOTPを要求" },
+                { value: "passkey", label: "Passkeyを要求" },
+              ]}
+            />
+            <Field label="固定ポリシー">
+              <div className="rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground">Argon2id / Remember me無効 / Passkey利用可能</div>
+            </Field>
+          </div>
+          <CheckboxList
+            label="MFAを要求するロール"
+            values={mfaRequiredRoles}
+            onChange={setMFARequiredRoles}
+            items={roleItems}
+            emptyText="ロールがまだ登録されていません。空のまま保存すると全ユーザーにMFAを要求します。"
+          />
+          <p className="text-xs text-muted-foreground">MFAポリシー有効時にロールを未選択で保存すると、全ユーザーが対象になります。</p>
+          <Button type="submit" disabled={save.isPending}>
+            保存
+          </Button>
+          {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+        </form>
+      )}
+    </div>
   );
 }
 
@@ -1048,6 +1226,23 @@ function useResourceOptions(path: string, valueKeys: string[], labelKeys: string
   );
 }
 
+function useRegisteredNodeOptions(serviceType: string) {
+  const rows = useResourceRows("/nodes");
+  return useMemo(
+    () =>
+      rows
+        .filter((row) => rowString(row, ["service_type", "node_type"]) === serviceType)
+        .map((row) => {
+          const value = rowString(row, ["service_id", "id"]);
+          const label = firstNonEmpty(rowString(row, ["service_name", "name"]), value);
+          const description = compactList([rowString(row, ["status"]), rowString(row, ["public_url", "host"])]).join(" / ");
+          return { value, label, description };
+        })
+        .filter((option) => option.value),
+    [rows, serviceType],
+  );
+}
+
 function permissionOptionFromRow(row: ResourceRow): SelectOption {
 	const value = rowString(row, ["id", "name", "value"]);
 	return {
@@ -1066,7 +1261,7 @@ const permissionGroupLabels: Record<string, string> = {
 	encoder_profiles: "エンコーダー設定",
 	archive_profiles: "録画/アーカイブ設定",
 	caption_profiles: "字幕/STT設定",
-	overlay_profiles: "オーバーレイ設定",
+	overlay_profiles: "ウォーターマーク設定",
 	discord_configs: "Discord設定",
 	youtube_outputs: "YouTube出力",
 	services: "サービス割り当て",
@@ -1182,6 +1377,14 @@ function numberValue(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function numberSetting(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function stringSetting(value: unknown, fallback: string) {
+  return typeof value === "string" && value.trim() !== "" ? value : fallback;
+}
+
 function splitList(value: string) {
   return value
     .split(/[,\n]/)
@@ -1241,7 +1444,7 @@ function ResourceTable({
             <TableRow key={String(row.id || row.name || index)}>
               {columns.map((column) => (
                 <TableCell key={column} className="max-w-[240px] overflow-hidden text-ellipsis">
-                  {formatCell(row[column])}
+                  {formatCell(row[column], column)}
                 </TableCell>
               ))}
               {showDelete ? (
@@ -1336,7 +1539,13 @@ function profileSummary(path: string, row: ResourceRow) {
     return compactList([labelValue("言語", rowString(row, ["language", "config.language"])), labelValue("方式", rowString(row, ["provider", "config.provider"])), rowString(row, ["delay_ms", "config.delay_ms"]) ? `遅延 ${rowString(row, ["delay_ms", "config.delay_ms"])}ms` : ""]);
   }
   if (path === "/profiles/overlay") {
-    return compactList([labelValue("位置", rowString(row, ["safe_area", "config.safe_area"])), labelValue("テーマ", rowString(row, ["theme", "config.theme"])), enabledLabel("ウォーターマーク", rowValue(row, ["watermark_enabled", "config.watermark_enabled"])), rowString(row, ["watermark_text", "config.watermark_text"]) ? `表示 ${rowString(row, ["watermark_text", "config.watermark_text"])}` : ""]);
+    return compactList([
+      enabledLabel("ウォーターマーク", rowValue(row, ["watermark_enabled", "config.watermark_enabled"])),
+      labelValue("位置", formatScalarValue("watermark_position", rowString(row, ["watermark_position", "config.watermark_position"]))),
+      rowString(row, ["watermark_opacity", "config.watermark_opacity"]) ? `不透明度 ${rowString(row, ["watermark_opacity", "config.watermark_opacity"])}` : "",
+      rowString(row, ["watermark_width_percent", "config.watermark_width_percent"]) ? `幅 ${rowString(row, ["watermark_width_percent", "config.watermark_width_percent"])}%` : "",
+      rowString(row, ["watermark_image_name", "config.watermark_image_name", "watermark_image_url", "config.watermark_image_url"]) ? "画像あり" : "",
+    ]);
   }
   if (path === "/profiles/archive") {
     return compactList([labelValue("形式", rowString(row, ["format", "config.format"])), rowString(row, ["retention_days", "config.retention_days"]) ? `${rowString(row, ["retention_days", "config.retention_days"])}日保持` : "", enabledLabel("Upload", rowValue(row, ["upload_enabled", "config.upload_enabled"])), rowString(row, ["drive_destination_id", "config.drive_destination_id"]) ? "Drive保存先あり" : ""]);
@@ -1374,17 +1583,17 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   return [];
 }
 
-function formatCell(value: unknown): ReactNode {
+function formatCell(value: unknown, key = ""): ReactNode {
   if (value === null || value === undefined || value === "") return "-";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "boolean") return <Badge variant={value ? "default" : "secondary"}>{value ? "有効" : "無効"}</Badge>;
+  if (typeof value === "string" || typeof value === "number") return formatScalarValue(key, value);
   if (Array.isArray(value)) {
     if (value.length === 0) return "-";
     return (
       <div className="flex flex-wrap gap-1">
         {value.slice(0, 6).map((item, index) => (
           <Badge key={index} variant="secondary" className="max-w-full text-xs">
-            {formatNestedValue("", item)}
+            {formatNestedValue(key, item)}
           </Badge>
         ))}
         {value.length > 6 ? <Badge variant="outline">+{value.length - 6}</Badge> : null}
@@ -1398,7 +1607,7 @@ function formatCell(value: unknown): ReactNode {
       <div className="space-y-1 text-xs">
         {entries.slice(0, 5).map(([key, entryValue]) => (
           <div key={key} className="grid grid-cols-[minmax(72px,0.45fr)_minmax(0,1fr)] gap-2">
-            <span className="text-muted-foreground">{humanizeKey(key)}</span>
+            <span className="text-muted-foreground">{columnLabel(key)}</span>
             <span className="min-w-0 truncate">{formatNestedValue(key, entryValue)}</span>
           </div>
         ))}
@@ -1413,10 +1622,19 @@ function formatNestedValue(key: string, value: unknown): string {
   if (isSensitiveKey(key)) return value ? "設定済み" : "-";
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "boolean") return value ? "有効" : "無効";
-  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "string" || typeof value === "number") return formatScalarValue(key, value);
   if (Array.isArray(value)) return value.length === 0 ? "-" : value.map((item) => formatNestedValue("", item)).join(", ");
   if (isRecord(value)) return "設定あり";
   return String(value);
+}
+
+function formatScalarValue(key: string, value: string | number) {
+  const raw = String(value);
+  if ((key === "id" || key === "name") && columnLabels[raw]) return columnLabels[raw];
+  const status = valueLabels[raw] || valueLabels[raw.toLowerCase()];
+  if (status) return status;
+  if (key.endsWith("_at") && !Number.isNaN(Date.parse(raw))) return raw.replace("T", " ").replace(/Z$/, " UTC");
+  return raw;
 }
 
 function rowValue(row: ResourceRow, keys: string[]) {
@@ -1455,33 +1673,97 @@ function isSensitiveKey(key: string) {
 }
 
 function humanizeKey(key: string) {
+  const known = columnLabels[key];
+  if (known) return known;
   return key
     .replace(/_/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+const valueLabels: Record<string, string> = {
+  discord_bot: "Discord Bot",
+  encoder_recorder: "Encoder/Recorder",
+  observability: "Observability",
+  worker: "Worker",
+  online: "オンライン",
+  offline: "オフライン",
+  healthy: "正常",
+  degraded: "注意",
+  unhealthy: "異常",
+  created: "作成済み",
+  scheduled: "予約",
+  ready: "待機中",
+  draft: "下書き",
+  starting: "開始中",
+  live: "配信中",
+  stopping: "停止中",
+  stopped: "停止",
+  completed: "完了",
+  failed: "失敗",
+  error: "エラー",
+  public: "公開",
+  unlisted: "限定公開",
+  private: "非公開",
+  stream_key: "既存ストリームキー",
+  live_api: "YouTube Live API本番",
+  live_api_dry_run: "YouTube Live API検証",
+  top_left: "左上",
+  top_right: "右上",
+  bottom_left: "左下",
+  bottom_right: "右下",
+  disabled: "無効",
+  totp: "TOTP",
+  passkey: "Passkey",
+  "Password minimum length": "最小パスワード長",
+  "MFA mode": "MFAポリシー",
+  "Session idle timeout": "アイドルタイムアウト",
+  "Session absolute lifetime": "絶対セッション期限",
+  "Login lockout threshold": "ロックまでの失敗回数",
+  "Remember me enabled": "Remember me",
+  "Passkey status": "Passkey状態",
+};
+
+const columnLabels: Record<string, string> = {
+  id: "ID",
+  name: "名前",
+  username: "ユーザー名",
+  email: "メール",
+  service_id: "Node ID",
+  service_name: "Node名",
+  service_type: "種別",
+  provider_type: "プロバイダ",
+  type: "種別",
+  status: "状態",
+  health_status: "ヘルス",
+  title: "タイトル",
+  action: "操作",
+  target: "対象",
+  updated_at: "更新日時",
+  created_at: "作成日時",
+  last_login_at: "最終ログイン",
+  profile_summary: "設定内容",
+  bot_summary: "BOT設定",
+  output_summary: "出力設定",
+  destination_summary: "保存先",
+  enabled: "有効",
+  configured: "設定済み",
+  client_secret_configured: "Client Secret",
+  password_min_length: "最小パスワード長",
+  password_hash: "パスワードハッシュ",
+  login_lockout_threshold: "ロックまでの失敗回数",
+  session_idle_timeout_min: "アイドル期限(分)",
+  session_absolute_lifetime_h: "絶対期限(時間)",
+  remember_me_enabled: "Remember me",
+  mfa_mode: "MFAポリシー",
+  mfa_required_roles: "MFA対象ロール",
+  mfa_supported_methods: "対応MFA",
+  passkey_status: "Passkey状態",
+  fingerprint: "指紋",
+  value: "値",
+};
+
 function columnLabel(column: string) {
-  const labels: Record<string, string> = {
-    id: "ID",
-    name: "名前",
-    username: "ユーザー名",
-    service_id: "Node ID",
-    service_name: "Node名",
-    service_type: "種別",
-    type: "種別",
-    status: "状態",
-    health_status: "ヘルス",
-    title: "タイトル",
-    action: "操作",
-    target: "対象",
-    updated_at: "更新日時",
-    created_at: "作成日時",
-    profile_summary: "設定内容",
-    bot_summary: "BOT設定",
-    output_summary: "出力設定",
-    destination_summary: "保存先",
-  };
-  return labels[column] || humanizeKey(column);
+  return columnLabels[column] || humanizeKey(column);
 }
 
 function resourceRowID(row: ResourceRow) {

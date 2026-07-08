@@ -29,17 +29,26 @@ export type ChartOption = ComposeOption<
 
 export function EChartsPanel({ title, option, height = 260 }: { title: string; option: ChartOption; height?: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<echarts.EChartsType | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    const resize = () => chart.resize();
+    const chart = echarts.init(ref.current, undefined, { renderer: "canvas" });
+    chartRef.current = chart;
+    const resize = () => chartRef.current?.resize();
     window.addEventListener("resize", resize);
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(ref.current);
     return () => {
       window.removeEventListener("resize", resize);
+      resizeObserver.disconnect();
       chart.dispose();
+      chartRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    chartRef.current?.setOption(option, { notMerge: false, lazyUpdate: true });
   }, [option]);
 
   return (

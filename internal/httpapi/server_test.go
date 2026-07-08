@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1030,6 +1031,116 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	}
 }
 
+func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "archive-admin", Roles: []string{"archive_admin"}}, "correct horse battery", []string{"streams.read", "archives.read", "archives.download", "archives.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive managed stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 123}); err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/metadata.json", SizeBytes: 12}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archiveArtifact store.StreamArtifact
+	for _, artifact := range artifacts {
+		if artifact.Name == "final.mp4" {
+			archiveArtifact = artifact
+		}
+	}
+	if archiveArtifact.ID == "" {
+		t.Fatalf("archive artifact missing id: %#v", artifacts)
+	}
+
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "archive-admin", "correct horse battery")
+	artifactPath := "/streams/" + stream.ID + "/artifacts/" + archiveArtifact.ID
+
+	downloadReq := httptest.NewRequest(http.MethodGet, artifactPath+"/download", nil)
+	downloadReq.AddCookie(cookie)
+	downloadRes := httptest.NewRecorder()
+	handler.ServeHTTP(downloadRes, downloadReq)
+	if downloadRes.Code != http.StatusOK || downloadRes.Body.String() != "archive-bytes" {
+		t.Fatalf("download status=%d body=%q", downloadRes.Code, downloadRes.Body.String())
+	}
+	if got := downloadRes.Header().Get("Content-Disposition"); !strings.Contains(got, "final.mp4") {
+		t.Fatalf("download content disposition = %q", got)
+	}
+	if dispatcher.archiveDownloadCalls != 1 || dispatcher.archiveArtifact.ID != archiveArtifact.ID {
+		t.Fatalf("download did not dispatch expected artifact: %#v", dispatcher)
+	}
+
+	invalidRenameReq := httptest.NewRequest(http.MethodPut, artifactPath, bytes.NewBufferString(`{"name":"../secret.mp4"}`))
+	invalidRenameReq.AddCookie(cookie)
+	invalidRenameReq.Header.Set("X-CSRF-Token", csrf)
+	invalidRenameRes := httptest.NewRecorder()
+	handler.ServeHTTP(invalidRenameRes, invalidRenameReq)
+	if invalidRenameRes.Code != http.StatusBadRequest || !strings.Contains(invalidRenameRes.Body.String(), "invalid_stream_artifact") {
+		t.Fatalf("invalid rename status=%d body=%s", invalidRenameRes.Code, invalidRenameRes.Body.String())
+	}
+	if dispatcher.archiveRenameCalls != 0 {
+		t.Fatalf("invalid rename must not dispatch: %#v", dispatcher)
+	}
+
+	renameReq := httptest.NewRequest(http.MethodPut, artifactPath, bytes.NewBufferString(`{"name":"renamed.mp4"}`))
+	renameReq.AddCookie(cookie)
+	renameReq.Header.Set("X-CSRF-Token", csrf)
+	renameRes := httptest.NewRecorder()
+	handler.ServeHTTP(renameRes, renameReq)
+	if renameRes.Code != http.StatusOK || !strings.Contains(renameRes.Body.String(), "renamed.mp4") {
+		t.Fatalf("rename status=%d body=%s", renameRes.Code, renameRes.Body.String())
+	}
+	if dispatcher.archiveRenameCalls != 1 || dispatcher.archiveRenameName != "renamed.mp4" {
+		t.Fatalf("rename did not dispatch expected artifact: %#v", dispatcher)
+	}
+	renamedArtifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !artifactListContains(renamedArtifacts, "renamed.mp4", "final/"+stream.ID+"/renamed.mp4") || artifactListContains(renamedArtifacts, "final.mp4", "") {
+		t.Fatalf("rename did not update artifact metadata safely: %#v", renamedArtifacts)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, artifactPath, nil)
+	deleteReq.AddCookie(cookie)
+	deleteReq.Header.Set("X-CSRF-Token", csrf)
+	deleteRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleteRes.Code, deleteRes.Body.String())
+	}
+	if dispatcher.archiveDeleteCalls != 1 {
+		t.Fatalf("delete did not dispatch: %#v", dispatcher)
+	}
+	finalArtifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifactListContains(finalArtifacts, "renamed.mp4", "") {
+		t.Fatalf("delete did not remove artifact metadata: %#v", finalArtifacts)
+	}
+}
+
+func artifactListContains(artifacts []store.StreamArtifact, name, relativePath string) bool {
+	for _, artifact := range artifacts {
+		if artifact.Name == name && (relativePath == "" || artifact.RelativePath == relativePath) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCreateStreamRejectsBlankName(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
@@ -1354,7 +1465,7 @@ func TestCreateStreamMaterializesDirectArchiveSettings(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"direct archive stream","archive_oauth_account_id":"`+account.ID+`","archive_folder_id":"raw-drive-folder-id","archive_shared_drive":true,"archive_shared_drive_id":"shared-drive-01"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"direct archive stream","archive_oauth_account_id":"`+account.ID+`","archive_folder_id":"raw-drive-folder-id","archive_shared_drive":true,"archive_shared_drive_id":"shared-drive-01","archive_retention_days":45}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -1386,8 +1497,45 @@ func TestCreateStreamMaterializesDirectArchiveSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Config["drive_destination_id"] != destination.ID || profile.Config["stream_archive_direct"] != true || profile.Config["archive_file_name"] != created.ArchiveFileName || profile.Config["shared_drive_id"] != "shared-drive-01" {
+	if profile.Config["drive_destination_id"] != destination.ID || profile.Config["stream_archive_direct"] != true || profile.Config["archive_file_name"] != created.ArchiveFileName || profile.Config["shared_drive_id"] != "shared-drive-01" || profile.Config["retention_days"] != 45 {
 		t.Fatalf("archive profile was not materialized from stream settings: %#v", profile.Config)
+	}
+}
+
+func TestCreateStreamMaterializesLocalRetentionArchiveProfileWithoutDrive(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"local retained stream","archive_retention_days":7}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	}
+	var created store.Stream
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ArchiveProfileID == "" || created.ArchiveDriveDestinationID != "" || created.ArchiveOAuthAccountID != "" || created.ArchiveFolderIDConfigured {
+		t.Fatalf("local retention archive settings were not persisted as expected: %#v", created)
+	}
+	profile, err := profiles.GetProfile(t.Context(), store.ProfileArchive, created.ArchiveProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Config["stream_archive_direct"] != true || profile.Config["retention_days"] != 7 {
+		t.Fatalf("local retention archive profile was not materialized: %#v", profile.Config)
+	}
+	if _, ok := profile.Config["drive_destination_id"]; ok {
+		t.Fatalf("local retention profile should not include Drive destination: %#v", profile.Config)
 	}
 }
 
@@ -4791,7 +4939,7 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "runtime archive", map[string]any{"drive_destination_id": destination.ID, "archive_file_name": "Council Meeting 20260708.mp4", "shared_drive_id": "shared-drive-01"})
+	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "runtime archive", map[string]any{"drive_destination_id": destination.ID, "archive_file_name": "Council Meeting 20260708.mp4", "shared_drive_id": "shared-drive-01", "retention_days": 60})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4828,6 +4976,9 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 	}
 	if cfg.ArchiveConfig["archive_file_name"] != "Council Meeting 20260708.mp4" || cfg.ArchiveConfig["shared_drive_id"] != "shared-drive-01" {
 		t.Fatalf("runtime archive config omitted file/shared drive id settings: %#v", cfg.ArchiveConfig)
+	}
+	if cfg.ArchiveConfig["retention_days"] != float64(60) {
+		t.Fatalf("runtime archive config omitted retention days: %#v", cfg.ArchiveConfig)
 	}
 	if cfg.ArchiveConfig["folder_id_secret_name"] != driveDestinationFolderIDSecretName(destination.ID) || cfg.ArchiveConfig["client_secret_secret_name"] != oauthProviderClientSecretSecretName(provider.ID) || cfg.ArchiveConfig["refresh_token_secret_name"] != oauthAccountRefreshTokenSecretName(account.ID) {
 		t.Fatalf("runtime archive config omitted scoped secret references: %#v", cfg.ArchiveConfig)
@@ -11180,6 +11331,9 @@ type fakeServiceDispatcher struct {
 	workerEventsCalls        int
 	encoderPreflightCalls    int
 	workerEventSendCalls     int
+	archiveDownloadCalls     int
+	archiveDeleteCalls       int
+	archiveRenameCalls       int
 	startedStream            store.Stream
 	stoppedStream            store.Stream
 	retriedStream            store.Stream
@@ -11187,6 +11341,9 @@ type fakeServiceDispatcher struct {
 	workerEventsStream       store.Stream
 	encoderPreflightStream   store.Stream
 	workerEventStream        store.Stream
+	archiveStream            store.Stream
+	archiveArtifact          store.StreamArtifact
+	archiveRenameName        string
 	startRequest             servicecall.StartRequest
 	retriedArchiveConfig     map[string]any
 	startedServices          []store.RegisteredService
@@ -11207,6 +11364,7 @@ type fakeServiceDispatcher struct {
 	failWorkerEvents         bool
 	failEncoderPreflight     bool
 	failWorkerEventSend      bool
+	failArchiveAction        bool
 	dispatchFailureError     string
 }
 
@@ -11462,6 +11620,37 @@ func (f *fakeServiceDispatcher) SendWorkerEvent(ctx context.Context, stream stor
 		StatusCode:  http.StatusAccepted,
 		Success:     true,
 	}
+}
+
+func (f *fakeServiceDispatcher) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) servicecall.ArchiveArtifactDownloadResult {
+	f.archiveDownloadCalls++
+	f.archiveStream = stream
+	f.archiveArtifact = artifact
+	if f.failArchiveAction {
+		return servicecall.ArchiveArtifactDownloadResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, Success: false, Error: f.failureError()}
+	}
+	return servicecall.ArchiveArtifactDownloadResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, StatusCode: http.StatusOK, Success: true, FileName: artifact.Name, ContentType: "video/mp4", SizeBytes: 13, Body: io.NopCloser(strings.NewReader("archive-bytes"))}
+}
+
+func (f *fakeServiceDispatcher) DeleteArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) servicecall.DispatchResult {
+	f.archiveDeleteCalls++
+	f.archiveStream = stream
+	f.archiveArtifact = artifact
+	if f.failArchiveAction {
+		return servicecall.DispatchResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, Success: false, Error: f.failureError()}
+	}
+	return servicecall.DispatchResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, StatusCode: http.StatusOK, Success: true}
+}
+
+func (f *fakeServiceDispatcher) RenameArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, name string) servicecall.DispatchResult {
+	f.archiveRenameCalls++
+	f.archiveStream = stream
+	f.archiveArtifact = artifact
+	f.archiveRenameName = name
+	if f.failArchiveAction {
+		return servicecall.DispatchResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, Success: false, Error: f.failureError()}
+	}
+	return servicecall.DispatchResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, StatusCode: http.StatusOK, Success: true}
 }
 
 func (f *fakeServiceDispatcher) failureError() string {

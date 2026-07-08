@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -118,6 +119,20 @@ type ServicePreflightResult struct {
 	Ready       bool                    `json:"ready"`
 	Checks      []ServicePreflightCheck `json:"checks,omitempty"`
 	Summary     map[string]any          `json:"summary,omitempty"`
+}
+
+type ArchiveArtifactDownloadResult struct {
+	ServiceID   string        `json:"service_id"`
+	ServiceType string        `json:"service_type"`
+	Endpoint    string        `json:"endpoint"`
+	StatusCode  int           `json:"status_code"`
+	Success     bool          `json:"success"`
+	Error       string        `json:"error,omitempty"`
+	Code        string        `json:"code,omitempty"`
+	FileName    string        `json:"file_name,omitempty"`
+	ContentType string        `json:"content_type,omitempty"`
+	SizeBytes   int64         `json:"size_bytes,omitempty"`
+	Body        io.ReadCloser `json:"-"`
 }
 
 func RedactServicePreflightResult(result ServicePreflightResult) ServicePreflightResult {
@@ -456,6 +471,33 @@ func (c Client) EncoderPreflight(ctx context.Context, stream store.Stream, servi
 	return ServicePreflightResult{ServiceType: "encoder_recorder", Endpoint: "/preflight", Error: "assigned encoder_recorder service not found"}
 }
 
+func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) ArchiveArtifactDownloadResult {
+	for _, service := range services {
+		if service.ServiceType == "encoder_recorder" {
+			return c.getArchiveArtifact(ctx, service, archiveArtifactEndpoint(stream.ID, artifact.Name), artifact.Name)
+		}
+	}
+	return ArchiveArtifactDownloadResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
+}
+
+func (c Client) DeleteArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) DispatchResult {
+	for _, service := range services {
+		if service.ServiceType == "encoder_recorder" {
+			return c.serviceJSONAction(ctx, service, http.MethodDelete, archiveArtifactEndpoint(stream.ID, artifact.Name), nil)
+		}
+	}
+	return DispatchResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
+}
+
+func (c Client) RenameArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, name string) DispatchResult {
+	for _, service := range services {
+		if service.ServiceType == "encoder_recorder" {
+			return c.serviceJSONAction(ctx, service, http.MethodPut, archiveArtifactEndpoint(stream.ID, artifact.Name), map[string]string{"name": name})
+		}
+	}
+	return DispatchResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
+}
+
 func (c Client) SendWorkerEvent(ctx context.Context, stream store.Stream, services []store.RegisteredService, req WorkerEventRequest) DispatchResult {
 	for _, service := range services {
 		if service.ServiceType != "worker" {
@@ -489,6 +531,10 @@ func (c Client) authToken(service store.RegisteredService) (string, error) {
 }
 
 func (c Client) post(ctx context.Context, service store.RegisteredService, endpoint string, payload any) DispatchResult {
+	return c.serviceJSONAction(ctx, service, http.MethodPost, endpoint, payload)
+}
+
+func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredService, method, endpoint string, payload any) DispatchResult {
 	result := DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
@@ -504,10 +550,14 @@ func (c Client) post(ctx context.Context, service store.RegisteredService, endpo
 		result.Error = serviceURLMessage(err)
 		return result
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		result.Error = "marshal payload failed"
-		return result
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			result.Error = "marshal payload failed"
+			return result
+		}
+		body = bytes.NewReader(encoded)
 	}
 	reqCtx := ctx
 	if c.Config.Timeout > 0 {
@@ -515,13 +565,15 @@ func (c Client) post(ctx context.Context, service store.RegisteredService, endpo
 		reqCtx, cancel = context.WithTimeout(ctx, c.Config.Timeout)
 		defer cancel()
 	}
-	request, err := http.NewRequestWithContext(reqCtx, http.MethodPost, joinURL(service.PublicURL, endpoint), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(reqCtx, method, joinURL(service.PublicURL, endpoint), body)
 	if err != nil {
 		result.Error = "build request failed"
 		return result
 	}
 	request.Header.Set("Authorization", "Bearer "+authToken)
-	request.Header.Set("Content-Type", "application/json")
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	client := c.httpClient()
 	response, err := client.Do(request)
 	if err != nil {
@@ -548,6 +600,63 @@ func (c Client) post(ctx context.Context, service store.RegisteredService, endpo
 	if result.Code != "" {
 		result.Error += ": " + result.Code
 	}
+	return result
+}
+
+func (c Client) getArchiveArtifact(ctx context.Context, service store.RegisteredService, endpoint, fallbackName string) ArchiveArtifactDownloadResult {
+	result := ArchiveArtifactDownloadResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint, FileName: fallbackName}
+	if !c.Enabled() {
+		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		return result
+	}
+	authToken, err := c.authToken(service)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
+		result.Code = serviceURLIssueCode(err)
+		result.Error = serviceURLMessage(err)
+		return result
+	}
+	reqCtx := ctx
+	if c.Config.Timeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, c.Config.Timeout)
+		defer cancel()
+	}
+	request, err := http.NewRequestWithContext(reqCtx, http.MethodGet, joinURL(service.PublicURL, endpoint), nil)
+	if err != nil {
+		result.Error = "build request failed"
+		return result
+	}
+	request.Header.Set("Authorization", "Bearer "+authToken)
+	request.Header.Set("Accept", "application/octet-stream")
+	client := c.httpClient()
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = "service request failed"
+		return result
+	}
+	result.StatusCode = response.StatusCode
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		defer response.Body.Close()
+		var errorBody struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&errorBody); err == nil {
+			result.Code = sanitizeServiceErrorValue(errorBody.Code)
+		}
+		result.Error = fmt.Sprintf("service returned status %d", response.StatusCode)
+		if result.Code != "" {
+			result.Error += ": " + result.Code
+		}
+		return result
+	}
+	result.Success = true
+	result.ContentType = response.Header.Get("Content-Type")
+	result.SizeBytes = response.ContentLength
+	result.Body = response.Body
 	return result
 }
 
@@ -794,6 +903,10 @@ func stopPayload(stream store.Stream, service store.RegisteredService) (string, 
 	default:
 		return "", nil, false
 	}
+}
+
+func archiveArtifactEndpoint(streamID, name string) string {
+	return "/streams/" + url.PathEscape(streamID) + "/artifacts/" + url.PathEscape(name)
 }
 
 func workerEventPayload(stream store.Stream, req WorkerEventRequest) (string, any, bool) {

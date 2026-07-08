@@ -1,5 +1,5 @@
-import { ResourcePage } from "@/features/resources/resource-page";
+import { ArchiveView } from "@/features/archive/archive-view";
 
 export default function ArchivePage() {
-  return <ResourcePage pageId="archive" />;
+  return <ArchiveView />;
 }
