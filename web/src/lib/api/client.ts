@@ -5,12 +5,14 @@ const csrfStorageKey = "autostream.csrf_token";
 export class APIError extends Error {
   status: number;
   code?: string;
+  responseContentType?: string;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, responseContentType?: string) {
     super(message);
     this.name = "APIError";
     this.status = status;
     this.code = code;
+    this.responseContentType = responseContentType;
   }
 }
 
@@ -110,9 +112,14 @@ async function readJSONResponse<T>(response: Response, path: string): Promise<T>
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
     if (canUseMockFallback(path)) return mockGet(path) as T;
-    throw new APIError("API response was not JSON.", response.status);
+    throw new APIError("API response was not JSON.", response.status, "non_json_response", contentType);
   }
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new APIError("API response JSON could not be parsed.", response.status, "invalid_json_response", contentType);
+  }
   if (!response.ok) {
     throw new APIError(data?.code || "API request failed.", response.status, data?.code);
   }

@@ -214,6 +214,12 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
 
 function testEmailErrorMessage(error: unknown) {
   if (error instanceof APIError) {
+    if (error.code === "non_json_response") {
+      return testEmailNonJSONErrorMessage(error.status);
+    }
+    if (error.code === "invalid_json_response") {
+      return "Control Panel APIから壊れたJSON応答が返りました。デプロイ中の不整合、プロキシのエラーページ、またはサーバーログを確認してください。";
+    }
     const messages: Record<string, string> = {
       invalid_email_recipient: "テスト送信先のメールアドレスを確認してください。",
       smtp_not_configured: "メールサーバー設定を保存してからテスト送信してください。",
@@ -237,6 +243,13 @@ function testEmailErrorMessage(error: unknown) {
   }
   if (error instanceof Error) return `テストメール送信に失敗しました。${error.message}`;
   return "テストメール送信に失敗しました。";
+}
+
+function testEmailNonJSONErrorMessage(status: number) {
+  if (status === 502 || status === 503 || status === 504) {
+    return `Control Panel APIからJSONではないHTTP ${status}応答が返りました。SMTPサーバーではなく、Cloudflare、リバースプロキシ、またはControl Panelプロセスの上流障害を確認してください。`;
+  }
+  return `Control Panel APIからJSONではないHTTP ${status}応答が返りました。NetworkのResponseとプロキシ/アプリログを確認してください。`;
 }
 
 function testEmailStatusErrorMessage(status: number, detail: string) {
