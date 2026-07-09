@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Image from "next/image";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Link2, Mail, Plus, ShieldCheck, Trash2, UserCog } from "lucide-react";
+import { Copy, KeyRound, Link2, Mail, Plus, QrCode, RefreshCcw, ShieldCheck, ShieldOff, Trash2, UserCog } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
+import { qrCodeDataURL } from "@/lib/qr-code";
 import { useAppSettings, useCurrentUser } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
@@ -245,12 +247,18 @@ function MFAPanel({
   const [disableCode, setDisableCode] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
   const [enrollment, setEnrollment] = useState<MFAEnrollResponse | null>(null);
+  const [copiedRecoveryCodes, setCopiedRecoveryCodes] = useState(false);
   const policyMode = status?.policy_mode || "";
   const totpEnrollmentAvailable = Boolean(status?.available && policyMode !== "passkey");
+  const recoveryCodes = enrollment?.recovery_codes || [];
+  const qrImage = enrollment?.provisioning_uri ? qrCodeDataURL(enrollment.provisioning_uri) : "";
+  const registrationInProgress = Boolean(enrollment?.secret);
+  const recoveryOnlyResult = Boolean(enrollment && !enrollment.secret && recoveryCodes.length > 0);
   const enroll = useMutation({
     mutationFn: () => apiPost<MFAEnrollResponse>("/auth/mfa/enroll", status?.enabled ? { code: currentCode } : {}),
     onSuccess: (data) => {
       setEnrollment(data);
+      setCopiedRecoveryCodes(false);
       setNotice({ tone: "success", text: "MFA登録を開始しました。確認コードを入力してください。" });
       refresh();
     },
@@ -279,6 +287,7 @@ function MFAPanel({
     mutationFn: () => apiPost<{ recovery_codes: string[] }>("/auth/recovery-codes/regenerate", { code: recoveryCode }),
     onSuccess: (data) => {
       setEnrollment({ method: "totp", secret: "", provisioning_uri: "", recovery_codes: data.recovery_codes });
+      setCopiedRecoveryCodes(false);
       setRecoveryCode("");
       setNotice({ tone: "success", text: "リカバリーコードを再発行しました。" });
       refresh();
@@ -286,6 +295,11 @@ function MFAPanel({
     onError: (error) => onError(error, "リカバリーコードを再発行できませんでした"),
   });
   const canStartEnrollment = totpEnrollmentAvailable && !loading && !enroll.isPending && (!status?.enabled || currentCode.length >= 6);
+  const copyRecoveryCodes = async () => {
+    if (recoveryCodes.length === 0 || typeof navigator === "undefined") return;
+    await navigator.clipboard.writeText(recoveryCodes.join("\n"));
+    setCopiedRecoveryCodes(true);
+  };
 
   return (
     <Card>
@@ -302,47 +316,112 @@ function MFAPanel({
           <span className="text-sm text-muted-foreground">Policy {mfaPolicyLabel(policyMode)}</span>
           {status?.required ? <Badge variant="outline">必須</Badge> : null}
           {status?.pending_enrollment ? <Badge variant="outline">確認待ち</Badge> : null}
+          {status?.recovery_code_count !== undefined && status.enabled ? <Badge variant="secondary">リカバリーコード残り {status.recovery_code_count}</Badge> : null}
         </div>
         {!loading && !totpEnrollmentAvailable ? <div className="rounded-md border bg-muted/35 px-3 py-2 text-sm text-muted-foreground">{mfaUnavailableMessage(status)}</div> : null}
-        {totpEnrollmentAvailable && status?.enabled ? <Input inputMode="numeric" placeholder="現在のMFAコード" value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} /> : null}
+        {totpEnrollmentAvailable && status?.enabled ? (
+          <div className="space-y-2 rounded-md border p-3">
+            <label className="text-sm font-medium">TOTPを再登録する場合の本人確認コード</label>
+            <Input inputMode="numeric" placeholder="現在のMFAコード" value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} />
+            <p className="text-xs text-muted-foreground">再登録すると新しいQRコードとリカバリーコードを発行します。現在のMFAコードが必要です。</p>
+          </div>
+        ) : null}
         {totpEnrollmentAvailable ? (
           <Button variant="outline" className="w-full" onClick={() => enroll.mutate()} disabled={!canStartEnrollment}>
+            <QrCode className="size-4" />
             {status?.enabled ? "TOTPを再登録" : status?.pending_enrollment ? "TOTP登録をやり直す" : "TOTP登録を開始"}
           </Button>
         ) : null}
         {enrollment ? (
-          <div className="space-y-3 rounded-md border p-3">
-            {enrollment.secret ? <Input readOnly value={enrollment.secret} aria-label="TOTP secret" /> : null}
-            {enrollment.provisioning_uri ? <Textarea readOnly value={enrollment.provisioning_uri} rows={3} aria-label="Provisioning URI" /> : null}
-            {enrollment.recovery_codes?.length ? <Textarea readOnly value={enrollment.recovery_codes.join("\n")} rows={6} aria-label="Recovery codes" /> : null}
-            {enrollment.secret ? (
-              <div className="flex gap-2">
-                <Input inputMode="numeric" placeholder="確認コード" value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
-                <Button onClick={() => verify.mutate()} disabled={verifyCode.length < 6 || verify.isPending}>
-                  有効化
-                </Button>
+          <div className="space-y-4 rounded-md border p-3">
+            {registrationInProgress ? (
+              <div className="grid gap-3 md:grid-cols-[180px_1fr]">
+                <div className="flex min-h-44 items-center justify-center rounded-md border bg-white p-3">
+                  {qrImage ? <Image src={qrImage} alt="TOTP登録用QRコード" width={160} height={160} unoptimized /> : <div className="text-center text-sm text-muted-foreground">QRコードを生成できませんでした。手動入力キーを使ってください。</div>}
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-sm font-medium">1. 認証アプリでQRコードを読み取る</div>
+                    <p className="mt-1 text-xs text-muted-foreground">Google Authenticator、1Password、Microsoft AuthenticatorなどのTOTP対応アプリで読み取ります。</p>
+                  </div>
+                  {enrollment.secret ? (
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">手動入力キー</label>
+                      <Input readOnly value={enrollment.secret} aria-label="TOTP secret" className="font-mono" />
+                    </div>
+                  ) : null}
+                  {enrollment.provisioning_uri ? <Textarea readOnly value={enrollment.provisioning_uri} rows={2} aria-label="Provisioning URI" className="font-mono text-xs" /> : null}
+                </div>
+              </div>
+            ) : null}
+            {recoveryCodes.length ? <RecoveryCodesBlock codes={recoveryCodes} copied={copiedRecoveryCodes} onCopy={copyRecoveryCodes} recoveryOnly={recoveryOnlyResult} /> : null}
+            {registrationInProgress ? (
+              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                <label className="text-sm font-medium">2. アプリに表示された6桁コードで有効化</label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input inputMode="numeric" placeholder="確認コード" value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
+                  <Button onClick={() => verify.mutate()} disabled={verifyCode.length < 6 || verify.isPending}>
+                    有効化
+                  </Button>
+                </div>
               </div>
             ) : null}
           </div>
         ) : null}
         {status?.enabled ? (
-          <div className="grid gap-2 md:grid-cols-2">
-            <div className="flex gap-2">
-              <Input inputMode="numeric" placeholder="MFAコード" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
-              <Button variant="outline" onClick={() => regenerate.mutate()} disabled={recoveryCode.length < 6 || regenerate.isPending}>
-                再発行
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-2 rounded-md border p-3">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <RefreshCcw className="size-4" />
+                リカバリーコード再発行
+              </div>
+              <p className="text-xs text-muted-foreground">新しいリカバリーコードを発行します。発行後、古いリカバリーコードは使えません。</p>
+              <Input inputMode="numeric" placeholder="現在のMFAコード" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
+              <Button variant="outline" className="w-full" onClick={() => regenerate.mutate()} disabled={recoveryCode.length < 6 || regenerate.isPending}>
+                リカバリーコードを再発行
               </Button>
             </div>
-            <div className="flex gap-2">
-              <Input inputMode="numeric" placeholder="MFAコード" value={disableCode} onChange={(event) => setDisableCode(event.target.value)} />
-              <Button variant="destructive" onClick={() => disable.mutate()} disabled={disableCode.length < 6 || disable.isPending}>
-                無効化
-              </Button>
+            <div className="space-y-2 rounded-md border border-red-200 bg-red-50/50 p-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-red-700">
+                <ShieldOff className="size-4" />
+                MFAを無効化
+              </div>
+              <p className="text-xs text-red-700/80">無効化すると次回ログイン時のTOTP確認が不要になります。現在のMFAコードで確認してください。</p>
+              <Input inputMode="numeric" placeholder="現在のMFAコード" value={disableCode} onChange={(event) => setDisableCode(event.target.value)} />
+              <DangerConfirm title="MFAを無効化しますか" description="このアカウントの多要素認証を無効化します。必要な場合は後で再登録してください。" onConfirm={() => disable.mutate()} actionLabel="MFAを無効化">
+                <Button variant="destructive" className="w-full" disabled={disableCode.length < 6 || disable.isPending}>
+                  MFAを無効化
+                </Button>
+              </DangerConfirm>
             </div>
           </div>
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function RecoveryCodesBlock({ codes, copied, onCopy, recoveryOnly }: { codes: string[]; copied: boolean; onCopy: () => void; recoveryOnly: boolean }) {
+  return (
+    <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-950">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold">{recoveryOnly ? "再発行されたリカバリーコード" : "リカバリーコード"}</div>
+          <p className="mt-1 text-xs text-amber-800">ここに表示されているコードが保存対象です。MFAアプリを使えない時のログインに使います。表示は今回だけです。</p>
+        </div>
+        <Button type="button" variant="outline" size="sm" className="bg-white" onClick={onCopy}>
+          <Copy className="size-4" />
+          {copied ? "コピー済み" : "まとめてコピー"}
+        </Button>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {codes.map((code) => (
+          <code key={code} className="rounded-md border bg-white px-3 py-2 text-sm font-semibold tracking-wide text-foreground">
+            {code}
+          </code>
+        ))}
+      </div>
+    </div>
   );
 }
 

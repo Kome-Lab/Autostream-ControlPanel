@@ -2,10 +2,10 @@
 
 import type { FormEvent, ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Moon, RadioTower, Sun } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -32,10 +32,10 @@ export function LoginCard() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [mfaCode, setMFACode] = useState("");
-  const [mfaChallengeToken, setMFAChallengeToken] = useState("");
+  const [mfaChallengeToken, setMFAChallengeToken] = useState(() => oauthMFAChallengeFromHash());
   const [turnstileToken, setTurnstileToken] = useState("");
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(() => (oauthMFAChallengeFromHash() ? "OAuthログインのMFA確認を完了してください。" : ""));
   const [busy, setBusy] = useState(false);
   const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
   const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
@@ -44,6 +44,13 @@ export function LoginCard() {
     setTurnstileToken("");
     setTurnstileResetKey((value) => value + 1);
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (oauthMFAChallengeFromHash()) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }, []);
 
   const login = async (event: FormEvent) => {
     event.preventDefault();
@@ -136,13 +143,15 @@ export function LoginCard() {
 
 export function EmailConfirmCard({ token }: { token?: string }) {
   const appSettings = useAppSettings();
+  const searchParams = useSearchParams();
   const [turnstileToken, setTurnstileToken] = useState("");
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
   const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
-  const trimmedToken = token?.trim() || "";
+  const tokenFromURL = searchParams.get("token") || searchParams.get("t") || searchParams.get("confirmation_token") || "";
+  const trimmedToken = (token || tokenFromURL).trim();
 
   const confirm = async (event: FormEvent) => {
     event.preventDefault();
@@ -194,6 +203,13 @@ function authErrorMessage(error: unknown, fallback: string) {
     return messages[error.code || ""] || `${fallback} (${error.code || error.status})`;
   }
   return fallback;
+}
+
+function oauthMFAChallengeFromHash() {
+  if (typeof window === "undefined") return "";
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+  if (!hash) return "";
+  return new URLSearchParams(hash).get("oauth_mfa_challenge")?.trim() || "";
 }
 
 export function SetupCard() {

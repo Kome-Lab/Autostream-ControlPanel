@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/http"
 	"net/mail"
 	"net/smtp"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
 )
@@ -100,13 +102,21 @@ func (s *Server) sendEmailChangeConfirmation(r *http.Request, settings store.App
 	}
 	return s.mailer.Send(r.Context(), settings, password, MailMessage{
 		To:      challenge.Email,
-		Subject: appName + " email change confirmation",
-		Text: "Confirm the email address change for " + appName + " Control Panel.\n\n" +
-			"User: " + user.Username + "\n" +
-			"One-time URL: " + confirmURL + "\n" +
-			"Expires at: " + challenge.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z07:00") + "\n\n" +
-			"If you did not request this change, ignore this email.\n",
+		Subject: appName + " メールアドレス変更確認",
+		Text: appName + " Control Panel のメールアドレス変更を確認してください。\n\n" +
+			"ユーザー名: " + user.Username + "\n" +
+			"ワンタイムURL: " + confirmURL + "\n" +
+			"有効期限: " + formatMailTimestamp(challenge.ExpiresAt, settings.Timezone) + "\n\n" +
+			"この変更に心当たりがない場合、このメールは破棄してください。\n",
 	})
+}
+
+func formatMailTimestamp(value time.Time, timezone string) string {
+	location, err := time.LoadLocation(strings.TrimSpace(timezone))
+	if err != nil {
+		location = time.UTC
+	}
+	return value.In(location).Format("2006-01-02 15:04:05 MST")
 }
 
 func emailChangeConfirmURL(r *http.Request, token string) string {
@@ -180,7 +190,7 @@ func (SMTPMailer) Send(ctx context.Context, settings store.AppSettings, password
 func formatPlainTextEmail(from string, message MailMessage) string {
 	return "From: " + formatAddressHeader(from) + "\r\n" +
 		"To: " + sanitizeHeaderValue(message.To) + "\r\n" +
-		"Subject: " + sanitizeHeaderValue(message.Subject) + "\r\n" +
+		"Subject: " + formatSubjectHeader(message.Subject) + "\r\n" +
 		"MIME-Version: 1.0\r\n" +
 		"Content-Type: text/plain; charset=UTF-8\r\n" +
 		"Content-Transfer-Encoding: 8bit\r\n\r\n" +
@@ -201,6 +211,14 @@ func formatAddressHeader(value string) string {
 		return address.String()
 	}
 	return sanitizeHeaderValue(value)
+}
+
+func formatSubjectHeader(value string) string {
+	subject := sanitizeHeaderValue(value)
+	if strings.IndexFunc(subject, func(r rune) bool { return r > 127 }) == -1 {
+		return subject
+	}
+	return mime.QEncoding.Encode("UTF-8", subject)
 }
 
 func sanitizeHeaderValue(value string) string {

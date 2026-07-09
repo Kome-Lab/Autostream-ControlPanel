@@ -3,12 +3,13 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -184,32 +185,32 @@ function CreateResourceForm({ resource }: { resource: ResourceDefinition }) {
   );
 }
 
-function ResourceFormFields({ resource, disabled, submit }: { resource: ResourceDefinition; disabled: boolean; submit: SubmitResource }) {
+function ResourceFormFields({ resource, disabled, submit, initial, submitLabel }: { resource: ResourceDefinition; disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   switch (resource.form) {
     case "encoder-profile":
-      return <EncoderProfileForm disabled={disabled} submit={submit} />;
+      return <EncoderProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "discord-config":
-      return <DiscordConfigForm disabled={disabled} submit={submit} />;
+      return <DiscordConfigForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "youtube-output":
-      return <YouTubeOutputForm disabled={disabled} submit={submit} />;
+      return <YouTubeOutputForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "caption-profile":
-      return <CaptionProfileForm disabled={disabled} submit={submit} />;
+      return <CaptionProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "overlay-profile":
-      return <OverlayProfileForm disabled={disabled} submit={submit} />;
+      return <OverlayProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "archive-profile":
-      return <ArchiveProfileForm disabled={disabled} submit={submit} />;
+      return <ArchiveProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "drive-destination":
-      return <DriveDestinationForm disabled={disabled} submit={submit} />;
+      return <DriveDestinationForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "oauth-provider":
-      return <OAuthProviderForm disabled={disabled} submit={submit} />;
+      return <OAuthProviderForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "oauth-account-connect":
       return <OAuthAccountConnectForm disabled={disabled} submit={submit} />;
     case "user":
       return <UserForm disabled={disabled} submit={submit} />;
     case "role":
-      return <RoleForm disabled={disabled} submit={submit} />;
+      return <RoleForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "notification-channel":
-      return <NotificationChannelForm disabled={disabled} submit={submit} />;
+      return <NotificationChannelForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "security-settings":
       return null;
     default:
@@ -217,13 +218,14 @@ function ResourceFormFields({ resource, disabled, submit }: { resource: Resource
   }
 }
 
-function EncoderProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
-  const [name, setName] = useState("1080p60");
-  const [width, setWidth] = useState("1920");
-  const [height, setHeight] = useState("1080");
-  const [fps, setFps] = useState("60");
-  const [videoBitrate, setVideoBitrate] = useState("8000");
-  const [audioBitrate, setAudioBitrate] = useState("192");
+function EncoderProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "1080p60");
+  const [width, setWidth] = useState(() => rowString(row, ["width", "config.width"]) || "1920");
+  const [height, setHeight] = useState(() => rowString(row, ["height", "config.height"]) || "1080");
+  const [fps, setFps] = useState(() => rowString(row, ["fps", "config.fps"]) || "60");
+  const [videoBitrate, setVideoBitrate] = useState(() => rowString(row, ["video_bitrate_kbps", "bitrate_kbps", "config.video_bitrate_kbps", "config.bitrate_kbps"]) || "8000");
+  const [audioBitrate, setAudioBitrate] = useState(() => rowString(row, ["audio_bitrate_kbps", "config.audio_bitrate_kbps"]) || "192");
 
   return (
     <form
@@ -250,19 +252,18 @@ function EncoderProfileForm({ disabled, submit }: { disabled: boolean; submit: S
         <NumberField label="フレームレート" value={fps} onChange={setFps} min={1} required />
         <NumberField label="音声ビットレート (kbps)" value={audioBitrate} onChange={setAudioBitrate} min={1} required />
       </div>
-      <FormActions disabled={disabled} />
+      <FormActions label={submitLabel} disabled={disabled} />
     </form>
   );
 }
 
-function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
   const discordNodes = useRegisteredNodeOptions("discord_bot");
-  const [name, setName] = useState("main-discord-bot");
-  const [serviceID, setServiceID] = useState(noneValue);
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "main-discord-bot");
+  const [serviceID, setServiceID] = useState(() => rowString(row, ["service_id", "config.service_id"]) || noneValue);
   const [botToken, setBotToken] = useState("");
-  const [reconnectEnabled, setReconnectEnabled] = useState(true);
-  const [reconnectMaxAttempts, setReconnectMaxAttempts] = useState("5");
-  const [audioForwardEnabled, setAudioForwardEnabled] = useState(true);
+  const [reconnectMaxAttempts, setReconnectMaxAttempts] = useState(() => rowString(row, ["reconnect_max_attempts", "config.reconnect_max_attempts"]) || "5");
   const effectiveServiceID = serviceID === noneValue && discordNodes[0]?.value ? discordNodes[0].value : serviceID;
 
   return (
@@ -275,11 +276,11 @@ function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: Su
             name,
             service_id: effectiveServiceID === noneValue ? "" : effectiveServiceID,
             bot_token: botToken,
-            reconnect_enabled: reconnectEnabled,
+            reconnect_enabled: true,
             reconnect_max_attempts: numberValue(reconnectMaxAttempts, 5),
             reconnect_base_delay: "2s",
             reconnect_max_delay: "30s",
-            audio_forward_enabled: audioForwardEnabled,
+            audio_forward_enabled: true,
           }),
         );
       }}
@@ -297,29 +298,27 @@ function DiscordConfigForm({ disabled, submit }: { disabled: boolean; submit: Su
         <NumberField label="再接続最大回数" value={reconnectMaxAttempts} onChange={setReconnectMaxAttempts} min={0} />
       </div>
       {discordNodes.length === 0 ? <p className="text-sm text-muted-foreground">先にNode登録でDiscord Bot Nodeを登録してください。</p> : null}
-      <div className="grid gap-3 md:grid-cols-2">
-        <SwitchField label="音声転送" checked={audioForwardEnabled} onCheckedChange={setAudioForwardEnabled} />
-        <SwitchField label="自動再接続" checked={reconnectEnabled} onCheckedChange={setReconnectEnabled} />
-      </div>
-      <FormActions disabled={disabled || effectiveServiceID === noneValue} />
+      <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">音声転送と自動再接続は常に有効です。</div>
+      <FormActions label={submitLabel} disabled={disabled || effectiveServiceID === noneValue} />
     </form>
   );
 }
 
-function YouTubeOutputForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
   const oauthAccounts = useResourceOptions("/integrations/oauth-accounts", ["id"], ["account_label", "email", "id"], ["email", "provider_type"]);
-  const [name, setName] = useState("public-live");
-  const [mode, setMode] = useState("live_api_dry_run");
-  const [rtmpURL, setRTMPURL] = useState("rtmps://a.rtmps.youtube.com/live2");
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "public-live");
+  const [mode, setMode] = useState(() => rowString(row, ["mode", "config.mode"]) || "live_api_dry_run");
+  const [rtmpURL, setRTMPURL] = useState(() => rowString(row, ["rtmp_url", "config.rtmp_url"]) || "rtmps://a.rtmps.youtube.com/live2");
   const [streamKey, setStreamKey] = useState("");
-  const [oauthAccountID, setOAuthAccountID] = useState(noneValue);
-  const [privacyStatus, setPrivacyStatus] = useState("public");
-  const [latencyPreference, setLatencyPreference] = useState("low");
-  const [titleTemplate, setTitleTemplate] = useState("{{program_title}}");
-  const [description, setDescription] = useState("");
-  const [autoStart, setAutoStart] = useState(true);
-  const [autoStop, setAutoStop] = useState(true);
-  const [completeOnStop, setCompleteOnStop] = useState(true);
+  const [oauthAccountID, setOAuthAccountID] = useState(() => rowString(row, ["oauth_account_id", "config.oauth_account_id"]) || noneValue);
+  const [privacyStatus, setPrivacyStatus] = useState(() => rowString(row, ["privacy_status", "config.privacy_status"]) || "public");
+  const [latencyPreference, setLatencyPreference] = useState(() => rowString(row, ["latency_preference", "config.latency_preference"]) || "low");
+  const [titleTemplate, setTitleTemplate] = useState(() => rowString(row, ["broadcast_title_template", "title_template", "config.broadcast_title_template", "config.title_template"]) || "{{program_title}}");
+  const [description, setDescription] = useState(() => rowString(row, ["broadcast_description", "description", "config.broadcast_description", "config.description"]));
+  const [autoStart, setAutoStart] = useState(() => rowValue(row, ["enable_auto_start", "config.enable_auto_start"]) !== false);
+  const [autoStop, setAutoStop] = useState(() => rowValue(row, ["enable_auto_stop", "config.enable_auto_stop"]) !== false);
+  const [completeOnStop, setCompleteOnStop] = useState(() => rowValue(row, ["complete_on_stop", "config.complete_on_stop"]) !== false);
   const requiresOAuth = mode === "live_api" || mode === "live_api_dry_run";
   const effectiveOAuthAccountID = requiresOAuth && oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
 
@@ -392,16 +391,17 @@ function YouTubeOutputForm({ disabled, submit }: { disabled: boolean; submit: Su
         <SwitchField label="停止時に完了扱い" checked={completeOnStop} onCheckedChange={setCompleteOnStop} />
       </div>
       {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、先にOAuth接続アカウントでGoogleアカウントを接続してください。</p> : null}
-      <FormActions disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue)} />
+      <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue)} />
     </form>
   );
 }
 
-function CaptionProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
-  const [name, setName] = useState("日本語ライブ字幕");
-  const [language, setLanguage] = useState("ja-JP");
-  const [provider, setProvider] = useState("deepgram");
-  const [delayMs, setDelayMs] = useState("800");
+function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "日本語ライブ字幕");
+  const [language, setLanguage] = useState(() => rowString(row, ["language", "config.language"]) || "ja-JP");
+  const [provider, setProvider] = useState(() => rowString(row, ["provider", "config.provider"]) || "deepgram");
+  const [delayMs, setDelayMs] = useState(() => rowString(row, ["delay_ms", "config.delay_ms"]) || "800");
 
   return (
     <form
@@ -433,17 +433,19 @@ function CaptionProfileForm({ disabled, submit }: { disabled: boolean; submit: S
         />
         <NumberField label="遅延補正 (ms)" value={delayMs} onChange={setDelayMs} min={0} />
       </div>
-      <FormActions disabled={disabled} />
+      <FormActions label={submitLabel} disabled={disabled} />
     </form>
   );
 }
 
-function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
-  const [name, setName] = useState("station-logo");
-  const [watermarkEnabled, setWatermarkEnabled] = useState(true);
+function OverlayProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
+  const existingImageName = rowString(row, ["watermark_image_name", "watermark_file_name", "config.watermark_image_name", "config.watermark_file_name"]);
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "station-logo");
   const [watermarkImage, setWatermarkImage] = useState("");
-  const [watermarkFileName, setWatermarkFileName] = useState("");
+  const [watermarkFileName, setWatermarkFileName] = useState(existingImageName);
   const [fileMessage, setFileMessage] = useState("");
+  const editing = Boolean(initial);
 
   return (
     <form
@@ -453,81 +455,77 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
         submit({
           name,
           config: compactRecord({
-            watermark_enabled: watermarkEnabled,
-            watermark_image_data_url: watermarkEnabled ? watermarkImage : "",
-            watermark_file_name: watermarkEnabled ? watermarkFileName : "",
-            watermark_canvas_width: watermarkEnabled ? watermarkCanvasWidth : undefined,
-            watermark_canvas_height: watermarkEnabled ? watermarkCanvasHeight : undefined,
-            watermark_fit_mode: watermarkEnabled ? "scale_to_output" : "",
+            watermark_enabled: true,
+            watermark_image_data_url: watermarkImage || undefined,
+            watermark_file_name: watermarkImage ? watermarkFileName : existingImageName,
+            watermark_canvas_width: watermarkCanvasWidth,
+            watermark_canvas_height: watermarkCanvasHeight,
+            watermark_fit_mode: "scale_to_output",
           }),
         });
       }}
     >
       <TextField label="プロファイル名" value={name} onChange={setName} required />
       <div className="grid gap-3 md:grid-cols-2">
-        <SwitchField label="ウォーターマークを表示" checked={watermarkEnabled} onCheckedChange={setWatermarkEnabled} />
-        {watermarkEnabled ? (
-          <>
-            <Field label="画像アップロード" description="PNG、JPEG、WebPのみ。1920x1080の画像を保存します。5MB以下にしてください。">
-              <Input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-                    setFileMessage("PNG、JPEG、WebPの画像を選択してください。");
+        <Field label="画像アップロード" description="PNG、JPEG、WebPのみ。1920x1080の画像を保存します。5MB以下にしてください。">
+          <Input
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+                setFileMessage("PNG、JPEG、WebPの画像を選択してください。");
+                setWatermarkImage("");
+                setWatermarkFileName("");
+                return;
+              }
+              if (file.size > watermarkMaxBytes) {
+                setFileMessage("画像は5MB以下にしてください。");
+                setWatermarkImage("");
+                setWatermarkFileName("");
+                return;
+              }
+              const reader = new FileReader();
+              reader.onload = () => {
+                if (typeof reader.result !== "string") {
+                  setFileMessage("画像を読み込めませんでした。");
+                  setWatermarkImage("");
+                  setWatermarkFileName("");
+                  return;
+                }
+                const probe = new window.Image();
+                probe.onload = () => {
+                  if (probe.naturalWidth !== watermarkCanvasWidth || probe.naturalHeight !== watermarkCanvasHeight) {
+                    setFileMessage(`画像サイズは${watermarkCanvasWidth}x${watermarkCanvasHeight}にしてください。`);
                     setWatermarkImage("");
                     setWatermarkFileName("");
                     return;
                   }
-                  if (file.size > watermarkMaxBytes) {
-                    setFileMessage("画像は5MB以下にしてください。");
-                    setWatermarkImage("");
-                    setWatermarkFileName("");
-                    return;
-                  }
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    if (typeof reader.result !== "string") {
-                      setFileMessage("画像を読み込めませんでした。");
-                      setWatermarkImage("");
-                      setWatermarkFileName("");
-                      return;
-                    }
-                    const probe = new window.Image();
-                    probe.onload = () => {
-                      if (probe.naturalWidth !== watermarkCanvasWidth || probe.naturalHeight !== watermarkCanvasHeight) {
-                        setFileMessage(`画像サイズは${watermarkCanvasWidth}x${watermarkCanvasHeight}にしてください。`);
-                        setWatermarkImage("");
-                        setWatermarkFileName("");
-                        return;
-                      }
-                      setWatermarkImage(reader.result as string);
-                      setWatermarkFileName(file.name);
-                      setFileMessage(`${file.name} を読み込みました。配信画質が1080未満の場合は自動でフィットします。`);
-                    };
-                    probe.onerror = () => {
-                      setFileMessage("画像を読み込めませんでした。");
-                      setWatermarkImage("");
-                      setWatermarkFileName("");
-                    };
-                    probe.src = reader.result;
-                  };
-                  reader.onerror = () => setFileMessage("画像を読み込めませんでした。");
-                  reader.readAsDataURL(file);
-                }}
-              />
-              {fileMessage ? <p className="mt-1 text-xs text-muted-foreground">{fileMessage}</p> : null}
-            </Field>
-            <Field label="合成サイズ" description="ウォーターマーク画像は配信映像全体に重ねる1920x1080固定です。">
-              <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">1920x1080 / 自動フィット</div>
-            </Field>
-          </>
-        ) : null}
+                  setWatermarkImage(reader.result as string);
+                  setWatermarkFileName(file.name);
+                  setFileMessage(`${file.name} を読み込みました。配信画質が1080未満の場合は自動でフィットします。`);
+                };
+                probe.onerror = () => {
+                  setFileMessage("画像を読み込めませんでした。");
+                  setWatermarkImage("");
+                  setWatermarkFileName("");
+                };
+                probe.src = reader.result;
+              };
+              reader.onerror = () => setFileMessage("画像を読み込めませんでした。");
+              reader.readAsDataURL(file);
+            }}
+          />
+          {fileMessage ? <p className="mt-1 text-xs text-muted-foreground">{fileMessage}</p> : null}
+        </Field>
+        <Field label="合成サイズ" description="ウォーターマーク画像は配信映像全体に重ねる1920x1080固定です。配信画質が1080未満の場合は自動でフィットします。">
+          <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">1920x1080 / 自動フィット</div>
+        </Field>
       </div>
-      {watermarkEnabled ? <WatermarkPreview image={watermarkImage} /> : null}
-      <FormActions disabled={disabled || (watermarkEnabled && !watermarkImage)} />
+      {editing && existingImageName && !watermarkImage ? <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">現在の画像: {existingImageName}。差し替える場合だけ新しい画像を選択してください。</div> : null}
+      <WatermarkPreview image={watermarkImage} />
+      <FormActions label={submitLabel} disabled={disabled || (!editing && !watermarkImage)} />
     </form>
   );
 }
@@ -555,13 +553,14 @@ function WatermarkPreview({ image }: { image: string }) {
   );
 }
 
-function ArchiveProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+function ArchiveProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
   const driveDestinations = useResourceOptions("/archive/destinations", ["id"], ["name", "id"]);
-  const [name, setName] = useState("shared-drive");
-  const [format, setFormat] = useState("mp4");
-  const [retentionDays, setRetentionDays] = useState("180");
-  const [uploadEnabled, setUploadEnabled] = useState(true);
-  const [driveDestinationID, setDriveDestinationID] = useState(noneValue);
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "shared-drive");
+  const [format, setFormat] = useState(() => rowString(row, ["format", "config.format"]) || "mp4");
+  const [retentionDays, setRetentionDays] = useState(() => rowString(row, ["retention_days", "config.retention_days"]) || "180");
+  const [uploadEnabled, setUploadEnabled] = useState(() => rowValue(row, ["upload_enabled", "config.upload_enabled"]) !== false);
+  const [driveDestinationID, setDriveDestinationID] = useState(() => rowString(row, ["drive_destination_id", "config.drive_destination_id"]) || noneValue);
   const effectiveDriveDestinationID = uploadEnabled && driveDestinationID === noneValue && driveDestinations[0]?.value ? driveDestinations[0].value : driveDestinationID;
 
   return (
@@ -595,18 +594,19 @@ function ArchiveProfileForm({ disabled, submit }: { disabled: boolean; submit: S
         <SelectField label="Drive保存先" value={effectiveDriveDestinationID} onChange={setDriveDestinationID} options={[{ value: noneValue, label: "未選択" }, ...driveDestinations]} />
       </div>
       <SwitchField label="録画後に保存先へアップロード" checked={uploadEnabled} onCheckedChange={setUploadEnabled} />
-      <FormActions disabled={disabled} />
+      <FormActions label={submitLabel} disabled={disabled} />
     </form>
   );
 }
 
-function DriveDestinationForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
   const oauthAccounts = useResourceOptions("/integrations/oauth-accounts", ["id"], ["account_label", "email", "id"], ["email", "provider_type"]);
-  const [name, setName] = useState("archive-drive");
-  const [oauthAccountID, setOAuthAccountID] = useState(noneValue);
-  const [folderID, setFolderID] = useState("");
-  const [sharedDrive, setSharedDrive] = useState(false);
-  const [basePath, setBasePath] = useState("autostream");
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "archive-drive");
+  const [oauthAccountID, setOAuthAccountID] = useState(() => rowString(row, ["oauth_account_id"]) || noneValue);
+  const [folderID, setFolderID] = useState(() => rowString(row, ["folder_id"]));
+  const [sharedDrive, setSharedDrive] = useState(() => rowValue(row, ["shared_drive"]) === true);
+  const [basePath, setBasePath] = useState(() => rowString(row, ["base_path"]) || "autostream");
   const effectiveOAuthAccountID = oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
 
   return (
@@ -634,23 +634,26 @@ function DriveDestinationForm({ disabled, submit }: { disabled: boolean; submit:
       </div>
       <SwitchField label="共有ドライブを使う" checked={sharedDrive} onCheckedChange={setSharedDrive} />
       {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth接続アカウントでGoogleアカウントを接続してください。</p> : null}
-      <FormActions disabled={disabled || effectiveOAuthAccountID === noneValue} />
+      <FormActions label={submitLabel} disabled={disabled || effectiveOAuthAccountID === noneValue} />
     </form>
   );
 }
 
-function OAuthProviderForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const roles = useResourceOptions("/roles", ["id"], ["name", "id"], ["permissions"]);
   const defaultRedirectURI = typeof window === "undefined" ? "https://control.example.jp/auth/oauth/callback" : `${window.location.origin}/auth/oauth/callback`;
-  const [providerType, setProviderType] = useState("google");
-  const [name, setName] = useState("Google Workspace");
-  const [enabled, setEnabled] = useState(true);
-  const [clientID, setClientID] = useState("");
+  const connectedAccountRedirectURI = typeof window === "undefined" ? "https://control.example.jp/integrations/oauth-accounts/callback" : `${window.location.origin}/integrations/oauth-accounts/callback`;
+  const [providerType, setProviderType] = useState(() => rowString(initial || {}, ["provider_type"]) || "google");
+  const [name, setName] = useState(() => rowString(initial || {}, ["name"]) || "Google Workspace");
+  const [enabled, setEnabled] = useState(() => rowValue(initial || {}, ["enabled"]) !== false);
+  const [clientID, setClientID] = useState(() => rowString(initial || {}, ["client_id"]));
   const [clientSecret, setClientSecret] = useState("");
-  const [redirectURI, setRedirectURI] = useState(defaultRedirectURI);
-  const [allowedDomains, setAllowedDomains] = useState("");
-  const [autoProvision, setAutoProvision] = useState(false);
-  const [defaultRoleIDs, setDefaultRoleIDs] = useState<string[]>([]);
+  const [redirectURI, setRedirectURI] = useState(() => rowString(initial || {}, ["redirect_uri"]) || defaultRedirectURI);
+  const [allowedDomains, setAllowedDomains] = useState(() => stringListSetting(rowValue(initial || {}, ["allowed_domains"])).join("\n"));
+  const [autoProvision, setAutoProvision] = useState(() => rowValue(initial || {}, ["auto_provision"]) === true);
+  const [defaultRoleIDs, setDefaultRoleIDs] = useState<string[]>(() => stringListSetting(rowValue(initial || {}, ["default_role_ids"])));
+  const editing = Boolean(initial);
+  const secretConfigured = rowValue(initial || {}, ["client_secret_configured"]) === true;
 
   return (
     <form
@@ -683,8 +686,17 @@ function OAuthProviderForm({ disabled, submit }: { disabled: boolean; submit: Su
         />
         <TextField label="表示名" value={name} onChange={setName} required />
         <TextField label="Client ID" value={clientID} onChange={setClientID} required />
-        <TextField label="Client Secret" value={clientSecret} onChange={setClientSecret} type="password" description="入力値は保存後に再表示しません。" />
+        <TextField label="Client Secret" value={clientSecret} onChange={setClientSecret} type="password" description={editing ? (secretConfigured ? "空欄のまま更新すると現在のClient Secretを保持します。差し替える時だけ入力してください。" : "保存済みClient Secretはありません。") : "入力値は保存後に再表示しません。"} />
         <TextField label="Redirect URI" value={redirectURI} onChange={setRedirectURI} required />
+      </div>
+      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+        <div className="font-medium">Google Cloud Consoleに登録するリダイレクトURI</div>
+        <p className="mt-1 text-xs text-amber-800">ログイン連携だけでなくYouTube/Drive接続も使う場合、Google OAuthクライアントの「承認済みのリダイレクトURI」に両方を登録してください。</p>
+        <div className="mt-2 space-y-1 font-mono text-xs">
+          <div className="rounded bg-white px-2 py-1">{redirectURI}</div>
+          <div className="rounded bg-white px-2 py-1">{connectedAccountRedirectURI}</div>
+        </div>
+        <p className="mt-2 text-xs text-amber-800">`redirect_uri_mismatch` がYouTube/Drive接続でだけ出る場合は、下の `/integrations/oauth-accounts/callback` がGoogle側に未登録の可能性が高いです。</p>
       </div>
       <Field label="許可ドメイン" description="複数ある場合は改行またはカンマで区切ります。空なら制限しません。">
         <Textarea value={allowedDomains} onChange={(event) => setAllowedDomains(event.target.value)} className="min-h-20" placeholder="example.jp" />
@@ -694,7 +706,7 @@ function OAuthProviderForm({ disabled, submit }: { disabled: boolean; submit: Su
         <SwitchField label="初回ログイン時に自動ユーザー作成" checked={autoProvision} onCheckedChange={setAutoProvision} />
       </div>
       {autoProvision ? <CheckboxList label="自動作成ユーザーのロール" values={defaultRoleIDs} onChange={setDefaultRoleIDs} items={roles} emptyText="ロールがありません。" /> : null}
-      <FormActions disabled={disabled || (autoProvision && defaultRoleIDs.length === 0)} />
+      <FormActions label={submitLabel} disabled={disabled || (autoProvision && defaultRoleIDs.length === 0)} />
     </form>
   );
 }
@@ -790,11 +802,12 @@ function UserForm({ disabled, submit }: { disabled: boolean; submit: SubmitResou
   );
 }
 
-function RoleForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+function RoleForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
   const permissionRows = useResourceRows("/permissions");
   const permissionOptions = useMemo(() => permissionRows.map(permissionOptionFromRow).filter((option) => option.value), [permissionRows]);
-  const [name, setName] = useState("operator");
-  const [permissions, setPermissions] = useState<string[]>(["streams.read", "streams.start", "streams.stop"]);
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "operator");
+  const [permissions, setPermissions] = useState<string[]>(() => stringListSetting(rowValue(row, ["permissions"])).length ? stringListSetting(rowValue(row, ["permissions"])) : ["streams.read", "streams.start", "streams.stop"]);
 
   return (
     <form
@@ -806,25 +819,26 @@ function RoleForm({ disabled, submit }: { disabled: boolean; submit: SubmitResou
     >
       <TextField label="ロール名" value={name} onChange={setName} required />
       <GroupedCheckboxList label="許可する操作" values={permissions} onChange={setPermissions} items={permissionOptions} emptyText="権限一覧を取得できませんでした。" />
-      <FormActions disabled={disabled || permissions.length === 0} />
+      <FormActions label={submitLabel} disabled={disabled || permissions.length === 0} />
     </form>
   );
 }
 
-function NotificationChannelForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
-  const [name, setName] = useState("ops-discord");
-  const [type, setType] = useState("discord");
+function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "ops-discord");
+  const [type, setType] = useState(() => rowString(row, ["type"]) || "discord");
   const [webhookURL, setWebhookURL] = useState("");
-  const [emailRecipients, setEmailRecipients] = useState("ops@example.jp");
-  const [smtpHost, setSMTPHost] = useState("");
-  const [smtpPort, setSMTPPort] = useState("587");
-  const [smtpTLS, setSMTPTLS] = useState(true);
-  const [smtpFrom, setSMTPFrom] = useState("");
-  const [smtpUsername, setSMTPUsername] = useState("");
+  const [emailRecipients, setEmailRecipients] = useState(() => stringListSetting(rowValue(row, ["email_recipients"])).join("\n") || "ops@example.jp");
+  const [smtpHost, setSMTPHost] = useState(() => rowString(row, ["smtp_host"]));
+  const [smtpPort, setSMTPPort] = useState(() => rowString(row, ["smtp_port"]) || "587");
+  const [smtpTLS, setSMTPTLS] = useState(() => rowValue(row, ["smtp_tls"]) !== false);
+  const [smtpFrom, setSMTPFrom] = useState(() => rowString(row, ["smtp_from"]));
+  const [smtpUsername, setSMTPUsername] = useState(() => rowString(row, ["smtp_username"]));
   const [smtpPassword, setSMTPPassword] = useState("");
-  const [severityFilter, setSeverityFilter] = useState<string[]>(["critical", "error", "warning"]);
-  const [eventTypeFilter, setEventTypeFilter] = useState<string[]>(["incident.opened"]);
-  const [enabled, setEnabled] = useState(true);
+  const [severityFilter, setSeverityFilter] = useState<string[]>(() => stringListSetting(rowValue(row, ["severity_filter"])).length ? stringListSetting(rowValue(row, ["severity_filter"])) : ["critical", "error", "warning"]);
+  const [eventTypeFilter, setEventTypeFilter] = useState<string[]>(() => stringListSetting(rowValue(row, ["event_type_filter"])).length ? stringListSetting(rowValue(row, ["event_type_filter"])) : ["incident.opened"]);
+  const [enabled, setEnabled] = useState(() => rowValue(row, ["enabled"]) !== false);
   const emailRecipientList = splitList(emailRecipients);
   const webhookRequired = type === "discord" || type === "slack";
   const emailRequired = type === "email";
@@ -838,14 +852,14 @@ function NotificationChannelForm({ disabled, submit }: { disabled: boolean; subm
           compactRecord({
             name,
             type,
-            webhook_url: webhookRequired ? webhookURL : "",
+            webhook_url: webhookRequired ? webhookURL || undefined : undefined,
             email_recipients: emailRequired ? emailRecipientList : undefined,
             smtp_host: emailRequired ? smtpHost : "",
             smtp_port: emailRequired ? numberValue(smtpPort, 587) : undefined,
             smtp_tls: emailRequired ? smtpTLS : undefined,
             smtp_from: emailRequired ? smtpFrom : "",
             smtp_username: emailRequired ? smtpUsername : "",
-            smtp_password: emailRequired ? smtpPassword : "",
+            smtp_password: emailRequired ? smtpPassword || undefined : undefined,
             severity_filter: severityFilter,
             event_type_filter: eventTypeFilter,
             enabled,
@@ -916,7 +930,7 @@ function NotificationChannelForm({ disabled, submit }: { disabled: boolean; subm
         ]}
       />
       <SwitchField label="有効化" checked={enabled} onCheckedChange={setEnabled} />
-      <FormActions disabled={disabled || (webhookRequired && webhookURL.trim() === "") || (emailRequired && (emailRecipientList.length === 0 || smtpHost.trim() === "" || smtpFrom.trim() === ""))} />
+      <FormActions label={submitLabel} disabled={disabled || (webhookRequired && webhookURL.trim() === "" && !initial) || (emailRequired && (emailRecipientList.length === 0 || smtpHost.trim() === "" || smtpFrom.trim() === ""))} />
     </form>
   );
 }
@@ -1382,6 +1396,12 @@ function stringSetting(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim() !== "" ? value : fallback;
 }
 
+function stringListSetting(value: unknown) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string") return splitList(value);
+  return [];
+}
+
 function splitList(value: string) {
   return value
     .split(/[,\n]/)
@@ -1424,6 +1444,8 @@ function ResourceTable({
     return <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">データがありません。</div>;
   }
   const showDelete = Boolean(resource.deletable);
+  const showEdit = resourceCanEdit(resource);
+  const showActions = showDelete || showEdit;
 
   return (
     <div className="overflow-x-auto rounded-md border">
@@ -1433,7 +1455,7 @@ function ResourceTable({
             {columns.map((column) => (
               <TableHead key={column}>{columnLabel(column)}</TableHead>
             ))}
-            {showDelete ? <TableHead className="w-28 min-w-28 text-right">操作</TableHead> : null}
+            {showActions ? <TableHead className="w-32 min-w-32 text-right">操作</TableHead> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -1444,9 +1466,12 @@ function ResourceTable({
                   {formatCell(row[column], column)}
                 </TableCell>
               ))}
-              {showDelete ? (
-                <TableCell className="w-28 min-w-28 text-right">
-                  <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row)} onDelete={onDelete} />
+              {showActions ? (
+                <TableCell className="w-32 min-w-32 text-right">
+                  <div className="flex justify-end gap-1">
+                    {showEdit ? <EditResourceButton resource={resource} row={row} /> : null}
+                    {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row)} onDelete={onDelete} /> : null}
+                  </div>
                 </TableCell>
               ) : null}
             </TableRow>
@@ -1455,6 +1480,52 @@ function ResourceTable({
       </Table>
     </div>
   );
+}
+
+function EditResourceButton({ resource, row }: { resource: ResourceDefinition; row: ResourceRow }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const id = resourceRowID(row);
+  const mutation = useMutation<unknown, Error, Record<string, unknown>>({
+    mutationFn: async (payload) => apiPut(`${resource.path}/${encodeURIComponent(id)}`, payload),
+    onSuccess: async () => {
+      setMessage("更新しました。");
+      await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+    },
+    onError: (error) => setMessage(`更新に失敗しました。入力内容と権限を確認してください。${error.message ? ` (${error.message})` : ""}`),
+  });
+  const submit: SubmitResource = (payload) => {
+    setMessage("");
+    mutation.mutate(payload);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="icon-sm" disabled={!id} aria-label={`${resourceRowLabel(row)} を編集`}>
+          <Pencil className="size-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{resource.title}を編集</DialogTitle>
+          <DialogDescription>作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。</DialogDescription>
+        </DialogHeader>
+        <ResourceFormFields resource={resource} disabled={mutation.isPending} submit={submit} initial={row} submitLabel="更新" />
+        {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline">閉じる</Button>
+          </DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function resourceCanEdit(resource: ResourceDefinition) {
+  return Boolean(resource.form && !["security-settings", "oauth-account-connect", "user", "notification-channel"].includes(resource.form));
 }
 
 function DeleteResourceButton({ row, disabled, onDelete }: { row: ResourceRow; disabled: boolean; onDelete: (row: ResourceRow) => void }) {
@@ -1515,7 +1586,7 @@ function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): Reso
     return { ...row, profile_summary: profileSummary(resource.path, row) };
   }
   if (resource.path === "/discord/configs") {
-    return { ...row, bot_summary: compactList([enabledLabel("音声転送", rowValue(row, ["audio_forward_enabled", "config.audio_forward_enabled"])), enabledLabel("自動再接続", rowValue(row, ["reconnect_enabled", "config.reconnect_enabled"])), rowString(row, ["config.reconnect_max_attempts"]) ? `再接続 ${rowString(row, ["config.reconnect_max_attempts"])}回` : ""]) };
+    return { ...row, bot_summary: compactList(["音声転送: 常時有効", "自動再接続: 常時有効", rowString(row, ["reconnect_max_attempts", "config.reconnect_max_attempts"]) ? `再接続 ${rowString(row, ["reconnect_max_attempts", "config.reconnect_max_attempts"])}回` : ""]) };
   }
   if (resource.path === "/youtube/outputs") {
     return { ...row, output_summary: compactList([labelValue("方式", rowString(row, ["mode", "config.mode"])), labelValue("公開", rowString(row, ["privacy_status", "config.privacy_status"])), enabledLabel("自動開始", rowValue(row, ["enable_auto_start", "config.enable_auto_start"]))]) };
@@ -1537,7 +1608,6 @@ function profileSummary(path: string, row: ResourceRow) {
   }
   if (path === "/profiles/overlay") {
     return compactList([
-      enabledLabel("ウォーターマーク", rowValue(row, ["watermark_enabled", "config.watermark_enabled"])),
       "1920x1080",
       "自動フィット",
       rowString(row, ["watermark_image_name", "config.watermark_image_name", "watermark_image_url", "config.watermark_image_url"]) ? "画像あり" : "",

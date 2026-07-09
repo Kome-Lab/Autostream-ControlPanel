@@ -83,7 +83,6 @@ const navSections: NavSection[] = [
       { href: "/admin/caption/", key: "caption", icon: Captions },
       { href: "/admin/overlay/", key: "overlay", icon: Layers },
       { href: "/admin/archive/", key: "archive", icon: Archive },
-      { href: "/admin/integrations/", key: "integrations", icon: Plug },
     ],
   },
   {
@@ -105,6 +104,7 @@ const navSections: NavSection[] = [
       { href: "/admin/audit-logs/", key: "auditLogs", icon: ClipboardList },
       { href: "/admin/security/", key: "security", icon: KeyRound },
       { href: "/admin/nodes/", key: "nodeRegistration", icon: Network },
+      { href: "/admin/integrations/", key: "integrations", icon: Plug },
       { href: "/admin/settings/", key: "settings", icon: Settings },
     ],
   },

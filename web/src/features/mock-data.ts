@@ -332,15 +332,15 @@ const mockResourceData: Record<string, unknown[]> = {
   ],
   "/profiles/overlay": [
     { id: "overlay-lower-third", name: "自治体ロゴ", watermark_enabled: true, watermark_image_name: "city-logo.png", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output", updated_at: baseTime },
-    { id: "overlay-event", name: "イベントロゴ", watermark_enabled: false, watermark_image_name: "event-logo.webp", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output", updated_at: "2026-07-01T17:00:00+09:00" },
+    { id: "overlay-event", name: "イベントロゴ", watermark_enabled: true, watermark_image_name: "event-logo.webp", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output", updated_at: "2026-07-01T17:00:00+09:00" },
   ],
   "/profiles/archive": [
     { id: "archive-shared-drive", name: "共有Drive保存", format: "mp4", retention_days: 180, upload_enabled: true, updated_at: baseTime },
     { id: "archive-local", name: "ローカル一時保存", format: "mkv", retention_days: 30, upload_enabled: false, updated_at: "2026-07-01T10:00:00+09:00" },
   ],
   "/discord/configs": [
-    { id: "discord-main", name: "制作連絡チャンネル", service_id: "discord-01", guild_id: "guild-main", audio_forward_enabled: true, updated_at: baseTime },
-    { id: "discord-city", name: "自治体通知", service_id: "discord-city", guild_id: "guild-city", audio_forward_enabled: false, updated_at: "2026-07-01T15:40:00+09:00" },
+    { id: "discord-main", name: "制作連絡チャンネル", service_id: "discord-01", guild_id: "guild-main", audio_forward_enabled: true, reconnect_enabled: true, updated_at: baseTime },
+    { id: "discord-city", name: "自治体通知", service_id: "discord-city", guild_id: "guild-city", audio_forward_enabled: true, reconnect_enabled: true, updated_at: "2026-07-01T15:40:00+09:00" },
   ],
   "/youtube/outputs": [
     { id: "yt-regional-news", name: "地域ニュース配信", mode: "live_api_dry_run", privacy_status: "public", rtmp_url: "rtmps://example.youtube.com/live2", updated_at: baseTime },
@@ -351,8 +351,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "drive-bpo", name: "BPO案件別 Drive", auth_mode: "oauth2", folder_id_configured: true, shared_drive: true, updated_at: "2026-07-01T12:00:00+09:00" },
   ],
   "/integrations/oauth-providers": [
-    { id: "google-main", provider_type: "google", name: "Google Workspace", enabled: true, redirect_uri: "https://control.example.jp/auth/oauth/callback" },
-    { id: "github-login", provider_type: "github", name: "GitHub Login", enabled: false, redirect_uri: "https://control.example.jp/auth/oauth/callback" },
+    { id: "google-main", provider_type: "google", name: "Google Workspace", enabled: true, client_id: "google-client-id", client_secret_configured: true, allowed_domains: ["example.jp"], auto_provision: false, default_role_ids: [], redirect_uri: "https://control.example.jp/auth/oauth/callback" },
+    { id: "github-login", provider_type: "github", name: "GitHub Login", enabled: false, client_id: "github-client-id", client_secret_configured: true, allowed_domains: [], auto_provision: false, default_role_ids: [], redirect_uri: "https://control.example.jp/auth/oauth/callback" },
   ],
   "/integrations/oauth-accounts": [
     { id: "acct-drive", provider_type: "google", account_label: "広報 Drive", email: "archive@example.jp", status: "connected", updated_at: baseTime },
@@ -706,6 +706,7 @@ function mockConfigPath(serviceType: string) {
 }
 
 export function mockPut(path: string, body?: unknown): unknown {
+  const normalizedPath = stripQuery(path);
   const artifactUpdate = stripQuery(path).match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)$/);
   if (artifactUpdate) {
     const streamID = decodeURIComponent(artifactUpdate[1]);
@@ -753,6 +754,23 @@ export function mockPut(path: string, body?: unknown): unknown {
       updated_at: baseTime,
     };
     return mockAppSettings;
+  }
+  const collectionPath = mockDeleteCollectionPath(normalizedPath);
+  if (collectionPath) {
+    const id = decodeURIComponent(normalizedPath.slice(collectionPath.length + 1));
+    const rows = mockResourceData[collectionPath];
+    if (!Array.isArray(rows)) return { ok: true };
+    const index = (rows as Record<string, unknown>[]).findIndex((row) => ["id", "service_id", "name"].some((key) => row[key] === id));
+    if (index < 0) throw new Error("not_found");
+    const request = (body || {}) as Record<string, unknown>;
+    const existing = (rows as Record<string, unknown>[])[index];
+    const next: Record<string, unknown> = { ...existing, ...request, id, updated_at: baseTime };
+    if (collectionPath === "/integrations/oauth-providers") {
+      next.client_secret_configured = Boolean(request.client_secret || existing.client_secret_configured);
+      delete next.client_secret;
+    }
+    (rows as Record<string, unknown>[])[index] = next;
+    return next;
   }
   return { ok: true };
 }

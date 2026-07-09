@@ -281,6 +281,82 @@ func TestOAuthLoginRedirectCallbackCreatesSessionAndRedirects(t *testing.T) {
 	}
 }
 
+func TestOAuthLoginRedirectCallbackRedirectsMFAChallengeToLoginPage(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "user-oauth-mfa", Username: "operator", Roles: []string{"admin"}}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	secret := "JBSWY3DPEHPK3PXP"
+	if err := auth.StartTOTPEnrollment(t.Context(), "user-oauth-mfa", secret, []string{security.HashRecoveryCode("ABCD-EFGH-IJKL")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.ConfirmTOTPEnrollment(t.Context(), "user-oauth-mfa"); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemorySecuritySettingsStore()
+	if _, err := settings.UpdateSecuritySettings(t.Context(), store.SecuritySettings{
+		PasswordMinLength:        12,
+		PasswordHash:             "argon2id",
+		LoginLockoutThreshold:    5,
+		SessionIdleTimeoutMin:    30,
+		SessionAbsoluteLifetimeH: 12,
+		MFAMode:                  "totp",
+		MFARequiredRoles:         []string{"admin"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Login",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"openid", "email"},
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauthStore := store.NewMemoryOAuthLoginStore()
+	if _, err := oauthStore.LinkOAuthUser(t.Context(), store.OAuthUserLink{UserID: "user-oauth-mfa", ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-mfa-login", Email: "operator@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-mfa-login", Email: "operator@example.com", EmailVerified: true}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(oauthStore), WithOAuthVerifier(verifier), WithSecuritySettingsStore(settings), WithMFAStore(auth))
+
+	state, oauthCookie := startOAuthForTest(t, handler, provider.ID)
+	req := httptest.NewRequest(http.MethodGet, "/auth/oauth/callback?state="+url.QueryEscape(state)+"&code=callback-code", nil)
+	req.AddCookie(oauthCookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	location := res.Header().Get("Location")
+	if res.Code != http.StatusSeeOther || !strings.HasPrefix(location, "/login#") {
+		t.Fatalf("oauth MFA redirect status=%d location=%q body=%s", res.Code, location, res.Body.String())
+	}
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragment, err := url.ParseQuery(parsed.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fragment.Get("oauth_mfa_challenge") == "" || fragment.Get("expires_at") == "" {
+		t.Fatalf("oauth MFA redirect missing challenge fragment: %q", location)
+	}
+	for _, cookie := range res.Result().Cookies() {
+		if cookie.Name == sessionCookieName && cookie.Value != "" {
+			t.Fatalf("OAuth MFA redirect must not issue a session cookie before verification: %#v", cookie)
+		}
+	}
+	if strings.Contains(res.Body.String(), "mfa_required") || strings.Contains(res.Body.String(), "challenge_token") {
+		t.Fatalf("OAuth GET callback should not render JSON challenge body: %s", res.Body.String())
+	}
+}
+
 func TestOAuthLoginCallbackRejectsUnlinkedIdentity(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
@@ -8423,6 +8499,14 @@ func TestCreateUserCanSendWelcomeEmailWithoutLeakingTemporaryPassword(t *testing
 	if mailer.messages[0].To != "operator@example.jp" || !strings.Contains(mailer.messages[0].Subject, "Kome Panel") {
 		t.Fatalf("unexpected welcome email: %#v", mailer.messages[0])
 	}
+	if !strings.Contains(mailer.messages[0].Subject, "アカウント作成のお知らせ") ||
+		!strings.Contains(mailer.messages[0].Text, "アカウントを作成しました") ||
+		!strings.Contains(mailer.messages[0].Text, "ログインURL: ") ||
+		!strings.Contains(mailer.messages[0].Text, "初期パスワードはこのメールには記載していません") ||
+		strings.Contains(mailer.messages[0].Text, "Welcome") ||
+		strings.Contains(mailer.messages[0].Text, "temporary password") {
+		t.Fatalf("welcome email is not localized: %#v", mailer.messages[0])
+	}
 	if mailer.passwords[0] != "raw-smtp-password" {
 		t.Fatalf("SMTP password was not resolved for mailer")
 	}
@@ -8483,13 +8567,19 @@ func TestCurrentUserCanUpdateOwnEmail(t *testing.T) {
 	if mailer.messages[0].To != "new@example.jp" || strings.Contains(mailer.messages[0].Text, "raw-smtp-password") || strings.Contains(mailer.messages[0].Text, "old@example.jp") {
 		t.Fatalf("unexpected confirmation email: %#v", mailer.messages[0])
 	}
+	if !strings.Contains(mailer.messages[0].Subject, "メールアドレス変更確認") ||
+		!strings.Contains(mailer.messages[0].Text, "メールアドレス変更を確認してください") ||
+		!strings.Contains(mailer.messages[0].Text, "有効期限: ") ||
+		strings.Contains(mailer.messages[0].Text, "Confirm the email address change") {
+		t.Fatalf("confirmation email is not localized: %#v", mailer.messages[0])
+	}
 	if mailer.passwords[0] != "raw-smtp-password" {
 		t.Fatalf("SMTP password was not resolved for confirmation email")
 	}
 	confirmURL := ""
 	for _, line := range strings.Split(mailer.messages[0].Text, "\n") {
-		if strings.HasPrefix(line, "One-time URL: ") {
-			confirmURL = strings.TrimSpace(strings.TrimPrefix(line, "One-time URL: "))
+		if strings.HasPrefix(line, "ワンタイムURL: ") {
+			confirmURL = strings.TrimSpace(strings.TrimPrefix(line, "ワンタイムURL: "))
 		}
 	}
 	parsedConfirmURL, err := url.Parse(confirmURL)
@@ -9214,7 +9304,7 @@ func TestDiscordConfigStoresReconnectPolicyFields(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	createReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"reconnect","service_id":"discord-01","guild_id":"guild-01","voice_channel_id":"voice-01","reconnect_enabled":true,"reconnect_max_attempts":7,"reconnect_base_delay":"3s","reconnect_max_delay":"45s"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"reconnect","service_id":"discord-01","guild_id":"guild-01","voice_channel_id":"voice-01","reconnect_enabled":false,"audio_forward_enabled":false,"reconnect_max_attempts":7,"reconnect_base_delay":"3s","reconnect_max_delay":"45s"}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -9226,7 +9316,7 @@ func TestDiscordConfigStoresReconnectPolicyFields(t *testing.T) {
 	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if !created.ReconnectEnabled || created.ReconnectMaxAttempts != 7 || created.ReconnectBaseDelay != "3s" || created.ReconnectMaxDelay != "45s" {
+	if !created.ReconnectEnabled || !created.AudioForwardEnabled || created.ReconnectMaxAttempts != 7 || created.ReconnectBaseDelay != "3s" || created.ReconnectMaxDelay != "45s" {
 		t.Fatalf("unexpected reconnect response: %#v", created)
 	}
 
@@ -9236,6 +9326,9 @@ func TestDiscordConfigStoresReconnectPolicyFields(t *testing.T) {
 	}
 	if profile.Config["reconnect_max_attempts"] != 7 || profile.Config["reconnect_base_delay"] != "3s" || profile.Config["reconnect_max_delay"] != "45s" {
 		t.Fatalf("unexpected stored reconnect config: %#v", profile.Config)
+	}
+	if profile.Config["reconnect_enabled"] != true || profile.Config["audio_forward_enabled"] != true {
+		t.Fatalf("discord transfer flags should be forced enabled: %#v", profile.Config)
 	}
 
 	badReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"bad-reconnect","service_id":"discord-01","guild_id":"guild-01","voice_channel_id":"voice-01","reconnect_base_delay":"soon"}`))
@@ -11325,8 +11418,13 @@ func TestAppSettingsTestEmailSendsWithSavedSMTPSecret(t *testing.T) {
 	if len(mailer.messages) != 1 {
 		t.Fatalf("expected one test email, got %#v", mailer.messages)
 	}
-	if mailer.messages[0].To != "ops@example.jp" || !strings.Contains(mailer.messages[0].Subject, "Kome Panel SMTP test") {
+	if mailer.messages[0].To != "ops@example.jp" || !strings.Contains(mailer.messages[0].Subject, "Kome Panel SMTPテスト") {
 		t.Fatalf("unexpected test email message: %#v", mailer.messages[0])
+	}
+	if !strings.Contains(mailer.messages[0].Text, "Control Panel からのテストメールです。") ||
+		!strings.Contains(mailer.messages[0].Text, "送信を実行したユーザー: admin") ||
+		strings.Contains(mailer.messages[0].Text, "This is a test email") {
+		t.Fatalf("test email is not localized: %#v", mailer.messages[0])
 	}
 	if mailer.passwords[0] != "raw-smtp-password" {
 		t.Fatalf("SMTP password was not resolved for test email")

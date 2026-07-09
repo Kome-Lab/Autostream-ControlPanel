@@ -1013,6 +1013,10 @@ func (s *Server) continueOAuthLogin(w http.ResponseWriter, r *http.Request, user
 				return
 			}
 			s.writeAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.oauth.login", ResourceType: "user", ResourceID: user.ID, Result: "mfa_required", Metadata: map[string]any{"provider_type": provider.ProviderType}})
+			if redirectOnSuccess {
+				redirectOAuthMFAChallenge(w, r, challenge)
+				return
+			}
 			writeJSON(w, http.StatusAccepted, map[string]any{"mfa_required": true, "challenge_token": challenge.Token, "expires_at": challenge.ExpiresAt})
 			return
 		}
@@ -1026,6 +1030,13 @@ func (s *Server) continueOAuthLogin(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	s.completeLogin(w, r, user, settings)
+}
+
+func redirectOAuthMFAChallenge(w http.ResponseWriter, r *http.Request, challenge store.MFAChallenge) {
+	fragment := url.Values{}
+	fragment.Set("oauth_mfa_challenge", challenge.Token)
+	fragment.Set("expires_at", challenge.ExpiresAt.UTC().Format(time.RFC3339Nano))
+	http.Redirect(w, r, "/login#"+fragment.Encode(), http.StatusSeeOther)
 }
 
 func mfaRequiredForUser(settings store.SecuritySettings, user store.User) bool {
@@ -2957,9 +2968,7 @@ func discordConfigFromRequest(body discordConfigRequest, id string) (map[string]
 	if body.CaptionEnabled != nil {
 		config["caption_enabled"] = *body.CaptionEnabled
 	}
-	if body.ReconnectEnabled != nil {
-		config["reconnect_enabled"] = *body.ReconnectEnabled
-	}
+	config["reconnect_enabled"] = true
 	if body.ReconnectMaxAttempts < 0 {
 		return nil, errors.New("reconnect max attempts must be positive")
 	}
@@ -2978,9 +2987,7 @@ func discordConfigFromRequest(body discordConfigRequest, id string) (map[string]
 		}
 		config["reconnect_max_delay"] = value
 	}
-	if body.AudioForwardEnabled != nil {
-		config["audio_forward_enabled"] = *body.AudioForwardEnabled
-	}
+	config["audio_forward_enabled"] = true
 	if id != "" {
 		config["bot_token_secret_name"] = discordBotTokenSecretName(id)
 	}
@@ -3023,11 +3030,11 @@ func discordConfigFromProfile(profile store.Profile, statuses []store.SecretStat
 		BotTokenFingerprint:  status.Fingerprint,
 		CaptionEnabled:       configBool(profile.Config, "caption_enabled"),
 		STTProfileID:         configString(profile.Config, "stt_profile_id"),
-		ReconnectEnabled:     configBool(profile.Config, "reconnect_enabled"),
+		ReconnectEnabled:     true,
 		ReconnectMaxAttempts: configInt(profile.Config, "reconnect_max_attempts"),
 		ReconnectBaseDelay:   configString(profile.Config, "reconnect_base_delay"),
 		ReconnectMaxDelay:    configString(profile.Config, "reconnect_max_delay"),
-		AudioForwardEnabled:  configBool(profile.Config, "audio_forward_enabled"),
+		AudioForwardEnabled:  true,
 		CreatedAt:            profile.CreatedAt,
 		UpdatedAt:            profile.UpdatedAt,
 	}
@@ -9590,10 +9597,10 @@ func (s *Server) sendAppSettingsTestEmail(w http.ResponseWriter, r *http.Request
 	}
 	message := MailMessage{
 		To:      to,
-		Subject: appName + " SMTP test",
-		Text: "This is a test email from " + appName + " Control Panel.\n\n" +
-			"Triggered by: " + current.User.Username + "\n" +
-			"Sent at: " + time.Now().UTC().Format(time.RFC3339) + "\n",
+		Subject: appName + " SMTPテスト",
+		Text: appName + " Control Panel からのテストメールです。\n\n" +
+			"送信を実行したユーザー: " + current.User.Username + "\n" +
+			"送信日時: " + formatMailTimestamp(time.Now(), settings.Timezone) + "\n",
 	}
 	if err := s.mailer.Send(r.Context(), settings, password, message); err != nil {
 		code := safeErrorCode(err)
