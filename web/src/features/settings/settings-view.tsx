@@ -129,7 +129,7 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
             ))}
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">Dashboard、Streams、Audit Logs、Accountの時刻表示に反映されます。</p>
+        <p className="text-xs text-muted-foreground">Streams、Audit Logs、Accountの時刻表示に反映されます。</p>
       </div>
       <div className="space-y-3 rounded-md border bg-muted/20 p-3">
         <div className="flex items-center justify-between gap-3">
