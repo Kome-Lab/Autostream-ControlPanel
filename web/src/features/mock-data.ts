@@ -685,6 +685,37 @@ export function mockPost(path: string, body?: unknown): unknown {
     }
     return response;
   }
+  const configureTokenRotate = stripQuery(path).match(/^\/nodes\/([^/]+)\/configure-token$/);
+  if (configureTokenRotate) {
+    const nodeID = decodeURIComponent(configureTokenRotate[1]);
+    const node = mockWorkers.find((item) => (item.service_id || item.id) === nodeID) || mockWorkers[0];
+    const configureToken = "ast_cfg_demo_rotated_7c8f1a2d";
+    node.configure_token_expires_at = baseTime;
+    node.configure_token_used_at = undefined;
+    return {
+      node,
+      configure_token: configureToken,
+      configure_token_expires_at: baseTime,
+      configure_command: mockConfigureCommand(node.service_type, node.service_id || node.id, configureToken),
+    };
+  }
+  const runtimeTokenRotate = stripQuery(path).match(/^\/nodes\/([^/]+)\/rotate-token$/);
+  if (runtimeTokenRotate) {
+    const nodeID = decodeURIComponent(runtimeTokenRotate[1]);
+    const node = mockWorkers.find((item) => (item.service_id || item.id) === nodeID) || mockWorkers[0];
+    const runtimeToken = "ast_svc_demo_rotated_2f6d0b8e";
+    const runtimeTokenID = "runtime-token-demo-rotated";
+    const host = node.host || "worker-main.example.jp";
+    const port = node.port || 8443;
+    const sslEnabled = node.ssl_enabled ?? true;
+    node.node_token_rotated_at = baseTime;
+    return {
+      node,
+      runtime_token_id: runtimeTokenID,
+      runtime_token: runtimeToken,
+      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${node.service_id || node.id}"\n  name: "${node.service_name}"\n  type: "${node.service_type}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "${runtimeTokenID}"\n  token: "${runtimeToken}"\n`,
+    };
+  }
   return { ok: true };
 }
 
@@ -769,6 +800,28 @@ export function mockPut(path: string, body?: unknown): unknown {
     };
     return mockAppSettings;
   }
+  const nodeUpdate = stripQuery(path).match(/^\/nodes\/([^/]+)$/);
+  if (nodeUpdate) {
+    const nodeID = decodeURIComponent(nodeUpdate[1]);
+    const request = body as Partial<{ service_name: string; name: string; description: string; host: string; port: number; ssl_enabled: boolean }>;
+    const index = mockWorkers.findIndex((node) => (node.service_id || node.id) === nodeID);
+    if (index < 0) throw new Error("not_found");
+    const existing = mockWorkers[index];
+    const host = request.host || existing.host || "worker-main.example.jp";
+    const port = request.port || existing.port || 8443;
+    const sslEnabled = request.ssl_enabled ?? existing.ssl_enabled ?? true;
+    const next: WorkerNode = {
+      ...existing,
+      service_name: request.service_name || request.name || existing.service_name,
+      description: request.description ?? existing.description,
+      host,
+      port,
+      ssl_enabled: sslEnabled,
+      public_url: `${sslEnabled ? "https" : "http"}://${host}:${port}`,
+    };
+    mockWorkers[index] = next;
+    return next;
+  }
   const collectionPath = mockDeleteCollectionPath(normalizedPath);
   if (collectionPath) {
     const id = decodeURIComponent(normalizedPath.slice(collectionPath.length + 1));
@@ -824,6 +877,9 @@ export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
   if (/^\/streams\/[^/]+\/artifacts(?:\/[^/]+)?(?:\/download)?$/.test(normalizedPath)) return true;
   if (/^\/nodes\/[^/]+\/configuration$/.test(normalizedPath)) return true;
+  if (/^\/nodes\/[^/]+$/.test(normalizedPath)) return true;
+  if (/^\/nodes\/[^/]+\/configure-token$/.test(normalizedPath)) return true;
+  if (/^\/nodes\/[^/]+\/rotate-token$/.test(normalizedPath)) return true;
   if (/^\/services\/[^/]+$/.test(normalizedPath)) return true;
   if (/^\/auth\/passkeys\/[^/]+$/.test(normalizedPath)) return true;
   if (/^\/auth\/oauth\/[^/]+\/start$/.test(normalizedPath)) return true;

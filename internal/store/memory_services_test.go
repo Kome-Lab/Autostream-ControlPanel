@@ -82,6 +82,31 @@ func TestPrecreateServiceAllowsSameTokenRegistrationOnly(t *testing.T) {
 	}
 }
 
+func TestUpdateServiceMetadataPreservesRuntimeState(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(ctx, "worker", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "Worker 01", PublicURL: "https://worker-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate service: %v", err)
+	}
+	if _, err := auth.Heartbeat(ctx, token, ServiceHeartbeat{ServiceID: "worker-01", Status: "online", Metrics: map[string]any{"cpu_percent": 12.5}}); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	updated, err := auth.UpdateServiceMetadata(ctx, "worker-01", ServiceMetadataUpdate{ServiceName: "Worker Edited", Description: "renamed", Host: "worker-edited.example.com", Port: 9443, SSLEnabled: true})
+	if err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+	if updated.ServiceName != "Worker Edited" || updated.Description != "renamed" || updated.PublicURL != "https://worker-edited.example.com:9443" {
+		t.Fatalf("metadata was not updated: %#v", updated)
+	}
+	if updated.Status != "online" || updated.LastHeartbeatAt == nil || updated.Metrics["cpu_percent"] != 12.5 || updated.TokenID != token.ID {
+		t.Fatalf("runtime state should be preserved: %#v", updated)
+	}
+}
+
 func TestHeartbeatWithoutCurrentStreamPreservesAssignment(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()

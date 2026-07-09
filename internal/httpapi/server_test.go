@@ -10534,6 +10534,117 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 	}
 }
 
+func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "*.example.com")
+	t.Setenv("AUTOSTREAM_REQUIRE_SERVICE_PUBLIC_ALLOWED_HOSTS", "true")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "node-admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "services.disable"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{
+		ServiceID:   "studio-worker-01",
+		ServiceType: "worker",
+		ServiceName: "Studio Worker 01",
+		Host:        "worker.example.com",
+		Port:        8443,
+		SSLEnabled:  true,
+		PublicURL:   "https://worker.example.com:8443",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "node-admin", "correct horse battery")
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/nodes/studio-worker-01", bytes.NewBufferString(`{"service_name":"Studio Worker Edited","description":"編集済みNode","host":"worker-edited.example.com","port":9443,"ssl_enabled":true}`))
+	updateReq.AddCookie(cookie)
+	updateReq.Header.Set("X-CSRF-Token", csrf)
+	updateRes := httptest.NewRecorder()
+	handler.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusOK {
+		t.Fatalf("update node status = %d body = %s", updateRes.Code, updateRes.Body.String())
+	}
+	if !strings.Contains(updateRes.Body.String(), `"service_name":"Studio Worker Edited"`) || !strings.Contains(updateRes.Body.String(), `"public_url":"https://worker-edited.example.com:9443"`) {
+		t.Fatalf("update response missing edited node fields: %s", updateRes.Body.String())
+	}
+	updated, err := auth.GetService(t.Context(), "studio-worker-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ServiceName != "Studio Worker Edited" || updated.Description != "編集済みNode" || updated.Host != "worker-edited.example.com" || updated.Port != 9443 || updated.PublicURL != "https://worker-edited.example.com:9443" {
+		t.Fatalf("node metadata was not updated: %#v", updated)
+	}
+
+	configReq := httptest.NewRequest(http.MethodGet, "/nodes/studio-worker-01/configuration", nil)
+	configReq.AddCookie(cookie)
+	configRes := httptest.NewRecorder()
+	handler.ServeHTTP(configRes, configReq)
+	if configRes.Code != http.StatusOK {
+		t.Fatalf("node configuration status = %d body = %s", configRes.Code, configRes.Body.String())
+	}
+	if !strings.Contains(configRes.Body.String(), `"node_api_url":"https://worker-edited.example.com:9443"`) {
+		t.Fatalf("node configuration should use edited endpoint: %s", configRes.Body.String())
+	}
+
+	configureReq := httptest.NewRequest(http.MethodPost, "/nodes/studio-worker-01/configure-token", nil)
+	configureReq.AddCookie(cookie)
+	configureReq.Header.Set("X-CSRF-Token", csrf)
+	configureRes := httptest.NewRecorder()
+	handler.ServeHTTP(configureRes, configureReq)
+	if configureRes.Code != http.StatusCreated {
+		t.Fatalf("configure token rotate status = %d body = %s", configureRes.Code, configureRes.Body.String())
+	}
+	var configureBody struct {
+		ConfigureToken string `json:"configure_token"`
+		Command        string `json:"configure_command"`
+	}
+	if err := json.NewDecoder(configureRes.Body).Decode(&configureBody); err != nil {
+		t.Fatal(err)
+	}
+	if configureBody.ConfigureToken == "" || !strings.Contains(configureBody.Command, configureBody.ConfigureToken) {
+		t.Fatalf("configure token was not returned once: %#v", configureBody)
+	}
+
+	rotateReq := httptest.NewRequest(http.MethodPost, "/nodes/studio-worker-01/rotate-token", nil)
+	rotateReq.AddCookie(cookie)
+	rotateReq.Header.Set("X-CSRF-Token", csrf)
+	rotateRes := httptest.NewRecorder()
+	handler.ServeHTTP(rotateRes, rotateReq)
+	if rotateRes.Code != http.StatusCreated {
+		t.Fatalf("runtime token rotate status = %d body = %s", rotateRes.Code, rotateRes.Body.String())
+	}
+	var rotateBody struct {
+		RuntimeToken      string `json:"runtime_token"`
+		RuntimeTokenID    string `json:"runtime_token_id"`
+		ConfigurationYAML string `json:"configuration_yaml"`
+	}
+	if err := json.NewDecoder(rotateRes.Body).Decode(&rotateBody); err != nil {
+		t.Fatal(err)
+	}
+	if rotateBody.RuntimeToken == "" || rotateBody.RuntimeTokenID == "" || !strings.Contains(rotateBody.ConfigurationYAML, rotateBody.RuntimeToken) {
+		t.Fatalf("runtime token was not returned once in config: %#v", rotateBody)
+	}
+	if rotateBody.RuntimeToken == token.RawToken || rotateBody.RuntimeTokenID == token.ID {
+		t.Fatalf("runtime token was not rotated: %#v", rotateBody)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/services/studio-worker-01", nil)
+	deleteReq.AddCookie(cookie)
+	deleteReq.Header.Set("X-CSRF-Token", csrf)
+	deleteRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("delete service status = %d body = %s", deleteRes.Code, deleteRes.Body.String())
+	}
+	if _, err := auth.GetService(t.Context(), "studio-worker-01"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted node should be gone, got %v", err)
+	}
+}
+
 func TestCreateNodeRegistrationTokenReportsBlockedEndpoint(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
 	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "")

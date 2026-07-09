@@ -384,7 +384,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api-tokens/{id}", s.requirePermission("api_tokens.revoke", s.revokeServiceToken))
 	s.mux.HandleFunc("GET /nodes", s.requirePermission("api_tokens.create", s.listNodes))
 	s.mux.HandleFunc("POST /nodes/registration-tokens", s.requirePermission("api_tokens.create", s.createNodeRegistrationToken))
-	s.mux.HandleFunc("GET /nodes/{id}/configuration", s.requirePermission("service_health.read", s.nodeConfiguration))
+	s.mux.HandleFunc("PUT /nodes/{id}", s.requirePermission("api_tokens.create", s.updateNode))
+	s.mux.HandleFunc("GET /nodes/{id}/configuration", s.requireAnyPermission([]string{"service_health.read", "api_tokens.create"}, s.nodeConfiguration))
 	s.mux.HandleFunc("POST /nodes/{id}/configure-token", s.requirePermission("api_tokens.create", s.regenerateNodeConfigureToken))
 	s.mux.HandleFunc("POST /nodes/{id}/rotate-token", s.requirePermission("api_tokens.create", s.rotateNodeRuntimeToken))
 	s.mux.HandleFunc("GET /service-health", s.requirePermission("service_health.read", s.listServices))
@@ -4868,6 +4869,104 @@ func nodeListResponses(services []store.RegisteredService, now time.Time) []node
 		})
 	}
 	return out
+}
+
+func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
+	existing, err := s.services.GetService(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	var body struct {
+		Name        *string `json:"name"`
+		ServiceName *string `json:"service_name"`
+		Description *string `json:"description"`
+		Host        *string `json:"host"`
+		Port        *int    `json:"port"`
+		SSLEnabled  *bool   `json:"ssl_enabled"`
+		PublicURL   *string `json:"public_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	serviceName := existing.ServiceName
+	if body.ServiceName != nil {
+		serviceName = strings.TrimSpace(*body.ServiceName)
+	}
+	if body.Name != nil && strings.TrimSpace(*body.Name) != "" {
+		serviceName = strings.TrimSpace(*body.Name)
+	}
+	description := existing.Description
+	if body.Description != nil {
+		description = strings.TrimSpace(*body.Description)
+	}
+	host := existing.Host
+	port := existing.Port
+	sslEnabled := existing.SSLEnabled
+	if body.PublicURL != nil && strings.TrimSpace(*body.PublicURL) != "" {
+		parsedHost, parsedPort, parsedSSL := nodeEndpointFromURL(*body.PublicURL)
+		host = parsedHost
+		port = parsedPort
+		sslEnabled = parsedSSL
+	}
+	if body.Host != nil {
+		host = strings.TrimSpace(*body.Host)
+	}
+	if body.Port != nil {
+		port = *body.Port
+	}
+	if body.SSLEnabled != nil {
+		sslEnabled = *body.SSLEnabled
+	}
+	publicURL := buildNodeAgentURL(host, port, sslEnabled)
+	if publicURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
+		return
+	}
+	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(publicURL); err != nil {
+		code := "invalid_node_endpoint"
+		if errors.Is(err, netpolicy.ErrBlockedServiceURL) {
+			code = "node_endpoint_blocked"
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
+		return
+	}
+	updated, err := s.services.UpdateServiceMetadata(r.Context(), existing.ServiceID, store.ServiceMetadataUpdate{
+		ServiceName: serviceName,
+		Description: description,
+		Host:        host,
+		Port:        port,
+		SSLEnabled:  sslEnabled,
+		PublicURL:   publicURL,
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if errors.Is(err, store.ErrInvalidServiceRegistration) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_registration"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_node_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{
+		ActorUserID:   current.User.ID,
+		ActorUsername: current.User.Username,
+		Action:        "nodes.update",
+		ResourceType:  "node",
+		ResourceID:    updated.ServiceID,
+		Result:        "success",
+		Metadata:      map[string]any{"node_type": updated.ServiceType, "public_url": updated.PublicURL},
+	})
+	writeJSON(w, http.StatusOK, nodeListResponses([]store.RegisteredService{updated}, time.Now().UTC())[0])
 }
 
 func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
@@ -10628,6 +10727,40 @@ func (s *Server) requirePermission(permission string, next http.HandlerFunc) htt
 			return
 		}
 		if permission != "" && !security.HasPermission(current.Permissions, permission) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
+			return
+		}
+		ctx := context.WithValue(r.Context(), currentUserKey{}, current)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
+
+func (s *Server) requireAnyPermission(permissions []string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if isOAuthCallbackPath(r.URL.Path) {
+			setOAuthCallbackNoStoreHeaders(w)
+		}
+		current, ok := s.authenticate(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		}
+		if isUnsafeMethod(r.Method) && !security.VerifyTokenHash(r.Header.Get("X-CSRF-Token"), current.Session.CSRFTokenHash) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "csrf_failed"})
+			return
+		}
+		if current.User.Status == "pending_password_change" && !isPasswordChangeAllowedPath(r.URL.Path) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "password_change_required"})
+			return
+		}
+		allowed := len(permissions) == 0
+		for _, permission := range permissions {
+			if permission != "" && security.HasPermission(current.Permissions, permission) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
 			return
 		}

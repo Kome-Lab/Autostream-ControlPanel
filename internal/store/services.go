@@ -74,6 +74,15 @@ type ServiceRegistration struct {
 	Arch         string         `json:"arch,omitempty"`
 }
 
+type ServiceMetadataUpdate struct {
+	ServiceName string
+	Description string
+	Host        string
+	Port        int
+	SSLEnabled  bool
+	PublicURL   string
+}
+
 type ServiceHeartbeat struct {
 	ServiceID       string         `json:"service_id"`
 	NodeID          string         `json:"nodeId,omitempty"`
@@ -134,6 +143,7 @@ type ServiceRegistryStore interface {
 	ListServices(ctx context.Context) ([]RegisteredService, error)
 	ListWorkers(ctx context.Context) ([]RegisteredService, error)
 	GetService(ctx context.Context, id string) (RegisteredService, error)
+	UpdateServiceMetadata(ctx context.Context, serviceID string, update ServiceMetadataUpdate) (RegisteredService, error)
 	DeleteService(ctx context.Context, serviceID string) error
 	AssignServiceToStream(ctx context.Context, serviceID, streamID, actorUserID string) (RegisteredService, error)
 	AssignServiceToStreamWithRole(ctx context.Context, serviceID, streamID, actorUserID, assignmentRole string) (RegisteredService, error)
@@ -534,6 +544,29 @@ ORDER BY s.service_name`)
 
 func (s MariaDBAuthStore) GetService(ctx context.Context, id string) (RegisteredService, error) {
 	return s.getService(ctx, id)
+}
+
+func (s MariaDBAuthStore) UpdateServiceMetadata(ctx context.Context, serviceID string, update ServiceMetadataUpdate) (RegisteredService, error) {
+	update = normalizeServiceMetadataUpdate(update)
+	if strings.TrimSpace(serviceID) == "" {
+		return RegisteredService{}, ErrNotFound
+	}
+	if err := validateServiceMetadataUpdate(update); err != nil {
+		return RegisteredService{}, err
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET service_name = ?, description = ?, host = ?, port = ?, ssl_enabled = ?, public_url = ?, updated_at = ? WHERE service_id = ?`, update.ServiceName, update.Description, update.Host, update.Port, update.SSLEnabled, update.PublicURL, now, serviceID)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	if affected == 0 {
+		return RegisteredService{}, ErrNotFound
+	}
+	return s.getService(ctx, serviceID)
 }
 
 func (s MariaDBAuthStore) DeleteService(ctx context.Context, serviceID string) error {
@@ -1017,6 +1050,17 @@ func validateServiceRegistration(registration ServiceRegistration) error {
 	return nil
 }
 
+func validateServiceMetadataUpdate(update ServiceMetadataUpdate) error {
+	update = normalizeServiceMetadataUpdate(update)
+	if strings.TrimSpace(update.ServiceName) == "" || strings.TrimSpace(update.PublicURL) == "" {
+		return ErrInvalidServiceRegistration
+	}
+	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(update.PublicURL); err != nil {
+		return ErrInvalidServiceRegistration
+	}
+	return nil
+}
+
 func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegistration {
 	registration.ServiceID = strings.TrimSpace(registration.ServiceID)
 	registration.ServiceType = strings.TrimSpace(registration.ServiceType)
@@ -1042,6 +1086,29 @@ func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegis
 		registration.PublicURL = buildServiceURL(registration.Host, registration.Port, registration.SSLEnabled)
 	}
 	return registration
+}
+
+func normalizeServiceMetadataUpdate(update ServiceMetadataUpdate) ServiceMetadataUpdate {
+	update.ServiceName = strings.TrimSpace(update.ServiceName)
+	update.Description = strings.TrimSpace(update.Description)
+	update.Host = strings.TrimSpace(update.Host)
+	update.PublicURL = strings.TrimSpace(update.PublicURL)
+	if update.Host == "" || update.Port == 0 {
+		host, port, sslEnabled := endpointFromServiceURL(update.PublicURL)
+		if update.Host == "" {
+			update.Host = host
+		}
+		if update.Port == 0 {
+			update.Port = port
+		}
+		if host != "" {
+			update.SSLEnabled = sslEnabled
+		}
+	}
+	if update.PublicURL == "" {
+		update.PublicURL = buildServiceURL(update.Host, update.Port, update.SSLEnabled)
+	}
+	return update
 }
 
 func normalizeServiceRuntimeReport(report ServiceRuntimeReport) ServiceRuntimeReport {

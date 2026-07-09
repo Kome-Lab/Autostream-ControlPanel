@@ -3,17 +3,20 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Activity, AlertCircle, Check, Copy, FileCode2, KeyRound, LockKeyhole, RotateCw, Server } from "lucide-react";
+import { Activity, AlertCircle, Check, Copy, FileCode2, KeyRound, LockKeyhole, Pencil, RotateCw, Server, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/tables/data-table";
+import { DangerConfirm } from "@/components/admin/danger-confirm";
+import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
-import { APIError, apiPost } from "@/lib/api/client";
-import { hasAnyPermission } from "@/lib/auth/permissions";
+import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
+import { hasPermission } from "@/lib/auth/permissions";
 import { useCurrentUser, useNodes } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
@@ -24,6 +27,28 @@ const nodeTypes = [
   { value: "discord_bot", label: "Discord Bot Node Agent", defaultPort: 8083 },
   { value: "observability", label: "Observability Node Agent", defaultPort: 8084 },
 ];
+
+type NodeConfigurationResponse = {
+  node?: WorkerNode;
+  node_api_url?: string;
+  token?: string;
+  configure_token?: string;
+  configure_token_expires_at?: string;
+  runtime_token_id?: string;
+  runtime_token?: string;
+  configure_command?: string;
+  configuration_yaml?: string;
+  systemd_unit?: string;
+  scopes?: string[];
+};
+
+type NodeEditForm = {
+  service_name: string;
+  description: string;
+  host: string;
+  port: string;
+  ssl_enabled: boolean;
+};
 
 export function NodeRegistrationView() {
   const { t } = useI18n();
@@ -41,8 +66,13 @@ export function NodeRegistrationView() {
   const [allowRuntimeSecrets, setAllowRuntimeSecrets] = useState(false);
   const [allowRemediation, setAllowRemediation] = useState(false);
   const [copied, setCopied] = useState("");
+  const [configuration, setConfiguration] = useState<NodeConfigurationResponse | null>(null);
+  const [editingNode, setEditingNode] = useState<WorkerNode | null>(null);
+  const [editForm, setEditForm] = useState<NodeEditForm>({ service_name: "", description: "", host: "", port: "", ssl_enabled: true });
 
-  const allowed = hasAnyPermission(currentUser.data, ["api_tokens.create"]);
+  const allowed = hasPermission(currentUser.data, "api_tokens.create");
+  const canRotateRuntimeToken = hasPermission(currentUser.data, "api_tokens.revoke");
+  const canDeleteNode = hasPermission(currentUser.data, "services.disable");
   const nodeApiUrl = useMemo(() => {
     const scheme = sslEnabled ? "https" : "http";
     const normalizedHost = host.trim();
@@ -50,6 +80,14 @@ export function NodeRegistrationView() {
     if (!normalizedHost || !Number.isFinite(normalizedPort) || normalizedPort <= 0) return "";
     return `${scheme}://${normalizedHost}:${normalizedPort}`;
   }, [host, port, sslEnabled]);
+
+  const invalidateNodeQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["nodes"] }),
+      queryClient.invalidateQueries({ queryKey: ["service-health"] }),
+      queryClient.invalidateQueries({ queryKey: ["workers"] }),
+    ]);
+  };
 
   const createToken = useMutation({
     mutationFn: () =>
@@ -64,15 +102,53 @@ export function NodeRegistrationView() {
         allow_runtime_secrets: allowRuntimeSecrets,
         allow_remediation: allowRemediation,
       }),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["nodes"] }),
-        queryClient.invalidateQueries({ queryKey: ["service-health"] }),
-        queryClient.invalidateQueries({ queryKey: ["workers"] }),
-      ]);
+    onSuccess: async (data) => {
+      setConfiguration(data);
+      await invalidateNodeQueries();
+    },
+  });
+  const loadConfiguration = useMutation({
+    mutationFn: (nodeID: string) => apiGet<NodeConfigurationResponse>(`/nodes/${encodeURIComponent(nodeID)}/configuration`),
+    onSuccess: (data) => setConfiguration(data),
+  });
+  const regenerateConfigureToken = useMutation({
+    mutationFn: (nodeID: string) => apiPost<NodeConfigurationResponse>(`/nodes/${encodeURIComponent(nodeID)}/configure-token`),
+    onSuccess: async (data) => {
+      setConfiguration(data);
+      await invalidateNodeQueries();
+    },
+  });
+  const rotateRuntimeToken = useMutation({
+    mutationFn: (nodeID: string) => apiPost<NodeConfigurationResponse>(`/nodes/${encodeURIComponent(nodeID)}/rotate-token`),
+    onSuccess: async (data) => {
+      setConfiguration(data);
+      await invalidateNodeQueries();
+    },
+  });
+  const updateNode = useMutation({
+    mutationFn: ({ nodeID, values }: { nodeID: string; values: NodeEditForm }) =>
+      apiPut<WorkerNode>(`/nodes/${encodeURIComponent(nodeID)}`, {
+        service_name: values.service_name,
+        description: values.description,
+        host: values.host,
+        port: Number.parseInt(values.port, 10),
+        ssl_enabled: values.ssl_enabled,
+      }),
+    onSuccess: async (node) => {
+      setEditingNode(null);
+      setConfiguration((current) => (current?.node && nodeIdentity(current.node) === nodeIdentity(node) ? { ...current, node } : current));
+      await invalidateNodeQueries();
+    },
+  });
+  const deleteNode = useMutation({
+    mutationFn: (nodeID: string) => apiDelete<{ status: string }>(`/services/${encodeURIComponent(nodeID)}`),
+    onSuccess: async (_data, nodeID) => {
+      setConfiguration((current) => (current?.node && nodeIdentity(current.node) === nodeID ? null : current));
+      await invalidateNodeQueries();
     },
   });
   const createError = nodeRegistrationErrorMessage(createToken.error);
+  const actionError = nodeRegistrationErrorMessage(updateNode.error || deleteNode.error || loadConfiguration.error || regenerateConfigureToken.error || rotateRuntimeToken.error);
   const registeredRows = registeredNodes.data || [];
 
   const handleTypeChange = (value: string) => {
@@ -89,6 +165,19 @@ export function NodeRegistrationView() {
     setCopied(key);
     window.setTimeout(() => setCopied(""), 1200);
   };
+
+  const openEditNode = (node: WorkerNode) => {
+    setEditingNode(node);
+    setEditForm(nodeEditDefaults(node));
+  };
+
+  const submitEditNode = () => {
+    if (!editingNode) return;
+    updateNode.mutate({ nodeID: nodeIdentity(editingNode), values: editForm });
+  };
+
+  const editPortNumber = Number.parseInt(editForm.port, 10);
+  const editFormValid = editForm.service_name.trim() !== "" && editForm.host.trim() !== "" && Number.isFinite(editPortNumber) && editPortNumber > 0 && editPortNumber <= 65535;
 
   const registeredColumns: ColumnDef<WorkerNode>[] = [
     {
@@ -147,6 +236,41 @@ export function NodeRegistrationView() {
       id: "heartbeat",
       header: "Heartbeat",
       cell: ({ row }) => formatHeartbeat(row.original),
+    },
+    {
+      id: "actions",
+      header: t("actions"),
+      cell: ({ row }) => {
+        const node = row.original;
+        const nodeID = nodeIdentity(node);
+        return (
+          <div className="flex min-w-52 flex-wrap items-center gap-2">
+            <Button variant="outline" size="icon-sm" aria-label="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
+              <FileCode2 />
+            </Button>
+            <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} disabled={!allowed || regenerateConfigureToken.isPending}>
+              <KeyRound />
+            </Button>
+            <RoleGuard allowed={canRotateRuntimeToken}>
+              <DangerConfirm title={`${node.service_name} のRuntime Tokenを再生成しますか`} description="既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。" onConfirm={() => rotateRuntimeToken.mutate(nodeID)} actionLabel="再生成">
+                <Button variant="outline" size="icon-sm" aria-label="Runtime Tokenを再生成" {...guardedButtonProps(canRotateRuntimeToken)} disabled={!canRotateRuntimeToken || rotateRuntimeToken.isPending}>
+                  <RotateCw />
+                </Button>
+              </DangerConfirm>
+            </RoleGuard>
+            <Button variant="outline" size="icon-sm" aria-label="Nodeを編集" onClick={() => openEditNode(node)} disabled={!allowed}>
+              <Pencil />
+            </Button>
+            <RoleGuard allowed={canDeleteNode}>
+              <DangerConfirm title={`${node.service_name} を削除しますか`} description="Node登録、割り当て、Runtime Tokenを無効化します。この操作は取り消せません。" onConfirm={() => deleteNode.mutate(nodeID)} actionLabel="削除">
+                <Button variant="destructive" size="icon-sm" aria-label="Nodeを削除" {...guardedButtonProps(canDeleteNode)} disabled={!canDeleteNode || deleteNode.isPending}>
+                  <Trash2 />
+                </Button>
+              </DangerConfirm>
+            </RoleGuard>
+          </div>
+        );
+      },
     },
   ];
 
@@ -245,65 +369,73 @@ export function NodeRegistrationView() {
           <CardDescription>Configure TokenとRuntime Tokenは生成直後だけ表示されます。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {createToken.data ? (
+          {configuration ? (
             <>
               <div className="grid gap-2 rounded-md border bg-muted/40 p-3 text-sm">
                 <div className="font-medium">接続状態</div>
                 <div className="text-muted-foreground">
-                  {createToken.data.node?.status ?? "pending"} / 報告バージョン: {createToken.data.node?.reported_version || "未取得"} / Capability:{" "}
-                  {Object.keys(createToken.data.node?.reported_capabilities ?? {}).length > 0 ? "報告済み" : "未取得"}
+                  {configuration.node?.service_name || "選択中のNode"} / {configuration.node?.status ?? "pending"} / 報告バージョン:{" "}
+                  {configuration.node?.reported_version || "未取得"} / Capability: {Object.keys(configuration.node?.reported_capabilities ?? {}).length > 0 ? "報告済み" : "未取得"}
                 </div>
+                {configuration.configure_token_expires_at ? <div className="text-xs text-muted-foreground">Configure Token期限: {configuration.configure_token_expires_at}</div> : null}
               </div>
-              <SecretBlock
-                label="Configure Token"
-                value={createToken.data.configure_token ?? createToken.data.token}
-                copied={copied === "configure-token"}
-                onCopy={() => copyValue("configure-token", createToken.data?.configure_token ?? createToken.data?.token)}
-              />
-              {createToken.data.runtime_token ? (
+              {configuration.node_api_url ? <SecretBlock label="Node Agent API URL" value={configuration.node_api_url} copied={copied === "api-url"} onCopy={() => copyValue("api-url", configuration.node_api_url)} /> : null}
+              {configuration.configure_token || configuration.token ? (
+                <SecretBlock
+                  label="Configure Token"
+                  value={configuration.configure_token ?? configuration.token ?? ""}
+                  copied={copied === "configure-token"}
+                  onCopy={() => copyValue("configure-token", configuration.configure_token ?? configuration.token)}
+                />
+              ) : null}
+              {configuration.runtime_token ? (
                 <SecretBlock
                   label="Node Runtime Token"
-                  value={createToken.data.runtime_token}
+                  value={configuration.runtime_token}
                   copied={copied === "runtime-token"}
-                  onCopy={() => copyValue("runtime-token", createToken.data?.runtime_token)}
+                  onCopy={() => copyValue("runtime-token", configuration.runtime_token)}
                 />
               ) : null}
-              <SecretBlock
-                label={t("configureCommand")}
-                value={createToken.data.configure_command}
-                copied={copied === "command"}
-                onCopy={() => copyValue("command", createToken.data?.configure_command)}
-              />
-              {createToken.data.configuration_yaml ? (
+              {configuration.configure_command ? (
+                <SecretBlock
+                  label={t("configureCommand")}
+                  value={configuration.configure_command}
+                  copied={copied === "command"}
+                  onCopy={() => copyValue("command", configuration.configure_command)}
+                />
+              ) : null}
+              {configuration.configuration_yaml ? (
                 <SecretBlock
                   label="config.yml"
-                  value={createToken.data.configuration_yaml}
+                  value={configuration.configuration_yaml}
                   copied={copied === "yaml"}
-                  onCopy={() => copyValue("yaml", createToken.data?.configuration_yaml)}
+                  onCopy={() => copyValue("yaml", configuration.configuration_yaml)}
                 />
               ) : null}
-              {createToken.data.systemd_unit ? (
+              {configuration.systemd_unit ? (
                 <SecretBlock
                   label="systemd"
-                  value={createToken.data.systemd_unit}
+                  value={configuration.systemd_unit}
                   copied={copied === "systemd"}
-                  onCopy={() => copyValue("systemd", createToken.data?.systemd_unit)}
+                  onCopy={() => copyValue("systemd", configuration.systemd_unit)}
                 />
               ) : null}
-              <div className="rounded-md border bg-muted/40 p-3 text-sm">
-                <div className="font-medium">Scopes</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {createToken.data.scopes.map((scope) => (
-                    <span key={scope} className="rounded-md bg-background px-2 py-1 text-xs">
-                      {scope}
-                    </span>
-                  ))}
+              {configuration.scopes?.length ? (
+                <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                  <div className="font-medium">Scopes</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {configuration.scopes.map((scope) => (
+                      <span key={scope} className="rounded-md bg-background px-2 py-1 text-xs">
+                        {scope}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </>
           ) : (
             <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-              Nodeを作成すると、config.yml、Auto Configureコマンド、Tokenがここに一度だけ表示されます。
+              Nodeを作成、または登録済みNodeのConfiguration・Token再生成を実行するとここに表示されます。
             </div>
           )}
           <div className="grid gap-2 rounded-md border bg-muted/30 p-3 text-sm">
@@ -347,16 +479,106 @@ export function NodeRegistrationView() {
               登録済みNodeを取得できませんでした。api_tokens.create 権限とControl Panelのログを確認してください。
             </div>
           ) : null}
+          {actionError ? (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="polite">
+              {actionError}
+            </div>
+          ) : null}
           <div className="text-sm text-muted-foreground">登録済み: {registeredRows.length} Node</div>
           <DataTable columns={registeredColumns} data={registeredRows} filterPlaceholder="Node名、Node ID、種別、状態で検索" getRowId={(row) => row.service_id || row.id} />
         </CardContent>
       </Card>
+      <Dialog open={Boolean(editingNode)} onOpenChange={(open) => (!open ? setEditingNode(null) : undefined)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Nodeを編集</DialogTitle>
+            <DialogDescription>Node IDとNode typeは変更できません。接続先を変えた場合は必要に応じてNode Agent側の設定も更新してください。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Node ID</label>
+              <Input value={editingNode ? nodeIdentity(editingNode) : ""} disabled />
+            </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">{t("name")}</label>
+              <Input value={editForm.service_name} onChange={(event) => setEditForm((current) => ({ ...current, service_name: event.target.value }))} />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Host / FQDN / IP</label>
+                <Input value={editForm.host} onChange={(event) => setEditForm((current) => ({ ...current, host: event.target.value }))} />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Port</label>
+                <Input inputMode="numeric" value={editForm.port} onChange={(event) => setEditForm((current) => ({ ...current, port: event.target.value }))} />
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox checked={editForm.ssl_enabled} onCheckedChange={(value) => setEditForm((current) => ({ ...current, ssl_enabled: value === true }))} />
+              SSLを有効化してHTTPSを使用
+            </label>
+            <div className="rounded-md border bg-muted/40 p-3 text-sm">
+              <div className="font-medium">Node Agent API URL</div>
+              <div className="mt-1 break-all text-muted-foreground">{editNodeApiURL(editForm) || "HostとPortを入力してください"}</div>
+            </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">説明</label>
+              <Textarea value={editForm.description} onChange={(event) => setEditForm((current) => ({ ...current, description: event.target.value }))} rows={3} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingNode(null)}>
+              {t("cancel")}
+            </Button>
+            <Button onClick={submitEditNode} disabled={!allowed || !editFormValid || updateNode.isPending}>
+              {updateNode.isPending ? "保存中" : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function nodeTypeLabel(type?: string) {
   return nodeTypes.find((item) => item.value === type)?.label || type || "-";
+}
+
+function nodeIdentity(node: WorkerNode) {
+  return node.service_id || node.id;
+}
+
+function nodeEditDefaults(node: WorkerNode): NodeEditForm {
+  const parsed = parseNodePublicURL(node.public_url);
+  return {
+    service_name: node.service_name || "",
+    description: node.description || "",
+    host: node.host || parsed.host,
+    port: node.port ? String(node.port) : parsed.port,
+    ssl_enabled: node.ssl_enabled ?? parsed.ssl_enabled ?? true,
+  };
+}
+
+function parseNodePublicURL(publicURL?: string) {
+  if (!publicURL) return { host: "", port: "", ssl_enabled: true };
+  try {
+    const url = new URL(publicURL);
+    const sslEnabled = url.protocol === "https:";
+    return {
+      host: url.hostname,
+      port: url.port || (sslEnabled ? "443" : "80"),
+      ssl_enabled: sslEnabled,
+    };
+  } catch {
+    return { host: "", port: "", ssl_enabled: true };
+  }
+}
+
+function editNodeApiURL(form: NodeEditForm) {
+  const host = form.host.trim();
+  const port = Number.parseInt(form.port, 10);
+  if (!host || !Number.isFinite(port) || port <= 0) return "";
+  return `${form.ssl_enabled ? "https" : "http"}://${host}:${port}`;
 }
 
 function nodeEndpoint(node: WorkerNode) {
@@ -458,9 +680,16 @@ function nodeRegistrationErrorMessage(error: unknown) {
       node_endpoint_blocked: "Node Agent API URLがControl Panelのoutbound allowlistに入っていません。Control Panel envの AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS にこのHost、または *.example.jp のようなwildcardを追加して再起動してください。",
       invalid_node_registration: "Node ID、名前、Host、Portのいずれかが無効です。HostはURL全体ではなくFQDNまたはIPだけを入力し、Control Panelのoutbound allowlistも確認してください。",
       node_type_mismatch: "既存Nodeと異なるNode typeでは発行できません。Node typeとNode IDの組み合わせを確認してください。",
+      not_found: "対象のNodeが見つかりません。一覧を更新してください。",
+      service_not_found: "対象のNodeが見つかりません。一覧を更新してください。",
+      permission_denied: "この操作に必要な権限がありません。Runtime Token再生成には api_tokens.revoke 権限が必要です。",
       store_node_runtime_token_failed: "Control Panelのenvに AUTOSTREAM_SECRET_ENCRYPTION_KEY が設定されていない、または暗号化設定が不正です。設定後にControl Panelを再起動してください。",
       create_node_configure_token_failed: "Configure Tokenの保存に失敗しました。database接続とControl Panelのログを確認してください。",
       create_node_registration_token_failed: "Node Runtime Tokenの作成に失敗しました。Control Panelのログを確認してください。",
+      rotate_node_runtime_token_failed: "Node Runtime Tokenの再生成に失敗しました。Control Panelのログを確認してください。",
+      runtime_token_not_found: "現在のRuntime Tokenが見つかりません。Nodeを再作成するか、Control Panelのログを確認してください。",
+      update_node_failed: "Nodeの更新に失敗しました。Control Panelのログを確認してください。",
+      delete_service_failed: "Nodeの削除に失敗しました。割り当て状態とControl Panelのログを確認してください。",
       precreate_node_failed: "Nodeの作成に失敗しました。database接続とControl Panelのログを確認してください。",
     };
     return messages[error.code || ""] || `API error: ${error.code || error.message} (HTTP ${error.status})`;

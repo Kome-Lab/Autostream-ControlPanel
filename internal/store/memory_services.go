@@ -403,6 +403,34 @@ func (s *MemoryAuthStore) GetService(ctx context.Context, id string) (Registered
 	return svc, nil
 }
 
+func (s *MemoryAuthStore) UpdateServiceMetadata(ctx context.Context, serviceID string, update ServiceMetadataUpdate) (RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return RegisteredService{}, err
+	}
+	update = normalizeServiceMetadataUpdate(update)
+	if strings.TrimSpace(serviceID) == "" {
+		return RegisteredService{}, ErrNotFound
+	}
+	if err := validateServiceMetadataUpdate(update); err != nil {
+		return RegisteredService{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	svc, ok := s.services[serviceID]
+	if !ok {
+		return RegisteredService{}, ErrNotFound
+	}
+	svc.ServiceName = update.ServiceName
+	svc.Description = update.Description
+	svc.Host = update.Host
+	svc.Port = update.Port
+	svc.SSLEnabled = update.SSLEnabled
+	svc.PublicURL = update.PublicURL
+	svc.UpdatedAt = time.Now().UTC()
+	s.services[serviceID] = svc
+	return svc, nil
+}
+
 func (s *MemoryAuthStore) DeleteService(ctx context.Context, serviceID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
