@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Activity, AlertCircle, Check, Copy, FileCode2, KeyRound, LockKeyhole, Pencil, RotateCw, Server, Trash2 } from "lucide-react";
+import { Activity, AlertCircle, Check, Copy, FileCode2, KeyRound, Link, LockKeyhole, Pencil, RotateCw, Server, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,8 +17,9 @@ import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
-import { useCurrentUser, useNodes } from "@/features/queries";
+import { useAppSettings, useCurrentUser, useNodes } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
+import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 
 const nodeTypes = [
@@ -50,11 +51,15 @@ type NodeEditForm = {
   ssl_enabled: boolean;
 };
 
-export function NodeRegistrationView() {
+type NodeRegistrationViewMode = "registration" | "registered" | "all";
+
+export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeRegistrationViewMode }) {
   const { t } = useI18n();
   const currentUser = useCurrentUser();
+  const appSettings = useAppSettings();
   const registeredNodes = useNodes();
   const queryClient = useQueryClient();
+  const timezone = appSettings.data?.timezone;
   const [nodeType, setNodeType] = useState("worker");
   const selectedType = nodeTypes.find((type) => type.value === nodeType) ?? nodeTypes[0];
   const [nodeID, setNodeID] = useState("worker-tokyo-01");
@@ -178,17 +183,26 @@ export function NodeRegistrationView() {
 
   const editPortNumber = Number.parseInt(editForm.port, 10);
   const editFormValid = editForm.service_name.trim() !== "" && editForm.host.trim() !== "" && Number.isFinite(editPortNumber) && editPortNumber > 0 && editPortNumber <= 65535;
+  const showRegistration = mode !== "registered";
+  const showRegistered = mode !== "registration";
 
   const registeredColumns: ColumnDef<WorkerNode>[] = [
     {
       accessorKey: "service_name",
       header: t("name"),
-      cell: ({ row }) => (
-        <div className="min-w-56">
-          <div className="font-medium">{row.original.service_name}</div>
-          <div className="text-xs text-muted-foreground">{row.original.service_id || row.original.id}</div>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const nodeID = nodeIdentity(row.original);
+        return (
+          <div className="min-w-56">
+            <div className="flex items-center gap-2">
+              <div className="font-medium">{nodeDisplayName(row.original)}</div>
+              <Button variant="outline" size="icon-sm" aria-label="Node IDをコピー" onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
+                {copied === `node-id-${nodeID}` ? <Check className="size-4" /> : <Copy className="size-4" />}
+              </Button>
+            </div>
+          </div>
+        );
+      },
     },
     {
       accessorKey: "service_type",
@@ -197,8 +211,21 @@ export function NodeRegistrationView() {
     },
     {
       id: "endpoint",
-      header: "Node Agent API",
-      cell: ({ row }) => <span className="break-all text-sm">{nodeEndpoint(row.original)}</span>,
+      header: "接続先",
+      cell: ({ row }) => {
+        const node = row.original;
+        const endpoint = nodeEndpoint(node);
+        return (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">{endpoint ? "設定済み" : "未設定"}</span>
+            {endpoint ? (
+              <Button variant="outline" size="icon-sm" aria-label="Node Agent API URLをコピー" onClick={() => copyValue(`endpoint-${nodeIdentity(node)}`, endpoint)}>
+                {copied === `endpoint-${nodeIdentity(node)}` ? <Check className="size-4" /> : <Link className="size-4" />}
+              </Button>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       accessorKey: "status",
@@ -235,7 +262,7 @@ export function NodeRegistrationView() {
     {
       id: "heartbeat",
       header: "Heartbeat",
-      cell: ({ row }) => formatHeartbeat(row.original),
+      cell: ({ row }) => formatHeartbeat(row.original, timezone),
     },
     {
       id: "actions",
@@ -276,7 +303,8 @@ export function NodeRegistrationView() {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]">
+      <div className={showRegistration ? "grid gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]" : "grid gap-4"}>
+        {showRegistration ? (
         <Card className="min-w-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -359,6 +387,7 @@ export function NodeRegistrationView() {
           ) : null}
         </CardContent>
         </Card>
+        ) : null}
 
         <Card className="min-w-0">
         <CardHeader>
@@ -377,7 +406,7 @@ export function NodeRegistrationView() {
                   {configuration.node?.service_name || "選択中のNode"} / {configuration.node?.status ?? "pending"} / 報告バージョン:{" "}
                   {configuration.node?.reported_version || "未取得"} / Capability: {Object.keys(configuration.node?.reported_capabilities ?? {}).length > 0 ? "報告済み" : "未取得"}
                 </div>
-                {configuration.configure_token_expires_at ? <div className="text-xs text-muted-foreground">Configure Token期限: {configuration.configure_token_expires_at}</div> : null}
+                {configuration.configure_token_expires_at ? <div className="text-xs text-muted-foreground">Configure Token期限: {formatNodeDateTime(configuration.configure_token_expires_at, timezone)}</div> : null}
               </div>
               {configuration.node_api_url ? <SecretBlock label="Node Agent API URL" value={configuration.node_api_url} copied={copied === "api-url"} onCopy={() => copyValue("api-url", configuration.node_api_url)} /> : null}
               {configuration.configure_token || configuration.token ? (
@@ -455,6 +484,7 @@ export function NodeRegistrationView() {
         </Card>
       </div>
 
+      {showRegistered ? (
       <Card>
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -485,9 +515,11 @@ export function NodeRegistrationView() {
             </div>
           ) : null}
           <div className="text-sm text-muted-foreground">登録済み: {registeredRows.length} Node</div>
-          <DataTable columns={registeredColumns} data={registeredRows} filterPlaceholder="Node名、Node ID、種別、状態で検索" getRowId={(row) => row.service_id || row.id} />
+          <DataTable columns={registeredColumns} data={registeredRows} filterPlaceholder="Node名、種別、状態で検索" getRowId={(row) => row.service_id || row.id} />
         </CardContent>
       </Card>
+      ) : null}
+      {showRegistered ? (
       <Dialog open={Boolean(editingNode)} onOpenChange={(open) => (!open ? setEditingNode(null) : undefined)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
@@ -536,6 +568,7 @@ export function NodeRegistrationView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      ) : null}
     </div>
   );
 }
@@ -546,6 +579,10 @@ function nodeTypeLabel(type?: string) {
 
 function nodeIdentity(node: WorkerNode) {
   return node.service_id || node.id;
+}
+
+function nodeDisplayName(node: WorkerNode) {
+  return node.service_name || "未設定のNode名";
 }
 
 function nodeEditDefaults(node: WorkerNode): NodeEditForm {
@@ -588,10 +625,14 @@ function nodeEndpoint(node: WorkerNode) {
   return node.public_url || "-";
 }
 
-function formatHeartbeat(node: WorkerNode) {
+function formatHeartbeat(node: WorkerNode, timezone?: string) {
   if (typeof node.heartbeat_age_sec === "number") return `${node.heartbeat_age_sec} sec`;
-  if (node.last_heartbeat_at) return node.last_heartbeat_at;
+  if (node.last_heartbeat_at) return formatNodeDateTime(node.last_heartbeat_at, timezone);
   return "-";
+}
+
+function formatNodeDateTime(value?: string, timezone?: string) {
+  return formatDateTimeInTimeZone(value, timezone, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 function nodeReportedPlatform(node: WorkerNode) {

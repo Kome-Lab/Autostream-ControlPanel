@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertCircle, Eye, Play, Plus, RotateCw, Square, Shuffle } from "lucide-react";
+import { AlertCircle, Check, Copy, Eye, Play, Plus, RotateCw, Square, Shuffle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,7 +21,7 @@ import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
-type SelectOption = { value: string; label: string };
+type SelectOption = { value: string; label: string; description?: string };
 
 const noneValue = "__none__";
 
@@ -33,6 +33,7 @@ export function StreamsView() {
   const timezone = appSettings.data?.timezone;
   const queryClient = useQueryClient();
   const [createdStreams, setCreatedStreams] = useState<Stream[]>([]);
+  const [copiedStreamID, setCopiedStreamID] = useState("");
 
   const actionMutation = useMutation({
     mutationFn: ({ path }: { path: string }) => apiPost(path),
@@ -51,10 +52,16 @@ export function StreamsView() {
   );
   const discordLabels = useOptionLabelMap(useResourceOptions("/discord/configs", ["name", "service_id", "id"]));
   const youtubeOutputLabels = useOptionLabelMap(useResourceOptions("/youtube/outputs", ["name", "id"]));
-  const archiveAccountLabels = useOptionLabelMap(useResourceOptions("/integrations/oauth-accounts", ["account_label", "email", "id"]));
+  const archiveAccountLabels = useOptionLabelMap(useOAuthAccountOptions());
   const archiveDestinationLabels = useOptionLabelMap(useResourceOptions("/archive/destinations", ["name", "id"]));
   const archiveProfileLabels = useOptionLabelMap(useResourceOptions("/profiles/archive", ["name", "id"]));
   const overlayProfileLabels = useOptionLabelMap(useResourceOptions("/profiles/overlay", ["name", "id"]));
+  const copyStreamID = async (id: string) => {
+    if (!id || typeof navigator === "undefined" || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(id);
+    setCopiedStreamID(id);
+    window.setTimeout(() => setCopiedStreamID((current) => (current === id ? "" : current)), 1200);
+  };
 
   const columns: ColumnDef<Stream>[] = [
     {
@@ -62,8 +69,12 @@ export function StreamsView() {
       header: t("name"),
       cell: ({ row }) => (
         <div className="min-w-56">
-          <div className="font-medium">{row.original.name}</div>
-          <div className="text-xs text-muted-foreground">{row.original.id}</div>
+          <div className="flex items-center gap-2">
+            <div className="font-medium">{row.original.name}</div>
+            <Button variant="outline" size="icon-sm" aria-label="配信IDをコピー" onClick={() => void copyStreamID(row.original.id)}>
+              {copiedStreamID === row.original.id ? <Check className="size-4" /> : <Copy className="size-4" />}
+            </Button>
+          </div>
         </div>
       ),
     },
@@ -221,7 +232,7 @@ function StreamSlotForm({
 }) {
   const discordConfigs = useResourceOptions("/discord/configs", ["name", "service_id", "id"]);
   const youtubeOutputs = useResourceOptions("/youtube/outputs", ["name", "id"]);
-  const oauthAccounts = useResourceOptions("/integrations/oauth-accounts", ["account_label", "email", "id"]);
+  const oauthAccounts = useOAuthAccountOptions();
   const encoderProfiles = useResourceOptions("/profiles/encoder", ["name", "id"]);
   const captionProfiles = useResourceOptions("/profiles/caption", ["name", "id"]);
   const overlayProfiles = useResourceOptions("/profiles/overlay", ["name", "id"]);
@@ -436,8 +447,11 @@ function SelectField({ label, value, onChange, options, disabled }: { label: str
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
+            <SelectItem key={option.value} value={option.value} textValue={option.label}>
+              <span className="grid gap-0.5">
+                <span>{option.label}</span>
+                {option.description ? <span className="text-xs text-muted-foreground">{option.description}</span> : null}
+              </span>
             </SelectItem>
           ))}
         </SelectContent>
@@ -446,7 +460,7 @@ function SelectField({ label, value, onChange, options, disabled }: { label: str
   );
 }
 
-function useResourceOptions(path: string, labelKeys: string[]) {
+function useResourceOptions(path: string, labelKeys: string[], detailKeys: string[] = []) {
   const query = useResourceData<unknown>(path);
   const rows = useMemo(() => normalizeRows(query.data), [query.data]);
   return useMemo(
@@ -455,10 +469,31 @@ function useResourceOptions(path: string, labelKeys: string[]) {
         .map((row) => {
           const value = rowString(row, ["id"]);
           const label = firstNonEmpty(rowString(row, labelKeys), value);
-          return { value, label };
+          const description = compactList(detailKeys.map((key) => rowString(row, [key]))).join(" / ");
+          return { value, label, description };
         })
         .filter((option) => option.value),
-    [labelKeys, rows],
+    [detailKeys, labelKeys, rows],
+  );
+}
+
+function useOAuthAccountOptions() {
+  const query = useResourceData<unknown>("/integrations/oauth-accounts");
+  const rows = useMemo(() => normalizeRows(query.data), [query.data]);
+  return useMemo(
+    () =>
+      rows
+        .map((row) => {
+          const value = rowString(row, ["id"]);
+          const provider = rowString(row, ["provider_type"]);
+          return {
+            value,
+            label: oauthAccountLabel(row),
+            description: provider ? providerTypeLabel(provider) : undefined,
+          };
+        })
+        .filter((option) => option.value),
+    [rows],
   );
 }
 
@@ -487,6 +522,28 @@ function optionLabel(labels: Map<string, string>, value?: string) {
   const id = value?.trim() || "";
   if (!id) return "";
   return labels.get(id) || id;
+}
+
+function oauthAccountLabel(row: ResourceRow) {
+  const email = rowString(row, ["email"]).toLowerCase();
+  for (const key of ["account_label", "display_name"]) {
+    const value = rowString(row, [key]);
+    if (value && value.toLowerCase() !== email) return value;
+  }
+  return `${providerTypeLabel(rowString(row, ["provider_type"]))}接続アカウント`;
+}
+
+function providerTypeLabel(providerType: string) {
+  switch (providerType.trim().toLowerCase()) {
+    case "google":
+      return "Google";
+    case "github":
+      return "GitHub";
+    case "discord":
+      return "Discord";
+    default:
+      return providerType.trim() || "OAuth";
+  }
 }
 
 function compactList(values: Array<string | undefined>) {

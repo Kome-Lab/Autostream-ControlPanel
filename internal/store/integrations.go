@@ -35,6 +35,7 @@ type OAuthAccount struct {
 	ProviderID             string   `json:"provider_id"`
 	ProviderType           string   `json:"provider_type"`
 	AccountLabel           string   `json:"account_label"`
+	DisplayName            string   `json:"display_name,omitempty"`
 	Subject                string   `json:"subject,omitempty"`
 	Email                  string   `json:"email,omitempty"`
 	Scopes                 []string `json:"scopes"`
@@ -960,7 +961,37 @@ func publicOAuthProvider(provider OAuthProvider) OAuthProvider {
 
 func publicOAuthAccount(account OAuthAccount) OAuthAccount {
 	account.RefreshToken = ""
+	account.DisplayName = oauthAccountDisplayName(account)
 	return account
+}
+
+func oauthAccountDisplayName(account OAuthAccount) string {
+	email := strings.TrimSpace(strings.ToLower(account.Email))
+	if label := strings.TrimSpace(account.AccountLabel); label != "" {
+		if strings.ToLower(label) != email {
+			return label
+		}
+	}
+	if providerLabel := oauthAccountProviderLabel(account.ProviderType); providerLabel != "" {
+		return providerLabel + "接続アカウント"
+	}
+	if subject := strings.TrimSpace(account.Subject); subject != "" {
+		return subject
+	}
+	return strings.TrimSpace(account.ID)
+}
+
+func oauthAccountProviderLabel(providerType string) string {
+	switch strings.TrimSpace(strings.ToLower(providerType)) {
+	case "google":
+		return "Google"
+	case "github":
+		return "GitHub"
+	case "discord":
+		return "Discord"
+	default:
+		return strings.TrimSpace(providerType)
+	}
 }
 
 func publicDriveDestination(destination DriveDestination) DriveDestination {

@@ -416,8 +416,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /streams/{id}/logs", s.requirePermission("logs.read", s.streamLogs))
 	s.mux.HandleFunc("GET /streams/{id}/artifacts", s.requirePermission("archives.read", s.streamArtifacts))
 	s.mux.HandleFunc("GET /streams/{id}/artifacts/{artifact_id}/download", s.requirePermission("archives.download", s.downloadStreamArtifact))
+	s.mux.HandleFunc("GET /streams/{id}/artifacts/{artifact_id}/shares", s.requirePermission("archives.read", s.listStreamArtifactShares))
+	s.mux.HandleFunc("POST /streams/{id}/artifacts/{artifact_id}/shares", s.requirePermission("archives.download", s.createStreamArtifactShare))
+	s.mux.HandleFunc("DELETE /streams/{id}/artifacts/{artifact_id}/shares/{share_id}", s.requirePermission("archives.delete", s.revokeStreamArtifactShare))
 	s.mux.HandleFunc("DELETE /streams/{id}/artifacts/{artifact_id}", s.requirePermission("archives.delete", s.deleteStreamArtifact))
 	s.mux.HandleFunc("PUT /streams/{id}/artifacts/{artifact_id}", s.requirePermission("archives.delete", s.renameStreamArtifact))
+	s.mux.HandleFunc("GET /archive-shares/{token}", s.publicArchiveShare)
+	s.mux.HandleFunc("GET /archive-shares/{token}/download", s.downloadPublicArchiveShare)
 	s.mux.HandleFunc("GET /audit-logs", s.requirePermission("audit_logs.read", s.listAuditLogs))
 	s.mux.HandleFunc("GET /audit-logs/export", s.requirePermission("audit_logs.export", s.exportAuditLogs))
 	s.mux.HandleFunc("GET /security/settings", s.requirePermission("system_settings.read", s.securitySettings))
@@ -3626,6 +3631,7 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		ProviderType:    provider.ProviderType,
 		Purpose:         "connected_account",
 		RedirectAfter:   safeRedirectAfter(body.RedirectAfter),
+		AccountLabel:    strings.TrimSpace(body.AccountLabel),
 		RequestedScopes: requestedScopes,
 	}, 10*time.Minute)
 	if err != nil {
@@ -3750,10 +3756,10 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 	}
 	label := strings.TrimSpace(body.AccountLabel)
 	if label == "" {
-		label = connected.Identity.Email
+		label = strings.TrimSpace(state.AccountLabel)
 	}
-	if label == "" {
-		label = provider.Name + " connected account"
+	if label == "" || strings.EqualFold(label, strings.TrimSpace(connected.Identity.Email)) {
+		label = defaultOAuthAccountLabel(provider)
 	}
 	account, err := s.integrations.CreateOAuthAccount(r.Context(), store.OAuthAccount{
 		ProviderID:   provider.ID,
@@ -3783,6 +3789,22 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusCreated, account)
+}
+
+func defaultOAuthAccountLabel(provider store.OAuthProvider) string {
+	if providerName := strings.TrimSpace(provider.Name); providerName != "" {
+		return providerName + " 接続アカウント"
+	}
+	switch strings.TrimSpace(strings.ToLower(provider.ProviderType)) {
+	case "google":
+		return "Google接続アカウント"
+	case "github":
+		return "GitHub接続アカウント"
+	case "discord":
+		return "Discord接続アカウント"
+	default:
+		return "OAuth接続アカウント"
+	}
 }
 
 func (s *Server) listOAuthAccounts(w http.ResponseWriter, r *http.Request) {
@@ -4621,6 +4643,8 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 		ConfigureToken string `json:"configureToken"`
 		Token          string `json:"configure_token"`
 		Version        string `json:"version"`
+		Commit         string `json:"commit"`
+		BuildDate      string `json:"build_date"`
 		Hostname       string `json:"hostname"`
 		OS             string `json:"os"`
 		Arch           string `json:"arch"`
@@ -4653,6 +4677,8 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 	service, err = s.services.UpdateServiceRuntimeReport(r.Context(), store.ServiceRuntimeReport{
 		ServiceID: service.ServiceID,
 		Version:   body.Version,
+		Commit:    body.Commit,
+		BuildDate: body.BuildDate,
 		Hostname:  body.Hostname,
 		OS:        body.OS,
 		Arch:      body.Arch,
@@ -4812,6 +4838,8 @@ type nodeListResponse struct {
 	PublicURL               string         `json:"public_url"`
 	Version                 string         `json:"version"`
 	ReportedVersion         string         `json:"reported_version,omitempty"`
+	ReportedCommit          string         `json:"reported_commit,omitempty"`
+	ReportedBuildDate       string         `json:"reported_build_date,omitempty"`
 	Status                  string         `json:"status"`
 	HealthStatus            string         `json:"health_status"`
 	HeartbeatStale          bool           `json:"heartbeat_stale"`
@@ -4848,6 +4876,8 @@ func nodeListResponses(services []store.RegisteredService, now time.Time) []node
 			PublicURL:               service.PublicURL,
 			Version:                 service.Version,
 			ReportedVersion:         service.ReportedVersion,
+			ReportedCommit:          service.ReportedCommit,
+			ReportedBuildDate:       service.ReportedBuildDate,
 			Status:                  service.Status,
 			HealthStatus:            healthStatus,
 			HeartbeatStale:          heartbeatStale,
@@ -9219,13 +9249,180 @@ func (s *Server) downloadStreamArtifact(w http.ResponseWriter, r *http.Request) 
 	if strings.TrimSpace(contentType) == "" {
 		contentType = "application/octet-stream"
 	}
+	disposition := "attachment"
+	if r.URL.Query().Get("inline") == "1" {
+		disposition = "inline"
+	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", `attachment; filename="`+sanitizeDownloadFileName(fileName)+`"`)
+	w.Header().Set("Content-Disposition", disposition+`; filename="`+sanitizeDownloadFileName(fileName)+`"`)
 	if result.SizeBytes >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(result.SizeBytes, 10))
 	}
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.download", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"artifact_id": artifact.ID, "artifact_name": artifact.Name}})
+	_, _ = io.Copy(w, result.Body)
+}
+
+func (s *Server) listStreamArtifactShares(w http.ResponseWriter, r *http.Request) {
+	shareStore, ok := s.streams.(store.StreamArtifactShareStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "archive_share_store_not_configured"})
+		return
+	}
+	stream, artifact, _, ok := s.prepareStreamArtifactAction(w, r)
+	if !ok {
+		return
+	}
+	shares, err := shareStore.ListStreamArtifactShares(r.Context(), stream.ID, artifact.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_archive_shares_failed"})
+		return
+	}
+	out := make([]map[string]any, 0, len(shares))
+	for _, share := range shares {
+		out = append(out, publicArchiveShareAdmin(share))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) createStreamArtifactShare(w http.ResponseWriter, r *http.Request) {
+	shareStore, ok := s.streams.(store.StreamArtifactShareStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "archive_share_store_not_configured"})
+		return
+	}
+	stream, artifact, _, ok := s.prepareStreamArtifactAction(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		ExpiresAt      string `json:"expires_at"`
+		ExpiresInHours int    `json:"expires_in_hours"`
+		AllowDownload  *bool  `json:"allow_download"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	expiresAt, ok := archiveShareExpiry(body.ExpiresAt, body.ExpiresInHours)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_archive_share_expiry"})
+		return
+	}
+	allowDownload := true
+	if body.AllowDownload != nil {
+		allowDownload = *body.AllowDownload
+	}
+	rawToken, err := security.RandomToken(32)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_archive_share_token_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	share, err := shareStore.CreateStreamArtifactShare(r.Context(), store.StreamArtifactShare{
+		TokenHash:       security.HashToken(rawToken),
+		StreamID:        stream.ID,
+		ArtifactID:      artifact.ID,
+		CreatedByUserID: current.User.ID,
+		AllowDownload:   allowDownload,
+		ExpiresAt:       expiresAt,
+	})
+	if errors.Is(err, store.ErrInvalidStreamArtifact) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_archive_share"})
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_archive_share_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.share.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"artifact_id": artifact.ID, "artifact_name": artifact.Name, "share_id": share.ID, "expires_at": share.ExpiresAt, "allow_download": share.AllowDownload}})
+	response := publicArchiveShareAdmin(share)
+	response["token"] = rawToken
+	response["url"] = archiveSharePageURL(r, rawToken)
+	response["api_url"] = "/archive-shares/" + url.PathEscape(rawToken)
+	writeOneTimeSecretJSON(w, http.StatusCreated, response)
+}
+
+func (s *Server) revokeStreamArtifactShare(w http.ResponseWriter, r *http.Request) {
+	shareStore, ok := s.streams.(store.StreamArtifactShareStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "archive_share_store_not_configured"})
+		return
+	}
+	streamID := strings.TrimSpace(r.PathValue("id"))
+	artifactID := strings.TrimSpace(r.PathValue("artifact_id"))
+	shareID := strings.TrimSpace(r.PathValue("share_id"))
+	if err := shareStore.RevokeStreamArtifactShare(r.Context(), streamID, artifactID, shareID); errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "revoke_archive_share_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.share.revoke", ResourceType: "stream", ResourceID: streamID, Result: "success", Metadata: map[string]any{"artifact_id": artifactID, "share_id": shareID}})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+func (s *Server) publicArchiveShare(w http.ResponseWriter, r *http.Request) {
+	share, stream, artifact, ok := s.resolvePublicArchiveShare(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, publicArchiveSharePayload(share, stream, artifact, r.PathValue("token")))
+}
+
+func (s *Server) downloadPublicArchiveShare(w http.ResponseWriter, r *http.Request) {
+	share, stream, artifact, ok := s.resolvePublicArchiveShare(w, r)
+	if !ok {
+		return
+	}
+	asDownload := r.URL.Query().Get("download") == "1"
+	if asDownload && !share.AllowDownload {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "archive_share_download_disabled"})
+		return
+	}
+	assignments, err := s.streamAssignments(r.Context(), stream.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
+	primaryAssignments := primaryStreamAssignments(assignments)
+	if missing := missingServiceTypes(primaryAssignments, requiredRetryUploadServiceTypes); len(missing) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
+		return
+	}
+	result := s.dispatcher.DownloadArchiveArtifact(r.Context(), stream, primaryAssignments, artifact)
+	if !result.Success || result.Body == nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "archive_artifact_download_failed", "dispatch": sanitizeArchiveDownloadResult(result)})
+		return
+	}
+	defer result.Body.Close()
+	fileName := artifact.Name
+	if result.FileName != "" {
+		fileName = result.FileName
+	}
+	contentType := strings.TrimSpace(result.ContentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	disposition := "inline"
+	if asDownload {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", disposition+`; filename="`+sanitizeDownloadFileName(fileName)+`"`)
+	if result.SizeBytes >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(result.SizeBytes, 10))
+	}
 	_, _ = io.Copy(w, result.Body)
 }
 
@@ -9355,6 +9552,124 @@ func artifactByID(artifacts []store.StreamArtifact, id string) (store.StreamArti
 		}
 	}
 	return store.StreamArtifact{}, false
+}
+
+func archiveShareExpiry(raw string, expiresInHours int) (time.Time, bool) {
+	now := time.Now().UTC()
+	var expiresAt time.Time
+	if strings.TrimSpace(raw) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+		if err != nil {
+			return time.Time{}, false
+		}
+		expiresAt = parsed.UTC()
+	} else {
+		if expiresInHours == 0 {
+			expiresInHours = 24
+		}
+		expiresAt = now.Add(time.Duration(expiresInHours) * time.Hour)
+	}
+	if expiresAt.Before(now.Add(time.Hour)) || expiresAt.After(now.Add(30*24*time.Hour)) {
+		return time.Time{}, false
+	}
+	return expiresAt, true
+}
+
+func archiveSharePageURL(r *http.Request, token string) string {
+	base := strings.TrimRight(panelBaseURL(r), "/")
+	if base == "" {
+		return "/archive/share/?token=" + url.QueryEscape(token)
+	}
+	return base + "/archive/share/?token=" + url.QueryEscape(token)
+}
+
+func publicArchiveShareAdmin(share store.StreamArtifactShare) map[string]any {
+	status := "active"
+	if share.RevokedAt != nil {
+		status = "revoked"
+	} else if !share.ExpiresAt.After(time.Now().UTC()) {
+		status = "expired"
+	}
+	return map[string]any{
+		"id":             share.ID,
+		"stream_id":      share.StreamID,
+		"artifact_id":    share.ArtifactID,
+		"allow_download": share.AllowDownload,
+		"expires_at":     share.ExpiresAt,
+		"created_at":     share.CreatedAt,
+		"revoked_at":     share.RevokedAt,
+		"status":         status,
+	}
+}
+
+func publicArchiveSharePayload(share store.StreamArtifactShare, stream store.Stream, artifact store.StreamArtifact, token string) map[string]any {
+	payload := map[string]any{
+		"id":             share.ID,
+		"stream_id":      stream.ID,
+		"stream_name":    stream.Name,
+		"artifact_id":    artifact.ID,
+		"artifact_name":  artifact.Name,
+		"artifact_kind":  artifact.Kind,
+		"size_bytes":     artifact.SizeBytes,
+		"created_at":     artifact.CreatedAt,
+		"allow_download": share.AllowDownload,
+		"expires_at":     share.ExpiresAt,
+		"playback_url":   "/archive-shares/" + url.PathEscape(token) + "/download",
+	}
+	if share.AllowDownload {
+		payload["download_url"] = "/archive-shares/" + url.PathEscape(token) + "/download?download=1"
+	}
+	return payload
+}
+
+func (s *Server) resolvePublicArchiveShare(w http.ResponseWriter, r *http.Request) (store.StreamArtifactShare, store.Stream, store.StreamArtifact, bool) {
+	shareStore, ok := s.streams.(store.StreamArtifactShareStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "archive_share_store_not_configured"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	token := strings.TrimSpace(r.PathValue("token"))
+	if token == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	share, err := shareStore.GetStreamArtifactShareByTokenHash(r.Context(), security.HashToken(token))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "archive_share_lookup_failed"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	if share.RevokedAt != nil {
+		writeJSON(w, http.StatusGone, map[string]string{"code": "archive_share_revoked"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	if !share.ExpiresAt.After(time.Now().UTC()) {
+		writeJSON(w, http.StatusGone, map[string]string{"code": "archive_share_expired"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	stream, err := s.streams.GetStream(r.Context(), share.StreamID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	artifacts, err := s.streams.ListStreamArtifacts(r.Context(), stream.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_artifacts_failed"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	artifact, ok := artifactByID(artifacts, share.ArtifactID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return store.StreamArtifactShare{}, store.Stream{}, store.StreamArtifact{}, false
+	}
+	return share, stream, artifact, true
 }
 
 func sanitizeArchiveDownloadResult(result servicecall.ArchiveArtifactDownloadResult) servicecall.ArchiveArtifactDownloadResult {
@@ -10107,6 +10422,21 @@ func (s *Server) serviceMetricSnapshots(ctx context.Context) ([]map[string]any, 
 	if err != nil {
 		return nil, err
 	}
+	history, err := s.services.ListServiceMetricSnapshots(ctx, time.Now().UTC().Add(-3*time.Hour))
+	if err == nil && len(history) > 0 {
+		out := make([]map[string]any, 0, len(history))
+		for _, snapshot := range history {
+			out = append(out, map[string]any{
+				"name":         snapshot.Name,
+				"service_id":   snapshot.ServiceID,
+				"service_type": snapshot.ServiceType,
+				"status":       snapshot.Status,
+				"value":        snapshot.Value,
+				"updated_at":   snapshot.ObservedAt.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		return out, nil
+	}
 	out := make([]map[string]any, 0)
 	for _, service := range services {
 		if len(service.Metrics) == 0 {
@@ -10132,7 +10462,7 @@ func (s *Server) serviceMetricSnapshots(ctx context.Context) ([]map[string]any, 
 				"service_type": service.ServiceType,
 				"status":       service.Status,
 				"value":        value,
-				"updated_at":   updatedAt,
+				"updated_at":   updatedAt.UTC().Format(time.RFC3339Nano),
 			})
 		}
 	}
@@ -10168,10 +10498,11 @@ func metricSnapshotKey(row map[string]any) string {
 	serviceID := jsonStringField(row, "service_id")
 	streamID := jsonStringField(row, "stream_id")
 	name := jsonStringField(row, "name")
+	updatedAt := jsonStringField(row, "updated_at")
 	if serviceID == "" || name == "" {
 		return ""
 	}
-	return serviceID + "\x00" + streamID + "\x00" + name
+	return serviceID + "\x00" + streamID + "\x00" + name + "\x00" + updatedAt
 }
 
 func jsonStringField(row map[string]any, key string) string {
@@ -11263,6 +11594,9 @@ func (s *Server) writeAudit(r *http.Request, event store.AuditEvent) {
 	if s.audit == nil {
 		return
 	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
 	if event.RequestID == "" {
 		event.RequestID = requestID()
 	}
@@ -11277,7 +11611,9 @@ func (s *Server) writeAudit(r *http.Request, event store.AuditEvent) {
 	}
 	if err := s.audit.WriteAudit(r.Context(), event); err != nil {
 		log.Printf("audit write failed: action=%s resource_type=%s result=%s error=%v", event.Action, event.ResourceType, event.Result, err)
+		return
 	}
+	s.notifyAdminAuditEvent(event)
 }
 
 func (s *Server) writeSystemAudit(ctx context.Context, event store.AuditEvent) {
@@ -11296,6 +11632,101 @@ func (s *Server) writeSystemAudit(ctx context.Context, event store.AuditEvent) {
 	if err := s.audit.WriteAudit(ctx, event); err != nil {
 		log.Printf("system audit write failed: action=%s resource_type=%s result=%s error=%v", event.Action, event.ResourceType, event.Result, err)
 	}
+}
+
+func (s *Server) notifyAdminAuditEvent(event store.AuditEvent) {
+	if !adminAuditEventNotificationAllowed(event) {
+		return
+	}
+	redacted := store.RedactAuditEvent(event)
+	payload := map[string]any{
+		"event_type":     "admin.audit",
+		"severity":       adminAuditNotificationSeverity(redacted),
+		"status":         strings.TrimSpace(redacted.Result),
+		"action":         strings.TrimSpace(redacted.Action),
+		"resource_type":  strings.TrimSpace(redacted.ResourceType),
+		"resource_id":    strings.TrimSpace(redacted.ResourceID),
+		"actor_username": strings.TrimSpace(redacted.ActorUsername),
+		"summary":        adminAuditNotificationSummary(redacted),
+		"metadata":       redacted.Metadata,
+		"timestamp":      redacted.Timestamp.UTC().Format(time.RFC3339),
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		obs, configured, err := s.observabilityClient(ctx)
+		if err != nil || !configured {
+			return
+		}
+		if _, err := obs.Post(ctx, "/notification-events", payload); err != nil {
+			log.Printf("admin audit notification failed: action=%s resource_type=%s result=%s error=%v", redacted.Action, redacted.ResourceType, redacted.Result, err)
+		}
+	}()
+}
+
+func adminAuditEventNotificationAllowed(event store.AuditEvent) bool {
+	action := strings.ToLower(strings.TrimSpace(event.Action))
+	if action == "" {
+		return false
+	}
+	if strings.HasPrefix(event.ActorUserID, "service:") || strings.HasPrefix(event.ActorUsername, "service:") {
+		return false
+	}
+	allowedPrefixes := []string{
+		"setup.",
+		"users.",
+		"roles.",
+		"security.",
+		"secrets.",
+		"app.settings.",
+		"notification_channels.",
+		"integrations.",
+		"oauth_providers.",
+		"oauth_accounts.",
+		"drive_destinations.",
+		"discord_configs.",
+		"youtube_outputs.",
+		"archive_destinations.",
+		"services.",
+		"nodes.",
+	}
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(action, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func adminAuditNotificationSeverity(event store.AuditEvent) string {
+	result := strings.ToLower(strings.TrimSpace(event.Result))
+	if result != "" && result != "success" && result != "ok" {
+		return "warning"
+	}
+	action := strings.ToLower(strings.TrimSpace(event.Action))
+	if strings.HasPrefix(action, "security.") || strings.HasPrefix(action, "secrets.") || strings.HasPrefix(action, "users.delete") || strings.HasPrefix(action, "roles.delete") {
+		return "warning"
+	}
+	return "info"
+}
+
+func adminAuditNotificationSummary(event store.AuditEvent) string {
+	action := strings.TrimSpace(event.Action)
+	if action == "" {
+		action = "admin action"
+	}
+	result := strings.TrimSpace(event.Result)
+	if result == "" {
+		result = "recorded"
+	}
+	resource := strings.TrimSpace(event.ResourceType)
+	if resource != "" && strings.TrimSpace(event.ResourceID) != "" {
+		resource += " " + strings.TrimSpace(event.ResourceID)
+	}
+	if resource == "" {
+		return "管理イベント: " + action + " / " + result
+	}
+	return "管理イベント: " + action + " / " + resource + " / " + result
 }
 
 func (s *Server) writeServiceAudit(r *http.Request, token store.ServiceToken, action, resourceType, resourceID, result string, metadata map[string]any) {

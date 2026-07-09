@@ -148,6 +148,8 @@ export const mockWorkers: WorkerNode[] = [
     public_url: "https://worker-main.example.jp",
     version: "1.2.0",
     reported_version: "1.2.0",
+    reported_commit: "8f71c21a4b2d",
+    reported_build_date: "2026-07-02T07:40:00+09:00",
     reported_os: "linux",
     reported_arch: "amd64",
     last_heartbeat_at: "2026-07-02T09:00:00+09:00",
@@ -171,6 +173,8 @@ export const mockWorkers: WorkerNode[] = [
     public_url: "https://encoder-main.example.jp",
     version: "1.2.0",
     reported_version: "1.2.0",
+    reported_commit: "41df9e2b701a",
+    reported_build_date: "2026-07-02T07:42:00+09:00",
     reported_os: "linux",
     reported_arch: "amd64",
     last_heartbeat_at: "2026-07-02T08:59:58+09:00",
@@ -194,6 +198,8 @@ export const mockWorkers: WorkerNode[] = [
     public_url: "https://worker-city.example.jp",
     version: "1.1.8",
     reported_version: "1.1.8",
+    reported_commit: "ce2038a91d0b",
+    reported_build_date: "2026-06-28T11:20:00+09:00",
     reported_os: "linux",
     reported_arch: "arm64",
     last_heartbeat_at: "2026-07-02T08:59:54+09:00",
@@ -217,6 +223,8 @@ export const mockWorkers: WorkerNode[] = [
     public_url: "https://encoder-field.example.jp",
     version: "1.1.4",
     reported_version: "1.1.4",
+    reported_commit: "ab96c1d0027e",
+    reported_build_date: "2026-06-25T15:10:00+09:00",
     reported_os: "linux",
     reported_arch: "amd64",
     last_heartbeat_at: "2026-07-02T08:57:40+09:00",
@@ -240,6 +248,8 @@ export const mockWorkers: WorkerNode[] = [
     public_url: "https://discord-main.example.jp",
     version: "1.2.0",
     reported_version: "1.2.0",
+    reported_commit: "529b7e14f08c",
+    reported_build_date: "2026-07-02T07:45:00+09:00",
     reported_os: "linux",
     reported_arch: "amd64",
     last_heartbeat_at: "2026-07-02T08:59:59+09:00",
@@ -286,13 +296,49 @@ export const mockAuditLogs: AuditLog[] = [
   },
 ];
 
-export const mockWorkerMetrics: MetricSnapshot[] = [
-  { name: "worker.cpu_percent", service_id: "worker-main", service_type: "worker", value: 32, updated_at: "2026-07-02T09:00:00+09:00" },
-  { name: "worker.memory_percent", service_id: "worker-main", service_type: "worker", value: 41, updated_at: "2026-07-02T09:00:00+09:00" },
-  { name: "encoder.process_alive", service_id: "encoder-field", service_type: "encoder_recorder", value: 1, updated_at: "2026-07-02T09:00:00+09:00" },
-  { name: "discord.audio_forward_active", service_id: "discord-main", service_type: "discord_bot", value: 1, updated_at: "2026-07-02T09:00:00+09:00" },
-  { name: "observability.goroutines", service_id: "observability-main", service_type: "observability", value: 18, updated_at: "2026-07-02T09:00:00+09:00" },
-];
+export function mockWorkerMetrics(): MetricSnapshot[] {
+  const offsets = [-35, -30, -25, -20, -15, -10, -5, 0];
+  const nodes = [
+    { id: "worker-main", type: "worker", status: "online", cpu: 34, memory: 42, disk: 58, rx: 4200, tx: 2100, heap: 156 * 1024 * 1024, uptime: 212400, workload: { name: "worker.active_jobs", value: 2 } },
+    { id: "encoder-main", type: "encoder_recorder", status: "online", cpu: 48, memory: 55, disk: 64, rx: 6200, tx: 9100, heap: 248 * 1024 * 1024, uptime: 188000, workload: { name: "encoder.output_bitrate_kbps", value: 7800 } },
+    { id: "worker-standby", type: "worker", status: "online", cpu: 18, memory: 31, disk: 44, rx: 900, tx: 420, heap: 118 * 1024 * 1024, uptime: 167200, workload: { name: "worker.active_jobs", value: 0 } },
+    { id: "encoder-field", type: "encoder_recorder", status: "degraded", cpu: 72, memory: 68, disk: 79, rx: 3100, tx: 120, heap: 302 * 1024 * 1024, uptime: 94500, workload: { name: "encoder.output_bitrate_kbps", value: 0 } },
+    { id: "discord-main", type: "discord_bot", status: "online", cpu: 14, memory: 26, disk: 37, rx: 1600, tx: 1400, heap: 86 * 1024 * 1024, uptime: 198400, workload: { name: "discord.audio_forward_active", value: 1 } },
+  ];
+  return nodes.flatMap((node, nodeIndex) =>
+    offsets.flatMap((minutesAgo, pointIndex) => {
+      const updatedAt = new Date(Date.now() + minutesAgo * 60 * 1000).toISOString();
+      const phase = pointIndex * 0.75 + nodeIndex;
+      const cpu = clampMetric(node.cpu + Math.sin(phase) * 5, 0, 100);
+      const memory = clampMetric(node.memory + Math.cos(phase) * 3, 0, 100);
+      const disk = clampMetric(node.disk + Math.sin(pointIndex / 3) * 0.6, 0, 100);
+      const rx = Math.max(0, Math.round(node.rx + Math.sin(phase) * 460));
+      const tx = Math.max(0, Math.round(node.tx + Math.cos(phase) * 520));
+      const heap = Math.max(0, Math.round(node.heap + Math.sin(phase) * 6 * 1024 * 1024));
+      return [
+        metricAt("node.cpu.used_percent", node.id, node.type, node.status, cpu, updatedAt),
+        metricAt("node.load1", node.id, node.type, node.status, Number((cpu / 38).toFixed(2)), updatedAt),
+        metricAt("node.memory.used_percent", node.id, node.type, node.status, memory, updatedAt),
+        metricAt("node.memory.used_bytes", node.id, node.type, node.status, Math.round((memory / 100) * 16 * 1024 * 1024 * 1024), updatedAt),
+        metricAt("node.filesystem.root.used_percent", node.id, node.type, node.status, disk, updatedAt),
+        metricAt("node.network.rx_kbps", node.id, node.type, node.status, rx, updatedAt),
+        metricAt("node.network.tx_kbps", node.id, node.type, node.status, tx, updatedAt),
+        metricAt("process.goroutines", node.id, node.type, node.status, Math.round(24 + nodeIndex * 7 + Math.sin(phase) * 3), updatedAt),
+        metricAt("process.heap_alloc_bytes", node.id, node.type, node.status, heap, updatedAt),
+        metricAt("process.uptime_seconds", node.id, node.type, node.status, node.uptime + (35 + minutesAgo) * 60, updatedAt),
+        metricAt(node.workload.name, node.id, node.type, node.status, node.workload.value, updatedAt),
+      ];
+    }),
+  );
+}
+
+function metricAt(name: string, serviceID: string, serviceType: string, status: string, value: number, updatedAt: string): MetricSnapshot {
+  return { name, service_id: serviceID, service_type: serviceType, status, value, updated_at: updatedAt };
+}
+
+function clampMetric(value: number, min: number, max: number) {
+  return Number(Math.min(max, Math.max(min, value)).toFixed(1));
+}
 
 export const mockSetupStatus: SetupStatus = {
   setup_enabled: true,
@@ -355,8 +401,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "github-login", provider_type: "github", name: "GitHub Login", enabled: false, client_id: "github-client-id", client_secret_configured: true, allowed_domains: [], auto_provision: false, default_role_ids: [], redirect_uri: "https://control.example.jp/auth/oauth/callback" },
   ],
   "/integrations/oauth-accounts": [
-    { id: "acct-drive", provider_type: "google", account_label: "広報 Drive", email: "archive@example.jp", status: "connected", updated_at: baseTime },
-    { id: "acct-youtube", provider_type: "google", account_label: "YouTube 管理", email: "live@example.jp", status: "connected", updated_at: "2026-07-01T16:10:00+09:00" },
+    { id: "acct-drive", provider_type: "google", account_label: "広報 Drive", display_name: "広報 Drive", email: "archive@example.jp", status: "connected", refresh_token_configured: true, updated_at: baseTime },
+    { id: "acct-youtube", provider_type: "google", account_label: "YouTube 管理", display_name: "YouTube 管理", email: "live@example.jp", status: "connected", refresh_token_configured: true, updated_at: "2026-07-01T16:10:00+09:00" },
   ],
   "/users": [
     { id: "user-admin", username: "admin", email: "admin@example.jp", status: "active", roles: ["super_admin"], last_login_at: baseTime },
@@ -395,10 +441,11 @@ const mockResourceData: Record<string, unknown[]> = {
   "/observability/notification-deliveries": [
     { id: "ntf-1", status: "success", channel: "discord", incident_id: "inc-1", sent_at: baseTime },
     { id: "ntf-2", status: "retrying", channel: "email", incident_id: "inc-2", sent_at: "2026-07-02T08:40:00+09:00" },
+    { id: "ntf-3", event_type: "admin.audit", status: "success", channel: "slack", incident_id: "", sent_at: "2026-07-02T09:05:00+09:00" },
   ],
   "/observability/notification-channels": [
     { id: "chn-1", name: "制作Discord", type: "discord", enabled: true, masked_webhook_url: "https://example.jp/<WEBHOOK_PATH>" },
-    { id: "chn-2", name: "運用Slack", type: "slack", enabled: true, masked_webhook_url: "https://hooks.slack.com/<WEBHOOK_PATH>", severity_filter: ["critical", "error", "warning"], event_type_filter: ["incident.opened"] },
+    { id: "chn-2", name: "運用Slack", type: "slack", enabled: true, masked_webhook_url: "https://hooks.slack.com/<WEBHOOK_PATH>", severity_filter: ["critical", "error", "warning", "info"], event_type_filter: ["incident.opened", "admin.audit"] },
     { id: "chn-3", name: "運用メール", type: "email", enabled: true, masked_email_target: "o***s@example.jp", smtp_password_configured: true, severity_filter: ["critical", "error"], event_type_filter: ["incident.opened", "incident.resolved"] },
   ],
 };
@@ -413,11 +460,26 @@ const mockStreamArtifacts: Record<string, Array<Record<string, unknown>>> = {
   ],
 };
 
+const mockArchiveShares: Record<string, Array<Record<string, unknown>>> = {};
+const mockArchiveSharesStorageKey = "autostream.mock_archive_shares";
+let mockArchiveSharesLoaded = false;
+
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
   const streamArtifacts = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts$/);
   if (streamArtifacts) {
     return mockStreamArtifacts[decodeURIComponent(streamArtifacts[1])] || [];
+  }
+  const artifactShares = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares$/);
+  if (artifactShares) {
+    loadMockArchiveShares();
+    const streamID = decodeURIComponent(artifactShares[1]);
+    const artifactID = decodeURIComponent(artifactShares[2]);
+    return (mockArchiveShares[archiveShareKey(streamID, artifactID)] || []).map(publicMockArchiveShareAdmin);
+  }
+  const archiveShare = normalizedPath.match(/^\/archive-shares\/([^/]+)$/);
+  if (archiveShare) {
+    return publicMockArchiveShare(decodeURIComponent(archiveShare[1]));
   }
   const nodeConfiguration = normalizedPath.match(/^\/nodes\/([^/]+)\/configuration$/);
   if (nodeConfiguration) {
@@ -448,13 +510,44 @@ export function mockGet(path: string): unknown {
     "/nodes": mockWorkers,
     "/service-health": mockWorkers,
     "/audit-logs": mockAuditLogs,
-    "/observability/metrics": mockWorkerMetrics,
+    "/observability/metrics": mockWorkerMetrics(),
     ...mockResourceData,
   };
   return dataByPath[normalizedPath] ?? [];
 }
 
 export function mockPost(path: string, body?: unknown): unknown {
+  const normalizedPath = stripQuery(path);
+  const artifactShareCreate = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares$/);
+  if (artifactShareCreate) {
+    loadMockArchiveShares();
+    const streamID = decodeURIComponent(artifactShareCreate[1]);
+    const artifactID = decodeURIComponent(artifactShareCreate[2]);
+    const artifact = mockArtifactByID(streamID, artifactID);
+    if (!artifact) throw new Error("archive_not_found");
+    const request = body as Partial<{ expires_in_hours: number; allow_download: boolean }>;
+    const expiresInHours = Math.min(24 * 30, Math.max(1, Number(request.expires_in_hours || 24)));
+    const token = `mock-share-${streamID}-${artifactID}-${Date.now()}`;
+    const origin = typeof window === "undefined" ? "" : window.location.origin;
+    const share: Record<string, unknown> = {
+      id: `share-${Date.now()}`,
+      token,
+      stream_id: streamID,
+      artifact_id: artifactID,
+      allow_download: request.allow_download !== false,
+      expires_at: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(),
+      created_at: new Date().toISOString(),
+    };
+    const key = archiveShareKey(streamID, artifactID);
+    mockArchiveShares[key] = [share, ...(mockArchiveShares[key] || [])];
+    saveMockArchiveShares();
+    return {
+      ...publicMockArchiveShareAdmin(share),
+      token,
+      url: `${origin}/archive/share/?token=${encodeURIComponent(token)}`,
+      api_url: `/archive-shares/${encodeURIComponent(token)}`,
+    };
+  }
   if (stripQuery(path) === "/auth/login") {
     return { csrf_token: "mock-csrf-token", user: mockCurrentUser.user };
   }
@@ -844,6 +937,19 @@ export function mockPut(path: string, body?: unknown): unknown {
 
 export function mockDelete(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  const artifactShareDelete = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares\/([^/]+)$/);
+  if (artifactShareDelete) {
+    loadMockArchiveShares();
+    const streamID = decodeURIComponent(artifactShareDelete[1]);
+    const artifactID = decodeURIComponent(artifactShareDelete[2]);
+    const shareID = decodeURIComponent(artifactShareDelete[3]);
+    const shares = mockArchiveShares[archiveShareKey(streamID, artifactID)] || [];
+    const share = shares.find((item) => item.id === shareID);
+    if (!share) throw new Error("not_found");
+    share.revoked_at = new Date().toISOString();
+    saveMockArchiveShares();
+    return { status: "revoked" };
+  }
   const artifactDelete = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)$/);
   if (artifactDelete) {
     const streamID = decodeURIComponent(artifactDelete[1]);
@@ -876,6 +982,8 @@ export function mockDelete(path: string): unknown {
 export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
   if (/^\/streams\/[^/]+\/artifacts(?:\/[^/]+)?(?:\/download)?$/.test(normalizedPath)) return true;
+  if (/^\/streams\/[^/]+\/artifacts\/[^/]+\/shares(?:\/[^/]+)?$/.test(normalizedPath)) return true;
+  if (/^\/archive-shares\/[^/]+(?:\/download)?$/.test(normalizedPath)) return true;
   if (/^\/nodes\/[^/]+\/configuration$/.test(normalizedPath)) return true;
   if (/^\/nodes\/[^/]+$/.test(normalizedPath)) return true;
   if (/^\/nodes\/[^/]+\/configure-token$/.test(normalizedPath)) return true;
@@ -944,6 +1052,74 @@ function deleteFromArray(rows: Record<string, unknown>[], id: string) {
 
 function stripQuery(path: string) {
   return String(path || "").split("?")[0];
+}
+
+function archiveShareKey(streamID: string, artifactID: string) {
+  return `${streamID}/${artifactID}`;
+}
+
+function loadMockArchiveShares() {
+  if (mockArchiveSharesLoaded || typeof window === "undefined") return;
+  mockArchiveSharesLoaded = true;
+  try {
+    const raw = window.sessionStorage.getItem(mockArchiveSharesStorageKey);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, Array<Record<string, unknown>>>;
+    for (const [key, shares] of Object.entries(parsed)) {
+      mockArchiveShares[key] = Array.isArray(shares) ? shares : [];
+    }
+  } catch {
+    window.sessionStorage.removeItem(mockArchiveSharesStorageKey);
+  }
+}
+
+function saveMockArchiveShares() {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(mockArchiveSharesStorageKey, JSON.stringify(mockArchiveShares));
+}
+
+function publicMockArchiveShareAdmin(share: Record<string, unknown>) {
+  const safeShare = { ...share };
+  delete safeShare.token;
+  return { ...safeShare, status: mockArchiveShareStatus(share) };
+}
+
+function publicMockArchiveShare(token: string) {
+  loadMockArchiveShares();
+  for (const [key, shares] of Object.entries(mockArchiveShares)) {
+    const share = shares.find((item) => item.token === token);
+    if (!share) continue;
+    const status = mockArchiveShareStatus(share);
+    if (status !== "active") throw new Error(status === "revoked" ? "archive_share_revoked" : "archive_share_expired");
+    const [streamID, artifactID] = key.split("/");
+    const artifact = mockArtifactByID(streamID, artifactID);
+    const stream = mockStreams.find((item) => item.id === streamID);
+    if (!artifact) throw new Error("archive_not_found");
+    const allowDownload = share.allow_download !== false;
+    return {
+      stream_name: stream?.name || streamID,
+      artifact_name: String(artifact.name || artifactID),
+      artifact_kind: String(artifact.kind || "archive"),
+      size_bytes: Number(artifact.size_bytes || 0),
+      created_at: String(artifact.created_at || baseTime),
+      allow_download: allowDownload,
+      expires_at: String(share.expires_at || baseTime),
+      playback_url: `/archive-shares/${encodeURIComponent(token)}/download`,
+      download_url: allowDownload ? `/archive-shares/${encodeURIComponent(token)}/download?download=1` : undefined,
+    };
+  }
+  throw new Error("archive_not_found");
+}
+
+function mockArchiveShareStatus(share: Record<string, unknown>) {
+  if (share.revoked_at) return "revoked";
+  const expiresAt = Date.parse(String(share.expires_at || ""));
+  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) return "expired";
+  return "active";
+}
+
+function mockArtifactByID(streamID: string, artifactID: string) {
+  return (mockStreamArtifacts[streamID] || []).find((item) => item.id === artifactID);
 }
 
 function maskMockEmail(value: string) {

@@ -36,6 +36,8 @@ type RegisteredService struct {
 	PublicURL               string         `json:"public_url"`
 	Version                 string         `json:"version"`
 	ReportedVersion         string         `json:"reported_version,omitempty"`
+	ReportedCommit          string         `json:"reported_commit,omitempty"`
+	ReportedBuildDate       string         `json:"reported_build_date,omitempty"`
 	Status                  string         `json:"status"`
 	AssignmentRole          string         `json:"assignment_role,omitempty"`
 	LastHeartbeatAt         *time.Time     `json:"last_heartbeat_at,omitempty"`
@@ -68,6 +70,8 @@ type ServiceRegistration struct {
 	SSLEnabled   bool           `json:"ssl_enabled"`
 	PublicURL    string         `json:"public_url"`
 	Version      string         `json:"version"`
+	Commit       string         `json:"commit,omitempty"`
+	BuildDate    string         `json:"build_date,omitempty"`
 	Capabilities map[string]any `json:"capabilities"`
 	Hostname     string         `json:"hostname,omitempty"`
 	OS           string         `json:"os,omitempty"`
@@ -90,6 +94,8 @@ type ServiceHeartbeat struct {
 	Status          string         `json:"status"`
 	CurrentStreamID string         `json:"current_stream_id,omitempty"`
 	Version         string         `json:"version,omitempty"`
+	Commit          string         `json:"commit,omitempty"`
+	BuildDate       string         `json:"build_date,omitempty"`
 	Capabilities    map[string]any `json:"capabilities,omitempty"`
 	Hostname        string         `json:"hostname,omitempty"`
 	OS              string         `json:"os,omitempty"`
@@ -98,9 +104,20 @@ type ServiceHeartbeat struct {
 	Metrics         map[string]any `json:"metrics,omitempty"`
 }
 
+type ServiceMetricSnapshot struct {
+	Name        string    `json:"name"`
+	ServiceID   string    `json:"service_id"`
+	ServiceType string    `json:"service_type"`
+	Status      string    `json:"status,omitempty"`
+	Value       float64   `json:"value"`
+	ObservedAt  time.Time `json:"updated_at"`
+}
+
 type ServiceRuntimeReport struct {
 	ServiceID string
 	Version   string
+	Commit    string
+	BuildDate string
 	Hostname  string
 	OS        string
 	Arch      string
@@ -141,6 +158,7 @@ type ServiceRegistryStore interface {
 	ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error)
 	SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error)
 	ListServices(ctx context.Context) ([]RegisteredService, error)
+	ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error)
 	ListWorkers(ctx context.Context) ([]RegisteredService, error)
 	GetService(ctx context.Context, id string) (RegisteredService, error)
 	UpdateServiceMetadata(ctx context.Context, serviceID string, update ServiceMetadataUpdate) (RegisteredService, error)
@@ -361,9 +379,9 @@ func (s MariaDBAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	if existingType != registration.ServiceType || existingTokenID != token.ID {
 		return RegisteredService{}, ErrForbidden
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO services (service_id, service_type, service_name, description, host, port, ssl_enabled, public_url, version, reported_version, status, capabilities, reported_capabilities, reported_hostname, reported_os, reported_arch, last_reported_at, metrics, token_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE service_type = VALUES(service_type), service_name = VALUES(service_name), description = VALUES(description), host = VALUES(host), port = VALUES(port), ssl_enabled = VALUES(ssl_enabled), public_url = VALUES(public_url), version = VALUES(version), reported_version = VALUES(reported_version), status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, capabilities = VALUES(capabilities), reported_capabilities = VALUES(reported_capabilities), reported_hostname = VALUES(reported_hostname), reported_os = VALUES(reported_os), reported_arch = VALUES(reported_arch), last_reported_at = VALUES(last_reported_at), token_id = VALUES(token_id), updated_at = VALUES(updated_at)`, registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description, registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL, registration.Version, registration.Version, string(capabilities), string(capabilities), registration.Hostname, registration.OS, registration.Arch, now, "{}", token.ID, now, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO services (service_id, service_type, service_name, description, host, port, ssl_enabled, public_url, version, reported_version, reported_commit, reported_build_date, status, capabilities, reported_capabilities, reported_hostname, reported_os, reported_arch, last_reported_at, metrics, token_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE service_type = VALUES(service_type), service_name = VALUES(service_name), description = VALUES(description), host = VALUES(host), port = VALUES(port), ssl_enabled = VALUES(ssl_enabled), public_url = VALUES(public_url), version = VALUES(version), reported_version = VALUES(reported_version), reported_commit = VALUES(reported_commit), reported_build_date = VALUES(reported_build_date), status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, capabilities = VALUES(capabilities), reported_capabilities = VALUES(reported_capabilities), reported_hostname = VALUES(reported_hostname), reported_os = VALUES(reported_os), reported_arch = VALUES(reported_arch), last_reported_at = VALUES(last_reported_at), token_id = VALUES(token_id), updated_at = VALUES(updated_at)`, registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description, registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL, registration.Version, registration.Version, registration.Commit, registration.BuildDate, string(capabilities), string(capabilities), registration.Hostname, registration.OS, registration.Arch, now, "{}", token.ID, now, now)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -389,8 +407,15 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 			return RegisteredService{}, ErrForbidden
 		}
 	}
+	heartbeat.Version = truncateServiceReportedValue(strings.TrimSpace(heartbeat.Version), 80)
+	heartbeat.Commit = truncateServiceReportedValue(strings.TrimSpace(heartbeat.Commit), 80)
+	heartbeat.BuildDate = truncateServiceReportedValue(strings.TrimSpace(heartbeat.BuildDate), 80)
+	heartbeat.Hostname = truncateServiceReportedValue(strings.TrimSpace(heartbeat.Hostname), 255)
+	heartbeat.OS = truncateServiceReportedValue(strings.TrimSpace(heartbeat.OS), 80)
+	heartbeat.Arch = truncateServiceReportedValue(strings.TrimSpace(heartbeat.Arch), 80)
 	now := time.Now().UTC()
-	metrics, err := json.Marshal(sanitizeServiceMetrics(heartbeat.Metrics))
+	sanitizedMetrics := sanitizeServiceMetrics(heartbeat.Metrics)
+	metrics, err := json.Marshal(sanitizedMetrics)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -406,7 +431,7 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		apiPort = heartbeat.API.Port
 		apiSSL = heartbeat.API.SSLEnabled
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = ?, last_heartbeat_at = ?, current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END, metrics = ?, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, capabilities = CASE WHEN ? = '{}' THEN capabilities ELSE ? END, reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, host = CASE WHEN ? = '' THEN host ELSE ? END, port = CASE WHEN ? = 0 THEN port ELSE ? END, ssl_enabled = CASE WHEN ? = '' THEN ssl_enabled ELSE ? END, public_url = CASE WHEN ? = '' THEN public_url ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ? AND token_id = ?`, heartbeat.Status, now, heartbeat.CurrentStreamID, heartbeat.CurrentStreamID, string(metrics), heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Version, string(capabilities), string(capabilities), string(capabilities), string(capabilities), heartbeat.Hostname, heartbeat.Hostname, heartbeat.OS, heartbeat.OS, heartbeat.Arch, heartbeat.Arch, apiHost, apiHost, apiPort, apiPort, apiHost, apiSSL, buildServiceURL(apiHost, apiPort, apiSSL), buildServiceURL(apiHost, apiPort, apiSSL), heartbeat.Version, string(capabilities), heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, now, now, heartbeat.ServiceID, token.ID)
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = ?, last_heartbeat_at = ?, current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END, metrics = ?, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, capabilities = CASE WHEN ? = '{}' THEN capabilities ELSE ? END, reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, host = CASE WHEN ? = '' THEN host ELSE ? END, port = CASE WHEN ? = 0 THEN port ELSE ? END, ssl_enabled = CASE WHEN ? = '' THEN ssl_enabled ELSE ? END, public_url = CASE WHEN ? = '' THEN public_url ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ? AND token_id = ?`, heartbeat.Status, now, heartbeat.CurrentStreamID, heartbeat.CurrentStreamID, string(metrics), heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Commit, heartbeat.Commit, heartbeat.BuildDate, heartbeat.BuildDate, string(capabilities), string(capabilities), string(capabilities), string(capabilities), heartbeat.Hostname, heartbeat.Hostname, heartbeat.OS, heartbeat.OS, heartbeat.Arch, heartbeat.Arch, apiHost, apiHost, apiPort, apiPort, apiHost, apiSSL, buildServiceURL(apiHost, apiPort, apiSSL), buildServiceURL(apiHost, apiPort, apiSSL), heartbeat.Version, heartbeat.Commit, heartbeat.BuildDate, string(capabilities), heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, now, now, heartbeat.ServiceID, token.ID)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -417,7 +442,44 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	if affected == 0 {
 		return RegisteredService{}, ErrForbidden
 	}
+	if err := s.recordServiceMetricSnapshots(ctx, heartbeat.ServiceID, token.ServiceType, heartbeat.Status, sanitizedMetrics, now); err != nil {
+		return RegisteredService{}, err
+	}
 	return s.getService(ctx, heartbeat.ServiceID)
+}
+
+func (s MariaDBAuthStore) recordServiceMetricSnapshots(ctx context.Context, serviceID, serviceType, status string, metrics map[string]any, observedAt time.Time) error {
+	for name, raw := range metrics {
+		value, ok := serviceMetricSnapshotNumber(raw)
+		if !ok {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO service_metric_snapshots (service_id, service_type, metric_name, status, value, observed_at) VALUES (?, ?, ?, ?, ?, ?)`, serviceID, serviceType, name, status, value, observedAt); err != nil {
+			return err
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM service_metric_snapshots WHERE observed_at < ?`, observedAt.Add(-3*time.Hour))
+	return err
+}
+
+func (s MariaDBAuthStore) ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error) {
+	if since.IsZero() {
+		since = time.Now().UTC().Add(-3 * time.Hour)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT metric_name, service_id, service_type, status, value, observed_at FROM service_metric_snapshots WHERE observed_at >= ? ORDER BY observed_at ASC`, since.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ServiceMetricSnapshot
+	for rows.Next() {
+		var snapshot ServiceMetricSnapshot
+		if err := rows.Scan(&snapshot.Name, &snapshot.ServiceID, &snapshot.ServiceType, &snapshot.Status, &snapshot.Value, &snapshot.ObservedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, snapshot)
+	}
+	return out, rows.Err()
 }
 
 func (s MariaDBAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report ServiceRuntimeReport) (RegisteredService, error) {
@@ -426,8 +488,8 @@ func (s MariaDBAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report
 		return RegisteredService{}, ErrNotFound
 	}
 	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ?`,
-		report.Version, report.Version, report.Version, report.Version, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Hostname, report.OS, report.Arch, now, now, report.ServiceID)
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ?`,
+		report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, now, report.ServiceID)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -502,7 +564,7 @@ func (s MariaDBAuthStore) SetServiceNodeTokenSecret(ctx context.Context, service
 }
 
 func (s MariaDBAuthStore) ListServices(ctx context.Context) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
+	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
 FROM services s
 LEFT JOIN stream_service_assignments a ON a.service_id = s.service_id AND a.stream_id = s.current_stream_id
 ORDER BY s.service_type, s.service_name`)
@@ -522,7 +584,7 @@ ORDER BY s.service_type, s.service_name`)
 }
 
 func (s MariaDBAuthStore) ListWorkers(ctx context.Context) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
+	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
 FROM services s
 LEFT JOIN stream_service_assignments a ON a.service_id = s.service_id AND a.stream_id = s.current_stream_id
 WHERE s.service_type = 'worker'
@@ -687,7 +749,7 @@ func (s MariaDBAuthStore) UnassignServiceFromStream(ctx context.Context, service
 }
 
 func (s MariaDBAuthStore) ListStreamAssignments(ctx context.Context, streamID string) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, a.assignment_role
+	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, a.assignment_role
 FROM stream_service_assignments a
 JOIN services s ON s.service_id = a.service_id
 WHERE a.stream_id = ?
@@ -831,7 +893,7 @@ func sanitizeServiceEventValue(value any) any {
 }
 
 func (s MariaDBAuthStore) getService(ctx context.Context, id string) (RegisteredService, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ?`, id)
 	service, err := scanService(row)
 	if err == sql.ErrNoRows {
 		return RegisteredService{}, ErrNotFound
@@ -871,7 +933,7 @@ func scanService(row serviceScanner) (RegisteredService, error) {
 	var configureExpires sql.NullTime
 	var configureUsed sql.NullTime
 	var nodeTokenRotated sql.NullTime
-	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt)
+	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -933,7 +995,7 @@ func scanServiceWithExtraRole(row serviceScanner) (RegisteredService, error) {
 	var configureExpires sql.NullTime
 	var configureUsed sql.NullTime
 	var nodeTokenRotated sql.NullTime
-	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt, &service.AssignmentRole)
+	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt, &service.AssignmentRole)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -988,6 +1050,40 @@ func sanitizeServiceMetrics(metrics map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+func serviceMetricSnapshotNumber(raw any) (float64, bool) {
+	switch value := raw.(type) {
+	case int:
+		return float64(value), true
+	case int8:
+		return float64(value), true
+	case int16:
+		return float64(value), true
+	case int32:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	case uint:
+		return float64(value), true
+	case uint8:
+		return float64(value), true
+	case uint16:
+		return float64(value), true
+	case uint32:
+		return float64(value), true
+	case uint64:
+		return float64(value), true
+	case float32:
+		return float64(value), true
+	case float64:
+		return value, true
+	case json.Number:
+		parsed, err := value.Float64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func sanitizeServiceCapabilities(capabilities map[string]any) map[string]any {
@@ -1069,6 +1165,8 @@ func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegis
 	registration.Host = strings.TrimSpace(registration.Host)
 	registration.PublicURL = strings.TrimSpace(registration.PublicURL)
 	registration.Version = strings.TrimSpace(registration.Version)
+	registration.Commit = truncateServiceReportedValue(strings.TrimSpace(registration.Commit), 80)
+	registration.BuildDate = truncateServiceReportedValue(strings.TrimSpace(registration.BuildDate), 80)
 	registration.Hostname = strings.TrimSpace(registration.Hostname)
 	registration.OS = strings.TrimSpace(registration.OS)
 	registration.Arch = strings.TrimSpace(registration.Arch)
@@ -1114,6 +1212,8 @@ func normalizeServiceMetadataUpdate(update ServiceMetadataUpdate) ServiceMetadat
 func normalizeServiceRuntimeReport(report ServiceRuntimeReport) ServiceRuntimeReport {
 	report.ServiceID = strings.TrimSpace(report.ServiceID)
 	report.Version = truncateServiceReportedValue(strings.TrimSpace(report.Version), 80)
+	report.Commit = truncateServiceReportedValue(strings.TrimSpace(report.Commit), 80)
+	report.BuildDate = truncateServiceReportedValue(strings.TrimSpace(report.BuildDate), 80)
 	report.Hostname = truncateServiceReportedValue(strings.TrimSpace(report.Hostname), 255)
 	report.OS = truncateServiceReportedValue(strings.TrimSpace(report.OS), 80)
 	report.Arch = truncateServiceReportedValue(strings.TrimSpace(report.Arch), 80)

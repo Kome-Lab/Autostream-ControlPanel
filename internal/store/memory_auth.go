@@ -20,6 +20,7 @@ type MemoryAuthStore struct {
 	sessions      map[string]Session
 	serviceTokens map[string]ServiceToken
 	services      map[string]RegisteredService
+	metricHistory []ServiceMetricSnapshot
 	assignments   map[string]string
 	failedLogins  map[string]int
 	mfaConfigs    map[string]MFAConfig

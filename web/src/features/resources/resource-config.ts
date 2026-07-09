@@ -219,13 +219,13 @@ export const resourcePages = {
   },
   notifications: {
     titleKey: "notifications",
-    description: "インシデント通知の送信履歴と通知先を管理します。",
+    description: "インシデント、復旧操作、管理操作の通知履歴と通知先を管理します。",
     resources: [
-      { title: "通知履歴", path: "/observability/notification-deliveries", description: "通知送信の成功、失敗、再試行履歴です。" },
+      { title: "通知履歴", path: "/observability/notification-deliveries", description: "インシデント、復旧操作、管理操作の通知送信履歴です。" },
       {
         title: "通知先",
         path: "/observability/notification-channels",
-        description: "Discord、Slack、メールなどの通知先です。",
+        description: "Discord、Slack、メールなどの通知先と対象イベントです。",
         form: "notification-channel",
         deletable: true,
         createTemplate: { name: "ops-slack", type: "slack", webhook_url: "https://hooks.slack.com/services/...", enabled: true },

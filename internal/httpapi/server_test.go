@@ -84,6 +84,45 @@ func TestNormalizeOverlayProfileConfigUsesFixedWatermarkCanvas(t *testing.T) {
 	}
 }
 
+func TestAdminAuditEventNotificationPolicy(t *testing.T) {
+	cases := []struct {
+		name  string
+		event store.AuditEvent
+		want  bool
+	}{
+		{name: "oauth account update", event: store.AuditEvent{Action: "oauth_accounts.update", ActorUsername: "ops"}, want: true},
+		{name: "notification channel create", event: store.AuditEvent{Action: "notification_channels.create", ActorUsername: "ops"}, want: true},
+		{name: "stream runtime events stay out", event: store.AuditEvent{Action: "streams.start", ActorUsername: "ops"}, want: false},
+		{name: "service actor stays out", event: store.AuditEvent{Action: "nodes.update", ActorUsername: "service:worker"}, want: false},
+		{name: "blank action stays out", event: store.AuditEvent{ActorUsername: "ops"}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := adminAuditEventNotificationAllowed(tc.event); got != tc.want {
+				t.Fatalf("adminAuditEventNotificationAllowed() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAdminAuditNotificationSummaryUsesRedactedEvent(t *testing.T) {
+	event := store.RedactAuditEvent(store.AuditEvent{
+		Action:       "secrets.update",
+		ResourceType: "secret",
+		ResourceID:   "raw-secret-token",
+		Result:       "success",
+		Metadata:     map[string]any{"webhook_url": "https://discord.com/api/webhooks/id/raw-secret-token"},
+	})
+	summary := adminAuditNotificationSummary(event)
+	metadata := toJSONForTest(t, event.Metadata)
+	if strings.Contains(summary, "raw-secret-token") || strings.Contains(metadata, "raw-secret-token") {
+		t.Fatalf("admin audit notification leaked raw secret: summary=%q metadata=%s", summary, metadata)
+	}
+	if severity := adminAuditNotificationSeverity(event); severity != "warning" {
+		t.Fatalf("security-related admin audit severity = %q, want warning", severity)
+	}
+}
+
 func TestOAuthLoginCallbackCreatesSessionForLinkedUser(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
@@ -946,6 +985,130 @@ func TestOAuthAccountRedirectCallbackSuppressesCodeCachingAndReferrers(t *testin
 	assertOAuthCallbackNoStoreHeaders(t, res.Result().Header)
 }
 
+func TestOAuthAccountRedirectCallbackUsesStartedAccountLabel(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"integrations.create", "integrations.read"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
+		RedirectURI:  "https://control.example.com/integrations/oauth-accounts/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector := fakeOAuthConnector{account: oauthlogin.ConnectedAccount{
+		Identity:     oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "archive@example.com"},
+		RefreshToken: "raw-google-refresh-token",
+		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
+	}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(store.NewMemoryOAuthLoginStore()), WithOAuthConnector(connector))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	startReq := httptest.NewRequest(http.MethodPost, "/integrations/oauth-accounts/start", bytes.NewBufferString(fmt.Sprintf(`{"provider_id":%q,"account_label":"Drive Owner"}`, provider.ID)))
+	startReq.AddCookie(cookie)
+	startReq.Header.Set("X-CSRF-Token", csrf)
+	startRes := httptest.NewRecorder()
+	handler.ServeHTTP(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("oauth account start status = %d body = %s", startRes.Code, startRes.Body.String())
+	}
+	var startBody struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(startRes.Body).Decode(&startBody); err != nil {
+		t.Fatal(err)
+	}
+	if startBody.State == "" {
+		t.Fatal("oauth account start did not return state")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/integrations/oauth-accounts/callback?state="+url.QueryEscape(startBody.State)+"&code=callback-code", nil)
+	req.AddCookie(cookie)
+	req.AddCookie(findCookieForTest(t, startRes.Result().Cookies(), oauthStateCookieName))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("oauth account redirect callback status = %d body = %s", res.Code, res.Body.String())
+	}
+	assertOAuthCallbackNoStoreHeaders(t, res.Result().Header)
+	accounts, err := integrations.ListOAuthAccounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].AccountLabel != "Drive Owner" || accounts[0].DisplayName != "Drive Owner" || accounts[0].Email != "archive@example.com" {
+		t.Fatalf("connected account label was not restored from state: %#v", accounts)
+	}
+}
+
+func TestOAuthAccountRedirectCallbackDoesNotUseEmailAsDefaultLabel(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"integrations.create", "integrations.read"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
+		RedirectURI:  "https://control.example.com/integrations/oauth-accounts/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector := fakeOAuthConnector{account: oauthlogin.ConnectedAccount{
+		Identity:     oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "archive@example.com"},
+		RefreshToken: "raw-google-refresh-token",
+		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
+	}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(store.NewMemoryOAuthLoginStore()), WithOAuthConnector(connector))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	startReq := httptest.NewRequest(http.MethodPost, "/integrations/oauth-accounts/start", bytes.NewBufferString(fmt.Sprintf(`{"provider_id":%q,"account_purpose":"drive"}`, provider.ID)))
+	startReq.AddCookie(cookie)
+	startReq.Header.Set("X-CSRF-Token", csrf)
+	startRes := httptest.NewRecorder()
+	handler.ServeHTTP(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("oauth account start status = %d body = %s", startRes.Code, startRes.Body.String())
+	}
+	var startBody struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(startRes.Body).Decode(&startBody); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/integrations/oauth-accounts/callback?state="+url.QueryEscape(startBody.State)+"&code=callback-code", nil)
+	req.AddCookie(cookie)
+	req.AddCookie(findCookieForTest(t, startRes.Result().Cookies(), oauthStateCookieName))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("oauth account redirect callback status = %d body = %s", res.Code, res.Body.String())
+	}
+	accounts, err := integrations.ListOAuthAccounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].AccountLabel == "archive@example.com" || accounts[0].DisplayName == "archive@example.com" {
+		t.Fatalf("connected account should not use email as display label: %#v", accounts)
+	}
+	if accounts[0].AccountLabel != "Google Drive 接続アカウント" || accounts[0].DisplayName != "Google Drive 接続アカウント" {
+		t.Fatalf("connected account label should fall back to provider label: %#v", accounts)
+	}
+}
+
 func TestOAuthLoginRedirectCallbackCompletesConnectedAccountState(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
@@ -1332,6 +1495,20 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 		t.Fatalf("download did not dispatch expected artifact: %#v", dispatcher)
 	}
 
+	previewReq := httptest.NewRequest(http.MethodGet, artifactPath+"/download?inline=1", nil)
+	previewReq.AddCookie(cookie)
+	previewRes := httptest.NewRecorder()
+	handler.ServeHTTP(previewRes, previewReq)
+	if previewRes.Code != http.StatusOK || previewRes.Body.String() != "archive-bytes" {
+		t.Fatalf("preview status=%d body=%q", previewRes.Code, previewRes.Body.String())
+	}
+	if got := previewRes.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") || !strings.Contains(got, "final.mp4") {
+		t.Fatalf("preview content disposition = %q", got)
+	}
+	if dispatcher.archiveDownloadCalls != 2 || dispatcher.archiveArtifact.ID != archiveArtifact.ID {
+		t.Fatalf("preview did not dispatch expected artifact: %#v", dispatcher)
+	}
+
 	invalidRenameReq := httptest.NewRequest(http.MethodPut, artifactPath, bytes.NewBufferString(`{"name":"../secret.mp4"}`))
 	invalidRenameReq.AddCookie(cookie)
 	invalidRenameReq.Header.Set("X-CSRF-Token", csrf)
@@ -1380,6 +1557,105 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 	}
 	if artifactListContains(finalArtifacts, "renamed.mp4", "") {
 		t.Fatalf("delete did not remove artifact metadata: %#v", finalArtifacts)
+	}
+}
+
+func TestArchiveArtifactSharePublicPlaybackWithoutLogin(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "archive-admin", Roles: []string{"archive_admin"}}, "correct horse battery", []string{"streams.read", "archives.read", "archives.download", "archives.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "public share stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 123}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("unexpected artifacts: %#v", artifacts)
+	}
+
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "archive-admin", "correct horse battery")
+	sharePath := "/streams/" + stream.ID + "/artifacts/" + artifacts[0].ID + "/shares"
+
+	createReq := httptest.NewRequest(http.MethodPost, sharePath, bytes.NewBufferString(`{"expires_in_hours":2,"allow_download":false}`))
+	createReq.AddCookie(cookie)
+	createReq.Header.Set("X-CSRF-Token", csrf)
+	createRes := httptest.NewRecorder()
+	handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create share status=%d body=%s", createRes.Code, createRes.Body.String())
+	}
+	var createBody struct {
+		ID     string `json:"id"`
+		Token  string `json:"token"`
+		APIURL string `json:"api_url"`
+		URL    string `json:"url"`
+	}
+	if err := json.NewDecoder(createRes.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	if createBody.ID == "" || createBody.Token == "" || createBody.APIURL == "" || createBody.URL == "" {
+		t.Fatalf("share response missing fields: %#v", createBody)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, sharePath, nil)
+	listReq.AddCookie(cookie)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list share status=%d body=%s", listRes.Code, listRes.Body.String())
+	}
+	if strings.Contains(listRes.Body.String(), createBody.Token) || strings.Contains(listRes.Body.String(), "token_hash") {
+		t.Fatalf("share list leaked token material: %s", listRes.Body.String())
+	}
+
+	publicReq := httptest.NewRequest(http.MethodGet, createBody.APIURL, nil)
+	publicRes := httptest.NewRecorder()
+	handler.ServeHTTP(publicRes, publicReq)
+	if publicRes.Code != http.StatusOK || !strings.Contains(publicRes.Body.String(), "final.mp4") || strings.Contains(publicRes.Body.String(), "token_hash") {
+		t.Fatalf("public share status=%d body=%s", publicRes.Code, publicRes.Body.String())
+	}
+
+	playbackReq := httptest.NewRequest(http.MethodGet, createBody.APIURL+"/download", nil)
+	playbackRes := httptest.NewRecorder()
+	handler.ServeHTTP(playbackRes, playbackReq)
+	if playbackRes.Code != http.StatusOK || playbackRes.Body.String() != "archive-bytes" {
+		t.Fatalf("playback status=%d body=%q", playbackRes.Code, playbackRes.Body.String())
+	}
+	if got := playbackRes.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+		t.Fatalf("playback content disposition = %q", got)
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, createBody.APIURL+"/download?download=1", nil)
+	downloadRes := httptest.NewRecorder()
+	handler.ServeHTTP(downloadRes, downloadReq)
+	if downloadRes.Code != http.StatusForbidden || !strings.Contains(downloadRes.Body.String(), "archive_share_download_disabled") {
+		t.Fatalf("disabled download status=%d body=%s", downloadRes.Code, downloadRes.Body.String())
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, sharePath+"/"+createBody.ID, nil)
+	revokeReq.AddCookie(cookie)
+	revokeReq.Header.Set("X-CSRF-Token", csrf)
+	revokeRes := httptest.NewRecorder()
+	handler.ServeHTTP(revokeRes, revokeReq)
+	if revokeRes.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", revokeRes.Code, revokeRes.Body.String())
+	}
+	revokedReq := httptest.NewRequest(http.MethodGet, createBody.APIURL, nil)
+	revokedRes := httptest.NewRecorder()
+	handler.ServeHTTP(revokedRes, revokedReq)
+	if revokedRes.Code != http.StatusGone || !strings.Contains(revokedRes.Body.String(), "archive_share_revoked") {
+		t.Fatalf("revoked share status=%d body=%s", revokedRes.Code, revokedRes.Body.String())
 	}
 }
 
@@ -4893,7 +5169,7 @@ func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 	for _, service := range health {
 		roles[service.ServiceID] = service.AssignmentRole
 	}
-	if roles["enc-primary"] != "primary" || roles["enc-standby"] != "standby" {
+	if roles["discord-01"] != "primary" || roles["enc-primary"] != "primary" || roles["enc-standby"] != "standby" {
 		t.Fatalf("service health did not expose assignment roles: %#v", roles)
 	}
 
@@ -7615,6 +7891,13 @@ func TestIntegrationRegistryAPIDoesNotReturnRawSecrets(t *testing.T) {
 	}
 	if strings.Contains(renameAccountRes.Body.String(), "raw-refresh-token") || strings.Contains(renameAccountRes.Body.String(), "refresh_token\":") {
 		t.Fatalf("account label update leaked token: %s", renameAccountRes.Body.String())
+	}
+	var renamedAccount store.OAuthAccount
+	if err := json.Unmarshal(renameAccountRes.Body.Bytes(), &renamedAccount); err != nil {
+		t.Fatal(err)
+	}
+	if renamedAccount.AccountLabel != "Archive Account 2" || renamedAccount.DisplayName != "Archive Account 2" {
+		t.Fatalf("account label update did not expose display name: %#v", renamedAccount)
 	}
 
 	driveReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"Shared Drive Archive","auth_mode":"oauth2","oauth_account_id":"`+account.ID+`","folder_id":"raw-drive-folder-id","shared_drive":true,"base_path":"AutoStream"}`))
@@ -10372,7 +10655,7 @@ func TestNodeAgentConfigurePersistsRuntimeReportBeforeRuntimeTokenSecret(t *test
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+configureToken+`","version":"1.4.1","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+configureToken+`","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "store_node_runtime_token_failed") {
@@ -10382,7 +10665,7 @@ func TestNodeAgentConfigurePersistsRuntimeReportBeforeRuntimeTokenSecret(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedHostname != "studio-worker-01" || got.ReportedOS != "linux" || got.ReportedArch != "amd64" {
+	if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedCommit != "abc1234" || got.ReportedBuildDate != "2026-07-09T00:00:00Z" || got.ReportedHostname != "studio-worker-01" || got.ReportedOS != "linux" || got.ReportedArch != "amd64" {
 		t.Fatalf("configure runtime report was not persisted before runtime token storage failure: %#v", got)
 	}
 	if got.TokenID != token.ID {
@@ -10417,7 +10700,7 @@ func TestNodeAgentConfigurePersistsRuntimeReportForSupportedNodeTypes(t *testing
 			if _, err := auth.SetServiceConfigureToken(t.Context(), service.ServiceID, security.HashToken(configureToken), time.Now().UTC().Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			payload := `{"nodeId":"` + service.ServiceID + `","configureToken":"` + configureToken + `","version":"1.4.1","hostname":"` + service.ServiceID + `","os":"linux","arch":"amd64"}`
+			payload := `{"nodeId":"` + service.ServiceID + `","configureToken":"` + configureToken + `","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"` + service.ServiceID + `","os":"linux","arch":"amd64"}`
 			req := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(payload))
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, req)
@@ -10428,7 +10711,7 @@ func TestNodeAgentConfigurePersistsRuntimeReportForSupportedNodeTypes(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedHostname != service.ServiceID || got.ReportedOS != "linux" || got.ReportedArch != "amd64" || got.LastReportedAt == nil {
+			if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedCommit != "abc1234" || got.ReportedBuildDate != "2026-07-09T00:00:00Z" || got.ReportedHostname != service.ServiceID || got.ReportedOS != "linux" || got.ReportedArch != "amd64" || got.LastReportedAt == nil {
 				t.Fatalf("configure runtime report was not persisted for %s: %#v", serviceType, got)
 			}
 			if got.ConfigureTokenUsedAt == nil {
@@ -10462,7 +10745,7 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+createBody.ConfigureToken+`","version":"1.4.1","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
+	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+createBody.ConfigureToken+`","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
 	configureRes := httptest.NewRecorder()
 	handler.ServeHTTP(configureRes, configureReq)
 	if configureRes.Code != http.StatusOK {
@@ -10487,13 +10770,13 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 		t.Fatalf("list nodes before heartbeat status = %d body = %s", nodesBeforeHeartbeatRes.Code, nodesBeforeHeartbeatRes.Body.String())
 	}
 	bodyBeforeHeartbeat := nodesBeforeHeartbeatRes.Body.String()
-	for _, want := range []string{`"service_id":"studio-worker-01"`, `"status":"registered"`, `"health_status":"unconfigured"`, `"reported_version":"1.4.1"`, `"reported_os":"linux"`, `"reported_arch":"amd64"`} {
+	for _, want := range []string{`"service_id":"studio-worker-01"`, `"status":"registered"`, `"health_status":"unconfigured"`, `"reported_version":"1.4.1"`, `"reported_commit":"abc1234"`, `"reported_build_date":"2026-07-09T00:00:00Z"`, `"reported_os":"linux"`, `"reported_arch":"amd64"`} {
 		if !strings.Contains(bodyBeforeHeartbeat, want) {
 			t.Fatalf("node list before heartbeat missing %s: %s", want, bodyBeforeHeartbeat)
 		}
 	}
 
-	heartbeatReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/heartbeat", bytes.NewBufferString(`{"nodeId":"studio-worker-01","status":"online","version":"1.4.2","capabilities":{"streaming":true},"hostname":"studio-worker-01","os":"linux","arch":"amd64","api":{"host":"worker.example.com","port":8443,"sslEnabled":true},"metrics":{"cpuUsage":12.5,"runningJobs":2}}`))
+	heartbeatReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/heartbeat", bytes.NewBufferString(`{"nodeId":"studio-worker-01","status":"online","version":"1.4.2","commit":"def5678","build_date":"2026-07-09T01:00:00Z","capabilities":{"streaming":true},"hostname":"studio-worker-01","os":"linux","arch":"amd64","api":{"host":"worker.example.com","port":8443,"sslEnabled":true},"metrics":{"cpuUsage":12.5,"runningJobs":2}}`))
 	heartbeatReq.Header.Set("Authorization", "Bearer "+configureBody.Config.Auth.Token)
 	heartbeatRes := httptest.NewRecorder()
 	handler.ServeHTTP(heartbeatRes, heartbeatReq)
@@ -10517,7 +10800,7 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 		t.Fatalf("list nodes status = %d body = %s", nodesRes.Code, nodesRes.Body.String())
 	}
 	body := nodesRes.Body.String()
-	for _, want := range []string{`"service_id":"studio-worker-01"`, `"health_status":"healthy"`, `"reported_version":"1.4.2"`, `"reported_os":"linux"`, `"reported_arch":"amd64"`} {
+	for _, want := range []string{`"service_id":"studio-worker-01"`, `"health_status":"healthy"`, `"reported_version":"1.4.2"`, `"reported_commit":"def5678"`, `"reported_build_date":"2026-07-09T01:00:00Z"`, `"reported_os":"linux"`, `"reported_arch":"amd64"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("node list missing %s: %s", want, body)
 		}
@@ -11162,6 +11445,9 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"chn-1","name":"discord","webhook_url":"https://discord.com/api/webhooks/id/upstream-secret-token","masked_webhook_url":"https://example.com/<WEBHOOK_PATH>","recipient_list":["bypass@example.com"]}`))
 		case "/notification-channels/chn-1/test":
 			_, _ = w.Write([]byte(`[{"status":"success","target":"https://example.com/<WEBHOOK_PATH>"}]`))
+		case "/notification-events":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`[{"event_type":"admin.audit","status":"success","channel":"generic","target":"https://example.com/<WEBHOOK_PATH>"}]`))
 		case "/incidents/inc-1/acknowledge":
 			_, _ = w.Write([]byte(`{"id":"inc-1","status":"acknowledged"}`))
 		case "/incidents/inc-1/resolve":

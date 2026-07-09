@@ -3,7 +3,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { Check, Copy, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,8 +19,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
-import { useResourceData } from "@/features/queries";
+import { useAppSettings, useResourceData } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
+import { formatDateTimeInTimeZone } from "@/lib/timezone";
 
 const watermarkCanvasWidth = 1920;
 const watermarkCanvasHeight = 1080;
@@ -63,8 +64,11 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
 function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
   const queryClient = useQueryClient();
   const query = useResourceData<unknown>(resource.path);
+  const appSettings = useAppSettings();
+  const timezone = appSettings.data?.timezone;
   const rows = useMemo(() => normalizeRows(query.data).map((row) => enrichResourceRow(resource, row)), [query.data, resource]);
   const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
+  const showTable = resource.form !== "security-settings";
   const [deleteMessage, setDeleteMessage] = useState("");
   const deleteMutation = useMutation<unknown, Error, ResourceRow>({
     mutationFn: async (row) => apiDelete(deletePathForResource(resource, row)),
@@ -93,20 +97,23 @@ function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
         {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} /> : null}
         {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} /> : null}
         {deleteMessage ? <p className="text-sm text-muted-foreground">{deleteMessage}</p> : null}
-        {query.isLoading ? (
-          <Skeleton className="h-48 w-full" />
-        ) : (
-          <ResourceTable
-            rows={rows}
-            columns={columns}
-            resource={resource}
-            deletePending={deleteMutation.isPending}
-            onDelete={(row) => {
-              setDeleteMessage("");
-              deleteMutation.mutate(row);
-            }}
-          />
-        )}
+        {showTable ? (
+          query.isLoading ? (
+            <Skeleton className="h-48 w-full" />
+          ) : (
+            <ResourceTable
+              rows={rows}
+              columns={columns}
+              resource={resource}
+              timezone={timezone}
+              deletePending={deleteMutation.isPending}
+              onDelete={(row) => {
+                setDeleteMessage("");
+                deleteMutation.mutate(row);
+              }}
+            />
+          )
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -204,7 +211,7 @@ function ResourceFormFields({ resource, disabled, submit, initial, submitLabel }
     case "oauth-provider":
       return <OAuthProviderForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "oauth-account-connect":
-      return <OAuthAccountConnectForm disabled={disabled} submit={submit} />;
+      return initial ? <OAuthAccountRenameForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} /> : <OAuthAccountConnectForm disabled={disabled} submit={submit} />;
     case "user":
       return <UserForm disabled={disabled} submit={submit} />;
     case "role":
@@ -306,7 +313,7 @@ function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { disable
 
 function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const row = initial || {};
-  const oauthAccounts = useResourceOptions("/integrations/oauth-accounts", ["id"], ["account_label", "email", "id"], ["email", "provider_type"]);
+  const oauthAccounts = useOAuthAccountOptions();
   const [name, setName] = useState(() => rowString(row, ["name"]) || "public-live");
   const [mode, setMode] = useState(() => rowString(row, ["mode", "config.mode"]) || "live_api_dry_run");
   const [rtmpURL, setRTMPURL] = useState(() => rowString(row, ["rtmp_url", "config.rtmp_url"]) || "rtmps://a.rtmps.youtube.com/live2");
@@ -601,7 +608,7 @@ function ArchiveProfileForm({ disabled, submit, initial, submitLabel }: { disabl
 
 function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const row = initial || {};
-  const oauthAccounts = useResourceOptions("/integrations/oauth-accounts", ["id"], ["account_label", "email", "id"], ["email", "provider_type"]);
+  const oauthAccounts = useOAuthAccountOptions();
   const [name, setName] = useState(() => rowString(row, ["name"]) || "archive-drive");
   const [oauthAccountID, setOAuthAccountID] = useState(() => rowString(row, ["oauth_account_id"]) || noneValue);
   const [folderID, setFolderID] = useState(() => rowString(row, ["folder_id"]));
@@ -769,6 +776,34 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
   );
 }
 
+function OAuthAccountRenameForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial: ResourceRow; submitLabel?: string }) {
+  const [accountLabel, setAccountLabel] = useState(() => rowString(initial, ["account_label", "display_name"]));
+  const providerType = rowString(initial, ["provider_type"]);
+  const email = rowString(initial, ["email"]);
+
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit({ account_label: accountLabel.trim() });
+      }}
+    >
+      <div className="grid gap-3 md:grid-cols-2">
+        <TextField label="アカウント表示名" value={accountLabel} onChange={setAccountLabel} required />
+        <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
+          <div className="text-muted-foreground">接続情報</div>
+          <div className="mt-1 space-y-1">
+            <div>{providerType || "プロバイダ未設定"}</div>
+            <div className="truncate text-muted-foreground">{email || "メール未取得"}</div>
+          </div>
+        </div>
+      </div>
+      <FormActions label={submitLabel} disabled={disabled || accountLabel.trim() === ""} />
+    </form>
+  );
+}
+
 function UserForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
   const roles = useResourceOptions("/roles", ["id"], ["name", "id"], ["permissions"]);
   const [username, setUsername] = useState("operator");
@@ -925,6 +960,7 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
           { value: "diagnostic.created", label: "Diagnostic created" },
           { value: "remediation.pending_approval", label: "Remediation pending approval" },
           { value: "remediation.executed", label: "Remediation executed" },
+          { value: "admin.audit", label: "管理操作" },
         ]}
       />
       <SwitchField label="有効化" checked={enabled} onCheckedChange={setEnabled} />
@@ -987,6 +1023,11 @@ function SecuritySettingsEditor({ resource, data, loading }: { resource: Resourc
   }, [data]);
 
   const roleItems = roles.length > 0 ? roles : [{ value: "super_admin", label: "super_admin" }, { value: "admin", label: "admin" }];
+  const passwordLength = numberValue(passwordMinLength, 12);
+  const lockoutThreshold = numberValue(loginLockoutThreshold, 5);
+  const idleTimeout = numberValue(sessionIdleTimeout, 30);
+  const absoluteLifetime = numberValue(sessionAbsoluteLifetime, 12);
+  const mfaScope = mfaRequiredRoles.length > 0 ? mfaRequiredRoles.join(", ") : "全ユーザー";
 
   return (
     <div className="rounded-md border bg-muted/20 p-3">
@@ -994,6 +1035,14 @@ function SecuritySettingsEditor({ resource, data, loading }: { resource: Resourc
         <div className="font-medium">設定を変更</div>
         <p className="text-sm text-muted-foreground">ログイン保護、セッション期限、MFA適用範囲を保存できます。パスワードハッシュはArgon2id固定です。</p>
       </div>
+      {!loading ? (
+        <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <SecurityPolicyCard label="パスワード" value={`${passwordLength}文字以上`} detail="Argon2idで保存します。Remember meは無効です。" />
+          <SecurityPolicyCard label="ロックアウト" value={`${lockoutThreshold}回失敗でロック`} detail="連続ログイン失敗時の保護です。" />
+          <SecurityPolicyCard label="セッション" value={`無操作${idleTimeout}分 / 最大${absoluteLifetime}時間`} detail="保存後に作成されるログインセッションへ適用します。" />
+          <SecurityPolicyCard label="MFA" value={securityMFAModeLabel(mfaMode)} detail={mfaMode === "disabled" ? "現在は要求しません。" : `対象: ${mfaScope}`} />
+        </div>
+      ) : null}
       {loading ? (
         <Skeleton className="h-36 w-full" />
       ) : (
@@ -1048,6 +1097,27 @@ function SecuritySettingsEditor({ resource, data, loading }: { resource: Resourc
       )}
     </div>
   );
+}
+
+function SecurityPolicyCard({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="rounded-md border bg-background p-3 text-sm">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="mt-1 font-semibold">{value}</div>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function securityMFAModeLabel(mode: string) {
+  switch (mode) {
+    case "totp":
+      return "TOTPを要求";
+    case "passkey":
+      return "Passkeyを要求";
+    default:
+      return "無効";
+  }
 }
 
 function Field({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
@@ -1113,8 +1183,11 @@ function SelectField({ label, value, onChange, options }: { label: string; value
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
+            <SelectItem key={option.value} value={option.value} textValue={option.label}>
+              <span className="grid gap-0.5">
+                <span>{option.label}</span>
+                {option.description ? <span className="text-xs text-muted-foreground">{option.description}</span> : null}
+              </span>
             </SelectItem>
           ))}
         </SelectContent>
@@ -1232,6 +1305,24 @@ function useResourceOptions(path: string, valueKeys: string[], labelKeys: string
         })
         .filter((option) => option.value),
     [detailKeys, labelKeys, rows, valueKeys],
+  );
+}
+
+function useOAuthAccountOptions() {
+  const rows = useResourceRows("/integrations/oauth-accounts");
+  return useMemo(
+    () =>
+      rows
+        .map((row) => {
+          const value = rowString(row, ["id"]);
+          return {
+            value,
+            label: oauthAccountDisplayName(row),
+            description: oauthAccountOptionDescription(row),
+          };
+        })
+        .filter((option) => option.value),
+    [rows],
   );
 }
 
@@ -1429,21 +1520,35 @@ function ResourceTable({
   rows,
   columns,
   resource,
+  timezone,
   deletePending,
   onDelete,
 }: {
   rows: ResourceRow[];
   columns: string[];
   resource: ResourceDefinition;
+  timezone?: string;
   deletePending: boolean;
   onDelete: (row: ResourceRow) => void;
 }) {
+  const [copiedID, setCopiedID] = useState("");
   if (rows.length === 0) {
     return <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">データがありません。</div>;
   }
   const showDelete = Boolean(resource.deletable);
   const showEdit = resourceCanEdit(resource);
-  const showActions = showDelete || showEdit;
+  const showIDCopy = rows.some((row) => resourceRowID(row));
+  const showActions = showDelete || showEdit || showIDCopy;
+  const copyRowID = async (id: string) => {
+    if (!id || typeof navigator === "undefined" || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(id);
+    } catch {
+      return;
+    }
+    setCopiedID(id);
+    window.setTimeout(() => setCopiedID((current) => (current === id ? "" : current)), 1500);
+  };
 
   return (
     <div className="overflow-x-auto rounded-md border">
@@ -1453,7 +1558,7 @@ function ResourceTable({
             {columns.map((column) => (
               <TableHead key={column}>{columnLabel(column)}</TableHead>
             ))}
-            {showActions ? <TableHead className="w-32 min-w-32 text-right">操作</TableHead> : null}
+            {showActions ? <TableHead className="w-40 min-w-40 text-right">操作</TableHead> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -1461,12 +1566,13 @@ function ResourceTable({
             <TableRow key={String(row.id || row.name || index)}>
               {columns.map((column) => (
                 <TableCell key={column} className="max-w-[240px] overflow-hidden text-ellipsis">
-                  {formatCell(row[column], column)}
+                  {formatCell(row[column], column, timezone)}
                 </TableCell>
               ))}
               {showActions ? (
-                <TableCell className="w-32 min-w-32 text-right">
+                <TableCell className="w-40 min-w-40 text-right">
                   <div className="flex justify-end gap-1">
+                    {showIDCopy ? <CopyResourceIDButton id={resourceRowID(row)} copied={copiedID === resourceRowID(row)} onCopy={copyRowID} /> : null}
                     {showEdit ? <EditResourceButton resource={resource} row={row} /> : null}
                     {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row)} onDelete={onDelete} /> : null}
                   </div>
@@ -1477,6 +1583,14 @@ function ResourceTable({
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+function CopyResourceIDButton({ id, copied, onCopy }: { id: string; copied: boolean; onCopy: (id: string) => Promise<void> }) {
+  return (
+    <Button variant="outline" size="icon-sm" disabled={!id} aria-label="IDをコピー" onClick={() => void onCopy(id)}>
+      {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+    </Button>
   );
 }
 
@@ -1523,7 +1637,7 @@ function EditResourceButton({ resource, row }: { resource: ResourceDefinition; r
 }
 
 function resourceCanEdit(resource: ResourceDefinition) {
-  return Boolean(resource.form && !["security-settings", "oauth-account-connect", "user", "notification-channel"].includes(resource.form));
+  return Boolean(resource.form && !["security-settings", "user", "notification-channel"].includes(resource.form));
 }
 
 function DeleteResourceButton({ row, disabled, onDelete }: { row: ResourceRow; disabled: boolean; onDelete: (row: ResourceRow) => void }) {
@@ -1592,6 +1706,27 @@ function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): Reso
   if (resource.path === "/archive/destinations") {
     return { ...row, destination_summary: compactList([rowValue(row, ["shared_drive"]) === true ? "共有ドライブ" : "マイドライブ", rowValue(row, ["folder_id_configured"]) === true ? "Folder設定済み" : "Folder未設定"]) };
   }
+  if (resource.path === "/integrations/oauth-accounts") {
+    return {
+      ...row,
+      oauth_account_display_name: oauthAccountDisplayName(row),
+      account_summary: compactList([
+        labelValue("プロバイダ", formatScalarValue("provider_type", rowString(row, ["provider_type"]))),
+        rowString(row, ["email"]) ? "メール取得済み" : "メール未取得",
+        rowValue(row, ["refresh_token_configured"]) === true ? "OAuth tokenあり" : "OAuth token未接続",
+      ]),
+    };
+  }
+  if (resource.path === "/secrets/status") {
+    const summary = secretStatusSummary(row);
+    return {
+      ...row,
+      secret_label: summary.label,
+      secret_scope: summary.scope,
+      secret_status: rowValue(row, ["configured"]) === true ? "configured" : "missing",
+      secret_reference: rowString(row, ["name"]),
+    };
+  }
   return row;
 }
 
@@ -1622,14 +1757,16 @@ function visibleColumns(rows: Record<string, unknown>[], resource: ResourceDefin
   if (resourcePreferred.length > 0) {
     return resourcePreferred.filter((column) => rows.some((row) => row[column] !== undefined));
   }
-  const preferred = ["id", "name", "username", "service_id", "service_name", "service_type", "type", "status", "health_status", "title", "action", "target", "updated_at", "created_at"];
+  const preferred = ["name", "username", "service_name", "service_type", "type", "status", "health_status", "title", "action", "target", "updated_at", "created_at"];
   const seen = new Set<string>();
   for (const key of preferred) {
+    if (isInternalReferenceColumn(key)) continue;
     if (rows.some((row) => row[key] !== undefined)) seen.add(key);
   }
   for (const row of rows) {
     for (const key of Object.keys(row)) {
       if (seen.size >= 8) break;
+      if (isInternalReferenceColumn(key)) continue;
       seen.add(key);
     }
     if (seen.size >= 8) break;
@@ -1638,19 +1775,40 @@ function visibleColumns(rows: Record<string, unknown>[], resource: ResourceDefin
 }
 
 function resourcePreferredColumns(resource: ResourceDefinition) {
-  if (resource.path.startsWith("/profiles/")) return ["id", "name", "profile_summary", "updated_at", "created_at"];
-  if (resource.path === "/discord/configs") return ["id", "name", "service_id", "bot_summary", "updated_at"];
-  if (resource.path === "/integrations/oauth-providers") return ["id", "name", "provider_type", "enabled", "client_secret_configured", "updated_at"];
-  if (resource.path === "/youtube/outputs") return ["id", "name", "output_summary", "updated_at"];
-  if (resource.path === "/archive/destinations") return ["id", "name", "destination_summary", "updated_at"];
-  if (resource.path === "/users") return ["id", "username", "email", "status", "roles", "last_login_at"];
+  if (resource.path.startsWith("/profiles/")) return ["name", "profile_summary", "updated_at", "created_at"];
+  if (resource.path === "/discord/configs") return ["name", "bot_summary", "updated_at"];
+  if (resource.path === "/integrations/oauth-providers") return ["name", "provider_type", "enabled", "client_secret_configured", "updated_at"];
+  if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_summary", "updated_at"];
+  if (resource.path === "/youtube/outputs") return ["name", "output_summary", "updated_at"];
+  if (resource.path === "/archive/destinations") return ["name", "destination_summary", "updated_at"];
+  if (resource.path === "/secrets/status") return ["secret_label", "secret_scope", "secret_status", "updated_at", "fingerprint"];
+  if (resource.path === "/users") return ["username", "email", "status", "roles", "last_login_at"];
+  if (resource.path === "/roles") return ["name", "permissions", "updated_at"];
+  if (resource.path === "/permissions") return ["name", "description"];
+  if (resource.path === "/streams") return ["name", "status", "scheduled_start_at", "updated_at"];
+  if (resource.path === "/audit-logs") return ["timestamp", "actor_username", "action", "result", "resource_type"];
+  if (resource.path === "/service-health") return ["service_name", "service_type", "status", "health_status", "last_heartbeat_at"];
+  if (resource.path === "/observability/incidents") return ["title", "severity", "status", "updated_at"];
+  if (resource.path === "/observability/diagnostics") return ["check", "status", "target", "updated_at"];
+  if (resource.path === "/observability/remediation-actions") return ["action", "status", "target", "created_at"];
+  if (resource.path === "/observability/notification-deliveries") return ["event_type", "channel", "status", "sent_at", "error"];
+  if (resource.path === "/observability/notification-channels") return ["name", "type", "enabled", "severity_filter", "event_type_filter"];
+  if (resource.path === "/observability/metrics") return ["name", "service_type", "status", "value", "updated_at"];
   return [];
 }
 
-function formatCell(value: unknown, key = ""): ReactNode {
+function isInternalReferenceColumn(key: string) {
+  const normalized = key.toLowerCase();
+  if (normalized === "id") return true;
+  if (normalized.endsWith("_id")) return true;
+  if (normalized.endsWith("_ids")) return true;
+  return false;
+}
+
+function formatCell(value: unknown, key = "", timezone?: string): ReactNode {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "boolean") return <Badge variant={value ? "default" : "secondary"}>{value ? "有効" : "無効"}</Badge>;
-  if (typeof value === "string" || typeof value === "number") return formatScalarValue(key, value);
+  if (typeof value === "string" || typeof value === "number") return formatScalarValue(key, value, timezone);
   if (Array.isArray(value)) {
     if (value.length === 0) return "-";
     return (
@@ -1692,12 +1850,13 @@ function formatNestedValue(key: string, value: unknown): string {
   return String(value);
 }
 
-function formatScalarValue(key: string, value: string | number) {
+function formatScalarValue(key: string, value: string | number, timezone?: string) {
   const raw = String(value);
+  if (key === "action") return operationLabel(raw);
   if ((key === "id" || key === "name") && columnLabels[raw]) return columnLabels[raw];
   const status = valueLabels[raw] || valueLabels[raw.toLowerCase()];
   if (status) return status;
-  if (key.endsWith("_at") && !Number.isNaN(Date.parse(raw))) return raw.replace("T", " ").replace(/Z$/, " UTC");
+  if ((key.endsWith("_at") || key === "timestamp") && !Number.isNaN(Date.parse(raw))) return formatDateTimeInTimeZone(raw, timezone, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   return raw;
 }
 
@@ -1723,6 +1882,36 @@ function labelValue(label: string, value: string) {
   return value ? `${label}: ${value}` : "";
 }
 
+function oauthAccountDisplayName(row: ResourceRow) {
+  const email = rowString(row, ["email"]).toLowerCase();
+  for (const key of ["account_label", "display_name"]) {
+    const value = rowString(row, [key]);
+    if (value && value.toLowerCase() !== email) return value;
+  }
+  const provider = rowString(row, ["provider_type"]);
+  return `${providerTypeLabel(provider)}接続アカウント`;
+}
+
+function oauthAccountOptionDescription(row: ResourceRow) {
+  return compactList([
+    providerTypeLabel(rowString(row, ["provider_type"])),
+    rowValue(row, ["refresh_token_configured"]) === true ? "接続済み" : "未接続",
+  ]).join(" / ");
+}
+
+function providerTypeLabel(providerType: string) {
+  switch (providerType.trim().toLowerCase()) {
+    case "google":
+      return "Google";
+    case "github":
+      return "GitHub";
+    case "discord":
+      return "Discord";
+    default:
+      return providerType.trim() || "OAuth";
+  }
+}
+
 function enabledLabel(label: string, value: unknown) {
   if (value === undefined || value === null || value === "") return "";
   return `${label}: ${value === true ? "有効" : value === false ? "無効" : String(value)}`;
@@ -1744,11 +1933,59 @@ function humanizeKey(key: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function operationLabel(value: string) {
+  const labels: Record<string, string> = {
+    "app.settings.update": "アプリ設定を更新",
+    "archive_destinations.create": "Drive保存先を作成",
+    "archive_destinations.delete": "Drive保存先を削除",
+    "archive_destinations.update": "Drive保存先を更新",
+    "discord_configs.create": "Discord BOT設定を作成",
+    "discord_configs.delete": "Discord BOT設定を削除",
+    "discord_configs.update": "Discord BOT設定を更新",
+    "nodes.delete": "Nodeを削除",
+    "nodes.registration_token.create": "Node設定を発行",
+    "nodes.runtime_token.rotate": "Node Runtime Tokenを再生成",
+    "nodes.update": "Nodeを更新",
+    "notification_channels.create": "通知先を作成",
+    "notification_channels.delete": "通知先を削除",
+    "notification_channels.test": "通知テストを送信",
+    "notification_channels.update": "通知先を更新",
+    "oauth_accounts.create": "OAuth接続アカウントを作成",
+    "oauth_accounts.delete": "OAuth接続アカウントを削除",
+    "oauth_accounts.update": "OAuth接続アカウントを更新",
+    "oauth_providers.create": "OAuthプロバイダを作成",
+    "oauth_providers.delete": "OAuthプロバイダを削除",
+    "oauth_providers.update": "OAuthプロバイダを更新",
+    "roles.create": "ロールを作成",
+    "roles.delete": "ロールを削除",
+    "roles.update": "ロールを更新",
+    "secrets.update": "シークレットを更新",
+    "streams.create": "配信枠を作成",
+    "streams.start": "配信を開始",
+    "streams.stop": "配信を停止",
+    "streams.update": "配信枠を更新",
+    "users.create": "ユーザーを作成",
+    "users.delete": "ユーザーを削除",
+    "users.update": "ユーザーを更新",
+    "workers.restart": "Workerを再起動",
+    "youtube_outputs.create": "YouTube出力を作成",
+    "youtube_outputs.delete": "YouTube出力を削除",
+    "youtube_outputs.update": "YouTube出力を更新",
+  };
+  if (labels[value]) return labels[value];
+  return value
+    .replace(/[_\-.]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 const valueLabels: Record<string, string> = {
   discord_bot: "Discord Bot",
   encoder_recorder: "Encoder/Recorder",
   observability: "Observability",
   worker: "Worker",
+  google: "Google",
+  github: "GitHub",
+  discord: "Discord",
   online: "オンライン",
   offline: "オフライン",
   healthy: "正常",
@@ -1778,6 +2015,23 @@ const valueLabels: Record<string, string> = {
   disabled: "無効",
   totp: "TOTP",
   passkey: "Passkey",
+  critical: "重大",
+  warning: "警告",
+  info: "情報",
+  acknowledged: "確認済み",
+  resolved: "解決済み",
+  retrying: "再試行中",
+  success: "成功",
+  open: "未対応",
+  "incident.opened": "インシデント発生",
+  "incident.updated": "インシデント更新",
+  "incident.resolved": "インシデント解決",
+  "diagnostic.created": "診断作成",
+  "remediation.pending_approval": "復旧承認待ち",
+  "remediation.executed": "復旧実行",
+  "admin.audit": "管理操作",
+  configured: "登録済み",
+  missing: "未登録",
   "Password minimum length": "最小パスワード長",
   "MFA mode": "MFAポリシー",
   "Session idle timeout": "アイドルタイムアウト",
@@ -1795,20 +2049,38 @@ const columnLabels: Record<string, string> = {
   service_id: "Node ID",
   service_name: "Node名",
   service_type: "種別",
+  account_label: "表示名",
+  oauth_account_display_name: "表示名",
   provider_type: "プロバイダ",
   type: "種別",
   status: "状態",
   health_status: "ヘルス",
+  severity: "重要度",
   title: "タイトル",
+  check: "チェック",
+  channel: "通知先",
+  event_type: "イベント",
+  sent_at: "送信日時",
+  error: "エラー",
+  timestamp: "日時",
+  actor_username: "実行者",
+  resource_type: "対象",
+  scheduled_start_at: "開始予定",
   action: "操作",
   target: "対象",
   updated_at: "更新日時",
   created_at: "作成日時",
+  last_heartbeat_at: "最終Heartbeat",
   last_login_at: "最終ログイン",
   profile_summary: "設定内容",
   bot_summary: "BOT設定",
   output_summary: "出力設定",
   destination_summary: "保存先",
+  account_summary: "接続設定",
+  secret_label: "用途",
+  secret_scope: "分類",
+  secret_status: "状態",
+  secret_reference: "参照名",
   enabled: "有効",
   configured: "設定済み",
   client_secret_configured: "Client Secret",
@@ -1830,12 +2102,42 @@ function columnLabel(column: string) {
   return columnLabels[column] || humanizeKey(column);
 }
 
+function secretStatusSummary(row: ResourceRow) {
+  const name = rowString(row, ["name"]);
+  const fixed: Record<string, { label: string; scope: string }> = {
+    app_smtp_password: { label: "メールサーバー SMTPパスワード", scope: "システム通知" },
+    app_turnstile_secret: { label: "Cloudflare Turnstile Secret", scope: "ログイン保護" },
+    deepgram_api_key: { label: "Deepgram API Key", scope: "字幕生成" },
+    discord_bot_token: { label: "Discord BOT Token", scope: "Discord" },
+    google_drive_folder_id: { label: "Google Drive Folder ID", scope: "録画アーカイブ" },
+    observability_token: { label: "Observability Token", scope: "監視" },
+    youtube_stream_key: { label: "YouTube Stream Key", scope: "YouTube" },
+  };
+  if (fixed[name]) return fixed[name];
+  for (const item of dynamicSecretPrefixes) {
+    if (name.startsWith(item.prefix)) {
+      return { label: item.label, scope: item.scope };
+    }
+  }
+  return { label: name || "未分類シークレット", scope: "その他" };
+}
+
+const dynamicSecretPrefixes = [
+  { prefix: "youtube_stream_key_", label: "YouTube Stream Key", scope: "YouTube出力" },
+  { prefix: "discord_bot_token_", label: "Discord BOT Token", scope: "Discord BOT設定" },
+  { prefix: "encoder_runtime_secret_", label: "Encoder Runtime Secret", scope: "Encoder/Recorder" },
+  { prefix: "google_oauth_refresh_token_", label: "Google OAuth Refresh Token", scope: "OAuth接続アカウント" },
+  { prefix: "google_drive_folder_id_", label: "Google Drive Folder ID", scope: "Drive保存先" },
+  { prefix: "webhook_url_", label: "Webhook URL", scope: "通知先" },
+  { prefix: "smtp_password_", label: "SMTP Password", scope: "通知先メール" },
+];
+
 function resourceRowID(row: ResourceRow) {
-  return rowString(row, ["id"]);
+  return rowString(row, ["id", "service_id"]);
 }
 
 function resourceRowLabel(row: ResourceRow) {
-  return firstNonEmpty(rowString(row, ["name", "service_name", "username", "account_label", "provider_type", "id"]), "この項目");
+  return firstNonEmpty(rowString(row, ["name", "service_name", "username", "oauth_account_display_name", "display_name", "account_label", "provider_type", "id"]), "この項目");
 }
 
 function deletePathForResource(resource: ResourceDefinition, row: ResourceRow) {

@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { APIError, apiPost, apiPut } from "@/lib/api/client";
-import { defaultTimeZone, timeZoneOptions } from "@/lib/timezone";
+import { defaultTimeZone, formatDateTimeInTimeZone, isValidTimeZone, normalizeTimeZone, timeZoneLabel, timeZoneOptions } from "@/lib/timezone";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser } from "@/features/queries";
 import type { AppSettings } from "@/types/domain";
@@ -19,6 +19,8 @@ type TestEmailResponse = {
   status: string;
   target?: string;
 };
+
+const customTimeZoneValue = "__custom_timezone__";
 
 export function SettingsView() {
   const { t } = useI18n();
@@ -36,7 +38,7 @@ export function SettingsView() {
           <CardTitle>{t("appSettings")}</CardTitle>
           <CardDescription>サイドバー、ログイン、初期作成画面の表示名と、画面上の時刻表示に使うタイムゾーンです。</CardDescription>
         </CardHeader>
-        <CardContent className="max-w-xl space-y-4">
+        <CardContent className="space-y-4">
           {appSettings.isLoading ? (
             <Skeleton className="h-10 w-full" />
           ) : (
@@ -70,13 +72,18 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
   const [turnstileSecret, setTurnstileSecret] = useState("");
   const [testEmailOverride, setTestEmailOverride] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  const options = timeZoneOptions.some((option) => option.value === timezone) ? timeZoneOptions : [{ value: timezone, label: timezone }, ...timeZoneOptions];
+  const trimmedTimezone = timezone.trim();
+  const effectiveTimezone = trimmedTimezone || defaultTimeZone;
+  const timezoneValid = trimmedTimezone === "" || isValidTimeZone(trimmedTimezone);
+  const normalizedTimezone = normalizeTimeZone(timezone);
+  const options = timeZoneOptions.some((option) => option.value === normalizedTimezone) ? timeZoneOptions : [{ value: normalizedTimezone, label: timeZoneLabel(normalizedTimezone) }, ...timeZoneOptions];
+  const timezoneSelectValue = options.some((option) => option.value === effectiveTimezone) ? effectiveTimezone : customTimeZoneValue;
   const testEmailTo = testEmailOverride ?? currentUserEmail;
   const saveAppSettings = useMutation({
     mutationFn: () =>
       apiPut<AppSettings>("/settings/app", {
         app_name: appName,
-        timezone,
+        timezone: normalizedTimezone,
         smtp_enabled: smtpEnabled,
         smtp_host: smtpHost,
         smtp_port: Number.parseInt(smtpPort, 10),
@@ -106,109 +113,149 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
   const turnstileRequiredMissing = turnstileEnabled && (!turnstileSiteKey.trim() || (!turnstileSecret.trim() && !initialSettings?.turnstile_configured));
 
   return (
-    <>
-      <div className="space-y-2">
-        <label className="text-sm font-medium" htmlFor="app-name">
-          {t("appNameLabel")}
-        </label>
-        <Input id="app-name" value={appName} onChange={(event) => setAppName(event.target.value)} maxLength={80} />
-      </div>
-      <div className="space-y-2">
-        <label className="text-sm font-medium" htmlFor="app-timezone">
-          タイムゾーン
-        </label>
-        <Select value={timezone} onValueChange={setTimezone}>
-          <SelectTrigger id="app-timezone">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-muted-foreground">Streams、Audit Logs、Accountの時刻表示に反映されます。</p>
-      </div>
-      <div className="space-y-3 rounded-md border bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium">メールサーバー</div>
-            <p className="text-xs text-muted-foreground">ユーザー登録完了などControl Panelから送るメールに使います。</p>
-          </div>
-          <Switch checked={smtpEnabled} onCheckedChange={setSMTPEnabled} />
-        </div>
-        {smtpEnabled ? (
-          <div className="grid gap-3 md:grid-cols-2">
-            <Field label="SMTP Host">
-              <Input value={smtpHost} onChange={(event) => setSMTPHost(event.target.value)} placeholder="smtp.example.jp" />
-            </Field>
-            <Field label="SMTP Port">
-              <Input inputMode="numeric" value={smtpPort} onChange={(event) => setSMTPPort(event.target.value)} />
-            </Field>
-            <Field label="From">
-              <Input value={smtpFrom} onChange={(event) => setSMTPFrom(event.target.value)} placeholder="AutoStream <no-reply@example.jp>" />
-            </Field>
-            <Field label="SMTP Username">
-              <Input value={smtpUsername} onChange={(event) => setSMTPUsername(event.target.value)} />
-            </Field>
-            <Field label="SMTP Password">
-              <Input type="password" value={smtpPassword} onChange={(event) => setSMTPPassword(event.target.value)} placeholder={initialSettings?.smtp_password_configured ? "設定済み" : ""} />
-            </Field>
-            <label className="flex items-center gap-2 text-sm">
-              <Switch checked={smtpStartTLS} onCheckedChange={setSMTPStartTLS} />
-              STARTTLSを使用する
-            </label>
-            <Field label="テスト送信先">
-              <Input
-                type="email"
-                value={testEmailTo}
-                onChange={(event) => {
-                  setTestEmailOverride(event.target.value);
+    <div className="space-y-4">
+      <div className="grid gap-4 xl:grid-cols-2">
+        <SettingsSection title="基本設定" description="管理画面の名前と、システム内の時刻表示に使う基準タイムゾーンです。">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="app-name">
+                {t("appNameLabel")}
+              </label>
+              <Input id="app-name" value={appName} onChange={(event) => setAppName(event.target.value)} maxLength={80} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="app-timezone-input">
+                タイムゾーンID
+              </label>
+              <Input id="app-timezone-input" value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Asia/Tokyo" spellCheck={false} />
+              <p className={timezoneValid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{timezoneValid ? "IANA time zone nameを直接入力できます。" : "有効なIANA time zone nameを入力してください。"}</p>
+            </div>
+            <div className="space-y-2 lg:col-span-2">
+              <label className="text-sm font-medium" htmlFor="app-timezone">
+                候補から選択
+              </label>
+              <Select
+                value={timezoneSelectValue}
+                onValueChange={(value) => {
+                  if (value !== customTimeZoneValue) setTimezone(value);
                 }}
-                placeholder="ops@example.jp"
-              />
-            </Field>
-            <div className="flex items-end">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => testEmail.mutate()}
-                disabled={testEmail.isPending || saveAppSettings.isPending || !smtpEnabled || smtpRequiredMissing || !testEmailTo.trim()}
               >
-                <Send className="size-4" />
-                テスト送信
-              </Button>
+                <SelectTrigger id="app-timezone">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="max-h-80">
+                  {timezoneSelectValue === customTimeZoneValue ? (
+                    <SelectItem value={customTimeZoneValue}>{trimmedTimezone ? `手入力: ${trimmedTimezone}` : "手入力"}</SelectItem>
+                  ) : null}
+                  {options.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
-        ) : null}
-      </div>
-      <div className="space-y-3 rounded-md border bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium">Cloudflare Turnstile</div>
-            <p className="text-xs text-muted-foreground">ログインとメール変更確認のBOT確認に使います。</p>
-          </div>
-          <Switch checked={turnstileEnabled} onCheckedChange={setTurnstileEnabled} />
-        </div>
-        {turnstileEnabled ? (
-          <div className="grid gap-3 md:grid-cols-2">
-            <Field label="Site key">
-              <Input value={turnstileSiteKey} onChange={(event) => setTurnstileSiteKey(event.target.value)} placeholder="0x4AAAA..." />
-            </Field>
-            <Field label="Secret key">
-              <Input type="password" value={turnstileSecret} onChange={(event) => setTurnstileSecret(event.target.value)} placeholder={initialSettings?.turnstile_configured ? "設定済み" : ""} />
-            </Field>
-          </div>
-        ) : null}
+        </SettingsSection>
+        <SettingsSection title="表示プレビュー" description="保存前の表示名とタイムゾーン変換結果を確認できます。">
+          <dl className="grid grid-cols-[112px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
+            <dt className="text-muted-foreground">アプリ名</dt>
+            <dd className="min-w-0 truncate">{appName || "-"}</dd>
+            <dt className="text-muted-foreground">タイムゾーン</dt>
+            <dd className="min-w-0 truncate">{timezoneValid ? normalizedTimezone : "未確認"}</dd>
+            <dt className="text-muted-foreground">現在時刻</dt>
+            <dd className="min-w-0 truncate">{timezoneValid ? formatDateTimeInTimeZone(new Date().toISOString(), normalizedTimezone, { dateStyle: "medium", timeStyle: "medium" }) : "-"}</dd>
+          </dl>
+        </SettingsSection>
+        <SettingsSection
+          title="メールサーバー"
+          description="ユーザー登録完了、メール変更確認、運用通知に使います。"
+          action={<Switch checked={smtpEnabled} onCheckedChange={setSMTPEnabled} />}
+          className={smtpEnabled ? "xl:col-span-2" : ""}
+        >
+          {smtpEnabled ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <Field label="SMTP Host">
+                <Input value={smtpHost} onChange={(event) => setSMTPHost(event.target.value)} placeholder="smtp.example.jp" />
+              </Field>
+              <Field label="SMTP Port">
+                <Input inputMode="numeric" value={smtpPort} onChange={(event) => setSMTPPort(event.target.value)} />
+              </Field>
+              <Field label="From">
+                <Input value={smtpFrom} onChange={(event) => setSMTPFrom(event.target.value)} placeholder="AutoStream <no-reply@example.jp>" />
+              </Field>
+              <Field label="SMTP Username">
+                <Input value={smtpUsername} onChange={(event) => setSMTPUsername(event.target.value)} />
+              </Field>
+              <Field label="SMTP Password">
+                <Input type="password" value={smtpPassword} onChange={(event) => setSMTPPassword(event.target.value)} placeholder={initialSettings?.smtp_password_configured ? "設定済み" : ""} />
+              </Field>
+              <label className="flex min-h-10 items-center gap-2 self-end text-sm">
+                <Switch checked={smtpStartTLS} onCheckedChange={setSMTPStartTLS} />
+                STARTTLSを使用する
+              </label>
+              <Field label="テスト送信先">
+                <Input
+                  type="email"
+                  value={testEmailTo}
+                  onChange={(event) => {
+                    setTestEmailOverride(event.target.value);
+                  }}
+                  placeholder="ops@example.jp"
+                />
+              </Field>
+              <div className="flex items-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => testEmail.mutate()}
+                  disabled={testEmail.isPending || saveAppSettings.isPending || !smtpEnabled || smtpRequiredMissing || !testEmailTo.trim()}
+                >
+                  <Send className="size-4" />
+                  テスト送信
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">メール送信を使う場合は有効化してSMTP情報を保存してください。</div>
+          )}
+        </SettingsSection>
+        <SettingsSection title="Cloudflare Turnstile" description="ログインとメール変更確認のBOT確認に使います。" action={<Switch checked={turnstileEnabled} onCheckedChange={setTurnstileEnabled} />}>
+          {turnstileEnabled ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label="Site key">
+                <Input value={turnstileSiteKey} onChange={(event) => setTurnstileSiteKey(event.target.value)} placeholder="0x4AAAA..." />
+              </Field>
+              <Field label="Secret key">
+                <Input type="password" value={turnstileSecret} onChange={(event) => setTurnstileSecret(event.target.value)} placeholder={initialSettings?.turnstile_configured ? "設定済み" : ""} />
+              </Field>
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Turnstileを使う場合は有効化してSite keyとSecret keyを保存してください。</div>
+          )}
+        </SettingsSection>
       </div>
       {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
-      <Button onClick={() => saveAppSettings.mutate()} disabled={saveAppSettings.isPending || !appName.trim() || smtpRequiredMissing || turnstileRequiredMissing}>
+      <Button onClick={() => saveAppSettings.mutate()} disabled={saveAppSettings.isPending || !appName.trim() || !timezoneValid || smtpRequiredMissing || turnstileRequiredMissing}>
         <Save className="size-4" />
         {t("save")}
       </Button>
-    </>
+    </div>
+  );
+}
+
+function SettingsSection({ title, description, action, className = "", children }: { title: string; description: string; action?: ReactNode; className?: string; children: ReactNode }) {
+  return (
+    <section className={`space-y-3 rounded-md border bg-muted/20 p-3 ${className}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{title}</div>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      {children}
+    </section>
   );
 }
 

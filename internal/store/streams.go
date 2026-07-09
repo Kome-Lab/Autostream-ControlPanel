@@ -82,6 +82,18 @@ type StreamArtifact struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+type StreamArtifactShare struct {
+	ID              string     `json:"id"`
+	TokenHash       string     `json:"-"`
+	StreamID        string     `json:"stream_id"`
+	ArtifactID      string     `json:"artifact_id"`
+	CreatedByUserID string     `json:"created_by_user_id,omitempty"`
+	AllowDownload   bool       `json:"allow_download"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
+}
+
 type StreamYouTubeRuntime struct {
 	StreamID            string    `json:"stream_id"`
 	YouTubeOutput       string    `json:"youtube_output"`
@@ -115,6 +127,13 @@ type StreamStore interface {
 type StreamArtifactAdminStore interface {
 	DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error
 	RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error)
+}
+
+type StreamArtifactShareStore interface {
+	CreateStreamArtifactShare(ctx context.Context, share StreamArtifactShare) (StreamArtifactShare, error)
+	ListStreamArtifactShares(ctx context.Context, streamID, artifactID string) ([]StreamArtifactShare, error)
+	GetStreamArtifactShareByTokenHash(ctx context.Context, tokenHash string) (StreamArtifactShare, error)
+	RevokeStreamArtifactShare(ctx context.Context, streamID, artifactID, shareID string) error
 }
 
 type StreamArtifactReportStore interface {
@@ -484,6 +503,99 @@ func (s MariaDBStreamStore) RenameStreamArtifact(ctx context.Context, streamID, 
 		return StreamArtifact{}, err
 	}
 	return artifact, nil
+}
+
+func (s MariaDBStreamStore) CreateStreamArtifactShare(ctx context.Context, share StreamArtifactShare) (StreamArtifactShare, error) {
+	share.StreamID = strings.TrimSpace(share.StreamID)
+	share.ArtifactID = strings.TrimSpace(share.ArtifactID)
+	share.TokenHash = strings.TrimSpace(share.TokenHash)
+	share.CreatedByUserID = strings.TrimSpace(share.CreatedByUserID)
+	if share.StreamID == "" || share.ArtifactID == "" || share.TokenHash == "" || !share.ExpiresAt.After(time.Now().UTC()) {
+		return StreamArtifactShare{}, ErrInvalidStreamArtifact
+	}
+	if _, err := s.streamArtifactByID(ctx, share.StreamID, share.ArtifactID); err != nil {
+		return StreamArtifactShare{}, err
+	}
+	now := time.Now().UTC()
+	share.ID = newUUID()
+	share.ExpiresAt = share.ExpiresAt.UTC()
+	share.CreatedAt = now
+	_, err := s.db.ExecContext(ctx, `INSERT INTO stream_artifact_shares (id, token_hash, stream_id, artifact_id, created_by_user_id, allow_download, expires_at, created_at, revoked_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULL)`,
+		share.ID, share.TokenHash, share.StreamID, share.ArtifactID, share.CreatedByUserID, share.AllowDownload, share.ExpiresAt, share.CreatedAt)
+	if err != nil {
+		return StreamArtifactShare{}, err
+	}
+	return share, nil
+}
+
+func (s MariaDBStreamStore) ListStreamArtifactShares(ctx context.Context, streamID, artifactID string) ([]StreamArtifactShare, error) {
+	streamID = strings.TrimSpace(streamID)
+	artifactID = strings.TrimSpace(artifactID)
+	if _, err := s.streamArtifactByID(ctx, streamID, artifactID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, token_hash, stream_id, artifact_id, COALESCE(created_by_user_id, ''), allow_download, expires_at, created_at, revoked_at FROM stream_artifact_shares WHERE stream_id = ? AND artifact_id = ? ORDER BY created_at DESC`, streamID, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var shares []StreamArtifactShare
+	for rows.Next() {
+		share, err := scanStreamArtifactShare(rows)
+		if err != nil {
+			return nil, err
+		}
+		shares = append(shares, share)
+	}
+	return shares, rows.Err()
+}
+
+func (s MariaDBStreamStore) GetStreamArtifactShareByTokenHash(ctx context.Context, tokenHash string) (StreamArtifactShare, error) {
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return StreamArtifactShare{}, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, token_hash, stream_id, artifact_id, COALESCE(created_by_user_id, ''), allow_download, expires_at, created_at, revoked_at FROM stream_artifact_shares WHERE token_hash = ?`, tokenHash)
+	share, err := scanStreamArtifactShare(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StreamArtifactShare{}, ErrNotFound
+	}
+	if err != nil {
+		return StreamArtifactShare{}, err
+	}
+	return share, nil
+}
+
+func (s MariaDBStreamStore) RevokeStreamArtifactShare(ctx context.Context, streamID, artifactID, shareID string) error {
+	streamID = strings.TrimSpace(streamID)
+	artifactID = strings.TrimSpace(artifactID)
+	shareID = strings.TrimSpace(shareID)
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `UPDATE stream_artifact_shares SET revoked_at = ? WHERE id = ? AND stream_id = ? AND artifact_id = ? AND revoked_at IS NULL`, now, shareID, streamID, artifactID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+type streamArtifactShareScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanStreamArtifactShare(scanner streamArtifactShareScanner) (StreamArtifactShare, error) {
+	var share StreamArtifactShare
+	var revoked sql.NullTime
+	if err := scanner.Scan(&share.ID, &share.TokenHash, &share.StreamID, &share.ArtifactID, &share.CreatedByUserID, &share.AllowDownload, &share.ExpiresAt, &share.CreatedAt, &revoked); err != nil {
+		return StreamArtifactShare{}, err
+	}
+	if revoked.Valid {
+		revokedAt := revoked.Time.UTC()
+		share.RevokedAt = &revokedAt
+	}
+	return share, nil
 }
 
 func (s MariaDBStreamStore) streamArtifactByID(ctx context.Context, streamID, artifactID string) (StreamArtifact, error) {

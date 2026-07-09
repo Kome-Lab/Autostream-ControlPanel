@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Database, Gauge, HardDrive, RadioTower, Server } from "lucide-react";
+import { Activity, Database, Gauge, HardDrive, Network, RadioTower, Server } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { MetricCard } from "@/components/admin/metric-card";
 import { EChartsPanel, type ChartOption } from "@/components/charts/echarts-panel";
-import { useWorkerMetrics } from "@/features/queries";
-import type { MetricSnapshot } from "@/types/domain";
+import { useAppSettings, useServiceHealth, useWorkerMetrics } from "@/features/queries";
+import { formatTimeInTimeZone } from "@/lib/timezone";
+import type { MetricSnapshot, WorkerNode } from "@/types/domain";
 
 type MetricPoint = {
   time: number;
@@ -21,6 +23,7 @@ type MetricSeries = {
   key: string;
   label: string;
   serviceID: string;
+  serviceLabel: string;
   serviceType: string;
   name: string;
   unit: MetricUnit;
@@ -29,42 +32,101 @@ type MetricSeries = {
 };
 
 type MetricUnit = "percent" | "kbps" | "bytes" | "seconds" | "count" | "flag" | "number";
-type MetricGroup = "cpu" | "memory" | "disk" | "heap" | "workload" | "runtime";
+type MetricGroup = "cpu" | "memory" | "disk" | "network" | "heap" | "workload" | "runtime";
 
-const historyWindowMs = 30 * 60 * 1000;
-const maxPointsPerSeries = 90;
+const historyWindowMs = 3 * 60 * 60 * 1000;
+const maxPointsPerSeries = 360;
+const timeRangeOptions = [
+  { value: String(15 * 60 * 1000), label: "直近15分" },
+  { value: String(30 * 60 * 1000), label: "直近30分" },
+  { value: String(60 * 60 * 1000), label: "直近1時間" },
+  { value: String(3 * 60 * 60 * 1000), label: "直近3時間" },
+];
 
 export function MetricsView() {
+  const appSettings = useAppSettings();
   const metrics = useWorkerMetrics();
+  const services = useServiceHealth();
+  const timezone = appSettings.data?.timezone;
+  const [selectedNode, setSelectedNode] = useState("");
+  const [timeRange, setTimeRange] = useState(String(3 * 60 * 60 * 1000));
   const numericMetrics = useMemo(() => numericMetricSnapshots(metrics.data || []), [metrics.data]);
-  const history = useMetricHistory(numericMetrics);
-  const latest = useMemo(() => latestSeries(history), [history]);
+  const serviceLabels = useMemo(() => serviceLabelMap(services.data || []), [services.data]);
+  const history = useMetricHistory(numericMetrics, serviceLabels);
+  const allSeries = useMemo(() => latestSeries(history), [history]);
+  const nodeOptions = useMemo(() => metricNodeOptions(allSeries), [allSeries]);
+  const selectedNodeIsValid = nodeOptions.some((option) => option.value === selectedNode);
+  const effectiveNode = selectedNodeIsValid ? selectedNode : nodeOptions[0]?.value || "";
+  const effectiveNodeLabel = nodeOptions.find((option) => option.value === effectiveNode)?.label || "";
+  const latest = useMemo(() => filterMetricSeries(allSeries, effectiveNode, Number.parseInt(timeRange, 10)), [allSeries, effectiveNode, timeRange]);
 
   const cpuSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "cpu"), [latest]);
   const memorySeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "memory"), [latest]);
   const diskSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "disk"), [latest]);
+  const networkSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "network"), [latest]);
+  const networkThroughputSeries = useMemo(() => {
+    const throughput = networkSeries.filter((series) => isNetworkThroughputMetric(series.name));
+    return throughput.length > 0 ? throughput : networkSeries;
+  }, [networkSeries]);
+  const networkUnit = useMemo(() => chartUnit(networkThroughputSeries, "kbps"), [networkThroughputSeries]);
   const heapSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "heap"), [latest]);
   const workloadSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "workload"), [latest]);
   const runtimeSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "runtime"), [latest]);
+  const operationSeries = useMemo(() => [...workloadSeries, ...runtimeSeries].filter(isOperationChartMetric), [workloadSeries, runtimeSeries]);
 
   const maxCPU = maxLatestValue(cpuSeries);
   const maxMemory = maxLatestValue(memorySeries);
   const maxDisk = maxLatestValue(diskSeries);
-  const maxHeap = maxLatestValue(heapSeries);
-  const serviceCount = new Set(latest.map((series) => series.serviceID || series.serviceType).filter(Boolean)).size;
+  const maxNetwork = maxLatestValue(networkThroughputSeries);
+  const serviceCount = new Set(allSeries.map((series) => series.serviceID || series.serviceType).filter(Boolean)).size;
 
-  if (metrics.isLoading && latest.length === 0) {
+  if (metrics.isLoading && allSeries.length === 0) {
     return <Skeleton className="h-[520px] w-full" />;
   }
 
   return (
     <div className="space-y-6">
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <MetricCard title="最大CPU使用率" value={formatStat(maxCPU, "percent")} detail="各Nodeの最新CPU使用率" tone={thresholdTone(maxCPU, 80, 95)} />
-        <MetricCard title="最大メモリ使用率" value={formatStat(maxMemory, "percent")} detail="各Nodeの最新メモリ使用率" tone={thresholdTone(maxMemory, 75, 90)} />
-        <MetricCard title="最大ディスク使用率" value={formatStat(maxDisk, "percent")} detail="rootディスクの最新使用率" tone={thresholdTone(maxDisk, 80, 92)} />
-        <MetricCard title="最大Heap使用量" value={formatStat(maxHeap, "bytes")} detail="process heapの最新使用量" tone="default" />
-        <MetricCard title="受信Node" value={serviceCount} detail="メトリクスを報告中" tone={serviceCount > 0 ? "ok" : "warning"} />
+        <MetricCard title="CPU使用率" value={formatStat(maxCPU, "percent")} detail={metricCardDetail(effectiveNodeLabel, "CPU")} tone={thresholdTone(maxCPU, 80, 95)} />
+        <MetricCard title="メモリ使用率" value={formatStat(maxMemory, "percent")} detail={metricCardDetail(effectiveNodeLabel, "メモリ")} tone={thresholdTone(maxMemory, 75, 90)} />
+        <MetricCard title="ディスク使用率" value={formatStat(maxDisk, "percent")} detail={metricCardDetail(effectiveNodeLabel, "rootディスク")} tone={thresholdTone(maxDisk, 80, 92)} />
+        <MetricCard title="ネットワーク" value={formatStat(maxNetwork, networkUnit)} detail={metricCardDetail(effectiveNodeLabel, "送受信スループット")} tone="default" />
+        <MetricCard title="受信Node" value={serviceCount} detail={effectiveNodeLabel ? `表示中: ${effectiveNodeLabel}` : "メトリクスを報告中"} tone={serviceCount > 0 ? "ok" : "warning"} />
+      </section>
+
+      <section className="flex flex-wrap items-end gap-3 rounded-md border bg-muted/20 p-3">
+        <div className="min-w-64 space-y-2">
+          <label className="text-sm font-medium">表示Node</label>
+          <Select value={effectiveNode || "__none__"} onValueChange={setSelectedNode}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {nodeOptions.length === 0 ? <SelectItem value="__none__">Nodeなし</SelectItem> : null}
+              {nodeOptions.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="min-w-48 space-y-2">
+          <label className="text-sm font-medium">表示範囲</label>
+          <Select value={timeRange} onValueChange={setTimeRange}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {timeRangeOptions.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <p className="text-sm text-muted-foreground">リアルタイム更新は維持し、選択したNodeの時系列だけを表示します。</p>
       </section>
 
       {latest.length === 0 ? (
@@ -78,19 +140,20 @@ export function MetricsView() {
         </Card>
       ) : (
         <>
-          <section className="grid gap-4 xl:grid-cols-2">
-            <EChartsPanel title="CPU使用率" option={lineChartOption(cpuSeries, "percent")} height={300} />
-            <EChartsPanel title="メモリ使用率" option={lineChartOption(memorySeries, "percent")} height={300} />
+          <section className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
+            <EChartsPanel title="CPU使用率" option={lineChartOption(cpuSeries, "percent", timezone)} height={300} />
+            <EChartsPanel title="メモリ使用率" option={lineChartOption(memorySeries, "percent", timezone)} height={300} />
           </section>
-          <section className="grid gap-4 xl:grid-cols-2">
-            <EChartsPanel title="ディスク使用率" option={lineChartOption(diskSeries, "percent")} height={300} />
-            <EChartsPanel title="Heap使用量" option={lineChartOption(heapSeries, "bytes")} height={300} />
+          <section className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
+            <EChartsPanel title="ディスク使用率" option={lineChartOption(diskSeries, "percent", timezone)} height={300} />
+            <EChartsPanel title="ネットワーク送受信" option={lineChartOption(networkThroughputSeries, networkUnit, timezone)} height={300} />
           </section>
-          <section className="grid gap-4 xl:grid-cols-1">
-            <EChartsPanel title="処理・ランタイム指標" option={lineChartOption([...workloadSeries, ...runtimeSeries], "number")} height={300} />
+          <section className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
+            <EChartsPanel title="Heap使用量" option={lineChartOption(heapSeries, "bytes", timezone)} height={300} />
+            <EChartsPanel title="処理・ランタイム指標" option={lineChartOption(operationSeries, "number", timezone)} height={300} />
           </section>
-          <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-            <LatestMetricsTable series={latest} />
+          <section className="grid min-w-0 gap-4 xl:grid-cols-[1.15fr_0.85fr] [&>*]:min-w-0">
+            <LatestMetricsTable series={latest} timezone={timezone} />
             <ServiceMetricSummary series={latest} />
           </section>
         </>
@@ -99,7 +162,7 @@ export function MetricsView() {
   );
 }
 
-function useMetricHistory(metrics: MetricSnapshot[]) {
+function useMetricHistory(metrics: MetricSnapshot[], serviceLabels: Map<string, string>) {
   const historyRef = useRef<Map<string, MetricSeries>>(new Map());
   const [history, setHistory] = useState<MetricSeries[]>([]);
 
@@ -114,16 +177,20 @@ function useMetricHistory(metrics: MetricSnapshot[]) {
       const existing = next.get(key);
       const point = { time, value: metric.value, updatedAt: metric.updated_at };
       const previousPoints = existing?.points || [];
-      const lastPoint = previousPoints[previousPoints.length - 1];
-      const cutoff = Math.max(lastPoint?.time || time, time) - historyWindowMs;
-      const points =
-        lastPoint && lastPoint.time === point.time && lastPoint.value === point.value
-          ? previousPoints
-          : [...previousPoints, point].filter((item) => item.time >= cutoff).slice(-maxPointsPerSeries);
+      const cutoff = now - historyWindowMs;
+      const mergedPoints = new Map<number, MetricPoint>();
+      for (const previousPoint of previousPoints) {
+        if (previousPoint.time >= cutoff) mergedPoints.set(previousPoint.time, previousPoint);
+      }
+      if (point.time >= cutoff) mergedPoints.set(point.time, point);
+      const points = Array.from(mergedPoints.values())
+        .sort((a, b) => a.time - b.time)
+        .slice(-maxPointsPerSeries);
       next.set(key, {
         key,
-        label: metricSeriesLabel(metric),
+        label: metricSeriesLabel(metric, serviceLabels),
         serviceID: metric.service_id,
+        serviceLabel: serviceLabel(metric.service_id, metric.service_type, serviceLabels),
         serviceType: metric.service_type,
         name: metric.name,
         unit: metricUnit(metric.name),
@@ -134,21 +201,21 @@ function useMetricHistory(metrics: MetricSnapshot[]) {
     historyRef.current = next;
     const handle = window.setTimeout(() => setHistory(Array.from(next.values())), 0);
     return () => window.clearTimeout(handle);
-  }, [metrics]);
+  }, [metrics, serviceLabels]);
 
   return history;
 }
 
-function LatestMetricsTable({ series }: { series: MetricSeries[] }) {
+function LatestMetricsTable({ series, timezone }: { series: MetricSeries[]; timezone?: string }) {
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
           <Activity className="size-4" />
           最新メトリクス
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-w-0">
         <Table>
           <TableHeader>
             <TableRow>
@@ -164,12 +231,12 @@ function LatestMetricsTable({ series }: { series: MetricSeries[] }) {
               return (
                 <TableRow key={item.key}>
                   <TableCell className="min-w-36">
-                    <div className="font-medium">{item.serviceID || "-"}</div>
+                    <div className="font-medium">{item.serviceLabel}</div>
                     <div className="text-xs text-muted-foreground">{serviceTypeLabel(item.serviceType)}</div>
                   </TableCell>
                   <TableCell>{metricNameLabel(item.name)}</TableCell>
                   <TableCell className="font-medium">{latest ? formatMetricValue(latest.value, item.unit) : "-"}</TableCell>
-                  <TableCell className="text-muted-foreground">{latest ? formatTime(latest.time) : "-"}</TableCell>
+                  <TableCell className="text-muted-foreground">{latest ? formatTime(latest.time, timezone) : "-"}</TableCell>
                 </TableRow>
               );
             })}
@@ -183,29 +250,30 @@ function LatestMetricsTable({ series }: { series: MetricSeries[] }) {
 function ServiceMetricSummary({ series }: { series: MetricSeries[] }) {
   const rows = useMemo(() => serviceMetricRows(series), [series]);
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
           <Server className="size-4" />
           Node別サマリー
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="min-w-0 space-y-3">
         {rows.map((row) => (
           <div key={row.id} className="rounded-md border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="font-medium">{row.id}</div>
+                <div className="font-medium">{row.label}</div>
                 <div className="text-xs text-muted-foreground">{serviceTypeLabel(row.type)}</div>
               </div>
               <Badge variant="outline">{row.count} 指標</Badge>
             </div>
-            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-5">
+            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-6">
               <SummaryItem icon={Activity} label="CPU" value={formatOptional(row.cpu, "percent")} />
               <SummaryItem icon={Database} label="メモリ" value={formatOptional(row.memory, "percent")} />
               <SummaryItem icon={HardDrive} label="ディスク" value={formatOptional(row.disk, "percent")} />
+              <SummaryItem icon={Network} label="ネットワーク" value={formatOptional(row.network, row.networkUnit || "kbps")} />
               <SummaryItem icon={Gauge} label="Heap" value={formatOptional(row.heap, "bytes")} />
-              <SummaryItem icon={RadioTower} label="状態" value={row.status || "-"} />
+              <SummaryItem icon={RadioTower} label="状態" value={serviceStatusLabel(row.status)} />
             </div>
           </div>
         ))}
@@ -226,7 +294,7 @@ function SummaryItem({ icon: Icon, label, value }: { icon: typeof Activity; labe
   );
 }
 
-function lineChartOption(series: MetricSeries[], preferredUnit: MetricUnit): ChartOption {
+function lineChartOption(series: MetricSeries[], preferredUnit: MetricUnit, timezone?: string): ChartOption {
   if (series.length === 0) {
     return {
       grid: { top: 18, right: 16, bottom: 40, left: 48 },
@@ -236,7 +304,7 @@ function lineChartOption(series: MetricSeries[], preferredUnit: MetricUnit): Cha
     } as ChartOption;
   }
   const times = Array.from(new Set(series.flatMap((item) => item.points.map((point) => point.time)))).sort((a, b) => a - b);
-  const unit = preferredUnit === "number" ? dominantUnit(series) : preferredUnit;
+  const unit = chartUnit(series, preferredUnit);
   return {
     color: ["#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#7c3aed", "#0891b2", "#475569"],
     tooltip: {
@@ -247,7 +315,7 @@ function lineChartOption(series: MetricSeries[], preferredUnit: MetricUnit): Cha
     grid: { top: 20, right: 22, bottom: 58, left: 58 },
     xAxis: {
       type: "category",
-      data: times.map(formatTime),
+      data: times.map((time) => formatTime(time, timezone)),
       boundaryGap: false,
       axisLabel: { hideOverlap: true },
     },
@@ -259,7 +327,7 @@ function lineChartOption(series: MetricSeries[], preferredUnit: MetricUnit): Cha
       splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.22)" } },
     },
     series: series.slice(0, 8).map((item) => ({
-      name: item.label,
+      name: chartSeriesName(item, series),
       type: "line",
       smooth: true,
       showSymbol: false,
@@ -268,6 +336,16 @@ function lineChartOption(series: MetricSeries[], preferredUnit: MetricUnit): Cha
       data: times.map((time) => item.points.find((point) => point.time === time)?.value ?? null),
     })),
   } as ChartOption;
+}
+
+function chartUnit(series: MetricSeries[], preferredUnit: MetricUnit) {
+  if (preferredUnit !== "number" && series.some((item) => item.unit === preferredUnit)) return preferredUnit;
+  return dominantUnit(series);
+}
+
+function chartSeriesName(item: MetricSeries, series: MetricSeries[]) {
+  const serviceIDs = new Set(series.map((candidate) => candidate.serviceID).filter(Boolean));
+  return serviceIDs.size <= 1 ? metricNameLabel(item.name) : item.label;
 }
 
 function numericMetricSnapshots(metrics: MetricSnapshot[]) {
@@ -280,11 +358,34 @@ function latestSeries(series: MetricSeries[]) {
   return [...series].sort((a, b) => metricSortRank(a.name, a.unit) - metricSortRank(b.name, b.unit) || a.label.localeCompare(b.label));
 }
 
+function metricNodeOptions(series: MetricSeries[]) {
+  const seen = new Map<string, string>();
+  for (const item of series) {
+    const value = item.serviceID || item.serviceType;
+    if (!value || seen.has(value)) continue;
+    seen.set(value, `${item.serviceLabel} (${serviceTypeLabel(item.serviceType)})`);
+  }
+  return Array.from(seen.entries())
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function filterMetricSeries(series: MetricSeries[], serviceID: string, rangeMs: number) {
+  const cutoff = Date.now() - (Number.isFinite(rangeMs) ? rangeMs : historyWindowMs);
+  return series
+    .filter((item) => !serviceID || item.serviceID === serviceID)
+    .map((item) => ({ ...item, points: item.points.filter((point) => point.time >= cutoff) }))
+    .filter((item) => item.points.length > 0);
+}
+
 function serviceMetricRows(series: MetricSeries[]) {
-  const rows = new Map<string, { id: string; type: string; count: number; cpu?: number; memory?: number; disk?: number; heap?: number; status?: string }>();
+  const rows = new Map<
+    string,
+    { id: string; label: string; type: string; count: number; cpu?: number; memory?: number; disk?: number; network?: number; networkUnit?: MetricUnit; heap?: number; status?: string }
+  >();
   for (const item of series) {
     const id = item.serviceID || item.serviceType || "-";
-    const row = rows.get(id) || { id, type: item.serviceType, count: 0 };
+    const row = rows.get(id) || { id, label: item.serviceLabel, type: item.serviceType, count: 0 };
     row.count += 1;
     row.status = item.status || row.status;
     const latest = latestPoint(item)?.value;
@@ -293,6 +394,10 @@ function serviceMetricRows(series: MetricSeries[]) {
       if (group === "cpu") row.cpu = latest;
       if (group === "memory") row.memory = latest;
       if (group === "disk" && item.name.endsWith("used_percent")) row.disk = latest;
+      if (group === "network" && isNetworkThroughputMetric(item.name)) {
+        row.network = Math.max(row.network ?? latest, latest);
+        row.networkUnit = item.unit;
+      }
       if (group === "heap" && (item.name.endsWith("heap_alloc_bytes") || row.heap === undefined)) row.heap = latest;
     }
     rows.set(id, row);
@@ -304,24 +409,49 @@ function metricKey(metric: MetricSnapshot) {
   return `${metric.service_type}:${metric.service_id}:${metric.stream_id || ""}:${metric.name}`;
 }
 
-function metricSeriesLabel(metric: MetricSnapshot) {
-  return `${metric.service_id || serviceTypeLabel(metric.service_type)} / ${metricNameLabel(metric.name)}`;
+function metricSeriesLabel(metric: MetricSnapshot, serviceLabels: Map<string, string>) {
+  return `${serviceLabel(metric.service_id, metric.service_type, serviceLabels)} / ${metricNameLabel(metric.name)}`;
+}
+
+function serviceLabelMap(nodes: WorkerNode[]) {
+  const labels = new Map<string, string>();
+  for (const node of nodes) {
+    const id = node.service_id || node.id;
+    const label = node.service_name || id;
+    if (id && label) labels.set(id, label);
+  }
+  return labels;
+}
+
+function serviceLabel(serviceID: string, serviceType: string, labels: Map<string, string>) {
+  return labels.get(serviceID) || serviceID || serviceTypeLabel(serviceType);
 }
 
 function metricGroup(name: string, unit: MetricUnit): MetricGroup {
   const lower = name.toLowerCase();
   if (lower.includes("cpu")) return "cpu";
   if (unit === "percent" && lower.includes("filesystem")) return "disk";
+  if (lower.includes("network") || lower.includes("net.") || lower.includes("interface") || lower.includes("rx_") || lower.includes("tx_")) return "network";
   if (unit === "percent" && (lower.includes("memory") || lower.includes("mem"))) return "memory";
   if (unit === "bytes" && lower.includes("heap")) return "heap";
   if (lower.includes("bitrate") || lower.includes("fps") || lower.includes("active") || lower.includes("process_alive") || lower.includes("audio")) return "workload";
   return "runtime";
 }
 
+function isNetworkThroughputMetric(name: string) {
+  const lower = name.toLowerCase();
+  return lower.includes("kbps") || lower.includes("bytes_per_sec") || lower.includes("rx_rate") || lower.includes("tx_rate");
+}
+
+function isOperationChartMetric(series: MetricSeries) {
+  if (series.unit === "bytes" || series.unit === "seconds") return false;
+  return !series.name.toLowerCase().includes("memory.used");
+}
+
 function metricUnit(name: string): MetricUnit {
   const lower = name.toLowerCase();
   if (lower.includes("percent")) return "percent";
-  if (lower.includes("kbps") || lower.includes("bitrate")) return "kbps";
+  if (lower.includes("kbps") || lower.includes("bitrate") || lower.includes("bps")) return "kbps";
   if (lower.includes("heap_objects") || lower.includes("objects")) return "count";
   if (lower.includes("bytes")) return "bytes";
   if (lower.includes("sec") || lower.includes("duration") || lower.includes("uptime")) return "seconds";
@@ -334,6 +464,8 @@ function metricNameLabel(name: string) {
   const labels: Record<string, string> = {
     "worker.cpu_percent": "Worker CPU使用率",
     "worker.memory_percent": "Worker メモリ使用率",
+    "worker.active_jobs": "Worker 実行中ジョブ",
+    "encoder.output_bitrate_kbps": "Encoder 出力ビットレート",
     "encoder.process_alive": "Encoderプロセス",
     "discord.audio_forward_active": "Discord音声転送",
     "observability.goroutines": "Observability goroutine数",
@@ -341,6 +473,7 @@ function metricNameLabel(name: string) {
     "observability.heap_sys_bytes": "Observability heap予約量",
     "observability.heap_objects": "Observability heap object数",
     "observability.uptime_seconds": "Observability稼働秒数",
+    "node.cpu.used_percent": "CPU使用率",
     "node.cpu_count": "CPUコア数",
     "node.load1": "ロードアベレージ 1分",
     "node.load5": "ロードアベレージ 5分",
@@ -359,6 +492,12 @@ function metricNameLabel(name: string) {
     "node.filesystem.root.files": "root inode総数",
     "node.filesystem.root.files_free": "root inode空き数",
     "node.filesystem.root.files_percent": "root inode使用率",
+    "node.network.rx_bytes_total": "ネットワーク受信累計",
+    "node.network.tx_bytes_total": "ネットワーク送信累計",
+    "node.network.rx_bytes_per_sec": "ネットワーク受信量",
+    "node.network.tx_bytes_per_sec": "ネットワーク送信量",
+    "node.network.rx_kbps": "ネットワーク受信 kbps",
+    "node.network.tx_kbps": "ネットワーク送信 kbps",
     "process.goroutines": "プロセス goroutine数",
     "process.heap_alloc_bytes": "プロセス heap使用量",
     "process.heap_sys_bytes": "プロセス heap予約量",
@@ -379,14 +518,29 @@ function serviceTypeLabel(type: string) {
   return labels[type] || type || "-";
 }
 
+function serviceStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    online: "オンライン",
+    offline: "オフライン",
+    degraded: "注意",
+    pending: "未設定",
+  };
+  return status ? labels[status] || status : "-";
+}
+
+function metricCardDetail(nodeLabel: string, target: string) {
+  return nodeLabel ? `${nodeLabel} の${target}` : `${target}の最新値`;
+}
+
 function metricSortRank(name: string, unit: MetricUnit) {
   const group = metricGroup(name, unit);
   if (group === "cpu") return 0;
   if (group === "memory") return 1;
   if (group === "disk") return 2;
-  if (group === "heap") return 3;
-  if (group === "workload") return 4;
-  return 5;
+  if (group === "network") return 3;
+  if (group === "heap") return 4;
+  if (group === "workload") return 5;
+  return 6;
 }
 
 function normalizedMetricTime(value: string, fallback: number) {
@@ -452,6 +606,6 @@ function thresholdTone(value: number | undefined, warning: number, danger: numbe
   return "ok";
 }
 
-function formatTime(time: number) {
-  return new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(time);
+function formatTime(time: number, timezone?: string) {
+  return formatTimeInTimeZone(new Date(time).toISOString(), timezone);
 }

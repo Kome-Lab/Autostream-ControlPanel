@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Check, Copy, FileCode2, RotateCw } from "lucide-react";
+import { Check, Copy, FileCode2, Link, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/tables/data-table";
@@ -62,21 +62,37 @@ export function WorkersView() {
     {
       accessorKey: "service_name",
       header: t("name"),
-      cell: ({ row }) => (
-        <div className="min-w-56">
-          <div className="font-medium">{row.original.service_name}</div>
-          <div className="text-xs text-muted-foreground">{row.original.service_id || row.original.id}</div>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const nodeID = row.original.service_id || row.original.id;
+        return (
+          <div className="min-w-56">
+            <div className="flex items-center gap-2">
+              <div className="font-medium">{nodeDisplayName(row.original)}</div>
+              <Button variant="outline" size="icon-sm" aria-label="Node IDをコピー" onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
+                {copied === `node-id-${nodeID}` ? <Check className="size-4" /> : <Copy className="size-4" />}
+              </Button>
+            </div>
+          </div>
+        );
+      },
     },
     { accessorKey: "service_type", header: t("nodeType") },
     {
       id: "endpoint",
-      header: "Node Agent API",
+      header: "接続先",
       cell: ({ row }) => {
         const node = row.original;
-        const url = node.host && node.port ? `${node.ssl_enabled ? "https" : "http"}://${node.host}:${node.port}` : node.public_url || "-";
-        return <span className="break-all text-sm">{url}</span>;
+        const url = nodeEndpoint(node);
+        return (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">{url ? "設定済み" : "未設定"}</span>
+            {url ? (
+              <Button variant="outline" size="icon-sm" aria-label="Node Agent API URLをコピー" onClick={() => copyValue(`endpoint-${node.service_id || node.id}`, url)}>
+                {copied === `endpoint-${node.service_id || node.id}` ? <Check className="size-4" /> : <Link className="size-4" />}
+              </Button>
+            ) : null}
+          </div>
+        );
       },
     },
     {
@@ -174,6 +190,17 @@ export function WorkersView() {
 function capabilityCount(node: WorkerNode) {
   const capabilities = node.reported_capabilities && Object.keys(node.reported_capabilities).length > 0 ? node.reported_capabilities : node.capabilities;
   return Object.keys(capabilities ?? {}).length;
+}
+
+function nodeDisplayName(node: WorkerNode) {
+  return node.service_name || "未設定のNode名";
+}
+
+function nodeEndpoint(node: WorkerNode) {
+  if (node.host && node.port) {
+    return `${node.ssl_enabled ? "https" : "http"}://${node.host}:${node.port}`;
+  }
+  return node.public_url || "";
 }
 
 function SecretBlock({ label, value, copied, onCopy }: { label: string; value: string; copied: boolean; onCopy: () => void }) {

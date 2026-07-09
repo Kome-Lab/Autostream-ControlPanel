@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS services (
   public_url TEXT NOT NULL,
   version VARCHAR(80) NOT NULL,
   reported_version VARCHAR(80) NOT NULL DEFAULT '',
+  reported_commit VARCHAR(80) NOT NULL DEFAULT '',
+  reported_build_date VARCHAR(80) NOT NULL DEFAULT '',
   status VARCHAR(80) NOT NULL,
   last_heartbeat_at DATETIME NULL,
   last_reported_at DATETIME NULL,
@@ -91,6 +93,18 @@ CREATE TABLE IF NOT EXISTS services (
   node_token_rotated_at DATETIME NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS service_metric_snapshots (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  service_id VARCHAR(128) NOT NULL,
+  service_type ENUM('discord_bot','encoder_recorder','worker','observability') NOT NULL,
+  metric_name VARCHAR(255) NOT NULL,
+  status VARCHAR(80) NOT NULL DEFAULT '',
+  value DOUBLE NOT NULL,
+  observed_at DATETIME NOT NULL,
+  INDEX idx_service_metric_snapshots_observed_at (observed_at),
+  INDEX idx_service_metric_snapshots_service_observed (service_id, observed_at)
 );
 
 CREATE TABLE IF NOT EXISTS stream_service_assignments (
@@ -141,6 +155,20 @@ CREATE TABLE IF NOT EXISTS stream_artifacts (
   created_at DATETIME NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stream_artifact_shares (
+  id CHAR(36) PRIMARY KEY,
+  token_hash CHAR(64) NOT NULL UNIQUE,
+  stream_id CHAR(36) NOT NULL,
+  artifact_id CHAR(36) NOT NULL,
+  created_by_user_id CHAR(36) NULL,
+  allow_download BOOLEAN NOT NULL DEFAULT TRUE,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL,
+  revoked_at DATETIME NULL,
+  INDEX idx_stream_artifact_shares_artifact (stream_id, artifact_id),
+  INDEX idx_stream_artifact_shares_expires_at (expires_at)
+);
+
 CREATE TABLE IF NOT EXISTS stream_youtube_runtimes (
   stream_id CHAR(36) PRIMARY KEY,
   youtube_output VARCHAR(160) NOT NULL,
@@ -166,6 +194,7 @@ CREATE TABLE IF NOT EXISTS oauth_login_states (
   purpose VARCHAR(32) NOT NULL DEFAULT 'login',
   nonce VARCHAR(160) NOT NULL,
   redirect_after TEXT NULL,
+  account_label VARCHAR(255) NULL,
   requested_scopes TEXT NULL,
   expires_at DATETIME NOT NULL,
   created_at DATETIME NOT NULL,

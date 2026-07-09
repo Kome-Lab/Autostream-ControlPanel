@@ -63,6 +63,8 @@ export type WorkerNode = {
   public_url?: string;
   version?: string;
   reported_version?: string;
+  reported_commit?: string;
+  reported_build_date?: string;
   reported_hostname?: string;
   reported_os?: string;
   reported_arch?: string;

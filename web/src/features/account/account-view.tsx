@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Image from "next/image";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, KeyRound, Link2, Mail, Plus, QrCode, RefreshCcw, ShieldCheck, ShieldOff, Trash2, UserCog } from "lucide-react";
@@ -28,17 +28,6 @@ export function AccountView() {
   const oauthLinks = useQuery({ queryKey: ["auth", "oauth-links"], queryFn: () => apiGet<OAuthUserLink[]>("/auth/oauth-links") });
   const oauthProviders = useQuery({ queryKey: ["auth", "oauth", "providers"], queryFn: () => apiGet<OAuthLoginProvider[]>("/auth/oauth/providers") });
   const [notice, setNotice] = useState<AccountNotice>(null);
-
-  const linkedEmails = useMemo(() => {
-    const seen = new Set<string>();
-    return (oauthLinks.data || [])
-      .map((link) => link.email?.trim())
-      .filter((email): email is string => {
-        if (!email || seen.has(email)) return false;
-        seen.add(email);
-        return true;
-      });
-  }, [oauthLinks.data]);
 
   const showError = (error: unknown, fallback: string) => {
     const code = error instanceof APIError ? error.code : "";
@@ -71,7 +60,6 @@ export function AccountView() {
           currentEmail={currentUser.data?.user.email || ""}
           links={oauthLinks.data || []}
           providers={oauthProviders.data || []}
-          linkedEmails={linkedEmails}
           loading={oauthLinks.isLoading || oauthProviders.isLoading}
           setNotice={setNotice}
           onUpdated={() => queryClient.invalidateQueries({ queryKey: ["auth", "me"] })}
@@ -133,7 +121,6 @@ function EmailPanel({
   currentEmail,
   links,
   providers,
-  linkedEmails,
   loading,
   setNotice,
   onUpdated,
@@ -143,7 +130,6 @@ function EmailPanel({
   currentEmail: string;
   links: OAuthUserLink[];
   providers: OAuthLoginProvider[];
-  linkedEmails: string[];
   loading: boolean;
   setNotice: (notice: AccountNotice) => void;
   onUpdated: () => void;
@@ -205,9 +191,8 @@ function EmailPanel({
           {providers.length === 0 ? <div className="text-sm text-muted-foreground">{loading ? "読み込み中" : "利用可能なOAuthプロバイダはありません。"}</div> : null}
         </div>
         <div className="space-y-2">
-          {linkedEmails.length > 0 ? linkedEmails.map((email) => <div key={email} className="rounded-md border px-3 py-2 text-sm">{email}</div>) : <div className="text-sm text-muted-foreground">{loading ? "読み込み中" : "連携メールはありません。"}</div>}
-        </div>
-        <div className="space-y-2">
+          <div className="text-sm font-medium">連携済みログイン</div>
+          {links.length === 0 ? <div className="text-sm text-muted-foreground">{loading ? "読み込み中" : "連携済みログインはありません。"}</div> : null}
           {links.map((link) => (
             <div key={link.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
               <div className="min-w-0">

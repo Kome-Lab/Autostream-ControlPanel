@@ -1,22 +1,29 @@
 "use client";
 
+import { useMemo } from "react";
 import { AlertTriangle, ClipboardCheck, Network, ShieldAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { MetricCard } from "@/components/admin/metric-card";
 import { StatusBadge } from "@/components/admin/status-badge";
-import { useResourceData, useServiceHealth } from "@/features/queries";
-import type { WorkerNode } from "@/types/domain";
+import { useAppSettings, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
+import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import type { Stream, WorkerNode } from "@/types/domain";
 
 type MonitoringRow = Record<string, unknown>;
 
 export function MonitoringView() {
+  const appSettings = useAppSettings();
   const services = useServiceHealth();
+  const streams = useStreams();
   const incidents = useResourceData<MonitoringRow[]>("/observability/incidents");
   const diagnostics = useResourceData<MonitoringRow[]>("/observability/diagnostics");
+  const timezone = appSettings.data?.timezone;
 
-  const serviceRows = services.data || [];
+  const serviceRows = useMemo(() => services.data || [], [services.data]);
+  const streamRows = useMemo(() => streams.data || [], [streams.data]);
+  const entityLabels = useMemo(() => buildEntityLabels(serviceRows, streamRows), [serviceRows, streamRows]);
   const incidentRows = incidents.data || [];
   const diagnosticRows = diagnostics.data || [];
   const online = serviceRows.filter((service) => service.status === "online").length;
@@ -38,19 +45,19 @@ export function MonitoringView() {
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-        <ServiceHealthPanel services={serviceRows} loading={services.isLoading} />
-        <IncidentPanel incidents={incidentRows} loading={incidents.isLoading} />
+        <ServiceHealthPanel services={serviceRows} loading={services.isLoading} entityLabels={entityLabels} />
+        <IncidentPanel incidents={incidentRows} loading={incidents.isLoading} timezone={timezone} entityLabels={entityLabels} />
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        <DiagnosticsPanel diagnostics={diagnosticRows} loading={diagnostics.isLoading} />
-        <OperationalFocus services={serviceRows} incidents={incidentRows} diagnostics={diagnosticRows} />
+        <DiagnosticsPanel diagnostics={diagnosticRows} loading={diagnostics.isLoading} entityLabels={entityLabels} />
+        <OperationalFocus services={serviceRows} incidents={incidentRows} diagnostics={diagnosticRows} entityLabels={entityLabels} />
       </section>
     </div>
   );
 }
 
-function ServiceHealthPanel({ services, loading }: { services: WorkerNode[]; loading: boolean }) {
+function ServiceHealthPanel({ services, loading, entityLabels }: { services: WorkerNode[]; loading: boolean; entityLabels: Map<string, string> }) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -85,7 +92,7 @@ function ServiceHealthPanel({ services, loading }: { services: WorkerNode[]; loa
                     <StatusBadge status={service.health_status || service.status} showDetail />
                   </TableCell>
                   <TableCell className="text-muted-foreground">{formatHeartbeat(service.heartbeat_age_sec)}</TableCell>
-                  <TableCell className="text-muted-foreground">{service.current_stream_id || "-"}</TableCell>
+                  <TableCell className="text-muted-foreground">{displayReference(service.current_stream_id || "", entityLabels)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -96,7 +103,7 @@ function ServiceHealthPanel({ services, loading }: { services: WorkerNode[]; loa
   );
 }
 
-function IncidentPanel({ incidents, loading }: { incidents: MonitoringRow[]; loading: boolean }) {
+function IncidentPanel({ incidents, loading, timezone, entityLabels }: { incidents: MonitoringRow[]; loading: boolean; timezone?: string; entityLabels: Map<string, string> }) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -115,7 +122,7 @@ function IncidentPanel({ incidents, loading }: { incidents: MonitoringRow[]; loa
               <StatusBadge status={rowString(row, "status") || rowString(row, "severity")} />
             </div>
             <div className="mt-1 text-sm text-muted-foreground">
-              {rowString(row, "service_id") || "-"} / {formatTimestamp(rowString(row, "updated_at") || rowString(row, "created_at"))}
+              {displayReference(rowString(row, "service_id"), entityLabels)} / {formatTimestamp(rowString(row, "updated_at") || rowString(row, "created_at"), timezone)}
             </div>
           </div>
         ))}
@@ -124,7 +131,7 @@ function IncidentPanel({ incidents, loading }: { incidents: MonitoringRow[]; loa
   );
 }
 
-function DiagnosticsPanel({ diagnostics, loading }: { diagnostics: MonitoringRow[]; loading: boolean }) {
+function DiagnosticsPanel({ diagnostics, loading, entityLabels }: { diagnostics: MonitoringRow[]; loading: boolean; entityLabels: Map<string, string> }) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -140,7 +147,7 @@ function DiagnosticsPanel({ diagnostics, loading }: { diagnostics: MonitoringRow
           <div key={rowString(row, "id") || index} className="grid gap-3 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_128px] sm:items-center">
             <div>
               <div className="font-medium">{diagnosticLabel(rowString(row, "check") || rowString(row, "rule"))}</div>
-              <div className="text-sm text-muted-foreground">{rowString(row, "target") || rowString(row, "service_id") || "-"}</div>
+              <div className="text-sm text-muted-foreground">{displayReference(rowString(row, "target") || rowString(row, "service_id"), entityLabels)}</div>
             </div>
             <StatusBadge status={rowString(row, "status")} showDetail />
           </div>
@@ -150,7 +157,7 @@ function DiagnosticsPanel({ diagnostics, loading }: { diagnostics: MonitoringRow
   );
 }
 
-function OperationalFocus({ services, incidents, diagnostics }: { services: WorkerNode[]; incidents: MonitoringRow[]; diagnostics: MonitoringRow[] }) {
+function OperationalFocus({ services, incidents, diagnostics, entityLabels }: { services: WorkerNode[]; incidents: MonitoringRow[]; diagnostics: MonitoringRow[]; entityLabels: Map<string, string> }) {
   const offlineServices = services.filter((service) => ["offline", "warning", "unconfigured"].includes(service.health_status || service.status));
   const openIncidents = incidents.filter((row) => !["resolved", "closed"].includes(rowString(row, "status")));
   const failedDiagnostics = diagnostics.filter((row) => !["pass", "ok", "success"].includes(rowString(row, "status")));
@@ -170,10 +177,10 @@ function OperationalFocus({ services, incidents, diagnostics }: { services: Work
           <AttentionRow key={service.id || service.service_id || service.service_name} title={service.service_name || service.service_id || "-"} detail={`${serviceTypeLabel(service.service_type)} / ${formatHeartbeat(service.heartbeat_age_sec)}`} status={service.health_status || service.status || "-"} />
         ))}
         {openIncidents.slice(0, 4).map((row, index) => (
-          <AttentionRow key={rowString(row, "id") || `incident-${index}`} title={rowString(row, "title") || "インシデント"} detail={rowString(row, "service_id") || "-"} status={rowString(row, "status") || rowString(row, "severity")} />
+          <AttentionRow key={rowString(row, "id") || `incident-${index}`} title={rowString(row, "title") || "インシデント"} detail={displayReference(rowString(row, "service_id"), entityLabels)} status={rowString(row, "status") || rowString(row, "severity")} />
         ))}
         {failedDiagnostics.slice(0, 4).map((row, index) => (
-          <AttentionRow key={rowString(row, "id") || `diagnostic-${index}`} title={diagnosticLabel(rowString(row, "check"))} detail={rowString(row, "target") || "-"} status={rowString(row, "status")} />
+          <AttentionRow key={rowString(row, "id") || `diagnostic-${index}`} title={diagnosticLabel(rowString(row, "check"))} detail={displayReference(rowString(row, "target"), entityLabels)} status={rowString(row, "status")} />
         ))}
       </CardContent>
     </Card>
@@ -199,6 +206,33 @@ function EmptyState({ message }: { message: string }) {
 function rowString(row: MonitoringRow, key: string) {
   const value = row[key];
   return typeof value === "string" ? value : "";
+}
+
+function buildEntityLabels(services: WorkerNode[], streams: Stream[]) {
+  const labels = new Map<string, string>();
+  for (const service of services) {
+    const label = service.service_name || service.service_id || service.id || "";
+    for (const key of [service.id, service.service_id]) {
+      if (key && label) labels.set(key, label);
+    }
+  }
+  for (const stream of streams) {
+    if (stream.id && stream.name) labels.set(stream.id, stream.name);
+  }
+  return labels;
+}
+
+function displayReference(value: string, labels: Map<string, string>) {
+  const raw = value.trim();
+  if (!raw) return "-";
+  if (labels.has(raw)) return labels.get(raw) || raw;
+  if (looksLikeInternalID(raw)) return "未登録の対象";
+  return raw;
+}
+
+function looksLikeInternalID(value: string) {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
+  return /^(stream|worker|encoder|discord|observability|node)-[a-z0-9][a-z0-9-]*$/i.test(value);
 }
 
 function serviceTypeLabel(type: string) {
@@ -228,8 +262,6 @@ function formatHeartbeat(value?: number) {
   return `${Math.round(value / 3600)}時間前`;
 }
 
-function formatTimestamp(value: string) {
-  const time = Date.parse(value);
-  if (Number.isNaN(time)) return "-";
-  return new Intl.DateTimeFormat("ja-JP", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(time);
+function formatTimestamp(value: string, timezone?: string) {
+  return formatDateTimeInTimeZone(value, timezone, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }

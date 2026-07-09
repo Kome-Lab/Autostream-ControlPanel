@@ -169,7 +169,7 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	svc := RegisteredService{
 		ServiceID: registration.ServiceID, ServiceType: registration.ServiceType, ServiceName: registration.ServiceName,
 		Description: registration.Description, Host: registration.Host, Port: registration.Port, SSLEnabled: registration.SSLEnabled,
-		PublicURL: registration.PublicURL, Version: registration.Version, ReportedVersion: registration.Version, Status: "registered",
+		PublicURL: registration.PublicURL, Version: registration.Version, ReportedVersion: registration.Version, ReportedCommit: registration.Commit, ReportedBuildDate: registration.BuildDate, Status: "registered",
 		Capabilities: capabilities, ReportedCapabilities: capabilities, TokenID: token.ID,
 		ReportedHostname: registration.Hostname, ReportedOS: registration.OS, ReportedArch: registration.Arch, LastReportedAt: &now,
 		CreatedAt: now, UpdatedAt: now,
@@ -224,6 +224,8 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	now := time.Now().UTC()
 	svc.Status = heartbeat.Status
 	svc.LastHeartbeatAt = &now
+	heartbeatCommit := truncateServiceReportedValue(strings.TrimSpace(heartbeat.Commit), 80)
+	heartbeatBuildDate := truncateServiceReportedValue(strings.TrimSpace(heartbeat.BuildDate), 80)
 	if heartbeat.CurrentStreamID != "" {
 		svc.CurrentStreamID = heartbeat.CurrentStreamID
 	}
@@ -231,6 +233,12 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	if strings.TrimSpace(heartbeat.Version) != "" {
 		svc.Version = strings.TrimSpace(heartbeat.Version)
 		svc.ReportedVersion = svc.Version
+	}
+	if heartbeatCommit != "" {
+		svc.ReportedCommit = heartbeatCommit
+	}
+	if heartbeatBuildDate != "" {
+		svc.ReportedBuildDate = heartbeatBuildDate
 	}
 	if len(heartbeat.Capabilities) > 0 {
 		svc.Capabilities = sanitizeServiceCapabilities(heartbeat.Capabilities)
@@ -254,12 +262,57 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 			svc.PublicURL = buildServiceURL(svc.Host, svc.Port, svc.SSLEnabled)
 		}
 	}
-	if heartbeat.Version != "" || len(heartbeat.Capabilities) > 0 || heartbeat.Hostname != "" || heartbeat.OS != "" || heartbeat.Arch != "" || heartbeat.API != nil {
+	if heartbeat.Version != "" || heartbeatCommit != "" || heartbeatBuildDate != "" || len(heartbeat.Capabilities) > 0 || heartbeat.Hostname != "" || heartbeat.OS != "" || heartbeat.Arch != "" || heartbeat.API != nil {
 		svc.LastReportedAt = &now
 	}
 	svc.UpdatedAt = now
 	s.services[svc.ServiceID] = svc
+	s.recordMetricHistoryLocked(svc, now)
 	return svc, nil
+}
+
+func (s *MemoryAuthStore) recordMetricHistoryLocked(service RegisteredService, observedAt time.Time) {
+	cutoff := observedAt.Add(-3 * time.Hour)
+	next := s.metricHistory[:0]
+	for _, snapshot := range s.metricHistory {
+		if snapshot.ObservedAt.After(cutoff) || snapshot.ObservedAt.Equal(cutoff) {
+			next = append(next, snapshot)
+		}
+	}
+	for name, raw := range service.Metrics {
+		value, ok := serviceMetricSnapshotNumber(raw)
+		if !ok {
+			continue
+		}
+		next = append(next, ServiceMetricSnapshot{
+			Name:        name,
+			ServiceID:   service.ServiceID,
+			ServiceType: service.ServiceType,
+			Status:      service.Status,
+			Value:       value,
+			ObservedAt:  observedAt,
+		})
+	}
+	s.metricHistory = next
+}
+
+func (s *MemoryAuthStore) ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if since.IsZero() {
+		since = time.Now().UTC().Add(-3 * time.Hour)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ServiceMetricSnapshot, 0, len(s.metricHistory))
+	for _, snapshot := range s.metricHistory {
+		if snapshot.ObservedAt.Before(since) {
+			continue
+		}
+		out = append(out, snapshot)
+	}
+	return out, nil
 }
 
 func (s *MemoryAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report ServiceRuntimeReport) (RegisteredService, error) {
@@ -284,6 +337,12 @@ func (s *MemoryAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report
 		svc.Version = report.Version
 		svc.ReportedVersion = report.Version
 	}
+	if report.Commit != "" {
+		svc.ReportedCommit = report.Commit
+	}
+	if report.BuildDate != "" {
+		svc.ReportedBuildDate = report.BuildDate
+	}
 	if report.Hostname != "" {
 		svc.ReportedHostname = report.Hostname
 	}
@@ -293,7 +352,7 @@ func (s *MemoryAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report
 	if report.Arch != "" {
 		svc.ReportedArch = report.Arch
 	}
-	if report.Version != "" || report.Hostname != "" || report.OS != "" || report.Arch != "" {
+	if report.Version != "" || report.Commit != "" || report.BuildDate != "" || report.Hostname != "" || report.OS != "" || report.Arch != "" {
 		svc.LastReportedAt = &now
 	}
 	svc.UpdatedAt = now

@@ -21,6 +21,10 @@ var auditSecretValuePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(stream[_ -]?key|refresh[_ -]?token|access[_ -]?token|client[_ -]?secret|smtp[_ -]?password|folder[_ -]?id)\s*[:=]\s*[^\s,;]+`),
 }
 
+func RedactAuditEvent(event AuditEvent) AuditEvent {
+	return redactedAuditEvent(event)
+}
+
 func redactedAuditEvent(event AuditEvent) AuditEvent {
 	event.ActorUserID = redactedAuditString(event.ActorUserID)
 	event.ActorUsername = redactedAuditString(event.ActorUsername)
