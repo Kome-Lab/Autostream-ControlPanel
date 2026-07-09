@@ -186,11 +186,7 @@ func validateSMTPSettings(settings AppSettings) error {
 	if !validSMTPHost(settings.SMTPHost) || settings.SMTPPort < 1 || settings.SMTPPort > 65535 {
 		return ErrInvalidSettings
 	}
-	if settings.SMTPFrom == "" || strings.ContainsAny(settings.SMTPUsername, "\r\n\x00") || len(settings.SMTPUsername) > 255 {
-		return ErrInvalidSettings
-	}
-	address, err := mail.ParseAddress(settings.SMTPFrom)
-	if err != nil || address.Address == "" || !strings.EqualFold(address.Address, settings.SMTPFrom) {
+	if !validSMTPFrom(settings.SMTPFrom) || strings.ContainsAny(settings.SMTPUsername, "\r\n\x00") || len(settings.SMTPUsername) > 255 {
 		return ErrInvalidSettings
 	}
 	if _, err := strconv.Atoi(settings.SMTPHost); err == nil {
@@ -203,6 +199,20 @@ func validateSMTPSettings(settings AppSettings) error {
 		return ErrInvalidSettings
 	}
 	return nil
+}
+
+func validSMTPFrom(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
+		return false
+	}
+	address, err := mail.ParseAddress(value)
+	return err == nil && validSMTPMailbox(address.Address)
+}
+
+func validSMTPMailbox(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= 320 && strings.Contains(value, "@") && !strings.ContainsAny(value, "\r\n\t\x00 <>")
 }
 
 func validSMTPHost(host string) bool {

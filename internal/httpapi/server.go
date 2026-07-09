@@ -9707,6 +9707,8 @@ type versionInfoResponse struct {
 	UpdateCheckError  string `json:"update_check_error,omitempty"`
 }
 
+const defaultControlPanelUpdateCheckURL = "https://api.github.com/repos/Kome-Lab/Autostream-ControlPanel/releases/latest"
+
 func (s *Server) versionInfo(w http.ResponseWriter, r *http.Request) {
 	latest, source, checkErr := latestControlPanelVersion(r.Context())
 	writeJSON(w, http.StatusOK, versionInfoResponse{
@@ -9726,45 +9728,50 @@ func latestControlPanelVersion(ctx context.Context) (string, string, string) {
 		return latest, "env", ""
 	}
 	rawURL := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_URL"))
+	source := "url"
 	if rawURL == "" {
+		rawURL = defaultControlPanelUpdateCheckURL
+		source = "github"
+	} else if strings.EqualFold(rawURL, "disabled") || strings.EqualFold(rawURL, "off") || strings.EqualFold(rawURL, "false") {
 		return "", "disabled", ""
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", "url", "invalid update check url"
+		return "", source, "invalid update check url"
 	}
 	if parsed.User != nil {
-		return "", "url", "update check url must not include credentials"
+		return "", source, "update check url must not include credentials"
 	}
 	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLocalUpdateCheckHost(parsed.Hostname())) {
-		return "", "url", "update check url must use https"
+		return "", source, "update check url must use https"
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", "url", "create update check request failed"
+		return "", source, "create update check request failed"
 	}
 	req.Header.Set("Accept", "application/json, text/plain")
+	req.Header.Set("User-Agent", "autostream-control-panel/"+version.Current())
 	if token := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_TOKEN")); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
 	if err != nil {
-		return "", "url", "update check request failed"
+		return "", source, "update check request failed"
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
-		return "", "url", "read update check response failed"
+		return "", source, "read update check response failed"
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "url", "update check returned HTTP " + strconv.Itoa(resp.StatusCode)
+		return "", source, "update check returned HTTP " + strconv.Itoa(resp.StatusCode)
 	}
 	if latest := parseLatestVersionResponse(body); latest != "" {
-		return latest, "url", ""
+		return latest, source, ""
 	}
-	return "", "url", "update check response did not include a version"
+	return "", source, "update check response did not include a version"
 }
 
 func parseLatestVersionResponse(body []byte) string {

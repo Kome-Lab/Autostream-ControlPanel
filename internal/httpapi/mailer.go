@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"net/url"
 	"strings"
@@ -151,7 +152,11 @@ func (SMTPMailer) Send(ctx context.Context, settings store.AppSettings, password
 			return fmt.Errorf("smtp_auth_failed: %w", err)
 		}
 	}
-	if err := client.Mail(settings.SMTPFrom); err != nil {
+	fromAddress, err := smtpEnvelopeFrom(settings.SMTPFrom)
+	if err != nil {
+		return errSMTPNotConfigured
+	}
+	if err := client.Mail(fromAddress); err != nil {
 		return fmt.Errorf("smtp_from_rejected: %w", err)
 	}
 	if err := client.Rcpt(message.To); err != nil {
@@ -173,13 +178,29 @@ func (SMTPMailer) Send(ctx context.Context, settings store.AppSettings, password
 }
 
 func formatPlainTextEmail(from string, message MailMessage) string {
-	return "From: " + sanitizeHeaderValue(from) + "\r\n" +
+	return "From: " + formatAddressHeader(from) + "\r\n" +
 		"To: " + sanitizeHeaderValue(message.To) + "\r\n" +
 		"Subject: " + sanitizeHeaderValue(message.Subject) + "\r\n" +
 		"MIME-Version: 1.0\r\n" +
 		"Content-Type: text/plain; charset=UTF-8\r\n" +
 		"Content-Transfer-Encoding: 8bit\r\n\r\n" +
 		message.Text + "\r\n"
+}
+
+func smtpEnvelopeFrom(from string) (string, error) {
+	address, err := mail.ParseAddress(strings.TrimSpace(from))
+	if err != nil || strings.TrimSpace(address.Address) == "" || !strings.Contains(address.Address, "@") {
+		return "", errSMTPNotConfigured
+	}
+	return address.Address, nil
+}
+
+func formatAddressHeader(value string) string {
+	address, err := mail.ParseAddress(strings.TrimSpace(value))
+	if err == nil && strings.TrimSpace(address.Address) != "" {
+		return address.String()
+	}
+	return sanitizeHeaderValue(value)
 }
 
 func sanitizeHeaderValue(value string) string {

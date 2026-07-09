@@ -11259,6 +11259,30 @@ func TestAppSettingsUpdateStoresSMTPPasswordAsSecret(t *testing.T) {
 	}
 }
 
+func TestAppSettingsAcceptsDisplayNameSMTPFrom(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings), WithSecretStore(store.NewMemorySecretStore()))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"Kome Panel","timezone":"Asia/Tokyo","smtp_enabled":true,"smtp_host":"smtp.example.jp","smtp_port":587,"smtp_starttls":true,"smtp_from":"AutoStream <no-reply@example.jp>"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	var response store.AppSettings
+	if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode display name SMTP From response: %v body = %s", err, res.Body.String())
+	}
+	if res.Code != http.StatusOK || response.SMTPFrom != "AutoStream <no-reply@example.jp>" {
+		t.Fatalf("display name SMTP From status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestAppSettingsTestEmailSendsWithSavedSMTPSecret(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
@@ -11486,6 +11510,62 @@ func TestVersionEndpointShowsBuildInfoAndUpdate(t *testing.T) {
 		if !strings.Contains(res.Body.String(), want) {
 			t.Fatalf("version response missing %s: %s", want, res.Body.String())
 		}
+	}
+}
+
+func TestVersionEndpointChecksConfiguredUpdateURL(t *testing.T) {
+	previousVersion, previousCommit, previousBuildDate := version.Version, version.Commit, version.BuildDate
+	version.Version, version.Commit, version.BuildDate = "v1.3.5", "abc123", "2026-07-07T00:00:00Z"
+	t.Cleanup(func() {
+		version.Version, version.Commit, version.BuildDate = previousVersion, previousCommit, previousBuildDate
+	})
+	updateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") != "application/json, text/plain" {
+			t.Fatalf("unexpected Accept header: %q", r.Header.Get("Accept"))
+		}
+		if !strings.HasPrefix(r.Header.Get("User-Agent"), "autostream-control-panel/") {
+			t.Fatalf("unexpected User-Agent header: %q", r.Header.Get("User-Agent"))
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"tag_name": "v1.3.6"})
+	}))
+	defer updateServer.Close()
+	t.Setenv("AUTOSTREAM_UPDATE_CHECK_URL", updateServer.URL)
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("version status = %d body = %s", res.Code, res.Body.String())
+	}
+	for _, want := range []string{`"latest_version":"v1.3.6"`, `"update_available":true`, `"update_check_source":"url"`} {
+		if !strings.Contains(res.Body.String(), want) {
+			t.Fatalf("version response missing %s: %s", want, res.Body.String())
+		}
+	}
+}
+
+func TestVersionEndpointCanDisableUpdateCheck(t *testing.T) {
+	t.Setenv("AUTOSTREAM_UPDATE_CHECK_URL", "off")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"update_check_source":"disabled"`) || strings.Contains(res.Body.String(), `"latest_version"`) {
+		t.Fatalf("disabled update check response mismatch: status = %d body = %s", res.Code, res.Body.String())
 	}
 }
 

@@ -148,7 +148,7 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
               <Input inputMode="numeric" value={smtpPort} onChange={(event) => setSMTPPort(event.target.value)} />
             </Field>
             <Field label="From">
-              <Input type="email" value={smtpFrom} onChange={(event) => setSMTPFrom(event.target.value)} placeholder="autostream@example.jp" />
+              <Input value={smtpFrom} onChange={(event) => setSMTPFrom(event.target.value)} placeholder="AutoStream <no-reply@example.jp>" />
             </Field>
             <Field label="SMTP Username">
               <Input value={smtpUsername} onChange={(event) => setSMTPUsername(event.target.value)} />

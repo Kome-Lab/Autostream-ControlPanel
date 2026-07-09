@@ -176,6 +176,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const appName = appSettings.data?.app_name || t("appName");
   const versionLabel = appVersion.data?.version || "dev";
   const updateAvailable = appVersion.data?.update_available && appVersion.data.latest_version;
+  const updateCheckFailed = !updateAvailable && appVersion.data?.update_check_error;
 
   return (
     <div className="min-h-screen bg-background">
@@ -188,6 +189,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <div className="font-semibold">{appName}</div>
             <div className="text-xs text-sidebar-foreground/70">Control Panel {versionLabel}</div>
             {updateAvailable ? <div className="text-xs font-medium text-amber-300">新しいバージョン {appVersion.data?.latest_version}</div> : null}
+            {updateCheckFailed ? <div className="text-xs font-medium text-amber-300">バージョン確認失敗</div> : null}
           </div>
         </div>
         <ScrollArea className="h-[calc(100vh-4rem)] px-3 py-4">{nav}</ScrollArea>
@@ -220,6 +222,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
                   <span className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
                     <AlertTriangle className="size-3" />
                     新しいバージョン {appVersion.data?.latest_version}
+                  </span>
+                ) : null}
+                {updateCheckFailed ? (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800" title={appVersion.data?.update_check_error}>
+                    <AlertTriangle className="size-3" />
+                    バージョン確認失敗
                   </span>
                 ) : null}
               </div>
