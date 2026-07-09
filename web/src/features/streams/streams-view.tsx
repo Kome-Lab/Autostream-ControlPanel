@@ -438,24 +438,23 @@ function TextField({
 }
 
 function SelectField({ label, value, onChange, options, disabled }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[]; disabled?: boolean }) {
+  const selected = options.find((option) => option.value === value);
   return (
     <label className="grid gap-1.5 text-sm">
       <span className="font-medium">{label}</span>
       <Select value={value} onValueChange={onChange} disabled={disabled}>
         <SelectTrigger className="w-full" disabled={disabled}>
-          <SelectValue />
+          <span className="min-w-0 truncate">{selected?.label || <SelectValue />}</span>
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
             <SelectItem key={option.value} value={option.value} textValue={option.label}>
-              <span className="grid gap-0.5">
-                <span>{option.label}</span>
-                {option.description ? <span className="text-xs text-muted-foreground">{option.description}</span> : null}
-              </span>
+              <span className="min-w-0 truncate">{option.label}</span>
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
+      {selected?.description ? <span className="text-xs text-muted-foreground">{selected.description}</span> : null}
     </label>
   );
 }
@@ -526,11 +525,26 @@ function optionLabel(labels: Map<string, string>, value?: string) {
 
 function oauthAccountLabel(row: ResourceRow) {
   const email = rowString(row, ["email"]).toLowerCase();
-  for (const key of ["account_label", "display_name"]) {
+  const provider = rowString(row, ["provider_type"]);
+  for (const key of ["display_name", "account_label"]) {
     const value = rowString(row, [key]);
-    if (value && value.toLowerCase() !== email) return value;
+    if (usableOAuthAccountLabel(value, email, provider)) return value;
   }
-  return `${providerTypeLabel(rowString(row, ["provider_type"]))}接続アカウント`;
+  return `${providerTypeLabel(provider)}接続アカウント`;
+}
+
+function usableOAuthAccountLabel(value: string, email: string, provider: string) {
+  const label = value.trim();
+  if (!label) return false;
+  const normalized = label.toLowerCase();
+  if (email && normalized === email) return false;
+  return !genericOAuthAccountLabel(normalized, provider);
+}
+
+function genericOAuthAccountLabel(normalizedLabel: string, provider: string) {
+  const providerLabel = providerTypeLabel(provider).toLowerCase();
+  const compact = normalizedLabel.replace(/\s+/g, "");
+  return compact === `${providerLabel}接続アカウント`.toLowerCase() || compact === `${providerLabel}connectedaccount`;
 }
 
 function providerTypeLabel(providerType: string) {

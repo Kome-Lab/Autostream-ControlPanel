@@ -183,10 +183,10 @@ export const resourcePages = {
   },
   security: {
     titleKey: "security",
-    description: "ログインポリシー、MFA、シークレット状態を管理します。",
+    description: "ログインポリシー、MFA、秘密情報の登録状況を管理します。",
     resources: [
       { title: "セキュリティ設定", path: "/security/settings", description: "パスワード、ロックアウト、セッション、MFAの設定です。", form: "security-settings" },
-      { title: "シークレット状態", path: "/secrets/status", description: "配信に使う秘密情報の登録状況です。" },
+      { title: "シークレット登録状況", path: "/secrets/status", description: "SMTP、Turnstile、OAuth tokenなどの秘密情報が登録済みかだけを確認します。値そのものは表示しません。" },
     ],
   },
   "service-health": {

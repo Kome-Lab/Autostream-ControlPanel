@@ -86,7 +86,7 @@ export function MetricsView() {
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
         <MetricCard title="CPU使用率" value={formatStat(maxCPU, "percent")} detail={metricCardDetail(effectiveNodeLabel, "CPU")} tone={thresholdTone(maxCPU, 80, 95)} />
         <MetricCard title="メモリ使用率" value={formatStat(maxMemory, "percent")} detail={metricCardDetail(effectiveNodeLabel, "メモリ")} tone={thresholdTone(maxMemory, 75, 90)} />
         <MetricCard title="ディスク使用率" value={formatStat(maxDisk, "percent")} detail={metricCardDetail(effectiveNodeLabel, "rootディスク")} tone={thresholdTone(maxDisk, 80, 92)} />
@@ -94,8 +94,8 @@ export function MetricsView() {
         <MetricCard title="受信Node" value={serviceCount} detail={effectiveNodeLabel ? `表示中: ${effectiveNodeLabel}` : "メトリクスを報告中"} tone={serviceCount > 0 ? "ok" : "warning"} />
       </section>
 
-      <section className="flex flex-wrap items-end gap-3 rounded-md border bg-muted/20 p-3">
-        <div className="min-w-64 space-y-2">
+      <section className="flex flex-wrap items-end gap-4 rounded-md border bg-muted/20 p-4">
+        <div className="min-w-64 flex-1 space-y-2">
           <label className="text-sm font-medium">表示Node</label>
           <Select value={effectiveNode || "__none__"} onValueChange={setSelectedNode}>
             <SelectTrigger>
@@ -111,7 +111,7 @@ export function MetricsView() {
             </SelectContent>
           </Select>
         </div>
-        <div className="min-w-48 space-y-2">
+        <div className="min-w-48 flex-1 space-y-2 sm:flex-none">
           <label className="text-sm font-medium">表示範囲</label>
           <Select value={timeRange} onValueChange={setTimeRange}>
             <SelectTrigger>
@@ -126,7 +126,7 @@ export function MetricsView() {
             </SelectContent>
           </Select>
         </div>
-        <p className="text-sm text-muted-foreground">リアルタイム更新は維持し、選択したNodeの時系列だけを表示します。</p>
+        <p className="max-w-2xl text-sm text-muted-foreground">リアルタイム更新は維持し、選択したNodeの時系列だけを表示します。</p>
       </section>
 
       {latest.length === 0 ? (
@@ -140,19 +140,19 @@ export function MetricsView() {
         </Card>
       ) : (
         <>
-          <section className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
-            <EChartsPanel title="CPU使用率" option={lineChartOption(cpuSeries, "percent", timezone)} height={300} />
-            <EChartsPanel title="メモリ使用率" option={lineChartOption(memorySeries, "percent", timezone)} height={300} />
+          <section className="grid min-w-0 gap-4 2xl:grid-cols-2 [&>*]:min-w-0">
+            <EChartsPanel title="CPU使用率" option={lineChartOption(cpuSeries, "percent", timezone)} height={320} />
+            <EChartsPanel title="メモリ使用率" option={lineChartOption(memorySeries, "percent", timezone)} height={320} />
           </section>
-          <section className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
-            <EChartsPanel title="ディスク使用率" option={lineChartOption(diskSeries, "percent", timezone)} height={300} />
-            <EChartsPanel title="ネットワーク送受信" option={lineChartOption(networkThroughputSeries, networkUnit, timezone)} height={300} />
+          <section className="grid min-w-0 gap-4 2xl:grid-cols-2 [&>*]:min-w-0">
+            <EChartsPanel title="ディスク使用率" option={lineChartOption(diskSeries, "percent", timezone)} height={320} />
+            <EChartsPanel title="ネットワーク送受信" option={lineChartOption(networkThroughputSeries, networkUnit, timezone)} height={320} />
           </section>
-          <section className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
-            <EChartsPanel title="Heap使用量" option={lineChartOption(heapSeries, "bytes", timezone)} height={300} />
-            <EChartsPanel title="処理・ランタイム指標" option={lineChartOption(operationSeries, "number", timezone)} height={300} />
+          <section className="grid min-w-0 gap-4 2xl:grid-cols-2 [&>*]:min-w-0">
+            <EChartsPanel title="Heap使用量" option={lineChartOption(heapSeries, "bytes", timezone)} height={320} />
+            <EChartsPanel title="処理・ランタイム指標" option={lineChartOption(operationSeries, "number", timezone)} height={320} />
           </section>
-          <section className="grid min-w-0 gap-4 xl:grid-cols-[1.15fr_0.85fr] [&>*]:min-w-0">
+          <section className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] [&>*]:min-w-0">
             <LatestMetricsTable series={latest} timezone={timezone} />
             <ServiceMetricSummary series={latest} />
           </section>
@@ -216,7 +216,8 @@ function LatestMetricsTable({ series, timezone }: { series: MetricSeries[]; time
         </CardTitle>
       </CardHeader>
       <CardContent className="min-w-0">
-        <Table>
+        <div className="overflow-x-auto">
+        <Table className="min-w-[760px]">
           <TableHeader>
             <TableRow>
               <TableHead>Node</TableHead>
@@ -234,7 +235,7 @@ function LatestMetricsTable({ series, timezone }: { series: MetricSeries[]; time
                     <div className="font-medium">{item.serviceLabel}</div>
                     <div className="text-xs text-muted-foreground">{serviceTypeLabel(item.serviceType)}</div>
                   </TableCell>
-                  <TableCell>{metricNameLabel(item.name)}</TableCell>
+                  <TableCell className="min-w-48 whitespace-normal break-words">{metricNameLabel(item.name)}</TableCell>
                   <TableCell className="font-medium">{latest ? formatMetricValue(latest.value, item.unit) : "-"}</TableCell>
                   <TableCell className="text-muted-foreground">{latest ? formatTime(latest.time, timezone) : "-"}</TableCell>
                 </TableRow>
@@ -242,6 +243,7 @@ function LatestMetricsTable({ series, timezone }: { series: MetricSeries[]; time
             })}
           </TableBody>
         </Table>
+        </div>
       </CardContent>
     </Card>
   );
@@ -267,7 +269,7 @@ function ServiceMetricSummary({ series }: { series: MetricSeries[] }) {
               </div>
               <Badge variant="outline">{row.count} 指標</Badge>
             </div>
-            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-6">
+            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
               <SummaryItem icon={Activity} label="CPU" value={formatOptional(row.cpu, "percent")} />
               <SummaryItem icon={Database} label="メモリ" value={formatOptional(row.memory, "percent")} />
               <SummaryItem icon={HardDrive} label="ディスク" value={formatOptional(row.disk, "percent")} />
@@ -284,11 +286,11 @@ function ServiceMetricSummary({ series }: { series: MetricSeries[] }) {
 
 function SummaryItem({ icon: Icon, label, value }: { icon: typeof Activity; label: string; value: string }) {
   return (
-    <div className="flex items-center gap-2 rounded-md bg-muted/35 px-2 py-2">
-      <Icon className="size-4 text-muted-foreground" />
+    <div className="flex min-h-16 items-center gap-3 rounded-md bg-muted/35 px-3 py-2">
+      <Icon className="size-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0">
         <div className="text-xs text-muted-foreground">{label}</div>
-        <div className="truncate font-medium">{value}</div>
+        <div className="break-words font-medium">{value}</div>
       </div>
     </div>
   );

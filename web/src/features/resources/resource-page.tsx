@@ -1,7 +1,6 @@
 "use client";
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import Image from "next/image";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
@@ -19,9 +18,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
-import { useAppSettings, useResourceData } from "@/features/queries";
+import { useAppSettings, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import type { WorkerNode } from "@/types/domain";
 
 const watermarkCanvasWidth = 1920;
 const watermarkCanvasHeight = 1080;
@@ -62,6 +62,14 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
 }
 
 function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
+  if (resource.path === "/service-health") {
+    return <ServiceHealthResourcePanel resource={resource} />;
+  }
+
+  return <GenericResourcePanel resource={resource} />;
+}
+
+function GenericResourcePanel({ resource }: { resource: ResourceDefinition }) {
   const queryClient = useQueryClient();
   const query = useResourceData<unknown>(resource.path);
   const appSettings = useAppSettings();
@@ -171,7 +179,7 @@ function CreateResourceForm({ resource }: { resource: ResourceDefinition }) {
   };
 
   return (
-    <div className="rounded-md border bg-muted/20 p-3">
+    <div className="rounded-md border bg-muted/20 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="font-medium">新規作成</div>
@@ -189,6 +197,46 @@ function CreateResourceForm({ resource }: { resource: ResourceDefinition }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ServiceHealthResourcePanel({ resource }: { resource: ResourceDefinition }) {
+  const appSettings = useAppSettings();
+  const registeredNodes = useNodes();
+  const serviceHealth = useServiceHealth();
+  const timezone = appSettings.data?.timezone;
+  const rows = useMemo(
+    () => mergeServiceHealthRows(registeredNodes.data || [], serviceHealth.data || []).map((row) => enrichResourceRow(resource, row as unknown as ResourceRow)),
+    [registeredNodes.data, resource, serviceHealth.data],
+  );
+  const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
+  const loading = registeredNodes.isLoading && serviceHealth.isLoading && rows.length === 0;
+  const fetching = registeredNodes.isFetching || serviceHealth.isFetching;
+
+  return (
+    <Card>
+      <CardHeader className="gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <CardTitle>{resource.title}</CardTitle>
+          <CardDescription>{resource.description}</CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={fetching}
+          onClick={() => {
+            void registeredNodes.refetch();
+            void serviceHealth.refetch();
+          }}
+        >
+          <RefreshCcw className="size-4" />
+          更新
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} onDelete={() => undefined} />}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -448,6 +496,7 @@ function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabl
 function OverlayProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const row = initial || {};
   const existingImageName = rowString(row, ["watermark_image_name", "watermark_file_name", "config.watermark_image_name", "config.watermark_file_name"]);
+  const existingPreviewImage = rowString(row, ["watermark_image_data_url", "config.watermark_image_data_url", "watermark_image_url", "config.watermark_image_url"]);
   const [name, setName] = useState(() => rowString(row, ["name"]) || "station-logo");
   const [watermarkImage, setWatermarkImage] = useState("");
   const [watermarkFileName, setWatermarkFileName] = useState(existingImageName);
@@ -531,27 +580,29 @@ function OverlayProfileForm({ disabled, submit, initial, submitLabel }: { disabl
         </Field>
       </div>
       {editing && existingImageName && !watermarkImage ? <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">現在の画像: {existingImageName}。差し替える場合だけ新しい画像を選択してください。</div> : null}
-      <WatermarkPreview image={watermarkImage} />
+      <WatermarkPreview image={watermarkImage || existingPreviewImage} imageName={watermarkFileName || existingImageName} />
       <FormActions label={submitLabel} disabled={disabled || (!editing && !watermarkImage)} />
     </form>
   );
 }
 
-function WatermarkPreview({ image }: { image: string }) {
+function WatermarkPreview({ image, imageName }: { image: string; imageName?: string }) {
   return (
     <div className="space-y-2">
       <div className="text-sm font-medium">プレビュー</div>
       <div className="relative aspect-video overflow-hidden rounded-md border bg-slate-950">
         <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,.08)_25%,transparent_25%,transparent_50%,rgba(255,255,255,.08)_50%,rgba(255,255,255,.08)_75%,transparent_75%,transparent)] bg-[length:24px_24px]" />
         {image ? (
-          <Image
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
             src={image}
             alt="ウォーターマークプレビュー"
-            width={watermarkCanvasWidth}
-            height={watermarkCanvasHeight}
-            unoptimized
             className="absolute inset-0 h-full w-full object-contain"
           />
+        ) : imageName ? (
+          <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-slate-300">
+            現在の画像「{imageName}」が設定されています。APIがプレビュー用URLを返した場合はここに画像を表示します。
+          </div>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-center text-sm text-slate-300">1920x1080の画像を選択するとプレビューされます。</div>
         )}
@@ -943,10 +994,10 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
         values={severityFilter}
         onChange={setSeverityFilter}
         items={[
-          { value: "critical", label: "Critical" },
-          { value: "error", label: "Error" },
-          { value: "warning", label: "Warning" },
-          { value: "info", label: "Info" },
+          { value: "critical", label: "重大" },
+          { value: "error", label: "エラー" },
+          { value: "warning", label: "警告" },
+          { value: "info", label: "情報" },
         ]}
       />
       <CheckboxList
@@ -954,12 +1005,12 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
         values={eventTypeFilter}
         onChange={setEventTypeFilter}
         items={[
-          { value: "incident.opened", label: "Incident opened" },
-          { value: "incident.updated", label: "Incident updated" },
-          { value: "incident.resolved", label: "Incident resolved" },
-          { value: "diagnostic.created", label: "Diagnostic created" },
-          { value: "remediation.pending_approval", label: "Remediation pending approval" },
-          { value: "remediation.executed", label: "Remediation executed" },
+          { value: "incident.opened", label: "インシデント発生" },
+          { value: "incident.updated", label: "インシデント更新" },
+          { value: "incident.resolved", label: "インシデント解決" },
+          { value: "diagnostic.created", label: "診断作成" },
+          { value: "remediation.pending_approval", label: "復旧承認待ち" },
+          { value: "remediation.executed", label: "復旧実行" },
           { value: "admin.audit", label: "管理操作" },
         ]}
       />
@@ -1175,23 +1226,22 @@ function NumberField({
 }
 
 function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[] }) {
+  const selected = options.find((option) => option.value === value);
   return (
     <Field label={label}>
       <Select value={value} onValueChange={onChange}>
         <SelectTrigger className="w-full">
-          <SelectValue />
+          <span className="min-w-0 truncate">{selected?.label || <SelectValue />}</span>
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
             <SelectItem key={option.value} value={option.value} textValue={option.label}>
-              <span className="grid gap-0.5">
-                <span>{option.label}</span>
-                {option.description ? <span className="text-xs text-muted-foreground">{option.description}</span> : null}
-              </span>
+              <span className="min-w-0 truncate">{option.label}</span>
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
+      {selected?.description ? <p className="text-xs text-muted-foreground">{selected.description}</p> : null}
     </Field>
   );
 }
@@ -1225,10 +1275,10 @@ function CheckboxList({
       ) : (
         <div className="grid gap-2 md:grid-cols-2">
           {items.map((item) => (
-            <label key={item.value} className="flex items-start gap-2 rounded-md border bg-background p-3 text-sm">
+            <label key={item.value} className="flex min-w-0 items-start gap-2 rounded-md border bg-background p-3 text-sm">
               <Checkbox checked={values.includes(item.value)} onCheckedChange={(checked) => onChange(toggleListValue(values, item.value, Boolean(checked)))} />
-              <span>
-                <span className="block font-medium">{item.label}</span>
+              <span className="min-w-0">
+                <span className="block break-words font-medium">{item.label}</span>
                 {item.description ? <span className="block text-xs text-muted-foreground">{item.description}</span> : null}
               </span>
             </label>
@@ -1260,10 +1310,10 @@ function GroupedCheckboxList(props: { label: string; values: string[]; onChange:
               <div className="text-xs font-medium uppercase text-muted-foreground">{group}</div>
               <div className="grid gap-2 md:grid-cols-2">
                 {items.map((item) => (
-                  <label key={item.value} className="flex items-start gap-2 rounded-md border bg-background p-3 text-sm">
+                  <label key={item.value} className="flex min-w-0 items-start gap-2 rounded-md border bg-background p-3 text-sm">
                     <Checkbox checked={props.values.includes(item.value)} onCheckedChange={(checked) => props.onChange(toggleListValue(props.values, item.value, Boolean(checked)))} />
-                    <span>
-                      <span className="block font-medium">{item.label}</span>
+                    <span className="min-w-0">
+                      <span className="block break-words font-medium">{item.label}</span>
                       {item.description ? <span className="block text-xs text-muted-foreground">{item.description}</span> : null}
                     </span>
                   </label>
@@ -1341,6 +1391,47 @@ function useRegisteredNodeOptions(serviceType: string) {
         .filter((option) => option.value),
     [rows, serviceType],
   );
+}
+
+function mergeServiceHealthRows(registeredNodes: WorkerNode[], serviceHealthRows: WorkerNode[]) {
+  const merged = new Map<string, WorkerNode>();
+  for (const node of registeredNodes) {
+    const key = serviceNodeIdentity(node);
+    if (key) merged.set(key, node);
+  }
+  for (const health of serviceHealthRows) {
+    const key = serviceNodeIdentity(health);
+    if (!key) continue;
+    const current = merged.get(key);
+    merged.set(key, current ? mergeServiceHealthRow(current, health) : health);
+  }
+  return Array.from(merged.values()).sort(compareServiceHealthRows);
+}
+
+function mergeServiceHealthRow(registered: WorkerNode, health: WorkerNode): WorkerNode {
+  return {
+    ...registered,
+    ...health,
+    id: registered.id || health.id,
+    service_id: registered.service_id || health.service_id,
+    service_type: registered.service_type || health.service_type,
+    service_name: registered.service_name || health.service_name,
+    description: registered.description || health.description,
+    public_url: health.public_url || registered.public_url,
+    status: health.status || registered.status,
+    health_status: health.health_status || registered.health_status,
+    last_heartbeat_at: health.last_heartbeat_at || registered.last_heartbeat_at,
+  };
+}
+
+function serviceNodeIdentity(node: WorkerNode) {
+  return node.service_id || node.id || "";
+}
+
+function compareServiceHealthRows(a: WorkerNode, b: WorkerNode) {
+  const type = String(a.service_type || "").localeCompare(String(b.service_type || ""), "ja");
+  if (type !== 0) return type;
+  return String(a.service_name || a.service_id || a.id || "").localeCompare(String(b.service_name || b.service_id || b.id || ""), "ja");
 }
 
 function permissionOptionFromRow(row: ResourceRow): SelectOption {
@@ -1565,7 +1656,7 @@ function ResourceTable({
           {rows.map((row, index) => (
             <TableRow key={String(row.id || row.name || index)}>
               {columns.map((column) => (
-                <TableCell key={column} className="max-w-[240px] overflow-hidden text-ellipsis">
+                <TableCell key={column} className="max-w-[360px] whitespace-normal break-words align-top">
                   {formatCell(row[column], column, timezone)}
                 </TableCell>
               ))}
@@ -1675,7 +1766,7 @@ function normalizeRows(data: unknown): Record<string, unknown>[] {
   if (!data) return [];
   if (Array.isArray(data)) return data.map((item) => normalizeRow(item));
   if (isRecord(data)) {
-    for (const key of ["items", "data", "results"]) {
+    for (const key of ["items", "data", "results", "secrets", "permissions", "nodes", "services"]) {
       const value = data[key];
       if (Array.isArray(value)) return value.map((item) => normalizeRow(item));
     }
@@ -1694,6 +1785,16 @@ function normalizeRow(item: unknown): Record<string, unknown> {
 }
 
 function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): ResourceRow {
+  if (resource.path === "/permissions") {
+    const value = rowString(row, ["id", "name", "value"]);
+    return {
+      ...row,
+      id: value,
+      name: value,
+      group: rowString(row, ["group"]) || permissionGroupForValue(value),
+      description: rowString(row, ["description"]) || permissionDescription(value),
+    };
+  }
   if (resource.path.startsWith("/profiles/")) {
     return { ...row, profile_summary: profileSummary(resource.path, row) };
   }
@@ -1724,6 +1825,7 @@ function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): Reso
       secret_label: summary.label,
       secret_scope: summary.scope,
       secret_status: rowValue(row, ["configured"]) === true ? "configured" : "missing",
+      secret_hint: summary.hint,
       secret_reference: rowString(row, ["name"]),
     };
   }
@@ -1781,10 +1883,10 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_summary", "updated_at"];
   if (resource.path === "/youtube/outputs") return ["name", "output_summary", "updated_at"];
   if (resource.path === "/archive/destinations") return ["name", "destination_summary", "updated_at"];
-  if (resource.path === "/secrets/status") return ["secret_label", "secret_scope", "secret_status", "updated_at", "fingerprint"];
+  if (resource.path === "/secrets/status") return ["secret_label", "secret_scope", "secret_status", "secret_hint", "updated_at"];
   if (resource.path === "/users") return ["username", "email", "status", "roles", "last_login_at"];
   if (resource.path === "/roles") return ["name", "permissions", "updated_at"];
-  if (resource.path === "/permissions") return ["name", "description"];
+  if (resource.path === "/permissions") return ["name", "group", "description"];
   if (resource.path === "/streams") return ["name", "status", "scheduled_start_at", "updated_at"];
   if (resource.path === "/audit-logs") return ["timestamp", "actor_username", "action", "result", "resource_type"];
   if (resource.path === "/service-health") return ["service_name", "service_type", "status", "health_status", "last_heartbeat_at"];
@@ -1884,12 +1986,26 @@ function labelValue(label: string, value: string) {
 
 function oauthAccountDisplayName(row: ResourceRow) {
   const email = rowString(row, ["email"]).toLowerCase();
-  for (const key of ["account_label", "display_name"]) {
-    const value = rowString(row, [key]);
-    if (value && value.toLowerCase() !== email) return value;
-  }
   const provider = rowString(row, ["provider_type"]);
+  for (const key of ["display_name", "account_label"]) {
+    const value = rowString(row, [key]);
+    if (usableOAuthAccountLabel(value, email, provider)) return value;
+  }
   return `${providerTypeLabel(provider)}接続アカウント`;
+}
+
+function usableOAuthAccountLabel(value: string, email: string, provider: string) {
+  const label = value.trim();
+  if (!label) return false;
+  const normalized = label.toLowerCase();
+  if (email && normalized === email) return false;
+  return !genericOAuthAccountLabel(normalized, provider);
+}
+
+function genericOAuthAccountLabel(normalizedLabel: string, provider: string) {
+  const providerLabel = providerTypeLabel(provider).toLowerCase();
+  const compact = normalizedLabel.replace(/\s+/g, "");
+  return compact === `${providerLabel}接続アカウント`.toLowerCase() || compact === `${providerLabel}connectedaccount`;
 }
 
 function oauthAccountOptionDescription(row: ResourceRow) {
@@ -2046,9 +2162,13 @@ const columnLabels: Record<string, string> = {
   name: "名前",
   username: "ユーザー名",
   email: "メール",
+  description: "説明",
+  display_name: "表示名",
   service_id: "Node ID",
   service_name: "Node名",
   service_type: "種別",
+  node_id: "Node ID",
+  node_name: "Node名",
   account_label: "表示名",
   oauth_account_display_name: "表示名",
   provider_type: "プロバイダ",
@@ -2056,6 +2176,8 @@ const columnLabels: Record<string, string> = {
   status: "状態",
   health_status: "ヘルス",
   severity: "重要度",
+  severity_filter: "通知する重要度",
+  event_type_filter: "通知するイベント",
   title: "タイトル",
   check: "チェック",
   channel: "通知先",
@@ -2080,6 +2202,7 @@ const columnLabels: Record<string, string> = {
   secret_label: "用途",
   secret_scope: "分類",
   secret_status: "状態",
+  secret_hint: "確認先",
   secret_reference: "参照名",
   enabled: "有効",
   configured: "設定済み",
@@ -2095,6 +2218,7 @@ const columnLabels: Record<string, string> = {
   mfa_supported_methods: "対応MFA",
   passkey_status: "Passkey状態",
   fingerprint: "指紋",
+  group: "分類",
   value: "値",
 };
 
@@ -2102,34 +2226,34 @@ function columnLabel(column: string) {
   return columnLabels[column] || humanizeKey(column);
 }
 
-function secretStatusSummary(row: ResourceRow) {
+function secretStatusSummary(row: ResourceRow): { label: string; scope: string; hint: string } {
   const name = rowString(row, ["name"]);
-  const fixed: Record<string, { label: string; scope: string }> = {
-    app_smtp_password: { label: "メールサーバー SMTPパスワード", scope: "システム通知" },
-    app_turnstile_secret: { label: "Cloudflare Turnstile Secret", scope: "ログイン保護" },
-    deepgram_api_key: { label: "Deepgram API Key", scope: "字幕生成" },
-    discord_bot_token: { label: "Discord BOT Token", scope: "Discord" },
-    google_drive_folder_id: { label: "Google Drive Folder ID", scope: "録画アーカイブ" },
-    observability_token: { label: "Observability Token", scope: "監視" },
-    youtube_stream_key: { label: "YouTube Stream Key", scope: "YouTube" },
+  const fixed: Record<string, { label: string; scope: string; hint: string }> = {
+    app_smtp_password: { label: "メールサーバー SMTPパスワード", scope: "システム通知", hint: "設定 > メールサーバー" },
+    app_turnstile_secret: { label: "Cloudflare Turnstile Secret", scope: "ログイン保護", hint: "設定 > Turnstile" },
+    deepgram_api_key: { label: "Deepgram API Key", scope: "字幕生成", hint: "字幕プロファイル" },
+    discord_bot_token: { label: "Discord BOT Token", scope: "Discord", hint: "Discord BOT設定" },
+    google_drive_folder_id: { label: "Google Drive Folder ID", scope: "録画アーカイブ", hint: "Drive保存先" },
+    observability_token: { label: "Observability Token", scope: "監視", hint: "Observability連携" },
+    youtube_stream_key: { label: "YouTube Stream Key", scope: "YouTube", hint: "YouTube出力" },
   };
   if (fixed[name]) return fixed[name];
   for (const item of dynamicSecretPrefixes) {
     if (name.startsWith(item.prefix)) {
-      return { label: item.label, scope: item.scope };
+      return { label: item.label, scope: item.scope, hint: item.hint };
     }
   }
-  return { label: name || "未分類シークレット", scope: "その他" };
+  return { label: name || "未分類シークレット", scope: "その他", hint: "関連する設定画面" };
 }
 
 const dynamicSecretPrefixes = [
-  { prefix: "youtube_stream_key_", label: "YouTube Stream Key", scope: "YouTube出力" },
-  { prefix: "discord_bot_token_", label: "Discord BOT Token", scope: "Discord BOT設定" },
-  { prefix: "encoder_runtime_secret_", label: "Encoder Runtime Secret", scope: "Encoder/Recorder" },
-  { prefix: "google_oauth_refresh_token_", label: "Google OAuth Refresh Token", scope: "OAuth接続アカウント" },
-  { prefix: "google_drive_folder_id_", label: "Google Drive Folder ID", scope: "Drive保存先" },
-  { prefix: "webhook_url_", label: "Webhook URL", scope: "通知先" },
-  { prefix: "smtp_password_", label: "SMTP Password", scope: "通知先メール" },
+  { prefix: "youtube_stream_key_", label: "YouTube Stream Key", scope: "YouTube出力", hint: "YouTube出力" },
+  { prefix: "discord_bot_token_", label: "Discord BOT Token", scope: "Discord BOT設定", hint: "Discord BOT設定" },
+  { prefix: "encoder_runtime_secret_", label: "Encoder Runtime Secret", scope: "Encoder/Recorder", hint: "Node設定" },
+  { prefix: "google_oauth_refresh_token_", label: "Google OAuth Refresh Token", scope: "OAuth接続アカウント", hint: "連携 > OAuth接続アカウント" },
+  { prefix: "google_drive_folder_id_", label: "Google Drive Folder ID", scope: "Drive保存先", hint: "Drive保存先" },
+  { prefix: "webhook_url_", label: "Webhook URL", scope: "通知先", hint: "通知先" },
+  { prefix: "smtp_password_", label: "SMTP Password", scope: "通知先メール", hint: "通知先メール" },
 ];
 
 function resourceRowID(row: ResourceRow) {

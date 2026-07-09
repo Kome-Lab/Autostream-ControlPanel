@@ -7,16 +7,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useAppSettings, useServiceHealth, useVersion } from "@/features/queries";
+import { useAppSettings, useNodes, useServiceHealth, useVersion } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { WorkerNode } from "@/types/domain";
 
 export function ApplicationInfoView() {
   const appSettings = useAppSettings();
   const appVersion = useVersion();
-  const services = useServiceHealth();
+  const registeredNodes = useNodes();
+  const serviceHealth = useServiceHealth();
   const timezone = appSettings.data?.timezone;
-  const nodeRows = useMemo(() => [...(services.data || [])].sort(compareServiceRows), [services.data]);
+  const nodeRows = useMemo(() => mergeRegisteredNodeRows(registeredNodes.data || [], serviceHealth.data || []).sort(compareServiceRows), [registeredNodes.data, serviceHealth.data]);
+  const nodesFetching = registeredNodes.isFetching || serviceHealth.isFetching;
 
   return (
     <div className="space-y-4">
@@ -30,14 +32,22 @@ export function ApplicationInfoView() {
             <RefreshCcw className="size-4" />
             Panel更新確認
           </Button>
-          <Button variant="outline" size="sm" onClick={() => services.refetch()} disabled={services.isFetching}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              void registeredNodes.refetch();
+              void serviceHealth.refetch();
+            }}
+            disabled={nodesFetching}
+          >
             <RefreshCcw className="size-4" />
             Node更新
           </Button>
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
+      <div className="grid gap-4 2xl:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -66,10 +76,10 @@ export function ApplicationInfoView() {
             <CardDescription>Worker、Encoder/Recorder、Discord Bot、Observabilityの報告バージョンです。</CardDescription>
           </CardHeader>
           <CardContent>
-            {services.isLoading ? (
+            {registeredNodes.isLoading ? (
               <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">読み込み中</div>
             ) : nodeRows.length === 0 ? (
-              <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeがありません。</div>
+              <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeがありません。Node登録ページで作成したNodeがある場合は、ページを更新してください。</div>
             ) : (
               <>
                 <div className="grid gap-3 md:hidden">
@@ -126,6 +136,43 @@ export function ApplicationInfoView() {
       </div>
     </div>
   );
+}
+
+function mergeRegisteredNodeRows(registeredNodes: WorkerNode[], serviceHealthRows: WorkerNode[]) {
+  const merged = new Map<string, WorkerNode>();
+  for (const node of registeredNodes) {
+    const key = nodeIdentity(node);
+    if (key) merged.set(key, node);
+  }
+  for (const health of serviceHealthRows) {
+    const key = nodeIdentity(health);
+    if (!key) continue;
+    const current = merged.get(key);
+    merged.set(key, current ? mergeNodeRow(current, health) : health);
+  }
+  return Array.from(merged.values());
+}
+
+function mergeNodeRow(registered: WorkerNode, health: WorkerNode): WorkerNode {
+  return {
+    ...registered,
+    ...health,
+    service_id: registered.service_id || health.service_id,
+    id: registered.id || health.id,
+    service_type: registered.service_type || health.service_type,
+    service_name: registered.service_name || health.service_name,
+    description: registered.description || health.description,
+    reported_version: health.reported_version || registered.reported_version,
+    reported_commit: health.reported_commit || registered.reported_commit,
+    reported_build_date: health.reported_build_date || registered.reported_build_date,
+    version: health.version || registered.version,
+    status: health.status || registered.status,
+    health_status: health.health_status || registered.health_status,
+  };
+}
+
+function nodeIdentity(node: WorkerNode) {
+  return node.service_id || node.id || "";
 }
 
 function InfoItem({ label, value, monospace = false }: { label: string; value: ReactNode; monospace?: boolean }) {
