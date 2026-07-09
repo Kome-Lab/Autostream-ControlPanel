@@ -307,14 +307,14 @@ func (s *Server) finishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "security_settings_unavailable"})
 		return
 	}
-	if mfaRequiredForUser(settings, user) {
+	mfaConfig, mfaRequired, err := s.loginMFARequirement(r.Context(), settings, user)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "mfa_state_unavailable"})
+		return
+	}
+	if mfaRequired {
 		if s.mfa == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "mfa_not_configured"})
-			return
-		}
-		mfaConfig, err := s.mfa.GetMFAConfig(r.Context(), user.ID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "mfa_state_unavailable"})
 			return
 		}
 		if mfaConfig.Enabled {

@@ -89,15 +89,15 @@ export const resourcePages = {
   },
   overlay: {
     titleKey: "overlay",
-    description: "映像に合成するウォーターマーク画像と表示ルールを管理します。字幕やチャットは映像生成側の設定として扱います。",
+    description: "映像に合成する1920x1080固定のウォーターマーク画像を管理します。字幕やチャットは映像生成側の設定として扱います。",
     resources: [
       {
         title: "ウォーターマーク設定",
         path: "/profiles/overlay",
-        description: "配信映像へ載せるロゴ画像、位置、不透明度の設定です。",
+        description: "配信映像へ載せる1920x1080固定のウォーターマーク画像です。",
         form: "overlay-profile",
         deletable: true,
-        createTemplate: { name: "station-logo", config: { watermark_enabled: true, watermark_image_url: "", watermark_position: "bottom_right", watermark_opacity: 0.7, watermark_width_percent: 14 } },
+        createTemplate: { name: "station-logo", config: { watermark_enabled: true, watermark_image_url: "", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output" } },
       },
     ],
   },
@@ -162,7 +162,7 @@ export const resourcePages = {
         description: "運用担当者のログインアカウントです。",
         form: "user",
         deletable: true,
-        createTemplate: { username: "operator", temporary_password: "change-me-with-12-chars", role_ids: ["role-operator"] },
+        createTemplate: { username: "operator", email: "operator@example.jp", temporary_password: "change-me-with-12-chars", role_ids: ["role-operator"] },
       },
     ],
   },

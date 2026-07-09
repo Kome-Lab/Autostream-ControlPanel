@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { useAppSettings, useCurrentUser } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
-import type { CurrentUser, MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
+import type { MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
 
 type AccountNotice = { tone: "success" | "error"; text: string } | null;
 
@@ -149,9 +149,13 @@ function EmailPanel({
 }) {
   const [email, setEmail] = useState(currentEmail);
   const updateEmail = useMutation({
-    mutationFn: () => apiPut<CurrentUser>("/auth/email", { email: email.trim() }),
-    onSuccess: () => {
-      setNotice({ tone: "success", text: "メールアドレスを保存しました。" });
+    mutationFn: () => apiPut<{ status: string; target?: string }>("/auth/email", { email: email.trim() }),
+    onSuccess: (response) => {
+      if (response.status === "unchanged") {
+        setNotice({ tone: "success", text: "メールアドレスは変更されていません。" });
+      } else {
+        setNotice({ tone: "success", text: response.target ? `確認メールを送信しました。宛先: ${response.target}` : "確認メールを送信しました。" });
+      }
       onUpdated();
     },
     onError: (error) => onError(error, "メールアドレスを保存できませんでした"),
@@ -182,11 +186,11 @@ function EmailPanel({
           <label className="text-sm font-medium">アカウントメール</label>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input type="email" autoComplete="email" placeholder="operator@example.jp" value={email} onChange={(event) => setEmail(event.target.value)} />
-            <Button onClick={() => updateEmail.mutate()} disabled={updateEmail.isPending || email.trim() === currentEmail.trim()}>
-              保存
+            <Button onClick={() => updateEmail.mutate()} disabled={updateEmail.isPending || email.trim() === currentEmail.trim() || !email.trim()}>
+              確認メール送信
             </Button>
           </div>
-          <div className="text-xs text-muted-foreground">通知やアカウント登録完了メールの宛先として使います。空で保存すると未設定になります。</div>
+          <div className="text-xs text-muted-foreground">変更すると新しい宛先へ確認メールを送信します。メール内のワンタイムURLを開くまで変更は完了しません。</div>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {providers.map((provider) => (
@@ -241,6 +245,8 @@ function MFAPanel({
   const [disableCode, setDisableCode] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
   const [enrollment, setEnrollment] = useState<MFAEnrollResponse | null>(null);
+  const policyMode = status?.policy_mode || "";
+  const totpEnrollmentAvailable = Boolean(status?.available && policyMode !== "passkey");
   const enroll = useMutation({
     mutationFn: () => apiPost<MFAEnrollResponse>("/auth/mfa/enroll", status?.enabled ? { code: currentCode } : {}),
     onSuccess: (data) => {
@@ -279,6 +285,7 @@ function MFAPanel({
     },
     onError: (error) => onError(error, "リカバリーコードを再発行できませんでした"),
   });
+  const canStartEnrollment = totpEnrollmentAvailable && !loading && !enroll.isPending && (!status?.enabled || currentCode.length >= 6);
 
   return (
     <Card>
@@ -292,13 +299,17 @@ function MFAPanel({
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={status?.enabled ? "default" : "secondary"}>{loading ? "確認中" : status?.enabled ? "有効" : "無効"}</Badge>
-          <span className="text-sm text-muted-foreground">Policy {status?.policy_mode || "-"}</span>
+          <span className="text-sm text-muted-foreground">Policy {mfaPolicyLabel(policyMode)}</span>
           {status?.required ? <Badge variant="outline">必須</Badge> : null}
+          {status?.pending_enrollment ? <Badge variant="outline">確認待ち</Badge> : null}
         </div>
-        {status?.enabled ? <Input inputMode="numeric" placeholder="現在のMFAコード" value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} /> : null}
-        <Button variant="outline" className="w-full" onClick={() => enroll.mutate()} disabled={enroll.isPending || (status?.enabled && currentCode.length < 6)}>
-          MFA登録を開始
-        </Button>
+        {!loading && !totpEnrollmentAvailable ? <div className="rounded-md border bg-muted/35 px-3 py-2 text-sm text-muted-foreground">{mfaUnavailableMessage(status)}</div> : null}
+        {totpEnrollmentAvailable && status?.enabled ? <Input inputMode="numeric" placeholder="現在のMFAコード" value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} /> : null}
+        {totpEnrollmentAvailable ? (
+          <Button variant="outline" className="w-full" onClick={() => enroll.mutate()} disabled={!canStartEnrollment}>
+            {status?.enabled ? "TOTPを再登録" : status?.pending_enrollment ? "TOTP登録をやり直す" : "TOTP登録を開始"}
+          </Button>
+        ) : null}
         {enrollment ? (
           <div className="space-y-3 rounded-md border p-3">
             {enrollment.secret ? <Input readOnly value={enrollment.secret} aria-label="TOTP secret" /> : null}
@@ -333,6 +344,30 @@ function MFAPanel({
       </CardContent>
     </Card>
   );
+}
+
+function mfaPolicyLabel(mode: string) {
+  switch (mode) {
+    case "totp":
+      return "TOTP";
+    case "passkey":
+      return "Passkey";
+    case "disabled":
+      return "無効";
+    default:
+      return mode || "-";
+  }
+}
+
+function mfaUnavailableMessage(status?: MFAStatus) {
+  if (!status?.available) {
+    return "MFAストアが構成されていないため、TOTP登録は利用できません。";
+  }
+  if (status.policy_mode === "passkey") {
+    return "現在のMFA modeはPasskeyです。下のPasskey欄から端末やセキュリティキーを登録してください。";
+  }
+  if (status.policy_mode === "disabled") return "このアカウントでは任意でTOTPを登録できます。登録後のログインでは2FAが必要になります。";
+  return "現在のMFA policyではTOTP登録を利用できません。";
 }
 
 function PasskeyPanel({

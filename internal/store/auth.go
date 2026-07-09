@@ -52,6 +52,15 @@ type MFAChallenge struct {
 	ExpiresAt time.Time
 }
 
+type EmailChangeChallenge struct {
+	Token     string    `json:"-"`
+	TokenHash string    `json:"token_hash,omitempty"`
+	UserID    string    `json:"user_id"`
+	Email     string    `json:"email"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type PasskeyRegistrationChallenge struct {
 	Token           string    `json:"-"`
 	TokenHash       string    `json:"token_hash,omitempty"`
@@ -142,6 +151,12 @@ type MFAStore interface {
 	CreateMFAChallenge(ctx context.Context, userID string, ttl time.Duration) (MFAChallenge, error)
 	GetMFAChallenge(ctx context.Context, rawToken string) (MFAChallenge, error)
 	DeleteMFAChallenge(ctx context.Context, rawToken string) error
+}
+
+type EmailChangeStore interface {
+	CreateEmailChangeChallenge(ctx context.Context, userID, email string, ttl time.Duration) (EmailChangeChallenge, error)
+	GetEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error)
+	ConsumeEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error)
 }
 
 type PasskeyStore interface {
@@ -543,6 +558,72 @@ func (s MariaDBAuthStore) DeleteMFAChallenge(ctx context.Context, rawToken strin
 	return err
 }
 
+func (s MariaDBAuthStore) CreateEmailChangeChallenge(ctx context.Context, userID, email string, ttl time.Duration) (EmailChangeChallenge, error) {
+	challenge, err := newEmailChangeChallenge(userID, email, ttl)
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO email_change_challenges (id, user_id, email, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`,
+		challenge.TokenHash, challenge.UserID, challenge.Email, challenge.ExpiresAt, challenge.CreatedAt)
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	return challenge, nil
+}
+
+func (s MariaDBAuthStore) GetEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error) {
+	hash := security.HashToken(strings.TrimSpace(rawToken))
+	var challenge EmailChangeChallenge
+	challenge.Token = rawToken
+	challenge.TokenHash = hash
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, email, expires_at, created_at FROM email_change_challenges WHERE id = ?`, hash).Scan(&challenge.UserID, &challenge.Email, &challenge.ExpiresAt, &challenge.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EmailChangeChallenge{}, ErrNotFound
+	}
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	if time.Now().UTC().After(challenge.ExpiresAt) {
+		_ = s.deleteEmailChangeChallenge(ctx, rawToken)
+		return EmailChangeChallenge{}, ErrNotFound
+	}
+	return challenge, nil
+}
+
+func (s MariaDBAuthStore) ConsumeEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error) {
+	hash := security.HashToken(strings.TrimSpace(rawToken))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	defer tx.Rollback()
+	var challenge EmailChangeChallenge
+	challenge.Token = rawToken
+	challenge.TokenHash = hash
+	err = tx.QueryRowContext(ctx, `SELECT user_id, email, expires_at, created_at FROM email_change_challenges WHERE id = ? FOR UPDATE`, hash).Scan(&challenge.UserID, &challenge.Email, &challenge.ExpiresAt, &challenge.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EmailChangeChallenge{}, ErrNotFound
+	}
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM email_change_challenges WHERE id = ?`, hash); err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	if time.Now().UTC().After(challenge.ExpiresAt) {
+		return EmailChangeChallenge{}, ErrNotFound
+	}
+	return challenge, nil
+}
+
+func (s MariaDBAuthStore) deleteEmailChangeChallenge(ctx context.Context, rawToken string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM email_change_challenges WHERE id = ?`, security.HashToken(strings.TrimSpace(rawToken)))
+	return err
+}
+
 func (s MariaDBAuthStore) CreatePasskeyRegistrationChallenge(ctx context.Context, userID, rpID, rpName, userName, userDisplayName string, ttl time.Duration) (PasskeyRegistrationChallenge, error) {
 	challenge, err := newPasskeyRegistrationChallenge(userID, rpID, rpName, userName, userDisplayName, ttl)
 	if err != nil {
@@ -858,6 +939,33 @@ func newPasskeyRegistrationChallenge(userID, rpID, rpName, userName, userDisplay
 		Challenge: rawChallenge, UserHandle: base64.RawURLEncoding.EncodeToString([]byte(userID)),
 		RPID: rpID, RPName: rpName, UserName: userName, UserDisplayName: userDisplayName,
 		ExpiresAt: now.Add(ttl), CreatedAt: now,
+	}, nil
+}
+
+func newEmailChangeChallenge(userID, email string, ttl time.Duration) (EmailChangeChallenge, error) {
+	userID = strings.TrimSpace(userID)
+	email, err := normalizeUserEmail(email)
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	if userID == "" || email == "" {
+		return EmailChangeChallenge{}, ErrInvalidSettings
+	}
+	rawToken, err := security.RandomToken(32)
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	now := time.Now().UTC()
+	return EmailChangeChallenge{
+		Token:     rawToken,
+		TokenHash: security.HashToken(rawToken),
+		UserID:    userID,
+		Email:     email,
+		ExpiresAt: now.Add(ttl),
+		CreatedAt: now,
 	}, nil
 }
 

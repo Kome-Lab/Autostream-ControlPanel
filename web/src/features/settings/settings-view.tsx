@@ -2,18 +2,23 @@
 
 import { type ReactNode, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Save } from "lucide-react";
+import { Save, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { apiPut } from "@/lib/api/client";
+import { APIError, apiPost, apiPut } from "@/lib/api/client";
 import { defaultTimeZone, timeZoneOptions } from "@/lib/timezone";
 import { useI18n } from "@/components/admin/i18n-provider";
-import { useAppSettings } from "@/features/queries";
+import { useAppSettings, useCurrentUser } from "@/features/queries";
 import type { AppSettings } from "@/types/domain";
+
+type TestEmailResponse = {
+  status: string;
+  target?: string;
+};
 
 export function SettingsView() {
   const { t } = useI18n();
@@ -36,7 +41,7 @@ export function SettingsView() {
             <Skeleton className="h-10 w-full" />
           ) : (
             <AppSettingsForm
-              key={`${appSettings.data?.app_name || "default"}-${appSettings.data?.timezone || defaultTimeZone}-${appSettings.data?.smtp_enabled ? "smtp-on" : "smtp-off"}`}
+              key={`${appSettings.data?.app_name || "default"}-${appSettings.data?.timezone || defaultTimeZone}-${appSettings.data?.smtp_enabled ? "smtp-on" : "smtp-off"}-${appSettings.data?.turnstile_enabled ? "turnstile-on" : "turnstile-off"}`}
               initialSettings={appSettings.data}
             />
           )}
@@ -49,6 +54,8 @@ export function SettingsView() {
 function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const currentUser = useCurrentUser();
+  const currentUserEmail = currentUser.data?.user.email || "";
   const [appName, setAppName] = useState(initialSettings?.app_name || t("appName"));
   const [timezone, setTimezone] = useState(initialSettings?.timezone || defaultTimeZone);
   const [smtpEnabled, setSMTPEnabled] = useState(Boolean(initialSettings?.smtp_enabled));
@@ -58,8 +65,13 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
   const [smtpFrom, setSMTPFrom] = useState(initialSettings?.smtp_from || "");
   const [smtpUsername, setSMTPUsername] = useState(initialSettings?.smtp_username || "");
   const [smtpPassword, setSMTPPassword] = useState("");
+  const [turnstileEnabled, setTurnstileEnabled] = useState(Boolean(initialSettings?.turnstile_enabled));
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState(initialSettings?.turnstile_site_key || "");
+  const [turnstileSecret, setTurnstileSecret] = useState("");
+  const [testEmailOverride, setTestEmailOverride] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const options = timeZoneOptions.some((option) => option.value === timezone) ? timeZoneOptions : [{ value: timezone, label: timezone }, ...timeZoneOptions];
+  const testEmailTo = testEmailOverride ?? currentUserEmail;
   const saveAppSettings = useMutation({
     mutationFn: () =>
       apiPut<AppSettings>("/settings/app", {
@@ -72,14 +84,26 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
         smtp_from: smtpFrom,
         smtp_username: smtpUsername,
         smtp_password: smtpPassword,
+        turnstile_enabled: turnstileEnabled,
+        turnstile_site_key: turnstileSiteKey,
+        turnstile_secret: turnstileSecret,
       }),
     onSuccess: async () => {
       setSMTPPassword("");
+      setTurnstileSecret("");
       setMessage("保存しました。");
       await queryClient.invalidateQueries({ queryKey: ["settings", "app"] });
     },
     onError: () => setMessage("保存に失敗しました。権限と入力内容を確認してください。"),
   });
+  const testEmail = useMutation({
+    mutationFn: () => apiPost<TestEmailResponse>("/settings/app/test-email", { to: testEmailTo.trim() }),
+    onMutate: () => setMessage("テストメールを送信しています。"),
+    onSuccess: (response) => setMessage(response.target ? `テストメールを送信しました。宛先: ${response.target}` : "テストメールを送信しました。"),
+    onError: (error) => setMessage(testEmailErrorMessage(error)),
+  });
+  const smtpRequiredMissing = smtpEnabled && (!smtpHost.trim() || !smtpFrom.trim());
+  const turnstileRequiredMissing = turnstileEnabled && (!turnstileSiteKey.trim() || (!turnstileSecret.trim() && !initialSettings?.turnstile_configured));
 
   return (
     <>
@@ -136,16 +160,71 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
               <Switch checked={smtpStartTLS} onCheckedChange={setSMTPStartTLS} />
               STARTTLSを使用する
             </label>
+            <Field label="テスト送信先">
+              <Input
+                type="email"
+                value={testEmailTo}
+                onChange={(event) => {
+                  setTestEmailOverride(event.target.value);
+                }}
+                placeholder="ops@example.jp"
+              />
+            </Field>
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => testEmail.mutate()}
+                disabled={testEmail.isPending || saveAppSettings.isPending || !smtpEnabled || smtpRequiredMissing || !testEmailTo.trim()}
+              >
+                <Send className="size-4" />
+                テスト送信
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium">Cloudflare Turnstile</div>
+            <p className="text-xs text-muted-foreground">ログインとメール変更確認のBOT確認に使います。</p>
+          </div>
+          <Switch checked={turnstileEnabled} onCheckedChange={setTurnstileEnabled} />
+        </div>
+        {turnstileEnabled ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Site key">
+              <Input value={turnstileSiteKey} onChange={(event) => setTurnstileSiteKey(event.target.value)} placeholder="0x4AAAA..." />
+            </Field>
+            <Field label="Secret key">
+              <Input type="password" value={turnstileSecret} onChange={(event) => setTurnstileSecret(event.target.value)} placeholder={initialSettings?.turnstile_configured ? "設定済み" : ""} />
+            </Field>
           </div>
         ) : null}
       </div>
       {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
-      <Button onClick={() => saveAppSettings.mutate()} disabled={saveAppSettings.isPending || !appName.trim() || (smtpEnabled && (!smtpHost.trim() || !smtpFrom.trim()))}>
+      <Button onClick={() => saveAppSettings.mutate()} disabled={saveAppSettings.isPending || !appName.trim() || smtpRequiredMissing || turnstileRequiredMissing}>
         <Save className="size-4" />
         {t("save")}
       </Button>
     </>
   );
+}
+
+function testEmailErrorMessage(error: unknown) {
+  if (error instanceof APIError) {
+    const messages: Record<string, string> = {
+      invalid_email_recipient: "テスト送信先のメールアドレスを確認してください。",
+      smtp_not_configured: "メールサーバー設定を保存してからテスト送信してください。",
+      smtp_requires_tls: "外部SMTPではSTARTTLSを有効にしてください。",
+      secret_encryption_key_required: "SMTPパスワードを読み出せません。Secret encryption keyを設定してください。",
+      send_failed: "テストメール送信に失敗しました。SMTPサーバー設定と到達性を確認してください。",
+    };
+    return messages[error.code || ""] || `テストメール送信に失敗しました。${error.code || error.message}`;
+  }
+  if (error instanceof Error) return `テストメール送信に失敗しました。${error.message}`;
+  return "テストメール送信に失敗しました。";
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

@@ -20,7 +20,10 @@ import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useResourceData } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
-import { cn } from "@/lib/utils";
+
+const watermarkCanvasWidth = 1920;
+const watermarkCanvasHeight = 1080;
+const watermarkMaxBytes = 5 * 1024 * 1024;
 
 export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
   const { t } = useI18n();
@@ -440,9 +443,6 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
   const [watermarkEnabled, setWatermarkEnabled] = useState(true);
   const [watermarkImage, setWatermarkImage] = useState("");
   const [watermarkFileName, setWatermarkFileName] = useState("");
-  const [watermarkPosition, setWatermarkPosition] = useState("bottom_right");
-  const [watermarkOpacity, setWatermarkOpacity] = useState("70");
-  const [watermarkWidth, setWatermarkWidth] = useState("14");
   const [fileMessage, setFileMessage] = useState("");
 
   return (
@@ -456,9 +456,9 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
             watermark_enabled: watermarkEnabled,
             watermark_image_data_url: watermarkEnabled ? watermarkImage : "",
             watermark_file_name: watermarkEnabled ? watermarkFileName : "",
-            watermark_position: watermarkEnabled ? watermarkPosition : "",
-            watermark_opacity: watermarkEnabled ? numberValue(watermarkOpacity, 70) / 100 : undefined,
-            watermark_width_percent: watermarkEnabled ? numberValue(watermarkWidth, 14) : undefined,
+            watermark_canvas_width: watermarkEnabled ? watermarkCanvasWidth : undefined,
+            watermark_canvas_height: watermarkEnabled ? watermarkCanvasHeight : undefined,
+            watermark_fit_mode: watermarkEnabled ? "scale_to_output" : "",
           }),
         });
       }}
@@ -468,7 +468,7 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
         <SwitchField label="ウォーターマークを表示" checked={watermarkEnabled} onCheckedChange={setWatermarkEnabled} />
         {watermarkEnabled ? (
           <>
-            <Field label="画像アップロード" description="PNG、JPEG、WebPのみ。1MB以下の画像を保存します。">
+            <Field label="画像アップロード" description="PNG、JPEG、WebPのみ。1920x1080の画像を保存します。5MB以下にしてください。">
               <Input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
@@ -481,17 +481,38 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
                     setWatermarkFileName("");
                     return;
                   }
-                  if (file.size > 1024 * 1024) {
-                    setFileMessage("画像は1MB以下にしてください。");
+                  if (file.size > watermarkMaxBytes) {
+                    setFileMessage("画像は5MB以下にしてください。");
                     setWatermarkImage("");
                     setWatermarkFileName("");
                     return;
                   }
                   const reader = new FileReader();
                   reader.onload = () => {
-                    setWatermarkImage(typeof reader.result === "string" ? reader.result : "");
-                    setWatermarkFileName(file.name);
-                    setFileMessage(`${file.name} を読み込みました。`);
+                    if (typeof reader.result !== "string") {
+                      setFileMessage("画像を読み込めませんでした。");
+                      setWatermarkImage("");
+                      setWatermarkFileName("");
+                      return;
+                    }
+                    const probe = new window.Image();
+                    probe.onload = () => {
+                      if (probe.naturalWidth !== watermarkCanvasWidth || probe.naturalHeight !== watermarkCanvasHeight) {
+                        setFileMessage(`画像サイズは${watermarkCanvasWidth}x${watermarkCanvasHeight}にしてください。`);
+                        setWatermarkImage("");
+                        setWatermarkFileName("");
+                        return;
+                      }
+                      setWatermarkImage(reader.result as string);
+                      setWatermarkFileName(file.name);
+                      setFileMessage(`${file.name} を読み込みました。配信画質が1080未満の場合は自動でフィットします。`);
+                    };
+                    probe.onerror = () => {
+                      setFileMessage("画像を読み込めませんでした。");
+                      setWatermarkImage("");
+                      setWatermarkFileName("");
+                    };
+                    probe.src = reader.result;
                   };
                   reader.onerror = () => setFileMessage("画像を読み込めませんでした。");
                   reader.readAsDataURL(file);
@@ -499,29 +520,19 @@ function OverlayProfileForm({ disabled, submit }: { disabled: boolean; submit: S
               />
               {fileMessage ? <p className="mt-1 text-xs text-muted-foreground">{fileMessage}</p> : null}
             </Field>
-            <SelectField
-              label="表示位置"
-              value={watermarkPosition}
-              onChange={setWatermarkPosition}
-              options={[
-                { value: "top_left", label: "左上" },
-                { value: "top_right", label: "右上" },
-                { value: "bottom_left", label: "左下" },
-                { value: "bottom_right", label: "右下" },
-              ]}
-            />
-            <NumberField label="不透明度 (%)" value={watermarkOpacity} onChange={setWatermarkOpacity} min={0} />
-            <NumberField label="横幅 (%)" value={watermarkWidth} onChange={setWatermarkWidth} min={1} />
+            <Field label="合成サイズ" description="ウォーターマーク画像は配信映像全体に重ねる1920x1080固定です。">
+              <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">1920x1080 / 自動フィット</div>
+            </Field>
           </>
         ) : null}
       </div>
-      {watermarkEnabled ? <WatermarkPreview image={watermarkImage} position={watermarkPosition} opacity={numberValue(watermarkOpacity, 70) / 100} widthPercent={numberValue(watermarkWidth, 14)} /> : null}
+      {watermarkEnabled ? <WatermarkPreview image={watermarkImage} /> : null}
       <FormActions disabled={disabled || (watermarkEnabled && !watermarkImage)} />
     </form>
   );
 }
 
-function WatermarkPreview({ image, position, opacity, widthPercent }: { image: string; position: string; opacity: number; widthPercent: number }) {
+function WatermarkPreview({ image }: { image: string }) {
   return (
     <div className="space-y-2">
       <div className="text-sm font-medium">プレビュー</div>
@@ -531,31 +542,17 @@ function WatermarkPreview({ image, position, opacity, widthPercent }: { image: s
           <Image
             src={image}
             alt="ウォーターマークプレビュー"
-            width={480}
-            height={270}
+            width={watermarkCanvasWidth}
+            height={watermarkCanvasHeight}
             unoptimized
-            className={cn("absolute max-h-[28%] object-contain", watermarkPositionClass(position))}
-            style={{ opacity, width: `${Math.min(Math.max(widthPercent, 4), 40)}%` }}
+            className="absolute inset-0 h-full w-full object-contain"
           />
         ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-300">画像を選択するとプレビューされます。</div>
+          <div className="absolute inset-0 flex items-center justify-center text-center text-sm text-slate-300">1920x1080の画像を選択するとプレビューされます。</div>
         )}
       </div>
     </div>
   );
-}
-
-function watermarkPositionClass(position: string) {
-  switch (position) {
-    case "top_left":
-      return "left-4 top-4";
-    case "top_right":
-      return "right-4 top-4";
-    case "bottom_left":
-      return "bottom-4 left-4";
-    default:
-      return "bottom-4 right-4";
-  }
 }
 
 function ArchiveProfileForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
@@ -780,7 +777,7 @@ function UserForm({ disabled, submit }: { disabled: boolean; submit: SubmitResou
     >
       <div className="grid gap-3 md:grid-cols-2">
         <TextField label="ユーザー名" value={username} onChange={setUsername} required />
-        <TextField label="メールアドレス" value={email} onChange={setEmail} type="email" description="登録完了メールと本人確認用の連絡先です。" />
+        <TextField label="メールアドレス" value={email} onChange={setEmail} type="email" description="登録完了メールと本人確認用の連絡先です。" required />
         <TextField label="初期パスワード" value={temporaryPassword} onChange={setTemporaryPassword} type="password" required description="ログイン後に変更してもらう一時パスワードです。" />
       </div>
       <label className="flex items-center gap-2 text-sm">
@@ -788,7 +785,7 @@ function UserForm({ disabled, submit }: { disabled: boolean; submit: SubmitResou
         登録完了メールを送る
       </label>
       <CheckboxList label="付与するロール" values={roleIDs} onChange={setRoleIDs} items={roles} emptyText="ロールがありません。" />
-      <FormActions disabled={disabled || (sendWelcomeEmail && email.trim() === "")} />
+      <FormActions disabled={disabled || email.trim() === ""} />
     </form>
   );
 }
@@ -1541,9 +1538,8 @@ function profileSummary(path: string, row: ResourceRow) {
   if (path === "/profiles/overlay") {
     return compactList([
       enabledLabel("ウォーターマーク", rowValue(row, ["watermark_enabled", "config.watermark_enabled"])),
-      labelValue("位置", formatScalarValue("watermark_position", rowString(row, ["watermark_position", "config.watermark_position"]))),
-      rowString(row, ["watermark_opacity", "config.watermark_opacity"]) ? `不透明度 ${rowString(row, ["watermark_opacity", "config.watermark_opacity"])}` : "",
-      rowString(row, ["watermark_width_percent", "config.watermark_width_percent"]) ? `幅 ${rowString(row, ["watermark_width_percent", "config.watermark_width_percent"])}%` : "",
+      "1920x1080",
+      "自動フィット",
       rowString(row, ["watermark_image_name", "config.watermark_image_name", "watermark_image_url", "config.watermark_image_url"]) ? "画像あり" : "",
     ]);
   }

@@ -3,44 +3,100 @@
 import type { FormEvent, ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { Moon, RadioTower, Sun } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiPost, setCSRFToken } from "@/lib/api/client";
+import { TurnstileWidget } from "@/components/auth/turnstile-widget";
+import { APIError, apiGet, apiPost, setCSRFToken } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
 import { useAppSettings, useSetupStatus } from "@/features/queries";
+import type { OAuthLinkStartResponse, OAuthLoginProvider } from "@/types/domain";
+
+type LoginResponse = {
+  csrf_token?: string;
+  mfa_required?: boolean;
+  challenge_token?: string;
+};
 
 export function LoginCard() {
   const { t } = useI18n();
   const router = useRouter();
   const setupStatus = useSetupStatus();
+  const appSettings = useAppSettings();
+  const oauthProviders = useQuery({ queryKey: ["auth", "oauth", "providers", "login"], queryFn: () => apiGet<OAuthLoginProvider[]>("/auth/oauth/providers") });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMFACode] = useState("");
+  const [mfaChallengeToken, setMFAChallengeToken] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
+  const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
+
+  const resetTurnstile = () => {
+    setTurnstileToken("");
+    setTurnstileResetKey((value) => value + 1);
+  };
 
   const login = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setMessage("");
     try {
-      const body = await apiPost<{ csrf_token?: string }>("/auth/login", { username, password });
+      const body = await apiPost<LoginResponse>("/auth/login", { username, password, turnstile_token: turnstileToken });
+      if (body.mfa_required && body.challenge_token) {
+        setMFAChallengeToken(body.challenge_token);
+        setMessage("2FAコードを入力してください。");
+        return;
+      }
       setCSRFToken(body.csrf_token);
       router.push("/admin/");
-    } catch {
-      setMessage("ログインできませんでした。ユーザー名とパスワードを確認してください。");
+    } catch (error) {
+      resetTurnstile();
+      setMessage(authErrorMessage(error, "ログインできませんでした。ユーザー名とパスワードを確認してください。"));
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyMFA = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      const body = await apiPost<{ csrf_token?: string }>("/auth/mfa/verify", { challenge_token: mfaChallengeToken, code: mfaCode });
+      setCSRFToken(body.csrf_token);
+      router.push("/admin/");
+    } catch (error) {
+      setMessage(authErrorMessage(error, "2FAコードを確認してください。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startOAuthLogin = async (providerID: string) => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const body = await apiPost<OAuthLinkStartResponse>(`/auth/oauth/${encodeURIComponent(providerID)}/start`, { turnstile_token: turnstileToken });
+      window.location.assign(body.authorization_url);
+    } catch (error) {
+      resetTurnstile();
+      setMessage(authErrorMessage(error, "OAuthログインを開始できませんでした。"));
       setBusy(false);
     }
   };
 
   return (
     <AuthFrame title={t("login")} description="Control Panelにログインします。">
-      <form className="space-y-3" onSubmit={login}>
+      <form className="space-y-3" onSubmit={mfaChallengeToken ? verifyMFA : login}>
         {setupStatus.data?.setup_required ? (
           <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
             初回管理者が未作成です。先に{" "}
@@ -50,15 +106,94 @@ export function LoginCard() {
             を完了してください。
           </div>
         ) : null}
-        <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" />
-        <Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="current-password" />
+        {mfaChallengeToken ? (
+          <Input value={mfaCode} onChange={(event) => setMFACode(event.target.value)} placeholder="2FAコード" inputMode="numeric" autoComplete="one-time-code" />
+        ) : (
+          <>
+            <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" />
+            <Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="current-password" />
+            {turnstileEnabled ? <TurnstileWidget siteKey={turnstileSiteKey} action="login" resetKey={turnstileResetKey} onToken={setTurnstileToken} /> : null}
+          </>
+        )}
         {message ? <p className="text-sm text-destructive">{message}</p> : null}
-        <Button className="w-full" type="submit" disabled={busy}>
-          {t("login")}
+        <Button className="w-full" type="submit" disabled={busy || (!mfaChallengeToken && turnstileEnabled && !turnstileToken) || (Boolean(mfaChallengeToken) && mfaCode.trim().length < 6)}>
+          {mfaChallengeToken ? "2FA確認" : t("login")}
         </Button>
       </form>
+      {!mfaChallengeToken && oauthProviders.data?.length ? (
+        <div className="space-y-2">
+          <div className="text-xs text-muted-foreground">OAuthログイン</div>
+          {oauthProviders.data.map((provider) => (
+            <Button key={provider.id} type="button" variant="outline" className="w-full justify-start" disabled={busy || (turnstileEnabled && !turnstileToken)} onClick={() => startOAuthLogin(provider.id)}>
+              {provider.name || provider.provider_type}
+            </Button>
+          ))}
+        </div>
+      ) : null}
     </AuthFrame>
   );
+}
+
+export function EmailConfirmCard({ token }: { token?: string }) {
+  const appSettings = useAppSettings();
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
+  const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
+  const trimmedToken = token?.trim() || "";
+
+  const confirm = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      const body = await apiPost<{ status: string; target?: string }>("/auth/email/confirm", { token: trimmedToken, turnstile_token: turnstileToken });
+      setMessage(body.target ? `メールアドレスを変更しました。宛先: ${body.target}` : "メールアドレスを変更しました。");
+    } catch (error) {
+      setTurnstileToken("");
+      setTurnstileResetKey((value) => value + 1);
+      setMessage(authErrorMessage(error, "メールアドレス変更を確認できませんでした。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AuthFrame title="メールアドレス変更確認" description="ワンタイムURLの確認を完了します。">
+      <form className="space-y-3" onSubmit={confirm}>
+        {!trimmedToken ? <p className="text-sm text-destructive">確認トークンがありません。</p> : null}
+        {turnstileEnabled ? <TurnstileWidget siteKey={turnstileSiteKey} action="email_confirm" resetKey={turnstileResetKey} onToken={setTurnstileToken} /> : null}
+        {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+        <Button className="w-full" type="submit" disabled={busy || !trimmedToken || (turnstileEnabled && !turnstileToken)}>
+          確認する
+        </Button>
+      </form>
+      <Button asChild variant="outline" className="w-full">
+        <Link href="/login">ログインへ戻る</Link>
+      </Button>
+    </AuthFrame>
+  );
+}
+
+function authErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof APIError) {
+    const messages: Record<string, string> = {
+      invalid_credentials: "ユーザー名またはパスワードを確認してください。",
+      mfa_enrollment_required: "このアカウントは2FA登録が必要です。管理者に確認してください。",
+      invalid_mfa_code: "2FAコードを確認してください。",
+      invalid_mfa_challenge: "2FA確認の有効期限が切れています。もう一度ログインしてください。",
+      oauth_provider_not_usable_for_login: "このOAuthプロバイダはログインに利用できません。",
+      turnstile_token_required: "BOT確認を完了してください。",
+      turnstile_failed: "BOT確認に失敗しました。もう一度お試しください。",
+      turnstile_unavailable: "BOT確認を利用できません。時間をおいて再試行してください。",
+      turnstile_not_configured: "BOT確認設定が未完了です。管理者に確認してください。",
+      invalid_email_change_token: "メールアドレス変更URLの有効期限が切れています。",
+    };
+    return messages[error.code || ""] || `${fallback} (${error.code || error.status})`;
+  }
+  return fallback;
 }
 
 export function SetupCard() {

@@ -59,6 +59,31 @@ func TestOAuthLoginStartReturnsAuthorizationURLWithoutClientSecret(t *testing.T)
 	}
 }
 
+func TestNormalizeOverlayProfileConfigUsesFixedWatermarkCanvas(t *testing.T) {
+	config := normalizeProfileConfig(store.ProfileOverlay, map[string]any{
+		"watermark_enabled":       true,
+		"watermark_position":      "bottom_right",
+		"watermark_opacity":       0.7,
+		"watermark_width_percent": 14,
+		"watermark_file_name":     "logo.png",
+	})
+	if _, ok := config["watermark_position"]; ok {
+		t.Fatalf("legacy position key was not removed: %#v", config)
+	}
+	if _, ok := config["watermark_opacity"]; ok {
+		t.Fatalf("legacy opacity key was not removed: %#v", config)
+	}
+	if _, ok := config["watermark_width_percent"]; ok {
+		t.Fatalf("legacy width key was not removed: %#v", config)
+	}
+	if config["watermark_canvas_width"] != 1920 || config["watermark_canvas_height"] != 1080 || config["watermark_fit_mode"] != "scale_to_output" {
+		t.Fatalf("fixed watermark canvas was not applied: %#v", config)
+	}
+	if config["watermark_file_name"] != "logo.png" {
+		t.Fatalf("unrelated config was not preserved: %#v", config)
+	}
+}
+
 func TestOAuthLoginCallbackCreatesSessionForLinkedUser(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
@@ -6478,7 +6503,7 @@ func TestClientIPDoesNotTrustLoopbackImplicitly(t *testing.T) {
 	}
 }
 
-func TestMFAEnrollmentIsDisabledByDefault(t *testing.T) {
+func TestMFAEnrollmentCanStartWhenPolicyDisabled(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.read"}); err != nil {
 		t.Fatal(err)
@@ -6490,7 +6515,37 @@ func TestMFAEnrollmentIsDisabledByDefault(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "mfa_disabled") {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"method":"totp"`) {
+		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestMFAEnrollmentReportsTOTPUnavailableInPasskeyMode(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemorySecuritySettingsStore()
+	if _, err := settings.UpdateSecuritySettings(t.Context(), store.SecuritySettings{
+		PasswordMinLength:        12,
+		PasswordHash:             "argon2id",
+		LoginLockoutThreshold:    5,
+		SessionIdleTimeoutMin:    30,
+		SessionAbsoluteLifetimeH: 12,
+		MFAMode:                  "passkey",
+		MFARequiredRoles:         []string{"admin"},
+		RememberMeEnabled:        false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithSecuritySettingsStore(settings), WithMFAStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/auth/mfa/enroll", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "totp_mfa_unavailable") {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
 	}
 }
@@ -6507,7 +6562,11 @@ func TestMFAStatusReturnsCurrentUserStateWithoutSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
-	cookie, _ := loginForTest(t, handler, "mfa-user", "correct horse battery")
+	session, err := auth.CreateSession(t.Context(), "mfa-user-id", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: sessionCookieName, Value: session.Token}
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/mfa/status", nil)
 	req.AddCookie(cookie)
@@ -8154,6 +8213,20 @@ func (m *captureMailer) Send(_ context.Context, settings store.AppSettings, pass
 	return m.err
 }
 
+type fakeTurnstileVerifier struct {
+	requests []TurnstileVerifyRequest
+	result   TurnstileVerifyResult
+	err      error
+}
+
+func (f *fakeTurnstileVerifier) Verify(_ context.Context, req TurnstileVerifyRequest) (TurnstileVerifyResult, error) {
+	f.requests = append(f.requests, req)
+	if f.err != nil {
+		return TurnstileVerifyResult{}, f.err
+	}
+	return f.result, nil
+}
+
 func remediationValidationClient(t *testing.T, expectedToken string, contexts map[string]observability.RemediationDispatchContext) (observability.Client, func()) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -8196,7 +8269,7 @@ func TestUsersAndRolesAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	userReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`{"username":"viewer","temporary_password":"correct horse battery","role_ids":["`+role.ID+`"]}`))
+	userReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`{"username":"viewer","email":"viewer@example.jp","temporary_password":"correct horse battery","role_ids":["`+role.ID+`"]}`))
 	userReq.AddCookie(cookie)
 	userReq.Header.Set("X-CSRF-Token", csrf)
 	userRes := httptest.NewRecorder()
@@ -8359,11 +8432,31 @@ func TestCreateUserCanSendWelcomeEmailWithoutLeakingTemporaryPassword(t *testing
 }
 
 func TestCurrentUserCanUpdateOwnEmail(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{ID: "self-id", Username: "operator", Email: "old@example.jp"}, "correct horse battery", nil); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	appSettings := store.NewMemoryAppSettingsStore()
+	if _, err := appSettings.UpdateAppSettings(t.Context(), store.AppSettings{
+		AppName:                "Kome Panel",
+		Timezone:               "Asia/Tokyo",
+		SMTPEnabled:            true,
+		SMTPHost:               "smtp.example.jp",
+		SMTPPort:               587,
+		SMTPStartTLS:           true,
+		SMTPFrom:               "noreply@example.jp",
+		SMTPUsername:           "autostream",
+		SMTPPasswordConfigured: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppSMTPPasswordSecretName, "raw-smtp-password"); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &captureMailer{}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(appSettings), WithSecretStore(secrets), WithMailer(mailer))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
 	req := httptest.NewRequest(http.MethodPut, "/auth/email", bytes.NewBufferString(`{"email":"new@example.jp"}`))
@@ -8372,24 +8465,61 @@ func TestCurrentUserCanUpdateOwnEmail(t *testing.T) {
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
-		t.Fatalf("update email status = %d body = %s", res.Code, res.Body.String())
+		t.Fatalf("request email change status = %d body = %s", res.Code, res.Body.String())
 	}
-	if !strings.Contains(res.Body.String(), `"email":"new@example.jp"`) || strings.Contains(res.Body.String(), "PasswordHash") {
-		t.Fatalf("updated public user response is wrong: %s", res.Body.String())
+	if !strings.Contains(res.Body.String(), `"status":"confirmation_sent"`) || strings.Contains(res.Body.String(), "new@example.jp") {
+		t.Fatalf("email change response is wrong: %s", res.Body.String())
 	}
 	user, err := auth.GetUser(t.Context(), "self-id")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Email != "new@example.jp" {
-		t.Fatalf("email was not persisted: %#v", user)
+	if user.Email != "old@example.jp" {
+		t.Fatalf("email should wait for confirmation: %#v", user)
 	}
-	events, err := auth.ListAudit(t.Context(), store.AuditFilter{Actions: []string{"auth.email.update"}})
+	if len(mailer.messages) != 1 {
+		t.Fatalf("expected one confirmation email, got %#v", mailer.messages)
+	}
+	if mailer.messages[0].To != "new@example.jp" || strings.Contains(mailer.messages[0].Text, "raw-smtp-password") || strings.Contains(mailer.messages[0].Text, "old@example.jp") {
+		t.Fatalf("unexpected confirmation email: %#v", mailer.messages[0])
+	}
+	if mailer.passwords[0] != "raw-smtp-password" {
+		t.Fatalf("SMTP password was not resolved for confirmation email")
+	}
+	confirmURL := ""
+	for _, line := range strings.Split(mailer.messages[0].Text, "\n") {
+		if strings.HasPrefix(line, "One-time URL: ") {
+			confirmURL = strings.TrimSpace(strings.TrimPrefix(line, "One-time URL: "))
+		}
+	}
+	parsedConfirmURL, err := url.Parse(confirmURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Result != "success" || events[0].ResourceID != "self-id" {
-		t.Fatalf("email update audit missing: %#v", events)
+	token := parsedConfirmURL.Query().Get("token")
+	if token == "" || parsedConfirmURL.Path != "/auth/email/confirm" {
+		t.Fatalf("confirmation URL is wrong: %q", confirmURL)
+	}
+
+	confirmReq := httptest.NewRequest(http.MethodPost, "/auth/email/confirm", bytes.NewBufferString(`{"token":"`+token+`"}`))
+	confirmRes := httptest.NewRecorder()
+	handler.ServeHTTP(confirmRes, confirmReq)
+	if confirmRes.Code != http.StatusOK || !strings.Contains(confirmRes.Body.String(), `"status":"email_changed"`) {
+		t.Fatalf("confirm email status = %d body = %s", confirmRes.Code, confirmRes.Body.String())
+	}
+	user, err = auth.GetUser(t.Context(), "self-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Email != "new@example.jp" {
+		t.Fatalf("email was not persisted after confirmation: %#v", user)
+	}
+	events, err := auth.ListAudit(t.Context(), store.AuditFilter{Actions: []string{"auth.email.change_request", "auth.email.confirm"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("email change audit missing: %#v", events)
 	}
 }
 
@@ -8418,6 +8548,88 @@ func TestCurrentUserEmailUpdateRejectsInvalidEmail(t *testing.T) {
 	}
 }
 
+func TestLoginRequiresTurnstileWhenConfigured(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "turnstile-user", Username: "operator"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	appSettings := store.NewMemoryAppSettingsStore()
+	if _, err := appSettings.UpdateAppSettings(t.Context(), store.AppSettings{AppName: "AutoStream", Timezone: "Asia/Tokyo", TurnstileEnabled: true, TurnstileSiteKey: "site-key", TurnstileConfigured: true}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppTurnstileSecretName, "turnstile-secret"); err != nil {
+		t.Fatal(err)
+	}
+	turnstile := &fakeTurnstileVerifier{result: TurnstileVerifyResult{Success: true, Action: "login"}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(appSettings), WithSecretStore(secrets), WithTurnstileVerifier(turnstile))
+
+	missingReq := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"username":"operator","password":"correct horse battery"}`))
+	missingRes := httptest.NewRecorder()
+	handler.ServeHTTP(missingRes, missingReq)
+	if missingRes.Code != http.StatusForbidden || !strings.Contains(missingRes.Body.String(), "turnstile_token_required") {
+		t.Fatalf("missing turnstile status = %d body = %s", missingRes.Code, missingRes.Body.String())
+	}
+	if len(turnstile.requests) != 0 {
+		t.Fatalf("missing token should not call verifier: %#v", turnstile.requests)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"username":"operator","password":"correct horse battery","turnstile_token":"client-token"}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "csrf_token") {
+		t.Fatalf("turnstile login status = %d body = %s", res.Code, res.Body.String())
+	}
+	if len(turnstile.requests) != 1 || turnstile.requests[0].Secret != "turnstile-secret" || turnstile.requests[0].Token != "client-token" {
+		t.Fatalf("turnstile verifier request mismatch: %#v", turnstile.requests)
+	}
+}
+
+func TestEmailConfirmationRequiresTurnstileBeforeConsumingToken(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "self-id", Username: "operator", Email: "old@example.jp"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := auth.CreateEmailChangeChallenge(t.Context(), "self-id", "new@example.jp", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appSettings := store.NewMemoryAppSettingsStore()
+	if _, err := appSettings.UpdateAppSettings(t.Context(), store.AppSettings{AppName: "AutoStream", Timezone: "Asia/Tokyo", TurnstileEnabled: true, TurnstileSiteKey: "site-key", TurnstileConfigured: true}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppTurnstileSecretName, "turnstile-secret"); err != nil {
+		t.Fatal(err)
+	}
+	turnstile := &fakeTurnstileVerifier{result: TurnstileVerifyResult{Success: true, Action: "email_confirm"}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(appSettings), WithSecretStore(secrets), WithTurnstileVerifier(turnstile))
+
+	missingReq := httptest.NewRequest(http.MethodPost, "/auth/email/confirm", bytes.NewBufferString(`{"token":"`+challenge.Token+`"}`))
+	missingRes := httptest.NewRecorder()
+	handler.ServeHTTP(missingRes, missingReq)
+	if missingRes.Code != http.StatusForbidden || !strings.Contains(missingRes.Body.String(), "turnstile_token_required") {
+		t.Fatalf("missing turnstile confirm status = %d body = %s", missingRes.Code, missingRes.Body.String())
+	}
+	if _, err := auth.GetEmailChangeChallenge(t.Context(), challenge.Token); err != nil {
+		t.Fatalf("failed turnstile must not consume email token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/email/confirm", bytes.NewBufferString(`{"token":"`+challenge.Token+`","turnstile_token":"client-token"}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"status":"email_changed"`) {
+		t.Fatalf("email confirm status = %d body = %s", res.Code, res.Body.String())
+	}
+	user, err := auth.GetUser(t.Context(), "self-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Email != "new@example.jp" {
+		t.Fatalf("email was not confirmed: %#v", user)
+	}
+}
+
 func TestUserRoleAssignmentRequiresRolesAssign(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "limited", Roles: []string{"admin"}}, "correct horse battery", []string{"users.create", "users.update", "roles.read"}); err != nil {
@@ -8434,7 +8646,7 @@ func TestUserRoleAssignmentRequiresRolesAssign(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "limited", "correct horse battery")
 
-	createReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`{"username":"created","temporary_password":"correct horse battery","role_ids":["`+role.ID+`"]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`{"username":"created","email":"created@example.jp","temporary_password":"correct horse battery","role_ids":["`+role.ID+`"]}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -8483,7 +8695,7 @@ func TestNonSuperAdminCannotAssignSuperAdminRole(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	createReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`{"username":"blocked","temporary_password":"correct horse battery","role_ids":["`+superAdminRole.ID+`"]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`{"username":"blocked","email":"blocked@example.jp","temporary_password":"correct horse battery","role_ids":["`+superAdminRole.ID+`"]}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -11044,6 +11256,123 @@ func TestAppSettingsUpdateStoresSMTPPasswordAsSecret(t *testing.T) {
 	}
 	if value != "raw-smtp-password" {
 		t.Fatal("unexpected stored SMTP secret value")
+	}
+}
+
+func TestAppSettingsTestEmailSendsWithSavedSMTPSecret(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	if _, err := settings.UpdateAppSettings(t.Context(), store.AppSettings{
+		AppName:                "Kome Panel",
+		Timezone:               "Asia/Tokyo",
+		SMTPEnabled:            true,
+		SMTPHost:               "smtp.example.jp",
+		SMTPPort:               587,
+		SMTPStartTLS:           true,
+		SMTPFrom:               "noreply@example.jp",
+		SMTPUsername:           "autostream",
+		SMTPPasswordConfigured: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppSMTPPasswordSecretName, "raw-smtp-password"); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &captureMailer{}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings), WithSecretStore(secrets), WithMailer(mailer))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/app/test-email", bytes.NewBufferString(`{"to":"ops@example.jp"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"status":"sent"`) {
+		t.Fatalf("test email status = %d body = %s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "raw-smtp-password") || strings.Contains(res.Body.String(), "ops@example.jp") || strings.Contains(res.Body.String(), "smtp.example.jp") {
+		t.Fatalf("test email response leaked sensitive data: %s", res.Body.String())
+	}
+	if len(mailer.messages) != 1 {
+		t.Fatalf("expected one test email, got %#v", mailer.messages)
+	}
+	if mailer.messages[0].To != "ops@example.jp" || !strings.Contains(mailer.messages[0].Subject, "Kome Panel SMTP test") {
+		t.Fatalf("unexpected test email message: %#v", mailer.messages[0])
+	}
+	if mailer.passwords[0] != "raw-smtp-password" {
+		t.Fatalf("SMTP password was not resolved for test email")
+	}
+}
+
+func TestAppSettingsTestEmailRejectsInvalidRecipient(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &captureMailer{}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(store.NewMemoryAppSettingsStore()), WithMailer(mailer))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/app/test-email", bytes.NewBufferString(`{"to":"ops@example.jp\r\nBcc: bad@example.jp"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_email_recipient") {
+		t.Fatalf("invalid recipient status = %d body = %s", res.Code, res.Body.String())
+	}
+	if len(mailer.messages) != 0 {
+		t.Fatalf("invalid recipient should not invoke mailer: %#v", mailer.messages)
+	}
+}
+
+func TestAppSettingsTestEmailSanitizesDeliveryFailure(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	if _, err := settings.UpdateAppSettings(t.Context(), store.AppSettings{
+		AppName:                "Kome Panel",
+		Timezone:               "Asia/Tokyo",
+		SMTPEnabled:            true,
+		SMTPHost:               "smtp.example.jp",
+		SMTPPort:               587,
+		SMTPStartTLS:           true,
+		SMTPFrom:               "noreply@example.jp",
+		SMTPUsername:           "autostream",
+		SMTPPasswordConfigured: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppSMTPPasswordSecretName, "raw-smtp-password"); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &captureMailer{err: errors.New("smtp failed with raw-smtp-password for ops@example.jp via smtp.example.jp")}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings), WithSecretStore(secrets), WithMailer(mailer))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/app/test-email", bytes.NewBufferString(`{"to":"ops@example.jp"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadGateway || !strings.Contains(res.Body.String(), `"code":"send_failed"`) {
+		t.Fatalf("delivery failure status = %d body = %s", res.Code, res.Body.String())
+	}
+	responseAndAudit := res.Body.String() + toJSONForTest(t, auth.AuditEvents())
+	for _, raw := range []string{"raw-smtp-password", "ops@example.jp", "smtp.example.jp"} {
+		if strings.Contains(responseAndAudit, raw) {
+			t.Fatalf("delivery failure leaked %q: %s", raw, responseAndAudit)
+		}
 	}
 }
 

@@ -306,6 +306,8 @@ export let mockAppSettings: AppSettings = {
   smtp_port: 587,
   smtp_starttls: true,
   smtp_password_configured: false,
+  turnstile_enabled: false,
+  turnstile_configured: false,
   updated_at: baseTime,
 };
 
@@ -329,8 +331,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "caption-manual", name: "手動字幕", language: "ja-JP", provider: "operator", delay_ms: 0, updated_at: "2026-07-01T18:20:00+09:00" },
   ],
   "/profiles/overlay": [
-    { id: "overlay-lower-third", name: "自治体ロゴ", watermark_enabled: true, watermark_image_name: "city-logo.png", watermark_position: "bottom_right", watermark_opacity: 0.7, watermark_width_percent: 14, updated_at: baseTime },
-    { id: "overlay-event", name: "イベントロゴ", watermark_enabled: false, watermark_image_name: "event-logo.webp", watermark_position: "top_left", watermark_opacity: 0.65, watermark_width_percent: 12, updated_at: "2026-07-01T17:00:00+09:00" },
+    { id: "overlay-lower-third", name: "自治体ロゴ", watermark_enabled: true, watermark_image_name: "city-logo.png", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output", updated_at: baseTime },
+    { id: "overlay-event", name: "イベントロゴ", watermark_enabled: false, watermark_image_name: "event-logo.webp", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output", updated_at: "2026-07-01T17:00:00+09:00" },
   ],
   "/profiles/archive": [
     { id: "archive-shared-drive", name: "共有Drive保存", format: "mp4", retention_days: 180, upload_enabled: true, updated_at: baseTime },
@@ -453,6 +455,20 @@ export function mockGet(path: string): unknown {
 }
 
 export function mockPost(path: string, body?: unknown): unknown {
+  if (stripQuery(path) === "/auth/login") {
+    return { csrf_token: "mock-csrf-token", user: mockCurrentUser.user };
+  }
+  if (/^\/auth\/oauth\/[^/]+\/start$/.test(stripQuery(path))) {
+    const providerID = decodeURIComponent(stripQuery(path).replace(/^\/auth\/oauth\//, "").replace(/\/start$/, ""));
+    const provider = mockLoginOAuthProviders().find((item) => item.id === providerID) || mockLoginOAuthProviders()[0];
+    return {
+      provider,
+      authorization_url: "/admin/",
+      state: "mock-oauth-login-state",
+      nonce: "mock-oauth-login-nonce",
+      expires_at: baseTime,
+    };
+  }
   if (stripQuery(path) === "/auth/change-password") {
     return { status: "password_changed" };
   }
@@ -472,6 +488,11 @@ export function mockPost(path: string, body?: unknown): unknown {
     mockMFAStatus.method = "totp";
     mockMFAStatus.recovery_code_count = 3;
     return { status: "mfa_enabled", method: "totp" };
+  }
+  if (stripQuery(path) === "/auth/email/confirm") {
+    const request = body as { token?: string };
+    if (!String(request.token || "").trim()) throw new Error("invalid_email_change_token");
+    return { status: "email_changed", target: maskMockEmail(mockCurrentUser.user.email || "operator@example.jp") };
   }
   if (stripQuery(path) === "/auth/mfa/disable") {
     mockMFAStatus.enabled = false;
@@ -527,6 +548,7 @@ export function mockPost(path: string, body?: unknown): unknown {
   }
   if (stripQuery(path) === "/users") {
     const request = body as Partial<{ username: string; email: string; role_ids: string[] }>;
+    if (!String(request.email || "").trim()) throw new Error("email_required");
     const user = {
       id: `user-demo-${request.username || mockResourceData["/users"].length + 1}`,
       username: request.username || "operator",
@@ -572,6 +594,14 @@ export function mockPost(path: string, body?: unknown): unknown {
     };
     mockStreams.unshift(stream);
     return stream;
+  }
+  if (stripQuery(path) === "/settings/app/test-email") {
+    const request = body as { to?: string };
+    const to = String(request.to || "").trim();
+    if (!to || !to.includes("@") || /[\r\n\t]/.test(to)) {
+      throw new Error("invalid_email_recipient");
+    }
+    return { status: "sent", target: maskMockEmail(to) };
   }
   if (stripQuery(path) === "/integrations/oauth-accounts/start") {
     const request = body as Partial<{ provider_id: string; account_label: string; redirect_after: string }>;
@@ -695,15 +725,18 @@ export function mockPut(path: string, body?: unknown): unknown {
   if (stripQuery(path) === "/auth/email") {
     const request = body as { email?: string };
     const email = String(request.email || "").trim();
-    if (email && (!email.includes("@") || /[\r\n\t]/.test(email))) {
+    if (!email) {
+      throw new Error("email_required");
+    }
+    if (!email.includes("@") || /[\r\n\t]/.test(email)) {
       throw new Error("invalid_email");
     }
-    mockCurrentUser.user.email = email || undefined;
-    return mockCurrentUser;
+    return { status: "confirmation_sent", target: maskMockEmail(email) };
   }
   if (stripQuery(path) === "/settings/app") {
-    const request = body as Partial<AppSettings> & { smtp_password?: string };
+    const request = body as Partial<AppSettings> & { smtp_password?: string; turnstile_secret?: string };
     const smtpEnabled = Boolean(request.smtp_enabled);
+    const turnstileEnabled = Boolean(request.turnstile_enabled);
     mockAppSettings = {
       app_name: request.app_name || mockAppSettings.app_name,
       timezone: request.timezone || mockAppSettings.timezone,
@@ -714,6 +747,9 @@ export function mockPut(path: string, body?: unknown): unknown {
       smtp_from: smtpEnabled ? request.smtp_from || "" : undefined,
       smtp_username: smtpEnabled ? request.smtp_username || "" : undefined,
       smtp_password_configured: smtpEnabled ? Boolean(request.smtp_password || mockAppSettings.smtp_password_configured) : false,
+      turnstile_enabled: turnstileEnabled,
+      turnstile_site_key: turnstileEnabled ? request.turnstile_site_key || "" : undefined,
+      turnstile_configured: turnstileEnabled ? Boolean(request.turnstile_secret || mockAppSettings.turnstile_configured) : false,
       updated_at: baseTime,
     };
     return mockAppSettings;
@@ -758,12 +794,15 @@ export function mockPathExists(path: string) {
   if (/^\/nodes\/[^/]+\/configuration$/.test(normalizedPath)) return true;
   if (/^\/services\/[^/]+$/.test(normalizedPath)) return true;
   if (/^\/auth\/passkeys\/[^/]+$/.test(normalizedPath)) return true;
+  if (/^\/auth\/oauth\/[^/]+\/start$/.test(normalizedPath)) return true;
   if (/^\/auth\/oauth-links\/[^/]+\/start$/.test(normalizedPath)) return true;
   if (/^\/auth\/oauth-links\/[^/]+$/.test(normalizedPath)) return true;
   if (mockDeleteCollectionPath(normalizedPath)) return true;
   return new Set([
     "/auth/me",
+    "/auth/login",
     "/auth/email",
+    "/auth/email/confirm",
     "/auth/change-password",
     "/auth/mfa/status",
     "/auth/mfa/enroll",
@@ -777,6 +816,7 @@ export function mockPathExists(path: string) {
     "/auth/oauth/providers",
     "/setup/status",
     "/settings/app",
+    "/settings/app/test-email",
     "/version",
     "/streams",
     "/workers",
@@ -814,4 +854,10 @@ function deleteFromArray(rows: Record<string, unknown>[], id: string) {
 
 function stripQuery(path: string) {
   return String(path || "").split("?")[0];
+}
+
+function maskMockEmail(value: string) {
+  const [local, domain] = value.split("@");
+  if (!local || !domain) return "masked";
+  return `${local.slice(0, 1)}***@${domain}`;
 }

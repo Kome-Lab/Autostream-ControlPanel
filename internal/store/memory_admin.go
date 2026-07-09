@@ -144,6 +144,11 @@ func (s *MemoryAuthStore) DeleteUser(ctx context.Context, id string) error {
 			delete(s.mfaChallenges, challengeID)
 		}
 	}
+	for challengeID, challenge := range s.emailChanges {
+		if challenge.UserID == id {
+			delete(s.emailChanges, challengeID)
+		}
+	}
 	for hash, session := range s.sessions {
 		if session.UserID == id {
 			delete(s.sessions, hash)

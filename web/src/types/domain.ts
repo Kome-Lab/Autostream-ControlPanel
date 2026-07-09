@@ -193,6 +193,9 @@ export type AppSettings = {
   smtp_from?: string;
   smtp_username?: string;
   smtp_password_configured?: boolean;
+  turnstile_enabled?: boolean;
+  turnstile_site_key?: string;
+  turnstile_configured?: boolean;
   updated_at?: string;
 };
 

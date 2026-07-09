@@ -24,6 +24,7 @@ type MemoryAuthStore struct {
 	failedLogins  map[string]int
 	mfaConfigs    map[string]MFAConfig
 	mfaChallenges map[string]MFAChallenge
+	emailChanges  map[string]EmailChangeChallenge
 	passkeys      map[string]PasskeyCredential
 	passkeyReg    map[string]PasskeyRegistrationChallenge
 	passkeySess   map[string]PasskeyCeremonySession
@@ -33,7 +34,7 @@ type MemoryAuthStore struct {
 
 func NewMemoryAuthStore() *MemoryAuthStore {
 	return &MemoryAuthStore{
-		users: map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, failedLogins: map[string]int{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
+		users: map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, failedLogins: map[string]int{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, emailChanges: map[string]EmailChangeChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
 	}
 }
 
@@ -366,6 +367,60 @@ func (s *MemoryAuthStore) DeleteMFAChallenge(ctx context.Context, rawToken strin
 	delete(s.mfaChallenges, security.HashToken(rawToken))
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *MemoryAuthStore) CreateEmailChangeChallenge(ctx context.Context, userID, email string, ttl time.Duration) (EmailChangeChallenge, error) {
+	if err := ctx.Err(); err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	challenge, err := newEmailChangeChallenge(userID, email, ttl)
+	if err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[challenge.UserID]; !ok {
+		return EmailChangeChallenge{}, ErrNotFound
+	}
+	for hash, existing := range s.emailChanges {
+		if existing.UserID == challenge.UserID {
+			delete(s.emailChanges, hash)
+		}
+	}
+	s.emailChanges[challenge.TokenHash] = challenge
+	return challenge, nil
+}
+
+func (s *MemoryAuthStore) GetEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error) {
+	if err := ctx.Err(); err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	hash := security.HashToken(strings.TrimSpace(rawToken))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	challenge, ok := s.emailChanges[hash]
+	if !ok || time.Now().UTC().After(challenge.ExpiresAt) {
+		delete(s.emailChanges, hash)
+		return EmailChangeChallenge{}, ErrNotFound
+	}
+	challenge.Token = rawToken
+	return challenge, nil
+}
+
+func (s *MemoryAuthStore) ConsumeEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error) {
+	if err := ctx.Err(); err != nil {
+		return EmailChangeChallenge{}, err
+	}
+	hash := security.HashToken(strings.TrimSpace(rawToken))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	challenge, ok := s.emailChanges[hash]
+	delete(s.emailChanges, hash)
+	if !ok || time.Now().UTC().After(challenge.ExpiresAt) {
+		return EmailChangeChallenge{}, ErrNotFound
+	}
+	challenge.Token = rawToken
+	return challenge, nil
 }
 
 func (s *MemoryAuthStore) CreatePasskeyRegistrationChallenge(ctx context.Context, userID, rpID, rpName, userName, userDisplayName string, ttl time.Duration) (PasskeyRegistrationChallenge, error) {

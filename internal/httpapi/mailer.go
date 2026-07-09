@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"strings"
 
 	"github.com/example/autostream-control-panel/internal/store"
@@ -63,6 +64,65 @@ func (s *Server) sendUserWelcomeEmail(r *http.Request, user store.User) error {
 			"初期パスワードはこのメールには記載していません。管理者から別経路で受け取ってください。\n" +
 			"初回ログイン後、画面の案内に従ってパスワードを変更してください。\n",
 	})
+}
+
+func (s *Server) mailSettingsForRequest(ctx context.Context) (store.AppSettings, string, int, string) {
+	settings, err := s.appSettings.GetAppSettings(ctx)
+	if err != nil {
+		return store.AppSettings{}, "", http.StatusInternalServerError, "app_settings_failed"
+	}
+	settings = s.appSettingsWithSecretStatus(ctx, settings)
+	if !settings.SMTPEnabled || strings.TrimSpace(settings.SMTPHost) == "" || strings.TrimSpace(settings.SMTPFrom) == "" {
+		return store.AppSettings{}, "", http.StatusConflict, "smtp_not_configured"
+	}
+	password := ""
+	if settings.SMTPUsername != "" || settings.SMTPPasswordConfigured {
+		password, err = s.secrets.GetSecretValue(ctx, store.AppSMTPPasswordSecretName)
+		if errors.Is(err, store.ErrSecretKeyRequired) {
+			return store.AppSettings{}, "", http.StatusServiceUnavailable, "secret_encryption_key_required"
+		}
+		if err != nil {
+			return store.AppSettings{}, "", http.StatusConflict, "smtp_not_configured"
+		}
+	}
+	return settings, password, 0, ""
+}
+
+func (s *Server) sendEmailChangeConfirmation(r *http.Request, settings store.AppSettings, password string, user store.User, challenge store.EmailChangeChallenge) error {
+	confirmURL := emailChangeConfirmURL(r, challenge.Token)
+	if confirmURL == "" {
+		return errors.New("email_change_url_unavailable")
+	}
+	appName := strings.TrimSpace(settings.AppName)
+	if appName == "" {
+		appName = "AutoStream"
+	}
+	return s.mailer.Send(r.Context(), settings, password, MailMessage{
+		To:      challenge.Email,
+		Subject: appName + " email change confirmation",
+		Text: "Confirm the email address change for " + appName + " Control Panel.\n\n" +
+			"User: " + user.Username + "\n" +
+			"One-time URL: " + confirmURL + "\n" +
+			"Expires at: " + challenge.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z07:00") + "\n\n" +
+			"If you did not request this change, ignore this email.\n",
+	})
+}
+
+func emailChangeConfirmURL(r *http.Request, token string) string {
+	base := panelBaseURL(r)
+	if base == "" {
+		return ""
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.Path = "/auth/email/confirm"
+	parsed.RawQuery = ""
+	query := parsed.Query()
+	query.Set("token", token)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func (SMTPMailer) Send(ctx context.Context, settings store.AppSettings, password string, message MailMessage) error {

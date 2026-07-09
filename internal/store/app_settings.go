@@ -23,6 +23,9 @@ type AppSettings struct {
 	SMTPFrom               string `json:"smtp_from,omitempty"`
 	SMTPUsername           string `json:"smtp_username,omitempty"`
 	SMTPPasswordConfigured bool   `json:"smtp_password_configured,omitempty"`
+	TurnstileEnabled       bool   `json:"turnstile_enabled,omitempty"`
+	TurnstileSiteKey       string `json:"turnstile_site_key,omitempty"`
+	TurnstileConfigured    bool   `json:"turnstile_configured,omitempty"`
 	UpdatedAt              string `json:"updated_at,omitempty"`
 }
 
@@ -31,7 +34,10 @@ type AppSettingsStore interface {
 	UpdateAppSettings(ctx context.Context, settings AppSettings) (AppSettings, error)
 }
 
-const AppSMTPPasswordSecretName = "app_smtp_password"
+const (
+	AppSMTPPasswordSecretName = "app_smtp_password"
+	AppTurnstileSecretName    = "app_turnstile_secret"
+)
 
 var defaultAppSettings = AppSettings{AppName: "AutoStream", Timezone: "Asia/Tokyo", SMTPPort: 587, SMTPStartTLS: true}
 
@@ -137,8 +143,24 @@ func normalizeAppSettings(settings AppSettings) (AppSettings, error) {
 	settings.SMTPHost = strings.TrimSpace(settings.SMTPHost)
 	settings.SMTPFrom = strings.TrimSpace(settings.SMTPFrom)
 	settings.SMTPUsername = strings.TrimSpace(settings.SMTPUsername)
+	settings.TurnstileSiteKey = strings.TrimSpace(settings.TurnstileSiteKey)
+	normalized := AppSettings{
+		AppName:             name,
+		Timezone:            timezone,
+		SMTPPort:            defaultAppSettings.SMTPPort,
+		SMTPStartTLS:        defaultAppSettings.SMTPStartTLS,
+		TurnstileEnabled:    settings.TurnstileEnabled,
+		TurnstileSiteKey:    settings.TurnstileSiteKey,
+		TurnstileConfigured: settings.TurnstileConfigured,
+	}
+	if !settings.TurnstileEnabled {
+		normalized.TurnstileSiteKey = ""
+		normalized.TurnstileConfigured = false
+	} else if !validTurnstileSiteKey(settings.TurnstileSiteKey) || !settings.TurnstileConfigured {
+		return AppSettings{}, ErrInvalidSettings
+	}
 	if !settings.SMTPEnabled {
-		return AppSettings{AppName: name, Timezone: timezone, SMTPPort: defaultAppSettings.SMTPPort, SMTPStartTLS: defaultAppSettings.SMTPStartTLS}, nil
+		return normalized, nil
 	}
 	if settings.SMTPPort == 0 {
 		settings.SMTPPort = defaultAppSettings.SMTPPort
@@ -146,17 +168,14 @@ func normalizeAppSettings(settings AppSettings) (AppSettings, error) {
 	if err := validateSMTPSettings(settings); err != nil {
 		return AppSettings{}, err
 	}
-	return AppSettings{
-		AppName:                name,
-		Timezone:               timezone,
-		SMTPEnabled:            settings.SMTPEnabled,
-		SMTPHost:               settings.SMTPHost,
-		SMTPPort:               settings.SMTPPort,
-		SMTPStartTLS:           settings.SMTPStartTLS,
-		SMTPFrom:               settings.SMTPFrom,
-		SMTPUsername:           settings.SMTPUsername,
-		SMTPPasswordConfigured: settings.SMTPPasswordConfigured,
-	}, nil
+	normalized.SMTPEnabled = settings.SMTPEnabled
+	normalized.SMTPHost = settings.SMTPHost
+	normalized.SMTPPort = settings.SMTPPort
+	normalized.SMTPStartTLS = settings.SMTPStartTLS
+	normalized.SMTPFrom = settings.SMTPFrom
+	normalized.SMTPUsername = settings.SMTPUsername
+	normalized.SMTPPasswordConfigured = settings.SMTPPasswordConfigured
+	return normalized, nil
 }
 
 func NormalizeAppSettings(settings AppSettings) (AppSettings, error) {
@@ -231,6 +250,14 @@ func validTimezoneName(value string) bool {
 		default:
 			return false
 		}
+	}
+	return true
+}
+
+func validTurnstileSiteKey(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 255 || strings.ContainsAny(value, "\r\n\t\x00") {
+		return false
 	}
 	return true
 }

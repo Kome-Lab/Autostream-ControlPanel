@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Database, RadioTower, Server } from "lucide-react";
+import { Activity, Database, Gauge, HardDrive, RadioTower, Server } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,6 +29,7 @@ type MetricSeries = {
 };
 
 type MetricUnit = "percent" | "kbps" | "bytes" | "seconds" | "count" | "flag" | "number";
+type MetricGroup = "cpu" | "memory" | "disk" | "heap" | "workload" | "runtime";
 
 const historyWindowMs = 30 * 60 * 1000;
 const maxPointsPerSeries = 90;
@@ -38,15 +39,19 @@ export function MetricsView() {
   const numericMetrics = useMemo(() => numericMetricSnapshots(metrics.data || []), [metrics.data]);
   const history = useMetricHistory(numericMetrics);
   const latest = useMemo(() => latestSeries(history), [history]);
-  const cpuSeries = useMemo(() => latest.filter((series) => metricGroup(series.name) === "cpu"), [latest]);
-  const memorySeries = useMemo(() => latest.filter((series) => metricGroup(series.name) === "memory"), [latest]);
-  const workloadSeries = useMemo(() => latest.filter((series) => metricGroup(series.name) === "workload"), [latest]);
-  const runtimeSeries = useMemo(() => latest.filter((series) => metricGroup(series.name) === "runtime"), [latest]);
+
+  const cpuSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "cpu"), [latest]);
+  const memorySeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "memory"), [latest]);
+  const diskSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "disk"), [latest]);
+  const heapSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "heap"), [latest]);
+  const workloadSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "workload"), [latest]);
+  const runtimeSeries = useMemo(() => latest.filter((series) => metricGroup(series.name, series.unit) === "runtime"), [latest]);
 
   const maxCPU = maxLatestValue(cpuSeries);
   const maxMemory = maxLatestValue(memorySeries);
+  const maxDisk = maxLatestValue(diskSeries);
+  const maxHeap = maxLatestValue(heapSeries);
   const serviceCount = new Set(latest.map((series) => series.serviceID || series.serviceType).filter(Boolean)).size;
-  const staleCount = latest.filter((series) => series.status && !["online", "healthy", "registered"].includes(series.status)).length;
 
   if (metrics.isLoading && latest.length === 0) {
     return <Skeleton className="h-[520px] w-full" />;
@@ -54,11 +59,12 @@ export function MetricsView() {
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard title="最大CPU" value={formatStat(maxCPU, "percent")} detail="Node別最新値の最大" tone={thresholdTone(maxCPU, 80, 95)} />
-        <MetricCard title="最大メモリ" value={formatStat(maxMemory, "percent")} detail="Node別最新値の最大" tone={thresholdTone(maxMemory, 75, 90)} />
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <MetricCard title="最大CPU使用率" value={formatStat(maxCPU, "percent")} detail="各Nodeの最新CPU使用率" tone={thresholdTone(maxCPU, 80, 95)} />
+        <MetricCard title="最大メモリ使用率" value={formatStat(maxMemory, "percent")} detail="各Nodeの最新メモリ使用率" tone={thresholdTone(maxMemory, 75, 90)} />
+        <MetricCard title="最大ディスク使用率" value={formatStat(maxDisk, "percent")} detail="rootディスクの最新使用率" tone={thresholdTone(maxDisk, 80, 92)} />
+        <MetricCard title="最大Heap使用量" value={formatStat(maxHeap, "bytes")} detail="process heapの最新使用量" tone="default" />
         <MetricCard title="受信Node" value={serviceCount} detail="メトリクスを報告中" tone={serviceCount > 0 ? "ok" : "warning"} />
-        <MetricCard title="状態注意" value={staleCount} detail="online以外の報告" tone={staleCount > 0 ? "warning" : "ok"} />
       </section>
 
       {latest.length === 0 ? (
@@ -77,8 +83,11 @@ export function MetricsView() {
             <EChartsPanel title="メモリ使用率" option={lineChartOption(memorySeries, "percent")} height={300} />
           </section>
           <section className="grid gap-4 xl:grid-cols-2">
-            <EChartsPanel title="配信・エンコード負荷" option={lineChartOption(workloadSeries, "number")} height={300} />
-            <EChartsPanel title="ランタイム指標" option={lineChartOption(runtimeSeries, "number")} height={300} />
+            <EChartsPanel title="ディスク使用率" option={lineChartOption(diskSeries, "percent")} height={300} />
+            <EChartsPanel title="Heap使用量" option={lineChartOption(heapSeries, "bytes")} height={300} />
+          </section>
+          <section className="grid gap-4 xl:grid-cols-1">
+            <EChartsPanel title="処理・ランタイム指標" option={lineChartOption([...workloadSeries, ...runtimeSeries], "number")} height={300} />
           </section>
           <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
             <LatestMetricsTable series={latest} />
@@ -191,9 +200,11 @@ function ServiceMetricSummary({ series }: { series: MetricSeries[] }) {
               </div>
               <Badge variant="outline">{row.count} 指標</Badge>
             </div>
-            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-5">
               <SummaryItem icon={Activity} label="CPU" value={formatOptional(row.cpu, "percent")} />
               <SummaryItem icon={Database} label="メモリ" value={formatOptional(row.memory, "percent")} />
+              <SummaryItem icon={HardDrive} label="ディスク" value={formatOptional(row.disk, "percent")} />
+              <SummaryItem icon={Gauge} label="Heap" value={formatOptional(row.heap, "bytes")} />
               <SummaryItem icon={RadioTower} label="状態" value={row.status || "-"} />
             </div>
           </div>
@@ -262,15 +273,15 @@ function lineChartOption(series: MetricSeries[], preferredUnit: MetricUnit): Cha
 function numericMetricSnapshots(metrics: MetricSnapshot[]) {
   return metrics
     .filter((metric) => typeof metric.value === "number" && Number.isFinite(metric.value))
-    .sort((a, b) => metricSortRank(a.name) - metricSortRank(b.name) || String(a.service_id).localeCompare(String(b.service_id)));
+    .sort((a, b) => metricSortRank(a.name, metricUnit(a.name)) - metricSortRank(b.name, metricUnit(b.name)) || String(a.service_id).localeCompare(String(b.service_id)));
 }
 
 function latestSeries(series: MetricSeries[]) {
-  return [...series].sort((a, b) => metricSortRank(a.name) - metricSortRank(b.name) || a.label.localeCompare(b.label));
+  return [...series].sort((a, b) => metricSortRank(a.name, a.unit) - metricSortRank(b.name, b.unit) || a.label.localeCompare(b.label));
 }
 
 function serviceMetricRows(series: MetricSeries[]) {
-  const rows = new Map<string, { id: string; type: string; count: number; cpu?: number; memory?: number; status?: string }>();
+  const rows = new Map<string, { id: string; type: string; count: number; cpu?: number; memory?: number; disk?: number; heap?: number; status?: string }>();
   for (const item of series) {
     const id = item.serviceID || item.serviceType || "-";
     const row = rows.get(id) || { id, type: item.serviceType, count: 0 };
@@ -278,8 +289,11 @@ function serviceMetricRows(series: MetricSeries[]) {
     row.status = item.status || row.status;
     const latest = latestPoint(item)?.value;
     if (typeof latest === "number") {
-      if (metricGroup(item.name) === "cpu") row.cpu = latest;
-      if (metricGroup(item.name) === "memory") row.memory = latest;
+      const group = metricGroup(item.name, item.unit);
+      if (group === "cpu") row.cpu = latest;
+      if (group === "memory") row.memory = latest;
+      if (group === "disk" && item.name.endsWith("used_percent")) row.disk = latest;
+      if (group === "heap" && (item.name.endsWith("heap_alloc_bytes") || row.heap === undefined)) row.heap = latest;
     }
     rows.set(id, row);
   }
@@ -294,10 +308,12 @@ function metricSeriesLabel(metric: MetricSnapshot) {
   return `${metric.service_id || serviceTypeLabel(metric.service_type)} / ${metricNameLabel(metric.name)}`;
 }
 
-function metricGroup(name: string) {
+function metricGroup(name: string, unit: MetricUnit): MetricGroup {
   const lower = name.toLowerCase();
   if (lower.includes("cpu")) return "cpu";
-  if (lower.includes("memory") || lower.includes("mem") || lower.includes("heap")) return "memory";
+  if (unit === "percent" && lower.includes("filesystem")) return "disk";
+  if (unit === "percent" && (lower.includes("memory") || lower.includes("mem"))) return "memory";
+  if (unit === "bytes" && lower.includes("heap")) return "heap";
   if (lower.includes("bitrate") || lower.includes("fps") || lower.includes("active") || lower.includes("process_alive") || lower.includes("audio")) return "workload";
   return "runtime";
 }
@@ -306,26 +322,51 @@ function metricUnit(name: string): MetricUnit {
   const lower = name.toLowerCase();
   if (lower.includes("percent")) return "percent";
   if (lower.includes("kbps") || lower.includes("bitrate")) return "kbps";
-  if (lower.includes("bytes") || lower.includes("heap")) return "bytes";
-  if (lower.includes("sec") || lower.includes("duration")) return "seconds";
-  if (lower.includes("alive") || lower.includes("active") || lower.endsWith("_exists") || lower.endsWith("_status")) return "flag";
-  if (lower.includes("count") || lower.includes("total") || lower.includes("goroutines")) return "count";
+  if (lower.includes("heap_objects") || lower.includes("objects")) return "count";
+  if (lower.includes("bytes")) return "bytes";
+  if (lower.includes("sec") || lower.includes("duration") || lower.includes("uptime")) return "seconds";
+  if (lower.includes("count") || lower.includes("total") || lower.includes("goroutine")) return "count";
+  if (lower.includes("alive") || lower.endsWith("_active") || lower.endsWith("_enabled") || lower.endsWith("_connected") || lower.endsWith("_exists") || lower.endsWith("_status")) return "flag";
   return "number";
 }
 
 function metricNameLabel(name: string) {
   const labels: Record<string, string> = {
-    "worker.cpu_percent": "CPU使用率",
-    "worker.memory_percent": "メモリ使用率",
+    "worker.cpu_percent": "Worker CPU使用率",
+    "worker.memory_percent": "Worker メモリ使用率",
     "encoder.process_alive": "Encoderプロセス",
     "discord.audio_forward_active": "Discord音声転送",
-    "observability.goroutines": "Observability goroutine",
+    "observability.goroutines": "Observability goroutine数",
     "observability.heap_alloc_bytes": "Observability heap使用量",
     "observability.heap_sys_bytes": "Observability heap予約量",
-    "observability.heap_objects": "Observability heap object",
+    "observability.heap_objects": "Observability heap object数",
     "observability.uptime_seconds": "Observability稼働秒数",
+    "node.cpu_count": "CPUコア数",
+    "node.load1": "ロードアベレージ 1分",
+    "node.load5": "ロードアベレージ 5分",
+    "node.load15": "ロードアベレージ 15分",
+    "node.memory.total_bytes": "メモリ総量",
+    "node.memory.free_bytes": "メモリ空き容量",
+    "node.memory.available_bytes": "メモリ利用可能容量",
+    "node.memory.buffers_bytes": "メモリ buffers",
+    "node.memory.cached_bytes": "メモリ cached",
+    "node.memory.used_bytes": "メモリ使用量",
+    "node.memory.used_percent": "メモリ使用率",
+    "node.filesystem.root.size_bytes": "rootディスク総量",
+    "node.filesystem.root.free_bytes": "rootディスク空き容量",
+    "node.filesystem.root.used_bytes": "rootディスク使用量",
+    "node.filesystem.root.used_percent": "rootディスク使用率",
+    "node.filesystem.root.files": "root inode総数",
+    "node.filesystem.root.files_free": "root inode空き数",
+    "node.filesystem.root.files_percent": "root inode使用率",
+    "process.goroutines": "プロセス goroutine数",
+    "process.heap_alloc_bytes": "プロセス heap使用量",
+    "process.heap_sys_bytes": "プロセス heap予約量",
+    "process.heap_objects": "プロセス heap object数",
+    "process.uptime_seconds": "プロセス稼働秒数",
+    "process.gc_pause_seconds_total": "GC pause累計秒数",
   };
-  return labels[name] || name.replace(/^observability\./, "Observability ").replace(/[._]/g, " ");
+  return labels[name] || name.replace(/^observability\./, "Observability ").replace(/^node\./, "Node ").replace(/^process\./, "Process ").replace(/[._]/g, " ");
 }
 
 function serviceTypeLabel(type: string) {
@@ -338,12 +379,14 @@ function serviceTypeLabel(type: string) {
   return labels[type] || type || "-";
 }
 
-function metricSortRank(name: string) {
-  const group = metricGroup(name);
+function metricSortRank(name: string, unit: MetricUnit) {
+  const group = metricGroup(name, unit);
   if (group === "cpu") return 0;
   if (group === "memory") return 1;
-  if (group === "workload") return 2;
-  return 3;
+  if (group === "disk") return 2;
+  if (group === "heap") return 3;
+  if (group === "workload") return 4;
+  return 5;
 }
 
 function normalizedMetricTime(value: string, fallback: number) {
@@ -362,8 +405,8 @@ function maxLatestValue(series: MetricSeries[]) {
 }
 
 function dominantUnit(series: MetricSeries[]): MetricUnit {
-  const first = series.find((item) => item.unit !== "flag");
-  return first?.unit || "number";
+  const priority: MetricUnit[] = ["number", "count", "flag", "seconds", "kbps", "bytes", "percent"];
+  return priority.find((unit) => series.some((item) => item.unit === unit)) || "number";
 }
 
 function formatMetricValue(value: number, unit: MetricUnit) {
