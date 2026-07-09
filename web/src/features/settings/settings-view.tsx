@@ -219,12 +219,43 @@ function testEmailErrorMessage(error: unknown) {
       smtp_not_configured: "メールサーバー設定を保存してからテスト送信してください。",
       smtp_requires_tls: "外部SMTPではSTARTTLSを有効にしてください。",
       secret_encryption_key_required: "SMTPパスワードを読み出せません。Secret encryption keyを設定してください。",
+      smtp_dial_failed: "SMTPサーバーへ接続できません。ホスト名、ポート、ファイアウォール、DNSを確認してください。",
+      smtp_starttls_failed: "STARTTLSに失敗しました。ポート番号、STARTTLS設定、証明書設定を確認してください。",
+      smtp_auth_failed: "SMTP認証に失敗しました。ユーザー名、パスワード、SMTP認証方式を確認してください。",
+      smtp_from_rejected: "SMTPサーバーに送信元アドレスが拒否されました。Fromアドレスと送信許可設定を確認してください。",
+      smtp_recipient_rejected: "SMTPサーバーにテスト送信先が拒否されました。送信先アドレスとリレー許可設定を確認してください。",
+      smtp_data_failed: "SMTPサーバーがメール本文の送信開始を拒否しました。サーバーの制限や認証設定を確認してください。",
+      smtp_write_failed: "SMTPサーバーへのメール本文送信中に失敗しました。通信経路とサーバーログを確認してください。",
+      smtp_close_failed: "SMTPサーバーへのメール送信完了処理に失敗しました。サーバーログを確認してください。",
       send_failed: "テストメール送信に失敗しました。SMTPサーバー設定と到達性を確認してください。",
+      unauthorized: "ログイン状態が切れています。再ログインしてからテスト送信してください。",
+      csrf_failed: "セキュリティトークンを確認できませんでした。ページを再読み込みしてからテスト送信してください。",
+      permission_denied: "メールサーバー設定を更新する権限がありません。",
+      password_change_required: "パスワード変更が必要な状態です。パスワード変更後にテスト送信してください。",
     };
-    return messages[error.code || ""] || `テストメール送信に失敗しました。${error.code || error.message}`;
+    return messages[error.code || ""] || testEmailStatusErrorMessage(error.status, error.code || error.message);
   }
   if (error instanceof Error) return `テストメール送信に失敗しました。${error.message}`;
   return "テストメール送信に失敗しました。";
+}
+
+function testEmailStatusErrorMessage(status: number, detail: string) {
+  switch (status) {
+    case 401:
+      return "ログイン状態が切れています。再ログインしてからテスト送信してください。";
+    case 403:
+      return "テストメール送信が拒否されました。権限を確認し、ページを再読み込みしてから再実行してください。";
+    case 404:
+      return "テストメール送信APIが見つかりません。デプロイ済みControl Panelが最新か確認してください。";
+    case 409:
+      return "メールサーバー設定が未完了です。設定を保存してからテスト送信してください。";
+    case 502:
+    case 503:
+    case 504:
+      return "テストメール送信に失敗しました。SMTPサーバーへ到達できないか、上流サービスが応答していません。SMTP設定とサーバーログを確認してください。";
+    default:
+      return `テストメール送信に失敗しました。HTTP ${status}: ${detail}`;
+  }
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

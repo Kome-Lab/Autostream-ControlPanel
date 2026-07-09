@@ -203,7 +203,33 @@ func safeErrorCode(err error) string {
 		return "smtp_not_configured"
 	case errors.Is(err, errSMTPRequiresTLS):
 		return "smtp_requires_tls"
-	default:
-		return "send_failed"
 	}
+	for _, code := range smtpDeliveryErrorCodes {
+		if hasSMTPErrorCode(err, code) {
+			return code
+		}
+	}
+	return "send_failed"
+}
+
+var smtpDeliveryErrorCodes = []string{
+	"smtp_dial_failed",
+	"smtp_starttls_failed",
+	"smtp_auth_failed",
+	"smtp_from_rejected",
+	"smtp_recipient_rejected",
+	"smtp_data_failed",
+	"smtp_write_failed",
+	"smtp_close_failed",
+}
+
+func hasSMTPErrorCode(err error, code string) bool {
+	for err != nil {
+		message := err.Error()
+		if message == code || strings.HasPrefix(message, code+":") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }

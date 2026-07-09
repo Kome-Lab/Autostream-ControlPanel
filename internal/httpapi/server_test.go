@@ -11376,6 +11376,50 @@ func TestAppSettingsTestEmailSanitizesDeliveryFailure(t *testing.T) {
 	}
 }
 
+func TestAppSettingsTestEmailReturnsSanitizedSMTPFailureCode(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	if _, err := settings.UpdateAppSettings(t.Context(), store.AppSettings{
+		AppName:                "Kome Panel",
+		Timezone:               "Asia/Tokyo",
+		SMTPEnabled:            true,
+		SMTPHost:               "smtp.example.jp",
+		SMTPPort:               587,
+		SMTPStartTLS:           true,
+		SMTPFrom:               "noreply@example.jp",
+		SMTPUsername:           "autostream",
+		SMTPPasswordConfigured: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppSMTPPasswordSecretName, "raw-smtp-password"); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &captureMailer{err: fmt.Errorf("delivery failed: %w", errors.New("smtp_auth_failed: raw-smtp-password rejected for ops@example.jp via smtp.example.jp"))}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(settings), WithSecretStore(secrets), WithMailer(mailer))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/app/test-email", bytes.NewBufferString(`{"to":"ops@example.jp"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadGateway || !strings.Contains(res.Body.String(), `"code":"smtp_auth_failed"`) {
+		t.Fatalf("SMTP auth failure status = %d body = %s", res.Code, res.Body.String())
+	}
+	responseAndAudit := res.Body.String() + toJSONForTest(t, auth.AuditEvents())
+	for _, raw := range []string{"raw-smtp-password", "ops@example.jp", "smtp.example.jp"} {
+		if strings.Contains(responseAndAudit, raw) {
+			t.Fatalf("SMTP auth failure leaked %q: %s", raw, responseAndAudit)
+		}
+	}
+}
+
 func TestAppSettingsRejectsInvalidSMTPWithoutStoringPassword(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
