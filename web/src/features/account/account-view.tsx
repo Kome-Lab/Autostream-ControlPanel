@@ -14,6 +14,7 @@ import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { qrCodeDataURL } from "@/lib/qr-code";
 import { useAppSettings, useCurrentUser } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import { passkeyRegistrationCredentialToJSON, passkeysSupported, publicKeyCreationOptionsFromJSON } from "@/lib/passkeys";
 import type { MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
 
 type AccountNotice = { tone: "success" | "error"; text: string } | null;
@@ -469,7 +470,7 @@ function PasskeyPanel({
   const [name, setName] = useState("メイン端末");
   const register = useMutation({
     mutationFn: async () => {
-      if (typeof window === "undefined" || !("PublicKeyCredential" in window)) {
+      if (!passkeysSupported()) {
         throw new Error("passkey unsupported");
       }
       const start = await apiPost<PasskeyRegistrationStart>("/auth/passkeys/register/start", { display_name: username || name });
@@ -480,7 +481,7 @@ function PasskeyPanel({
       return apiPost<PasskeyCredential>("/auth/passkeys/register/finish", {
         registration_token: start.registration_token,
         name: name.trim() || "Passkey",
-        credential: publicKeyCredentialToJSON(credential),
+        credential: passkeyRegistrationCredentialToJSON(credential),
       });
     },
     onSuccess: () => {
@@ -532,59 +533,6 @@ function PasskeyPanel({
       </CardContent>
     </Card>
   );
-}
-
-type PublicKeyCredentialUserEntityJSON = Omit<PublicKeyCredentialUserEntity, "id"> & { id: string };
-type PublicKeyCredentialDescriptorJSON = Omit<PublicKeyCredentialDescriptor, "id"> & { id: string };
-type PublicKeyCredentialCreationOptionsJSON = Omit<PublicKeyCredentialCreationOptions, "challenge" | "user" | "excludeCredentials"> & {
-  challenge: string;
-  user: PublicKeyCredentialUserEntityJSON;
-  excludeCredentials?: PublicKeyCredentialDescriptorJSON[];
-};
-
-function publicKeyCreationOptionsFromJSON(input: Record<string, unknown>): PublicKeyCredentialCreationOptions {
-  const options = input as Partial<PublicKeyCredentialCreationOptionsJSON>;
-  const user = options.user || { id: "", name: "", displayName: "" };
-  return {
-    ...options,
-    challenge: base64URLToBuffer(String(options.challenge || "")),
-    user: { ...user, id: base64URLToBuffer(String(user.id || "")) },
-    excludeCredentials: Array.isArray(options.excludeCredentials)
-      ? options.excludeCredentials.map((credential) => ({ ...credential, id: base64URLToBuffer(String(credential.id || "")) }))
-      : undefined,
-  } as PublicKeyCredentialCreationOptions;
-}
-
-function publicKeyCredentialToJSON(credential: PublicKeyCredential) {
-  const response = credential.response as AuthenticatorAttestationResponse & { getTransports?: () => string[] };
-  return {
-    id: credential.id,
-    type: credential.type,
-    rawId: bufferToBase64URL(credential.rawId),
-    authenticatorAttachment: credential.authenticatorAttachment,
-    clientExtensionResults: credential.getClientExtensionResults(),
-    response: {
-      clientDataJSON: bufferToBase64URL(response.clientDataJSON),
-      attestationObject: bufferToBase64URL(response.attestationObject),
-      transports: response.getTransports ? response.getTransports() : undefined,
-    },
-  };
-}
-
-function base64URLToBuffer(value: string): ArrayBuffer {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-  const binary = window.atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes.buffer;
-}
-
-function bufferToBase64URL(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function providerLabel(value: string) {

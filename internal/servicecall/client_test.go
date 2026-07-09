@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/autostream-control-panel/internal/ingesttoken"
 	"github.com/example/autostream-control-panel/internal/netpolicy"
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
@@ -88,11 +89,28 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	if payloads["discord_bot"]["guild_id"] != "guild" || payloads["discord_bot"]["voice_channel_id"] != "voice" || payloads["discord_bot"]["text_channel_id"] != "text" {
 		t.Fatalf("discord bot did not receive stream-specific Discord channel IDs: %#v", payloads["discord_bot"])
 	}
+	if payloads["discord_bot"]["worker_events_url"] != server.URL {
+		t.Fatalf("discord bot did not receive assigned worker event URL: %#v", payloads["discord_bot"])
+	}
 	if token, ok := payloads["worker"]["stream_ingest_token"].(string); !ok || !strings.HasPrefix(token, "ast_ingest_v1.") {
 		t.Fatalf("worker did not receive signed ingest token: %#v", payloads["worker"])
 	}
 	if token, ok := payloads["discord_bot"]["stream_ingest_token"].(string); !ok || !strings.HasPrefix(token, "ast_ingest_v1.") {
 		t.Fatalf("discord bot did not receive signed ingest token: %#v", payloads["discord_bot"])
+	}
+	workerEventsToken, ok := payloads["discord_bot"]["worker_events_token"].(string)
+	if !ok || !strings.HasPrefix(workerEventsToken, "ast_ingest_v1.") {
+		t.Fatalf("discord bot did not receive signed worker event token: %#v", payloads["discord_bot"])
+	}
+	claims, err := ingesttoken.Verify("test-ingest-signing-key", workerEventsToken, ingesttoken.Expected{
+		StreamID:    "stream-01",
+		ServiceID:   "discord-01",
+		ServiceType: "discord_bot",
+		Purpose:     "worker_events",
+		Audience:    "worker",
+	})
+	if err != nil || claims.StreamID != "stream-01" {
+		t.Fatalf("discord worker event token claims mismatch: claims=%#v err=%v", claims, err)
 	}
 	if _, ok := payloads["encoder_recorder"]["stream_ingest_token"]; ok {
 		t.Fatalf("encoder start payload must not receive ingest token: %#v", payloads["encoder_recorder"])

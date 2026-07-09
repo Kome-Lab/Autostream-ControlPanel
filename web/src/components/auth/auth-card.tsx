@@ -4,7 +4,7 @@ import type { FormEvent, ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { Moon, RadioTower, Sun } from "lucide-react";
+import { KeyRound, Moon, RadioTower, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,10 +12,11 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TurnstileWidget } from "@/components/auth/turnstile-widget";
 import { APIError, apiGet, apiPost, setCSRFToken } from "@/lib/api/client";
+import { passkeyAssertionCredentialToJSON, passkeysSupported, publicKeyRequestOptionsFromJSON } from "@/lib/passkeys";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
 import { useAppSettings, useSetupStatus } from "@/features/queries";
-import type { OAuthLinkStartResponse, OAuthLoginProvider } from "@/types/domain";
+import type { OAuthLinkStartResponse, OAuthLoginProvider, PasskeyLoginStart } from "@/types/domain";
 
 type LoginResponse = {
   csrf_token?: string;
@@ -37,6 +38,7 @@ export function LoginCard() {
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [message, setMessage] = useState(() => (oauthMFAChallengeFromHash() ? "OAuthログインのMFA確認を完了してください。" : ""));
   const [busy, setBusy] = useState(false);
+  const [passkeyUnavailable, setPasskeyUnavailable] = useState(false);
   const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
   const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
 
@@ -101,6 +103,40 @@ export function LoginCard() {
     }
   };
 
+  const loginWithPasskey = async () => {
+    if (!passkeysSupported()) {
+      setPasskeyUnavailable(true);
+      setMessage("このブラウザではPasskeyログインを利用できません。");
+      return;
+    }
+    setPasskeyUnavailable(false);
+    setBusy(true);
+    setMessage("");
+    try {
+      const body = username.trim() ? { username: username.trim() } : {};
+      const start = await apiPost<PasskeyLoginStart>("/auth/passkeys/login/start", body);
+      const credential = await navigator.credentials.get({ publicKey: publicKeyRequestOptionsFromJSON(start.public_key) });
+      if (!credential || !(credential instanceof PublicKeyCredential)) {
+        throw new Error("passkey authentication cancelled");
+      }
+      const result = await apiPost<LoginResponse>("/auth/passkeys/login/finish", {
+        challenge_token: start.challenge_token,
+        credential: passkeyAssertionCredentialToJSON(credential),
+      });
+      if (result.mfa_required && result.challenge_token) {
+        setMFAChallengeToken(result.challenge_token);
+        setMessage("2FAコードを入力してください。");
+        return;
+      }
+      setCSRFToken(result.csrf_token);
+      router.push("/admin/");
+    } catch (error) {
+      setMessage(authErrorMessage(error, "Passkeyでログインできませんでした。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <AuthFrame title={t("login")} description="Control Panelにログインします。">
       <form className="space-y-3" onSubmit={mfaChallengeToken ? verifyMFA : login}>
@@ -127,6 +163,15 @@ export function LoginCard() {
           {mfaChallengeToken ? "2FA確認" : t("login")}
         </Button>
       </form>
+      {!mfaChallengeToken ? (
+        <div className="space-y-2">
+          <Button type="button" variant="outline" className="w-full justify-start" disabled={busy} onClick={loginWithPasskey}>
+            <KeyRound className="size-4" />
+            Passkeyでログイン
+          </Button>
+          {passkeyUnavailable ? <p className="text-xs text-muted-foreground">このブラウザではPasskeyを利用できません。</p> : null}
+        </div>
+      ) : null}
       {!mfaChallengeToken && oauthProviders.data?.length ? (
         <div className="space-y-2">
           <div className="text-xs text-muted-foreground">OAuthログイン</div>
@@ -193,6 +238,13 @@ function authErrorMessage(error: unknown, fallback: string) {
       mfa_enrollment_required: "このアカウントは2FA登録が必要です。管理者に確認してください。",
       invalid_mfa_code: "2FAコードを確認してください。",
       invalid_mfa_challenge: "2FA確認の有効期限が切れています。もう一度ログインしてください。",
+      passkey_required: "このアカウントはPasskeyログインが必要です。",
+      passkey_enrollment_required: "このアカウントはPasskey登録が必要です。管理者に確認してください。",
+      passkeys_not_configured: "Passkeyログインはまだ構成されていません。",
+      passkey_runtime_unavailable: "Passkeyログイン設定を確認してください。",
+      passkey_login_challenge_failed: "Passkeyログインを開始できませんでした。",
+      invalid_passkey_login_challenge: "Passkeyログインの有効期限が切れています。もう一度お試しください。",
+      passkey_login_response_required: "Passkey認証の応答がありません。",
       oauth_provider_not_usable_for_login: "このOAuthプロバイダはログインに利用できません。",
       turnstile_token_required: "BOT確認を完了してください。",
       turnstile_failed: "BOT確認に失敗しました。もう一度お試しください。",

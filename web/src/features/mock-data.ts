@@ -546,6 +546,20 @@ export function mockPost(path: string, body?: unknown): unknown {
     mockPasskeys.unshift(passkey);
     return passkey;
   }
+  if (stripQuery(path) === "/auth/passkeys/login/start") {
+    return {
+      challenge_token: "ast_pk_demo_login",
+      expires_at: baseTime,
+      public_key: {
+        challenge: "ZGVtby1sb2dpbi1jaGFsbGVuZ2U",
+        timeout: 60000,
+        userVerification: "required",
+      },
+    };
+  }
+  if (stripQuery(path) === "/auth/passkeys/login/finish") {
+    return { csrf_token: "mock-csrf-token", user: mockCurrentUser.user };
+  }
   if (stripQuery(path) === "/users") {
     const request = body as Partial<{ username: string; email: string; role_ids: string[] }>;
     if (!String(request.email || "").trim()) throw new Error("email_required");
@@ -830,6 +844,8 @@ export function mockPathExists(path: string) {
     "/auth/passkeys",
     "/auth/passkeys/register/start",
     "/auth/passkeys/register/finish",
+    "/auth/passkeys/login/start",
+    "/auth/passkeys/login/finish",
     "/auth/oauth-links",
     "/auth/oauth/providers",
     "/setup/status",

@@ -140,6 +140,12 @@ export type PasskeyRegistrationStart = {
   public_key: Record<string, unknown>;
 };
 
+export type PasskeyLoginStart = {
+  challenge_token: string;
+  expires_at: string;
+  public_key: Record<string, unknown>;
+};
+
 export type OAuthUserLink = {
   id: string;
   user_id: string;

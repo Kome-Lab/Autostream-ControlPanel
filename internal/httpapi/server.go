@@ -822,7 +822,19 @@ func (s *Server) oauthLoginRedirectCallback(w http.ResponseWriter, r *http.Reque
 		State:      r.URL.Query().Get("state"),
 		Code:       r.URL.Query().Get("code"),
 	}
+	if s.isConnectedAccountOAuthRedirect(r, body.State) {
+		s.requirePermission("integrations.create", s.oauthAccountRedirectCallback)(w, r)
+		return
+	}
 	s.finishOAuthLogin(w, r, body, true)
+}
+
+func (s *Server) isConnectedAccountOAuthRedirect(r *http.Request, stateToken string) bool {
+	if s.oauthLogin == nil || !oauthStateTokenCookieMatches(r, stateToken) {
+		return false
+	}
+	state, err := s.oauthLogin.GetOAuthLoginState(r.Context(), stateToken)
+	return err == nil && state.Purpose == "connected_account"
 }
 
 func setOAuthCallbackNoStoreHeaders(w http.ResponseWriter) {
@@ -3598,9 +3610,9 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_connected_account"})
 		return
 	}
-	redirectURI := connectedOAuthRedirectURI(r)
-	if !validOAuthRedirectURI(redirectURI, "/integrations/oauth-accounts/callback") {
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_connected_account_redirect_uri_unavailable"})
+	redirectURI, redirectCode := connectedAccountOAuthRedirectURI(r, provider)
+	if redirectCode != "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": redirectCode})
 		return
 	}
 	requestedScopes, code := oauthAccountRequestedScopes(body.AccountPurpose)
@@ -3710,9 +3722,9 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_provider_not_usable_for_connected_account"})
 		return
 	}
-	redirectURI := connectedOAuthRedirectURI(r)
-	if !validOAuthRedirectURI(redirectURI, "/integrations/oauth-accounts/callback") {
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_connected_account_redirect_uri_unavailable"})
+	redirectURI, redirectCode := connectedAccountOAuthRedirectURI(r, provider)
+	if redirectCode != "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": redirectCode})
 		return
 	}
 	provider.RedirectURI = redirectURI
@@ -11011,6 +11023,20 @@ func connectedOAuthRedirectURI(r *http.Request) string {
 		return ""
 	}
 	return base + "/integrations/oauth-accounts/callback"
+}
+
+func connectedAccountOAuthRedirectURI(r *http.Request, provider store.OAuthProvider) (string, string) {
+	redirectURI := strings.TrimSpace(provider.RedirectURI)
+	if validOAuthRedirectURI(redirectURI, "/auth/oauth/callback") || validOAuthRedirectURI(redirectURI, "/integrations/oauth-accounts/callback") {
+		return redirectURI, ""
+	}
+	if redirectURI == "" {
+		legacyRedirectURI := connectedOAuthRedirectURI(r)
+		if validOAuthRedirectURI(legacyRedirectURI, "/integrations/oauth-accounts/callback") {
+			return legacyRedirectURI, ""
+		}
+	}
+	return "", "oauth_connected_account_redirect_uri_unavailable"
 }
 
 func validOAuthRedirectURI(raw, expectedPath string) bool {

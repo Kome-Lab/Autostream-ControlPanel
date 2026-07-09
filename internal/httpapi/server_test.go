@@ -799,6 +799,54 @@ func TestOAuthAccountConnectionStartReturnsOfflineConsentURLWithoutClientSecret(
 	}
 }
 
+func TestOAuthAccountConnectionStartUsesProviderRedirectURI(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"integrations.create"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Login and Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"openid", "email", "profile"},
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(store.NewMemoryOAuthLoginStore()))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/integrations/oauth-accounts/start", bytes.NewBufferString(fmt.Sprintf(`{"provider_id":%q,"account_purpose":"drive"}`, provider.ID)))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("oauth account start status = %d body = %s", res.Code, res.Body.String())
+	}
+	var body struct {
+		AuthorizationURL string `json:"authorization_url"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	authorizationURL, err := url.Parse(body.AuthorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authorizationURL.Query().Get("redirect_uri"); got != provider.RedirectURI {
+		t.Fatalf("connected account redirect_uri = %q, want %q", got, provider.RedirectURI)
+	}
+	if scope := authorizationURL.Query().Get("scope"); !strings.Contains(scope, "https://www.googleapis.com/auth/drive.file") {
+		t.Fatalf("connected account scope missing drive access: %q", scope)
+	}
+}
+
 func TestOAuthAccountConnectionCallbackStoresRefreshTokenWithoutLeak(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()
@@ -896,6 +944,108 @@ func TestOAuthAccountRedirectCallbackSuppressesCodeCachingAndReferrers(t *testin
 		t.Fatalf("oauth account redirect callback status = %d body = %s", res.Code, res.Body.String())
 	}
 	assertOAuthCallbackNoStoreHeaders(t, res.Result().Header)
+}
+
+func TestOAuthLoginRedirectCallbackCompletesConnectedAccountState(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"integrations.create", "integrations.read"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"openid", "email", "profile"},
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connectorRedirectURI string
+	connector := fakeOAuthConnector{
+		account: oauthlogin.ConnectedAccount{
+			Identity:     oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "archive@example.com"},
+			RefreshToken: "raw-google-refresh-token",
+			Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
+		},
+		onConnect: func(req oauthlogin.ConnectRequest) {
+			connectorRedirectURI = req.Provider.RedirectURI
+		},
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(store.NewMemoryOAuthLoginStore()), WithOAuthConnector(connector))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	state, oauthCookie := startOAuthAccountForTest(t, handler, cookie, csrf, provider.ID)
+	req := httptest.NewRequest(http.MethodGet, "/auth/oauth/callback?state="+url.QueryEscape(state)+"&code=callback-code&account_label=Drive+Owner", nil)
+	req.AddCookie(cookie)
+	req.AddCookie(oauthCookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusSeeOther {
+		t.Fatalf("oauth shared redirect callback status = %d body = %s", res.Code, res.Body.String())
+	}
+	assertOAuthCallbackNoStoreHeaders(t, res.Result().Header)
+	if connectorRedirectURI != provider.RedirectURI {
+		t.Fatalf("oauth connector redirect_uri = %q, want %q", connectorRedirectURI, provider.RedirectURI)
+	}
+	accounts, err := integrations.ListOAuthAccounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].Email != "archive@example.com" || !accounts[0].RefreshTokenConfigured {
+		t.Fatalf("connected account was not stored correctly: %#v", accounts)
+	}
+}
+
+func TestOAuthLoginRedirectCallbackKeepsConnectedAccountStateWhenUnauthorized(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"integrations.create"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Drive",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		Scopes:       []string{"openid", "email", "profile"},
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector := fakeOAuthConnector{account: oauthlogin.ConnectedAccount{
+		Identity:     oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-01", Email: "archive@example.com"},
+		RefreshToken: "raw-google-refresh-token",
+		Scopes:       []string{"openid", "email", "https://www.googleapis.com/auth/drive.file"},
+	}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(store.NewMemoryOAuthLoginStore()), WithOAuthConnector(connector))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	state, oauthCookie := startOAuthAccountForTest(t, handler, cookie, csrf, provider.ID)
+	missingSessionReq := httptest.NewRequest(http.MethodGet, "/auth/oauth/callback?state="+url.QueryEscape(state)+"&code=callback-code", nil)
+	missingSessionReq.AddCookie(oauthCookie)
+	missingSessionRes := httptest.NewRecorder()
+	handler.ServeHTTP(missingSessionRes, missingSessionReq)
+	if missingSessionRes.Code != http.StatusUnauthorized || !strings.Contains(missingSessionRes.Body.String(), "unauthorized") {
+		t.Fatalf("expected unauthorized shared callback, status=%d body=%s", missingSessionRes.Code, missingSessionRes.Body.String())
+	}
+	assertOAuthCallbackNoStoreHeaders(t, missingSessionRes.Result().Header)
+
+	retryReq := httptest.NewRequest(http.MethodGet, "/auth/oauth/callback?state="+url.QueryEscape(state)+"&code=callback-code", nil)
+	retryReq.AddCookie(cookie)
+	retryReq.AddCookie(oauthCookie)
+	retryRes := httptest.NewRecorder()
+	handler.ServeHTTP(retryRes, retryReq)
+	if retryRes.Code != http.StatusSeeOther {
+		t.Fatalf("connected account state was consumed before authorization, retry status=%d body=%s", retryRes.Code, retryRes.Body.String())
+	}
 }
 
 func TestOAuthAccountConnectionCallbackRejectsProviderMismatch(t *testing.T) {
@@ -11935,8 +12085,9 @@ type fakeOAuthVerifier struct {
 }
 
 type fakeOAuthConnector struct {
-	account oauthlogin.ConnectedAccount
-	err     error
+	account   oauthlogin.ConnectedAccount
+	err       error
+	onConnect func(oauthlogin.ConnectRequest)
 }
 
 func (f fakeOAuthVerifier) Verify(ctx context.Context, req oauthlogin.VerifyRequest) (oauthlogin.Identity, error) {
@@ -11947,6 +12098,9 @@ func (f fakeOAuthVerifier) Verify(ctx context.Context, req oauthlogin.VerifyRequ
 }
 
 func (f fakeOAuthConnector) Connect(ctx context.Context, req oauthlogin.ConnectRequest) (oauthlogin.ConnectedAccount, error) {
+	if f.onConnect != nil {
+		f.onConnect(req)
+	}
 	if f.err != nil {
 		return oauthlogin.ConnectedAccount{}, f.err
 	}

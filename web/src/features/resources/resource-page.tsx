@@ -642,7 +642,6 @@ function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disa
 function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const roles = useResourceOptions("/roles", ["id"], ["name", "id"], ["permissions"]);
   const defaultRedirectURI = typeof window === "undefined" ? "https://control.example.jp/auth/oauth/callback" : `${window.location.origin}/auth/oauth/callback`;
-  const connectedAccountRedirectURI = typeof window === "undefined" ? "https://control.example.jp/integrations/oauth-accounts/callback" : `${window.location.origin}/integrations/oauth-accounts/callback`;
   const [providerType, setProviderType] = useState(() => rowString(initial || {}, ["provider_type"]) || "google");
   const [name, setName] = useState(() => rowString(initial || {}, ["name"]) || "Google Workspace");
   const [enabled, setEnabled] = useState(() => rowValue(initial || {}, ["enabled"]) !== false);
@@ -691,12 +690,11 @@ function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { disable
       </div>
       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
         <div className="font-medium">Google Cloud Consoleに登録するリダイレクトURI</div>
-        <p className="mt-1 text-xs text-amber-800">ログイン連携だけでなくYouTube/Drive接続も使う場合、Google OAuthクライアントの「承認済みのリダイレクトURI」に両方を登録してください。</p>
+        <p className="mt-1 text-xs text-amber-800">ログイン、OAuthアカウント連携、YouTube/Drive接続は保存済みのRedirect URIを共用します。Google OAuthクライアントの「承認済みのリダイレクトURI」に下の値を登録してください。</p>
         <div className="mt-2 space-y-1 font-mono text-xs">
           <div className="rounded bg-white px-2 py-1">{redirectURI}</div>
-          <div className="rounded bg-white px-2 py-1">{connectedAccountRedirectURI}</div>
         </div>
-        <p className="mt-2 text-xs text-amber-800">`redirect_uri_mismatch` がYouTube/Drive接続でだけ出る場合は、下の `/integrations/oauth-accounts/callback` がGoogle側に未登録の可能性が高いです。</p>
+        <p className="mt-2 text-xs text-amber-800">`redirect_uri_mismatch` が出る場合は、Google側の値とここに保存した値がスキーム、ホスト、パスまで完全一致しているか確認してください。</p>
       </div>
       <Field label="許可ドメイン" description="複数ある場合は改行またはカンマで区切ります。空なら制限しません。">
         <Textarea value={allowedDomains} onChange={(event) => setAllowedDomains(event.target.value)} className="min-h-20" placeholder="example.jp" />

@@ -322,8 +322,9 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 		})
 	}
 	encoderURL := firstServiceURL(services, "encoder_recorder")
+	workerService := firstService(services, "worker")
 	for _, service := range services {
-		if _, _, ok := c.startPayload(store.Stream{}, service, req, encoderURL, now); !ok {
+		if _, _, ok := c.startPayload(store.Stream{}, service, req, encoderURL, workerService, now); !ok {
 			continue
 		}
 		if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
@@ -402,8 +403,9 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 func (c Client) Start(ctx context.Context, stream store.Stream, services []store.RegisteredService, req StartRequest) []DispatchResult {
 	results := make([]DispatchResult, 0, len(services))
 	encoderURL := firstServiceURL(services, "encoder_recorder")
+	workerService := firstService(services, "worker")
 	for _, service := range services {
-		endpoint, payload, ok := c.startPayload(stream, service, req, encoderURL, time.Now().UTC())
+		endpoint, payload, ok := c.startPayload(stream, service, req, encoderURL, workerService, time.Now().UTC())
 		if !ok {
 			continue
 		}
@@ -818,7 +820,7 @@ func (c Client) getAudioStatus(ctx context.Context, service store.RegisteredServ
 	return result
 }
 
-func (c Client) startPayload(stream store.Stream, service store.RegisteredService, req StartRequest, encoderURL string, now time.Time) (string, any, bool) {
+func (c Client) startPayload(stream store.Stream, service store.RegisteredService, req StartRequest, encoderURL string, workerService store.RegisteredService, now time.Time) (string, any, bool) {
 	switch service.ServiceType {
 	case "encoder_recorder":
 		payload := map[string]any{
@@ -854,6 +856,12 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		if token := c.issueIngestToken(stream.ID, service, "discord_audio", now); token != "" {
 			payload["stream_ingest_token"] = token
 		}
+		if strings.TrimSpace(workerService.PublicURL) != "" {
+			payload["worker_events_url"] = workerService.PublicURL
+			if token := c.issueIngestTokenForAudience(stream.ID, service, "worker_events", "worker", now); token != "" {
+				payload["worker_events_token"] = token
+			}
+		}
 		return "/jobs/start", payload, true
 	case "worker":
 		payload := map[string]any{
@@ -873,6 +881,10 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 }
 
 func (c Client) issueIngestToken(streamID string, service store.RegisteredService, purpose string, now time.Time) string {
+	return c.issueIngestTokenForAudience(streamID, service, purpose, "encoder_recorder", now)
+}
+
+func (c Client) issueIngestTokenForAudience(streamID string, service store.RegisteredService, purpose, audience string, now time.Time) string {
 	if strings.TrimSpace(c.Config.IngestTokenSigningKey) == "" || strings.TrimSpace(streamID) == "" {
 		return ""
 	}
@@ -885,7 +897,7 @@ func (c Client) issueIngestToken(streamID string, service store.RegisteredServic
 		ServiceID:   service.ServiceID,
 		ServiceType: service.ServiceType,
 		Purpose:     purpose,
-		Audience:    "encoder_recorder",
+		Audience:    audience,
 		ExpiresAt:   ingesttoken.Expiry(now, ttl),
 	})
 	if err != nil {
@@ -928,12 +940,16 @@ func workerEventPayload(stream store.Stream, req WorkerEventRequest) (string, an
 }
 
 func firstServiceURL(services []store.RegisteredService, serviceType string) string {
+	return firstService(services, serviceType).PublicURL
+}
+
+func firstService(services []store.RegisteredService, serviceType string) store.RegisteredService {
 	for _, service := range services {
 		if service.ServiceType == serviceType {
-			return service.PublicURL
+			return service
 		}
 	}
-	return ""
+	return store.RegisteredService{}
 }
 
 func capabilityBool(capabilities map[string]any, name string) (bool, bool) {

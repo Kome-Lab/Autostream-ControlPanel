@@ -38,6 +38,7 @@ type OAuthUserLink struct {
 
 type OAuthLoginStore interface {
 	CreateOAuthLoginState(ctx context.Context, state OAuthLoginState, ttl time.Duration) (OAuthLoginState, error)
+	GetOAuthLoginState(ctx context.Context, stateToken string) (OAuthLoginState, error)
 	ConsumeOAuthLoginState(ctx context.Context, stateToken string) (OAuthLoginState, error)
 	LinkOAuthUser(ctx context.Context, link OAuthUserLink) (OAuthUserLink, error)
 	FindOAuthUserLink(ctx context.Context, providerID, subject string) (OAuthUserLink, error)
@@ -102,6 +103,22 @@ func (s *MemoryOAuthLoginStore) ConsumeOAuthLoginState(ctx context.Context, stat
 	}
 	delete(s.states, hash)
 	if time.Now().UTC().After(state.ExpiresAt) {
+		return OAuthLoginState{}, ErrNotFound
+	}
+	state.StateToken = stateToken
+	state.Purpose = normalizeOAuthStatePurpose(state.Purpose)
+	return state, nil
+}
+
+func (s *MemoryOAuthLoginStore) GetOAuthLoginState(ctx context.Context, stateToken string) (OAuthLoginState, error) {
+	if err := ctx.Err(); err != nil {
+		return OAuthLoginState{}, err
+	}
+	hash := security.HashToken(strings.TrimSpace(stateToken))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.states[hash]
+	if !ok || time.Now().UTC().After(state.ExpiresAt) {
 		return OAuthLoginState{}, ErrNotFound
 	}
 	state.StateToken = stateToken
@@ -247,6 +264,30 @@ func (s MariaDBOAuthLoginStore) ConsumeOAuthLoginState(ctx context.Context, stat
 		return OAuthLoginState{}, err
 	}
 	if err := tx.Commit(); err != nil {
+		return OAuthLoginState{}, err
+	}
+	if time.Now().UTC().After(state.ExpiresAt) {
+		return OAuthLoginState{}, ErrNotFound
+	}
+	state.StateToken = stateToken
+	state.Purpose = normalizeOAuthStatePurpose(state.Purpose)
+	state.RedirectAfter = redirectAfter.String
+	if requestedScopes.Valid {
+		_ = json.Unmarshal([]byte(requestedScopes.String), &state.RequestedScopes)
+		state.RequestedScopes = cleanStringSlice(state.RequestedScopes)
+	}
+	return state, nil
+}
+
+func (s MariaDBOAuthLoginStore) GetOAuthLoginState(ctx context.Context, stateToken string) (OAuthLoginState, error) {
+	hash := security.HashToken(strings.TrimSpace(stateToken))
+	var state OAuthLoginState
+	var redirectAfter, requestedScopes sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT state_hash, provider_id, provider_type, purpose, nonce, redirect_after, requested_scopes, expires_at, created_at FROM oauth_login_states WHERE state_hash = ?`, hash).Scan(&state.StateHash, &state.ProviderID, &state.ProviderType, &state.Purpose, &state.Nonce, &redirectAfter, &requestedScopes, &state.ExpiresAt, &state.CreatedAt)
+	if err == sql.ErrNoRows {
+		return OAuthLoginState{}, ErrNotFound
+	}
+	if err != nil {
 		return OAuthLoginState{}, err
 	}
 	if time.Now().UTC().After(state.ExpiresAt) {
