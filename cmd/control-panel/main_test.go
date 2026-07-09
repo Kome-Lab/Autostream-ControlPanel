@@ -50,7 +50,11 @@ func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 		t.Fatalf("static response = %d appCalled=%v body=%q", res.Code, appCalled, res.Body.String())
 	}
 	csp := res.Header().Get("Content-Security-Policy")
-	if !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "object-src 'none'") || res.Header().Get("X-Frame-Options") != "DENY" {
+	if !strings.Contains(csp, "default-src 'self'") ||
+		!strings.Contains(csp, "object-src 'none'") ||
+		!strings.Contains(csp, "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com") ||
+		!strings.Contains(csp, "frame-src 'self' https://challenges.cloudflare.com") ||
+		res.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("static security headers are missing: %#v", res.Header())
 	}
 }
