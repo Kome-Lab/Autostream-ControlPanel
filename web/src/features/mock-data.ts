@@ -294,6 +294,17 @@ export const mockAuditLogs: AuditLog[] = [
     resource_type: "node",
     resource_id: "worker-standby",
   },
+  {
+    id: "audit-004",
+    timestamp: "2026-07-02T08:35:00+09:00",
+    action: "streams.create",
+    actor_username: "nakamura",
+    actor_ip: "198.51.100.8",
+    user_agent: "Chrome / macOS",
+    result: "success",
+    resource_type: "stream",
+    resource_id: "stream-city-council",
+  },
 ];
 
 export function mockWorkerMetrics(): MetricSnapshot[] {
@@ -466,6 +477,18 @@ let mockArchiveSharesLoaded = false;
 
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  if (normalizedPath === "/audit-logs") {
+    const query = path.includes("?") ? path.slice(path.indexOf("?") + 1) : "";
+    const params = new URLSearchParams(query);
+    const search = String(params.get("q") || "").trim().toLowerCase();
+    const result = String(params.get("result") || "").trim().toLowerCase();
+    return mockAuditLogs.filter((event) => {
+      if (result && String(event.result || "").toLowerCase() !== result) return false;
+      if (!search) return true;
+      return [event.id, event.action, event.actor_username, event.actor_ip, event.user_agent, event.result, event.resource_type, event.resource_id]
+        .some((value) => String(value || "").toLowerCase().includes(search));
+    });
+  }
   const streamArtifacts = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts$/);
   if (streamArtifacts) {
     return mockStreamArtifacts[decodeURIComponent(streamArtifacts[1])] || [];

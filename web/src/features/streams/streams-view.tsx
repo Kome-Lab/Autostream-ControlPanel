@@ -1,14 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertCircle, Check, Copy, Eye, Play, Plus, RotateCw, Square, Shuffle } from "lucide-react";
+import { AlertCircle, CalendarDays, Check, Copy, Eye, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { DataTable } from "@/components/tables/data-table";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
@@ -17,7 +20,9 @@ import { APIError, apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
+import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import { cn } from "@/lib/utils";
 import type { Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
@@ -34,18 +39,33 @@ export function StreamsView() {
   const queryClient = useQueryClient();
   const [createdStreams, setCreatedStreams] = useState<Stream[]>([]);
   const [copiedStreamID, setCopiedStreamID] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [selectedStream, setSelectedStream] = useState<Stream | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
-  const actionMutation = useMutation({
-    mutationFn: ({ path }: { path: string }) => apiPost(path),
-    onSuccess: async () => {
+  useEffect(() => {
+    const syncFromHash = () => setCreateOpen(window.location.hash === "#create-stream");
+    syncFromHash();
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, []);
+
+  const actionMutation = useMutation<unknown, Error, { path: string; streamName: string; actionLabel: string }>({
+    mutationFn: ({ path }) => apiPost(path),
+    onMutate: () => setActionNotice(null),
+    onSuccess: async (_, action) => {
       await queryClient.invalidateQueries({ queryKey: ["streams"] });
+      setActionNotice({ tone: "success", message: `${action.streamName}の${action.actionLabel}を受け付けました。状態が更新されるまでしばらくお待ちください。` });
     },
+    onError: (error, action) => setActionNotice({ tone: "error", message: streamActionErrorMessage(error, action.actionLabel) }),
   });
 
-  const canCreate = hasPermission(currentUser.data, "streams.create");
-  const canStart = hasPermission(currentUser.data, "streams.start");
-  const canStop = hasPermission(currentUser.data, "streams.stop");
-  const canUpdate = hasPermission(currentUser.data, "streams.update");
+  const superAdmin = currentUser.data?.user.roles?.includes("super_admin") === true;
+  const can = (permission: string) => superAdmin || hasPermission(currentUser.data, permission);
+  const canCreate = can("streams.create");
+  const canStart = can("streams.start");
+  const canStop = can("streams.stop");
+  const canUpdate = can("streams.update");
   const streamRows = useMemo(
     () => [...createdStreams, ...(streams.data || []).filter((stream) => !createdStreams.some((created) => created.id === stream.id))],
     [createdStreams, streams.data],
@@ -68,7 +88,7 @@ export function StreamsView() {
       accessorKey: "name",
       header: t("name"),
       cell: ({ row }) => (
-        <div className="min-w-56">
+        <div className="min-w-52">
           <div className="flex items-center gap-2">
             <div className="font-medium">{row.original.name}</div>
             <Button variant="outline" size="icon-sm" aria-label="配信IDをコピー" onClick={() => void copyStreamID(row.original.id)}>
@@ -84,6 +104,86 @@ export function StreamsView() {
       cell: ({ row }) => <StatusBadge status={row.original.status} showDetail />,
     },
     {
+      id: "actions",
+      header: t("actions"),
+      cell: ({ row }) => (
+        <div className="flex min-w-44 flex-nowrap gap-1">
+          <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={() => setSelectedStream(row.original)}>
+            <Eye />
+          </Button>
+          {streamStatusAllowsStart(row.original.status) ? <RoleGuard allowed={canStart}>
+            <DangerConfirm
+              title={`${row.original.name} を開始しますか`}
+              description="配信出力と録画を開始し、担当Nodeへ処理を送ります。開始時刻と出力先を確認してから実行してください。"
+              onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start`, streamName: row.original.name, actionLabel: "開始" })}
+              actionLabel="配信を開始"
+            >
+              <Button variant="outline" size="icon-sm" aria-label={t("start")} {...guardedButtonProps(canStart)} disabled={!canStart || actionMutation.isPending}><Play /></Button>
+            </DangerConfirm>
+          </RoleGuard> : null}
+          {streamStatusAllowsStop(row.original.status) ? <RoleGuard allowed={canStop}>
+            <DangerConfirm title={`${row.original.name} を停止しますか`} description="配信と録画を停止し、録画ファイルの保存処理へ進みます。視聴者への影響を確認してから実行してください。" onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/stop`, streamName: row.original.name, actionLabel: "停止" })} actionLabel="配信を停止">
+              <Button variant="outline" size="icon-sm" aria-label={t("stop")} {...guardedButtonProps(canStop)} disabled={!canStop || actionMutation.isPending}>
+                <Square />
+              </Button>
+            </DangerConfirm>
+          </RoleGuard> : null}
+          <RoleGuard allowed={canUpdate}>
+            <DangerConfirm title={`${row.original.name} の開始準備を再確認しますか`} description="担当Node、Discord、出力先、録画設定をもう一度確認します。現在の配信は停止しません。" onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start-readiness`, streamName: row.original.name, actionLabel: "開始準備の確認" })} actionLabel="準備を再確認">
+              <Button variant="outline" size="icon-sm" aria-label="開始準備を再確認" {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
+                <RotateCw />
+              </Button>
+            </DangerConfirm>
+          </RoleGuard>
+          <RoleGuard allowed={canUpdate}>
+            <DangerConfirm title={`${row.original.name} のWorkerテストを実行しますか`} description="担当Workerへテストイベントを送ります。本番配信中は実行前に運用担当者へ確認してください。" onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/worker-events/test`, streamName: row.original.name, actionLabel: "Workerテスト" })} actionLabel="テストを実行">
+              <Button variant="outline" size="icon-sm" aria-label="Workerテストを実行" {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
+                <Shuffle />
+              </Button>
+            </DangerConfirm>
+          </RoleGuard>
+        </div>
+      ),
+    },
+
+    {
+      id: "schedule",
+      accessorFn: (stream) => compactList([stream.scheduled_start_at, stream.scheduled_end_at]).join(" "),
+      header: t("scheduledTime"),
+      cell: ({ row }) => (
+        <div className="min-w-40 text-sm tabular-nums">
+          <div>{formatDateTime(row.original.scheduled_start_at, timezone)}</div>
+          <div className="text-muted-foreground">終了 {formatDateTime(row.original.scheduled_end_at, timezone)}</div>
+        </div>
+      ),
+    },
+    {
+      id: "route",
+      accessorFn: (stream) => compactList([stream.encoder_input_url, stream.input_source, stream.output_target, stream.youtube_output_id]).join(" "),
+      header: "配信経路",
+      cell: ({ row }) => (
+        <div className="min-w-56 max-w-80 text-sm">
+          <div className="flex items-center gap-1.5"><RadioTower className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate" title={safeDisplayURL(row.original.encoder_input_url || row.original.input_source)}>{safeDisplayURL(row.original.encoder_input_url || row.original.input_source) || "入力未設定"}</span></div>
+          <div className="mt-1 flex items-center gap-1.5 text-muted-foreground"><Video className="size-3.5 shrink-0" /><span className="truncate">{optionLabel(youtubeOutputLabels, row.original.youtube_output_id) || row.original.output_target || "出力未設定"}</span></div>
+        </div>
+      ),
+    },
+    {
+      id: "recording",
+      accessorFn: (stream) => compactList([recordingDescriptor(stream).label, stream.archive_file_name, stream.archive_masked_folder_id]).join(" "),
+      header: "録画・保存",
+      cell: ({ row }) => {
+        const recording = recordingDescriptor(row.original);
+        return (
+          <div className="min-w-44 max-w-64 text-sm">
+            <span className={cn("inline-flex rounded-md border px-2 py-0.5 text-xs font-medium", recording.className)}>{recording.label}</span>
+            <div className="mt-1 truncate text-muted-foreground" title={row.original.archive_file_name}>{row.original.archive_file_name || optionLabel(archiveDestinationLabels, row.original.archive_drive_destination_id) || optionLabel(archiveProfileLabels, row.original.archive_profile_id) || "保存先未設定"}</div>
+            {row.original.archive_folder_id_configured ? <div className="truncate text-xs text-muted-foreground">フォルダー {row.original.archive_masked_folder_id || "設定済み"}</div> : null}
+          </div>
+        );
+      },
+    },
+    {
       id: "discord",
       accessorFn: (stream) =>
         compactList([
@@ -94,137 +194,152 @@ export function StreamsView() {
           stream.discord_text_channel_id,
           stream.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始",
         ]).join(" "),
-      header: "Discord",
+      header: "自動開始",
       cell: ({ row }) => (
-        <div className="text-sm">
-          <div>{optionLabel(discordLabels, row.original.discord_config_id) || "-"}</div>
-          <div className="text-muted-foreground">VC {row.original.discord_voice_channel_id || "-"}</div>
-          <div className="text-muted-foreground">Chat {row.original.discord_text_channel_id || "-"}</div>
-          <div className="text-muted-foreground">{row.original.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div>
+        <div className="min-w-40 text-sm">
+          <div>{row.original.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div>
+          <div className="mt-1 truncate text-muted-foreground">{optionLabel(discordLabels, row.original.discord_config_id) || "Discord未設定"}</div>
+          <div className="truncate text-xs text-muted-foreground">VC {row.original.discord_voice_channel_id || "未設定"}</div>
         </div>
       ),
     },
     {
-      id: "outputs",
-      accessorFn: (stream) =>
-        compactList([
-          optionLabel(youtubeOutputLabels, stream.youtube_output_id),
-          stream.youtube_output_id,
-          stream.archive_file_name,
-          optionLabel(archiveDestinationLabels, stream.archive_drive_destination_id),
-          stream.archive_drive_destination_id,
-          optionLabel(archiveAccountLabels, stream.archive_oauth_account_id),
-          stream.archive_oauth_account_id,
-          optionLabel(archiveProfileLabels, stream.archive_profile_id),
-          stream.archive_profile_id,
-          stream.archive_masked_folder_id,
-          optionLabel(overlayProfileLabels, stream.overlay_profile_id),
-          stream.overlay_profile_id,
-        ]).join(" "),
-      header: "出力 / 保存",
+      id: "nodes",
+      accessorFn: (stream) => compactList([stream.assigned_worker_id, stream.assigned_encoder_id]).join(" "),
+      header: "担当Node",
       cell: ({ row }) => (
-        <div className="text-sm">
-          <div>YouTube {optionLabel(youtubeOutputLabels, row.original.youtube_output_id) || "-"}</div>
-          <div className="text-muted-foreground">
-            Archive{" "}
-            {row.original.archive_file_name ||
-              optionLabel(archiveDestinationLabels, row.original.archive_drive_destination_id) ||
-              optionLabel(archiveAccountLabels, row.original.archive_oauth_account_id) ||
-              optionLabel(archiveProfileLabels, row.original.archive_profile_id) ||
-              "-"}
-          </div>
-          <div className="text-muted-foreground">Drive {row.original.archive_folder_id_configured ? row.original.archive_masked_folder_id || "設定済み" : "-"}</div>
-          <div className="text-muted-foreground">Watermark {optionLabel(overlayProfileLabels, row.original.overlay_profile_id) || "OFF"}</div>
+        <div className="min-w-36 text-sm text-muted-foreground">
+          <div className="truncate">Worker {row.original.assigned_worker_id || "未割当"}</div>
+          <div className="truncate">Encoder {row.original.assigned_encoder_id || "未割当"}</div>
         </div>
       ),
-    },
-    {
-      id: "input",
-      header: t("input"),
-      cell: ({ row }) => <span className="break-all text-sm">{row.original.encoder_input_url || row.original.input_source || "-"}</span>,
-    },
-    {
-      id: "schedule",
-      header: t("scheduledTime"),
-      cell: ({ row }) => <span className="text-sm">{formatTimeRange(row.original.scheduled_start_at, row.original.scheduled_end_at, timezone)}</span>,
     },
     {
       id: "updated",
       header: "更新",
       cell: ({ row }) => <span className="text-sm">{formatDateTime(row.original.updated_at || row.original.created_at, timezone)}</span>,
     },
-    {
-      id: "actions",
-      header: t("actions"),
-      cell: ({ row }) => (
-        <div className="flex min-w-44 flex-nowrap gap-1">
-          <Button variant="outline" size="icon-sm" aria-label={t("details")}>
-            <Eye />
-          </Button>
-          <RoleGuard allowed={canStart}>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              aria-label={t("start")}
-              {...guardedButtonProps(canStart)}
-              onClick={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start` })}
-            >
-              <Play />
-            </Button>
-          </RoleGuard>
-          <RoleGuard allowed={canStop}>
-            <DangerConfirm title={`${row.original.name} を停止しますか`} onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/stop` })} actionLabel={t("stop")}>
-              <Button variant="outline" size="icon-sm" aria-label={t("stop")} {...guardedButtonProps(canStop)}>
-                <Square />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard>
-          <RoleGuard allowed={canUpdate}>
-            <DangerConfirm title={`${row.original.name} の開始準備を再実行しますか`} onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start-readiness` })} actionLabel={t("restart")}>
-              <Button variant="outline" size="icon-sm" aria-label={t("restart")} {...guardedButtonProps(canUpdate)}>
-                <RotateCw />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard>
-          <RoleGuard allowed={canUpdate}>
-            <DangerConfirm title={`${row.original.name} のWorkerイベントを送信しますか`} onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/worker-events/test` })} actionLabel={t("switchWorker")}>
-              <Button variant="outline" size="icon-sm" aria-label={t("switchWorker")} {...guardedButtonProps(canUpdate)}>
-                <Shuffle />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard>
-        </div>
-      ),
-    },
   ];
 
   return (
-    <div className="space-y-4">
-      <StreamSlotForm
-        canCreate={canCreate}
-        canAssignEncoder={hasPermission(currentUser.data, "services.assign")}
-        canAssignWorker={hasPermission(currentUser.data, "workers.assign")}
-        onCreated={(stream) => setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)])}
-      />
+    <div className="space-y-5">
+      <section className="flex flex-col gap-3 border-b pb-5 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-primary"><CalendarDays className="size-4" />配信枠一覧</div>
+          <h1 className="mt-1 text-xl font-semibold">予約から終了後の録画まで一元管理</h1>
+          <p className="mt-1 text-sm text-muted-foreground">開始予定、配信経路、録画状態、担当Nodeを確認してから操作できます。</p>
+        </div>
+        {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" />配信枠を作成</Button> : null}
+      </section>
+
+      <StreamSummary rows={streamRows} />
+
+      {streams.isError ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex gap-3"><AlertCircle className="mt-0.5 size-5 shrink-0" /><div><div className="text-sm font-semibold">配信枠を取得できませんでした</div><p className="mt-0.5 text-xs">通信状態を確認して再試行してください。新しい操作は一覧が更新されてから行ってください。</p></div></div>
+          <Button variant="outline" size="sm" onClick={() => streams.refetch()}><RotateCw className="size-4" />再試行</Button>
+        </div>
+      ) : null}
+
+      {actionNotice ? <div className={cn("rounded-lg border p-3 text-sm", actionNotice.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200" : "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/35 dark:text-red-200")}>{actionNotice.message}</div> : null}
+
       <Card>
-        <CardHeader>
-          <CardTitle>{t("streams")}</CardTitle>
-          <CardDescription>Discord VC待機、YouTube出力、録画保存を紐づけた配信枠を確認します。</CardDescription>
+        <CardHeader className="border-b">
+          <CardTitle>配信スケジュール</CardTitle>
+          <CardDescription>状態や名称で絞り込み、詳細を開いて設定内容を確認できます。</CardDescription>
         </CardHeader>
         <CardContent>
-          <DataTable columns={columns} data={streamRows} filterPlaceholder="配信名・Discord・YouTube・Archive・状態で絞り込み" getRowId={(row) => row.id} />
+          <DataTable columns={columns} data={streamRows} filterPlaceholder="配信名・状態・URL・録画保存先で絞り込み" getRowId={(row) => row.id} minTableWidthClass="min-w-[1420px]" />
         </CardContent>
       </Card>
+
+      <Sheet open={createOpen} onOpenChange={(open) => {
+        setCreateOpen(open);
+        if (!open && window.location.hash === "#create-stream") window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }}>
+        <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl">
+          <SheetHeader className="sr-only"><SheetTitle>配信枠を作成</SheetTitle><SheetDescription>配信の予定、入力、出力、録画、自動開始を設定します。</SheetDescription></SheetHeader>
+          <StreamSlotForm
+            className="min-h-full rounded-none border-0 shadow-none"
+            canCreate={canCreate}
+            canAssignEncoder={can("services.assign")}
+            canAssignWorker={can("workers.assign")}
+            onCreated={(stream) => {
+              setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]);
+              setActionNotice({ tone: "success", message: `${stream.name} を作成しました。開始前に予定、配信経路、録画設定を確認してください。` });
+              setCreateOpen(false);
+            }}
+          />
+        </SheetContent>
+      </Sheet>
+
+      <StreamDetailsDialog
+        stream={selectedStream}
+        onOpenChange={(open) => { if (!open) setSelectedStream(null); }}
+        timezone={timezone}
+        discordLabels={discordLabels}
+        youtubeOutputLabels={youtubeOutputLabels}
+        archiveAccountLabels={archiveAccountLabels}
+        archiveDestinationLabels={archiveDestinationLabels}
+        archiveProfileLabels={archiveProfileLabels}
+        overlayProfileLabels={overlayProfileLabels}
+      />
     </div>
   );
 }
 
+function StreamSummary({ rows }: { rows: Stream[] }) {
+  const counts = rows.reduce((value, stream) => {
+    const status = String(stream.status).toLowerCase();
+    if (["live", "starting"].includes(status)) value.live += 1;
+    else if (["failed", "error"].includes(status)) value.attention += 1;
+    else if (["completed", "stopped"].includes(status)) value.completed += 1;
+    else value.waiting += 1;
+    if (recordingDescriptor(stream).label === "録画中") value.recording += 1;
+    return value;
+  }, { live: 0, waiting: 0, recording: 0, attention: 0, completed: 0 });
+  const items = [
+    { label: "配信中", value: counts.live, tone: "text-emerald-700 dark:text-emerald-300" },
+    { label: "開始待ち", value: counts.waiting, tone: "text-blue-700 dark:text-blue-300" },
+    { label: "録画中", value: counts.recording, tone: "text-red-700 dark:text-red-300" },
+    { label: "要対応", value: counts.attention, tone: "text-red-700 dark:text-red-300" },
+    { label: "終了", value: counts.completed, tone: "text-muted-foreground" },
+  ];
+  return <section className="grid grid-cols-2 overflow-hidden rounded-lg border bg-card sm:grid-cols-5" aria-label="配信状態の集計">{items.map((item) => <div key={item.label} className="border-b border-r p-3 last:border-r-0 sm:border-b-0"><div className="text-xs text-muted-foreground">{item.label}</div><div className={cn("mt-1 text-xl font-semibold tabular-nums", item.tone)}>{item.value}</div></div>)}</section>;
+}
+
+function StreamDetailsDialog({ stream, onOpenChange, timezone, discordLabels, youtubeOutputLabels, archiveAccountLabels, archiveDestinationLabels, archiveProfileLabels, overlayProfileLabels }: { stream: Stream | null; onOpenChange: (open: boolean) => void; timezone?: string; discordLabels: Map<string, string>; youtubeOutputLabels: Map<string, string>; archiveAccountLabels: Map<string, string>; archiveDestinationLabels: Map<string, string>; archiveProfileLabels: Map<string, string>; overlayProfileLabels: Map<string, string> }) {
+  if (!stream) return null;
+  const recording = recordingDescriptor(stream);
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader><DialogTitle>{stream.name}</DialogTitle><DialogDescription>配信前の確認と、配信中・終了後の状況確認に使う情報です。</DialogDescription></DialogHeader>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <DetailGroup title="状態"><div className="flex flex-wrap items-center gap-2"><StatusBadge status={stream.status} /><span className={cn("inline-flex rounded-md border px-2 py-1 text-xs font-medium", recording.className)}>{recording.label}</span></div><p className="mt-2 text-xs text-muted-foreground">{recording.detail}</p></DetailGroup>
+          <DetailGroup title="予定"><DetailLine label="開始" value={formatDateTime(stream.scheduled_start_at, timezone)} /><DetailLine label="終了" value={formatDateTime(stream.scheduled_end_at, timezone)} /></DetailGroup>
+          <DetailGroup title="配信経路"><DetailLine label="入力URL" value={safeDisplayURL(stream.encoder_input_url || stream.input_source) || "未設定"} mono /><DetailLine label="YouTube出力" value={optionLabel(youtubeOutputLabels, stream.youtube_output_id) || stream.output_target || "未設定"} /></DetailGroup>
+          <DetailGroup title="録画保存"><DetailLine label="設定" value={optionLabel(archiveProfileLabels, stream.archive_profile_id) || "未設定"} /><DetailLine label="保存先" value={optionLabel(archiveDestinationLabels, stream.archive_drive_destination_id) || optionLabel(archiveAccountLabels, stream.archive_oauth_account_id) || "未設定"} /><DetailLine label="ファイル名" value={stream.archive_file_name || "自動命名"} /><DetailLine label="フォルダー" value={stream.archive_folder_id_configured ? stream.archive_masked_folder_id || "設定済み" : "未設定"} /></DetailGroup>
+          <DetailGroup title="自動開始"><DetailLine label="方式" value={stream.auto_start_trigger === "discord_voice_join" ? "Discord VC参加で自動開始" : "手動開始"} /><DetailLine label="BOT" value={optionLabel(discordLabels, stream.discord_config_id) || "未設定"} /><DetailLine label="VC" value={stream.discord_voice_channel_id || "未設定"} /><DetailLine label="Chat" value={stream.discord_text_channel_id || "未設定"} /></DetailGroup>
+          <DetailGroup title="担当Node・映像設定"><DetailLine label="Worker" value={stream.assigned_worker_id || "未割当"} /><DetailLine label="Encoder" value={stream.assigned_encoder_id || "未割当"} /><DetailLine label="Watermark" value={optionLabel(overlayProfileLabels, stream.overlay_profile_id) || "OFF"} /></DetailGroup>
+        </div>
+        <div className="flex justify-end"><Button asChild variant="outline" size="sm"><Link href={`/admin/audit-logs/?q=${encodeURIComponent(stream.id)}`}>この配信枠の操作履歴を確認</Link></Button></div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DetailGroup({ title, children }: { title: string; children: ReactNode }) { return <section className="rounded-lg border bg-muted/15 p-4"><h3 className="mb-3 text-sm font-semibold">{title}</h3>{children}</section>; }
+function DetailLine({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2 border-b py-2 text-sm last:border-b-0"><span className="text-muted-foreground">{label}</span><span className={cn("min-w-0 break-all", mono && "font-mono text-xs")}>{value}</span></div>; }
+
 function StreamSlotForm({
+  className,
   canCreate,
   canAssignEncoder,
   canAssignWorker,
   onCreated,
 }: {
+  className?: string;
   canCreate: boolean;
   canAssignEncoder: boolean;
   canAssignWorker: boolean;
@@ -238,7 +353,7 @@ function StreamSlotForm({
   const overlayProfiles = useResourceOptions("/profiles/overlay", ["name", "id"]);
   const encoderNodes = useServiceOptions("encoder_recorder");
   const workerNodes = useServiceOptions("worker");
-  const [name, setName] = useState("朝の地域情報");
+  const [name, setName] = useState("");
   const [discordConfigID, setDiscordConfigID] = useState(noneValue);
   const [guildID, setGuildID] = useState("");
   const [voiceChannelID, setVoiceChannelID] = useState("");
@@ -311,15 +426,20 @@ function StreamSlotForm({
   const watermarkReady = !watermarkEnabled || selectedValue(overlayProfileID) !== "";
   const nodeAssignmentReady = !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
   const nodeAssignmentPermissionLimited = autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
+  const scheduleReady = scheduleRangeIsValid(scheduledStartAt, scheduledEndAt);
+  const inputURLReady = externalInputURLIsValid(encoderInputURL);
+  const archiveFileNameReady = !/[\\/]/.test(archiveFileName);
+  const retentionDays = Number.parseInt(archiveRetentionDays, 10);
+  const retentionReady = Number.isFinite(retentionDays) && retentionDays >= 1 && retentionDays <= 3650;
 
   return (
-    <Card>
-      <CardHeader>
+    <Card id="create-stream" className={className}>
+      <CardHeader className="border-b">
         <CardTitle className="flex items-center gap-2">
           <Plus className="size-5" />
           配信枠を作成
         </CardTitle>
-        <CardDescription>Discord VCへの参加を起点に自動開始する前提で、必要なNode設定と出力先を配信枠にまとめます。</CardDescription>
+        <CardDescription>予定、開始条件、配信経路、録画保存先を確認してから作成します。</CardDescription>
       </CardHeader>
       <CardContent>
         <form
@@ -330,56 +450,68 @@ function StreamSlotForm({
             createStream.mutate(payload);
           }}
         >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            <TextField label="配信枠名" value={name} onChange={setName} required />
-            <TextField label="予定開始" type="datetime-local" value={scheduledStartAt} onChange={setScheduledStartAt} />
-            <TextField label="予定終了" type="datetime-local" value={scheduledEndAt} onChange={setScheduledEndAt} />
-            <SelectField label="Discord BOT設定" value={discordConfigID} onChange={setDiscordConfigID} options={[{ value: noneValue, label: "未選択" }, ...discordConfigs]} />
-            <TextField label="Discord Guild ID" value={guildID} onChange={setGuildID} />
-            <TextField label="VC Channel ID" value={voiceChannelID} onChange={setVoiceChannelID} />
-            <TextField label="Chat Channel ID" value={textChannelID} onChange={setTextChannelID} />
-            <SelectField label="YouTube output" value={youtubeOutputID} onChange={setYouTubeOutputID} options={[{ value: noneValue, label: "未選択" }, ...youtubeOutputs]} />
-            <SelectField label="Archive OAuth account" value={archiveOAuthAccountID} onChange={setArchiveOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
-            <TextField label="Drive Folder ID" value={archiveFolderID} onChange={setArchiveFolderID} />
-            <TextField label="保存ファイル名" value={archiveFileName} onChange={setArchiveFileName} placeholder="未入力なら 配信枠名-年月日.mp4" />
-            <TextField label="ローカル保持日数" value={archiveRetentionDays} onChange={setArchiveRetentionDays} type="number" />
-            <SelectField label="Encoder profile" value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: "未選択" }, ...encoderProfiles]} />
-            <SelectField label="Caption profile" value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: "未選択" }, ...captionProfiles]} />
-            <SelectField label="ウォーターマーク設定" value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: "未選択" }, ...overlayProfiles]} disabled={!watermarkEnabled} />
-            {canAssignEncoder ? <SelectField label="Primary Encoder Node" value={effectiveEncoderServiceID} onChange={setEncoderServiceID} options={[{ value: noneValue, label: "未選択" }, ...encoderNodes]} /> : null}
-            {canAssignWorker ? <SelectField label="Primary Worker Node" value={effectiveWorkerServiceID} onChange={setWorkerServiceID} options={[{ value: noneValue, label: "未選択" }, ...workerNodes]} /> : null}
-            <TextField label="外部入力URL" value={encoderInputURL} onChange={setEncoderInputURL} placeholder="srt://source.example.com:9000" />
-            <label className="flex min-h-10 items-center gap-2 self-end text-sm">
+          <FormSection title="基本情報" description="配信枠の名称と予定時刻">
+            <div className="grid gap-3 md:grid-cols-2">
+              <TextField label="配信枠名" value={name} onChange={setName} placeholder="例: 商品発表会 夕方枠" required />
+              <div className="hidden md:block" />
+              <TextField label="予定開始" type="datetime-local" value={scheduledStartAt} onChange={setScheduledStartAt} />
+              <TextField label="予定終了" type="datetime-local" value={scheduledEndAt} onChange={setScheduledEndAt} error={scheduleReady ? undefined : "予定終了は予定開始より後にしてください。"} />
+            </div>
+          </FormSection>
+
+          <FormSection title="開始条件と配信入力" description="自動開始に使うDiscordと担当Node">
+            <label className="mb-3 flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm">
               <Checkbox checked={autoStartFromDiscord} onCheckedChange={(value) => setAutoStartFromDiscord(value === true)} />
-              Discord VC参加で自動開始
+              Discord VCへの参加を検知して自動開始
             </label>
-            <label className="flex min-h-10 items-center gap-2 self-end text-sm">
-              <Checkbox checked={archiveSharedDrive} onCheckedChange={(value) => setArchiveSharedDrive(value === true)} />
-              共有ドライブIDを使う
-            </label>
-            <label className="flex min-h-10 items-center gap-2 self-end text-sm">
-              <Checkbox checked={watermarkEnabled} onCheckedChange={(value) => setWatermarkEnabled(value === true)} />
-              ウォーターマークを使う
-            </label>
-            <TextField label="共有ドライブID" value={archiveSharedDriveID} onChange={setArchiveSharedDriveID} />
-          </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <SelectField label="Discord BOT設定" value={discordConfigID} onChange={setDiscordConfigID} options={[{ value: noneValue, label: "未選択" }, ...discordConfigs]} />
+              <TextField label="DiscordサーバーID" value={guildID} onChange={setGuildID} />
+              <TextField label="ボイスチャンネルID" value={voiceChannelID} onChange={setVoiceChannelID} />
+              <TextField label="チャットチャンネルID" value={textChannelID} onChange={setTextChannelID} />
+              {canAssignWorker ? <SelectField label="担当Worker Node" value={effectiveWorkerServiceID} onChange={setWorkerServiceID} options={[{ value: noneValue, label: "未選択" }, ...workerNodes]} /> : null}
+              {canAssignEncoder ? <SelectField label="担当Encoder Node" value={effectiveEncoderServiceID} onChange={setEncoderServiceID} options={[{ value: noneValue, label: "未選択" }, ...encoderNodes]} /> : null}
+              <TextField label="配信入力URL" value={encoderInputURL} onChange={setEncoderInputURL} placeholder="srt://source.example.com:9000" error={inputURLReady ? undefined : "SRT、RTMP、RTMPS、HTTP、HTTPSの公開URLを入力してください。"} />
+            </div>
+          </FormSection>
+
+          <FormSection title="出力と録画" description="視聴先と録画ファイルの保存設定">
+            <div className="grid gap-3 md:grid-cols-2">
+              <SelectField label="YouTube出力" value={youtubeOutputID} onChange={setYouTubeOutputID} options={[{ value: noneValue, label: "未選択" }, ...youtubeOutputs]} />
+              <SelectField label="録画用Googleアカウント" value={archiveOAuthAccountID} onChange={setArchiveOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
+              <TextField label="Drive保存先フォルダーID" value={archiveFolderID} onChange={setArchiveFolderID} />
+              <TextField label="録画ファイル名" value={archiveFileName} onChange={setArchiveFileName} placeholder="未入力なら 配信枠名-年月日.mp4" error={archiveFileNameReady ? undefined : "ファイル名に / または \\ は使えません。"} />
+              <TextField label="Encoder内の保持日数" value={archiveRetentionDays} onChange={setArchiveRetentionDays} type="number" error={retentionReady ? undefined : "1日から3650日の範囲で入力してください。"} />
+              <label className="flex min-h-10 items-center gap-2 self-end rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={archiveSharedDrive} onCheckedChange={(value) => setArchiveSharedDrive(value === true)} />共有ドライブへ保存</label>
+              {archiveSharedDrive ? <TextField label="共有ドライブID" value={archiveSharedDriveID} onChange={setArchiveSharedDriveID} /> : null}
+            </div>
+          </FormSection>
+
+          <FormSection title="映像・字幕" description="配信品質と映像に適用する設定">
+            <div className="grid gap-3 md:grid-cols-2">
+              <SelectField label="エンコード設定" value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: "未選択" }, ...encoderProfiles]} />
+              <SelectField label="字幕設定" value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: "未選択" }, ...captionProfiles]} />
+              <label className="flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={watermarkEnabled} onCheckedChange={(value) => setWatermarkEnabled(value === true)} />ウォーターマークを使用</label>
+              <SelectField label="ウォーターマーク設定" value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: "未選択" }, ...overlayProfiles]} disabled={!watermarkEnabled} />
+            </div>
+          </FormSection>
 
           {hasDiscordTarget && !discordReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              Discord Guild/VC/Chatを指定する場合は、Discord BOT設定も選択してください。
+              Discordのサーバーやチャンネルを指定する場合は、使用するDiscord BOT設定も選択してください。
             </div>
           ) : null}
           {autoStartFromDiscord && !autoStartReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              Discord VC参加で自動開始する場合は、Discord BOT設定、Guild ID、VC Channel IDを指定してください。
+              自動開始を使うには、Discord BOT設定、サーバーID、ボイスチャンネルIDが必要です。
             </div>
           ) : null}
           {hasArchiveUploadTarget && !archiveReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              Archiveを設定する場合は、OAuth accountとDrive Folder IDを指定してください。共有ドライブを使う場合は共有ドライブIDも必要です。
+              Driveへ録画を保存するには、Googleアカウントと保存先フォルダーIDが必要です。共有ドライブを使う場合は共有ドライブIDも入力してください。
             </div>
           ) : null}
           {watermarkEnabled && !watermarkReady ? (
@@ -391,26 +523,36 @@ function StreamSlotForm({
           {autoStartFromDiscord && canAssignEncoder && canAssignWorker && !nodeAssignmentReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              自動開始する待機枠にはPrimary Encoder NodeとPrimary Worker Nodeを選択してください。
+              自動開始する配信枠には、担当Encoder Nodeと担当Worker Nodeを選択してください。
             </div>
           ) : null}
           {nodeAssignmentPermissionLimited ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              Node割当権限がないため、この画面ではPrimary Nodeを保存できません。Service Healthで割り当てを確認してください。
+              Nodeを割り当てる権限がありません。管理者に依頼し、サービス稼働画面で割り当てを確認してください。
             </div>
           ) : null}
-          {message ? <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">{message}</div> : null}
+          {message ? <div aria-live="polite" className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">{message}</div> : null}
           {!canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !archiveReady || !watermarkReady || !nodeAssignmentReady}>
+            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !archiveReady || !watermarkReady || !nodeAssignmentReady || !scheduleReady || !inputURLReady || !archiveFileNameReady || !retentionReady}>
               <Plus className="size-4" />
-              {createStream.isPending ? "作成中..." : "待機用の配信枠を作成"}
+              {createStream.isPending ? "作成中..." : "配信枠を作成"}
             </Button>
           </div>
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+function FormSection({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+  return (
+    <fieldset className="rounded-lg border p-4">
+      <legend className="px-1 text-sm font-semibold">{title}</legend>
+      <p className="mb-3 text-xs text-muted-foreground">{description}</p>
+      {children}
+    </fieldset>
   );
 }
 
@@ -421,6 +563,7 @@ function TextField({
   placeholder,
   type = "text",
   required,
+  error,
 }: {
   label: string;
   value: string;
@@ -428,11 +571,13 @@ function TextField({
   placeholder?: string;
   type?: string;
   required?: boolean;
+  error?: string;
 }) {
   return (
     <label className="grid gap-1.5 text-sm">
       <span className="font-medium">{label}</span>
-      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} />
+      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} aria-invalid={Boolean(error)} />
+      {error ? <span className="text-xs text-red-600 dark:text-red-300">{error}</span> : null}
     </label>
   );
 }
@@ -647,9 +792,40 @@ function streamCreateErrorMessage(error: unknown) {
   return "作成に失敗しました。";
 }
 
-function formatTimeRange(start?: string, end?: string, timezone?: string) {
-  if (!start && !end) return "-";
-  return `${formatDateTime(start, timezone)} - ${formatDateTime(end, timezone)}`;
+function streamActionErrorMessage(error: unknown, actionLabel: string) {
+  if (error instanceof APIError) {
+    if (error.status === 403) return `${actionLabel}を実行する権限がありません。管理者に操作権限を確認してください。`;
+    if (error.status === 404) return `対象の配信枠が見つかりません。一覧を更新してからもう一度確認してください。`;
+    if (error.status === 409) return `${actionLabel}できない状態です。配信状態を更新し、開始中・停止中の処理が終わってから再試行してください。`;
+    if (error.status >= 500) return `${actionLabel}を完了できませんでした。担当Nodeの接続状態を確認し、配信ログを確認してから再試行してください。`;
+  }
+  return `${actionLabel}を完了できませんでした。通信状態と配信ログを確認してから再試行してください。`;
+}
+
+function scheduleRangeIsValid(start: string, end: string) {
+  if (!start.trim() || !end.trim()) return true;
+  const startTime = new Date(start).getTime();
+  const endTime = new Date(end).getTime();
+  return Number.isFinite(startTime) && Number.isFinite(endTime) && endTime > startTime;
+}
+
+function streamStatusAllowsStart(status: Stream["status"]) {
+  return ["created", "draft", "scheduled", "ready", "failed"].includes(String(status).toLowerCase());
+}
+
+function streamStatusAllowsStop(status: Stream["status"]) {
+  return ["starting", "live", "failed"].includes(String(status).toLowerCase());
+}
+
+function externalInputURLIsValid(value: string) {
+  const input = value.trim();
+  if (!input) return true;
+  try {
+    const url = new URL(input);
+    return ["srt:", "rtmp:", "rtmps:", "http:", "https:"].includes(url.protocol) && Boolean(url.hostname) && url.hostname.toLowerCase() !== "localhost" && !url.username && !url.password && !url.hash;
+  } catch {
+    return false;
+  }
 }
 
 function formatDateTime(value?: string, timezone?: string) {

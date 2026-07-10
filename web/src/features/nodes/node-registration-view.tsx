@@ -506,7 +506,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
           ) : null}
           {registeredNodes.isError ? (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
-              登録済みNodeを取得できませんでした。api_tokens.create 権限とControl Panelのログを確認してください。
+              登録済みNodeを取得できませんでした。Nodeの登録・編集権限とControl Panelのログを確認してください。
             </div>
           ) : null}
           {actionError ? (
@@ -723,7 +723,7 @@ function nodeRegistrationErrorMessage(error: unknown) {
       node_type_mismatch: "既存Nodeと異なるNode typeでは発行できません。Node typeとNode IDの組み合わせを確認してください。",
       not_found: "対象のNodeが見つかりません。一覧を更新してください。",
       service_not_found: "対象のNodeが見つかりません。一覧を更新してください。",
-      permission_denied: "この操作に必要な権限がありません。Runtime Token再生成には api_tokens.revoke 権限が必要です。",
+      permission_denied: "この操作に必要な権限がありません。Runtime Tokenを再生成できる管理者へ依頼してください。",
       store_node_runtime_token_failed: "Control Panelのenvに AUTOSTREAM_SECRET_ENCRYPTION_KEY が設定されていない、または暗号化設定が不正です。設定後にControl Panelを再起動してください。",
       create_node_configure_token_failed: "Configure Tokenの保存に失敗しました。database接続とControl Panelのログを確認してください。",
       create_node_registration_token_failed: "Node Runtime Tokenの作成に失敗しました。Control Panelのログを確認してください。",

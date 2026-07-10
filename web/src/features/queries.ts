@@ -32,10 +32,11 @@ export function useVersion() {
   });
 }
 
-export function useStreams() {
+export function useStreams(enabled = true) {
   return useQuery({
     queryKey: ["streams"],
     queryFn: () => apiGet<Stream[]>("/streams"),
+    enabled,
   });
 }
 
@@ -47,28 +48,31 @@ export function useWorkers() {
   });
 }
 
-export function useServiceHealth() {
+export function useServiceHealth(enabled = true) {
   return useQuery({
     queryKey: ["service-health"],
     queryFn: () => apiGet<WorkerNode[]>("/service-health"),
     refetchInterval: 10_000,
+    enabled,
   });
 }
 
-export function useNodes() {
+export function useNodes(enabled = true) {
   return useQuery({
     queryKey: ["nodes"],
     queryFn: () => apiGet<WorkerNode[]>("/nodes"),
     refetchInterval: 10_000,
+    enabled,
   });
 }
 
-export function useAuditLogs(params?: { from?: string; to?: string; action?: string; result?: string }) {
+export function useAuditLogs(params?: { from?: string; to?: string; action?: string; result?: string; q?: string }) {
   const search = new URLSearchParams();
   if (params?.from) search.set("from", params.from);
   if (params?.to) search.set("to", params.to);
   if (params?.action) search.set("action", params.action);
   if (params?.result && params.result !== "all") search.set("result", params.result);
+  if (params?.q) search.set("q", params.q);
   const suffix = search.toString() ? `?${search}` : "";
   return useQuery({
     queryKey: ["audit-logs", params],
@@ -84,9 +88,10 @@ export function useWorkerMetrics() {
   });
 }
 
-export function useResourceData<T = unknown>(path: string) {
+export function useResourceData<T = unknown>(path: string, enabled = true) {
   return useQuery({
     queryKey: ["resource", path],
     queryFn: () => apiGet<T>(path),
+    enabled,
   });
 }

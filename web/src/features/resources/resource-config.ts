@@ -7,6 +7,12 @@ export type ResourceDefinition = {
   form?: ResourceFormKind;
   createTemplate?: Record<string, unknown>;
   deletable?: boolean;
+  permissions?: {
+    read?: string;
+    create?: string;
+    update?: string;
+    delete?: string;
+  };
 };
 
 export type ResourceFormKind =
@@ -41,6 +47,7 @@ export const resourcePages = {
         description: "Worker / Encoder が配信開始時に参照する映像変換プロファイルです。",
         form: "encoder-profile",
         deletable: true,
+        permissions: { read: "encoder_profiles.read", create: "encoder_profiles.create", update: "encoder_profiles.update", delete: "encoder_profiles.delete" },
         createTemplate: { name: "1080p60", config: { width: 1920, height: 1080, fps: 60, video_bitrate_kbps: 8000 } },
       },
     ],
@@ -55,6 +62,7 @@ export const resourcePages = {
         description: "Discord BOT Node、BOTトークン、音声転送と再接続ポリシーの設定です。",
         form: "discord-config",
         deletable: true,
+        permissions: { read: "discord_configs.read", create: "discord_configs.create", update: "discord_configs.update", delete: "discord_configs.delete" },
         createTemplate: { name: "main-discord-bot", audio_forward_enabled: true },
       },
     ],
@@ -69,6 +77,7 @@ export const resourcePages = {
         description: "配信開始時に使うRTMPまたはYouTube Live API出力です。",
         form: "youtube-output",
         deletable: true,
+        permissions: { read: "youtube_outputs.read", create: "youtube_outputs.create", update: "youtube_outputs.update", delete: "youtube_outputs.delete" },
         createTemplate: { name: "public-live", mode: "live_api_dry_run", privacy_status: "public", rtmp_url: "rtmps://example.youtube.com/live2" },
       },
     ],
@@ -83,6 +92,7 @@ export const resourcePages = {
         description: "字幕言語、プロバイダ、遅延補正などの設定です。",
         form: "caption-profile",
         deletable: true,
+        permissions: { read: "caption_profiles.read", create: "caption_profiles.create", update: "caption_profiles.update", delete: "caption_profiles.delete" },
         createTemplate: { name: "日本語ライブ字幕", config: { language: "ja-JP", provider: "deepgram", delay_ms: 800 } },
       },
     ],
@@ -97,6 +107,7 @@ export const resourcePages = {
         description: "配信映像へ載せる1920x1080固定のウォーターマーク画像です。",
         form: "overlay-profile",
         deletable: true,
+        permissions: { read: "overlay_profiles.read", create: "overlay_profiles.create", update: "overlay_profiles.update", delete: "overlay_profiles.delete" },
         createTemplate: { name: "station-logo", config: { watermark_enabled: true, watermark_image_url: "", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output" } },
       },
     ],
@@ -111,6 +122,7 @@ export const resourcePages = {
         description: "録画形式、保存期間、アップロード有無の設定です。",
         form: "archive-profile",
         deletable: true,
+        permissions: { read: "archive_profiles.read", create: "archive_profiles.create", update: "archive_profiles.update", delete: "archive_profiles.delete" },
         createTemplate: { name: "shared-drive", config: { format: "mp4", retention_days: 180, upload_enabled: true } },
       },
       {
@@ -119,6 +131,7 @@ export const resourcePages = {
         description: "Google Driveなどのアーカイブ保存先です。",
         form: "drive-destination",
         deletable: true,
+        permissions: { read: "integrations.read", create: "integrations.create", update: "integrations.update", delete: "integrations.delete" },
         createTemplate: { name: "archive-drive", oauth_account_id: "acct-drive", folder_id: "google-drive-folder-id" },
       },
     ],
@@ -133,6 +146,7 @@ export const resourcePages = {
         description: "管理画面ログインに使うOAuthプロバイダです。スコープはログイン用途に固定します。",
         form: "oauth-provider",
         deletable: true,
+        permissions: { read: "integrations.read", create: "integrations.create", update: "integrations.update", delete: "integrations.delete" },
         createTemplate: { provider_type: "google", name: "Google Workspace", enabled: true, client_id: "client-id", client_secret: "secret", redirect_uri: "https://control.example.jp/auth/oauth/callback" },
       },
       {
@@ -141,6 +155,7 @@ export const resourcePages = {
         description: "YouTubeやDrive操作に使う接続済みアカウントです。",
         form: "oauth-account-connect",
         deletable: true,
+        permissions: { read: "integrations.read", create: "integrations.create", update: "integrations.update", delete: "integrations.delete" },
       },
     ],
   },
@@ -148,8 +163,8 @@ export const resourcePages = {
     titleKey: "logs",
     description: "配信ログと最近の操作ログを確認します。ストリーム別ログは各配信詳細のAPIと連動します。",
     resources: [
-      { title: "配信", path: "/streams", description: "ログ確認対象となる配信です。" },
-      { title: "監査ログ", path: "/audit-logs", description: "管理画面で実行された操作の履歴です。" },
+      { title: "配信", path: "/streams", description: "ログ確認対象となる配信です。", permissions: { read: "streams.read", create: "streams.create", update: "streams.update", delete: "streams.delete" } },
+      { title: "監査ログ", path: "/audit-logs", description: "管理画面で実行された操作の履歴です。", permissions: { read: "audit_logs.read", delete: "audit_logs.export" } },
     ],
   },
   users: {
@@ -162,6 +177,7 @@ export const resourcePages = {
         description: "運用担当者のログインアカウントです。",
         form: "user",
         deletable: true,
+        permissions: { read: "users.read", create: "users.create", update: "users.update", delete: "users.delete" },
         createTemplate: { username: "operator", email: "operator@example.jp", temporary_password: "change-me-with-12-chars", role_ids: ["role-operator"] },
       },
     ],
@@ -176,58 +192,60 @@ export const resourcePages = {
         description: "ユーザーに付与する権限セットです。",
         form: "role",
         deletable: true,
+        permissions: { read: "roles.read", create: "roles.create", update: "roles.update", delete: "roles.delete" },
         createTemplate: { name: "operator", permissions: ["streams.read", "streams.start", "streams.stop"] },
       },
-      { title: "権限一覧", path: "/permissions", description: "利用できる権限一覧です。" },
+      { title: "権限一覧", path: "/permissions", description: "利用できる権限一覧です。", permissions: { read: "roles.read" } },
     ],
   },
   security: {
     titleKey: "security",
     description: "ログインポリシー、MFA、秘密情報の登録状況を管理します。",
     resources: [
-      { title: "セキュリティ設定", path: "/security/settings", description: "パスワード、ロックアウト、セッション、MFAの設定です。", form: "security-settings" },
-      { title: "シークレット登録状況", path: "/secrets/status", description: "SMTP、Turnstile、OAuth tokenなどの秘密情報が登録済みかだけを確認します。値そのものは表示しません。" },
+      { title: "セキュリティ設定", path: "/security/settings", description: "パスワード、ロックアウト、セッション、MFAの設定です。", form: "security-settings", permissions: { read: "system_settings.read", update: "system_settings.update" } },
+      { title: "シークレット登録状況", path: "/secrets/status", description: "SMTP、Turnstile、OAuth tokenなどの秘密情報が登録済みかだけを確認します。値そのものは表示しません。", permissions: { read: "secrets.read_status" } },
     ],
   },
   "service-health": {
     titleKey: "serviceHealth",
     description: "登録済みNodeと各サービスのヘルス、ハートビート、割り当て状態を確認します。",
-    resources: [{ title: "サービス状態", path: "/service-health", description: "Control Panelに接続しているNodeの状態です。" }],
+    resources: [{ title: "サービス状態", path: "/service-health", description: "Control Panelに接続しているNodeの状態です。", permissions: { read: "service_health.read" } }],
   },
   monitoring: {
     titleKey: "monitoring",
     description: "Nodeの生死、インシデント、診断結果を確認します。メトリクスの時系列グラフはメトリクスページで扱います。",
     resources: [
-      { title: "インシデント", path: "/observability/incidents", description: "現在検知されている問題です。" },
-      { title: "診断結果", path: "/observability/diagnostics", description: "音声、エンコーダー、外部接続の診断結果です。" },
+      { title: "インシデント", path: "/observability/incidents", description: "現在検知されている問題です。", permissions: { read: "incidents.read", update: "incidents.acknowledge" } },
+      { title: "診断結果", path: "/observability/diagnostics", description: "音声、エンコーダー、外部接続の診断結果です。", permissions: { read: "diagnostics.read", update: "diagnostics.run" } },
     ],
   },
   incidents: {
     titleKey: "incidents",
     description: "配信停止や品質低下など、対応が必要なイベントを管理します。",
-    resources: [{ title: "インシデント", path: "/observability/incidents", description: "検知、確認、解決の状態を追跡します。" }],
+    resources: [{ title: "インシデント", path: "/observability/incidents", description: "検知、確認、解決の状態を追跡します。", permissions: { read: "incidents.read", update: "incidents.resolve" } }],
   },
   diagnostics: {
     titleKey: "diagnostics",
     description: "配信前チェックやサービス疎通確認の結果を確認します。",
-    resources: [{ title: "診断結果", path: "/observability/diagnostics", description: "音声、エンコーダー、外部接続の診断結果です。" }],
+    resources: [{ title: "診断結果", path: "/observability/diagnostics", description: "音声、エンコーダー、外部接続の診断結果です。", permissions: { read: "diagnostics.read", update: "diagnostics.run" } }],
   },
   remediation: {
     titleKey: "remediation",
     description: "承認制の復旧アクションを確認し、必要に応じて実行します。",
-    resources: [{ title: "復旧アクション", path: "/observability/remediation-actions", description: "再起動、切替、再通知などの復旧候補です。" }],
+    resources: [{ title: "復旧アクション", path: "/observability/remediation-actions", description: "再起動、切替、再通知などの復旧候補です。", permissions: { read: "remediation.read", update: "remediation.execute" } }],
   },
   notifications: {
     titleKey: "notifications",
     description: "インシデント、復旧操作、管理操作の通知履歴と通知先を管理します。",
     resources: [
-      { title: "通知履歴", path: "/observability/notification-deliveries", description: "インシデント、復旧操作、管理操作の通知送信履歴です。" },
+      { title: "通知履歴", path: "/observability/notification-deliveries", description: "インシデント、復旧操作、管理操作の通知送信履歴です。", permissions: { read: "notification_channels.read" } },
       {
         title: "通知先",
         path: "/observability/notification-channels",
         description: "Discord、Slack、メールなどの通知先と対象イベントです。",
         form: "notification-channel",
         deletable: true,
+        permissions: { read: "notification_channels.read", create: "notification_channels.create", update: "notification_channels.update", delete: "notification_channels.delete" },
         createTemplate: { name: "ops-slack", type: "slack", webhook_url: "https://hooks.slack.com/services/...", enabled: true },
       },
     ],
@@ -235,7 +253,7 @@ export const resourcePages = {
   metrics: {
     titleKey: "metrics",
     description: "配信基盤のメトリクスを時系列で確認します。",
-    resources: [{ title: "メトリクス", path: "/observability/metrics", description: "監視システムから取得したメトリクスです。" }],
+    resources: [{ title: "メトリクス", path: "/observability/metrics", description: "監視システムから取得したメトリクスです。", permissions: { read: "metrics.read" } }],
   },
 } satisfies Record<string, ResourcePageConfig>;
 

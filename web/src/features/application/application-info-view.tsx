@@ -7,18 +7,25 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useAppSettings, useNodes, useServiceHealth, useVersion } from "@/features/queries";
+import { useAppSettings, useCurrentUser, useNodes, useServiceHealth, useVersion } from "@/features/queries";
+import { hasPermission } from "@/lib/auth/permissions";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { WorkerNode } from "@/types/domain";
 
 export function ApplicationInfoView() {
+  const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
   const appVersion = useVersion();
-  const registeredNodes = useNodes();
-  const serviceHealth = useServiceHealth();
+  const canReadRegisteredNodes = hasPermission(currentUser.data, "api_tokens.create");
+  const canReadServiceHealth = hasPermission(currentUser.data, "service_health.read");
+  const canViewNodeInfo = canReadRegisteredNodes || canReadServiceHealth;
+  const registeredNodes = useNodes(canReadRegisteredNodes);
+  const serviceHealth = useServiceHealth(canReadServiceHealth);
   const timezone = appSettings.data?.timezone;
   const nodeRows = useMemo(() => mergeRegisteredNodeRows(registeredNodes.data || [], serviceHealth.data || []).sort(compareServiceRows), [registeredNodes.data, serviceHealth.data]);
-  const nodesFetching = registeredNodes.isFetching || serviceHealth.isFetching;
+  const nodesFetching = (canReadRegisteredNodes && registeredNodes.isFetching) || (canReadServiceHealth && serviceHealth.isFetching);
+  const nodesLoading = nodeRows.length === 0 && ((canReadRegisteredNodes && registeredNodes.isLoading) || (canReadServiceHealth && serviceHealth.isLoading));
+  const nodesError = (canReadRegisteredNodes && registeredNodes.isError) || (canReadServiceHealth && serviceHealth.isError);
 
   return (
     <div className="space-y-4">
@@ -36,10 +43,10 @@ export function ApplicationInfoView() {
             variant="outline"
             size="sm"
             onClick={() => {
-              void registeredNodes.refetch();
-              void serviceHealth.refetch();
+              if (canReadRegisteredNodes) void registeredNodes.refetch();
+              if (canReadServiceHealth) void serviceHealth.refetch();
             }}
-            disabled={nodesFetching}
+            disabled={!canViewNodeInfo || nodesFetching}
           >
             <RefreshCcw className="size-4" />
             Node更新
@@ -76,7 +83,14 @@ export function ApplicationInfoView() {
             <CardDescription>Worker、Encoder/Recorder、Discord Bot、Observabilityの報告バージョンです。</CardDescription>
           </CardHeader>
           <CardContent>
-            {registeredNodes.isLoading ? (
+            {!canViewNodeInfo ? (
+              <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeの情報を確認する権限がありません。管理者にNode情報の閲覧権限を依頼してください。</div>
+            ) : nodesError ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
+                <span>登録済みNodeの情報を取得できませんでした。通信状態とControl Panelのログを確認してください。</span>
+                <Button variant="outline" size="sm" onClick={() => { if (canReadRegisteredNodes) void registeredNodes.refetch(); if (canReadServiceHealth) void serviceHealth.refetch(); }}>再試行</Button>
+              </div>
+            ) : nodesLoading ? (
               <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">読み込み中</div>
             ) : nodeRows.length === 0 ? (
               <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeがありません。Node登録ページで作成したNodeがある場合は、ページを更新してください。</div>

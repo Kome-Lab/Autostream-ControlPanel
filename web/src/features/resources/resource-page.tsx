@@ -18,8 +18,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
-import { useAppSettings, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
+import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
+import { hasPermission } from "@/lib/auth/permissions";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { WorkerNode } from "@/types/domain";
 
@@ -29,6 +30,7 @@ const watermarkMaxBytes = 5 * 1024 * 1024;
 
 export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
   const { t } = useI18n();
+  const currentUser = useCurrentUser();
   const page = resourcePages[pageId];
   const defaultTab = page.resources[0]?.path || "";
 
@@ -40,7 +42,7 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
       </section>
 
       {page.resources.length === 1 ? (
-        <ResourcePanel resource={page.resources[0]} />
+        <ResourcePanel resource={page.resources[0]} currentUser={currentUser.data} />
       ) : (
         <Tabs defaultValue={defaultTab} className="space-y-4">
           <TabsList className="max-w-full flex-wrap justify-start">
@@ -52,7 +54,7 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
           </TabsList>
           {page.resources.map((resource) => (
             <TabsContent key={resource.path} value={resource.path}>
-              <ResourcePanel resource={resource} />
+                <ResourcePanel resource={resource} currentUser={currentUser.data} />
             </TabsContent>
           ))}
         </Tabs>
@@ -61,17 +63,70 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
   );
 }
 
-function ResourcePanel({ resource }: { resource: ResourceDefinition }) {
+function ResourcePanel({ resource, currentUser }: { resource: ResourceDefinition; currentUser: Parameters<typeof hasPermission>[0] }) {
+  const access = resourceAccess(resource, currentUser);
   if (resource.path === "/service-health") {
-    return <ServiceHealthResourcePanel resource={resource} />;
+    return <ServiceHealthResourcePanel resource={resource} access={access} />;
   }
 
-  return <GenericResourcePanel resource={resource} />;
+  return <GenericResourcePanel resource={resource} access={access} />;
 }
 
-function GenericResourcePanel({ resource }: { resource: ResourceDefinition }) {
+type ResourceAccess = {
+  read: boolean;
+  create: boolean;
+  update: boolean;
+  delete: boolean;
+};
+
+function resourceAccess(resource: ResourceDefinition, currentUser: Parameters<typeof hasPermission>[0]): ResourceAccess {
+  const isSuperAdmin = currentUser?.user.roles?.includes("super_admin") === true;
+  const allowed = (permission?: string) => isSuperAdmin || (permission ? hasPermission(currentUser, permission) : false);
+  return {
+    read: allowed(resource.permissions?.read),
+    create: allowed(resource.permissions?.create),
+    update: allowed(resource.permissions?.update),
+    delete: allowed(resource.permissions?.delete),
+  };
+}
+
+function requiredPermissionText(permission?: string) {
+  return permission ? `この操作には「${permissionLabel(permission)}」権限が必要です。管理者に権限付与を依頼してください。` : "この操作を実行する権限がありません。管理者に権限付与を依頼してください。";
+}
+
+function PermissionNotice({ resource, action, permission }: { resource: ResourceDefinition; action: string; permission?: string }) {
+  return (
+    <Card>
+      <CardHeader className="border-b bg-muted/20 py-3">
+        <CardTitle className="text-base">{resource.title}</CardTitle>
+        <CardDescription>{resource.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="py-5">
+        <p className="text-sm">この項目を{action}する権限がありません。</p>
+        <p className="mt-1 text-sm text-muted-foreground">{requiredPermissionText(permission)}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function QueryErrorNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+      <div>
+        <p className="font-medium">データを取得できませんでした。</p>
+        <p className="mt-1">通信状態とログイン状態を確認して、もう一度お試しください。</p>
+      </div>
+      <Button variant="outline" size="sm" onClick={onRetry}>
+        <RefreshCcw className="size-4" />
+        更新を再試行
+      </Button>
+    </div>
+  );
+}
+
+function GenericResourcePanel({ resource, access }: { resource: ResourceDefinition; access: ResourceAccess }) {
   const queryClient = useQueryClient();
-  const query = useResourceData<unknown>(resource.path);
+  const query = useResourceData<unknown>(resource.path, access.read);
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
   const rows = useMemo(() => normalizeRows(query.data).map((row) => enrichResourceRow(resource, row)), [query.data, resource]);
@@ -87,34 +142,39 @@ function GenericResourcePanel({ resource }: { resource: ResourceDefinition }) {
     onError: (error) => setDeleteMessage(resourceDeleteErrorMessage(error)),
   });
 
+  if (!access.read) return <PermissionNotice resource={resource} action="参照" permission={resource.permissions?.read} />;
+
   return (
     <Card>
-      <CardHeader className="gap-2 sm:flex-row sm:items-start sm:justify-between">
+      <CardHeader className="gap-2 border-b bg-muted/20 py-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <CardTitle>{resource.title}</CardTitle>
           <CardDescription>{resource.description}</CardDescription>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => query.refetch()}>
+          <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => void query.refetch()}>
             <RefreshCcw className="size-4" />
             更新
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} /> : null}
-        {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} /> : null}
+      <CardContent className="space-y-4 py-4">
+        {query.isError ? <QueryErrorNotice onRetry={() => void query.refetch()} /> : null}
+        {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} disabled={!access.update} /> : null}
+        {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} allowed={access.create} permission={resource.permissions?.create} /> : null}
         {deleteMessage ? <p className="text-sm text-muted-foreground">{deleteMessage}</p> : null}
         {showTable ? (
           query.isLoading ? (
             <Skeleton className="h-48 w-full" />
-          ) : (
+          ) : query.isError ? null : (
             <ResourceTable
               rows={rows}
               columns={columns}
               resource={resource}
               timezone={timezone}
               deletePending={deleteMutation.isPending}
+              canEdit={access.update}
+              canDelete={access.delete}
               onDelete={(row) => {
                 setDeleteMessage("");
                 deleteMutation.mutate(row);
@@ -146,10 +206,11 @@ type SubmitResource = (payload: Record<string, unknown>, options?: SubmitOptions
 
 const noneValue = "__none__";
 
-function CreateResourceForm({ resource }: { resource: ResourceDefinition }) {
+function CreateResourceForm({ resource, allowed, permission }: { resource: ResourceDefinition; allowed: boolean; permission?: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
+  const hasSensitiveFields = Object.keys(resource.createTemplate || {}).some(isSensitiveKey);
   const mutation = useMutation<unknown, Error, Submission>({
     mutationFn: async (submission) => apiPost(submission.path, submission.payload),
     onSuccess: async (data, submission) => {
@@ -164,7 +225,7 @@ function CreateResourceForm({ resource }: { resource: ResourceDefinition }) {
         }
       }
     },
-    onError: (error) => setMessage(`作成に失敗しました。入力内容と権限を確認してください。${error.message ? ` (${error.message})` : ""}`),
+    onError: () => setMessage("作成できませんでした。入力内容、権限、ログイン状態を確認して再実行してください。"),
   });
 
   const submit: SubmitResource = (payload, options) => {
@@ -183,36 +244,45 @@ function CreateResourceForm({ resource }: { resource: ResourceDefinition }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="font-medium">新規作成</div>
-          <p className="text-sm text-muted-foreground">必要項目をフォームで入力して作成します。秘密情報はAPI側のシークレットストアに保存されます。</p>
+          <p className="text-sm text-muted-foreground">
+            {hasSensitiveFields
+              ? "必要項目をフォームで入力して作成します。秘密情報はAPI側のシークレットストアに保存されます。"
+              : "必要項目をフォームで入力して作成します。作成後も一覧から内容を確認・編集できます。"}
+          </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setOpen((value) => !value)}>
+        <Button variant="outline" size="sm" disabled={!allowed} title={allowed ? undefined : requiredPermissionText(permission)} onClick={() => setOpen((value) => !value)}>
           <Plus className="size-4" />
           {open ? "閉じる" : "開く"}
         </Button>
       </div>
       {open ? (
         <div className="mt-3 space-y-3">
-          <ResourceFormFields resource={resource} disabled={mutation.isPending} submit={submit} />
+          <ResourceFormFields resource={resource} disabled={mutation.isPending || !allowed} submit={submit} />
           {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
         </div>
       ) : null}
+      {!allowed ? <p className="mt-2 text-xs text-muted-foreground">{requiredPermissionText(permission)}</p> : null}
     </div>
   );
 }
 
-function ServiceHealthResourcePanel({ resource }: { resource: ResourceDefinition }) {
+function ServiceHealthResourcePanel({ resource, access }: { resource: ResourceDefinition; access: ResourceAccess }) {
   const appSettings = useAppSettings();
-  const registeredNodes = useNodes();
-  const serviceHealth = useServiceHealth();
+  const currentUser = useCurrentUser();
+  const canReadRegisteredNodes = hasPermission(currentUser.data, "api_tokens.create");
+  const registeredNodes = useNodes(access.read && canReadRegisteredNodes);
+  const serviceHealth = useServiceHealth(access.read);
   const timezone = appSettings.data?.timezone;
   const rows = useMemo(
     () => mergeServiceHealthRows(registeredNodes.data || [], serviceHealth.data || []).map((row) => enrichResourceRow(resource, row as unknown as ResourceRow)),
     [registeredNodes.data, resource, serviceHealth.data],
   );
   const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
-  const loading = registeredNodes.isLoading && serviceHealth.isLoading && rows.length === 0;
-  const fetching = registeredNodes.isFetching || serviceHealth.isFetching;
+  const loading = rows.length === 0 && (serviceHealth.isLoading || (canReadRegisteredNodes && registeredNodes.isLoading));
+  const fetching = serviceHealth.isFetching || (canReadRegisteredNodes && registeredNodes.isFetching);
 
+  if (!access.read) return <PermissionNotice resource={resource} action="参照" permission={resource.permissions?.read} />;
+  const queryError = serviceHealth.isError || (canReadRegisteredNodes && registeredNodes.isError);
   return (
     <Card>
       <CardHeader className="gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -234,7 +304,7 @@ function ServiceHealthResourcePanel({ resource }: { resource: ResourceDefinition
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} onDelete={() => undefined} />}
+        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} onDelete={() => undefined} />}
       </CardContent>
     </Card>
   );
@@ -1031,7 +1101,7 @@ type SecuritySettingsPayload = {
   mfa_required_roles: string[];
 };
 
-function SecuritySettingsEditor({ resource, data, loading }: { resource: ResourceDefinition; data: unknown; loading: boolean }) {
+function SecuritySettingsEditor({ resource, data, loading, disabled }: { resource: ResourceDefinition; data: unknown; loading: boolean; disabled: boolean }) {
   const queryClient = useQueryClient();
   const roles = useResourceOptions("/roles", ["name"], ["name"], ["permissions"]);
   const [passwordMinLength, setPasswordMinLength] = useState("12");
@@ -1113,6 +1183,7 @@ function SecuritySettingsEditor({ resource, data, loading }: { resource: Resourc
             });
           }}
         >
+          <fieldset disabled={disabled} className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
             <NumberField label="最小パスワード長" value={passwordMinLength} onChange={setPasswordMinLength} min={12} required />
             <NumberField label="ロックまでの失敗回数" value={loginLockoutThreshold} onChange={setLoginLockoutThreshold} min={3} required />
@@ -1140,9 +1211,11 @@ function SecuritySettingsEditor({ resource, data, loading }: { resource: Resourc
             emptyText="ロールがまだ登録されていません。空のまま保存すると全ユーザーにMFAを要求します。"
           />
           <p className="text-xs text-muted-foreground">MFAポリシー有効時にロールを未選択で保存すると、全ユーザーが対象になります。</p>
-          <Button type="submit" disabled={save.isPending}>
+          </fieldset>
+          <Button type="submit" disabled={save.isPending || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update) : undefined}>
             保存
           </Button>
+          {disabled ? <p className="text-xs text-muted-foreground">{requiredPermissionText(resource.permissions?.update)}</p> : null}
           {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
         </form>
       )}
@@ -1613,6 +1686,8 @@ function ResourceTable({
   resource,
   timezone,
   deletePending,
+  canEdit,
+  canDelete,
   onDelete,
 }: {
   rows: ResourceRow[];
@@ -1620,6 +1695,8 @@ function ResourceTable({
   resource: ResourceDefinition;
   timezone?: string;
   deletePending: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
   onDelete: (row: ResourceRow) => void;
 }) {
   const [copiedID, setCopiedID] = useState("");
@@ -1664,8 +1741,8 @@ function ResourceTable({
                 <TableCell className="w-40 min-w-40 text-right">
                   <div className="flex justify-end gap-1">
                     {showIDCopy ? <CopyResourceIDButton id={resourceRowID(row)} copied={copiedID === resourceRowID(row)} onCopy={copyRowID} /> : null}
-                    {showEdit ? <EditResourceButton resource={resource} row={row} /> : null}
-                    {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row)} onDelete={onDelete} /> : null}
+                    {showEdit ? <EditResourceButton resource={resource} row={row} disabled={!canEdit} /> : null}
+                    {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onDelete={onDelete} /> : null}
                   </div>
                 </TableCell>
               ) : null}
@@ -1685,7 +1762,7 @@ function CopyResourceIDButton({ id, copied, onCopy }: { id: string; copied: bool
   );
 }
 
-function EditResourceButton({ resource, row }: { resource: ResourceDefinition; row: ResourceRow }) {
+function EditResourceButton({ resource, row, disabled }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -1696,7 +1773,7 @@ function EditResourceButton({ resource, row }: { resource: ResourceDefinition; r
       setMessage("更新しました。");
       await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
     },
-    onError: (error) => setMessage(`更新に失敗しました。入力内容と権限を確認してください。${error.message ? ` (${error.message})` : ""}`),
+    onError: () => setMessage("更新できませんでした。入力内容、権限、ログイン状態を確認して再実行してください。"),
   });
   const submit: SubmitResource = (payload) => {
     setMessage("");
@@ -1706,7 +1783,7 @@ function EditResourceButton({ resource, row }: { resource: ResourceDefinition; r
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="icon-sm" disabled={!id} aria-label={`${resourceRowLabel(row)} を編集`}>
+          <Button variant="outline" size="icon-sm" disabled={!id || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update) : undefined} aria-label={`${resourceRowLabel(row)} を編集`}>
           <Pencil className="size-4" />
         </Button>
       </DialogTrigger>
@@ -1731,11 +1808,11 @@ function resourceCanEdit(resource: ResourceDefinition) {
   return Boolean(resource.form && !["security-settings", "user", "notification-channel"].includes(resource.form));
 }
 
-function DeleteResourceButton({ row, disabled, onDelete }: { row: ResourceRow; disabled: boolean; onDelete: (row: ResourceRow) => void }) {
+function DeleteResourceButton({ row, disabled, permission, onDelete }: { row: ResourceRow; disabled: boolean; permission?: string; onDelete: (row: ResourceRow) => void }) {
   const label = resourceRowLabel(row);
   return (
     <DangerConfirm title={`${label} を削除しますか`} description="削除後は元に戻せません。参照中の設定は削除できない場合があります。" actionLabel="削除" onConfirm={() => onDelete(row)}>
-      <Button variant="destructive" size="icon-sm" disabled={disabled} aria-label={`${label} を削除`}>
+        <Button variant="destructive" size="icon-sm" disabled={disabled} title={disabled && permission ? requiredPermissionText(permission) : undefined} aria-label={`${label} を削除`}>
         <Trash2 className="size-4" />
       </Button>
     </DangerConfirm>
@@ -1757,9 +1834,9 @@ function resourceDeleteErrorMessage(error: Error) {
       csrf_failed: "ログイン状態またはCSRF tokenが古くなっています。ページを再読み込みしてから再実行してください。",
       forbidden: "削除権限がありません。",
     };
-    return messages[error.code || ""] || `削除に失敗しました。参照中の設定や権限を確認してください。${error.code ? ` (${error.code})` : ""}`;
+    return messages[error.code || ""] || "削除できませんでした。参照中の設定、権限、ログイン状態を確認して再実行してください。";
   }
-  return `削除に失敗しました。参照中の設定や権限を確認してください。${error.message ? ` (${error.message})` : ""}`;
+  return "削除できませんでした。参照中の設定、権限、ログイン状態を確認して再実行してください。";
 }
 
 function normalizeRows(data: unknown): Record<string, unknown>[] {
@@ -1955,6 +2032,7 @@ function formatNestedValue(key: string, value: unknown): string {
 function formatScalarValue(key: string, value: string | number, timezone?: string) {
   const raw = String(value);
   if (key === "action") return operationLabel(raw);
+  if (key === "permissions") return permissionLabel(raw);
   if ((key === "id" || key === "name") && columnLabels[raw]) return columnLabels[raw];
   const status = valueLabels[raw] || valueLabels[raw.toLowerCase()];
   if (status) return status;
@@ -2194,6 +2272,7 @@ const columnLabels: Record<string, string> = {
   created_at: "作成日時",
   last_heartbeat_at: "最終Heartbeat",
   last_login_at: "最終ログイン",
+  permissions: "権限",
   profile_summary: "設定内容",
   bot_summary: "BOT設定",
   output_summary: "出力設定",

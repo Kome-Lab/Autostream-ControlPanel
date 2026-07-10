@@ -4169,6 +4169,87 @@ func TestStreamStopRequiresRequiredServiceAssignments(t *testing.T) {
 	}
 }
 
+func TestStreamStartRejectsActiveStatusWithoutDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "already live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "stream_status_not_startable") {
+		t.Fatalf("expected start state conflict, got %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.startCalls != 0 {
+		t.Fatalf("start must not be dispatched for an active stream: %#v", dispatcher)
+	}
+	unchanged, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Status != "live" {
+		t.Fatalf("active stream status changed: %#v", unchanged)
+	}
+	assertAuditFailureReason(t, auth.AuditEvents(), "streams.start", stream.ID, "stream_status_not_startable")
+}
+
+func TestStreamStopRejectsInactiveStatusWithoutDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "not started")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "stream_status_not_stoppable") {
+		t.Fatalf("expected stop state conflict, got %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.stopCalls != 0 {
+		t.Fatalf("stop must not be dispatched for an inactive stream: %#v", dispatcher)
+	}
+	unchanged, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Status != "created" {
+		t.Fatalf("inactive stream status changed: %#v", unchanged)
+	}
+	assertAuditFailureReason(t, auth.AuditEvents(), "streams.stop", stream.ID, "stream_status_not_stoppable")
+}
+
+func assertAuditFailureReason(t *testing.T, events []store.AuditEvent, action, resourceID, reason string) {
+	t.Helper()
+	for _, event := range events {
+		if event.Action == action && event.ResourceID == resourceID && event.Result == "failure" && event.Metadata["reason"] == reason {
+			return
+		}
+	}
+	t.Fatalf("missing audit failure action=%q resource=%q reason=%q: %#v", action, resourceID, reason, events)
+}
+
 func TestStreamDispatchFailureMarksFailed(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.start"}); err != nil {

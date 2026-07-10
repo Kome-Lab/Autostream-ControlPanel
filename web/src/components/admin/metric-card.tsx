@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -6,16 +8,24 @@ export function MetricCard({
   value,
   detail,
   tone = "default",
+  icon,
+  label,
 }: {
   title: string;
   value: string | number;
   detail: string;
   tone?: "default" | "ok" | "warning" | "danger";
+  icon?: ReactNode;
+  label?: ReactNode;
 }) {
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+      <CardHeader className="pb-1">
+        <div className="flex items-center gap-2">
+          {icon ? <span className="text-muted-foreground [&>svg]:size-4" aria-hidden="true">{icon}</span> : null}
+          <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        </div>
+        {label ? <span className="text-xs text-muted-foreground">{label}</span> : null}
       </CardHeader>
       <CardContent>
         <div

@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Database, Gauge, HardDrive, Network, RadioTower, Server } from "lucide-react";
+import { Activity, AlertCircle, CheckCircle2, Database, Gauge, HardDrive, Network, RadioTower, RefreshCw, Server } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { MetricCard } from "@/components/admin/metric-card";
 import { EChartsPanel, type ChartOption } from "@/components/charts/echarts-panel";
@@ -79,6 +80,10 @@ export function MetricsView() {
   const maxDisk = maxLatestValue(diskSeries);
   const maxNetwork = maxLatestValue(networkThroughputSeries);
   const serviceCount = new Set(allSeries.map((series) => series.serviceID || series.serviceType).filter(Boolean)).size;
+  const lastUpdated = metrics.dataUpdatedAt ? formatTime(metrics.dataUpdatedAt, timezone) : "未取得";
+  const hasMetricData = allSeries.length > 0;
+  const metricsStatus = metrics.isError ? "取得失敗" : hasMetricData ? "正常" : metrics.isLoading ? "取得中" : "データなし";
+  const metricsStatusTone = metrics.isError ? "danger" : hasMetricData ? "ok" : "warning";
 
   if (metrics.isLoading && allSeries.length === 0) {
     return <Skeleton className="h-[520px] w-full" />;
@@ -86,11 +91,28 @@ export function MetricsView() {
 
   return (
     <div className="space-y-6">
+      <section className="rounded-md border bg-muted/20 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">管理者向け要約</p>
+            <h2 className="mt-1 text-lg font-semibold">配信基盤の負荷と通信を確認</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">CPU・メモリ・ディスクは使用率、ネットワークは送受信量を表示します。高負荷のNodeは下のグラフと一覧で切り分けてください。</p>
+          </div>
+          <div className="flex min-w-56 flex-col items-start gap-1 text-sm sm:items-end">
+            <div className={`flex items-center gap-2 font-medium ${statusTextClass(metricsStatusTone)}`}>
+              {metrics.isError ? <AlertCircle className="size-4" /> : <CheckCircle2 className="size-4" />}
+              {metricsStatus}
+            </div>
+            <div className="text-muted-foreground">最終更新: {lastUpdated}</div>
+            <div className="text-muted-foreground">自動更新: 10秒ごと{metrics.isFetching ? "（更新中）" : ""}</div>
+          </div>
+        </div>
+      </section>
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
-        <MetricCard title="CPU使用率" value={formatStat(maxCPU, "percent")} detail={metricCardDetail(effectiveNodeLabel, "CPU")} tone={thresholdTone(maxCPU, 80, 95)} />
-        <MetricCard title="メモリ使用率" value={formatStat(maxMemory, "percent")} detail={metricCardDetail(effectiveNodeLabel, "メモリ")} tone={thresholdTone(maxMemory, 75, 90)} />
-        <MetricCard title="ディスク使用率" value={formatStat(maxDisk, "percent")} detail={metricCardDetail(effectiveNodeLabel, "rootディスク")} tone={thresholdTone(maxDisk, 80, 92)} />
-        <MetricCard title="ネットワーク" value={formatStat(maxNetwork, networkUnit)} detail={metricCardDetail(effectiveNodeLabel, "送受信スループット")} tone="default" />
+        <MetricCard title="CPU使用率" value={formatStat(maxCPU, "percent")} detail={resourceDetail(effectiveNodeLabel, maxCPU, 80, 95, "CPU")} tone={thresholdTone(maxCPU, 80, 95)} />
+        <MetricCard title="メモリ使用率" value={formatStat(maxMemory, "percent")} detail={resourceDetail(effectiveNodeLabel, maxMemory, 75, 90, "メモリ")} tone={thresholdTone(maxMemory, 75, 90)} />
+        <MetricCard title="ディスク使用率" value={formatStat(maxDisk, "percent")} detail={resourceDetail(effectiveNodeLabel, maxDisk, 80, 92, "rootディスク")} tone={thresholdTone(maxDisk, 80, 92)} />
+        <MetricCard title="ネットワーク" value={formatStat(maxNetwork, networkUnit)} detail={resourceDetail(effectiveNodeLabel, maxNetwork, undefined, undefined, "送受信スループット")} tone="default" />
         <MetricCard title="受信Node" value={serviceCount} detail={effectiveNodeLabel ? `表示中: ${effectiveNodeLabel}` : "メトリクスを報告中"} tone={serviceCount > 0 ? "ok" : "warning"} />
       </section>
 
@@ -135,7 +157,10 @@ export function MetricsView() {
             <CardTitle className="text-base">メトリクス</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">まだメトリクスを受信していません。</div>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed p-6 text-sm">
+              <div className="text-muted-foreground">{metrics.isError ? "メトリクスを取得できませんでした。" : "まだメトリクスを受信していません。"}</div>
+              {metrics.isError ? <Button variant="outline" size="sm" onClick={() => void metrics.refetch()} disabled={metrics.isFetching}><RefreshCw className="size-4" />再試行</Button> : null}
+            </div>
           </CardContent>
         </Card>
       ) : (
@@ -530,8 +555,19 @@ function serviceStatusLabel(status?: string) {
   return status ? labels[status] || status : "-";
 }
 
-function metricCardDetail(nodeLabel: string, target: string) {
-  return nodeLabel ? `${nodeLabel} の${target}` : `${target}の最新値`;
+function resourceDetail(nodeLabel: string, value: number | undefined, warning: number | undefined, danger: number | undefined, target: string) {
+  const prefix = nodeLabel ? `${nodeLabel} の` : "";
+  if (typeof value !== "number") return `${prefix}${target}: データなし`;
+  if (typeof danger === "number" && value >= danger) return `${prefix}${target}: 危険`;
+  if (typeof warning === "number" && value >= warning) return `${prefix}${target}: 注意`;
+  return `${prefix}${target}: 正常`;
+}
+
+function statusTextClass(tone: "default" | "ok" | "warning" | "danger") {
+  if (tone === "danger") return "text-red-700 dark:text-red-300";
+  if (tone === "warning") return "text-amber-700 dark:text-amber-300";
+  if (tone === "ok") return "text-emerald-700 dark:text-emerald-300";
+  return "text-muted-foreground";
 }
 
 function metricSortRank(name: string, unit: MetricUnit) {

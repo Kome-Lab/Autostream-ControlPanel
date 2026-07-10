@@ -1,9 +1,10 @@
 "use client";
 
 import { useMemo } from "react";
-import { AlertTriangle, ClipboardCheck, Network, ShieldAlert } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, ClipboardCheck, Network, RefreshCw, ShieldAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { MetricCard } from "@/components/admin/metric-card";
 import { StatusBadge } from "@/components/admin/status-badge";
@@ -30,6 +31,10 @@ export function MonitoringView() {
   const unhealthy = serviceRows.filter((service) => ["offline", "warning", "unconfigured"].includes(service.health_status || service.status)).length;
   const openIncidents = incidentRows.filter((row) => !["resolved", "closed"].includes(rowString(row, "status"))).length;
   const warningDiagnostics = diagnosticRows.filter((row) => !["pass", "ok", "success"].includes(rowString(row, "status"))).length;
+  const hasError = services.isError || incidents.isError || diagnostics.isError || streams.isError;
+  const lastUpdatedAt = Math.max(services.dataUpdatedAt, incidents.dataUpdatedAt, diagnostics.dataUpdatedAt, streams.dataUpdatedAt);
+  const lastUpdated = lastUpdatedAt > 0 ? formatTimestamp(new Date(lastUpdatedAt).toISOString(), timezone) : "未取得";
+  const retry = () => Promise.all([services.refetch(), incidents.refetch(), diagnostics.refetch(), streams.refetch()]);
 
   if (services.isLoading && incidents.isLoading && diagnostics.isLoading) {
     return <Skeleton className="h-[520px] w-full" />;
@@ -37,6 +42,24 @@ export function MonitoringView() {
 
   return (
     <div className="space-y-6">
+      <section className="rounded-md border bg-muted/20 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">管理者向け要約</p>
+            <h2 className="mt-1 text-lg font-semibold">現在の問題・Node稼働・診断を分けて確認</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Monitoringは障害対応と稼働状況を確認する画面です。CPUやメモリなどの時系列分析はMetricsで確認します。</p>
+          </div>
+          <div className="flex min-w-56 flex-col items-start gap-1 text-sm sm:items-end">
+            <div className={`flex items-center gap-2 font-medium ${hasError ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
+              {hasError ? <AlertCircle className="size-4" /> : <CheckCircle2 className="size-4" />}
+              {hasError ? "一部の情報を取得できません" : "監視情報は正常に取得済み"}
+            </div>
+            <div className="text-muted-foreground">最終更新: {lastUpdated}</div>
+            <div className="text-muted-foreground">自動更新: Nodeは10秒ごと</div>
+            {hasError ? <Button variant="outline" size="sm" onClick={() => void retry()} disabled={services.isFetching || incidents.isFetching || diagnostics.isFetching || streams.isFetching}><RefreshCw className="size-4" />再試行</Button> : null}
+          </div>
+        </div>
+      </section>
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard title="オンラインNode" value={`${online}/${serviceRows.length}`} detail="Control Panelに接続中" tone={serviceRows.length > 0 && online === serviceRows.length ? "ok" : "warning"} />
         <MetricCard title="Node要確認" value={unhealthy} detail="heartbeatまたは登録状態" tone={unhealthy > 0 ? "warning" : "ok"} />
@@ -45,19 +68,19 @@ export function MonitoringView() {
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-        <ServiceHealthPanel services={serviceRows} loading={services.isLoading} entityLabels={entityLabels} />
-        <IncidentPanel incidents={incidentRows} loading={incidents.isLoading} timezone={timezone} entityLabels={entityLabels} />
+        <ServiceHealthPanel services={serviceRows} loading={services.isLoading} error={services.isError} onRetry={() => void services.refetch()} entityLabels={entityLabels} />
+        <IncidentPanel incidents={incidentRows} loading={incidents.isLoading} error={incidents.isError} onRetry={() => void incidents.refetch()} timezone={timezone} entityLabels={entityLabels} />
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        <DiagnosticsPanel diagnostics={diagnosticRows} loading={diagnostics.isLoading} entityLabels={entityLabels} />
+        <DiagnosticsPanel diagnostics={diagnosticRows} loading={diagnostics.isLoading} error={diagnostics.isError} onRetry={() => void diagnostics.refetch()} entityLabels={entityLabels} />
         <OperationalFocus services={serviceRows} incidents={incidentRows} diagnostics={diagnosticRows} entityLabels={entityLabels} />
       </section>
     </div>
   );
 }
 
-function ServiceHealthPanel({ services, loading, entityLabels }: { services: WorkerNode[]; loading: boolean; entityLabels: Map<string, string> }) {
+function ServiceHealthPanel({ services, loading, error, onRetry, entityLabels }: { services: WorkerNode[]; loading: boolean; error: boolean; onRetry: () => void; entityLabels: Map<string, string> }) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -67,7 +90,7 @@ function ServiceHealthPanel({ services, loading, entityLabels }: { services: Wor
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {loading ? (
+        {error ? <ErrorState message="Nodeの稼働状況を取得できませんでした。" onRetry={onRetry} /> : loading ? (
           <Skeleton className="h-44 w-full" />
         ) : services.length === 0 ? (
           <EmptyState message="登録済みNodeがありません。" />
@@ -103,7 +126,7 @@ function ServiceHealthPanel({ services, loading, entityLabels }: { services: Wor
   );
 }
 
-function IncidentPanel({ incidents, loading, timezone, entityLabels }: { incidents: MonitoringRow[]; loading: boolean; timezone?: string; entityLabels: Map<string, string> }) {
+function IncidentPanel({ incidents, loading, error, onRetry, timezone, entityLabels }: { incidents: MonitoringRow[]; loading: boolean; error: boolean; onRetry: () => void; timezone?: string; entityLabels: Map<string, string> }) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -113,7 +136,7 @@ function IncidentPanel({ incidents, loading, timezone, entityLabels }: { inciden
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {loading ? <Skeleton className="h-36 w-full" /> : null}
+        {error ? <ErrorState message="現在の問題を取得できませんでした。" onRetry={onRetry} /> : loading ? <Skeleton className="h-36 w-full" /> : null}
         {!loading && incidents.length === 0 ? <EmptyState message="現在検知されている問題はありません。" /> : null}
         {incidents.slice(0, 6).map((row, index) => (
           <div key={rowString(row, "id") || index} className="rounded-md border p-3">
@@ -131,7 +154,7 @@ function IncidentPanel({ incidents, loading, timezone, entityLabels }: { inciden
   );
 }
 
-function DiagnosticsPanel({ diagnostics, loading, entityLabels }: { diagnostics: MonitoringRow[]; loading: boolean; entityLabels: Map<string, string> }) {
+function DiagnosticsPanel({ diagnostics, loading, error, onRetry, entityLabels }: { diagnostics: MonitoringRow[]; loading: boolean; error: boolean; onRetry: () => void; entityLabels: Map<string, string> }) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -141,7 +164,7 @@ function DiagnosticsPanel({ diagnostics, loading, entityLabels }: { diagnostics:
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {loading ? <Skeleton className="h-36 w-full" /> : null}
+        {error ? <ErrorState message="診断結果を取得できませんでした。" onRetry={onRetry} /> : loading ? <Skeleton className="h-36 w-full" /> : null}
         {!loading && diagnostics.length === 0 ? <EmptyState message="診断結果はまだありません。" /> : null}
         {diagnostics.slice(0, 6).map((row, index) => (
           <div key={rowString(row, "id") || index} className="grid gap-3 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_128px] sm:items-center">
@@ -201,6 +224,10 @@ function AttentionRow({ title, detail, status }: { title: string; detail: string
 
 function EmptyState({ message }: { message: string }) {
   return <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">{message}</div>;
+}
+
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50/50 p-4 text-sm dark:border-red-900 dark:bg-red-950/20"><span className="text-red-700 dark:text-red-300">{message}</span><Button variant="outline" size="sm" onClick={onRetry}><RefreshCw className="size-4" />再試行</Button></div>;
 }
 
 function rowString(row: MonitoringRow, key: string) {

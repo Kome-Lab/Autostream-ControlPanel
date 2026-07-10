@@ -7744,6 +7744,19 @@ func isAutoStartableStreamStatus(status string) bool {
 	}
 }
 
+func isManuallyStartableStreamStatus(status string) bool {
+	return isAutoStartableStreamStatus(status) || strings.EqualFold(strings.TrimSpace(status), "failed")
+}
+
+func isManuallyStoppableStreamStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "starting", "live", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	var body servicecall.StartRequest
 	if r.Body != nil {
@@ -7759,6 +7772,12 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	if !isManuallyStartableStreamStatus(stream.Status) {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_startable", "current_status": stream.Status}})
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_startable", "status": stream.Status})
 		return
 	}
 	applyStreamSettingsDefaults(stream, &body)
@@ -8842,6 +8861,12 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	if !isManuallyStoppableStreamStatus(stream.Status) {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.stop", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_stoppable", "current_status": stream.Status}})
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_stoppable", "status": stream.Status})
 		return
 	}
 	assignments, err := s.streamAssignments(r.Context(), stream.ID)

@@ -4,8 +4,9 @@ import { useMemo, useState } from "react";
 import { Copy, Download, ExternalLink, Link2, Pencil, PlayCircle, Share2, Trash2 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ResourcePage } from "@/features/resources/resource-page";
-import { useAppSettings, useResourceData, useStreams } from "@/features/queries";
+import { useAppSettings, useCurrentUser, useResourceData, useStreams } from "@/features/queries";
 import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
+import { hasPermission } from "@/lib/auth/permissions";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +14,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DangerConfirm } from "@/components/admin/danger-confirm";
+import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
 
 type StreamArtifact = {
@@ -40,7 +43,11 @@ type StreamArtifactShare = {
 };
 
 export function ArchiveView() {
-  const streams = useStreams();
+  const currentUser = useCurrentUser();
+  const superAdmin = currentUser.data?.user.roles?.includes("super_admin") === true;
+  const can = (permission: string) => superAdmin || hasPermission(currentUser.data, permission);
+  const canRead = can("archives.read");
+  const streams = useStreams(canRead);
   const [selectedStreamID, setSelectedStreamID] = useState("");
   const streamRows = streams.data || [];
   const selected = selectedStreamID || streamRows[0]?.id || "";
@@ -49,19 +56,23 @@ export function ArchiveView() {
     <div className="space-y-6">
       <ResourcePage pageId="archive" />
       <Card>
-        <CardHeader>
+        <CardHeader className="border-b">
           <CardTitle>ローカル録画アーカイブ</CardTitle>
           <CardDescription>Encoderに一定期間残る録画成果物を、配信枠ごとに管理します。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {streams.isLoading ? (
+          {!canRead ? (
+            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">録画成果物を確認する権限がありません。管理者に「録画の閲覧」権限を依頼してください。</div>
+          ) : streams.isError ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>配信枠を取得できませんでした。通信状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={() => streams.refetch()}>再試行</Button></div>
+          ) : streams.isLoading ? (
             <Skeleton className="h-12 w-full" />
           ) : streamRows.length === 0 ? (
             <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">配信枠がまだありません。</div>
           ) : (
             <>
               <StreamSelect streams={streamRows} value={selected} onChange={setSelectedStreamID} />
-              <ArchiveArtifacts streamID={selected} />
+              <ArchiveArtifacts streamID={selected} canDownload={can("archives.download")} canModify={can("archives.delete")} />
             </>
           )}
         </CardContent>
@@ -89,13 +100,14 @@ function StreamSelect({ streams, value, onChange }: { streams: Stream[]; value: 
   );
 }
 
-function ArchiveArtifacts({ streamID }: { streamID: string }) {
+function ArchiveArtifacts({ streamID, canDownload, canModify }: { streamID: string; canDownload: boolean; canModify: boolean }) {
   const query = useResourceData<StreamArtifact[]>(`/streams/${encodeURIComponent(streamID)}/artifacts`);
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
   const artifacts = useMemo(() => query.data || [], [query.data]);
 
   if (query.isLoading) return <Skeleton className="h-36 w-full" />;
+  if (query.isError) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>録画成果物を取得できませんでした。Encoderの接続状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={() => query.refetch()}>再試行</Button></div>;
   if (artifacts.length === 0) {
     return <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">この配信枠のローカル録画アーカイブはまだ報告されていません。</div>;
   }
@@ -103,13 +115,13 @@ function ArchiveArtifacts({ streamID }: { streamID: string }) {
   return (
     <div className="space-y-3">
       {artifacts.map((artifact) => (
-        <ArchiveArtifactRow key={artifact.id} streamID={streamID} artifact={artifact} timezone={timezone} />
+        <ArchiveArtifactRow key={artifact.id} streamID={streamID} artifact={artifact} timezone={timezone} canDownload={canDownload} canModify={canModify} />
       ))}
     </div>
   );
 }
 
-function ArchiveArtifactRow({ streamID, artifact, timezone }: { streamID: string; artifact: StreamArtifact; timezone?: string }) {
+function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModify }: { streamID: string; artifact: StreamArtifact; timezone?: string; canDownload: boolean; canModify: boolean }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(artifact.name);
   const [message, setMessage] = useState("");
@@ -120,6 +132,9 @@ function ArchiveArtifactRow({ streamID, artifact, timezone }: { streamID: string
   const artifactPath = `/streams/${encodeURIComponent(streamID)}/artifacts/${encodeURIComponent(artifact.id)}`;
   const sharesPath = `${artifactPath}/shares`;
   const playable = isLikelyVideo(artifact.name, artifact.kind);
+  const nameReady = name.trim() !== "" && !/[\\/]/.test(name);
+  const shareHoursValue = Number.parseInt(shareHours, 10);
+  const shareHoursReady = Number.isFinite(shareHoursValue) && shareHoursValue >= 1 && shareHoursValue <= 720;
   const shares = useResourceData<StreamArtifactShare[]>(sharesPath);
   const activeShares = useMemo(() => (shares.data || []).filter((share) => shareStatus(share) === "active"), [shares.data]);
   const invalidateArtifacts = () => queryClient.invalidateQueries({ queryKey: ["resource", `/streams/${encodeURIComponent(streamID)}/artifacts`] });
@@ -190,37 +205,31 @@ function ArchiveArtifactRow({ streamID, artifact, timezone }: { streamID: string
               {playable ? "再生" : "表示"}
             </a>
           </Button>
-          <Button asChild size="sm" variant="outline">
-            <a href={`${artifactPath}/download`}>
-              <Download className="size-4" />
-              ダウンロード
-            </a>
-          </Button>
-          <Input className="h-9 w-full sm:w-44" value={name} onChange={(event) => setName(event.target.value)} aria-label="アーカイブ名" />
-          <Button size="sm" variant="outline" onClick={() => rename.mutate()} disabled={rename.isPending || name.trim() === "" || name === artifact.name}>
-            <Pencil className="size-4" />
-            リネーム
-          </Button>
-          <Button size="sm" variant="destructive" onClick={() => remove.mutate()} disabled={remove.isPending}>
-            <Trash2 className="size-4" />
-            削除
-          </Button>
+          <RoleGuard allowed={canDownload}>{canDownload ? <Button asChild size="sm" variant="outline"><a href={`${artifactPath}/download`}><Download className="size-4" />ダウンロード</a></Button> : <Button size="sm" variant="outline" {...guardedButtonProps(false)}><Download className="size-4" />ダウンロード</Button>}</RoleGuard>
+          <div className="grid gap-1"><Input className="h-9 w-full sm:w-44" value={name} onChange={(event) => setName(event.target.value)} aria-label="アーカイブ名" aria-invalid={!nameReady} />{name && !nameReady ? <span className="text-xs text-red-600 dark:text-red-300">ファイル名に / または \\ は使えません。</span> : null}</div>
+          <RoleGuard allowed={canModify}><Button size="sm" variant="outline" onClick={() => rename.mutate()} disabled={!canModify || rename.isPending || !nameReady || name === artifact.name}><Pencil className="size-4" />リネーム</Button></RoleGuard>
+          <RoleGuard allowed={canModify}>
+            <DangerConfirm title={`${artifact.name} を削除しますか`} description="Encoderに保管されている録画成果物を削除します。削除後はこの管理画面から復元できません。" onConfirm={() => remove.mutate()} actionLabel="録画を削除">
+              <Button size="sm" variant="destructive" disabled={!canModify || remove.isPending}><Trash2 className="size-4" />削除</Button>
+            </DangerConfirm>
+          </RoleGuard>
         </div>
       </div>
 
       <div className="mt-3 rounded-md border bg-muted/20 p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Input className="h-9 w-24" inputMode="numeric" value={shareHours} onChange={(event) => setShareHours(event.target.value)} aria-label="共有期限時間" />
+          <Input className="h-9 w-24" inputMode="numeric" value={shareHours} onChange={(event) => setShareHours(event.target.value)} aria-label="共有期限時間" aria-invalid={!shareHoursReady} />
           <span className="text-xs text-muted-foreground">時間有効</span>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox checked={shareAllowDownload} onCheckedChange={(checked) => setShareAllowDownload(checked === true)} />
             ダウンロード許可
           </label>
-          <Button size="sm" onClick={() => createShare.mutate()} disabled={createShare.isPending}>
+          <Button size="sm" onClick={() => createShare.mutate()} disabled={!canDownload || createShare.isPending || !shareHoursReady}>
             <Share2 className="size-4" />
             共有リンク作成
           </Button>
         </div>
+        {!shareHoursReady ? <p className="mt-2 text-xs text-red-600 dark:text-red-300">共有期限は1時間から720時間の範囲で入力してください。</p> : null}
         {latestShareURL ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Input className="h-9 min-w-0 flex-[1_1_22rem]" value={latestShareURL} readOnly aria-label="作成した共有URL" />
@@ -249,9 +258,7 @@ function ArchiveArtifactRow({ streamID, artifact, timezone }: { streamID: string
                   <span className="truncate">期限: {formatDateTime(share.expires_at, timezone)}</span>
                   <span className="text-muted-foreground">{share.allow_download ? "DL許可" : "再生のみ"}</span>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => revokeShare.mutate(share.id)} disabled={revokeShare.isPending}>
-                  停止
-                </Button>
+                <RoleGuard allowed={canModify}><DangerConfirm title="この共有リンクを停止しますか" description="停止すると、このリンクを知っている利用者も録画を開けなくなります。" onConfirm={() => revokeShare.mutate(share.id)} actionLabel="共有を停止"><Button size="sm" variant="outline" disabled={!canModify || revokeShare.isPending}>停止</Button></DangerConfirm></RoleGuard>
               </div>
             ))
           )}
