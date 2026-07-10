@@ -77,8 +77,8 @@ const navSections: NavSection[] = [
   {
     key: "navOperations",
     items: [
-      navItem("/admin/", "dashboard", BarChart3, [], "本日の配信、要対応、基盤状態をまとめて確認", "Review today's streams, action items, and platform health"),
-      navItem("/admin/streams/", "streams", PlaySquare, ["streams.read"], "配信枠の予約、開始、停止、録画設定", "Schedule, start, stop, and configure recording"),
+      navItem("/admin/", "dashboard", BarChart3, [], "待機枠、配信中、要対応、基盤状態をまとめて確認", "Review waiting slots, live streams, action items, and platform health"),
+      navItem("/admin/streams/", "streams", PlaySquare, ["streams.read"], "Discord VC連動の待機枠、開始、停止、録画設定", "Manage Discord VC-triggered slots, start, stop, and recording"),
       navItem("/admin/service-health/", "serviceHealth", Activity, ["service_health.read"], "Nodeとサービスの接続状態を確認", "Review node and service availability"),
       navItem("/admin/incidents/", "incidents", AlertTriangle, ["incidents.read"], "障害の検知、確認、解決を追跡", "Track detection, acknowledgement, and resolution"),
       navItem("/admin/archive/", "archive", Archive, ["archives.read", "archive_profiles.read", "integrations.read"], "録画成果物の確認、保存、ダウンロード", "Manage recordings, retention, and downloads"),

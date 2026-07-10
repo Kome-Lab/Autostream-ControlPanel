@@ -7,7 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 export const metadata: Metadata = {
   title: "AutoStream Control Panel",
-  description: "Control Panel for stream schedules, workers, audit logs, and node registration.",
+  description: "Control Panel for Discord-triggered live streams, workers, audit logs, and node registration.",
   icons: [{ rel: "icon", url: "/favicon.svg", type: "image/svg+xml" }],
 };
 

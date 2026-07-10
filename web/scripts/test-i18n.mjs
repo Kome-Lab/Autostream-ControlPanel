@@ -19,7 +19,7 @@ const requiredFragments = [
 
 const criticalTranslations = new Map([
   ['dashboard', '\u30c0\u30c3\u30b7\u30e5\u30dc\u30fc\u30c9'],
-  ['streams', '\u914d\u4fe1\u30b9\u30b1\u30b8\u30e5\u30fc\u30eb'],
+  ['streams', '\u914d\u4fe1\u67a0'],
   ['auditLogs', '\u64cd\u4f5c\u76e3\u67fb'],
   ['status', '\u72b6\u614b'],
   ['actions', '\u64cd\u4f5c'],

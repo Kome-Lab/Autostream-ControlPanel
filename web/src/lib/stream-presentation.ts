@@ -63,8 +63,8 @@ export function recordingDescriptor(stream: Stream): RecordingDescriptor {
     };
   }
   return {
-    label: "録画予約",
-    detail: "配信開始と同時に録画します",
+    label: "録画待機",
+    detail: "配信開始と同時に自動で録画します",
     tone: "info",
     className: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/35 dark:text-blue-200",
   };

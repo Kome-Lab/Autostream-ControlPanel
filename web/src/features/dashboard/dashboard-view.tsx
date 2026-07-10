@@ -7,10 +7,9 @@ import {
   AlertTriangle,
   Archive,
   ArrowRight,
-  CalendarDays,
   CheckCircle2,
   ClipboardList,
-  Clock3,
+  Headphones,
   Plus,
   RadioTower,
   RefreshCcw,
@@ -21,10 +20,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge, statusDescriptor } from "@/components/admin/status-badge";
-import { useAppSettings, useCurrentUser, useServiceHealth, useStreams } from "@/features/queries";
+import { useCurrentUser, useServiceHealth, useStreams } from "@/features/queries";
 import { hasPermission } from "@/lib/auth/permissions";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
-import { formatDateTimeInTimeZone, normalizeTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import type { CurrentUser, Stream, WorkerNode } from "@/types/domain";
 
@@ -36,8 +34,6 @@ export function DashboardView() {
   const canReadServices = superAdmin || hasPermission(currentUser.data, "service_health.read");
   const streams = useStreams(canReadStreams);
   const services = useServiceHealth(canReadServices);
-  const appSettings = useAppSettings();
-  const timezone = normalizeTimeZone(appSettings.data?.timezone);
 
   const streamRows = useMemo(() => [...(streams.data || [])].sort(compareStreams), [streams.data]);
   const serviceRows = useMemo(() => services.data || [], [services.data]);
@@ -56,9 +52,7 @@ export function DashboardView() {
     return grouped;
   }, [serviceRows]);
   const streamNameByID = useMemo(() => new Map(streamRows.map((stream) => [stream.id, stream.name])), [streamRows]);
-  const scheduledToday = useMemo(() => streamRows.filter((stream) => isSameDay(stream.scheduled_start_at, new Date(), timezone) && !isFinished(stream.status)), [streamRows, timezone]);
-  const scheduleRows = (scheduledToday.length > 0 ? scheduledToday : streamRows.filter((stream) => !isFinished(stream.status))).slice(0, 6);
-  const scheduleTitle = scheduledToday.length > 0 ? "本日の配信予定" : "直近の配信予定";
+  const operationRows = streamRows.filter((stream) => !isFinished(stream.status)).slice(0, 6);
   const availableServices = serviceRows.filter(isAvailableService).length;
   const streamIssues = streamRows.filter((stream) => ["failed", "error"].includes(String(stream.status).toLowerCase()));
   const serviceIssues = serviceRows.filter((service) => !isAvailableService(service));
@@ -73,11 +67,11 @@ export function DashboardView() {
       <section className="flex flex-col gap-3 border-b pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2 text-sm font-medium text-primary">
-            <CalendarDays className="size-4" />
-            {formatToday(timezone)}
+            <RadioTower className="size-4" />
+            Discord VC連動
           </div>
-          <h1 className="mt-1 text-xl font-semibold">本日の配信オペレーション</h1>
-          <p className="mt-1 text-sm text-muted-foreground">予定、録画、要対応、配信基盤を一画面で確認できます。</p>
+          <h1 className="mt-1 text-xl font-semibold">自動配信オペレーション</h1>
+          <p className="mt-1 text-sm text-muted-foreground">VC参加待機、配信・録画、要対応、配信基盤を一画面で確認できます。</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -116,7 +110,7 @@ export function DashboardView() {
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="運用サマリー">
         <OperationMetric icon={RadioTower} label="配信中" value={canReadStreams ? statusCounts.live : "-"} detail={canReadStreams ? "映像と録画を監視中" : "配信の参照権限がありません"} tone={statusCounts.live > 0 ? "ok" : "default"} />
-        <OperationMetric icon={Clock3} label="開始待ち" value={canReadStreams ? statusCounts.waiting : "-"} detail={canReadStreams ? "予約・待機中の配信枠" : "管理者へ権限を確認してください"} />
+        <OperationMetric icon={Headphones} label="待機中" value={canReadStreams ? statusCounts.waiting : "-"} detail={canReadStreams ? "VC参加または手動開始を待機" : "管理者へ権限を確認してください"} />
         <OperationMetric icon={AlertTriangle} label="要対応" value={canReadStreams || canReadServices ? statusCounts.attention + serviceIssues.length : "-"} detail={canReadStreams || canReadServices ? "配信と基盤の確認項目" : "確認できる対象がありません"} tone={statusCounts.attention + serviceIssues.length > 0 ? "danger" : "ok"} />
         <OperationMetric
           icon={ServerCog}
@@ -133,8 +127,8 @@ export function DashboardView() {
             <CardHeader className="border-b">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <CardTitle>{scheduleTitle}</CardTitle>
-                  <CardDescription>{scheduledToday.length > 0 ? `${scheduledToday.length}件の配信枠があります。` : "今日の予定がないため、次に確認する配信枠を表示しています。"}</CardDescription>
+                  <CardTitle>配信枠の稼働状況</CardTitle>
+                  <CardDescription>VC参加を待機している枠と現在動作中の枠を表示します。</CardDescription>
                 </div>
                 <Button asChild variant="ghost" size="sm">
                   <Link href="/admin/streams/">
@@ -145,22 +139,18 @@ export function DashboardView() {
               </div>
             </CardHeader>
             <CardContent className="p-0">
-              {scheduleRows.length > 0 ? (
+              {operationRows.length > 0 ? (
                 <div className="divide-y">
-                  <div className="hidden grid-cols-[6rem_7.25rem_minmax(0,1fr)_8rem_11rem_2rem] gap-3 bg-muted/45 px-4 py-2 text-xs font-medium text-muted-foreground lg:grid">
-                    <span>予定</span>
+                  <div className="hidden grid-cols-[7.25rem_minmax(0,1fr)_12rem_8rem_11rem_2rem] gap-3 bg-muted/45 px-4 py-2 text-xs font-medium text-muted-foreground lg:grid">
                     <span>状態</span>
                     <span>配信枠</span>
+                    <span>開始条件</span>
                     <span>録画</span>
                     <span>担当Node</span>
                     <span className="sr-only">詳細</span>
                   </div>
-                  {scheduleRows.map((stream) => (
-                    <div key={stream.id} className="grid gap-3 px-4 py-3 transition-colors hover:bg-muted/25 lg:grid-cols-[6rem_7.25rem_minmax(0,1fr)_8rem_11rem_2rem] lg:items-center">
-                      <div>
-                        <div className="text-sm font-semibold tabular-nums">{formatTime(stream.scheduled_start_at, timezone)}</div>
-                        <div className="mt-0.5 text-xs text-muted-foreground">{formatDay(stream.scheduled_start_at, timezone)}</div>
-                      </div>
+                  {operationRows.map((stream) => (
+                    <div key={stream.id} className="grid gap-3 px-4 py-3 transition-colors hover:bg-muted/25 lg:grid-cols-[7.25rem_minmax(0,1fr)_12rem_8rem_11rem_2rem] lg:items-center">
                       <StatusBadge status={stream.status} />
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium">{stream.name}</div>
@@ -168,6 +158,10 @@ export function DashboardView() {
                           <span className="truncate">入力: {safeDisplayURL(stream.encoder_input_url || stream.input_source) || "未設定"}</span>
                           <span className="truncate">出力: {stream.output_target || (stream.youtube_output_id ? "YouTube" : "未設定")}</span>
                         </div>
+                      </div>
+                      <div className="min-w-0 text-xs leading-5">
+                        <div className="truncate font-medium text-foreground">{stream.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div>
+                        <div className="truncate text-muted-foreground">VC {stream.discord_voice_channel_id || "未設定"}</div>
                       </div>
                       <RecordingBadge stream={stream} />
                       <div className="text-xs leading-5 text-muted-foreground">
@@ -184,12 +178,12 @@ export function DashboardView() {
                   ))}
                 </div>
               ) : (
-                <EmptyState icon={CalendarDays} title="配信枠はまだありません" description="配信枠を作成すると、開始時刻・録画・状態がここに並びます。" href="/admin/streams/#create-stream" action="最初の配信枠を作成" />
+                <EmptyState icon={Headphones} title="待機中・配信中の枠はありません" description="配信枠を作成すると、VC参加の待機状態、録画、担当Nodeがここに並びます。" href="/admin/streams/#create-stream" action="配信枠を作成" />
               )}
             </CardContent>
           </Card>
         ) : (
-          <PermissionPanel title="配信予定を表示できません" description="このアカウントには配信枠を参照する権限がありません。管理者に「配信の閲覧」権限を依頼してください。" />
+          <PermissionPanel title="配信枠を表示できません" description="このアカウントには配信枠を参照する権限がありません。管理者に「配信の閲覧」権限を依頼してください。" />
         )}
 
         <Card>
@@ -350,7 +344,7 @@ function PermissionPanel({ title, description }: { title: string; description: s
 }
 
 function QueryWarning({ streamsFailed, servicesFailed, retry }: { streamsFailed: boolean; servicesFailed: boolean; retry: () => void }) {
-  const targets = [streamsFailed ? "配信予定" : "", servicesFailed ? "サービス状態" : ""].filter(Boolean).join("と");
+  const targets = [streamsFailed ? "配信枠" : "", servicesFailed ? "サービス状態" : ""].filter(Boolean).join("と");
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0" /><div><div className="text-sm font-semibold">{targets}を取得できませんでした</div><p className="mt-0.5 text-xs opacity-85">通信状態を確認して再試行してください。直前の表示がある場合は更新前の情報です。</p></div></div>
@@ -378,7 +372,7 @@ function compareStreams(left: Stream, right: Stream) {
     if (["ready", "scheduled", "created", "draft"].includes(status)) return 2;
     return 3;
   };
-  return priority(left) - priority(right) || dateValue(left.scheduled_start_at) - dateValue(right.scheduled_start_at);
+  return priority(left) - priority(right) || left.name.localeCompare(right.name, "ja");
 }
 
 function isFinished(status?: string) { return ["completed", "stopped"].includes(String(status || "").toLowerCase()); }
@@ -394,9 +388,3 @@ function assignedNodeLabels(stream: Stream, labels: Map<string, string>, service
 
 function serviceTypeLabel(serviceType?: string) { const labels: Record<string, string> = { encoder_recorder: "Encoder / Recorder", discord_bot: "Discord Bot", observability: "Observability", worker: "Worker" }; return labels[String(serviceType || "").toLowerCase()] || serviceType || "Service"; }
 function compactValues(values: Array<string | undefined>) { return values.map((value) => value?.trim() || "").filter(Boolean); }
-function dateValue(value?: string) { const time = value ? new Date(value).getTime() : Number.MAX_SAFE_INTEGER; return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time; }
-function dateKey(value: Date, timezone: string) { return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: timezone }).format(value); }
-function isSameDay(value: string | undefined, comparison: Date, timezone: string) { if (!value) return false; const date = new Date(value); return !Number.isNaN(date.getTime()) && dateKey(date, timezone) === dateKey(comparison, timezone); }
-function formatToday(timezone: string) { return new Intl.DateTimeFormat("ja-JP", { dateStyle: "full", timeZone: timezone }).format(new Date()); }
-function formatTime(value: string | undefined, timezone: string) { return formatDateTimeInTimeZone(value, timezone, { hour: "2-digit", minute: "2-digit" }); }
-function formatDay(value: string | undefined, timezone: string) { return formatDateTimeInTimeZone(value, timezone, { month: "short", day: "numeric", weekday: "short" }); }

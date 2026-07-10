@@ -4,9 +4,9 @@ import { cn } from "@/lib/utils";
 const statusMap: Record<string, { label: string; detail: string; className: string }> = {
   live: { label: "配信中", detail: "映像と録画を監視中", className: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-200" },
   starting: { label: "開始中", detail: "開始処理を実行中", className: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-700 dark:bg-sky-950/60 dark:text-sky-200" },
-  scheduled: { label: "予約済み", detail: "時刻になると自動開始", className: "border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-700 dark:bg-blue-950/60 dark:text-blue-200" },
-  ready: { label: "待機中", detail: "自動開始待ち", className: "border-teal-300 bg-teal-50 text-teal-800 dark:border-teal-700 dark:bg-teal-950/60 dark:text-teal-200" },
-  created: { label: "待機枠", detail: "設定済みの配信枠", className: "border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-700 dark:bg-blue-950/60 dark:text-blue-200" },
+  scheduled: { label: "待機中", detail: "開始トリガーを待機中", className: "border-teal-300 bg-teal-50 text-teal-800 dark:border-teal-700 dark:bg-teal-950/60 dark:text-teal-200" },
+  ready: { label: "待機中", detail: "開始トリガーを待機中", className: "border-teal-300 bg-teal-50 text-teal-800 dark:border-teal-700 dark:bg-teal-950/60 dark:text-teal-200" },
+  created: { label: "待機中", detail: "開始トリガーを待機中", className: "border-teal-300 bg-teal-50 text-teal-800 dark:border-teal-700 dark:bg-teal-950/60 dark:text-teal-200" },
   draft: { label: "下書き", detail: "設定確認が必要", className: "border-slate-300 bg-slate-100 text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" },
   stopped: { label: "停止中", detail: "停止処理または停止済み", className: "border-slate-300 bg-slate-100 text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" },
   completed: { label: "終了", detail: "配信終了、録画確認待ち", className: "border-slate-300 bg-slate-100 text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" },

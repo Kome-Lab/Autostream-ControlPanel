@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertCircle, CalendarDays, Check, Copy, Eye, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Video } from "lucide-react";
+import { AlertCircle, Check, Copy, Eye, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -114,7 +114,7 @@ export function StreamsView() {
           {streamStatusAllowsStart(row.original.status) ? <RoleGuard allowed={canStart}>
             <DangerConfirm
               title={`${row.original.name} を開始しますか`}
-              description="配信出力と録画を開始し、担当Nodeへ処理を送ります。開始時刻と出力先を確認してから実行してください。"
+              description="配信出力と録画を開始し、担当Nodeへ処理を送ります。対象の配信枠と出力先を確認してから実行してください。"
               onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start`, streamName: row.original.name, actionLabel: "開始" })}
               actionLabel="配信を開始"
             >
@@ -146,17 +146,6 @@ export function StreamsView() {
       ),
     },
 
-    {
-      id: "schedule",
-      accessorFn: (stream) => compactList([stream.scheduled_start_at, stream.scheduled_end_at]).join(" "),
-      header: t("scheduledTime"),
-      cell: ({ row }) => (
-        <div className="min-w-40 text-sm tabular-nums">
-          <div>{formatDateTime(row.original.scheduled_start_at, timezone)}</div>
-          <div className="text-muted-foreground">終了 {formatDateTime(row.original.scheduled_end_at, timezone)}</div>
-        </div>
-      ),
-    },
     {
       id: "route",
       accessorFn: (stream) => compactList([stream.encoder_input_url, stream.input_source, stream.output_target, stream.youtube_output_id]).join(" "),
@@ -225,9 +214,9 @@ export function StreamsView() {
     <div className="space-y-5">
       <section className="flex flex-col gap-3 border-b pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-sm font-medium text-primary"><CalendarDays className="size-4" />配信枠一覧</div>
-          <h1 className="mt-1 text-xl font-semibold">予約から終了後の録画まで一元管理</h1>
-          <p className="mt-1 text-sm text-muted-foreground">開始予定、配信経路、録画状態、担当Nodeを確認してから操作できます。</p>
+          <div className="flex items-center gap-2 text-sm font-medium text-primary"><RadioTower className="size-4" />Discord VC連動</div>
+          <h1 className="mt-1 text-xl font-semibold">待機開始から終了後の録画まで一元管理</h1>
+          <p className="mt-1 text-sm text-muted-foreground">VC参加を待機する配信枠、配信経路、録画状態、担当Nodeを一元管理します。</p>
         </div>
         {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" />配信枠を作成</Button> : null}
       </section>
@@ -245,11 +234,11 @@ export function StreamsView() {
 
       <Card>
         <CardHeader className="border-b">
-          <CardTitle>配信スケジュール</CardTitle>
-          <CardDescription>状態や名称で絞り込み、詳細を開いて設定内容を確認できます。</CardDescription>
+          <CardTitle>配信枠</CardTitle>
+          <CardDescription>VC待機中・配信中・要対応の状態を確認し、必要な操作を実行できます。</CardDescription>
         </CardHeader>
         <CardContent>
-          <DataTable columns={columns} data={streamRows} filterPlaceholder="配信名・状態・URL・録画保存先で絞り込み" getRowId={(row) => row.id} minTableWidthClass="min-w-[1420px]" />
+          <DataTable columns={columns} data={streamRows} filterPlaceholder="配信名・状態・VC・URL・録画保存先で絞り込み" getRowId={(row) => row.id} minTableWidthClass="min-w-[1240px]" />
         </CardContent>
       </Card>
 
@@ -258,7 +247,7 @@ export function StreamsView() {
         if (!open && window.location.hash === "#create-stream") window.history.replaceState(null, "", window.location.pathname + window.location.search);
       }}>
         <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl">
-          <SheetHeader className="sr-only"><SheetTitle>配信枠を作成</SheetTitle><SheetDescription>配信の予定、入力、出力、録画、自動開始を設定します。</SheetDescription></SheetHeader>
+          <SheetHeader className="sr-only"><SheetTitle>配信枠を作成</SheetTitle><SheetDescription>Discord VCの開始条件、入力、出力、録画を設定します。</SheetDescription></SheetHeader>
           <StreamSlotForm
             className="min-h-full rounded-none border-0 shadow-none"
             canCreate={canCreate}
@@ -266,7 +255,7 @@ export function StreamsView() {
             canAssignWorker={can("workers.assign")}
             onCreated={(stream) => {
               setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]);
-              setActionNotice({ tone: "success", message: `${stream.name} を作成しました。開始前に予定、配信経路、録画設定を確認してください。` });
+              setActionNotice({ tone: "success", message: `${stream.name} を作成し、開始トリガーの待機を開始しました。VC、配信経路、録画設定を確認してください。` });
               setCreateOpen(false);
             }}
           />
@@ -276,7 +265,6 @@ export function StreamsView() {
       <StreamDetailsDialog
         stream={selectedStream}
         onOpenChange={(open) => { if (!open) setSelectedStream(null); }}
-        timezone={timezone}
         discordLabels={discordLabels}
         youtubeOutputLabels={youtubeOutputLabels}
         archiveAccountLabels={archiveAccountLabels}
@@ -300,7 +288,7 @@ function StreamSummary({ rows }: { rows: Stream[] }) {
   }, { live: 0, waiting: 0, recording: 0, attention: 0, completed: 0 });
   const items = [
     { label: "配信中", value: counts.live, tone: "text-emerald-700 dark:text-emerald-300" },
-    { label: "開始待ち", value: counts.waiting, tone: "text-blue-700 dark:text-blue-300" },
+    { label: "待機中", value: counts.waiting, tone: "text-blue-700 dark:text-blue-300" },
     { label: "録画中", value: counts.recording, tone: "text-red-700 dark:text-red-300" },
     { label: "要対応", value: counts.attention, tone: "text-red-700 dark:text-red-300" },
     { label: "終了", value: counts.completed, tone: "text-muted-foreground" },
@@ -308,7 +296,7 @@ function StreamSummary({ rows }: { rows: Stream[] }) {
   return <section className="grid grid-cols-2 overflow-hidden rounded-lg border bg-card sm:grid-cols-5" aria-label="配信状態の集計">{items.map((item) => <div key={item.label} className="border-b border-r p-3 last:border-r-0 sm:border-b-0"><div className="text-xs text-muted-foreground">{item.label}</div><div className={cn("mt-1 text-xl font-semibold tabular-nums", item.tone)}>{item.value}</div></div>)}</section>;
 }
 
-function StreamDetailsDialog({ stream, onOpenChange, timezone, discordLabels, youtubeOutputLabels, archiveAccountLabels, archiveDestinationLabels, archiveProfileLabels, overlayProfileLabels }: { stream: Stream | null; onOpenChange: (open: boolean) => void; timezone?: string; discordLabels: Map<string, string>; youtubeOutputLabels: Map<string, string>; archiveAccountLabels: Map<string, string>; archiveDestinationLabels: Map<string, string>; archiveProfileLabels: Map<string, string>; overlayProfileLabels: Map<string, string> }) {
+function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutputLabels, archiveAccountLabels, archiveDestinationLabels, archiveProfileLabels, overlayProfileLabels }: { stream: Stream | null; onOpenChange: (open: boolean) => void; discordLabels: Map<string, string>; youtubeOutputLabels: Map<string, string>; archiveAccountLabels: Map<string, string>; archiveDestinationLabels: Map<string, string>; archiveProfileLabels: Map<string, string>; overlayProfileLabels: Map<string, string> }) {
   if (!stream) return null;
   const recording = recordingDescriptor(stream);
   return (
@@ -317,7 +305,6 @@ function StreamDetailsDialog({ stream, onOpenChange, timezone, discordLabels, yo
         <DialogHeader><DialogTitle>{stream.name}</DialogTitle><DialogDescription>配信前の確認と、配信中・終了後の状況確認に使う情報です。</DialogDescription></DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
           <DetailGroup title="状態"><div className="flex flex-wrap items-center gap-2"><StatusBadge status={stream.status} /><span className={cn("inline-flex rounded-md border px-2 py-1 text-xs font-medium", recording.className)}>{recording.label}</span></div><p className="mt-2 text-xs text-muted-foreground">{recording.detail}</p></DetailGroup>
-          <DetailGroup title="予定"><DetailLine label="開始" value={formatDateTime(stream.scheduled_start_at, timezone)} /><DetailLine label="終了" value={formatDateTime(stream.scheduled_end_at, timezone)} /></DetailGroup>
           <DetailGroup title="配信経路"><DetailLine label="入力URL" value={safeDisplayURL(stream.encoder_input_url || stream.input_source) || "未設定"} mono /><DetailLine label="YouTube出力" value={optionLabel(youtubeOutputLabels, stream.youtube_output_id) || stream.output_target || "未設定"} /></DetailGroup>
           <DetailGroup title="録画保存"><DetailLine label="設定" value={optionLabel(archiveProfileLabels, stream.archive_profile_id) || "未設定"} /><DetailLine label="保存先" value={optionLabel(archiveDestinationLabels, stream.archive_drive_destination_id) || optionLabel(archiveAccountLabels, stream.archive_oauth_account_id) || "未設定"} /><DetailLine label="ファイル名" value={stream.archive_file_name || "自動命名"} /><DetailLine label="フォルダー" value={stream.archive_folder_id_configured ? stream.archive_masked_folder_id || "設定済み" : "未設定"} /></DetailGroup>
           <DetailGroup title="自動開始"><DetailLine label="方式" value={stream.auto_start_trigger === "discord_voice_join" ? "Discord VC参加で自動開始" : "手動開始"} /><DetailLine label="BOT" value={optionLabel(discordLabels, stream.discord_config_id) || "未設定"} /><DetailLine label="VC" value={stream.discord_voice_channel_id || "未設定"} /><DetailLine label="Chat" value={stream.discord_text_channel_id || "未設定"} /></DetailGroup>
@@ -373,8 +360,6 @@ function StreamSlotForm({
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
   const [encoderInputURL, setEncoderInputURL] = useState("");
-  const [scheduledStartAt, setScheduledStartAt] = useState("");
-  const [scheduledEndAt, setScheduledEndAt] = useState("");
   const [message, setMessage] = useState("");
 
   const effectiveEncoderServiceID = encoderServiceID ?? singleOptionValue(encoderNodes);
@@ -413,10 +398,8 @@ function StreamSlotForm({
         encoder_service_id: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : "",
         worker_service_id: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : "",
         encoder_input_url: encoderInputURL,
-        scheduled_start_at: dateTimeLocalToISO(scheduledStartAt),
-        scheduled_end_at: dateTimeLocalToISO(scheduledEndAt),
       }),
-    [archiveFileName, archiveFolderID, archiveOAuthAccountID, archiveRetentionDays, archiveSharedDrive, archiveSharedDriveID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderInputURL, encoderProfileID, guildID, name, overlayProfileID, scheduledEndAt, scheduledStartAt, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
+    [archiveFileName, archiveFolderID, archiveOAuthAccountID, archiveRetentionDays, archiveSharedDrive, archiveSharedDriveID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderInputURL, encoderProfileID, guildID, name, overlayProfileID, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
@@ -426,7 +409,6 @@ function StreamSlotForm({
   const watermarkReady = !watermarkEnabled || selectedValue(overlayProfileID) !== "";
   const nodeAssignmentReady = !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
   const nodeAssignmentPermissionLimited = autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
-  const scheduleReady = scheduleRangeIsValid(scheduledStartAt, scheduledEndAt);
   const inputURLReady = externalInputURLIsValid(encoderInputURL);
   const archiveFileNameReady = !/[\\/]/.test(archiveFileName);
   const retentionDays = Number.parseInt(archiveRetentionDays, 10);
@@ -439,7 +421,7 @@ function StreamSlotForm({
           <Plus className="size-5" />
           配信枠を作成
         </CardTitle>
-        <CardDescription>予定、開始条件、配信経路、録画保存先を確認してから作成します。</CardDescription>
+        <CardDescription>Discord VCの開始条件、配信経路、録画保存先を確認してから待機を開始します。</CardDescription>
       </CardHeader>
       <CardContent>
         <form
@@ -450,12 +432,9 @@ function StreamSlotForm({
             createStream.mutate(payload);
           }}
         >
-          <FormSection title="基本情報" description="配信枠の名称と予定時刻">
-            <div className="grid gap-3 md:grid-cols-2">
-              <TextField label="配信枠名" value={name} onChange={setName} placeholder="例: 商品発表会 夕方枠" required />
-              <div className="hidden md:block" />
-              <TextField label="予定開始" type="datetime-local" value={scheduledStartAt} onChange={setScheduledStartAt} />
-              <TextField label="予定終了" type="datetime-local" value={scheduledEndAt} onChange={setScheduledEndAt} error={scheduleReady ? undefined : "予定終了は予定開始より後にしてください。"} />
+          <FormSection title="基本情報" description="運用中に識別する配信枠名">
+            <div className="max-w-xl">
+              <TextField label="配信枠名" value={name} onChange={setName} placeholder="例: 商品発表会 メイン配信" required />
             </div>
           </FormSection>
 
@@ -535,7 +514,7 @@ function StreamSlotForm({
           {message ? <div aria-live="polite" className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">{message}</div> : null}
           {!canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !archiveReady || !watermarkReady || !nodeAssignmentReady || !scheduleReady || !inputURLReady || !archiveFileNameReady || !retentionReady}>
+            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !archiveReady || !watermarkReady || !nodeAssignmentReady || !inputURLReady || !archiveFileNameReady || !retentionReady}>
               <Plus className="size-4" />
               {createStream.isPending ? "作成中..." : "配信枠を作成"}
             </Button>
@@ -755,19 +734,10 @@ function singleOptionValue(options: SelectOption[]) {
   return options.length === 1 ? options[0].value : noneValue;
 }
 
-function dateTimeLocalToISO(value: string) {
-  if (!value.trim()) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toISOString();
-}
-
 function streamCreateErrorMessage(error: unknown) {
   if (error instanceof APIError) {
     const messages: Record<string, string> = {
       name_required: "配信枠名を入力してください。",
-      schedule_time_invalid: "予定日時の形式が正しくありません。",
-      schedule_end_before_start: "予定終了は予定開始より後にしてください。",
       auto_start_trigger_invalid: "自動開始条件が無効です。Discord VC参加で自動開始を使う場合は画面のチェック項目から設定してください。",
       auto_start_discord_required: "Discord VC参加で自動開始する場合は、Discord BOT設定、Guild ID、VC Channel IDを指定してください。",
       discord_config_required: "Discord Guild/VC/Chatを指定する場合はDiscord BOT設定を選択してください。",
@@ -800,13 +770,6 @@ function streamActionErrorMessage(error: unknown, actionLabel: string) {
     if (error.status >= 500) return `${actionLabel}を完了できませんでした。担当Nodeの接続状態を確認し、配信ログを確認してから再試行してください。`;
   }
   return `${actionLabel}を完了できませんでした。通信状態と配信ログを確認してから再試行してください。`;
-}
-
-function scheduleRangeIsValid(start: string, end: string) {
-  if (!start.trim() || !end.trim()) return true;
-  const startTime = new Date(start).getTime();
-  const endTime = new Date(end).getTime();
-  return Number.isFinite(startTime) && Number.isFinite(endTime) && endTime > startTime;
 }
 
 function streamStatusAllowsStart(status: Stream["status"]) {

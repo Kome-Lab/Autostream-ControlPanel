@@ -1964,7 +1964,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path === "/users") return ["username", "email", "status", "roles", "last_login_at"];
   if (resource.path === "/roles") return ["name", "permissions", "updated_at"];
   if (resource.path === "/permissions") return ["name", "group", "description"];
-  if (resource.path === "/streams") return ["name", "status", "scheduled_start_at", "updated_at"];
+  if (resource.path === "/streams") return ["name", "status", "auto_start_trigger", "discord_voice_channel_id", "updated_at"];
   if (resource.path === "/audit-logs") return ["timestamp", "actor_username", "action", "result", "resource_type"];
   if (resource.path === "/service-health") return ["service_name", "service_type", "status", "health_status", "last_heartbeat_at"];
   if (resource.path === "/observability/incidents") return ["title", "severity", "status", "updated_at"];
@@ -2185,8 +2185,8 @@ const valueLabels: Record<string, string> = {
   healthy: "正常",
   degraded: "注意",
   unhealthy: "異常",
-  created: "作成済み",
-  scheduled: "予約",
+  created: "待機中",
+  scheduled: "待機中",
   ready: "待機中",
   draft: "下書き",
   starting: "開始中",
@@ -2199,6 +2199,8 @@ const valueLabels: Record<string, string> = {
   public: "公開",
   unlisted: "限定公開",
   private: "非公開",
+  discord_voice_join: "VC参加で自動開始",
+  manual: "手動開始",
   stream_key: "既存ストリームキー",
   live_api: "YouTube Live API本番",
   live_api_dry_run: "YouTube Live API検証",
@@ -2265,7 +2267,8 @@ const columnLabels: Record<string, string> = {
   timestamp: "日時",
   actor_username: "実行者",
   resource_type: "対象",
-  scheduled_start_at: "開始予定",
+  auto_start_trigger: "開始条件",
+  discord_voice_channel_id: "VC Channel ID",
   action: "操作",
   target: "対象",
   updated_at: "更新日時",
