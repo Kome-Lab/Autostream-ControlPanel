@@ -214,10 +214,14 @@ func (h staticFilesHandler) serveStatic(w http.ResponseWriter, r *http.Request) 
 	}
 	info, err := os.Stat(full)
 	if err == nil && info.IsDir() {
+		w.Header().Add("Vary", "Accept")
+		if !isHTMLNavigationRequest(r) {
+			return false
+		}
 		if h.serveStaticIndex(w, r, rel) {
 			return true
 		}
-		if isHTMLNavigationRequest(r) && isControlPanelUIPath(cleanPath) {
+		if isControlPanelUIPath(cleanPath) {
 			http.ServeFile(w, r, filepath.Join(h.dir, "index.html"))
 			return true
 		}

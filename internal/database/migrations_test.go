@@ -120,3 +120,16 @@ func TestOAuthLoginStatePurposeMigrationIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestUserAvatarMigrationUsesBoundedBinaryStorageAndUserCascade(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/037_user_avatars.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, required := range []string{"user_id CHAR(36) PRIMARY KEY", "image_data MEDIUMBLOB NOT NULL", "fingerprint CHAR(64) NOT NULL", "REFERENCES users(id) ON DELETE CASCADE"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("avatar migration is missing %q:\n%s", required, text)
+		}
+	}
+}

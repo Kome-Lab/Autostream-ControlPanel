@@ -182,6 +182,8 @@ export type CurrentUser = {
     email?: string;
     status?: string;
     roles?: string[];
+    avatar_url?: string;
+    avatar_updated_at?: string;
   };
   permissions: string[];
 };

@@ -173,6 +173,15 @@ func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>app</main>"), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	for _, route := range []string{"streams", "service-health", "workers", "roles", "users"} {
+		dir := filepath.Join(root, route)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<main>"+route+"</main>"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	handler := staticFilesHandler{
 		app: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -181,15 +190,9 @@ func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
 		dir: root,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/streams", nil)
-	req.Header.Set("Accept", "application/json")
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusTeapot {
-		t.Fatalf("JSON API request should fall through, status = %d body=%q", res.Code, res.Body.String())
-	}
-
-	for _, path := range []string{"/service-health", "/settings/app", "/services/runtime-config", "/observability/metrics"} {
+	var req *http.Request
+	var res *httptest.ResponseRecorder
+	for _, path := range []string{"/streams", "/service-health", "/workers", "/roles", "/users", "/settings/app", "/services/runtime-config", "/observability/metrics"} {
 		req = httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Accept", "application/json")
 		res = httptest.NewRecorder()
@@ -197,6 +200,17 @@ func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
 		if res.Code != http.StatusTeapot {
 			t.Fatalf("API request %q should fall through, status = %d body=%q", path, res.Code, res.Body.String())
 		}
+		if path == "/streams" && !strings.Contains(res.Header().Get("Vary"), "Accept") {
+			t.Fatalf("content-negotiated route should vary by Accept, headers = %#v", res.Header())
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/streams", nil)
+	req.Header.Set("Accept", "text/html")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || res.Body.String() != "<main>streams</main>" {
+		t.Fatalf("HTML navigation should use the exported route, status = %d body=%q", res.Code, res.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)

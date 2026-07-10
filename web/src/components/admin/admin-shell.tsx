@@ -41,6 +41,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AccountAvatar } from "@/components/ui/account-avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetClose, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -192,6 +193,10 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const updateAvailable = appVersion.data?.update_available && appVersion.data.latest_version;
   const updateCheckFailed = !updateAvailable && appVersion.data?.update_check_error;
   const activeItem = activeNavigationItem(pathname);
+  const accountPage = pathname.startsWith("/admin/account");
+  const pageSection = accountPage ? "個人設定" : t("liveOperations");
+  const pageTitle = accountPage ? "アカウント設定" : activeItem ? t(activeItem.key) : t("dashboard");
+  const pageDescription = accountPage ? "プロフィールとログインセキュリティを管理" : activeItem?.description[locale];
   const healthRows = serviceHealth.data || [];
   const healthyServices = healthRows.filter(isAvailableService).length;
   const healthIsGood = healthRows.length > 0 && healthyServices === healthRows.length;
@@ -204,9 +209,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
           <div className="flex size-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shadow-sm">
             <RadioTower className="size-5" />
           </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">{appName}</div>
-            <div className="text-xs text-sidebar-foreground/58">Live Operations</div>
+          <div className="min-w-0 flex-1">
+            <div className="line-clamp-2 text-sm font-semibold leading-tight [overflow-wrap:anywhere]" title={appName}>{appName}</div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-sidebar-foreground/58">
+              <span>Live Operations</span>
+              <span className="h-3 border-l border-sidebar-border" aria-hidden="true" />
+              <span className="shrink-0 font-medium text-sidebar-foreground/80">{withVersionPrefix(versionLabel)}</span>
+            </div>
           </div>
         </div>
         <ScrollArea className="min-h-0 flex-1">
@@ -239,9 +248,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
                   <div className="flex size-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                     <RadioTower className="size-5" />
                   </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">{appName}</div>
-                    <div className="text-xs text-sidebar-foreground/58">Live Operations</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="line-clamp-2 text-sm font-semibold leading-tight [overflow-wrap:anywhere]" title={appName}>{appName}</div>
+                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-sidebar-foreground/58">
+                      <span>Live Operations</span>
+                      <span className="h-3 border-l border-sidebar-border" aria-hidden="true" />
+                      <span className="shrink-0 font-medium text-sidebar-foreground/80">{withVersionPrefix(versionLabel)}</span>
+                    </div>
                   </div>
                 </div>
                 <ScrollArea className="h-[calc(100vh-4.5rem)]">
@@ -252,9 +265,9 @@ export function AdminShell({ children }: { children: ReactNode }) {
               </SheetContent>
             </Sheet>
             <div className="min-w-0">
-              <div className="text-[0.7rem] font-semibold text-primary">{t("liveOperations")}</div>
-              <div className="truncate text-lg font-semibold leading-tight">{activeItem ? t(activeItem.key) : t("dashboard")}</div>
-              <div className="hidden max-w-2xl truncate text-xs text-muted-foreground xl:block">{activeItem?.description[locale]}</div>
+              <div className="text-[0.7rem] font-semibold text-primary">{pageSection}</div>
+              <div className="truncate text-lg font-semibold leading-tight">{pageTitle}</div>
+              <div className="hidden max-w-2xl truncate text-xs text-muted-foreground xl:block">{pageDescription}</div>
             </div>
           </div>
 
@@ -304,9 +317,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="h-10 gap-2 px-1.5" aria-label="アカウントメニュー">
-                  <span className="flex size-8 items-center justify-center rounded-full bg-primary/12 text-sm font-semibold text-primary">
-                    {userInitial(username)}
-                  </span>
+                  <AccountAvatar name={username} src={currentUser.data.user.avatar_url} className="size-8 border-0" sizes="32px" />
                   <span className="hidden min-w-0 text-left xl:block">
                     <span className="block max-w-28 truncate text-sm font-medium">{username}</span>
                     <span className="block text-xs text-muted-foreground">{t("currentUser")}</span>
@@ -315,9 +326,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64">
                 <DropdownMenuLabel className="flex items-center gap-3">
-                  <span className="flex size-9 items-center justify-center rounded-full bg-primary/12 text-sm font-semibold text-primary">
-                    {userInitial(username)}
-                  </span>
+                  <AccountAvatar name={username} src={currentUser.data.user.avatar_url} className="size-9" sizes="36px" />
                   <span className="min-w-0">
                     <span className="block truncate">{username}</span>
                     <span className="block truncate text-xs font-normal text-muted-foreground">{currentUser.data.user.email || "メール未設定"}</span>
@@ -427,10 +436,6 @@ function canSeeNavItem(item: NavItem, currentUser: CurrentUser) {
 
 function isSuperAdmin(currentUser?: CurrentUser) {
   return currentUser?.user.roles?.includes("super_admin") === true;
-}
-
-function userInitial(username: string) {
-  return (username.trim().charAt(0) || "U").toUpperCase();
 }
 
 function activeNavigationItem(pathname: string) {

@@ -26,6 +26,22 @@ type User struct {
 	PasswordHash string `json:"-"`
 }
 
+type UserAvatar struct {
+	UserID      string
+	ContentType string
+	Data        []byte
+	Fingerprint string
+	UpdatedAt   time.Time
+}
+
+type UserAvatarInfo struct {
+	UserID      string    `json:"user_id"`
+	ContentType string    `json:"content_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Fingerprint string    `json:"fingerprint"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type Session struct {
 	Token             string
 	TokenHash         string
@@ -139,6 +155,13 @@ type AuthStore interface {
 	DeleteUserSessions(ctx context.Context, userID string) error
 	RecordLoginSuccess(ctx context.Context, userID, ip string) error
 	RecordLoginFailure(ctx context.Context, username string, lockoutThreshold int) error
+}
+
+type UserAvatarStore interface {
+	GetUserAvatar(ctx context.Context, userID string) (UserAvatar, error)
+	GetUserAvatarInfo(ctx context.Context, userID string) (UserAvatarInfo, error)
+	UpsertUserAvatar(ctx context.Context, avatar UserAvatar) (UserAvatarInfo, error)
+	DeleteUserAvatar(ctx context.Context, userID string) error
 }
 
 type MFAStore interface {
@@ -385,6 +408,48 @@ func (s MariaDBAuthStore) RecordLoginFailure(ctx context.Context, username strin
 		lockoutThreshold = defaultSecurityConfig.LoginLockoutThreshold
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET failed_login_count = failed_login_count + 1, status = IF(failed_login_count + 1 >= ?, 'locked', status), updated_at = ? WHERE username = ?`, lockoutThreshold, time.Now().UTC(), username)
+	return err
+}
+
+func (s MariaDBAuthStore) GetUserAvatar(ctx context.Context, userID string) (UserAvatar, error) {
+	var avatar UserAvatar
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, content_type, image_data, fingerprint, updated_at FROM user_avatars WHERE user_id = ?`, userID).
+		Scan(&avatar.UserID, &avatar.ContentType, &avatar.Data, &avatar.Fingerprint, &avatar.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserAvatar{}, ErrNotFound
+	}
+	if err != nil {
+		return UserAvatar{}, err
+	}
+	return avatar, nil
+}
+
+func (s MariaDBAuthStore) GetUserAvatarInfo(ctx context.Context, userID string) (UserAvatarInfo, error) {
+	var info UserAvatarInfo
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, content_type, OCTET_LENGTH(image_data), fingerprint, updated_at FROM user_avatars WHERE user_id = ?`, userID).
+		Scan(&info.UserID, &info.ContentType, &info.SizeBytes, &info.Fingerprint, &info.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserAvatarInfo{}, ErrNotFound
+	}
+	if err != nil {
+		return UserAvatarInfo{}, err
+	}
+	return info, nil
+}
+
+func (s MariaDBAuthStore) UpsertUserAvatar(ctx context.Context, avatar UserAvatar) (UserAvatarInfo, error) {
+	if avatar.UpdatedAt.IsZero() {
+		avatar.UpdatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO user_avatars (user_id, content_type, image_data, fingerprint, updated_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE content_type = VALUES(content_type), image_data = VALUES(image_data), fingerprint = VALUES(fingerprint), updated_at = VALUES(updated_at)`, avatar.UserID, avatar.ContentType, avatar.Data, avatar.Fingerprint, avatar.UpdatedAt)
+	if err != nil {
+		return UserAvatarInfo{}, err
+	}
+	return UserAvatarInfo{UserID: avatar.UserID, ContentType: avatar.ContentType, SizeBytes: int64(len(avatar.Data)), Fingerprint: avatar.Fingerprint, UpdatedAt: avatar.UpdatedAt}, nil
+}
+
+func (s MariaDBAuthStore) DeleteUserAvatar(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM user_avatars WHERE user_id = ?`, userID)
 	return err
 }
 

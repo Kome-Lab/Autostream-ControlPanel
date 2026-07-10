@@ -70,6 +70,7 @@ type Server struct {
 	mfa            store.MFAStore
 	emailChanges   store.EmailChangeStore
 	passkeys       store.PasskeyStore
+	avatars        store.UserAvatarStore
 	oauthLogin     store.OAuthLoginStore
 	oauthVerifier  oauthlogin.Verifier
 	oauthConnector oauthlogin.Connector
@@ -159,6 +160,10 @@ func WithEmailChangeStore(emailChanges store.EmailChangeStore) ServerOption {
 
 func WithPasskeyStore(passkeys store.PasskeyStore) ServerOption {
 	return func(s *Server) { s.passkeys = passkeys }
+}
+
+func WithUserAvatarStore(avatars store.UserAvatarStore) ServerOption {
+	return func(s *Server) { s.avatars = avatars }
 }
 
 func WithOAuthLoginStore(oauthLogin store.OAuthLoginStore) ServerOption {
@@ -266,6 +271,11 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 			s.passkeys = passkeys
 		}
 	}
+	if s.avatars == nil {
+		if avatars, ok := s.auth.(store.UserAvatarStore); ok {
+			s.avatars = avatars
+		}
+	}
 	if s.oauthLogin == nil {
 		s.oauthLogin = store.NewMemoryOAuthLoginStore()
 	}
@@ -310,6 +320,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/node-agent/events", s.serviceStreamEvent)
 	s.mux.HandleFunc("POST /auth/logout", s.requirePermission("", s.logout))
 	s.mux.HandleFunc("GET /auth/me", s.requirePermission("", s.me))
+	s.mux.HandleFunc("GET /auth/avatar", s.requirePermission("", s.getCurrentUserAvatar))
+	s.mux.HandleFunc("PUT /auth/avatar", s.requirePermission("", s.updateCurrentUserAvatar))
+	s.mux.HandleFunc("DELETE /auth/avatar", s.requirePermission("", s.deleteCurrentUserAvatar))
 	s.mux.HandleFunc("PUT /auth/email", s.requirePermission("", s.updateCurrentUserEmail))
 	s.mux.HandleFunc("POST /auth/email/confirm", s.confirmCurrentUserEmail)
 	s.mux.HandleFunc("POST /auth/change-password", s.requirePermission("", s.changePassword))
@@ -1351,7 +1364,14 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	current := currentFromContext(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(current.User), "permissions": current.Permissions})
+	user := publicUser(current.User)
+	if s.avatars != nil {
+		if info, err := s.avatars.GetUserAvatarInfo(r.Context(), current.User.ID); err == nil {
+			user["avatar_url"] = userAvatarURL(info)
+			user["avatar_updated_at"] = info.UpdatedAt
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": user, "permissions": current.Permissions})
 }
 
 func (s *Server) updateCurrentUserEmail(w http.ResponseWriter, r *http.Request) {

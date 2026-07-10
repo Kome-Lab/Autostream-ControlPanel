@@ -1,16 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, KeyRound, Link2, Mail, Plus, QrCode, RefreshCcw, ShieldCheck, ShieldOff, Trash2, UserCog } from "lucide-react";
+import { Camera, CheckCircle2, Copy, KeyRound, Link2, Mail, Plus, QrCode, RefreshCcw, Save, ShieldCheck, ShieldOff, Trash2, Upload, UserCog, X } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
+import { AccountAvatar } from "@/components/ui/account-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
+import { APIError, apiDelete, apiGet, apiPost, apiPut, apiPutBinary } from "@/lib/api/client";
 import { qrCodeDataURL } from "@/lib/qr-code";
 import { useAppSettings, useCurrentUser } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
@@ -18,6 +20,17 @@ import { passkeyRegistrationCredentialToJSON, passkeysSupported, publicKeyCreati
 import type { MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
 
 type AccountNotice = { tone: "success" | "error"; text: string } | null;
+
+type AvatarResponse = {
+  avatar_url: string;
+  content_type: string;
+  size_bytes: number;
+  updated_at: string;
+};
+
+const maxAvatarBytes = 768 * 1024;
+const minAvatarDimension = 32;
+const maxAvatarDimension = 2048;
 
 export function AccountView() {
   const queryClient = useQueryClient();
@@ -28,6 +41,9 @@ export function AccountView() {
   const oauthLinks = useQuery({ queryKey: ["auth", "oauth-links"], queryFn: () => apiGet<OAuthUserLink[]>("/auth/oauth-links") });
   const oauthProviders = useQuery({ queryKey: ["auth", "oauth", "providers"], queryFn: () => apiGet<OAuthLoginProvider[]>("/auth/oauth/providers") });
   const [notice, setNotice] = useState<AccountNotice>(null);
+  const user = currentUser.data?.user;
+  const username = user?.username || "-";
+  const roles = user?.roles || [];
 
   const showError = (error: unknown, fallback: string) => {
     const code = error instanceof APIError ? error.code : "";
@@ -35,49 +51,229 @@ export function AccountView() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-normal">アカウント</h1>
-          <p className="mt-1 text-sm text-muted-foreground">ログイン、本人確認、連携メールを管理します。</p>
+          <h1 className="text-2xl font-semibold tracking-normal">アカウント設定</h1>
+          <p className="mt-1 text-sm text-muted-foreground">個人情報とログイン時のセキュリティを管理します。</p>
         </div>
-        <Badge variant="secondary" className="gap-2">
-          <UserCog className="size-3.5" />
-          {currentUser.data?.user.username || "-"}
-        </Badge>
+        <Badge variant="outline" className="gap-2"><UserCog />個人アカウント</Badge>
       </div>
 
       {notice ? (
-        <div className={notice.tone === "success" ? "rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800" : "rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"}>
+        <div role="status" aria-live="polite" className={notice.tone === "success" ? "rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200" : "rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/35 dark:text-red-200"}>
           {notice.text}
         </div>
       ) : null}
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <PasswordPanel setNotice={setNotice} onError={showError} />
-        <EmailPanel
-          key={currentUser.data?.user.email || ""}
-          currentEmail={currentUser.data?.user.email || ""}
-          links={oauthLinks.data || []}
-          providers={oauthProviders.data || []}
-          loading={oauthLinks.isLoading || oauthProviders.isLoading}
-          setNotice={setNotice}
-          onUpdated={() => queryClient.invalidateQueries({ queryKey: ["auth", "me"] })}
-          onDeleted={() => queryClient.invalidateQueries({ queryKey: ["auth", "oauth-links"] })}
-          onError={showError}
-        />
-        <MFAPanel status={mfaStatus.data} loading={mfaStatus.isLoading} setNotice={setNotice} onError={showError} refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] })} />
-        <PasskeyPanel
-          passkeys={passkeys.data || []}
-          loading={passkeys.isLoading}
-          username={currentUser.data?.user.username || ""}
-          timezone={appSettings.data?.timezone}
-          setNotice={setNotice}
-          onError={showError}
-          refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "passkeys"] })}
-        />
-      </div>
+      <Card>
+        <CardContent className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(320px,0.7fr)] md:items-center">
+          <div className="flex min-w-0 items-center gap-4">
+            <AccountAvatar name={username} src={user?.avatar_url} alt={`${username}のアカウントアイコン`} className="size-20" sizes="80px" />
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="truncate text-xl font-semibold">{username}</div>
+                <Badge className={user?.status === "active" ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300" : ""} variant="outline">
+                  <CheckCircle2 />{accountStatusLabel(user?.status)}
+                </Badge>
+              </div>
+              <div className="mt-1 truncate text-sm text-muted-foreground">{user?.email || "メールアドレス未設定"}</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {roles.length ? roles.map((role) => <Badge key={role} variant="secondary">{roleLabel(role)}</Badge>) : <Badge variant="secondary">ロール未設定</Badge>}
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 divide-x rounded-md border bg-muted/20">
+            <AccountSummaryMetric label="MFA" value={mfaStatus.isLoading ? "確認中" : mfaStatus.data?.enabled ? "有効" : "無効"} />
+            <AccountSummaryMetric label="Passkey" value={`${passkeys.data?.length || 0}件`} />
+            <AccountSummaryMetric label="外部ログイン" value={`${oauthLinks.data?.length || 0}件`} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Tabs defaultValue="profile" className="gap-4">
+        <TabsList variant="line" className="h-auto w-full justify-start border-b pb-1">
+          <TabsTrigger value="profile" className="min-w-32 flex-none"><UserCog />プロフィール</TabsTrigger>
+          <TabsTrigger value="security" className="min-w-32 flex-none"><ShieldCheck />セキュリティ</TabsTrigger>
+        </TabsList>
+        <TabsContent value="profile">
+          <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.75fr)_minmax(0,1.25fr)]">
+            <AvatarPanel
+              username={username}
+              currentAvatarURL={user?.avatar_url}
+              setNotice={setNotice}
+              onError={showError}
+              refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "me"] })}
+            />
+            <EmailPanel
+              key={user?.email || ""}
+              currentEmail={user?.email || ""}
+              links={oauthLinks.data || []}
+              providers={oauthProviders.data || []}
+              loading={oauthLinks.isLoading || oauthProviders.isLoading}
+              setNotice={setNotice}
+              onUpdated={() => queryClient.invalidateQueries({ queryKey: ["auth", "me"] })}
+              onDeleted={() => queryClient.invalidateQueries({ queryKey: ["auth", "oauth-links"] })}
+              onError={showError}
+            />
+          </div>
+        </TabsContent>
+        <TabsContent value="security">
+          <div className="grid items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+            <PasswordPanel setNotice={setNotice} onError={showError} />
+            <MFAPanel status={mfaStatus.data} loading={mfaStatus.isLoading} setNotice={setNotice} onError={showError} refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] })} />
+            <PasskeyPanel
+              passkeys={passkeys.data || []}
+              loading={passkeys.isLoading}
+              username={username}
+              timezone={appSettings.data?.timezone}
+              setNotice={setNotice}
+              onError={showError}
+              refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "passkeys"] })}
+            />
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
+  );
+}
+
+function AccountSummaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 px-2 py-3 text-center sm:px-3">
+      <div className="truncate text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function AvatarPanel({
+  username,
+  currentAvatarURL,
+  setNotice,
+  onError,
+  refresh,
+}: {
+  username: string;
+  currentAvatarURL?: string;
+  setNotice: (notice: AccountNotice) => void;
+  onError: (error: unknown, fallback: string) => void;
+  refresh: () => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewURL, setPreviewURL] = useState("");
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => () => {
+    if (previewURL) URL.revokeObjectURL(previewURL);
+  }, [previewURL]);
+
+  const clearSelection = () => {
+    setSelectedFile(null);
+    setDimensions(null);
+    setPreviewURL("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const upload = useMutation({
+    mutationFn: (file: File) => apiPutBinary<AvatarResponse>("/auth/avatar", file),
+    onSuccess: async () => {
+      clearSelection();
+      setNotice({ tone: "success", text: "アカウントアイコンを更新しました。" });
+      await refresh();
+    },
+    onError: (error) => onError(error, "アカウントアイコンを更新できませんでした"),
+  });
+  const remove = useMutation({
+    mutationFn: () => apiDelete<void>("/auth/avatar"),
+    onSuccess: async () => {
+      clearSelection();
+      setNotice({ tone: "success", text: "アカウントアイコンを削除しました。" });
+      await refresh();
+    },
+    onError: (error) => onError(error, "アカウントアイコンを削除できませんでした"),
+  });
+
+  const selectFile = async (file?: File) => {
+    if (!file) return;
+    clearSelection();
+    if (!(["image/jpeg", "image/png"] as string[]).includes(file.type)) {
+      setNotice({ tone: "error", text: "JPEGまたはPNG画像を選択してください。" });
+      return;
+    }
+    if (file.size > maxAvatarBytes) {
+      setNotice({ tone: "error", text: "画像は768 KB以下にしてください。" });
+      return;
+    }
+    try {
+      const nextDimensions = await readImageDimensions(file);
+      if (nextDimensions.width < minAvatarDimension || nextDimensions.height < minAvatarDimension || nextDimensions.width > maxAvatarDimension || nextDimensions.height > maxAvatarDimension) {
+        setNotice({ tone: "error", text: "画像の縦横は32〜2048 pxにしてください。" });
+        return;
+      }
+      const nextURL = URL.createObjectURL(file);
+      setPreviewURL(nextURL);
+      setSelectedFile(file);
+      setDimensions(nextDimensions);
+      setNotice(null);
+    } catch {
+      setNotice({ tone: "error", text: "画像を読み込めませんでした。別の画像を選択してください。" });
+    }
+  };
+
+  return (
+    <Card className="h-fit">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-lg"><Camera className="size-5" />アカウントアイコン</CardTitle>
+        <CardDescription>ヘッダーとアカウントメニューに表示する画像です。</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-col items-center gap-4 rounded-md border bg-muted/20 p-4 text-center sm:flex-row sm:text-left">
+          <AccountAvatar name={username} src={previewURL || currentAvatarURL} alt={previewURL ? "選択したアカウントアイコンのプレビュー" : `${username}のアカウントアイコン`} className="size-24" sizes="96px" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <div>
+              <div className="text-sm font-medium">{previewURL ? "変更後のプレビュー" : currentAvatarURL ? "現在のアイコン" : "アイコン未設定"}</div>
+              <div className="mt-1 text-xs text-muted-foreground">JPEG / PNG、768 KB以下、32〜2048 px</div>
+            </div>
+            {selectedFile ? (
+              <div className="text-xs text-muted-foreground">
+                <div className="truncate font-medium text-foreground">{selectedFile.name}</div>
+                <div>{formatFileSize(selectedFile.size)}{dimensions ? ` / ${dimensions.width}×${dimensions.height} px` : ""}</div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg"
+          className="sr-only"
+          aria-label="アカウントアイコン画像を選択"
+          onChange={(event) => void selectFile(event.target.files?.[0])}
+        />
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending || remove.isPending}>
+            <Upload />画像を選択
+          </Button>
+          {selectedFile ? (
+            <>
+              <Button type="button" onClick={() => upload.mutate(selectedFile)} disabled={upload.isPending}>
+                <Save />{upload.isPending ? "保存中" : "この画像を保存"}
+              </Button>
+              <Button type="button" variant="ghost" size="icon" aria-label="画像の選択を取り消す" onClick={clearSelection} disabled={upload.isPending}>
+                <X />
+              </Button>
+            </>
+          ) : null}
+          {!selectedFile && currentAvatarURL ? (
+            <DangerConfirm title="アカウントアイコンを削除" description="画像を削除すると、ユーザー名の先頭文字が表示されます。" onConfirm={() => remove.mutate()} actionLabel="削除">
+              <Button type="button" variant="outline" disabled={remove.isPending}><Trash2 />削除</Button>
+            </DangerConfirm>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -299,7 +495,7 @@ function MFAPanel({
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={status?.enabled ? "default" : "secondary"}>{loading ? "確認中" : status?.enabled ? "有効" : "無効"}</Badge>
-          <span className="text-sm text-muted-foreground">Policy {mfaPolicyLabel(policyMode)}</span>
+          <span className="text-sm text-muted-foreground">認証方式 {mfaPolicyLabel(policyMode)}</span>
           {status?.required ? <Badge variant="outline">必須</Badge> : null}
           {status?.pending_enrollment ? <Badge variant="outline">確認待ち</Badge> : null}
           {status?.recovery_code_count !== undefined && status.enabled ? <Badge variant="secondary">リカバリーコード残り {status.recovery_code_count}</Badge> : null}
@@ -429,10 +625,10 @@ function mfaUnavailableMessage(status?: MFAStatus) {
     return "MFAストアが構成されていないため、TOTP登録は利用できません。";
   }
   if (status.policy_mode === "passkey") {
-    return "現在のMFA modeはPasskeyです。下のPasskey欄から端末やセキュリティキーを登録してください。";
+    return "現在のMFA方式はPasskeyです。Passkey欄から端末やセキュリティキーを登録してください。";
   }
   if (status.policy_mode === "disabled") return "このアカウントでは任意でTOTPを登録できます。登録後のログインでは2FAが必要になります。";
-  return "現在のMFA policyではTOTP登録を利用できません。";
+  return "現在のMFAポリシーではTOTP登録を利用できません。";
 }
 
 function PasskeyPanel({
@@ -505,7 +701,7 @@ function PasskeyPanel({
             <div key={passkey.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium">{passkey.name || "Passkey"}</div>
-                <div className="text-xs text-muted-foreground">Last used {passkey.last_used_at ? formatDateTime(passkey.last_used_at, timezone) : "-"}</div>
+                <div className="text-xs text-muted-foreground">最終使用 {passkey.last_used_at ? formatDateTime(passkey.last_used_at, timezone) : "-"}</div>
               </div>
               <DangerConfirm title="Passkeyを削除" description="このPasskeyではログインできなくなります。" onConfirm={() => remove.mutate(passkey.id)} actionLabel="削除">
                 <Button variant="outline" size="icon-sm" aria-label="Passkeyを削除">
@@ -527,4 +723,55 @@ function providerLabel(value: string) {
 
 function formatDateTime(value: string, timezone?: string) {
   return formatDateTimeInTimeZone(value, timezone, { dateStyle: "short", timeStyle: "short" });
+}
+
+function accountStatusLabel(status?: string) {
+  switch (status) {
+    case "active":
+      return "有効";
+    case "locked":
+      return "ロック中";
+    case "disabled":
+      return "無効";
+    case "pending_password_change":
+      return "初回設定待ち";
+    default:
+      return status || "確認中";
+  }
+}
+
+function roleLabel(role: string) {
+  switch (role) {
+    case "super_admin":
+      return "システム管理者";
+    case "admin":
+      return "管理者";
+    case "operator":
+      return "配信担当者";
+    case "viewer":
+      return "閲覧者";
+    default:
+      return role.replaceAll("_", " ");
+  }
+}
+
+function readImageDimensions(file: File) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const objectURL = URL.createObjectURL(file);
+    const image = new window.Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectURL);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectURL);
+      reject(new Error("invalid image"));
+    };
+    image.src = objectURL;
+  });
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  return `${Math.round(size / 1024)} KB`;
 }

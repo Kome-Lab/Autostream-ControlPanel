@@ -1,4 +1,4 @@
-import { mockDelete, mockGet, mockPost, mockPut, mockPathExists } from "@/features/mock-data";
+import { mockDelete, mockGet, mockPost, mockPut, mockPutBinary, mockPathExists } from "@/features/mock-data";
 
 const csrfStorageKey = "autostream.csrf_token";
 
@@ -82,6 +82,30 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
     return await readJSONResponse<T>(response, path);
   } catch (error) {
     if (canUseMockFallback(path)) return mockPut(path, body) as T;
+    throw error;
+  }
+}
+
+export async function apiPutBinary<T>(path: string, body: Blob): Promise<T> {
+  if (forceMock()) return mockPutBinary(path, body) as Promise<T>;
+  try {
+    const response = await fetch(path, {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": body.type || "application/octet-stream",
+        "X-CSRF-Token": getCSRFToken(),
+      },
+      body,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json") && canUseMockFallback(path)) {
+      return mockPutBinary(path, body) as Promise<T>;
+    }
+    return await readJSONResponse<T>(response, path);
+  } catch (error) {
+    if (canUseMockFallback(path)) return mockPutBinary(path, body) as Promise<T>;
     throw error;
   }
 }

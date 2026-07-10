@@ -23,6 +23,7 @@ type MemoryAuthStore struct {
 	metricHistory []ServiceMetricSnapshot
 	assignments   map[string]string
 	failedLogins  map[string]int
+	avatars       map[string]UserAvatar
 	mfaConfigs    map[string]MFAConfig
 	mfaChallenges map[string]MFAChallenge
 	emailChanges  map[string]EmailChangeChallenge
@@ -35,7 +36,7 @@ type MemoryAuthStore struct {
 
 func NewMemoryAuthStore() *MemoryAuthStore {
 	return &MemoryAuthStore{
-		users: map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, failedLogins: map[string]int{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, emailChanges: map[string]EmailChangeChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
+		users: map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, failedLogins: map[string]int{}, avatars: map[string]UserAvatar{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, emailChanges: map[string]EmailChangeChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
 	}
 }
 
@@ -107,6 +108,64 @@ func (s *MemoryAuthStore) GetUser(ctx context.Context, id string) (User, error) 
 		return User{}, ErrNotFound
 	}
 	return user, nil
+}
+
+func (s *MemoryAuthStore) GetUserAvatar(ctx context.Context, userID string) (UserAvatar, error) {
+	if err := ctx.Err(); err != nil {
+		return UserAvatar{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	avatar, ok := s.avatars[userID]
+	if !ok {
+		return UserAvatar{}, ErrNotFound
+	}
+	avatar.Data = append([]byte(nil), avatar.Data...)
+	return avatar, nil
+}
+
+func (s *MemoryAuthStore) GetUserAvatarInfo(ctx context.Context, userID string) (UserAvatarInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return UserAvatarInfo{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	avatar, ok := s.avatars[userID]
+	if !ok {
+		return UserAvatarInfo{}, ErrNotFound
+	}
+	return userAvatarInfo(avatar), nil
+}
+
+func (s *MemoryAuthStore) UpsertUserAvatar(ctx context.Context, avatar UserAvatar) (UserAvatarInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return UserAvatarInfo{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[avatar.UserID]; !ok {
+		return UserAvatarInfo{}, ErrNotFound
+	}
+	if avatar.UpdatedAt.IsZero() {
+		avatar.UpdatedAt = time.Now().UTC()
+	}
+	avatar.Data = append([]byte(nil), avatar.Data...)
+	s.avatars[avatar.UserID] = avatar
+	return userAvatarInfo(avatar), nil
+}
+
+func (s *MemoryAuthStore) DeleteUserAvatar(ctx context.Context, userID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	delete(s.avatars, userID)
+	s.mu.Unlock()
+	return nil
+}
+
+func userAvatarInfo(avatar UserAvatar) UserAvatarInfo {
+	return UserAvatarInfo{UserID: avatar.UserID, ContentType: avatar.ContentType, SizeBytes: int64(len(avatar.Data)), Fingerprint: avatar.Fingerprint, UpdatedAt: avatar.UpdatedAt}
 }
 
 func (s *MemoryAuthStore) GetUserPermissions(ctx context.Context, id string) ([]string, error) {

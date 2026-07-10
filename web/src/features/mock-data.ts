@@ -484,6 +484,12 @@ let mockArchiveSharesLoaded = false;
 
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  if (normalizedPath === "/auth/me") {
+    return {
+      user: { ...mockCurrentUser.user, roles: [...(mockCurrentUser.user.roles || [])] },
+      permissions: [...mockCurrentUser.permissions],
+    } satisfies CurrentUser;
+  }
   if (normalizedPath === "/audit-logs") {
     const query = path.includes("?") ? path.slice(path.indexOf("?") + 1) : "";
     const params = new URLSearchParams(query);
@@ -527,7 +533,6 @@ export function mockGet(path: string): unknown {
     };
   }
   const dataByPath: Record<string, unknown> = {
-    "/auth/me": mockCurrentUser,
     "/auth/mfa/status": mockMFAStatus,
     "/auth/passkeys": mockPasskeys,
     "/auth/oauth-links": mockOAuthLinks,
@@ -963,6 +968,21 @@ export function mockPut(path: string, body?: unknown): unknown {
   return { ok: true };
 }
 
+export async function mockPutBinary(path: string, body: Blob): Promise<unknown> {
+  const normalizedPath = stripQuery(path);
+  if (normalizedPath !== "/auth/avatar") return { ok: true };
+  const bytes = new Uint8Array(await body.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+  }
+  const updatedAt = new Date().toISOString();
+  mockCurrentUser.user.avatar_url = `data:${body.type || "image/png"};base64,${window.btoa(binary)}`;
+  mockCurrentUser.user.avatar_updated_at = updatedAt;
+  return { avatar_url: mockCurrentUser.user.avatar_url, content_type: body.type, size_bytes: body.size, updated_at: updatedAt };
+}
+
 export function mockDelete(path: string): unknown {
   const normalizedPath = stripQuery(path);
   const artifactShareDelete = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares\/([^/]+)$/);
@@ -994,6 +1014,11 @@ export function mockDelete(path: string): unknown {
     deleteFromArray(mockOAuthLinks as unknown as Record<string, unknown>[], decodeURIComponent(normalizedPath.replace(/^\/auth\/oauth-links\//, "")));
     return { status: "deleted" };
   }
+  if (normalizedPath === "/auth/avatar") {
+    delete mockCurrentUser.user.avatar_url;
+    delete mockCurrentUser.user.avatar_updated_at;
+    return undefined;
+  }
   if (/^\/services\/[^/]+$/.test(normalizedPath)) {
     const id = decodeURIComponent(normalizedPath.replace(/^\/services\//, ""));
     deleteFromArray(mockWorkers, id);
@@ -1024,6 +1049,7 @@ export function mockPathExists(path: string) {
   if (mockDeleteCollectionPath(normalizedPath)) return true;
   return new Set([
     "/auth/me",
+    "/auth/avatar",
     "/auth/login",
     "/auth/email",
     "/auth/email/confirm",
