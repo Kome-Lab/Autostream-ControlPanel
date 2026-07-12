@@ -209,15 +209,19 @@ export type AppSettings = {
   updated_at?: string;
 };
 
-export type AppVersion = {
+export type ServiceUpdateInfo = {
+  latest_version?: string;
+  update_check_source: string;
+  update_check_error?: string;
+};
+
+export type AppVersion = ServiceUpdateInfo & {
   service: string;
   version: string;
   commit: string;
   build_date: string;
-  latest_version?: string;
   update_available: boolean;
-  update_check_source: string;
-  update_check_error?: string;
+  service_updates: Record<string, ServiceUpdateInfo>;
 };
 
 export type NodeRegistrationResponse = {

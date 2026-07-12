@@ -41,6 +41,7 @@ export function LoginCard() {
   const [passkeyUnavailable, setPasskeyUnavailable] = useState(false);
   const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
   const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
+  const loginSecurityPending = appSettings.isLoading || (turnstileEnabled && !turnstileToken);
 
   const resetTurnstile = () => {
     setTurnstileToken("");
@@ -113,7 +114,7 @@ export function LoginCard() {
     setBusy(true);
     setMessage("");
     try {
-      const body = username.trim() ? { username: username.trim() } : {};
+      const body = { username: username.trim() || undefined, turnstile_token: turnstileToken };
       const start = await apiPost<PasskeyLoginStart>("/auth/passkeys/login/start", body);
       const credential = await navigator.credentials.get({ publicKey: publicKeyRequestOptionsFromJSON(start.public_key) });
       if (!credential || !(credential instanceof PublicKeyCredential)) {
@@ -131,6 +132,7 @@ export function LoginCard() {
       setCSRFToken(result.csrf_token);
       router.push("/admin/");
     } catch (error) {
+      resetTurnstile();
       setMessage(authErrorMessage(error, "Passkeyでログインできませんでした。"));
     } finally {
       setBusy(false);
@@ -159,13 +161,13 @@ export function LoginCard() {
           </>
         )}
         {message ? <p className="text-sm text-destructive">{message}</p> : null}
-        <Button className="w-full" type="submit" disabled={busy || (!mfaChallengeToken && turnstileEnabled && !turnstileToken) || (Boolean(mfaChallengeToken) && mfaCode.trim().length < 6)}>
+        <Button className="w-full" type="submit" disabled={busy || (!mfaChallengeToken && loginSecurityPending) || (Boolean(mfaChallengeToken) && mfaCode.trim().length < 6)}>
           {mfaChallengeToken ? "2FA確認" : t("login")}
         </Button>
       </form>
       {!mfaChallengeToken ? (
         <div className="space-y-2">
-          <Button type="button" variant="outline" className="w-full justify-start" disabled={busy} onClick={loginWithPasskey}>
+          <Button type="button" variant="outline" className="w-full justify-start" disabled={busy || loginSecurityPending} onClick={loginWithPasskey}>
             <KeyRound className="size-4" />
             Passkeyでログイン
           </Button>
@@ -176,7 +178,7 @@ export function LoginCard() {
         <div className="space-y-2">
           <div className="text-xs text-muted-foreground">OAuthログイン</div>
           {oauthProviders.data.map((provider) => (
-            <Button key={provider.id} type="button" variant="outline" className="w-full justify-start" disabled={busy || (turnstileEnabled && !turnstileToken)} onClick={() => startOAuthLogin(provider.id)}>
+            <Button key={provider.id} type="button" variant="outline" className="w-full justify-start" disabled={busy || loginSecurityPending} onClick={() => startOAuthLogin(provider.id)}>
               {provider.name || provider.provider_type}
             </Button>
           ))}

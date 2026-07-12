@@ -28,7 +28,8 @@ type passkeyRegistrationFinishRequest struct {
 }
 
 type passkeyLoginStartRequest struct {
-	Username string `json:"username"`
+	Username       string `json:"username"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 type passkeyLoginStartResponse struct {
@@ -178,6 +179,11 @@ func (s *Server) startPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	var body passkeyLoginStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	if status, code := s.turnstileFailure(r.Context(), r, body.TurnstileToken, "login"); code != "" {
+		s.writeAudit(r, store.AuditEvent{Action: "auth.passkey.login.start", ResourceType: "passkey", Result: "failure", Metadata: map[string]any{"reason": code}})
+		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
 	username := strings.TrimSpace(body.Username)

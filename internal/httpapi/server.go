@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/netpolicy"
@@ -10201,40 +10202,107 @@ func (s *Server) secretConfigured(ctx context.Context, name string) bool {
 }
 
 type versionInfoResponse struct {
-	Service           string `json:"service"`
-	Version           string `json:"version"`
-	Commit            string `json:"commit"`
-	BuildDate         string `json:"build_date"`
+	Service           string                               `json:"service"`
+	Version           string                               `json:"version"`
+	Commit            string                               `json:"commit"`
+	BuildDate         string                               `json:"build_date"`
+	LatestVersion     string                               `json:"latest_version,omitempty"`
+	UpdateAvailable   bool                                 `json:"update_available"`
+	UpdateCheckSource string                               `json:"update_check_source"`
+	UpdateCheckError  string                               `json:"update_check_error,omitempty"`
+	ServiceUpdates    map[string]serviceUpdateInfoResponse `json:"service_updates"`
+}
+
+type serviceUpdateInfoResponse struct {
 	LatestVersion     string `json:"latest_version,omitempty"`
-	UpdateAvailable   bool   `json:"update_available"`
 	UpdateCheckSource string `json:"update_check_source"`
 	UpdateCheckError  string `json:"update_check_error,omitempty"`
 }
 
-const defaultControlPanelUpdateCheckURL = "https://api.github.com/repos/Kome-Lab/Autostream-ControlPanel/releases/latest"
+type versionUpdateTarget struct {
+	serviceType       string
+	latestVersionEnv  string
+	updateCheckURLEnv string
+	defaultURL        string
+}
+
+const (
+	defaultControlPanelUpdateCheckURL  = "https://api.github.com/repos/Kome-Lab/Autostream-ControlPanel/releases/latest"
+	defaultWorkerUpdateCheckURL        = "https://api.github.com/repos/Kome-Lab/Autostream-Worker/releases/latest"
+	defaultEncoderUpdateCheckURL       = "https://api.github.com/repos/Kome-Lab/Autostream-Encoder-Recorder/releases/latest"
+	defaultDiscordBotUpdateCheckURL    = "https://api.github.com/repos/Kome-Lab/Autostream-DiscordBot/releases/latest"
+	defaultObservabilityUpdateCheckURL = "https://api.github.com/repos/Kome-Lab/Autostream-Observability/releases/latest"
+)
+
+var controlPanelVersionUpdateTarget = versionUpdateTarget{
+	serviceType:       "control-panel",
+	latestVersionEnv:  "AUTOSTREAM_LATEST_VERSION",
+	updateCheckURLEnv: "AUTOSTREAM_UPDATE_CHECK_URL",
+	defaultURL:        defaultControlPanelUpdateCheckURL,
+}
+
+var nodeVersionUpdateTargets = []versionUpdateTarget{
+	{serviceType: "worker", latestVersionEnv: "AUTOSTREAM_WORKER_LATEST_VERSION", updateCheckURLEnv: "AUTOSTREAM_WORKER_UPDATE_CHECK_URL", defaultURL: defaultWorkerUpdateCheckURL},
+	{serviceType: "encoder_recorder", latestVersionEnv: "AUTOSTREAM_ENCODER_RECORDER_LATEST_VERSION", updateCheckURLEnv: "AUTOSTREAM_ENCODER_RECORDER_UPDATE_CHECK_URL", defaultURL: defaultEncoderUpdateCheckURL},
+	{serviceType: "discord_bot", latestVersionEnv: "AUTOSTREAM_DISCORD_BOT_LATEST_VERSION", updateCheckURLEnv: "AUTOSTREAM_DISCORD_BOT_UPDATE_CHECK_URL", defaultURL: defaultDiscordBotUpdateCheckURL},
+	{serviceType: "observability", latestVersionEnv: "AUTOSTREAM_OBSERVABILITY_LATEST_VERSION", updateCheckURLEnv: "AUTOSTREAM_OBSERVABILITY_UPDATE_CHECK_URL", defaultURL: defaultObservabilityUpdateCheckURL},
+}
 
 func (s *Server) versionInfo(w http.ResponseWriter, r *http.Request) {
-	latest, source, checkErr := latestControlPanelVersion(r.Context())
+	targets := make([]versionUpdateTarget, 0, len(nodeVersionUpdateTargets)+1)
+	targets = append(targets, controlPanelVersionUpdateTarget)
+	targets = append(targets, nodeVersionUpdateTargets...)
+	updates := latestVersions(r.Context(), targets)
+	panelUpdate := updates[controlPanelVersionUpdateTarget.serviceType]
+	serviceUpdates := make(map[string]serviceUpdateInfoResponse, len(nodeVersionUpdateTargets))
+	for _, target := range nodeVersionUpdateTargets {
+		serviceUpdates[target.serviceType] = updates[target.serviceType]
+	}
 	writeJSON(w, http.StatusOK, versionInfoResponse{
 		Service:           "control-panel",
 		Version:           version.Current(),
 		Commit:            version.Commit,
 		BuildDate:         version.BuildDate,
-		LatestVersion:     latest,
-		UpdateAvailable:   versionIsNewer(latest, version.Current()),
-		UpdateCheckSource: source,
-		UpdateCheckError:  checkErr,
+		LatestVersion:     panelUpdate.LatestVersion,
+		UpdateAvailable:   versionIsNewer(panelUpdate.LatestVersion, version.Current()),
+		UpdateCheckSource: panelUpdate.UpdateCheckSource,
+		UpdateCheckError:  panelUpdate.UpdateCheckError,
+		ServiceUpdates:    serviceUpdates,
 	})
 }
 
-func latestControlPanelVersion(ctx context.Context) (string, string, string) {
-	if latest := strings.TrimSpace(os.Getenv("AUTOSTREAM_LATEST_VERSION")); latest != "" {
+func latestVersions(ctx context.Context, targets []versionUpdateTarget) map[string]serviceUpdateInfoResponse {
+	results := make([]serviceUpdateInfoResponse, len(targets))
+	var wait sync.WaitGroup
+	wait.Add(len(targets))
+	for index, target := range targets {
+		go func(index int, target versionUpdateTarget) {
+			defer wait.Done()
+			latest, source, checkErr := latestVersion(ctx, target)
+			results[index] = serviceUpdateInfoResponse{
+				LatestVersion:     latest,
+				UpdateCheckSource: source,
+				UpdateCheckError:  checkErr,
+			}
+		}(index, target)
+	}
+	wait.Wait()
+
+	updates := make(map[string]serviceUpdateInfoResponse, len(targets))
+	for index, target := range targets {
+		updates[target.serviceType] = results[index]
+	}
+	return updates
+}
+
+func latestVersion(ctx context.Context, target versionUpdateTarget) (string, string, string) {
+	if latest := strings.TrimSpace(os.Getenv(target.latestVersionEnv)); latest != "" {
 		return latest, "env", ""
 	}
-	rawURL := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_URL"))
+	rawURL := strings.TrimSpace(os.Getenv(target.updateCheckURLEnv))
 	source := "url"
 	if rawURL == "" {
-		rawURL = defaultControlPanelUpdateCheckURL
+		rawURL = target.defaultURL
 		source = "github"
 	} else if strings.EqualFold(rawURL, "disabled") || strings.EqualFold(rawURL, "off") || strings.EqualFold(rawURL, "false") {
 		return "", "disabled", ""

@@ -383,6 +383,12 @@ export const mockAppVersion = {
   latest_version: "v1.2.4",
   update_available: true,
   update_check_source: "mock",
+  service_updates: {
+    worker: { latest_version: "v1.2.1", update_check_source: "mock" },
+    encoder_recorder: { latest_version: "v1.2.0", update_check_source: "mock" },
+    discord_bot: { latest_version: "v1.1.8", update_check_source: "mock" },
+    observability: { latest_version: "v1.1.5", update_check_source: "mock" },
+  },
 };
 
 const mockResourceData: Record<string, unknown[]> = {

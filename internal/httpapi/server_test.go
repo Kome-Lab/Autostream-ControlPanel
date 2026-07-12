@@ -9310,6 +9310,87 @@ func TestLoginRequiresTurnstileWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestAlternativeLoginStartsRequireTurnstileWhenConfigured(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google Login",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "google-client-secret",
+		Scopes:       []string{"openid", "email"},
+		RedirectURI:  "https://control.example.com/auth/oauth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appSettings := store.NewMemoryAppSettingsStore()
+	if _, err := appSettings.UpdateAppSettings(t.Context(), store.AppSettings{AppName: "AutoStream", Timezone: "Asia/Tokyo", TurnstileEnabled: true, TurnstileSiteKey: "site-key", TurnstileConfigured: true}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.AppTurnstileSecretName, "turnstile-secret"); err != nil {
+		t.Fatal(err)
+	}
+	turnstile := &fakeTurnstileVerifier{result: TurnstileVerifyResult{Success: true, Action: "login"}}
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithPasskeyStore(auth),
+		WithIntegrationStore(integrations),
+		WithOAuthLoginStore(store.NewMemoryOAuthLoginStore()),
+		WithAppSettingsStore(appSettings),
+		WithSecretStore(secrets),
+		WithTurnstileVerifier(turnstile),
+	)
+
+	missingCases := []struct {
+		name string
+		path string
+	}{
+		{name: "passkey", path: "/auth/passkeys/login/start"},
+		{name: "oauth", path: "/auth/oauth/" + provider.ID + "/start"},
+	}
+	for _, testCase := range missingCases {
+		t.Run(testCase.name+" missing token", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, testCase.path, bytes.NewBufferString(`{}`))
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "turnstile_token_required") {
+				t.Fatalf("missing turnstile status = %d body = %s", res.Code, res.Body.String())
+			}
+		})
+	}
+	if len(turnstile.requests) != 0 {
+		t.Fatalf("missing tokens must not call verifier: %#v", turnstile.requests)
+	}
+
+	validCases := []struct {
+		name  string
+		path  string
+		token string
+	}{
+		{name: "passkey", path: "/auth/passkeys/login/start", token: "passkey-client-token"},
+		{name: "oauth", path: "/auth/oauth/" + provider.ID + "/start", token: "oauth-client-token"},
+	}
+	for _, testCase := range validCases {
+		t.Run(testCase.name+" valid token", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, testCase.path, bytes.NewBufferString(`{"turnstile_token":"`+testCase.token+`"}`))
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusOK {
+				t.Fatalf("valid turnstile status = %d body = %s", res.Code, res.Body.String())
+			}
+		})
+	}
+	if len(turnstile.requests) != 2 || turnstile.requests[0].Token != "passkey-client-token" || turnstile.requests[1].Token != "oauth-client-token" {
+		t.Fatalf("alternative login verifier requests mismatch: %#v", turnstile.requests)
+	}
+}
+
 func TestEmailConfirmationRequiresTurnstileBeforeConsumingToken(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{ID: "self-id", Username: "operator", Email: "old@example.jp"}, "correct horse battery", nil); err != nil {
@@ -12377,6 +12458,10 @@ func TestVersionEndpointShowsBuildInfoAndUpdate(t *testing.T) {
 		version.Version, version.Commit, version.BuildDate = previousVersion, previousCommit, previousBuildDate
 	})
 	t.Setenv("AUTOSTREAM_LATEST_VERSION", "v1.3.0")
+	t.Setenv("AUTOSTREAM_WORKER_LATEST_VERSION", "v2.4.1")
+	t.Setenv("AUTOSTREAM_ENCODER_RECORDER_LATEST_VERSION", "v3.0.2")
+	t.Setenv("AUTOSTREAM_DISCORD_BOT_LATEST_VERSION", "v1.8.4")
+	t.Setenv("AUTOSTREAM_OBSERVABILITY_LATEST_VERSION", "v4.2.0")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", nil); err != nil {
 		t.Fatal(err)
@@ -12395,6 +12480,24 @@ func TestVersionEndpointShowsBuildInfoAndUpdate(t *testing.T) {
 		if !strings.Contains(res.Body.String(), want) {
 			t.Fatalf("version response missing %s: %s", want, res.Body.String())
 		}
+	}
+	var payload versionInfoResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode version response: %v", err)
+	}
+	wants := map[string]string{
+		"worker":           "v2.4.1",
+		"encoder_recorder": "v3.0.2",
+		"discord_bot":      "v1.8.4",
+		"observability":    "v4.2.0",
+	}
+	for serviceType, want := range wants {
+		if got := payload.ServiceUpdates[serviceType].LatestVersion; got != want {
+			t.Fatalf("%s latest version = %q, want %q; response = %s", serviceType, got, want, res.Body.String())
+		}
+	}
+	if payload.ServiceUpdates["worker"].LatestVersion == payload.LatestVersion {
+		t.Fatalf("worker latest version must not reuse the Control Panel latest version: %s", res.Body.String())
 	}
 }
 
@@ -12415,6 +12518,7 @@ func TestVersionEndpointChecksConfiguredUpdateURL(t *testing.T) {
 	}))
 	defer updateServer.Close()
 	t.Setenv("AUTOSTREAM_UPDATE_CHECK_URL", updateServer.URL)
+	disableNodeVersionUpdateChecks(t)
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", nil); err != nil {
 		t.Fatal(err)
@@ -12438,6 +12542,7 @@ func TestVersionEndpointChecksConfiguredUpdateURL(t *testing.T) {
 
 func TestVersionEndpointCanDisableUpdateCheck(t *testing.T) {
 	t.Setenv("AUTOSTREAM_UPDATE_CHECK_URL", "off")
+	disableNodeVersionUpdateChecks(t)
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", nil); err != nil {
 		t.Fatal(err)
@@ -12451,6 +12556,14 @@ func TestVersionEndpointCanDisableUpdateCheck(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"update_check_source":"disabled"`) || strings.Contains(res.Body.String(), `"latest_version"`) {
 		t.Fatalf("disabled update check response mismatch: status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func disableNodeVersionUpdateChecks(t *testing.T) {
+	t.Helper()
+	for _, target := range nodeVersionUpdateTargets {
+		t.Setenv(target.latestVersionEnv, "")
+		t.Setenv(target.updateCheckURLEnv, "off")
 	}
 }
 

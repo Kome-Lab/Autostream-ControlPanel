@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useAppSettings, useCurrentUser, useNodes, useServiceHealth, useVersion } from "@/features/queries";
 import { hasPermission } from "@/lib/auth/permissions";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
-import type { WorkerNode } from "@/types/domain";
+import type { AppVersion, ServiceUpdateInfo, WorkerNode } from "@/types/domain";
 
 export function ApplicationInfoView() {
   const currentUser = useCurrentUser();
@@ -37,7 +37,7 @@ export function ApplicationInfoView() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => appVersion.refetch()} disabled={appVersion.isFetching}>
             <RefreshCcw className="size-4" />
-            Panel更新確認
+            更新情報を再確認
           </Button>
           <Button
             variant="outline"
@@ -98,7 +98,12 @@ export function ApplicationInfoView() {
               <>
                 <div className="grid gap-3 md:hidden">
                   {nodeRows.map((node) => (
-                    <ServiceInfoPanel key={node.service_id || node.id} node={node} timezone={timezone} latestVersion={appVersion.data} />
+                    <ServiceInfoPanel
+                      key={node.service_id || node.id}
+                      node={node}
+                      timezone={timezone}
+                      updateInfo={serviceUpdateForNode(node, appVersion.data)}
+                    />
                   ))}
                 </div>
                 <div className="hidden overflow-x-auto rounded-md border md:block">
@@ -133,7 +138,7 @@ export function ApplicationInfoView() {
                             <StatusBadge status={node.health_status || node.status || "-"} />
                           </TableCell>
                           <TableCell>
-                            <UpdateStatusBadge state={nodeUpdateState(node, appVersion.data)} />
+                            <UpdateStatusBadge state={nodeUpdateState(node, serviceUpdateForNode(node, appVersion.data))} />
                           </TableCell>
                         </TableRow>
                       ))}
@@ -141,7 +146,7 @@ export function ApplicationInfoView() {
                   </Table>
                 </div>
                 <p className="mt-3 text-xs text-muted-foreground">
-                  Nodeの更新確認はControl Panelの更新確認ソースから取得した最新バージョンとの比較です。同じリリース系列で運用するNodeの目安として表示します。
+                  Nodeごとに、対応するサービスの最新リリースと報告バージョンを比較しています。
                 </p>
               </>
             )}
@@ -198,7 +203,7 @@ function InfoItem({ label, value, monospace = false }: { label: string; value: R
   );
 }
 
-function ServiceInfoPanel({ node, timezone, latestVersion }: { node: WorkerNode; timezone?: string; latestVersion?: VersionInfo }) {
+function ServiceInfoPanel({ node, timezone, updateInfo }: { node: WorkerNode; timezone?: string; updateInfo?: ServiceUpdateInfo }) {
   return (
     <div className="rounded-md border bg-muted/20 p-3 text-sm">
       <div className="flex items-start justify-between gap-3">
@@ -212,7 +217,7 @@ function ServiceInfoPanel({ node, timezone, latestVersion }: { node: WorkerNode;
         <ServiceInfoLine label="バージョン" value={node.reported_version || node.version || "未報告"} />
         <ServiceInfoLine label="コミット" value={shortCommit(node.reported_commit)} monospace />
         <ServiceInfoLine label="ビルド日時" value={formatOptionalDate(node.reported_build_date, timezone)} />
-        <ServiceInfoLine label="更新確認" value={<UpdateStatusBadge state={nodeUpdateState(node, latestVersion)} />} />
+        <ServiceInfoLine label="更新確認" value={<UpdateStatusBadge state={nodeUpdateState(node, updateInfo)} />} />
       </div>
     </div>
   );
@@ -246,27 +251,27 @@ function formatOptionalDate(value?: string, timezone?: string) {
   return formatDateTimeInTimeZone(raw, timezone, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-type VersionInfo = {
-  version?: string;
-  latest_version?: string;
-  update_available?: boolean;
-  update_check_source?: string;
-};
-
 type UpdateState = {
   label: string;
   tone: "default" | "warning" | "muted" | "ok";
+  title?: string;
 };
 
-function controlPanelUpdateState(version?: VersionInfo): UpdateState {
+function controlPanelUpdateState(version?: AppVersion): UpdateState {
   if (!version) return { label: "確認中", tone: "muted" };
+  if (version.update_check_error) return { label: "確認失敗", tone: "warning", title: version.update_check_error };
   if (version.update_available && version.latest_version) return { label: `更新あり ${version.latest_version}`, tone: "warning" };
   if (version.update_check_source === "disabled") return { label: "更新確認なし", tone: "muted" };
   return { label: "更新なし", tone: "ok" };
 }
 
-function nodeUpdateState(node: WorkerNode, version?: VersionInfo): UpdateState {
+function serviceUpdateForNode(node: WorkerNode, version?: AppVersion) {
+  return version?.service_updates?.[node.service_type];
+}
+
+function nodeUpdateState(node: WorkerNode, version?: ServiceUpdateInfo): UpdateState {
   if (!(node.reported_version || node.version)) return { label: "未報告", tone: "muted" };
+  if (version?.update_check_error) return { label: "確認失敗", tone: "warning", title: version.update_check_error };
   const current = (node.reported_version || node.version || "").trim();
   const latest = version?.latest_version?.trim() || "";
   if (!latest) {
@@ -311,7 +316,7 @@ function normalizeVersionText(value: string) {
 
 function UpdateStatusBadge({ state }: { state: UpdateState }) {
   const variant = state.tone === "warning" ? "destructive" : state.tone === "muted" ? "secondary" : "default";
-  return <Badge variant={variant}>{state.label}</Badge>;
+  return <Badge variant={variant} title={state.title}>{state.label}</Badge>;
 }
 
 function serviceTypeLabel(type: string) {
