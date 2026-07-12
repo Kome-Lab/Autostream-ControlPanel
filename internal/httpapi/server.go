@@ -4503,7 +4503,7 @@ func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tok
 	if tokenIDValue == "" {
 		tokenIDValue = service.TokenID
 	}
-	return strings.Join([]string{
+	lines := []string{
 		"panel:",
 		"  url: " + yamlQuote(panelURL),
 		"",
@@ -4522,11 +4522,33 @@ func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tok
 		"  token_id: " + yamlQuote(tokenIDValue),
 		"  token: " + yamlQuote(tokenValue),
 		"",
+	}
+	if signingKey := nodeStreamIngestSigningKey(service.ServiceType, rawToken != ""); signingKey != "" {
+		lines = append(lines,
+			"stream_ingest:",
+			"  signing_key: "+yamlQuote(signingKey),
+			"",
+		)
+	}
+	lines = append(lines,
 		"agent:",
-		"  data_dir: " + yamlQuote(nodeAgentDataDir(service.ServiceType)),
-		"  log_dir: " + yamlQuote(nodeAgentLogDir(service.ServiceType)),
+		"  data_dir: "+yamlQuote(nodeAgentDataDir(service.ServiceType)),
+		"  log_dir: "+yamlQuote(nodeAgentLogDir(service.ServiceType)),
 		"",
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
+}
+
+func nodeStreamIngestSigningKey(serviceType string, includeSecret bool) string {
+	if !includeSecret {
+		return ""
+	}
+	switch strings.TrimSpace(serviceType) {
+	case "worker", "encoder_recorder":
+		return strings.TrimSpace(os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY"))
+	default:
+		return ""
+	}
 }
 
 func yamlQuote(value string) string {
@@ -4733,13 +4755,17 @@ func nodeAgentConfigResponse(r *http.Request, service store.RegisteredService, t
 	if panelURL == "" {
 		panelURL = "https://control.example.com"
 	}
-	return map[string]any{
+	response := map[string]any{
 		"panel": map[string]any{"url": panelURL},
 		"node":  map[string]any{"id": service.ServiceID, "name": service.ServiceName, "type": service.ServiceType},
 		"api":   map[string]any{"host": service.Host, "port": service.Port, "ssl_enabled": service.SSLEnabled},
 		"auth":  map[string]any{"token_id": tokenID, "token": rawToken},
 		"agent": map[string]any{"data_dir": nodeAgentDataDir(service.ServiceType), "log_dir": nodeAgentLogDir(service.ServiceType)},
 	}
+	if signingKey := nodeStreamIngestSigningKey(service.ServiceType, rawToken != ""); signingKey != "" {
+		response["stream_ingest"] = map[string]any{"signing_key": signingKey}
+	}
+	return response
 }
 
 func (s *Server) nodeAgentHeartbeat(w http.ResponseWriter, r *http.Request) {

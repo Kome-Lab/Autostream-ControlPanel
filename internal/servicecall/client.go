@@ -321,6 +321,12 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 			Message: "SERVICE_CALL_TOKEN is not configured on the Control Panel.",
 		})
 	}
+	if strings.TrimSpace(c.Config.IngestTokenSigningKey) == "" {
+		issues = append(issues, ReadinessIssue{
+			Code:    "stream_ingest_signing_key_missing",
+			Message: "AUTOSTREAM_STREAM_INGEST_SIGNING_KEY is not configured on the Control Panel.",
+		})
+	}
 	encoderURL := firstServiceURL(services, "encoder_recorder")
 	workerService := firstService(services, "worker")
 	for _, service := range services {

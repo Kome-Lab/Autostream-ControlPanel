@@ -10684,6 +10684,7 @@ func TestCreateServiceTokenRejectsEmptyScopes(t *testing.T) {
 
 func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read", "service_health.read", "audit_logs.read"}); err != nil {
 		t.Fatal(err)
@@ -10741,6 +10742,9 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if !strings.Contains(body.ConfigurationYAML, `ssl_enabled: true`) || !strings.Contains(body.ConfigurationYAML, body.RuntimeToken) || !strings.Contains(body.ConfigurationYAML, `host: "worker.example.com"`) {
 		t.Fatalf("configuration yaml missing node agent settings: %s", body.ConfigurationYAML)
 	}
+	if !strings.Contains(body.ConfigurationYAML, `stream_ingest:`) || !strings.Contains(body.ConfigurationYAML, `signing_key: "test-stream-ingest-signing-key"`) {
+		t.Fatalf("configuration yaml missing stream ingest signing key: %s", body.ConfigurationYAML)
+	}
 	legacyNodeName := "autostream-" + "node"
 	if strings.Contains(body.ConfigureCommand, legacyNodeName) || strings.Contains(body.ConfigurationYAML, legacyNodeName) || !strings.Contains(body.ConfigurationYAML, `/var/lib/autostream/worker`) {
 		t.Fatalf("node configuration should use service-specific paths: command=%s yaml=%s", body.ConfigureCommand, body.ConfigurationYAML)
@@ -10775,6 +10779,9 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 				TokenID string `json:"token_id"`
 				Token   string `json:"token"`
 			} `json:"auth"`
+			StreamIngest struct {
+				SigningKey string `json:"signing_key"`
+			} `json:"stream_ingest"`
 		} `json:"config"`
 		ConfigYML string `json:"config_yml"`
 	}
@@ -10783,6 +10790,9 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 	if configureBody.Config.Auth.TokenID == "" || configureBody.Config.Auth.Token == "" || configureBody.Config.Auth.Token == body.RuntimeToken || !strings.Contains(configureBody.ConfigYML, configureBody.Config.Auth.Token) {
 		t.Fatalf("configure endpoint did not rotate and return runtime token once: %#v", configureBody)
+	}
+	if configureBody.Config.StreamIngest.SigningKey != "test-stream-ingest-signing-key" || !strings.Contains(configureBody.ConfigYML, `signing_key: "test-stream-ingest-signing-key"`) {
+		t.Fatalf("configure endpoint did not return the stream ingest signing key: %#v", configureBody)
 	}
 	configuredNode, err := auth.GetService(t.Context(), "studio-worker-01")
 	if err != nil {
@@ -10829,6 +10839,27 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 	if strings.Contains(auditBody, `"token_id"`) && !strings.Contains(auditBody, `"\u003credacted\u003e"`) {
 		t.Fatalf("audit log token binding was not redacted: %s", auditBody)
+	}
+}
+
+func TestNodeConfigurationYAMLScopesSigningKeyToOneTimeWorkerEncoderConfigs(t *testing.T) {
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key")
+	request := httptest.NewRequest(http.MethodGet, "https://control.example.jp/nodes", nil)
+	worker := store.RegisteredService{ServiceID: "worker-01", ServiceName: "Worker 01", ServiceType: "worker", Host: "worker.example.jp", Port: 8443, SSLEnabled: true}
+
+	oneTime := nodeConfigurationYAML(request, worker, "token-id", "runtime-token")
+	if !strings.Contains(oneTime, `stream_ingest:`) || !strings.Contains(oneTime, `signing_key: "test-stream-ingest-signing-key"`) {
+		t.Fatalf("one-time worker config omitted signing key: %s", oneTime)
+	}
+	redacted := nodeConfigurationYAML(request, worker, "token-id", "")
+	if strings.Contains(redacted, "test-stream-ingest-signing-key") || strings.Contains(redacted, "stream_ingest") {
+		t.Fatalf("normal node config leaked signing key: %s", redacted)
+	}
+	discord := worker
+	discord.ServiceType = "discord_bot"
+	discordConfig := nodeConfigurationYAML(request, discord, "token-id", "runtime-token")
+	if strings.Contains(discordConfig, "test-stream-ingest-signing-key") || strings.Contains(discordConfig, "stream_ingest") {
+		t.Fatalf("discord config received an unrelated signing key: %s", discordConfig)
 	}
 }
 
@@ -11021,6 +11052,7 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 
 func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key")
 	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "*.example.com")
 	t.Setenv("AUTOSTREAM_REQUIRE_SERVICE_PUBLIC_ALLOWED_HOSTS", "true")
 	auth := store.NewMemoryAuthStore()
@@ -11074,6 +11106,9 @@ func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
 	if !strings.Contains(configRes.Body.String(), `"node_api_url":"https://worker-edited.example.com:9443"`) {
 		t.Fatalf("node configuration should use edited endpoint: %s", configRes.Body.String())
 	}
+	if strings.Contains(configRes.Body.String(), "test-stream-ingest-signing-key") || strings.Contains(configRes.Body.String(), "stream_ingest") {
+		t.Fatalf("normal node configuration response leaked one-time signing material: %s", configRes.Body.String())
+	}
 
 	configureReq := httptest.NewRequest(http.MethodPost, "/nodes/studio-worker-01/configure-token", nil)
 	configureReq.AddCookie(cookie)
@@ -11112,6 +11147,9 @@ func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
 	}
 	if rotateBody.RuntimeToken == "" || rotateBody.RuntimeTokenID == "" || !strings.Contains(rotateBody.ConfigurationYAML, rotateBody.RuntimeToken) {
 		t.Fatalf("runtime token was not returned once in config: %#v", rotateBody)
+	}
+	if !strings.Contains(rotateBody.ConfigurationYAML, `signing_key: "test-stream-ingest-signing-key"`) {
+		t.Fatalf("rotated one-time config omitted stream ingest signing key: %#v", rotateBody)
 	}
 	if rotateBody.RuntimeToken == token.RawToken || rotateBody.RuntimeTokenID == token.ID {
 		t.Fatalf("runtime token was not rotated: %#v", rotateBody)

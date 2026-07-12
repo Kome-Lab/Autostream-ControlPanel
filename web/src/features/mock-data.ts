@@ -784,7 +784,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       runtime_token: runtimeToken,
       created_at: baseTime,
       configure_command: mockConfigureCommand(request.node_type || "worker", nodeID, configureToken),
-      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${nodeID}"\n  name: "${request.name || "新規Node"}"\n  type: "${request.node_type || "worker"}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "runtime-token-demo"\n  token: "${runtimeToken}"\n`,
+      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${nodeID}"\n  name: "${request.name || "新規Node"}"\n  type: "${request.node_type || "worker"}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "runtime-token-demo"\n  token: "${runtimeToken}"${mockStreamIngestConfigYAML(request.node_type || "worker")}\n`,
       node: {
         id: nodeID,
         service_id: nodeID,
@@ -839,7 +839,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       node,
       runtime_token_id: runtimeTokenID,
       runtime_token: runtimeToken,
-      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${node.service_id || node.id}"\n  name: "${node.service_name}"\n  type: "${node.service_type}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "${runtimeTokenID}"\n  token: "${runtimeToken}"\n`,
+      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${node.service_id || node.id}"\n  name: "${node.service_name}"\n  type: "${node.service_type}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "${runtimeTokenID}"\n  token: "${runtimeToken}"${mockStreamIngestConfigYAML(node.service_type)}\n`,
     };
   }
   return { ok: true };
@@ -874,6 +874,11 @@ function mockConfigPath(serviceType: string) {
     default:
       return "/etc/autostream-worker/config.yml";
   }
+}
+
+function mockStreamIngestConfigYAML(serviceType: string) {
+  if (serviceType !== "worker" && serviceType !== "encoder_recorder") return "";
+  return `\n\nstream_ingest:\n  signing_key: "<stream-ingest-signing-key>"`;
 }
 
 export function mockPut(path: string, body?: unknown): unknown {

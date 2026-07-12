@@ -493,7 +493,7 @@ func TestStartReadinessIssues(t *testing.T) {
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "ftp://worker.example.com", Status: "online"},
 		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: "https://discord.example.com", Status: "online", LastHeartbeatAt: &stale, Capabilities: map[string]any{"audio_stream_forward": false}},
 	}, StartRequest{}, now)
-	for _, want := range []string{"service_call_token_missing", "service_public_url_invalid", "service_heartbeat_stale", "discord_audio_forward_unavailable"} {
+	for _, want := range []string{"service_call_token_missing", "stream_ingest_signing_key_missing", "service_public_url_invalid", "service_heartbeat_stale", "discord_audio_forward_unavailable"} {
 		if !hasIssueCode(issues, want) {
 			t.Fatalf("missing readiness issue %s in %#v", want, issues)
 		}
@@ -502,7 +502,7 @@ func TestStartReadinessIssues(t *testing.T) {
 
 func TestStartReadinessAllowsUnknownAudioForwardCapability(t *testing.T) {
 	now := time.Now().UTC()
-	client := Client{Config: Config{Token: "service-token"}}
+	client := Client{Config: Config{Token: "service-token", IngestTokenSigningKey: "stream-ingest-signing-key"}}
 	issues := client.StartReadinessIssues([]store.RegisteredService{
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com", Status: "online"},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com", Status: "online"},

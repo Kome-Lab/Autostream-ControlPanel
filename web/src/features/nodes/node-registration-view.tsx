@@ -395,7 +395,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             <FileCode2 className="size-5" />
             Configuration
           </CardTitle>
-          <CardDescription>Configure TokenとRuntime Tokenは生成直後だけ表示されます。</CardDescription>
+          <CardDescription>TokenとWorker／Encoder用のstream ingest署名鍵は、生成直後のconfig.ymlでだけ取得できます。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {configuration ? (
@@ -473,7 +473,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
               Token運用
             </div>
             <div className="text-muted-foreground">
-              Configure Tokenは設定取得用、Node Runtime TokenはPanelとNode Agent間の通常通信認証用です。再表示できない場合は再生成してください。
+              Configure Tokenは設定取得用、Node Runtime TokenはPanelとNode Agent間の通常通信認証用です。Worker／Encoderの署名鍵もconfig.ymlへ含まれるため、Node側のenvへ手入力せず、ファイル権限を制限してください。
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
               <RotateCw className="size-4" />
