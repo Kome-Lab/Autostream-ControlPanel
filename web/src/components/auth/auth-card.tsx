@@ -27,6 +27,7 @@ type LoginResponse = {
 export function LoginCard() {
   const { t } = useI18n();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const setupStatus = useSetupStatus();
   const appSettings = useAppSettings();
   const oauthProviders = useQuery({ queryKey: ["auth", "oauth", "providers", "login"], queryFn: () => apiGet<OAuthLoginProvider[]>("/auth/oauth/providers") });
@@ -42,6 +43,7 @@ export function LoginCard() {
   const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
   const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
   const loginSecurityPending = appSettings.isLoading || (turnstileEnabled && !turnstileToken);
+  const sessionExpired = searchParams.get("reason") === "session_expired";
 
   const resetTurnstile = () => {
     setTurnstileToken("");
@@ -141,6 +143,7 @@ export function LoginCard() {
 
   return (
     <AuthFrame title={t("login")} description="Control Panelにログインします。">
+      {sessionExpired ? <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">セッションの有効期限が切れました。もう一度ログインしてください。</div> : null}
       <form className="space-y-3" onSubmit={mfaChallengeToken ? verifyMFA : login}>
         {setupStatus.data?.setup_required ? (
           <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">

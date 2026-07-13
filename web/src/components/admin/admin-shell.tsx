@@ -1,7 +1,7 @@
 "use client";
 
 import type { ComponentType, ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
@@ -51,7 +51,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
-import { apiGet, apiPost, clearCSRFToken } from "@/lib/api/client";
+import { APIError, apiGet, apiPost, clearCSRFToken } from "@/lib/api/client";
 import { hasAnyPermission, hasPermission } from "@/lib/auth/permissions";
 import { useAppSettings, useCurrentUser, useServiceHealth, useVersion } from "@/features/queries";
 import type { CurrentUser, Locale, SetupStatus } from "@/types/domain";
@@ -131,12 +131,14 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const { locale, setLocale, t } = useI18n();
   const { dark, toggleTheme } = useTheme();
   const currentUser = useCurrentUser();
+  const authenticatedSessionSeen = useRef(false);
   const appSettings = useAppSettings();
   const appVersion = useVersion();
   const superAdmin = isSuperAdmin(currentUser.data);
   const canViewHealth = superAdmin || hasPermission(currentUser.data, "service_health.read");
   const serviceHealth = useServiceHealth(canViewHealth);
   const username = currentUser.data?.user.username || "";
+  const sessionExpired = currentUser.error instanceof APIError && currentUser.error.status === 401 && currentUser.error.code === "unauthorized";
   const logout = useMutation({
     mutationFn: () => apiPost<{ status: string }>("/auth/logout"),
     onSettled: () => {
@@ -146,7 +148,16 @@ export function AdminShell({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
+    if (currentUser.data) authenticatedSessionSeen.current = true;
+  }, [currentUser.data]);
+
+  useEffect(() => {
     if (!currentUser.isError) return;
+    if (sessionExpired) clearCSRFToken();
+    if (authenticatedSessionSeen.current) {
+      if (sessionExpired) window.location.replace("/login?reason=session_expired");
+      return;
+    }
     let active = true;
     apiGet<SetupStatus>("/setup/status")
       .then((status) => {
@@ -159,7 +170,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [currentUser.isError, router]);
+  }, [currentUser.isError, router, sessionExpired]);
 
   if (currentUser.isLoading) {
     return (
@@ -172,7 +183,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
     );
   }
 
-  if (currentUser.isError || !currentUser.data) {
+  if ((currentUser.isError && (!currentUser.data || sessionExpired)) || !currentUser.data) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background p-6">
         <div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-sm">

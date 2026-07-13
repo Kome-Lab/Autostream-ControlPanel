@@ -7,6 +7,9 @@ export function useCurrentUser() {
     queryKey: ["auth", "me"],
     queryFn: () => apiGet<CurrentUser>("/auth/me"),
     retry: false,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
 }
 
