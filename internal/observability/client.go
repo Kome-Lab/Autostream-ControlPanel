@@ -21,6 +21,15 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+type ResponseError struct {
+	StatusCode int
+	Code       string
+}
+
+func (e *ResponseError) Error() string {
+	return fmt.Sprintf("observability request failed with status %d", e.StatusCode)
+}
+
 type RemediationDispatchContext struct {
 	ActionID       string `json:"action_id"`
 	Action         string `json:"action"`
@@ -150,7 +159,8 @@ func (c Client) do(ctx context.Context, method, endpoint string, body io.Reader)
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("observability request failed with status %d", res.StatusCode)
+		response, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		return nil, &ResponseError{StatusCode: res.StatusCode, Code: observabilityErrorCode(response)}
 	}
 	response, err := io.ReadAll(io.LimitReader(res.Body, 4*1024*1024))
 	if err != nil {
@@ -160,6 +170,25 @@ func (c Client) do(ctx context.Context, method, endpoint string, body io.Reader)
 		response = []byte("null")
 	}
 	return json.RawMessage(response), nil
+}
+
+func observabilityErrorCode(body []byte) string {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	code := strings.TrimSpace(payload.Code)
+	if code == "" || len(code) > 64 {
+		return ""
+	}
+	for _, char := range code {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return ""
+		}
+	}
+	return code
 }
 
 func rejectObservabilityRedirect(req *http.Request, via []*http.Request) error {

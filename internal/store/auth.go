@@ -20,6 +20,7 @@ type User struct {
 	Email       string     `json:"email,omitempty"`
 	Status      string     `json:"status"`
 	Roles       []string   `json:"roles"`
+	RoleIDs     []string   `json:"-"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 	LastLoginIP string     `json:"last_login_ip,omitempty"`
 
@@ -237,6 +238,7 @@ func (s MariaDBAuthStore) CreateFirstAdmin(ctx context.Context, username, passwo
 	now := time.Now().UTC()
 	user := User{ID: newUUID(), Username: username, Status: "active", Roles: []string{"super_admin"}, PasswordHash: hash}
 	roleID := newUUID()
+	user.RoleIDs = []string{roleID}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, email, password_hash, status, created_at, updated_at) VALUES (?, ?, NULL, ?, 'active', ?, ?)`, user.ID, user.Username, user.PasswordHash, now, now); err != nil {
 		return User{}, err
 	}
@@ -274,7 +276,7 @@ func (s MariaDBAuthStore) FindUserByUsername(ctx context.Context, username strin
 	if lastLoginIP.Valid {
 		user.LastLoginIP = lastLoginIP.String
 	}
-	user.Roles, _ = s.userRoles(ctx, user.ID)
+	user.RoleIDs, user.Roles, _ = s.userRoleAssignments(ctx, user.ID)
 	return user, nil
 }
 
@@ -295,25 +297,28 @@ func (s MariaDBAuthStore) GetUser(ctx context.Context, id string) (User, error) 
 	if lastLoginIP.Valid {
 		user.LastLoginIP = lastLoginIP.String
 	}
-	user.Roles, _ = s.userRoles(ctx, user.ID)
+	user.RoleIDs, user.Roles, _ = s.userRoleAssignments(ctx, user.ID)
 	return user, nil
 }
 
-func (s MariaDBAuthStore) userRoles(ctx context.Context, userID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.name FROM roles r INNER JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ? ORDER BY r.name`, userID)
+func (s MariaDBAuthStore) userRoleAssignments(ctx context.Context, userID string) ([]string, []string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.name FROM roles r INNER JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ? ORDER BY r.name`, userID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
+	var roleIDs []string
 	var roles []string
 	for rows.Next() {
+		var roleID string
 		var role string
-		if err := rows.Scan(&role); err != nil {
-			return nil, err
+		if err := rows.Scan(&roleID, &role); err != nil {
+			return nil, nil, err
 		}
+		roleIDs = append(roleIDs, roleID)
 		roles = append(roles, role)
 	}
-	return roles, rows.Err()
+	return roleIDs, roles, rows.Err()
 }
 
 func (s MariaDBAuthStore) GetUserPermissions(ctx context.Context, id string) ([]string, error) {

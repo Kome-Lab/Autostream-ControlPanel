@@ -35,7 +35,7 @@ func (s *MemoryAuthStore) CreateUser(ctx context.Context, username, email, tempo
 	if err != nil {
 		return User{}, err
 	}
-	user := User{ID: newUUID(), Username: username, Email: email, Status: "pending_password_change", PasswordHash: hash}
+	user := User{ID: newUUID(), Username: username, Email: email, Status: "pending_password_change", PasswordHash: hash, RoleIDs: append([]string(nil), roleIDs...)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.byUsername[username]; exists {
@@ -63,7 +63,7 @@ func (s *MemoryAuthStore) CreateOAuthUser(ctx context.Context, username, email s
 	if err != nil {
 		return User{}, err
 	}
-	user := User{ID: newUUID(), Username: username, Email: email, Status: "active", PasswordHash: hash}
+	user := User{ID: newUUID(), Username: username, Email: email, Status: "active", PasswordHash: hash, RoleIDs: append([]string(nil), roleIDs...)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.byUsername[username]; exists {
@@ -98,6 +98,7 @@ func (s *MemoryAuthStore) UpdateUser(ctx context.Context, id string, patch UserP
 		user.Email = email
 	}
 	if patch.RoleIDs != nil {
+		user.RoleIDs = append([]string(nil), patch.RoleIDs...)
 		user.Roles = s.roleNamesLocked(patch.RoleIDs)
 	}
 	s.users[id] = user
@@ -292,6 +293,13 @@ func (s *MemoryAuthStore) DeleteRole(ctx context.Context, id string) error {
 			}
 		}
 		user.Roles = filtered
+		filteredIDs := user.RoleIDs[:0]
+		for _, roleID := range user.RoleIDs {
+			if roleID != id {
+				filteredIDs = append(filteredIDs, roleID)
+			}
+		}
+		user.RoleIDs = filteredIDs
 		s.users[userID] = user
 	}
 	return nil
@@ -328,5 +336,7 @@ func hasRole(user User, roleName string) bool {
 
 func publicUserCopy(user User) User {
 	user.PasswordHash = ""
+	user.Roles = append([]string(nil), user.Roles...)
+	user.RoleIDs = append([]string(nil), user.RoleIDs...)
 	return user
 }

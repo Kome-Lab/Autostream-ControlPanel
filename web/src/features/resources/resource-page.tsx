@@ -233,7 +233,7 @@ function CreateResourceForm({ resource, allowed, permission }: { resource: Resou
         }
       }
     },
-    onError: () => setMessage("作成できませんでした。入力内容、権限、ログイン状態を確認して再実行してください。"),
+    onError: (error) => setMessage(resourceWriteErrorMessage(resource, error, "作成")),
   });
 
   const submit: SubmitResource = (payload, options) => {
@@ -346,7 +346,7 @@ function ResourceFormFields({ resource, disabled, submit, initial, submitLabel }
     case "oauth-account-connect":
       return initial ? <OAuthAccountRenameForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} /> : <OAuthAccountConnectForm disabled={disabled} submit={submit} />;
     case "user":
-      return <UserForm disabled={disabled} submit={submit} />;
+      return <UserForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "role":
       return <RoleForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "notification-channel":
@@ -973,33 +973,65 @@ function OAuthAccountRenameForm({ disabled, submit, initial, submitLabel }: { di
   );
 }
 
-function UserForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+function UserForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
+  const editing = Boolean(initial);
+  const currentUser = useCurrentUser();
   const roles = useResourceOptions("/roles", ["id"], ["name", "id"], ["permissions"]);
-  const [username, setUsername] = useState("operator");
-  const [email, setEmail] = useState("operator@example.jp");
+  const initialRoleIDs = stringListSetting(rowValue(row, ["role_ids"]));
+  const initialRoleNames = stringListSetting(rowValue(row, ["roles"]));
+  const [username, setUsername] = useState(() => rowString(row, ["username"]) || "operator");
+  const [email, setEmail] = useState(() => rowString(row, ["email"]) || "operator@example.jp");
   const [temporaryPassword, setTemporaryPassword] = useState("");
-  const [roleIDs, setRoleIDs] = useState<string[]>([]);
+  const [roleIDs, setRoleIDs] = useState<string[]>(() => initialRoleIDs);
+  const [rolesChanged, setRolesChanged] = useState(false);
   const [sendWelcomeEmail, setSendWelcomeEmail] = useState(false);
+  const canAssignRoles = currentUser.data?.user.roles?.includes("super_admin") === true || hasPermission(currentUser.data, "roles.assign");
+  const editingSelf = editing && resourceRowID(row) === currentUser.data?.user.id;
+  const roleSelectionUnavailable = editing && initialRoleNames.length > 0 && initialRoleIDs.length === 0;
 
   return (
     <form
       className="space-y-3"
       onSubmit={(event) => {
         event.preventDefault();
-        submit({ username, email, temporary_password: temporaryPassword, role_ids: roleIDs, send_welcome_email: sendWelcomeEmail });
+        if (editing) {
+          const payload: Record<string, unknown> = { username: username.trim(), email: email.trim() };
+          if (rolesChanged && canAssignRoles && !editingSelf && !roleSelectionUnavailable) payload.role_ids = roleIDs;
+          submit(payload);
+          return;
+        }
+        const payload: Record<string, unknown> = { username: username.trim(), email: email.trim(), temporary_password: temporaryPassword, send_welcome_email: sendWelcomeEmail };
+        if (canAssignRoles && roleIDs.length > 0) payload.role_ids = roleIDs;
+        submit(payload);
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
         <TextField label="ユーザー名" value={username} onChange={setUsername} required />
         <TextField label="メールアドレス" value={email} onChange={setEmail} type="email" description="登録完了メールと本人確認用の連絡先です。" required />
-        <TextField label="初期パスワード" value={temporaryPassword} onChange={setTemporaryPassword} type="password" required description="ログイン後に変更してもらう一時パスワードです。" />
+        {!editing ? <TextField label="初期パスワード" value={temporaryPassword} onChange={setTemporaryPassword} type="password" required description="ログイン後に変更してもらう一時パスワードです。" /> : null}
       </div>
-      <label className="flex items-center gap-2 text-sm">
-        <Switch checked={sendWelcomeEmail} onCheckedChange={setSendWelcomeEmail} />
-        登録完了メールを送る
-      </label>
-      <CheckboxList label="付与するロール" values={roleIDs} onChange={setRoleIDs} items={roles} emptyText="ロールがありません。" />
-      <FormActions disabled={disabled || email.trim() === ""} />
+      {!editing ? (
+        <label className="flex items-center gap-2 text-sm">
+          <Switch checked={sendWelcomeEmail} onCheckedChange={setSendWelcomeEmail} />
+          登録完了メールを送る
+        </label>
+      ) : null}
+      <CheckboxList
+        label="付与するロール"
+        values={roleIDs}
+        onChange={(values) => {
+          setRoleIDs(values);
+          setRolesChanged(true);
+        }}
+        items={roles}
+        emptyText="ロールがありません。"
+        disabled={!canAssignRoles || editingSelf || roleSelectionUnavailable}
+      />
+      {!canAssignRoles ? <p className="text-xs text-muted-foreground">ロールの変更には「ロールを割り当て」権限が必要です。ユーザー名とメールアドレスは更新できます。</p> : null}
+      {editingSelf ? <p className="text-xs text-muted-foreground">ログイン中のユーザー自身のロールは変更できません。ユーザー名とメールアドレスは更新できます。</p> : null}
+      {roleSelectionUnavailable ? <p className="text-xs text-muted-foreground">既存ロール: {initialRoleNames.join("、")}。ロールIDを取得できないため、ロール変更は無効です。</p> : null}
+      <FormActions label={submitLabel} disabled={disabled || username.trim() === "" || email.trim() === "" || (!editing && temporaryPassword === "")} />
     </form>
   );
 }
@@ -1382,12 +1414,14 @@ function CheckboxList({
   onChange,
   items,
   emptyText = "選択肢がありません。",
+  disabled = false,
 }: {
   label: string;
   values: string[];
   onChange: (values: string[]) => void;
   items: SelectOption[];
   emptyText?: string;
+  disabled?: boolean;
 }) {
   return (
     <Field label={label}>
@@ -1397,7 +1431,7 @@ function CheckboxList({
         <div className="grid gap-2 md:grid-cols-2">
           {items.map((item) => (
             <label key={item.value} className="flex min-w-0 items-start gap-2 rounded-md border bg-background p-3 text-sm">
-              <Checkbox checked={values.includes(item.value)} onCheckedChange={(checked) => onChange(toggleListValue(values, item.value, Boolean(checked)))} />
+              <Checkbox disabled={disabled} checked={values.includes(item.value)} onCheckedChange={(checked) => onChange(toggleListValue(values, item.value, Boolean(checked)))} />
               <span className="min-w-0">
                 <span className="block break-words font-medium">{item.label}</span>
                 {item.description ? <span className="block text-xs text-muted-foreground">{item.description}</span> : null}
@@ -1837,7 +1871,7 @@ function EditResourceButton({ resource, row, disabled }: { resource: ResourceDef
       setMessage("更新しました。");
       await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
     },
-    onError: () => setMessage("更新できませんでした。入力内容、権限、ログイン状態を確認して再実行してください。"),
+    onError: (error) => setMessage(resourceWriteErrorMessage(resource, error, "更新")),
   });
   const submit: SubmitResource = (payload) => {
     setMessage("");
@@ -1854,7 +1888,7 @@ function EditResourceButton({ resource, row, disabled }: { resource: ResourceDef
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{resource.title}を編集</DialogTitle>
-          <DialogDescription>作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。</DialogDescription>
+          <DialogDescription>{resource.form === "user" ? "ユーザー名、メールアドレス、割り当てロールを更新します。" : "作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。"}</DialogDescription>
         </DialogHeader>
         <ResourceFormFields resource={resource} disabled={mutation.isPending} submit={submit} initial={row} submitLabel="更新" />
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
@@ -1869,7 +1903,48 @@ function EditResourceButton({ resource, row, disabled }: { resource: ResourceDef
 }
 
 function resourceCanEdit(resource: ResourceDefinition) {
-  return Boolean(resource.form && !["security-settings", "user", "notification-channel"].includes(resource.form));
+  return Boolean(resource.form && !["security-settings", "notification-channel"].includes(resource.form));
+}
+
+function resourceWriteErrorMessage(resource: ResourceDefinition, error: Error, action: "作成" | "更新") {
+  const fallback = `${action}できませんでした。入力内容、権限、ログイン状態を確認して再実行してください。`;
+  if (!(error instanceof APIError)) return fallback;
+  const common: Record<string, string> = {
+    bad_request: "送信内容を確認できませんでした。入力内容を見直してください。",
+    csrf_failed: "ログイン状態が古くなっています。画面を再読み込みしてから再実行してください。",
+    forbidden: "この設定を変更する権限がありません。",
+    permission_denied: "ロールを変更する権限がありません。",
+  };
+  if (common[error.code || ""]) return common[error.code || ""];
+  if (resource.path === "/users") {
+    const messages: Record<string, string> = {
+      cannot_update_own_roles: "ログイン中のユーザー自身のロールは変更できません。ユーザー名またはメールアドレスだけを更新してください。",
+      last_super_admin: "最後の有効なsuper_adminからロールを外すことはできません。",
+      cannot_assign_super_admin: "super_adminロールを付与できるのはsuper_adminだけです。",
+      permission_escalation: "自分が持っていない権限を含むロールは付与できません。",
+      invalid_role_assignment: "選択したロールを割り当てられません。ロール一覧を更新して再選択してください。",
+      invalid_permissions: "選択したロールに利用できない権限が含まれています。",
+      create_user_failed: "ユーザーを作成できませんでした。ユーザー名やメールアドレスの重複を確認してください。",
+      update_user_failed: "ユーザーを更新できませんでした。ユーザー名やメールアドレスの形式・重複を確認してください。",
+    };
+    if (messages[error.code || ""]) return messages[error.code || ""];
+  }
+  if (resource.path === "/observability/notification-channels") {
+    const messages: Record<string, string> = {
+      invalid_notification_channel: "通知先の必須項目が不足しています。通知方式ごとの入力内容を確認してください。",
+      invalid_webhook_url: "Webhook URLを利用できません。DiscordまたはSlackの正規HTTPS URLを指定してください。",
+      invalid_smtp_channel: "SMTP設定を利用できません。送信先、Host、From、TLS設定を確認してください。",
+      secret_encryption_key_required: "Observabilityの秘密情報暗号化キーが未設定です。AUTOSTREAM_SECRET_ENCRYPTION_KEYを設定してObservabilityを再起動してください。",
+      observability_auth_failed: "Control PanelとObservabilityのNode Runtime Tokenが一致していません。Observabilityのconfig.ymlを再発行して反映してください。",
+      observability_not_configured: "登録済みのObservability Nodeが見つかりません。Node登録、公開URL、config.yml、Service Healthを確認してください。",
+      observability_unavailable: "Observabilityが一時的に利用できません。Node状態とObservabilityのログを確認してください。",
+      observability_rate_limited: "Observabilityへのリクエストが集中しています。少し待ってから再実行してください。",
+      observability_request_rejected: "Observabilityが通知先設定を受け付けませんでした。入力内容を確認してください。",
+      observability_request_failed: "Observabilityへ接続できません。Nodeの公開URL、通信経路、サービスログを確認してください。",
+    };
+    if (messages[error.code || ""]) return messages[error.code || ""];
+  }
+  return fallback;
 }
 
 function DeleteResourceButton({ row, disabled, permission, onDelete }: { row: ResourceRow; disabled: boolean; permission?: string; onDelete: (row: ResourceRow) => void }) {
@@ -2309,6 +2384,7 @@ const columnLabels: Record<string, string> = {
   last_heartbeat_at: "最終Heartbeat",
   last_login_at: "最終ログイン",
   permissions: "権限",
+  roles: "ロール",
   profile_summary: "設定内容",
   bot_summary: "BOT設定",
   output_summary: "出力設定",

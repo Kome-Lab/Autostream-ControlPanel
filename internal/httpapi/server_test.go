@@ -9658,6 +9658,47 @@ func TestUserRoleAssignmentRequiresRolesAssign(t *testing.T) {
 	}
 }
 
+func TestUsersExposeRoleIDsForEditingAndPreserveUntouchedRoles(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "admin-id", Username: "admin", Roles: []string{"admin"}}, "correct horse battery", []string{"users.read", "users.update"}); err != nil {
+		t.Fatal(err)
+	}
+	role, err := auth.CreateRole(t.Context(), "operator", []string{"streams.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := auth.CreateUser(t.Context(), "target", "target@example.jp", "correct horse battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/users", nil)
+	listReq.AddCookie(cookie)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK || !strings.Contains(listRes.Body.String(), `"role_ids":["`+role.ID+`"]`) {
+		t.Fatalf("user list did not expose editable role ids: status=%d body=%s", listRes.Code, listRes.Body.String())
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/users/"+target.ID, bytes.NewBufferString(`{"username":"target-updated","email":"updated@example.jp"}`))
+	updateReq.AddCookie(cookie)
+	updateReq.Header.Set("X-CSRF-Token", csrf)
+	updateRes := httptest.NewRecorder()
+	handler.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusOK || !strings.Contains(updateRes.Body.String(), `"role_ids":["`+role.ID+`"]`) {
+		t.Fatalf("user update lost untouched roles: status=%d body=%s", updateRes.Code, updateRes.Body.String())
+	}
+	updated, err := auth.GetUser(t.Context(), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Username != "target-updated" || updated.Email != "updated@example.jp" || !slices.Equal(updated.RoleIDs, []string{role.ID}) || !slices.Equal(updated.Roles, []string{"operator"}) {
+		t.Fatalf("unexpected updated user: %#v", updated)
+	}
+}
+
 func TestNonSuperAdminCannotAssignSuperAdminRole(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{ID: "super-id", Username: "super", Roles: []string{"super_admin"}}, "correct horse battery", []string{"users.read"}); err != nil {
@@ -12110,6 +12151,60 @@ func TestObservabilityProxyDoesNotLeakTokenOnUpstreamError(t *testing.T) {
 	}
 	if strings.Contains(res.Body.String(), "secret-token") {
 		t.Fatalf("token leaked in response: %s", res.Body.String())
+	}
+}
+
+func TestObservabilityNotificationProxyPreservesSafeUpstreamErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "invalid webhook", status: http.StatusBadRequest, body: `{"code":"invalid_webhook_url","detail":"https://hooks.example/private-token"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_webhook_url"},
+		{name: "missing encryption key", status: http.StatusServiceUnavailable, body: `{"code":"secret_encryption_key_required","detail":"private-key-material"}`, wantStatus: http.StatusServiceUnavailable, wantCode: "secret_encryption_key_required"},
+		{name: "runtime token mismatch", status: http.StatusUnauthorized, body: `{"code":"invalid_service_token","detail":"Bearer private-token"}`, wantStatus: http.StatusBadGateway, wantCode: "observability_auth_failed"},
+		{name: "untrusted error code", status: http.StatusBadRequest, body: `{"code":"private_token","detail":"private-token"}`, wantStatus: http.StatusBadRequest, wantCode: "observability_request_rejected"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer obs.Close()
+
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"notification_channels.create"}); err != nil {
+				t.Fatal(err)
+			}
+			registerObservabilityNodeForTest(t, auth, "node-runtime-token", obs.URL)
+			handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+			cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+			req := httptest.NewRequest(http.MethodPost, "/observability/notification-channels", bytes.NewBufferString(`{"name":"ops","type":"slack","webhook_url":"https://hooks.slack.com/services/T/B/private-token","enabled":true}`))
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != tt.wantStatus || !strings.Contains(res.Body.String(), `"code":"`+tt.wantCode+`"`) {
+				t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+			}
+			for _, secret := range []string{"private-token", "private-key-material", "hooks.slack.com/services"} {
+				if strings.Contains(res.Body.String(), secret) {
+					t.Fatalf("upstream or request secret leaked: %s", res.Body.String())
+				}
+			}
+			events := auth.AuditEvents()
+			if len(events) == 0 || events[len(events)-1].Result != "failure" || events[len(events)-1].Metadata["reason"] != tt.wantCode {
+				t.Fatalf("missing safe failure audit: %#v", events)
+			}
+			metadata, _ := json.Marshal(events[len(events)-1].Metadata)
+			if strings.Contains(string(metadata), "private-token") || strings.Contains(string(metadata), "hooks.slack.com/services") {
+				t.Fatalf("notification secret leaked in audit: %s", metadata)
+			}
+		})
 	}
 }
 

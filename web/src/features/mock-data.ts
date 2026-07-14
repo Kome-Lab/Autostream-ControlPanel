@@ -441,8 +441,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "acct-both", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "配信運用 共通", display_name: "配信運用 共通", email: "operations@example.jp", account_purpose: "drive_youtube", scopes: ["openid", "email", "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/youtube.force-ssl"], status: "connected", refresh_token_configured: true, updated_at: "2026-07-02T09:30:00+09:00" },
   ],
   "/users": [
-    { id: "user-admin", username: "admin", email: "admin@example.jp", status: "active", roles: ["super_admin"], last_login_at: baseTime },
-    { id: "user-operator", username: "operator", email: "operator@example.jp", status: "active", roles: ["operator"], last_login_at: "2026-07-02T08:20:00+09:00" },
+    { id: "user-admin", username: "admin", email: "admin@example.jp", status: "active", roles: ["super_admin"], role_ids: ["role-super-admin"], last_login_at: baseTime },
+    { id: "user-operator", username: "operator", email: "operator@example.jp", status: "active", roles: ["operator"], role_ids: ["role-operator"], last_login_at: "2026-07-02T08:20:00+09:00" },
   ],
   "/roles": [
     { id: "role-super-admin", name: "super_admin", permissions: ["*"], updated_at: baseTime },
@@ -713,12 +713,14 @@ export function mockPost(path: string, body?: unknown): unknown {
   if (stripQuery(path) === "/users") {
     const request = body as Partial<{ username: string; email: string; role_ids: string[] }>;
     if (!String(request.email || "").trim()) throw new Error("email_required");
+    const roleIDs = request.role_ids || [];
     const user = {
       id: `user-demo-${request.username || mockResourceData["/users"].length + 1}`,
       username: request.username || "operator",
       email: request.email || "",
       status: "pending_password_change",
-      roles: request.role_ids || [],
+      roles: mockRoleNames(roleIDs),
+      role_ids: roleIDs,
       created_at: baseTime,
       updated_at: baseTime,
     };
@@ -990,10 +992,20 @@ export function mockPut(path: string, body?: unknown): unknown {
       next.client_secret_configured = Boolean(request.client_secret || existing.client_secret_configured);
       delete next.client_secret;
     }
+    if (collectionPath === "/users" && Array.isArray(request.role_ids)) {
+      next.roles = mockRoleNames(request.role_ids.map(String));
+    }
     (rows as Record<string, unknown>[])[index] = next;
     return next;
   }
   return { ok: true };
+}
+
+function mockRoleNames(roleIDs: string[]) {
+  const roles = mockResourceData["/roles"] as Array<Record<string, unknown>>;
+  return roleIDs
+    .map((roleID) => roles.find((role) => role.id === roleID)?.name)
+    .filter((name): name is string => typeof name === "string" && name !== "");
 }
 
 export async function mockPutBinary(path: string, body: Blob): Promise<unknown> {

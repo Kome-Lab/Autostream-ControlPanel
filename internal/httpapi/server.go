@@ -10590,7 +10590,7 @@ func (s *Server) observabilityGet(endpoint string) http.HandlerFunc {
 		}
 		body, err := obs.Get(r.Context(), endpoint)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+			writeObservabilityProxyError(w, err)
 			return
 		}
 		writeObservabilityJSON(w, http.StatusOK, endpoint, body)
@@ -10780,7 +10780,7 @@ func (s *Server) observabilityGetAction(template string) http.HandlerFunc {
 		}
 		body, err := obs.Get(r.Context(), endpoint)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+			writeObservabilityProxyError(w, err)
 			return
 		}
 		writeObservabilityJSON(w, http.StatusOK, endpoint, body)
@@ -10800,7 +10800,7 @@ func (s *Server) observabilityPostAction(template string) http.HandlerFunc {
 		}
 		body, err := obs.Post(r.Context(), endpoint, map[string]any{})
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+			writeObservabilityProxyError(w, err)
 			return
 		}
 		current := currentFromContext(r.Context())
@@ -10830,7 +10830,7 @@ func (s *Server) observabilityPostActionWithAuditStatus(template, action, resour
 		}
 		body, err := obs.Post(r.Context(), endpoint, map[string]any{})
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+			writeObservabilityProxyError(w, err)
 			return
 		}
 		current := currentFromContext(r.Context())
@@ -10873,7 +10873,7 @@ func (s *Server) observabilityDeleteProxy(template, action, resourceType string)
 		}
 		body, err := obs.Delete(r.Context(), endpoint)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+			writeObservabilityProxyError(w, err)
 			return
 		}
 		current := currentFromContext(r.Context())
@@ -10906,7 +10906,22 @@ func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Req
 		body, err = obs.Post(r.Context(), endpoint, payload)
 	}
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "observability_request_failed"})
+		status, code := observabilityProxyError(err)
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{
+			ActorUserID:   current.User.ID,
+			ActorUsername: current.User.Username,
+			Action:        action,
+			ResourceType:  resourceType,
+			ResourceID:    r.PathValue("id"),
+			Result:        "failure",
+			Metadata: map[string]any{
+				"reason":            code,
+				"has_webhook_url":   payload["webhook_url"] != nil,
+				"has_smtp_password": payload["smtp_password"] != nil,
+			},
+		})
+		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
 	current := currentFromContext(r.Context())
@@ -10923,6 +10938,53 @@ func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Req
 		},
 	})
 	writeObservabilityJSON(w, successStatus, endpoint, body)
+}
+
+var publicObservabilityErrorCodes = map[string]struct{}{
+	"bad_request":                       {},
+	"event_type_required":               {},
+	"incident_context_missing":          {},
+	"invalid_incident_status":           {},
+	"invalid_notification_channel":      {},
+	"invalid_notification_event":        {},
+	"invalid_smtp_channel":              {},
+	"invalid_webhook_url":               {},
+	"not_found":                         {},
+	"remediation_action_not_executable": {},
+	"remediation_action_terminal":       {},
+	"stream_context_missing":            {},
+}
+
+func writeObservabilityProxyError(w http.ResponseWriter, err error) {
+	status, code := observabilityProxyError(err)
+	writeJSON(w, status, map[string]string{"code": code})
+}
+
+func observabilityProxyError(err error) (int, string) {
+	var upstream *observability.ResponseError
+	if !errors.As(err, &upstream) {
+		return http.StatusBadGateway, "observability_request_failed"
+	}
+	if upstream.StatusCode == http.StatusUnauthorized || upstream.StatusCode == http.StatusForbidden {
+		return http.StatusBadGateway, "observability_auth_failed"
+	}
+	if upstream.StatusCode == http.StatusServiceUnavailable {
+		if upstream.Code == "secret_encryption_key_required" {
+			return http.StatusServiceUnavailable, upstream.Code
+		}
+		return http.StatusServiceUnavailable, "observability_unavailable"
+	}
+	if upstream.StatusCode == http.StatusTooManyRequests {
+		return http.StatusTooManyRequests, "observability_rate_limited"
+	}
+	if upstream.StatusCode >= 400 && upstream.StatusCode < 500 {
+		code := "observability_request_rejected"
+		if _, ok := publicObservabilityErrorCodes[upstream.Code]; ok {
+			code = upstream.Code
+		}
+		return upstream.StatusCode, code
+	}
+	return http.StatusBadGateway, "observability_request_failed"
 }
 
 func (s *Server) observabilityClientForRequest(w http.ResponseWriter, r *http.Request) (observability.Client, bool) {
@@ -11400,7 +11462,9 @@ func isOAuthCallbackPath(path string) bool {
 }
 
 func publicUser(user store.User) map[string]any {
-	return map[string]any{"id": user.ID, "username": user.Username, "email": user.Email, "status": user.Status, "roles": user.Roles, "last_login_at": user.LastLoginAt, "last_login_ip": user.LastLoginIP}
+	roles := append([]string{}, user.Roles...)
+	roleIDs := append([]string{}, user.RoleIDs...)
+	return map[string]any{"id": user.ID, "username": user.Username, "email": user.Email, "status": user.Status, "roles": roles, "role_ids": roleIDs, "last_login_at": user.LastLoginAt, "last_login_ip": user.LastLoginIP}
 }
 
 func publicUsers(users []store.User) []map[string]any {

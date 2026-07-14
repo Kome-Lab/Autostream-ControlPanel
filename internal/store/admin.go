@@ -109,7 +109,7 @@ func (s MariaDBAuthStore) ListUsers(ctx context.Context) ([]User, error) {
 		if err != nil {
 			return nil, err
 		}
-		user.Roles, _ = s.userRoles(ctx, user.ID)
+		user.RoleIDs, user.Roles, _ = s.userRoleAssignments(ctx, user.ID)
 		users = append(users, user)
 	}
 	return users, rows.Err()

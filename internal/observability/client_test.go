@@ -2,6 +2,7 @@ package observability
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,6 +93,31 @@ func TestClientErrorDoesNotLeakTokenOrBody(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret-token") {
 		t.Fatalf("token leaked in error: %v", err)
+	}
+}
+
+func TestClientResponseErrorExposesOnlyStatusAndSafeCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"secret_encryption_key_required","detail":"Bearer secret-token"}`))
+	}))
+	defer server.Close()
+
+	client := Client{BaseURL: server.URL, Token: "secret-token", Timeout: time.Second}
+	_, err := client.Post(t.Context(), "/notification-channels", map[string]any{"webhook_url": "https://example.com/private"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var responseErr *ResponseError
+	if !errors.As(err, &responseErr) {
+		t.Fatalf("expected ResponseError, got %T: %v", err, err)
+	}
+	if responseErr.StatusCode != http.StatusServiceUnavailable || responseErr.Code != "secret_encryption_key_required" {
+		t.Fatalf("unexpected response error: %#v", responseErr)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "Bearer") || strings.Contains(err.Error(), "secret_encryption_key_required") {
+		t.Fatalf("upstream body leaked through error text: %v", err)
 	}
 }
 

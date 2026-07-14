@@ -74,13 +74,14 @@ func (s *MemoryAuthStore) AddUser(user User, password string, permissions []stri
 	user.PasswordHash = hash
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.users[user.ID] = user
-	s.byUsername[user.Username] = user.ID
-	s.permissions[user.ID] = append([]string(nil), permissions...)
 	for _, roleName := range user.Roles {
 		role := Role{ID: newUUID(), Name: roleName, Permissions: append([]string(nil), permissions...), CreatedAt: time.Now().UTC()}
 		s.roles[role.ID] = role
+		user.RoleIDs = append(user.RoleIDs, role.ID)
 	}
+	s.users[user.ID] = user
+	s.byUsername[user.Username] = user.ID
+	s.permissions[user.ID] = append([]string(nil), permissions...)
 	return nil
 }
 
