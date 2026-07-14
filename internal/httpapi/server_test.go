@@ -1027,6 +1027,7 @@ func TestOAuthAccountConnectionStartUsesProviderRedirectURI(t *testing.T) {
 	}
 	var body struct {
 		AuthorizationURL string `json:"authorization_url"`
+		AccountPurpose   string `json:"account_purpose"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -1040,6 +1041,9 @@ func TestOAuthAccountConnectionStartUsesProviderRedirectURI(t *testing.T) {
 	}
 	if scope := authorizationURL.Query().Get("scope"); !strings.Contains(scope, "https://www.googleapis.com/auth/drive.file") {
 		t.Fatalf("connected account scope missing drive access: %q", scope)
+	}
+	if body.AccountPurpose != store.OAuthAccountPurposeDrive {
+		t.Fatalf("connected account purpose = %q, want %q", body.AccountPurpose, store.OAuthAccountPurposeDrive)
 	}
 }
 
@@ -1093,6 +1097,9 @@ func TestOAuthAccountConnectionCallbackStoresRefreshTokenWithoutLeak(t *testing.
 	}
 	if !account.RefreshTokenConfigured || account.TokenFingerprint == "" || account.Email != "archive@example.com" {
 		t.Fatalf("unexpected public account response: %#v", account)
+	}
+	if account.AccountPurpose != store.OAuthAccountPurposeYouTube {
+		t.Fatalf("connected account purpose = %q, want %q", account.AccountPurpose, store.OAuthAccountPurposeYouTube)
 	}
 	dispatchAccount, err := integrations.GetOAuthAccountForDispatch(t.Context(), account.ID)
 	if err != nil {

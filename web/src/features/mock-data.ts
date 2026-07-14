@@ -436,8 +436,9 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "github-login", provider_type: "github", name: "GitHub Login", enabled: false, client_id: "github-client-id", client_secret_configured: true, allowed_domains: [], auto_provision: false, default_role_ids: [], redirect_uri: "https://control.example.jp/auth/oauth/callback" },
   ],
   "/integrations/oauth-accounts": [
-    { id: "acct-drive", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "広報 Drive", display_name: "広報 Drive", email: "archive@example.jp", status: "connected", refresh_token_configured: true, updated_at: baseTime },
-    { id: "acct-youtube", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "YouTube 管理", display_name: "YouTube 管理", email: "live@example.jp", status: "connected", refresh_token_configured: true, updated_at: "2026-07-01T16:10:00+09:00" },
+    { id: "acct-drive", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "広報 Drive", display_name: "広報 Drive", email: "archive@example.jp", account_purpose: "drive", scopes: ["openid", "email", "https://www.googleapis.com/auth/drive.file"], status: "connected", refresh_token_configured: true, updated_at: baseTime },
+    { id: "acct-youtube", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "YouTube 管理", display_name: "YouTube 管理", email: "live@example.jp", account_purpose: "youtube", scopes: ["openid", "email", "https://www.googleapis.com/auth/youtube.force-ssl"], status: "connected", refresh_token_configured: true, updated_at: "2026-07-01T16:10:00+09:00" },
+    { id: "acct-both", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "配信運用 共通", display_name: "配信運用 共通", email: "operations@example.jp", account_purpose: "drive_youtube", scopes: ["openid", "email", "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/youtube.force-ssl"], status: "connected", refresh_token_configured: true, updated_at: "2026-07-02T09:30:00+09:00" },
   ],
   "/users": [
     { id: "user-admin", username: "admin", email: "admin@example.jp", status: "active", roles: ["super_admin"], last_login_at: baseTime },
@@ -765,7 +766,7 @@ export function mockPost(path: string, body?: unknown): unknown {
     return { status: "sent", target: maskMockEmail(to) };
   }
   if (stripQuery(path) === "/integrations/oauth-accounts/start") {
-    const request = body as Partial<{ provider_id: string; account_label: string; redirect_after: string }>;
+    const request = body as Partial<{ provider_id: string; account_label: string; account_purpose: string; redirect_after: string }>;
     const providers = mockResourceData["/integrations/oauth-providers"] as Array<{ id: string; provider_type: string; name: string; enabled: boolean; redirect_uri: string }>;
     return {
       provider: providers.find((provider) => provider.id === request.provider_id) || providers[0],
@@ -774,6 +775,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       nonce: "mock-oauth-nonce",
       expires_at: baseTime,
       account_label: request.account_label || "Googleアカウント",
+      account_purpose: request.account_purpose || "drive_youtube",
     };
   }
   if (stripQuery(path) === "/nodes/registration-tokens") {

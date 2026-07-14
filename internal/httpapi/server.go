@@ -3732,6 +3732,7 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		"nonce":             state.Nonce,
 		"expires_at":        state.ExpiresAt,
 		"account_label":     strings.TrimSpace(body.AccountLabel),
+		"account_purpose":   store.OAuthAccountPurposeFromScopes(state.RequestedScopes),
 		"scopes":            state.RequestedScopes,
 	})
 }
@@ -3859,7 +3860,7 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		return
 	}
 	current := currentFromContext(r.Context())
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "integrations.oauth_account.connect", ResourceType: "oauth_account", ResourceID: account.ID, Result: "success", Metadata: map[string]any{"provider_type": account.ProviderType, "refresh_token_configured": account.RefreshTokenConfigured}})
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "integrations.oauth_account.connect", ResourceType: "oauth_account", ResourceID: account.ID, Result: "success", Metadata: map[string]any{"provider_type": account.ProviderType, "account_purpose": account.AccountPurpose, "refresh_token_configured": account.RefreshTokenConfigured}})
 	if redirectOnSuccess {
 		target := safeRedirectAfter(state.RedirectAfter)
 		if target == "" {
@@ -6165,7 +6166,17 @@ func (s *Server) runtimeIntegrationSecretAllowedForDriveDestination(ctx context.
 	case "drive_destination:folder_id":
 		return destination.ID == id, nil
 	case "oauth_account:refresh_token":
-		return destination.AuthMode == "oauth2" && destination.OAuthAccountID == id, nil
+		if destination.AuthMode != "oauth2" || destination.OAuthAccountID != id {
+			return false, nil
+		}
+		account, err := s.integrations.GetOAuthAccountForDispatch(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeDrive), nil
 	case "oauth_provider:client_secret":
 		if destination.AuthMode != "oauth2" || strings.TrimSpace(destination.OAuthAccountID) == "" {
 			return false, nil
@@ -6177,7 +6188,7 @@ func (s *Server) runtimeIntegrationSecretAllowedForDriveDestination(ctx context.
 		if err != nil {
 			return false, err
 		}
-		return account.ProviderID == id, nil
+		return account.ProviderID == id && store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeDrive), nil
 	default:
 		return false, nil
 	}
@@ -7514,7 +7525,7 @@ func (s *Server) validateStreamSettingsReferences(ctx context.Context, settings 
 		if err != nil {
 			return err
 		}
-		if !strings.EqualFold(account.ProviderType, "google") || !oauthScopesContainDriveAccess(account.Scopes) {
+		if !strings.EqualFold(account.ProviderType, "google") || !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeDrive) {
 			return errDriveOAuthAccountUnavailable
 		}
 	}
@@ -8189,7 +8200,7 @@ func (s *Server) validateYouTubeLiveAPIReadiness(ctx context.Context, stream sto
 	if !strings.EqualFold(provider.ProviderType, "google") || !strings.EqualFold(account.ProviderType, "google") {
 		return errYouTubeOAuthAccountUnavailable
 	}
-	if !oauthScopesContainYouTubeAccess(account.Scopes) {
+	if !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeYouTube) {
 		return errYouTubeOAuthAccountUnavailable
 	}
 	return nil
@@ -8274,6 +8285,9 @@ func (s *Server) youtubeOAuthCredentials(ctx context.Context, oauthAccountID str
 	}
 	if err != nil {
 		return ytlive.OAuthCredentials{}, err
+	}
+	if !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeYouTube) {
+		return ytlive.OAuthCredentials{}, errYouTubeOAuthAccountUnavailable
 	}
 	provider, err := s.integrations.GetOAuthProviderForDispatch(ctx, account.ProviderID)
 	if errors.Is(err, store.ErrNotFound) || strings.TrimSpace(provider.ClientSecret) == "" || strings.TrimSpace(provider.ClientID) == "" || !provider.Enabled {
@@ -8624,6 +8638,9 @@ func (s *Server) applyArchiveConfig(ctx context.Context, req *servicecall.StartR
 	if err != nil {
 		return err
 	}
+	if !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeDrive) {
+		return errDriveOAuthAccountUnavailable
+	}
 	provider, err := s.integrations.GetOAuthProviderForDispatch(ctx, account.ProviderID)
 	if errors.Is(err, store.ErrNotFound) || strings.TrimSpace(provider.ClientSecret) == "" {
 		return errDriveOAuthAccountUnavailable
@@ -8708,7 +8725,7 @@ func (s *Server) validateDriveOAuthReadiness(ctx context.Context, destination st
 	if !strings.EqualFold(provider.ProviderType, "google") || !strings.EqualFold(account.ProviderType, "google") {
 		return errDriveOAuthAccountUnavailable
 	}
-	if !oauthScopesContainDriveAccess(account.Scopes) {
+	if !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeDrive) {
 		return errDriveOAuthAccountUnavailable
 	}
 	return nil
@@ -11494,40 +11511,7 @@ func cleanRequestStringSlice(values []string) []string {
 }
 
 func oauthScopesContainConnectedAccountAccess(scopes []string) bool {
-	for _, scope := range scopes {
-		switch strings.TrimSpace(scope) {
-		case "https://www.googleapis.com/auth/drive.file",
-			"https://www.googleapis.com/auth/drive",
-			"https://www.googleapis.com/auth/youtube",
-			"https://www.googleapis.com/auth/youtube.force-ssl",
-			"https://www.googleapis.com/auth/youtube.upload":
-			return true
-		}
-	}
-	return false
-}
-
-func oauthScopesContainDriveAccess(scopes []string) bool {
-	for _, scope := range scopes {
-		switch strings.TrimSpace(scope) {
-		case "https://www.googleapis.com/auth/drive.file",
-			"https://www.googleapis.com/auth/drive":
-			return true
-		}
-	}
-	return false
-}
-
-func oauthScopesContainYouTubeAccess(scopes []string) bool {
-	for _, scope := range scopes {
-		switch strings.TrimSpace(scope) {
-		case "https://www.googleapis.com/auth/youtube",
-			"https://www.googleapis.com/auth/youtube.force-ssl",
-			"https://www.googleapis.com/auth/youtube.upload":
-			return true
-		}
-	}
-	return false
+	return store.OAuthAccountPurposeFromScopes(scopes) != store.OAuthAccountPurposeUnknown
 }
 
 func oauthAccountIdentityChanged(body oauthAccountRequest, existing store.OAuthAccount) bool {
@@ -11605,7 +11589,7 @@ func (s *Server) validateDriveDestinationRequest(ctx context.Context, body drive
 		if !strings.EqualFold(account.ProviderType, "google") {
 			return "drive_destination_oauth_account_not_google", http.StatusBadRequest
 		}
-		if !oauthScopesContainDriveAccess(account.Scopes) {
+		if !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeDrive) {
 			return "drive_destination_drive_scope_required", http.StatusBadRequest
 		}
 	}
@@ -11637,7 +11621,7 @@ func (s *Server) validateYouTubeOutputOAuthAccount(ctx context.Context, config m
 	if !strings.EqualFold(account.ProviderType, "google") {
 		return "youtube_output_oauth_account_not_google", http.StatusBadRequest
 	}
-	if !oauthScopesContainYouTubeAccess(account.Scopes) {
+	if !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeYouTube) {
 		return "youtube_output_youtube_scope_required", http.StatusBadRequest
 	}
 	return "", 0

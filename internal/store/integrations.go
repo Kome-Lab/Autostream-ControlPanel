@@ -36,6 +36,7 @@ type OAuthAccount struct {
 	ProviderType           string   `json:"provider_type"`
 	ProviderName           string   `json:"provider_name,omitempty"`
 	AccountLabel           string   `json:"account_label"`
+	AccountPurpose         string   `json:"account_purpose"`
 	DisplayName            string   `json:"display_name,omitempty"`
 	Subject                string   `json:"subject,omitempty"`
 	Email                  string   `json:"email,omitempty"`
@@ -266,6 +267,7 @@ func (s *MemoryIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context,
 	if !ok {
 		return OAuthAccount{}, ErrNotFound
 	}
+	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
 	return account, nil
 }
 
@@ -664,6 +666,7 @@ func (s MariaDBIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context,
 	account.Email = email.String
 	account.TokenFingerprint = tokenFingerprint.String
 	_ = json.Unmarshal([]byte(scopes), &account.Scopes)
+	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
 	account.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 	account.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
 	return account, nil
@@ -859,6 +862,7 @@ func scanOAuthAccount(row scanner) (OAuthAccount, error) {
 	account.TokenFingerprint = tokenFingerprint.String
 	account.RefreshTokenConfigured = refreshCiphertext.Valid && refreshCiphertext.String != ""
 	_ = json.Unmarshal([]byte(scopes), &account.Scopes)
+	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
 	account.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 	account.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
 	return account, nil
@@ -931,6 +935,7 @@ func normalizeOAuthAccount(account OAuthAccount, creating bool) (OAuthAccount, e
 	account.Email = strings.TrimSpace(account.Email)
 	account.RefreshToken = strings.TrimSpace(account.RefreshToken)
 	account.Scopes = cleanStringSlice(account.Scopes)
+	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
 	if !creating && strings.TrimSpace(account.ID) == "" {
 		return OAuthAccount{}, errors.New("oauth account id is required")
 	}
@@ -981,8 +986,53 @@ func publicOAuthProvider(provider OAuthProvider) OAuthProvider {
 
 func publicOAuthAccount(account OAuthAccount) OAuthAccount {
 	account.RefreshToken = ""
+	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
 	account.DisplayName = oauthAccountDisplayName(account)
 	return account
+}
+
+const (
+	OAuthAccountPurposeDrive        = "drive"
+	OAuthAccountPurposeYouTube      = "youtube"
+	OAuthAccountPurposeDriveYouTube = "drive_youtube"
+	OAuthAccountPurposeUnknown      = "unknown"
+)
+
+func OAuthAccountPurposeFromScopes(scopes []string) string {
+	drive, youtube := false, false
+	for _, scope := range scopes {
+		switch strings.TrimSpace(scope) {
+		case "https://www.googleapis.com/auth/drive.file",
+			"https://www.googleapis.com/auth/drive":
+			drive = true
+		case "https://www.googleapis.com/auth/youtube",
+			"https://www.googleapis.com/auth/youtube.force-ssl",
+			"https://www.googleapis.com/auth/youtube.upload":
+			youtube = true
+		}
+	}
+	switch {
+	case drive && youtube:
+		return OAuthAccountPurposeDriveYouTube
+	case drive:
+		return OAuthAccountPurposeDrive
+	case youtube:
+		return OAuthAccountPurposeYouTube
+	default:
+		return OAuthAccountPurposeUnknown
+	}
+}
+
+func OAuthAccountAllowsPurpose(account OAuthAccount, purpose string) bool {
+	actual := OAuthAccountPurposeFromScopes(account.Scopes)
+	switch strings.ToLower(strings.TrimSpace(purpose)) {
+	case OAuthAccountPurposeDrive:
+		return actual == OAuthAccountPurposeDrive || actual == OAuthAccountPurposeDriveYouTube
+	case OAuthAccountPurposeYouTube:
+		return actual == OAuthAccountPurposeYouTube || actual == OAuthAccountPurposeDriveYouTube
+	default:
+		return false
+	}
 }
 
 func oauthAccountDisplayName(account OAuthAccount) string {

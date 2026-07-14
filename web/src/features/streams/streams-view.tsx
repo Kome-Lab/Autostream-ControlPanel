@@ -18,7 +18,13 @@ import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { APIError, apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
-import { oauthAccountDisplayName as oauthAccountLabel, oauthProviderTypeLabel as providerTypeLabel } from "@/lib/oauth-account";
+import {
+  oauthAccountDisplayName as oauthAccountLabel,
+  oauthAccountPurposeLabel,
+  oauthAccountSupportsPurpose,
+  oauthProviderTypeLabel as providerTypeLabel,
+  type OAuthAccountPurpose,
+} from "@/lib/oauth-account";
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
@@ -73,7 +79,7 @@ export function StreamsView() {
   );
   const discordLabels = useOptionLabelMap(useResourceOptions("/discord/configs", ["name", "service_id", "id"]));
   const youtubeOutputLabels = useOptionLabelMap(useResourceOptions("/youtube/outputs", ["name", "id"]));
-  const archiveAccountLabels = useOptionLabelMap(useOAuthAccountOptions());
+  const archiveAccountLabels = useOptionLabelMap(useOAuthAccountOptions("drive"));
   const archiveDestinationLabels = useOptionLabelMap(useResourceOptions("/archive/destinations", ["name", "id"]));
   const archiveProfileLabels = useOptionLabelMap(useResourceOptions("/profiles/archive", ["name", "id"]));
   const overlayProfileLabels = useOptionLabelMap(useResourceOptions("/profiles/overlay", ["name", "id"]));
@@ -335,7 +341,7 @@ function StreamSlotForm({
 }) {
   const discordConfigs = useResourceOptions("/discord/configs", ["name", "service_id", "id"]);
   const youtubeOutputs = useResourceOptions("/youtube/outputs", ["name", "id"]);
-  const oauthAccounts = useOAuthAccountOptions();
+  const oauthAccounts = useOAuthAccountOptions("drive");
   const encoderProfiles = useResourceOptions("/profiles/encoder", ["name", "id"]);
   const captionProfiles = useResourceOptions("/profiles/caption", ["name", "id"]);
   const overlayProfiles = useResourceOptions("/profiles/overlay", ["name", "id"]);
@@ -465,6 +471,7 @@ function StreamSlotForm({
               <label className="flex min-h-10 items-center gap-2 self-end rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={archiveSharedDrive} onCheckedChange={(value) => setArchiveSharedDrive(value === true)} />共有ドライブへ保存</label>
               {archiveSharedDrive ? <TextField label="共有ドライブID" value={archiveSharedDriveID} onChange={setArchiveSharedDriveID} /> : null}
             </div>
+            {oauthAccounts.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">Drive保存用途で接続されたGoogleアカウントがありません。</p> : null}
           </FormSection>
 
           <FormSection title="映像・字幕" description="配信品質と映像に適用する設定">
@@ -601,23 +608,24 @@ function useResourceOptions(path: string, labelKeys: string[], detailKeys: strin
   );
 }
 
-function useOAuthAccountOptions() {
+function useOAuthAccountOptions(purpose: OAuthAccountPurpose) {
   const query = useResourceData<unknown>("/integrations/oauth-accounts");
   const rows = useMemo(() => normalizeRows(query.data), [query.data]);
   return useMemo(
     () =>
       rows
+        .filter((row) => oauthAccountSupportsPurpose(row, purpose))
         .map((row) => {
           const value = rowString(row, ["id"]);
           const provider = rowString(row, ["provider_type"]);
           return {
             value,
             label: oauthAccountLabel(row),
-            description: provider ? providerTypeLabel(provider) : undefined,
+            description: compactList([provider ? providerTypeLabel(provider) : "", oauthAccountPurposeLabel(row)]).join(" / "),
           };
         })
         .filter((option) => option.value),
-    [rows],
+    [purpose, rows],
   );
 }
 

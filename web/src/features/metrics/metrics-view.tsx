@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { MetricCard } from "@/components/admin/metric-card";
 import { EChartsPanel, type ChartOption } from "@/components/charts/echarts-panel";
+import { metricGroup, type MetricUnit } from "@/features/metrics/metric-classification";
 import { useAppSettings, useServiceHealth, useWorkerMetrics } from "@/features/queries";
 import { formatTimeInTimeZone } from "@/lib/timezone";
 import type { MetricSnapshot, WorkerNode } from "@/types/domain";
@@ -31,9 +32,6 @@ type MetricSeries = {
   status?: string;
   points: MetricPoint[];
 };
-
-type MetricUnit = "percent" | "kbps" | "bytes" | "seconds" | "count" | "flag" | "number";
-type MetricGroup = "cpu" | "memory" | "disk" | "network" | "heap" | "workload" | "runtime";
 
 const historyWindowMs = 3 * 60 * 60 * 1000;
 const maxPointsPerSeries = 360;
@@ -452,17 +450,6 @@ function serviceLabelMap(nodes: WorkerNode[]) {
 
 function serviceLabel(serviceID: string, serviceType: string, labels: Map<string, string>) {
   return labels.get(serviceID) || serviceID || serviceTypeLabel(serviceType);
-}
-
-function metricGroup(name: string, unit: MetricUnit): MetricGroup {
-  const lower = name.toLowerCase();
-  if (lower.includes("cpu")) return "cpu";
-  if (unit === "percent" && lower.includes("filesystem")) return "disk";
-  if (lower.includes("network") || lower.includes("net.") || lower.includes("interface") || lower.includes("rx_") || lower.includes("tx_")) return "network";
-  if (unit === "percent" && (lower.includes("memory") || lower.includes("mem"))) return "memory";
-  if (unit === "bytes" && lower.includes("heap")) return "heap";
-  if (lower.includes("bitrate") || lower.includes("fps") || lower.includes("active") || lower.includes("process_alive") || lower.includes("audio")) return "workload";
-  return "runtime";
 }
 
 function isNetworkThroughputMetric(name: string) {

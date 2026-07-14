@@ -6,6 +6,7 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test:i18n": "node scripts/test-i18n.mjs",
+    "test:metrics": "node --no-warnings --test tests/metric-classification.test.mts",
     "test:oauth-account": "node --no-warnings --test tests/oauth-account.test.mts"
   },
   "dependencies": {

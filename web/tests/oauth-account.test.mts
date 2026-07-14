@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { oauthAccountConfiguredName, oauthAccountDisplayName } from "../src/lib/oauth-account.ts";
+import {
+  oauthAccountConfiguredName,
+  oauthAccountDisplayName,
+  oauthAccountPurpose,
+  oauthAccountPurposeLabel,
+  oauthAccountSupportsPurpose,
+} from "../src/lib/oauth-account.ts";
 
 test("configured account label is used verbatim", () => {
   const account = {
@@ -32,4 +38,26 @@ test("legacy accounts receive distinct non-email fallbacks", () => {
   assert.equal(oauthAccountDisplayName(first), "Google Workspace (11111111)");
   assert.equal(oauthAccountDisplayName(second), "Google Workspace (22222222)");
   assert.notEqual(oauthAccountDisplayName(first), oauthAccountDisplayName(second));
+});
+
+test("account purpose is derived from granted scopes", () => {
+  const drive = { scopes: ["openid", "https://www.googleapis.com/auth/drive.file"] };
+  const youtube = { scopes: ["https://www.googleapis.com/auth/youtube.force-ssl"] };
+  const both = { scopes: ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/youtube"] };
+
+  assert.equal(oauthAccountPurpose(drive), "drive");
+  assert.equal(oauthAccountPurpose(youtube), "youtube");
+  assert.equal(oauthAccountPurpose(both), "drive_youtube");
+  assert.equal(oauthAccountPurposeLabel(both), "YouTube Live・Drive保存");
+  assert.equal(oauthAccountSupportsPurpose(drive, "drive"), true);
+  assert.equal(oauthAccountSupportsPurpose(drive, "youtube"), false);
+  assert.equal(oauthAccountSupportsPurpose(both, "drive"), true);
+  assert.equal(oauthAccountSupportsPurpose(both, "youtube"), true);
+});
+
+test("account purpose falls back to the API field when scopes are absent", () => {
+  const legacy = { account_purpose: "youtube" };
+  assert.equal(oauthAccountPurpose(legacy), "youtube");
+  assert.equal(oauthAccountSupportsPurpose(legacy, "youtube"), true);
+  assert.equal(oauthAccountSupportsPurpose(legacy, "drive"), false);
 });

@@ -21,7 +21,14 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
 import { hasPermission } from "@/lib/auth/permissions";
-import { oauthAccountConfiguredName, oauthAccountDisplayName, oauthProviderTypeLabel as providerTypeLabel } from "@/lib/oauth-account";
+import {
+  oauthAccountConfiguredName,
+  oauthAccountDisplayName,
+  oauthAccountPurposeLabel,
+  oauthAccountSupportsPurpose,
+  oauthProviderTypeLabel as providerTypeLabel,
+  type OAuthAccountPurpose,
+} from "@/lib/oauth-account";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { WorkerNode } from "@/types/domain";
 
@@ -439,7 +446,7 @@ function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { disable
 
 function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const row = initial || {};
-  const oauthAccounts = useOAuthAccountOptions();
+  const oauthAccounts = useOAuthAccountOptions("youtube");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "public-live");
   const [mode, setMode] = useState(() => rowString(row, ["mode", "config.mode"]) || "live_api_dry_run");
   const [rtmpURL, setRTMPURL] = useState(() => rowString(row, ["rtmp_url", "config.rtmp_url"]) || "rtmps://a.rtmps.youtube.com/live2");
@@ -523,7 +530,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
         <SwitchField label="自動停止" checked={autoStop} onCheckedChange={setAutoStop} />
         <SwitchField label="停止時に完了扱い" checked={completeOnStop} onCheckedChange={setCompleteOnStop} />
       </div>
-      {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、先にOAuth接続アカウントでGoogleアカウントを接続してください。</p> : null}
+      {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、YouTube Live用途でGoogleアカウントを接続してください。</p> : null}
       <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue)} />
     </form>
   );
@@ -769,7 +776,7 @@ function ArchiveProfileForm({ disabled, submit, initial, submitLabel }: { disabl
 
 function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const row = initial || {};
-  const oauthAccounts = useOAuthAccountOptions();
+  const oauthAccounts = useOAuthAccountOptions("drive");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "archive-drive");
   const [oauthAccountID, setOAuthAccountID] = useState(() => rowString(row, ["oauth_account_id"]) || noneValue);
   const [folderID, setFolderID] = useState(() => rowString(row, ["folder_id"]));
@@ -801,7 +808,7 @@ function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disa
         <TextField label="保存先パス" value={basePath} onChange={setBasePath} />
       </div>
       <SwitchField label="共有ドライブを使う" checked={sharedDrive} onCheckedChange={setSharedDrive} />
-      {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuth接続アカウントでGoogleアカウントを接続してください。</p> : null}
+      {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">Drive保存用途でGoogleアカウントを接続してください。</p> : null}
       <FormActions label={submitLabel} disabled={disabled || effectiveOAuthAccountID === noneValue} />
     </form>
   );
@@ -921,13 +928,13 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
         <SelectField label="Google OAuthプロバイダ" value={effectiveProviderID} onChange={setProviderID} options={[{ value: noneValue, label: "未選択" }, ...providerOptions]} />
         <TextField label="アカウント表示名" value={accountLabel} onChange={setAccountLabel} required />
         <SelectField
-          label="用途"
+          label="接続用途"
           value={accountPurpose}
           onChange={setAccountPurpose}
           options={[
-            { value: "drive_youtube", label: "YouTubeとDrive" },
+            { value: "drive_youtube", label: "YouTube Live・Drive保存" },
             { value: "youtube", label: "YouTube Liveのみ" },
-            { value: "drive", label: "Archive保存のみ" },
+            { value: "drive", label: "Drive保存のみ" },
           ]}
         />
       </div>
@@ -956,6 +963,7 @@ function OAuthAccountRenameForm({ disabled, submit, initial, submitLabel }: { di
           <div className="text-muted-foreground">接続情報</div>
           <div className="mt-1 space-y-1">
             <div>{providerType || "プロバイダ未設定"}</div>
+            <div>{oauthAccountPurposeLabel(initial)}</div>
             <div className="truncate text-muted-foreground">{email || "メール未取得"}</div>
           </div>
         </div>
@@ -1471,11 +1479,12 @@ function useResourceOptions(path: string, valueKeys: string[], labelKeys: string
   );
 }
 
-function useOAuthAccountOptions() {
+function useOAuthAccountOptions(purpose: OAuthAccountPurpose) {
   const rows = useResourceRows("/integrations/oauth-accounts");
   return useMemo(
     () =>
       rows
+        .filter((row) => oauthAccountSupportsPurpose(row, purpose))
         .map((row) => {
           const value = rowString(row, ["id"]);
           return {
@@ -1485,7 +1494,7 @@ function useOAuthAccountOptions() {
           };
         })
         .filter((option) => option.value),
-    [rows],
+    [purpose, rows],
   );
 }
 
@@ -1943,6 +1952,7 @@ function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): Reso
     return {
       ...row,
       oauth_account_display_name: oauthAccountDisplayName(row),
+      account_usage: oauthAccountPurposeLabel(row),
       account_summary: compactList([
         labelValue("プロバイダ", formatScalarValue("provider_type", rowString(row, ["provider_type"]))),
         oauthAccountConfiguredName(row) ? "表示名設定済み" : "表示名未設定",
@@ -2013,7 +2023,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path.startsWith("/profiles/")) return ["name", "profile_summary", "updated_at", "created_at"];
   if (resource.path === "/discord/configs") return ["name", "bot_summary", "updated_at"];
   if (resource.path === "/integrations/oauth-providers") return ["name", "provider_type", "enabled", "client_secret_configured", "updated_at"];
-  if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_summary", "updated_at"];
+  if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_usage", "account_summary", "updated_at"];
   if (resource.path === "/youtube/outputs") return ["name", "output_summary", "updated_at"];
   if (resource.path === "/archive/destinations") return ["name", "destination_summary", "updated_at"];
   if (resource.path === "/secrets/status") return ["secret_label", "secret_scope", "secret_status", "secret_hint", "updated_at"];
@@ -2089,6 +2099,7 @@ function formatScalarValue(key: string, value: string | number, timezone?: strin
   const raw = String(value);
   if (key === "action") return operationLabel(raw);
   if (key === "permissions") return permissionLabel(raw);
+  if (key === "account_purpose") return oauthAccountPurposeLabel({ account_purpose: raw });
   if ((key === "id" || key === "name") && columnLabels[raw]) return columnLabels[raw];
   const status = valueLabels[raw] || valueLabels[raw.toLowerCase()];
   if (status) return status;
@@ -2121,6 +2132,7 @@ function labelValue(label: string, value: string) {
 function oauthAccountOptionDescription(row: ResourceRow) {
   return compactList([
     providerTypeLabel(rowString(row, ["provider_type"])),
+    oauthAccountPurposeLabel(row),
     rowValue(row, ["refresh_token_configured"]) === true ? "接続済み" : "未接続",
   ]).join(" / ");
 }
@@ -2270,6 +2282,8 @@ const columnLabels: Record<string, string> = {
   node_name: "Node名",
   account_label: "表示名",
   oauth_account_display_name: "表示名",
+  account_purpose: "利用可能な用途",
+  account_usage: "利用可能な用途",
   provider_type: "プロバイダ",
   type: "種別",
   status: "状態",

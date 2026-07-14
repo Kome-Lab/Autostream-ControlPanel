@@ -127,3 +127,32 @@ func TestOAuthAccountDisplayNameKeepsLegacyAccountsDistinct(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthAccountPurposeIsDerivedFromGrantedScopes(t *testing.T) {
+	tests := []struct {
+		name          string
+		scopes        []string
+		purpose       string
+		allowsDrive   bool
+		allowsYouTube bool
+	}{
+		{name: "drive", scopes: []string{"https://www.googleapis.com/auth/drive.file"}, purpose: OAuthAccountPurposeDrive, allowsDrive: true},
+		{name: "youtube", scopes: []string{"https://www.googleapis.com/auth/youtube.force-ssl"}, purpose: OAuthAccountPurposeYouTube, allowsYouTube: true},
+		{name: "both", scopes: []string{"https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/youtube"}, purpose: OAuthAccountPurposeDriveYouTube, allowsDrive: true, allowsYouTube: true},
+		{name: "login only", scopes: []string{"openid", "email", "profile"}, purpose: OAuthAccountPurposeUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			account := OAuthAccount{Scopes: tt.scopes}
+			if got := OAuthAccountPurposeFromScopes(account.Scopes); got != tt.purpose {
+				t.Fatalf("purpose = %q, want %q", got, tt.purpose)
+			}
+			if got := OAuthAccountAllowsPurpose(account, OAuthAccountPurposeDrive); got != tt.allowsDrive {
+				t.Fatalf("drive eligibility = %v, want %v", got, tt.allowsDrive)
+			}
+			if got := OAuthAccountAllowsPurpose(account, OAuthAccountPurposeYouTube); got != tt.allowsYouTube {
+				t.Fatalf("youtube eligibility = %v, want %v", got, tt.allowsYouTube)
+			}
+		})
+	}
+}
