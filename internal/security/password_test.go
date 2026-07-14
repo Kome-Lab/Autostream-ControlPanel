@@ -33,6 +33,15 @@ func TestValidatePasswordWithConfiguredMinimum(t *testing.T) {
 	}
 }
 
+func TestValidatePasswordAllowsConfiguredMinimumOfEight(t *testing.T) {
+	if err := ValidatePasswordWithMinLength("safe-8-x", 8); err != nil {
+		t.Fatalf("expected eight-character password to satisfy configured minimum: %v", err)
+	}
+	if err := ValidatePasswordWithMinLength("short-7", 7); err == nil {
+		t.Fatal("expected effective minimum of eight characters")
+	}
+}
+
 func TestMaskSecret(t *testing.T) {
 	if got := MaskSecret("super-secret-token"); got != "<configured>" {
 		t.Fatalf("unexpected mask: %s", got)

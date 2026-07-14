@@ -265,7 +265,7 @@ export function DashboardView() {
             <CardDescription>確認・報告に使う管理情報</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            {superAdmin || hasPermission(currentUser.data, "audit_logs.read") ? <QuickLink href="/admin/audit-logs/" icon={ClipboardList} title="操作監査" detail="担当者の操作履歴" /> : null}
+            {superAdmin || hasPermission(currentUser.data, "audit_logs.read") ? <QuickLink href="/admin/audit-logs/" icon={ClipboardList} title="監査ログ" detail="担当者の操作履歴" /> : null}
             {superAdmin || hasPermission(currentUser.data, "archives.read") ? <QuickLink href="/admin/archive/" icon={Archive} title="録画・アーカイブ" detail="成果物と保存状態" /> : null}
             {superAdmin || hasPermission(currentUser.data, "system_settings.read") ? <QuickLink href="/admin/security/" icon={ShieldCheck} title="セキュリティ" detail="MFAと運用ポリシー" /> : null}
           </CardContent>

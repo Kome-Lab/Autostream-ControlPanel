@@ -18,6 +18,7 @@ import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { APIError, apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
+import { oauthAccountDisplayName as oauthAccountLabel, oauthProviderTypeLabel as providerTypeLabel } from "@/lib/oauth-account";
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
@@ -645,43 +646,6 @@ function optionLabel(labels: Map<string, string>, value?: string) {
   const id = value?.trim() || "";
   if (!id) return "";
   return labels.get(id) || id;
-}
-
-function oauthAccountLabel(row: ResourceRow) {
-  const email = rowString(row, ["email"]).toLowerCase();
-  const provider = rowString(row, ["provider_type"]);
-  for (const key of ["display_name", "account_label"]) {
-    const value = rowString(row, [key]);
-    if (usableOAuthAccountLabel(value, email, provider)) return value;
-  }
-  return `${providerTypeLabel(provider)}接続アカウント`;
-}
-
-function usableOAuthAccountLabel(value: string, email: string, provider: string) {
-  const label = value.trim();
-  if (!label) return false;
-  const normalized = label.toLowerCase();
-  if (email && normalized === email) return false;
-  return !genericOAuthAccountLabel(normalized, provider);
-}
-
-function genericOAuthAccountLabel(normalizedLabel: string, provider: string) {
-  const providerLabel = providerTypeLabel(provider).toLowerCase();
-  const compact = normalizedLabel.replace(/\s+/g, "");
-  return compact === `${providerLabel}接続アカウント`.toLowerCase() || compact === `${providerLabel}connectedaccount`;
-}
-
-function providerTypeLabel(providerType: string) {
-  switch (providerType.trim().toLowerCase()) {
-    case "google":
-      return "Google";
-    case "github":
-      return "GitHub";
-    case "discord":
-      return "Discord";
-    default:
-      return providerType.trim() || "OAuth";
-  }
 }
 
 function compactList(values: Array<string | undefined>) {

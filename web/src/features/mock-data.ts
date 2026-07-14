@@ -312,6 +312,17 @@ export const mockAuditLogs: AuditLog[] = [
     resource_type: "stream",
     resource_id: "stream-city-council",
   },
+  {
+    id: "audit-005",
+    timestamp: "2026-07-02T08:59:40+09:00",
+    action: "services.runtime_config.read",
+    actor_username: "encoder-field",
+    actor_ip: "192.0.2.30",
+    user_agent: "AutoStream Encoder Recorder",
+    result: "success",
+    resource_type: "service",
+    resource_id: "encoder-field",
+  },
 ];
 
 export function mockWorkerMetrics(): MetricSnapshot[] {
@@ -397,8 +408,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "enc-profile-mobile", name: "現場回線向け 720p", width: 1280, height: 720, fps: 30, bitrate_kbps: 3500, updated_at: "2026-07-02T08:35:00+09:00" },
   ],
   "/profiles/caption": [
-    { id: "caption-live-ja", name: "日本語ライブ字幕", language: "ja-JP", provider: "Deepgram", delay_ms: 800, updated_at: baseTime },
-    { id: "caption-manual", name: "手動字幕", language: "ja-JP", provider: "operator", delay_ms: 0, updated_at: "2026-07-01T18:20:00+09:00" },
+    { id: "caption-live-ja", name: "日本語ライブ字幕", language: "ja", provider: "deepgram", model: "nova-3", endpointing_ms: 300, interim_results: true, smart_format: true, delay_ms: 800, updated_at: baseTime },
+    { id: "caption-live-en", name: "英語ライブ字幕", language: "en", provider: "deepgram", model: "nova-3", endpointing_ms: 300, interim_results: true, smart_format: true, delay_ms: 800, updated_at: "2026-07-01T18:20:00+09:00" },
   ],
   "/profiles/overlay": [
     { id: "overlay-lower-third", name: "自治体ロゴ", watermark_enabled: true, watermark_image_name: "city-logo.png", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output", updated_at: baseTime },
@@ -425,8 +436,8 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "github-login", provider_type: "github", name: "GitHub Login", enabled: false, client_id: "github-client-id", client_secret_configured: true, allowed_domains: [], auto_provision: false, default_role_ids: [], redirect_uri: "https://control.example.jp/auth/oauth/callback" },
   ],
   "/integrations/oauth-accounts": [
-    { id: "acct-drive", provider_type: "google", account_label: "広報 Drive", display_name: "広報 Drive", email: "archive@example.jp", status: "connected", refresh_token_configured: true, updated_at: baseTime },
-    { id: "acct-youtube", provider_type: "google", account_label: "YouTube 管理", display_name: "YouTube 管理", email: "live@example.jp", status: "connected", refresh_token_configured: true, updated_at: "2026-07-01T16:10:00+09:00" },
+    { id: "acct-drive", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "広報 Drive", display_name: "広報 Drive", email: "archive@example.jp", status: "connected", refresh_token_configured: true, updated_at: baseTime },
+    { id: "acct-youtube", provider_id: "google-main", provider_type: "google", provider_name: "Google Workspace", account_label: "YouTube 管理", display_name: "YouTube 管理", email: "live@example.jp", status: "connected", refresh_token_configured: true, updated_at: "2026-07-01T16:10:00+09:00" },
   ],
   "/users": [
     { id: "user-admin", username: "admin", email: "admin@example.jp", status: "active", roles: ["super_admin"], last_login_at: baseTime },
@@ -501,7 +512,11 @@ export function mockGet(path: string): unknown {
     const params = new URLSearchParams(query);
     const search = String(params.get("q") || "").trim().toLowerCase();
     const result = String(params.get("result") || "").trim().toLowerCase();
+    const actionGroup = String(params.get("action_group") || "").trim();
+    const excludedActionGroup = String(params.get("exclude_action_group") || "").trim();
     return mockAuditLogs.filter((event) => {
+      if (actionGroup === "service_runtime_reads" && event.action !== "services.runtime_config.read") return false;
+      if (excludedActionGroup === "service_runtime_reads" && event.action === "services.runtime_config.read") return false;
       if (result && String(event.result || "").toLowerCase() !== result) return false;
       if (!search) return true;
       return [event.id, event.action, event.actor_username, event.actor_ip, event.user_agent, event.result, event.resource_type, event.resource_id]

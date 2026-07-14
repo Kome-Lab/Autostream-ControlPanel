@@ -83,7 +83,7 @@ const navSections: NavSection[] = [
       navItem("/admin/service-health/", "serviceHealth", Activity, ["service_health.read"], "Nodeとサービスの接続状態を確認", "Review node and service availability"),
       navItem("/admin/incidents/", "incidents", AlertTriangle, ["incidents.read"], "障害の検知、確認、解決を追跡", "Track detection, acknowledgement, and resolution"),
       navItem("/admin/archive/", "archive", Archive, ["archives.read", "archive_profiles.read", "integrations.read"], "録画成果物の確認、保存、ダウンロード", "Manage recordings, retention, and downloads"),
-      navItem("/admin/logs/", "logs", FileText, ["logs.read"], "配信とシステムの記録を確認", "Inspect stream and system records"),
+      navItem("/admin/logs/", "logs", FileText, ["logs.read"], "配信枠ごとの記録を確認", "Inspect records for each stream slot"),
     ],
   },
   {
@@ -95,7 +95,6 @@ const navSections: NavSection[] = [
       navItem("/admin/youtube/", "youtube", Video, ["youtube_outputs.read"], "YouTube出力と公開設定", "Configure YouTube outputs and visibility"),
       navItem("/admin/caption/", "caption", Captions, ["caption_profiles.read"], "字幕生成の標準設定", "Standardize caption generation"),
       navItem("/admin/overlay/", "overlay", Layers, ["overlay_profiles.read"], "案件ごとのウォーターマーク", "Manage stream watermarks"),
-      navItem("/admin/integrations/", "integrations", Plug, ["integrations.read"], "OAuthと外部サービス接続", "Manage OAuth and external connections"),
     ],
   },
   {
@@ -106,6 +105,7 @@ const navSections: NavSection[] = [
       navItem("/admin/remediation/", "remediation", HardDrive, ["remediation.read"], "承認制の復旧操作", "Review and approve recovery actions"),
       navItem("/admin/notifications/", "notifications", Bell, ["notification_channels.read"], "通知履歴と連絡先", "Manage delivery history and destinations"),
       navItem("/admin/metrics/", "metrics", BarChart3, ["metrics.read"], "Nodeと配信基盤の時系列指標", "Inspect time-series platform metrics"),
+      navItem("/admin/audit-logs/", "auditLogs", ClipboardList, ["audit_logs.read"], "誰が何をしたかを確認", "Review who changed what and when"),
     ],
   },
   {
@@ -113,7 +113,7 @@ const navSections: NavSection[] = [
     items: [
       navItem("/admin/users/", "users", Users, ["users.read"], "担当者アカウントと利用状態", "Manage operator accounts and access state"),
       navItem("/admin/roles/", "roles", Shield, ["roles.read"], "役割ごとの操作権限", "Manage role-based permissions"),
-      navItem("/admin/audit-logs/", "auditLogs", ClipboardList, ["audit_logs.read"], "誰が何をしたかを確認", "Review who changed what and when"),
+      navItem("/admin/integrations/", "integrations", Plug, ["integrations.read"], "OAuthと外部サービス接続", "Manage OAuth and external connections"),
       navItem("/admin/security/", "security", KeyRound, ["secrets.read_status", "system_settings.read"], "ログイン・MFA・シークレット設定", "Manage login, MFA, and secret settings"),
       navItem("/admin/nodes/", "nodeRegistration", Network, ["api_tokens.create"], "新しいNodeと登録トークンを発行", "Issue nodes and registration tokens"),
       navItem("/admin/registered-nodes/", "registeredNodes", ServerCog, ["api_tokens.create"], "登録済みNodeを編集・削除", "Edit and remove registered nodes"),
@@ -138,6 +138,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const canViewHealth = superAdmin || hasPermission(currentUser.data, "service_health.read");
   const serviceHealth = useServiceHealth(canViewHealth);
   const username = currentUser.data?.user.username || "";
+  const authenticated = Boolean(currentUser.data);
   const sessionExpired = currentUser.error instanceof APIError && currentUser.error.status === 401 && currentUser.error.code === "unauthorized";
   const logout = useMutation({
     mutationFn: () => apiPost<{ status: string }>("/auth/logout"),
@@ -150,6 +151,39 @@ export function AdminShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (currentUser.data) authenticatedSessionSeen.current = true;
   }, [currentUser.data]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let lastRefreshAt = 0;
+    let refreshInFlight = false;
+    const refreshAfterActivity = () => {
+      if (document.visibilityState !== "visible" || refreshInFlight) return;
+      const now = Date.now();
+      if (now - lastRefreshAt < 60_000) return;
+      lastRefreshAt = now;
+      refreshInFlight = true;
+      void apiPost<{ status: string }>("/auth/session/refresh")
+        .catch((error) => {
+          if (error instanceof APIError && error.status === 401) {
+            clearCSRFToken();
+            window.location.replace("/login?reason=session_expired");
+          }
+        })
+        .finally(() => {
+          refreshInFlight = false;
+        });
+    };
+    const activityEvents: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "scroll", "focus"];
+    for (const eventName of activityEvents) window.addEventListener(eventName, refreshAfterActivity, { passive: true });
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshAfterActivity();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      for (const eventName of activityEvents) window.removeEventListener(eventName, refreshAfterActivity);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [authenticated]);
 
   useEffect(() => {
     if (!currentUser.isError) return;

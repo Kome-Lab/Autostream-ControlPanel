@@ -92,6 +92,9 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	if payloads["discord_bot"]["worker_events_url"] != server.URL {
 		t.Fatalf("discord bot did not receive assigned worker event URL: %#v", payloads["discord_bot"])
 	}
+	if payloads["discord_bot"]["caption_audio_url"] != server.URL {
+		t.Fatalf("discord bot did not receive assigned worker caption audio URL: %#v", payloads["discord_bot"])
+	}
 	if token, ok := payloads["worker"]["stream_ingest_token"].(string); !ok || !strings.HasPrefix(token, "ast_ingest_v1.") {
 		t.Fatalf("worker did not receive signed ingest token: %#v", payloads["worker"])
 	}
@@ -112,8 +115,41 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	if err != nil || claims.StreamID != "stream-01" {
 		t.Fatalf("discord worker event token claims mismatch: claims=%#v err=%v", claims, err)
 	}
+	captionAudioToken, ok := payloads["discord_bot"]["caption_audio_token"].(string)
+	if !ok || !strings.HasPrefix(captionAudioToken, "ast_ingest_v1.") {
+		t.Fatalf("discord bot did not receive signed caption audio token: %#v", payloads["discord_bot"])
+	}
+	captionClaims, err := ingesttoken.Verify("test-ingest-signing-key", captionAudioToken, ingesttoken.Expected{
+		StreamID: "stream-01", ServiceID: "discord-01", ServiceType: "discord_bot", Purpose: "caption_audio", Audience: "worker",
+	})
+	if err != nil || captionClaims.StreamID != "stream-01" {
+		t.Fatalf("discord caption audio token claims mismatch: claims=%#v err=%v", captionClaims, err)
+	}
 	if _, ok := payloads["encoder_recorder"]["stream_ingest_token"]; ok {
 		t.Fatalf("encoder start payload must not receive ingest token: %#v", payloads["encoder_recorder"])
+	}
+}
+
+func TestStartPayloadOmitsCaptionRouteWhenCaptionProfileIsNotSelected(t *testing.T) {
+	client := testClient()
+	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
+	_, payloadValue, ok := client.startPayload(
+		store.Stream{ID: "stream-01"},
+		store.RegisteredService{ServiceID: "discord-01", ServiceType: "discord_bot"},
+		StartRequest{},
+		"https://encoder.example.com",
+		store.RegisteredService{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com"},
+		time.Now().UTC(),
+	)
+	if !ok {
+		t.Fatal("discord start payload was not built")
+	}
+	payload := payloadValue.(map[string]any)
+	if _, exists := payload["caption_audio_url"]; exists {
+		t.Fatalf("caption route must be omitted without a caption profile: %#v", payload)
+	}
+	if _, exists := payload["caption_audio_token"]; exists {
+		t.Fatalf("caption token must be omitted without a caption profile: %#v", payload)
 	}
 }
 
@@ -510,6 +546,21 @@ func TestStartReadinessAllowsUnknownAudioForwardCapability(t *testing.T) {
 	}, StartRequest{}, now)
 	if len(issues) != 0 {
 		t.Fatalf("unexpected readiness issues: %#v", issues)
+	}
+}
+
+func TestStartReadinessBlocksUnavailableCaptionPipelineCapabilities(t *testing.T) {
+	now := time.Now().UTC()
+	client := Client{Config: Config{Token: "service-token", IngestTokenSigningKey: "stream-ingest-signing-key"}}
+	issues := client.StartReadinessIssues([]store.RegisteredService{
+		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com", Status: "online"},
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com", Status: "online", Capabilities: map[string]any{"deepgram_transcription": false}},
+		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: "https://discord.example.com", Status: "online", Capabilities: map[string]any{"audio_stream_forward": true, "audio_capture": true, "caption_audio_forward": false}},
+	}, StartRequest{CaptionProfileID: "caption-prof-01"}, now)
+	for _, want := range []string{"discord_caption_audio_forward_unavailable", "worker_deepgram_transcription_unavailable"} {
+		if !hasIssueCode(issues, want) {
+			t.Fatalf("missing caption readiness issue %s in %#v", want, issues)
+		}
 	}
 }
 

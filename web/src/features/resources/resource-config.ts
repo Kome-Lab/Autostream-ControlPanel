@@ -84,16 +84,16 @@ export const resourcePages = {
   },
   caption: {
     titleKey: "caption",
-    description: "字幕生成や手動字幕のプロファイルを管理します。",
+    description: "Deepgram Nova-3によるライブ字幕プロファイルを管理します。",
     resources: [
       {
         title: "字幕プロファイル",
         path: "/profiles/caption",
-        description: "字幕言語、プロバイダ、遅延補正などの設定です。",
+        description: "字幕言語、発話区切り、中間結果、遅延補正などの設定です。",
         form: "caption-profile",
         deletable: true,
         permissions: { read: "caption_profiles.read", create: "caption_profiles.create", update: "caption_profiles.update", delete: "caption_profiles.delete" },
-        createTemplate: { name: "日本語ライブ字幕", config: { language: "ja-JP", provider: "deepgram", delay_ms: 800 } },
+        createTemplate: { name: "日本語ライブ字幕", config: { language: "ja", provider: "deepgram", model: "nova-3", api_key_secret_name: "deepgram_api_key", delay_ms: 800 } },
       },
     ],
   },
@@ -150,7 +150,7 @@ export const resourcePages = {
         createTemplate: { provider_type: "google", name: "Google Workspace", enabled: true, client_id: "client-id", client_secret: "secret", redirect_uri: "https://control.example.jp/auth/oauth/callback" },
       },
       {
-        title: "OAuth接続アカウント",
+        title: "YouTube・Drive接続",
         path: "/integrations/oauth-accounts",
         description: "YouTubeやDrive操作に使う接続済みアカウントです。",
         form: "oauth-account-connect",
@@ -161,10 +161,9 @@ export const resourcePages = {
   },
   logs: {
     titleKey: "logs",
-    description: "配信ログと最近の操作ログを確認します。ストリーム別ログは各配信詳細のAPIと連動します。",
+    description: "配信ログを確認します。ストリーム別ログは各配信詳細のAPIと連動します。",
     resources: [
       { title: "配信", path: "/streams", description: "ログ確認対象となる配信です。", permissions: { read: "streams.read", create: "streams.create", update: "streams.update", delete: "streams.delete" } },
-      { title: "監査ログ", path: "/audit-logs", description: "管理画面で実行された操作の履歴です。", permissions: { read: "audit_logs.read", delete: "audit_logs.export" } },
     ],
   },
   users: {

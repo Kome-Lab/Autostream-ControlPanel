@@ -5,7 +5,8 @@
     "preview": "npx serve out",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
-    "test:i18n": "node scripts/test-i18n.mjs"
+    "test:i18n": "node scripts/test-i18n.mjs",
+    "test:oauth-account": "node --no-warnings --test tests/oauth-account.test.mts"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.18",

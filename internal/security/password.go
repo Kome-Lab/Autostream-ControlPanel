@@ -46,12 +46,12 @@ func VerifyPassword(password, encoded string) bool {
 }
 
 func ValidatePassword(password string) error {
-	return ValidatePasswordWithMinLength(password, 12)
+	return ValidatePasswordWithMinLength(password, 8)
 }
 
 func ValidatePasswordWithMinLength(password string, minimum int) error {
-	if minimum < 12 {
-		minimum = 12
+	if minimum < 8 {
+		minimum = 8
 	}
 	if len(password) < minimum {
 		return fmt.Errorf("password must be at least %d characters", minimum)

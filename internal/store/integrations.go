@@ -34,6 +34,7 @@ type OAuthAccount struct {
 	ID                     string   `json:"id"`
 	ProviderID             string   `json:"provider_id"`
 	ProviderType           string   `json:"provider_type"`
+	ProviderName           string   `json:"provider_name,omitempty"`
 	AccountLabel           string   `json:"account_label"`
 	DisplayName            string   `json:"display_name,omitempty"`
 	Subject                string   `json:"subject,omitempty"`
@@ -214,9 +215,9 @@ func (s *MemoryIntegrationStore) ListOAuthAccounts(ctx context.Context) ([]OAuth
 	defer s.mu.Unlock()
 	out := make([]OAuthAccount, 0, len(s.accounts))
 	for _, account := range s.accounts {
-		out = append(out, publicOAuthAccount(account))
+		out = append(out, s.publicOAuthAccountLocked(account))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].AccountLabel < out[j].AccountLabel })
+	sortOAuthAccounts(out)
 	return out, nil
 }
 
@@ -237,8 +238,9 @@ func (s *MemoryIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 	}
 	s.mu.Lock()
 	s.accounts[account.ID] = account
+	response := s.publicOAuthAccountLocked(account)
 	s.mu.Unlock()
-	return publicOAuthAccount(account), nil
+	return response, nil
 }
 
 func (s *MemoryIntegrationStore) GetOAuthAccount(ctx context.Context, id string) (OAuthAccount, error) {
@@ -251,7 +253,7 @@ func (s *MemoryIntegrationStore) GetOAuthAccount(ctx context.Context, id string)
 	if !ok {
 		return OAuthAccount{}, ErrNotFound
 	}
-	return publicOAuthAccount(account), nil
+	return s.publicOAuthAccountLocked(account), nil
 }
 
 func (s *MemoryIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context, id string) (OAuthAccount, error) {
@@ -292,7 +294,14 @@ func (s *MemoryIntegrationStore) UpdateOAuthAccount(ctx context.Context, account
 	account.CreatedAt = existing.CreatedAt
 	account.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	s.accounts[account.ID] = account
-	return publicOAuthAccount(account), nil
+	return s.publicOAuthAccountLocked(account), nil
+}
+
+func (s *MemoryIntegrationStore) publicOAuthAccountLocked(account OAuthAccount) OAuthAccount {
+	if provider, ok := s.providers[account.ProviderID]; ok {
+		account.ProviderName = provider.Name
+	}
+	return publicOAuthAccount(account)
 }
 
 func (s *MemoryIntegrationStore) DeleteOAuthAccount(ctx context.Context, id string) error {
@@ -563,7 +572,7 @@ func (s MariaDBIntegrationStore) DeleteOAuthProvider(ctx context.Context, id str
 }
 
 func (s MariaDBIntegrationStore) ListOAuthAccounts(ctx context.Context) ([]OAuthAccount, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, token_fingerprint, created_at, updated_at FROM oauth_accounts ORDER BY account_label`)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -574,9 +583,13 @@ func (s MariaDBIntegrationStore) ListOAuthAccounts(ctx context.Context) ([]OAuth
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, account)
+		out = append(out, publicOAuthAccount(account))
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sortOAuthAccounts(out)
+	return out, nil
 }
 
 func (s MariaDBIntegrationStore) CreateOAuthAccount(ctx context.Context, account OAuthAccount) (OAuthAccount, error) {
@@ -607,16 +620,22 @@ func (s MariaDBIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 	account.TokenFingerprint = fingerprint
 	account.CreatedAt = now.Format(time.RFC3339)
 	account.UpdatedAt = now.Format(time.RFC3339)
-	return account, nil
+	if provider, providerErr := s.GetOAuthProvider(ctx, account.ProviderID); providerErr == nil {
+		account.ProviderName = provider.Name
+	}
+	return publicOAuthAccount(account), nil
 }
 
 func (s MariaDBIntegrationStore) GetOAuthAccount(ctx context.Context, id string) (OAuthAccount, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, token_fingerprint, created_at, updated_at FROM oauth_accounts WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id WHERE a.id = ?`, id)
 	account, err := scanOAuthAccount(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OAuthAccount{}, ErrNotFound
 	}
-	return account, err
+	if err != nil {
+		return OAuthAccount{}, err
+	}
+	return publicOAuthAccount(account), nil
 }
 
 func (s MariaDBIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context, id string) (OAuthAccount, error) {
@@ -829,11 +848,12 @@ func scanOAuthProvider(row scanner) (OAuthProvider, error) {
 func scanOAuthAccount(row scanner) (OAuthAccount, error) {
 	var account OAuthAccount
 	var scopes string
-	var subject, email, tokenFingerprint, refreshCiphertext sql.NullString
+	var subject, email, tokenFingerprint, refreshCiphertext, providerName sql.NullString
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &tokenFingerprint, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &tokenFingerprint, &createdAt, &updatedAt, &providerName); err != nil {
 		return OAuthAccount{}, err
 	}
+	account.ProviderName = providerName.String
 	account.Subject = subject.String
 	account.Email = email.String
 	account.TokenFingerprint = tokenFingerprint.String
@@ -968,17 +988,68 @@ func publicOAuthAccount(account OAuthAccount) OAuthAccount {
 func oauthAccountDisplayName(account OAuthAccount) string {
 	email := strings.TrimSpace(strings.ToLower(account.Email))
 	if label := strings.TrimSpace(account.AccountLabel); label != "" {
-		if strings.ToLower(label) != email {
+		if strings.ToLower(label) != email && !generatedOAuthAccountLabel(label, account) {
 			return label
 		}
 	}
-	if providerLabel := oauthAccountProviderLabel(account.ProviderType); providerLabel != "" {
-		return providerLabel + "接続アカウント"
+	base := strings.TrimSpace(account.ProviderName)
+	if base == "" || genericOAuthProviderName(base, account.ProviderType) {
+		if providerLabel := oauthAccountProviderLabel(account.ProviderType); providerLabel != "" {
+			base = providerLabel + "アカウント"
+		} else {
+			base = "OAuthアカウント"
+		}
 	}
-	if subject := strings.TrimSpace(account.Subject); subject != "" {
-		return subject
+	if reference := oauthAccountDisplayReference(account.ID); reference != "" {
+		return base + " (" + reference + ")"
 	}
-	return strings.TrimSpace(account.ID)
+	return base + " (表示名未設定)"
+}
+
+func oauthAccountDisplayReference(id string) string {
+	id = strings.ReplaceAll(strings.TrimSpace(id), "-", "")
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func generatedOAuthAccountLabel(label string, account OAuthAccount) bool {
+	normalized := compactOAuthLabel(label)
+	for _, base := range []string{oauthAccountProviderLabel(account.ProviderType), account.ProviderName} {
+		base = strings.TrimSpace(base)
+		if base == "" {
+			continue
+		}
+		if normalized == compactOAuthLabel(base) || normalized == compactOAuthLabel(base+" 接続アカウント") || normalized == compactOAuthLabel(base+" connected account") {
+			return true
+		}
+	}
+	return false
+}
+
+func genericOAuthProviderName(name, providerType string) bool {
+	base := oauthAccountProviderLabel(providerType)
+	if base == "" {
+		return false
+	}
+	normalized := compactOAuthLabel(name)
+	return normalized == compactOAuthLabel(base) || normalized == compactOAuthLabel(base+" 接続アカウント") || normalized == compactOAuthLabel(base+" connected account")
+}
+
+func compactOAuthLabel(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), ""))
+}
+
+func sortOAuthAccounts(accounts []OAuthAccount) {
+	sort.SliceStable(accounts, func(i, j int) bool {
+		left := strings.ToLower(strings.TrimSpace(accounts[i].DisplayName))
+		right := strings.ToLower(strings.TrimSpace(accounts[j].DisplayName))
+		if left == right {
+			return accounts[i].ID < accounts[j].ID
+		}
+		return left < right
+	})
 }
 
 func oauthAccountProviderLabel(providerType string) string {

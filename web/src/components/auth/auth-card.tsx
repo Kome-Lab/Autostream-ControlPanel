@@ -288,7 +288,7 @@ export function SetupCard() {
       setMessage("初期管理者を作成しました。ログインページへ進みます。");
       setTimeout(() => router.push("/login"), 600);
     } catch {
-      setMessage("初期作成に失敗しました。セットアップトークン、ユーザー名、12文字以上のパスワードを確認してください。");
+      setMessage("初期作成に失敗しました。セットアップトークン、ユーザー名、設定された最低文字数を満たすパスワードを確認してください。");
     } finally {
       setBusy(false);
     }

@@ -390,6 +390,26 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 			break
 		}
 	}
+	if strings.TrimSpace(req.CaptionProfileID) != "" {
+		for _, service := range services {
+			switch service.ServiceType {
+			case "discord_bot":
+				if enabled, ok := capabilityBool(service.Capabilities, "caption_audio_forward"); ok && !enabled {
+					issues = append(issues, ReadinessIssue{
+						ServiceID: service.ServiceID, ServiceType: service.ServiceType,
+						Code: "discord_caption_audio_forward_unavailable", Message: "discord_bot reports caption_audio_forward=false while a caption profile is selected.",
+					})
+				}
+			case "worker":
+				if enabled, ok := capabilityBool(service.Capabilities, "deepgram_transcription"); ok && !enabled {
+					issues = append(issues, ReadinessIssue{
+						ServiceID: service.ServiceID, ServiceType: service.ServiceType,
+						Code: "worker_deepgram_transcription_unavailable", Message: "worker reports deepgram_transcription=false while a caption profile is selected.",
+					})
+				}
+			}
+		}
+	}
 	if encoderURL == "" {
 		issues = append(issues, ReadinessIssue{
 			ServiceType: "encoder_recorder",
@@ -857,7 +877,6 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 			"voice_channel_id":  req.DiscordVoiceChannelID,
 			"text_channel_id":   req.DiscordTextChannelID,
 			"encoder_audio_url": encoderURL,
-			"caption_audio_url": "",
 		}
 		if token := c.issueIngestToken(stream.ID, service, "discord_audio", now); token != "" {
 			payload["stream_ingest_token"] = token
@@ -866,6 +885,12 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 			payload["worker_events_url"] = workerService.PublicURL
 			if token := c.issueIngestTokenForAudience(stream.ID, service, "worker_events", "worker", now); token != "" {
 				payload["worker_events_token"] = token
+			}
+			if strings.TrimSpace(req.CaptionProfileID) != "" {
+				payload["caption_audio_url"] = workerService.PublicURL
+				if token := c.issueIngestTokenForAudience(stream.ID, service, "caption_audio", "worker", now); token != "" {
+					payload["caption_audio_token"] = token
+				}
 			}
 		}
 		return "/jobs/start", payload, true

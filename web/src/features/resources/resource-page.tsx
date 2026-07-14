@@ -21,6 +21,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
 import { hasPermission } from "@/lib/auth/permissions";
+import { oauthAccountConfiguredName, oauthAccountDisplayName, oauthProviderTypeLabel as providerTypeLabel } from "@/lib/oauth-account";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { WorkerNode } from "@/types/domain";
 
@@ -63,7 +64,7 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
   );
 }
 
-function ResourcePanel({ resource, currentUser }: { resource: ResourceDefinition; currentUser: Parameters<typeof hasPermission>[0] }) {
+export function ResourcePanel({ resource, currentUser }: { resource: ResourceDefinition; currentUser: Parameters<typeof hasPermission>[0] }) {
   const access = resourceAccess(resource, currentUser);
   if (resource.path === "/service-health") {
     return <ServiceHealthResourcePanel resource={resource} access={access} />;
@@ -240,28 +241,35 @@ function CreateResourceForm({ resource, allowed, permission }: { resource: Resou
   };
 
   return (
-    <div className="rounded-md border bg-muted/20 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="font-medium">新規作成</div>
-          <p className="text-sm text-muted-foreground">
-            {hasSensitiveFields
-              ? "必要項目をフォームで入力して作成します。秘密情報はAPI側のシークレットストアに保存されます。"
-              : "必要項目をフォームで入力して作成します。作成後も一覧から内容を確認・編集できます。"}
-          </p>
-        </div>
-        <Button variant="outline" size="sm" disabled={!allowed} title={allowed ? undefined : requiredPermissionText(permission)} onClick={() => setOpen((value) => !value)}>
-          <Plus className="size-4" />
-          {open ? "閉じる" : "開く"}
-        </Button>
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <div className="font-medium">登録済み設定</div>
+        <p className="text-sm text-muted-foreground">新しい設定はポップアップで作成します。</p>
       </div>
-      {open ? (
-        <div className="mt-3 space-y-3">
+      <Dialog open={open} onOpenChange={(value) => {
+        setOpen(value);
+        if (!value && !mutation.isPending) setMessage("");
+      }}>
+        <DialogTrigger asChild>
+          <Button size="sm" disabled={!allowed} title={allowed ? undefined : requiredPermissionText(permission)}>
+            <Plus className="size-4" />
+            新規作成
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{resource.title}を作成</DialogTitle>
+            <DialogDescription>
+              {hasSensitiveFields
+                ? "必要項目を入力します。秘密情報はAPI側のシークレットストアに保存されます。"
+                : "必要項目を入力します。作成後も一覧から確認・編集できます。"}
+            </DialogDescription>
+          </DialogHeader>
           <ResourceFormFields resource={resource} disabled={mutation.isPending || !allowed} submit={submit} />
           {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
-        </div>
-      ) : null}
-      {!allowed ? <p className="mt-2 text-xs text-muted-foreground">{requiredPermissionText(permission)}</p> : null}
+        </DialogContent>
+      </Dialog>
+      {!allowed ? <p className="w-full text-xs text-muted-foreground">{requiredPermissionText(permission)}</p> : null}
     </div>
   );
 }
@@ -522,18 +530,51 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
 }
 
 function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const queryClient = useQueryClient();
   const row = initial || {};
   const [name, setName] = useState(() => rowString(row, ["name"]) || "日本語ライブ字幕");
-  const [language, setLanguage] = useState(() => rowString(row, ["language", "config.language"]) || "ja-JP");
-  const [provider, setProvider] = useState(() => rowString(row, ["provider", "config.provider"]) || "deepgram");
+  const [language, setLanguage] = useState(() => normalizeDeepgramLanguage(rowString(row, ["language", "config.language"]) || "ja"));
   const [delayMs, setDelayMs] = useState(() => rowString(row, ["delay_ms", "config.delay_ms"]) || "800");
+  const [endpointingMs, setEndpointingMs] = useState(() => rowString(row, ["endpointing_ms", "config.endpointing_ms"]) || "300");
+  const [interimResults, setInterimResults] = useState(() => rowBoolean(row, ["interim_results", "config.interim_results"], true));
+  const [smartFormat, setSmartFormat] = useState(() => rowBoolean(row, ["smart_format", "config.smart_format"], true));
+  const [apiKey, setAPIKey] = useState("");
+  const [secretMessage, setSecretMessage] = useState("");
+  const [secretSaving, setSecretSaving] = useState(false);
 
   return (
     <form
       className="space-y-3"
-      onSubmit={(event) => {
+      onSubmit={async (event) => {
         event.preventDefault();
-        submit({ name, config: { language, provider, delay_ms: numberValue(delayMs, 800) } });
+        setSecretMessage("");
+        if (apiKey.trim()) {
+          setSecretSaving(true);
+          try {
+            await apiPut("/secrets/deepgram_api_key", { value: apiKey.trim() });
+            await queryClient.invalidateQueries({ queryKey: ["resource", "/secrets/status"] });
+            setAPIKey("");
+          } catch (error) {
+            const code = error instanceof APIError ? error.code || "" : "";
+            setSecretMessage(code === "forbidden" ? "Deepgram APIキーを更新する権限がありません。" : "Deepgram APIキーを保存できませんでした。");
+            setSecretSaving(false);
+            return;
+          }
+          setSecretSaving(false);
+        }
+        submit({
+          name,
+          config: {
+            provider: "deepgram",
+            model: "nova-3",
+            language,
+            api_key_secret_name: "deepgram_api_key",
+            endpointing_ms: numberValue(endpointingMs, 300),
+            interim_results: interimResults,
+            smart_format: smartFormat,
+            delay_ms: numberValue(delayMs, 800),
+          },
+        });
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
@@ -543,22 +584,21 @@ function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabl
           value={language}
           onChange={setLanguage}
           options={[
-            { value: "ja-JP", label: "日本語" },
-            { value: "en-US", label: "英語" },
+            { value: "ja", label: "日本語" },
+            { value: "en", label: "英語" },
           ]}
         />
-        <SelectField
-          label="プロバイダ"
-          value={provider}
-          onChange={setProvider}
-          options={[
-            { value: "deepgram", label: "Deepgram" },
-            { value: "manual", label: "手動字幕" },
-          ]}
-        />
+        <Field label="音声認識モデル"><div className="rounded-md border bg-background px-3 py-2 text-sm">Deepgram Nova-3</div></Field>
+        <TextField label="Deepgram APIキー" value={apiKey} onChange={setAPIKey} type="password" placeholder={initial ? "変更しない場合は空欄" : "既に設定済みの場合は空欄"} description="入力したキーは暗号化シークレットとして保存し、Workerだけが配信開始時に取得します。" />
+        <NumberField label="発話確定までの待機 (ms)" value={endpointingMs} onChange={setEndpointingMs} min={10} required />
         <NumberField label="遅延補正 (ms)" value={delayMs} onChange={setDelayMs} min={0} />
       </div>
-      <FormActions label={submitLabel} disabled={disabled} />
+      <div className="grid gap-3 md:grid-cols-2">
+        <SwitchField label="途中結果を表示" checked={interimResults} onCheckedChange={setInterimResults} />
+        <SwitchField label="読みやすく整形" checked={smartFormat} onCheckedChange={setSmartFormat} />
+      </div>
+      {secretMessage ? <p className="text-sm text-red-600 dark:text-red-300">{secretMessage}</p> : null}
+      <FormActions label={submitLabel} disabled={disabled || secretSaving} />
     </form>
   );
 }
@@ -898,7 +938,7 @@ function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; subm
 }
 
 function OAuthAccountRenameForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial: ResourceRow; submitLabel?: string }) {
-  const [accountLabel, setAccountLabel] = useState(() => rowString(initial, ["account_label", "display_name"]));
+  const [accountLabel, setAccountLabel] = useState(() => oauthAccountConfiguredName(initial));
   const providerType = rowString(initial, ["provider_type"]);
   const email = rowString(initial, ["email"]);
 
@@ -911,7 +951,7 @@ function OAuthAccountRenameForm({ disabled, submit, initial, submitLabel }: { di
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="アカウント表示名" value={accountLabel} onChange={setAccountLabel} required />
+        <TextField label="アカウント表示名" value={accountLabel} onChange={setAccountLabel} placeholder="例: 広報 YouTube" description="配信枠や保存先の選択肢に表示する、識別しやすい名前です。" required />
         <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
           <div className="text-muted-foreground">接続情報</div>
           <div className="mt-1 space-y-1">
@@ -1122,7 +1162,7 @@ function SecuritySettingsEditor({ resource, data, loading, disabled }: { resourc
       const code = error instanceof APIError ? error.code || "" : "";
       const details: Record<string, string> = {
         invalid_security_settings: "入力値がセキュリティポリシーを満たしていません。",
-        production_mfa_required: "本番環境ではMFAを無効化できません。adminまたはsuper_adminをMFA対象にしてください。",
+        production_mfa_required: "本番環境ではMFAを無効化できません。全ユーザーまたはsuper_adminをMFA対象にしてください。",
         forbidden: "セキュリティ設定を更新する権限がありません。",
         csrf_failed: "ログイン状態が古くなっています。再読み込みしてから保存してください。",
       };
@@ -1185,7 +1225,7 @@ function SecuritySettingsEditor({ resource, data, loading, disabled }: { resourc
         >
           <fieldset disabled={disabled} className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
-            <NumberField label="最小パスワード長" value={passwordMinLength} onChange={setPasswordMinLength} min={12} required />
+            <NumberField label="最小パスワード長" value={passwordMinLength} onChange={setPasswordMinLength} min={8} required />
             <NumberField label="ロックまでの失敗回数" value={loginLockoutThreshold} onChange={setLoginLockoutThreshold} min={3} required />
             <NumberField label="アイドルタイムアウト (分)" value={sessionIdleTimeout} onChange={setSessionIdleTimeout} min={5} required />
             <NumberField label="絶対セッション期限 (時間)" value={sessionAbsoluteLifetime} onChange={setSessionAbsoluteLifetime} min={1} required />
@@ -1676,6 +1716,21 @@ function rowString(row: ResourceRow, keys: string[]) {
   return "";
 }
 
+function rowBoolean(row: ResourceRow, keys: string[], fallback: boolean) {
+  const value = rowValue(row, keys);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function normalizeDeepgramLanguage(value: string) {
+  return value.trim().toLowerCase().startsWith("en") ? "en" : "ja";
+}
+
 function firstNonEmpty(...values: string[]) {
   return values.find((value) => value.trim() !== "") || "";
 }
@@ -1890,6 +1945,7 @@ function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): Reso
       oauth_account_display_name: oauthAccountDisplayName(row),
       account_summary: compactList([
         labelValue("プロバイダ", formatScalarValue("provider_type", rowString(row, ["provider_type"]))),
+        oauthAccountConfiguredName(row) ? "表示名設定済み" : "表示名未設定",
         rowString(row, ["email"]) ? "メール取得済み" : "メール未取得",
         rowValue(row, ["refresh_token_configured"]) === true ? "OAuth tokenあり" : "OAuth token未接続",
       ]),
@@ -2062,48 +2118,11 @@ function labelValue(label: string, value: string) {
   return value ? `${label}: ${value}` : "";
 }
 
-function oauthAccountDisplayName(row: ResourceRow) {
-  const email = rowString(row, ["email"]).toLowerCase();
-  const provider = rowString(row, ["provider_type"]);
-  for (const key of ["display_name", "account_label"]) {
-    const value = rowString(row, [key]);
-    if (usableOAuthAccountLabel(value, email, provider)) return value;
-  }
-  return `${providerTypeLabel(provider)}接続アカウント`;
-}
-
-function usableOAuthAccountLabel(value: string, email: string, provider: string) {
-  const label = value.trim();
-  if (!label) return false;
-  const normalized = label.toLowerCase();
-  if (email && normalized === email) return false;
-  return !genericOAuthAccountLabel(normalized, provider);
-}
-
-function genericOAuthAccountLabel(normalizedLabel: string, provider: string) {
-  const providerLabel = providerTypeLabel(provider).toLowerCase();
-  const compact = normalizedLabel.replace(/\s+/g, "");
-  return compact === `${providerLabel}接続アカウント`.toLowerCase() || compact === `${providerLabel}connectedaccount`;
-}
-
 function oauthAccountOptionDescription(row: ResourceRow) {
   return compactList([
     providerTypeLabel(rowString(row, ["provider_type"])),
     rowValue(row, ["refresh_token_configured"]) === true ? "接続済み" : "未接続",
   ]).join(" / ");
-}
-
-function providerTypeLabel(providerType: string) {
-  switch (providerType.trim().toLowerCase()) {
-    case "google":
-      return "Google";
-    case "github":
-      return "GitHub";
-    case "discord":
-      return "Discord";
-    default:
-      return providerType.trim() || "OAuth";
-  }
 }
 
 function enabledLabel(label: string, value: unknown) {

@@ -134,12 +134,13 @@ type AuditEvent struct {
 }
 
 type AuditFilter struct {
-	Limit   int
-	Actions []string
-	Result  string
-	Query   string
-	From    time.Time
-	To      time.Time
+	Limit           int
+	Actions         []string
+	ExcludedActions []string
+	Result          string
+	Query           string
+	From            time.Time
+	To              time.Time
 }
 
 type AuthStore interface {
@@ -151,6 +152,7 @@ type AuthStore interface {
 	ChangePassword(ctx context.Context, id, newPassword string) error
 	CreateSession(ctx context.Context, userID string, idleTTL, absoluteTTL time.Duration) (Session, error)
 	GetSession(ctx context.Context, rawToken string) (Session, error)
+	RefreshSession(ctx context.Context, rawToken string, idleTTL time.Duration) (Session, error)
 	DeleteSession(ctx context.Context, rawToken string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
 	RecordLoginSuccess(ctx context.Context, userID, ip string) error
@@ -385,6 +387,31 @@ func (s MariaDBAuthStore) GetSession(ctx context.Context, rawToken string) (Sess
 		_ = s.DeleteSession(ctx, rawToken)
 		return Session{}, ErrNotFound
 	}
+	return session, nil
+}
+
+func (s MariaDBAuthStore) RefreshSession(ctx context.Context, rawToken string, idleTTL time.Duration) (Session, error) {
+	session, err := s.GetSession(ctx, rawToken)
+	if err != nil {
+		return Session{}, err
+	}
+	now := time.Now().UTC()
+	nextIdleExpiry := now.Add(idleTTL)
+	if nextIdleExpiry.After(session.AbsoluteExpiresAt) {
+		nextIdleExpiry = session.AbsoluteExpiresAt
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET idle_expires_at = ? WHERE id = ? AND idle_expires_at > ? AND absolute_expires_at > ?`, nextIdleExpiry, session.TokenHash, now, now)
+	if err != nil {
+		return Session{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, err
+	}
+	if affected == 0 {
+		return Session{}, ErrNotFound
+	}
+	session.IdleExpiresAt = nextIdleExpiry
 	return session, nil
 }
 
@@ -1104,8 +1131,8 @@ func (s MariaDBAuditStore) WriteAudit(ctx context.Context, event AuditEvent) err
 
 func (s MariaDBAuditStore) ListAudit(ctx context.Context, filter AuditFilter) ([]AuditEvent, error) {
 	filter = normalizeAuditFilter(filter)
-	where := make([]string, 0, 3)
-	args := make([]any, 0, len(filter.Actions)+3)
+	where := make([]string, 0, 6)
+	args := make([]any, 0, len(filter.Actions)+len(filter.ExcludedActions)+4)
 	if len(filter.Actions) > 0 {
 		placeholders := make([]string, 0, len(filter.Actions))
 		for _, action := range filter.Actions {
@@ -1113,6 +1140,14 @@ func (s MariaDBAuditStore) ListAudit(ctx context.Context, filter AuditFilter) ([
 			args = append(args, action)
 		}
 		where = append(where, "action IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if len(filter.ExcludedActions) > 0 {
+		placeholders := make([]string, 0, len(filter.ExcludedActions))
+		for _, action := range filter.ExcludedActions {
+			placeholders = append(placeholders, "?")
+			args = append(args, action)
+		}
+		where = append(where, "action NOT IN ("+strings.Join(placeholders, ",")+")")
 	}
 	if filter.Result != "" {
 		where = append(where, "result = ?")
@@ -1172,17 +1207,21 @@ func normalizeAuditFilter(filter AuditFilter) AuditFilter {
 		filter.Result = ""
 	}
 	filter.Query = strings.TrimSpace(filter.Query)
-	actions := make([]string, 0, len(filter.Actions))
-	seen := map[string]bool{}
-	for _, action := range filter.Actions {
-		action = strings.TrimSpace(action)
-		if action == "" || seen[action] {
-			continue
+	normalizeActions := func(values []string) []string {
+		actions := make([]string, 0, len(values))
+		seen := map[string]bool{}
+		for _, action := range values {
+			action = strings.TrimSpace(action)
+			if action == "" || seen[action] {
+				continue
+			}
+			seen[action] = true
+			actions = append(actions, action)
 		}
-		seen[action] = true
-		actions = append(actions, action)
+		return actions
 	}
-	filter.Actions = actions
+	filter.Actions = normalizeActions(filter.Actions)
+	filter.ExcludedActions = normalizeActions(filter.ExcludedActions)
 	return filter
 }
 

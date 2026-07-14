@@ -52,6 +52,8 @@ func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 	csp := res.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "default-src 'self'") ||
 		!strings.Contains(csp, "object-src 'none'") ||
+		!strings.Contains(csp, "img-src 'self' data: blob:") ||
+		strings.Count(csp, "blob:") != 1 ||
 		!strings.Contains(csp, "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com") ||
 		!strings.Contains(csp, "frame-src 'self' https://challenges.cloudflare.com") ||
 		res.Header().Get("X-Frame-Options") != "DENY" {

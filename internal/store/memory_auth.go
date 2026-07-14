@@ -230,6 +230,28 @@ func (s *MemoryAuthStore) GetSession(ctx context.Context, rawToken string) (Sess
 	return session, nil
 }
 
+func (s *MemoryAuthStore) RefreshSession(ctx context.Context, rawToken string, idleTTL time.Duration) (Session, error) {
+	if err := ctx.Err(); err != nil {
+		return Session{}, err
+	}
+	hash := security.HashToken(rawToken)
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[hash]
+	if !ok || !now.Before(session.IdleExpiresAt) || !now.Before(session.AbsoluteExpiresAt) {
+		delete(s.sessions, hash)
+		return Session{}, ErrNotFound
+	}
+	nextIdleExpiry := now.Add(idleTTL)
+	if nextIdleExpiry.After(session.AbsoluteExpiresAt) {
+		nextIdleExpiry = session.AbsoluteExpiresAt
+	}
+	session.IdleExpiresAt = nextIdleExpiry
+	s.sessions[hash] = session
+	return session, nil
+}
+
 func (s *MemoryAuthStore) DeleteSession(ctx context.Context, rawToken string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -727,6 +749,11 @@ func auditEventMatchesFilter(event AuditEvent, filter AuditFilter) bool {
 			}
 		}
 		if !matched {
+			return false
+		}
+	}
+	for _, action := range filter.ExcludedActions {
+		if event.Action == action {
 			return false
 		}
 	}

@@ -315,7 +315,7 @@ func normalizeSecuritySettings(settings SecuritySettings) (SecuritySettings, err
 		settings.MFAMode = defaultSecurityConfig.MFAMode
 	}
 	settings.MFARequiredRoles = cleanSecurityStringSlice(settings.MFARequiredRoles)
-	if settings.PasswordMinLength < 12 ||
+	if settings.PasswordMinLength < 8 ||
 		settings.PasswordHash != "argon2id" ||
 		settings.LoginLockoutThreshold < 3 ||
 		settings.SessionIdleTimeoutMin < 5 ||

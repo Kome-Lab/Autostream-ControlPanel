@@ -69,11 +69,13 @@ export function useNodes(enabled = true) {
   });
 }
 
-export function useAuditLogs(params?: { from?: string; to?: string; action?: string; result?: string; q?: string }) {
+export function useAuditLogs(params?: { from?: string; to?: string; action?: string; actionGroup?: string; excludeActionGroup?: string; result?: string; q?: string }) {
   const search = new URLSearchParams();
   if (params?.from) search.set("from", params.from);
   if (params?.to) search.set("to", params.to);
   if (params?.action) search.set("action", params.action);
+  if (params?.actionGroup) search.set("action_group", params.actionGroup);
+  if (params?.excludeActionGroup) search.set("exclude_action_group", params.excludeActionGroup);
   if (params?.result && params.result !== "all") search.set("result", params.result);
   if (params?.q) search.set("q", params.q);
   const suffix = search.toString() ? `?${search}` : "";

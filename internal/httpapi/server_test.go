@@ -205,6 +205,42 @@ func TestNormalizeOverlayProfileConfigUsesFixedWatermarkCanvas(t *testing.T) {
 	}
 }
 
+func TestNormalizeCaptionProfileConfigUsesDeepgramRuntimeDefaults(t *testing.T) {
+	config := normalizeProfileConfig(store.ProfileCaption, map[string]any{
+		"provider":          "manual",
+		"model":             "legacy",
+		"language":          "ja-JP",
+		"endpointing_ms":    0,
+		"delay_ms":          1200,
+		"caption_audio_url": "https://caption.example.com/audio",
+	})
+
+	if config["provider"] != "deepgram" || config["model"] != "nova-3" {
+		t.Fatalf("Deepgram runtime was not enforced: %#v", config)
+	}
+	if config["language"] != "ja" || config["api_key_secret_name"] != "deepgram_api_key" {
+		t.Fatalf("Deepgram language or secret reference was not normalized: %#v", config)
+	}
+	if config["endpointing_ms"] != 300 || config["delay_ms"] != 1200 {
+		t.Fatalf("Deepgram timing defaults were not normalized: %#v", config)
+	}
+	if config["interim_results"] != true || config["smart_format"] != true {
+		t.Fatalf("Deepgram result defaults were not enabled: %#v", config)
+	}
+	if _, ok := config["caption_audio_url"]; ok {
+		t.Fatalf("legacy arbitrary caption URL was not removed: %#v", config)
+	}
+	runtime := sanitizeRuntimeProfileConfigForKind(store.ProfileCaption, map[string]any{
+		"provider": "operator", "language": "en-US", "caption_audio_url": "https://caption.example.com/audio",
+	})
+	if runtime["provider"] != "deepgram" || runtime["language"] != "en" || runtime["api_key_secret_name"] != "deepgram_api_key" {
+		t.Fatalf("legacy caption runtime config was not upgraded safely: %#v", runtime)
+	}
+	if _, ok := runtime["caption_audio_url"]; ok {
+		t.Fatalf("legacy caption URL reached runtime config: %#v", runtime)
+	}
+}
+
 func TestAdminAuditEventNotificationPolicy(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1225,8 +1261,8 @@ func TestOAuthAccountRedirectCallbackDoesNotUseEmailAsDefaultLabel(t *testing.T)
 	if len(accounts) != 1 || accounts[0].AccountLabel == "archive@example.com" || accounts[0].DisplayName == "archive@example.com" {
 		t.Fatalf("connected account should not use email as display label: %#v", accounts)
 	}
-	if accounts[0].AccountLabel != "Google Drive 接続アカウント" || accounts[0].DisplayName != "Google Drive 接続アカウント" {
-		t.Fatalf("connected account label should fall back to provider label: %#v", accounts)
+	if accounts[0].AccountLabel != "Google Drive" || !strings.HasPrefix(accounts[0].DisplayName, "Google Drive (") || accounts[0].ProviderName != "Google Drive" {
+		t.Fatalf("connected account label should fall back to a distinct provider label: %#v", accounts)
 	}
 }
 
@@ -5509,8 +5545,8 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 	if resolved.AutoStartTrigger != "discord_voice_join" {
 		t.Fatalf("stream auto-start trigger was not included: %#v", resolved)
 	}
-	if resolved.CaptionAudioURL != "https://caption.example.com/audio" {
-		t.Fatalf("profile defaults were not preserved for non-overridden fields: %#v", resolved)
+	if strings.Contains(res.Body.String(), "caption.example.com") {
+		t.Fatalf("legacy arbitrary caption URL must not be exposed: %#v", resolved)
 	}
 	if strings.Contains(res.Body.String(), "guild-2") || strings.Contains(res.Body.String(), "discord-02") || strings.Contains(res.Body.String(), "discord.com/api/webhooks") {
 		t.Fatalf("runtime config response leaked another service or raw secret: %s", res.Body.String())
@@ -5610,8 +5646,8 @@ func TestServiceRuntimeConfigIncludesConfiguredDiscordStreamsWithoutAssignments(
 	if byStream[streamB.ID].GuildID != "guild-stream-b" || byStream[streamB.ID].VoiceChannelID != "voice-stream-b" || byStream[streamB.ID].TextChannelID != "text-stream-b" {
 		t.Fatalf("stream overrides were not applied for unassigned stream: %#v", byStream[streamB.ID])
 	}
-	if byStream[streamA.ID].CaptionAudioURL != "https://caption.example.com/audio" {
-		t.Fatalf("profile caption URL was not preserved: %#v", byStream[streamA.ID])
+	if strings.Contains(res.Body.String(), "caption.example.com") {
+		t.Fatalf("legacy arbitrary caption URL must not be exposed: %#v", byStream[streamA.ID])
 	}
 	if strings.Contains(res.Body.String(), "guild-other") || strings.Contains(res.Body.String(), "discord-02") || strings.Contains(res.Body.String(), "discord-bot-01") {
 		t.Fatalf("runtime config leaked another service or raw secret: %s", res.Body.String())
@@ -6564,6 +6600,61 @@ func TestServiceRuntimeSecretResolveRequiresPrimaryAssignmentForGenericStreamSec
 	}
 }
 
+func TestServiceRuntimeSecretResolveAllowsSelectedCaptionSecretForPrimaryWorker(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	secrets := store.NewMemorySecretStore()
+	stream, err := streams.CreateStream(t.Context(), "deepgram caption secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.config.read", "service.secret.resolve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID: "worker-caption-primary", ServiceType: "worker", ServiceName: "Caption Worker",
+		PublicURL: "https://worker-caption.example.com", Version: "0.1.0", Capabilities: map[string]any{},
+	})
+	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "worker-caption-primary", stream.ID, "admin", "primary"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secrets.UpdateSecret(t.Context(), "deepgram_api_key", "raw-deepgram-api-key"); err != nil {
+		t.Fatal(err)
+	}
+	caption, err := profiles.CreateProfile(t.Context(), store.ProfileCaption, "Deepgram Japanese", map[string]any{
+		"provider": "deepgram", "model": "nova-3", "language": "ja", "api_key_secret_name": "deepgram_api_key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{CaptionProfileID: caption.ID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithAuditStore(auth))
+
+	body := `{"service_id":"worker-caption-primary","stream_id":"` + stream.ID + `","secret_name":"deepgram_api_key"}`
+	req := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("caption runtime secret resolve status = %d body = %s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "raw-deepgram-api-key") {
+		var resolved serviceRuntimeSecretResolveResponse
+		if err := json.NewDecoder(res.Body).Decode(&resolved); err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Value != "raw-deepgram-api-key" || resolved.SecretName != "deepgram_api_key" {
+			t.Fatalf("unexpected caption runtime secret response: %#v", resolved)
+		}
+	} else {
+		t.Fatalf("caption runtime secret was not returned to the selected primary worker: %s", res.Body.String())
+	}
+}
+
 func TestServiceRuntimeSecretResolveRejectsSecretFromWrongProfileKind(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()
@@ -7427,6 +7518,9 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "services.assign", ResourceType: "service", ResourceID: "enc-01", Result: "success", Metadata: map[string]any{"stream_id": "stream-01", "service_type": "encoder_recorder"}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "services.runtime_config.read", ResourceType: "service", ResourceID: "enc-01", Result: "success", Metadata: map[string]any{"assignment_count": 1}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "streams.start", ResourceType: "stream", ResourceID: "stream-01", Result: "failure", Metadata: map[string]any{"missing_service_types": []string{"worker"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -7456,6 +7550,39 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	}
 	if len(filtered) != 1 || filtered[0].Action != "services.assign" || filtered[0].ResourceID != "enc-01" {
 		t.Fatalf("unexpected filtered audit events: %#v", filtered)
+	}
+	runtimeReadReq := httptest.NewRequest(http.MethodGet, "/audit-logs?action_group=service_runtime_reads", nil)
+	runtimeReadReq.AddCookie(cookie)
+	runtimeReadRes := httptest.NewRecorder()
+	handler.ServeHTTP(runtimeReadRes, runtimeReadReq)
+	if runtimeReadRes.Code != http.StatusOK {
+		t.Fatalf("runtime read audit status = %d body = %s", runtimeReadRes.Code, runtimeReadRes.Body.String())
+	}
+	var runtimeReads []store.AuditEvent
+	if err := json.NewDecoder(runtimeReadRes.Body).Decode(&runtimeReads); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtimeReads) != 1 || runtimeReads[0].Action != "services.runtime_config.read" {
+		t.Fatalf("unexpected runtime read audit events: %#v", runtimeReads)
+	}
+	operationsReq := httptest.NewRequest(http.MethodGet, "/audit-logs?exclude_action_group=service_runtime_reads", nil)
+	operationsReq.AddCookie(cookie)
+	operationsRes := httptest.NewRecorder()
+	handler.ServeHTTP(operationsRes, operationsReq)
+	if operationsRes.Code != http.StatusOK {
+		t.Fatalf("operations audit status = %d body = %s", operationsRes.Code, operationsRes.Body.String())
+	}
+	var operations []store.AuditEvent
+	if err := json.NewDecoder(operationsRes.Body).Decode(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) == 0 {
+		t.Fatal("operations audit unexpectedly returned no events")
+	}
+	for _, event := range operations {
+		if event.Action == "services.runtime_config.read" {
+			t.Fatalf("operations audit included runtime read event: %#v", operations)
+		}
 	}
 	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Timestamp: time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC), Action: "streams.start", ResourceType: "stream", ResourceID: "dated-in", Result: "success"}); err != nil {
 		t.Fatal(err)
@@ -7490,6 +7617,13 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if strings.Contains(exportRes.Body.String(), "raw-secret-token") || strings.Contains(exportRes.Body.String(), "super-raw-discord-token") {
 		t.Fatalf("audit export leaked metadata secret: %s", exportRes.Body.String())
 	}
+	operationsExportReq := httptest.NewRequest(http.MethodGet, "/audit-logs/export?exclude_action_group=service_runtime_reads", nil)
+	operationsExportReq.AddCookie(cookie)
+	operationsExportRes := httptest.NewRecorder()
+	handler.ServeHTTP(operationsExportRes, operationsExportReq)
+	if operationsExportRes.Code != http.StatusOK || strings.Contains(operationsExportRes.Body.String(), "services.runtime_config.read") || !strings.Contains(operationsExportRes.Body.String(), "services.assign") {
+		t.Fatalf("operations audit export status = %d body = %s", operationsExportRes.Code, operationsExportRes.Body.String())
+	}
 	notificationExportReq := httptest.NewRequest(http.MethodGet, "/audit-logs/export?action_group=notifications", nil)
 	notificationExportReq.AddCookie(cookie)
 	notificationExportRes := httptest.NewRecorder()
@@ -7506,15 +7640,15 @@ func TestSecuritySettingsCanUpdateSafeValues(t *testing.T) {
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":14,"password_hash":"argon2id","login_lockout_threshold":6,"session_idle_timeout_min":20,"session_absolute_lifetime_h":8,"remember_me_enabled":false,"mfa_mode":"totp","mfa_required_roles":["admin","super_admin","admin"]}`))
+	req := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":8,"password_hash":"argon2id","login_lockout_threshold":6,"session_idle_timeout_min":20,"session_absolute_lifetime_h":8,"remember_me_enabled":false,"mfa_mode":"totp","mfa_required_roles":["admin","super_admin","admin"]}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"password_min_length":14`) || !strings.Contains(res.Body.String(), `"mfa_mode":"totp"`) || !strings.Contains(res.Body.String(), `"mfa_required_roles":["admin","super_admin"]`) || !strings.Contains(res.Body.String(), `"mfa_supported_methods":["totp","passkey"]`) || !strings.Contains(res.Body.String(), `"passkey_status":"available"`) {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"password_min_length":8`) || !strings.Contains(res.Body.String(), `"mfa_mode":"totp"`) || !strings.Contains(res.Body.String(), `"mfa_required_roles":["admin","super_admin"]`) || !strings.Contains(res.Body.String(), `"mfa_supported_methods":["totp","passkey"]`) || !strings.Contains(res.Body.String(), `"passkey_status":"available"`) {
 		t.Fatalf("update settings status = %d body = %s", res.Code, res.Body.String())
 	}
-	badReq := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":8,"password_hash":"argon2id","remember_me_enabled":true,"mfa_mode":"disabled"}`))
+	badReq := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":7,"password_hash":"argon2id","login_lockout_threshold":6,"session_idle_timeout_min":20,"session_absolute_lifetime_h":8,"remember_me_enabled":false,"mfa_mode":"disabled"}`))
 	badReq.AddCookie(cookie)
 	badReq.Header.Set("X-CSRF-Token", csrf)
 	badRes := httptest.NewRecorder()
@@ -7557,7 +7691,7 @@ func TestSecuritySettingsRejectsDisabledMFAInProduction(t *testing.T) {
 	}
 }
 
-func TestSecuritySettingsProductionRequiresAdminRolesWhenScoped(t *testing.T) {
+func TestSecuritySettingsProductionRequiresSuperAdminRoleWhenScoped(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
@@ -7566,16 +7700,16 @@ func TestSecuritySettingsProductionRequiresAdminRolesWhenScoped(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	missingAdminReq := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":14,"password_hash":"argon2id","login_lockout_threshold":6,"session_idle_timeout_min":20,"session_absolute_lifetime_h":8,"remember_me_enabled":false,"mfa_mode":"totp","mfa_required_roles":["super_admin"]}`))
-	missingAdminReq.AddCookie(cookie)
-	missingAdminReq.Header.Set("X-CSRF-Token", csrf)
-	missingAdminRes := httptest.NewRecorder()
-	handler.ServeHTTP(missingAdminRes, missingAdminReq)
-	if missingAdminRes.Code != http.StatusBadRequest || !strings.Contains(missingAdminRes.Body.String(), "production_mfa_required") {
-		t.Fatalf("production scoped MFA missing admin status = %d body = %s", missingAdminRes.Code, missingAdminRes.Body.String())
+	missingSuperAdminReq := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":14,"password_hash":"argon2id","login_lockout_threshold":6,"session_idle_timeout_min":20,"session_absolute_lifetime_h":8,"remember_me_enabled":false,"mfa_mode":"totp","mfa_required_roles":["admin"]}`))
+	missingSuperAdminReq.AddCookie(cookie)
+	missingSuperAdminReq.Header.Set("X-CSRF-Token", csrf)
+	missingSuperAdminRes := httptest.NewRecorder()
+	handler.ServeHTTP(missingSuperAdminRes, missingSuperAdminReq)
+	if missingSuperAdminRes.Code != http.StatusBadRequest || !strings.Contains(missingSuperAdminRes.Body.String(), "production_mfa_required") {
+		t.Fatalf("production scoped MFA missing super_admin status = %d body = %s", missingSuperAdminRes.Code, missingSuperAdminRes.Body.String())
 	}
 
-	okReq := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":14,"password_hash":"argon2id","login_lockout_threshold":6,"session_idle_timeout_min":20,"session_absolute_lifetime_h":8,"remember_me_enabled":false,"mfa_mode":"passkey","mfa_required_roles":["super_admin","admin"]}`))
+	okReq := httptest.NewRequest(http.MethodPut, "/security/settings", bytes.NewBufferString(`{"password_min_length":14,"password_hash":"argon2id","login_lockout_threshold":6,"session_idle_timeout_min":20,"session_absolute_lifetime_h":8,"remember_me_enabled":false,"mfa_mode":"passkey","mfa_required_roles":["super_admin"]}`))
 	okReq.AddCookie(cookie)
 	okReq.Header.Set("X-CSRF-Token", csrf)
 	okRes := httptest.NewRecorder()
@@ -8776,6 +8910,52 @@ func TestMFARecoveryCodeRegenerationRequiresCurrentCode(t *testing.T) {
 	handler.ServeHTTP(regenRes, regenReq)
 	if regenRes.Code != http.StatusOK || regenRes.Header().Get("Cache-Control") != "no-store" || !strings.Contains(regenRes.Body.String(), "recovery_codes") || strings.Contains(regenRes.Body.String(), enrollBody.RecoveryCodes[0]) {
 		t.Fatalf("regenerate status = %d cache = %q body = %s", regenRes.Code, regenRes.Header().Get("Cache-Control"), regenRes.Body.String())
+	}
+}
+
+func TestSessionRefreshSlidesIdleExpiryOnlyOnExplicitActivity(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{ID: "active-user", Username: "active-user"}, "correct horse battery", nil); err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSession(t.Context(), "active-user", time.Minute, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+
+	meReq := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	meReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Token})
+	meRes := httptest.NewRecorder()
+	handler.ServeHTTP(meRes, meReq)
+	if meRes.Code != http.StatusOK {
+		t.Fatalf("auth/me status = %d body = %s", meRes.Code, meRes.Body.String())
+	}
+	afterRead, err := auth.GetSession(t.Context(), session.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !afterRead.IdleExpiresAt.Equal(session.IdleExpiresAt) {
+		t.Fatalf("read-only auth check changed idle expiry: before=%s after=%s", session.IdleExpiresAt, afterRead.IdleExpiresAt)
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/auth/session/refresh", nil)
+	refreshReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Token})
+	refreshReq.Header.Set("X-CSRF-Token", session.CSRFToken)
+	refreshRes := httptest.NewRecorder()
+	handler.ServeHTTP(refreshRes, refreshReq)
+	if refreshRes.Code != http.StatusOK || !strings.Contains(refreshRes.Body.String(), `"status":"refreshed"`) {
+		t.Fatalf("session refresh status = %d body = %s", refreshRes.Code, refreshRes.Body.String())
+	}
+	afterRefresh, err := auth.GetSession(t.Context(), session.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !afterRefresh.IdleExpiresAt.After(session.IdleExpiresAt) {
+		t.Fatalf("activity refresh did not advance idle expiry: before=%s after=%s", session.IdleExpiresAt, afterRefresh.IdleExpiresAt)
+	}
+	if afterRefresh.IdleExpiresAt.After(session.AbsoluteExpiresAt) {
+		t.Fatalf("activity refresh exceeded absolute expiry: idle=%s absolute=%s", afterRefresh.IdleExpiresAt, session.AbsoluteExpiresAt)
 	}
 }
 

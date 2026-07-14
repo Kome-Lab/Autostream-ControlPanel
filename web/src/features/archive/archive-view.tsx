@@ -3,7 +3,9 @@
 import { useMemo, useState } from "react";
 import { Copy, Download, ExternalLink, Link2, Pencil, PlayCircle, Share2, Trash2 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ResourcePage } from "@/features/resources/resource-page";
+import { useI18n } from "@/components/admin/i18n-provider";
+import { ResourcePanel } from "@/features/resources/resource-page";
+import { resourcePages } from "@/features/resources/resource-config";
 import { useAppSettings, useCurrentUser, useResourceData, useStreams } from "@/features/queries";
 import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
@@ -14,6 +16,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
@@ -43,7 +46,9 @@ type StreamArtifactShare = {
 };
 
 export function ArchiveView() {
+  const { t } = useI18n();
   const currentUser = useCurrentUser();
+  const page = resourcePages.archive;
   const superAdmin = currentUser.data?.user.roles?.includes("super_admin") === true;
   const can = (permission: string) => superAdmin || hasPermission(currentUser.data, permission);
   const canRead = can("archives.read");
@@ -54,29 +59,45 @@ export function ArchiveView() {
 
   return (
     <div className="space-y-6">
-      <ResourcePage pageId="archive" />
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle>ローカル録画アーカイブ</CardTitle>
-          <CardDescription>Encoderに一定期間残る録画成果物を、配信枠ごとに管理します。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {!canRead ? (
-            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">録画成果物を確認する権限がありません。管理者に「録画の閲覧」権限を依頼してください。</div>
-          ) : streams.isError ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>配信枠を取得できませんでした。通信状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={() => streams.refetch()}>再試行</Button></div>
-          ) : streams.isLoading ? (
-            <Skeleton className="h-12 w-full" />
-          ) : streamRows.length === 0 ? (
-            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">配信枠がまだありません。</div>
-          ) : (
-            <>
-              <StreamSelect streams={streamRows} value={selected} onChange={setSelectedStreamID} />
-              <ArchiveArtifacts streamID={selected} canDownload={can("archives.download")} canModify={can("archives.delete")} />
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <section>
+        <h1 className="text-2xl font-semibold tracking-normal">{t(page.titleKey)}</h1>
+        <p className="mt-2 max-w-3xl text-sm text-muted-foreground">録画設定、Drive保存先、Encoderに残る録画成果物をそれぞれ管理します。</p>
+      </section>
+      <Tabs defaultValue={page.resources[0]?.path || "local-archives"} className="space-y-4">
+        <TabsList className="max-w-full flex-wrap justify-start">
+          {page.resources.map((resource) => <TabsTrigger key={resource.path} value={resource.path}>{resource.title}</TabsTrigger>)}
+          <TabsTrigger value="local-archives">ローカル録画アーカイブ</TabsTrigger>
+        </TabsList>
+        {page.resources.map((resource) => (
+          <TabsContent key={resource.path} value={resource.path}>
+            <ResourcePanel resource={resource} currentUser={currentUser.data} />
+          </TabsContent>
+        ))}
+        <TabsContent value="local-archives">
+          <Card>
+            <CardHeader className="border-b">
+              <CardTitle>ローカル録画アーカイブ</CardTitle>
+              <CardDescription>Encoderに一定期間残る録画成果物を、配信枠ごとに管理します。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!canRead ? (
+                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">録画成果物を確認する権限がありません。管理者に「録画の閲覧」権限を依頼してください。</div>
+              ) : streams.isError ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>配信枠を取得できませんでした。通信状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={() => streams.refetch()}>再試行</Button></div>
+              ) : streams.isLoading ? (
+                <Skeleton className="h-12 w-full" />
+              ) : streamRows.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">配信枠がまだありません。</div>
+              ) : (
+                <>
+                  <StreamSelect streams={streamRows} value={selected} onChange={setSelectedStreamID} />
+                  <ArchiveArtifacts streamID={selected} canDownload={can("archives.download")} canModify={can("archives.delete")} />
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

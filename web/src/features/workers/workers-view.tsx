@@ -16,6 +16,7 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { useCurrentUser, useWorkers } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import type { WorkerNode } from "@/types/domain";
+import { formatNodeMetricPercent, formatWorkerHeartbeat } from "./node-operational-display";
 
 type NodeConfigurationResponse = {
   node: WorkerNode;
@@ -116,15 +117,15 @@ export function WorkersView() {
     {
       accessorKey: "heartbeat_age_sec",
       header: "Heartbeat",
-      cell: ({ row }) => `${row.original.heartbeat_age_sec ?? "-"} sec`,
+      cell: ({ row }) => formatWorkerHeartbeat(row.original),
     },
     {
       id: "load",
       header: "負荷",
       cell: ({ row }) => (
         <div className="text-sm">
-          <div>CPU {row.original.metrics?.cpu_percent ?? row.original.metrics?.cpuUsage ?? "-"}%</div>
-          <div className="text-muted-foreground">MEM {row.original.metrics?.memory_percent ?? row.original.metrics?.memoryUsage ?? "-"}%</div>
+          <div>CPU {formatNodeMetricPercent(row.original.metrics, "cpu")}</div>
+          <div className="text-muted-foreground">MEM {formatNodeMetricPercent(row.original.metrics, "memory")}</div>
         </div>
       ),
     },

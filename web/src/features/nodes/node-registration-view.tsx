@@ -70,6 +70,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   const [description, setDescription] = useState("番組配信と録画を担当する東京本社のNode Agent");
   const [allowRuntimeSecrets, setAllowRuntimeSecrets] = useState(false);
   const [allowRemediation, setAllowRemediation] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [copied, setCopied] = useState("");
   const [configuration, setConfiguration] = useState<NodeConfigurationResponse | null>(null);
   const [editingNode, setEditingNode] = useState<WorkerNode | null>(null);
@@ -109,6 +110,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
       }),
     onSuccess: async (data) => {
       setConfiguration(data);
+      setCreateOpen(false);
       await invalidateNodeQueries();
     },
   });
@@ -303,17 +305,22 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 
   return (
     <div className="space-y-4">
-      <div className={showRegistration ? "grid gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]" : "grid gap-4"}>
-        {showRegistration ? (
-        <Card className="min-w-0">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Server className="size-5" />
-            {t("nodeRegistration")}
-          </CardTitle>
-          <CardDescription>PanelでNodeを作成し、Node Agentへ配置する設定ファイルを発行します。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      {showRegistration ? (
+        <div className="flex justify-end">
+          <Button onClick={() => setCreateOpen(true)} disabled={!allowed}>
+            <Server className="size-4" />
+            Nodeを新規作成
+          </Button>
+        </div>
+      ) : null}
+      {showRegistration ? (
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{t("nodeRegistration")}</DialogTitle>
+              <DialogDescription>PanelでNodeを作成し、Node Agentへ配置する設定ファイルを発行します。</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
           <div className="grid gap-2">
             <label className="text-sm font-medium">{t("nodeType")}</label>
             <Select value={nodeType} onValueChange={handleTypeChange}>
@@ -385,10 +392,12 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
               </div>
             </div>
           ) : null}
-        </CardContent>
-        </Card>
-        ) : null}
+            </div>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
+      <div className="grid gap-4">
         <Card className="min-w-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">

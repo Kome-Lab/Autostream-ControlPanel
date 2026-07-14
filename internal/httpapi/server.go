@@ -320,6 +320,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/node-agent/report", s.nodeAgentReport)
 	s.mux.HandleFunc("POST /api/node-agent/events", s.serviceStreamEvent)
 	s.mux.HandleFunc("POST /auth/logout", s.requirePermission("", s.logout))
+	s.mux.HandleFunc("POST /auth/session/refresh", s.requirePermission("", s.refreshSession))
 	s.mux.HandleFunc("GET /auth/me", s.requirePermission("", s.me))
 	s.mux.HandleFunc("GET /auth/avatar", s.requirePermission("", s.getCurrentUserAvatar))
 	s.mux.HandleFunc("PUT /auth/avatar", s.requirePermission("", s.updateCurrentUserAvatar))
@@ -1361,6 +1362,25 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(), Expires: time.Unix(0, 0), MaxAge: -1})
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.logout", ResourceType: "session", Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) refreshSession(w http.ResponseWriter, r *http.Request) {
+	current := currentFromContext(r.Context())
+	settings, err := s.settings.GetSecuritySettings(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "security_settings_unavailable"})
+		return
+	}
+	session, err := s.auth.RefreshSession(r.Context(), current.Session.Token, time.Duration(settings.SessionIdleTimeoutMin)*time.Minute)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":              "refreshed",
+		"idle_expires_at":     session.IdleExpiresAt,
+		"absolute_expires_at": session.AbsoluteExpiresAt,
+	})
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
@@ -2515,6 +2535,11 @@ func (s *Server) listProfiles(kind store.ProfileKind) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_profiles_failed"})
 			return
 		}
+		if kind == store.ProfileCaption {
+			for i := range items {
+				items[i].Config = normalizeProfileConfig(kind, items[i].Config)
+			}
+		}
 		writeJSON(w, http.StatusOK, items)
 	}
 }
@@ -2558,6 +2583,9 @@ func (s *Server) getProfile(kind store.ProfileKind) http.HandlerFunc {
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_profile_failed"})
 			return
+		}
+		if kind == store.ProfileCaption {
+			profile.Config = normalizeProfileConfig(kind, profile.Config)
 		}
 		writeJSON(w, http.StatusOK, profile)
 	}
@@ -2677,6 +2705,28 @@ func streamReferencesProfile(stream store.Stream, kind store.ProfileKind, id str
 }
 
 func normalizeProfileConfig(kind store.ProfileKind, config map[string]any) map[string]any {
+	if kind == store.ProfileCaption {
+		endpointingMS := configInt(config, "endpointing_ms")
+		if endpointingMS < 10 || endpointingMS > 5000 {
+			endpointingMS = 300
+		}
+		delayMS := configInt(config, "delay_ms")
+		if _, ok := config["delay_ms"]; !ok {
+			delayMS = 800
+		} else if delayMS < 0 || delayMS > 10000 {
+			delayMS = 800
+		}
+		return map[string]any{
+			"provider":            "deepgram",
+			"model":               "nova-3",
+			"language":            normalizeDeepgramLanguage(configString(config, "language")),
+			"api_key_secret_name": "deepgram_api_key",
+			"endpointing_ms":      endpointingMS,
+			"interim_results":     configBoolDefault(config, "interim_results", true),
+			"smart_format":        configBoolDefault(config, "smart_format", true),
+			"delay_ms":            delayMS,
+		}
+	}
 	if kind != store.ProfileOverlay || config == nil {
 		return config
 	}
@@ -2691,6 +2741,15 @@ func normalizeProfileConfig(kind store.ProfileKind, config map[string]any) map[s
 	out["watermark_canvas_height"] = 1080
 	out["watermark_fit_mode"] = "scale_to_output"
 	return out
+}
+
+func normalizeDeepgramLanguage(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "en", "en-us", "en-gb":
+		return "en"
+	default:
+		return "ja"
+	}
 }
 
 func (s *Server) validateProfileSecretReferences(w http.ResponseWriter, kind store.ProfileKind, config map[string]any) bool {
@@ -3814,7 +3873,7 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 
 func defaultOAuthAccountLabel(provider store.OAuthProvider) string {
 	if providerName := strings.TrimSpace(provider.Name); providerName != "" {
-		return providerName + " 接続アカウント"
+		return providerName
 	}
 	switch strings.TrimSpace(strings.ToLower(provider.ProviderType)) {
 	case "google":
@@ -5396,7 +5455,6 @@ type serviceRuntimeDiscordStreamConfig struct {
 	GuildID          string `json:"guild_id"`
 	VoiceChannelID   string `json:"voice_channel_id"`
 	TextChannelID    string `json:"text_channel_id,omitempty"`
-	CaptionAudioURL  string `json:"caption_audio_url,omitempty"`
 	AutoStartTrigger string `json:"auto_start_trigger,omitempty"`
 }
 
@@ -5637,7 +5695,7 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 			return nil, err
 		}
 		for _, item := range items {
-			if !runtimeProfileMatchesService(item.Config, service.ServiceID) {
+			if kind != store.ProfileCaption && !runtimeProfileMatchesService(item.Config, service.ServiceID) {
 				continue
 			}
 			item.Config = sanitizeRuntimeProfileConfigForKind(kind, item.Config)
@@ -5687,7 +5745,6 @@ func (s *Server) runtimeDiscordStreamConfigs(ctx context.Context, service store.
 			GuildID:          guildID,
 			VoiceChannelID:   voiceChannelID,
 			TextChannelID:    strings.TrimSpace(firstNonEmpty(stream.DiscordTextID, configString(profile.Config, "text_channel_id"))),
-			CaptionAudioURL:  strings.TrimSpace(configString(profile.Config, "caption_audio_url")),
 			AutoStartTrigger: strings.TrimSpace(stream.AutoStartTrigger),
 		})
 	}
@@ -5877,7 +5934,7 @@ func (s *Server) runtimeSecretAllowedForService(ctx context.Context, service sto
 				}
 				return s.runtimeArchiveProfileSecretAllowed(ctx, service, item.ID, streamID, archiveProfileID)
 			}
-			if !runtimeProfileMatchesService(item.Config, service.ServiceID) {
+			if kind != store.ProfileCaption && !runtimeProfileMatchesService(item.Config, service.ServiceID) {
 				continue
 			}
 			if runtimeProfileConfigReferencesSecret(item.Config, secretName) {
@@ -6042,7 +6099,7 @@ func (s *Server) runtimeArchiveProfileSecretAllowed(ctx context.Context, service
 }
 
 func (s *Server) runtimeGenericStreamSecretAllowedForProfile(ctx context.Context, service store.RegisteredService, kind store.ProfileKind, profileID, streamID string) (bool, error) {
-	if service.ServiceType != "encoder_recorder" {
+	if service.ServiceType != "encoder_recorder" && service.ServiceType != "worker" {
 		return false, nil
 	}
 	streamID = strings.TrimSpace(streamID)
@@ -6072,6 +6129,8 @@ func (s *Server) runtimeGenericStreamSecretAllowedForProfile(ctx context.Context
 		return stream.EncoderProfileID == profileID, nil
 	case store.ProfileOverlay:
 		return stream.OverlayProfileID == profileID, nil
+	case store.ProfileCaption:
+		return service.ServiceType == "worker" && stream.CaptionProfileID == profileID, nil
 	default:
 		return false, nil
 	}
@@ -6190,13 +6249,14 @@ func streamScopedGenericSecretName(secretName string) bool {
 		"youtube_stream_key_",
 		"google_oauth_refresh_token_",
 		"google_drive_folder_id_",
+		"deepgram_api_key_",
 	} {
 		if strings.HasPrefix(secretName, prefix) {
 			return true
 		}
 	}
 	switch secretName {
-	case "youtube_stream_key", "google_drive_folder_id":
+	case "youtube_stream_key", "google_drive_folder_id", "deepgram_api_key":
 		return true
 	default:
 		return false
@@ -6243,6 +6303,9 @@ func sanitizeRuntimeProfileConfig(config map[string]any) map[string]any {
 }
 
 func sanitizeRuntimeProfileConfigForKind(kind store.ProfileKind, config map[string]any) map[string]any {
+	if kind == store.ProfileCaption {
+		config = normalizeProfileConfig(kind, config)
+	}
 	out := sanitizeRuntimeProfileConfig(config)
 	if kind == store.ProfileDiscordConfig {
 		delete(out, "guild_id")
@@ -9808,12 +9871,13 @@ func safeCSVCell(value string) string {
 }
 
 var auditActionGroups = map[string][]string{
-	"service_assignment": {"services.assign", "services.unassign", "workers.assign", "workers.unassign"},
-	"service_runtime":    {"services.register", "services.heartbeat", "archive.artifacts.reported", "nodes.registration_token.create"},
-	"stream_lifecycle":   {"streams.create", "streams.start", "streams.stop", "streams.mark_failed", "streams.retry_upload"},
-	"security":           {"auth.login", "auth.logout", "auth.change_password", "users.create", "users.update", "users.disable", "users.lock", "users.unlock", "users.reset_password", "users.force_password_change", "roles.create", "roles.update", "roles.delete"},
-	"secrets":            {"secrets.update", "security.settings.update", "api_tokens.create", "api_tokens.revoke", "api_tokens.rotate"},
-	"notifications":      {"notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test"},
+	"service_assignment":    {"services.assign", "services.unassign", "workers.assign", "workers.unassign"},
+	"service_runtime":       {"services.register", "services.heartbeat", "archive.artifacts.reported", "nodes.registration_token.create"},
+	"service_runtime_reads": {"services.runtime_config.read"},
+	"stream_lifecycle":      {"streams.create", "streams.start", "streams.stop", "streams.mark_failed", "streams.retry_upload"},
+	"security":              {"auth.login", "auth.logout", "auth.change_password", "users.create", "users.update", "users.disable", "users.lock", "users.unlock", "users.reset_password", "users.force_password_change", "roles.create", "roles.update", "roles.delete"},
+	"secrets":               {"secrets.update", "security.settings.update", "api_tokens.create", "api_tokens.revoke", "api_tokens.rotate"},
+	"notifications":         {"notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test"},
 }
 
 func auditFilterFromRequest(r *http.Request, defaultLimit int) store.AuditFilter {
@@ -9827,6 +9891,9 @@ func auditFilterFromRequest(r *http.Request, defaultLimit int) store.AuditFilter
 	}
 	if group := query.Get("action_group"); group != "" && group != "all" {
 		filter.Actions = append(filter.Actions, auditActionGroups[group]...)
+	}
+	if group := query.Get("exclude_action_group"); group != "" && group != "all" {
+		filter.ExcludedActions = append(filter.ExcludedActions, auditActionGroups[group]...)
 	}
 	for _, action := range strings.Split(query.Get("action"), ",") {
 		action = strings.TrimSpace(action)
@@ -10453,7 +10520,7 @@ func productionMFASettingsAllowed(settings store.SecuritySettings) bool {
 	if len(requiredRoles) == 0 {
 		return true
 	}
-	return requiredRoles["super_admin"] && requiredRoles["admin"]
+	return requiredRoles["super_admin"]
 }
 
 func (s *Server) secretStatus(w http.ResponseWriter, r *http.Request) {
