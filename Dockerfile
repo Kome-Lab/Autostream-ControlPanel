@@ -1,4 +1,4 @@
-FROM node:26-alpine AS web
+FROM node:24-alpine AS web
 WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci --no-audit --no-fund
@@ -8,7 +8,7 @@ RUN npm run build \
        elif [ -d dist ]; then cp -a dist /tmp/autostream-control-panel-web; \
        else echo "control-panel web build did not produce web/out or web/dist" >&2; exit 1; fi
 
-FROM golang:1.26-trixie AS build
+FROM golang:1.26.5-trixie AS build
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
