@@ -56,8 +56,9 @@ func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 		!strings.Contains(csp, "media-src 'self' blob:") ||
 		!strings.Contains(csp, "worker-src 'self' blob:") ||
 		strings.Count(csp, "blob:") != 3 ||
-		!strings.Contains(csp, "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.googletagmanager.com") ||
-		!strings.Contains(csp, "connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com") ||
+		!strings.Contains(csp, "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.googletagmanager.com https://static.cloudflareinsights.com") ||
+		!strings.Contains(csp, "connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://www.googletagmanager.com https://cloudflareinsights.com") ||
+		strings.Contains(csp, "*.cloudflareinsights.com") ||
 		strings.Contains(csp, "unsafe-eval") ||
 		!strings.Contains(csp, "frame-src 'self' https://challenges.cloudflare.com") ||
 		res.Header().Get("X-Frame-Options") != "DENY" {
