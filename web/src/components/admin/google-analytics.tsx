@@ -4,21 +4,25 @@ import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useAppSettings } from "@/features/queries";
 import {
+  createGoogleTagCommandQueue,
   googleAnalyticsPageLocation,
+  type GoogleTagCommand,
   isGoogleAnalyticsPathAllowed,
   normalizeGoogleAnalyticsMeasurementID,
+  shouldSendGoogleAnalyticsPageView,
 } from "@/lib/google-analytics";
-
-type GTag = (...args: unknown[]) => void;
 
 declare global {
   interface Window {
     dataLayer?: unknown[];
-    gtag?: GTag;
+    gtag?: GoogleTagCommand;
+    __AUTOSTREAM_GOOGLE_ANALYTICS_ID__?: string;
+    __AUTOSTREAM_GOOGLE_ANALYTICS_PAGE_VIEW__?: string;
   }
 }
 
 const scriptID = "autostream-google-analytics";
+const bootstrapScriptID = "autostream-google-analytics-bootstrap";
 
 export function GoogleAnalytics() {
   const settings = useAppSettings();
@@ -29,16 +33,21 @@ export function GoogleAnalytics() {
     : "";
 
   useEffect(() => {
+    if (settings.isPending) return;
+
     if (!measurementID) {
       window.gtag?.("consent", "update", { analytics_storage: "denied" });
       document.getElementById(scriptID)?.remove();
+      document.getElementById(bootstrapScriptID)?.remove();
+      delete window.__AUTOSTREAM_GOOGLE_ANALYTICS_ID__;
+      delete window.__AUTOSTREAM_GOOGLE_ANALYTICS_PAGE_VIEW__;
       lastPageView.current = "";
       return;
     }
 
     window.dataLayer = window.dataLayer || [];
     if (!window.gtag) {
-      window.gtag = (...args: unknown[]) => window.dataLayer?.push(args);
+      window.gtag = createGoogleTagCommandQueue(window.dataLayer);
       window.gtag("consent", "default", {
         analytics_storage: "denied",
         ad_storage: "denied",
@@ -48,18 +57,30 @@ export function GoogleAnalytics() {
       window.gtag("js", new Date());
     }
     window.gtag("consent", "update", { analytics_storage: "granted" });
-    window.gtag("config", measurementID, {
-      send_page_view: false,
-      allow_google_signals: false,
-      allow_ad_personalization_signals: false,
-      cookie_flags: "SameSite=Strict;Secure",
-    });
 
+    if (window.__AUTOSTREAM_GOOGLE_ANALYTICS_ID__ !== measurementID) {
+      window.gtag("config", measurementID, {
+        send_page_view: false,
+        allow_google_signals: false,
+        allow_ad_personalization_signals: false,
+        cookie_flags: "SameSite=Strict;Secure",
+      });
+      window.__AUTOSTREAM_GOOGLE_ANALYTICS_ID__ = measurementID;
+    }
+
+    const existingScript = document.getElementById(scriptID) as HTMLScriptElement | null;
+    const existingMeasurementID = existingScript
+      ? existingScript.dataset.measurementId || new URL(existingScript.src).searchParams.get("id") || ""
+      : "";
+    if (existingScript && existingMeasurementID !== measurementID) {
+      existingScript.remove();
+    }
     if (!document.getElementById(scriptID)) {
       const source = new URL("/gtag/js", "https://www.googletagmanager.com");
       source.searchParams.set("id", measurementID);
       const script = document.createElement("script");
       script.id = scriptID;
+      script.dataset.measurementId = measurementID;
       script.async = true;
       script.src = source.toString();
       document.head.appendChild(script);
@@ -69,16 +90,23 @@ export function GoogleAnalytics() {
     return () => {
       window.gtag?.("consent", "update", { analytics_storage: "denied" });
       document.getElementById(scriptID)?.remove();
+      document.getElementById(bootstrapScriptID)?.remove();
+      delete window.__AUTOSTREAM_GOOGLE_ANALYTICS_ID__;
+      delete window.__AUTOSTREAM_GOOGLE_ANALYTICS_PAGE_VIEW__;
       lastPageView.current = "";
     };
-  }, [measurementID]);
+  }, [measurementID, settings.isPending]);
 
   useEffect(() => {
     if (!measurementID || !window.gtag || !pathname) return;
     const pageLocation = googleAnalyticsPageLocation(window.location.origin, pathname);
     const pageViewKey = `${measurementID}:${pageLocation}`;
-    if (lastPageView.current === pageViewKey) return;
+    if (!shouldSendGoogleAnalyticsPageView(pageViewKey, lastPageView.current, window.__AUTOSTREAM_GOOGLE_ANALYTICS_PAGE_VIEW__)) {
+      lastPageView.current = pageViewKey;
+      return;
+    }
     lastPageView.current = pageViewKey;
+    window.__AUTOSTREAM_GOOGLE_ANALYTICS_PAGE_VIEW__ = pageViewKey;
     window.gtag("event", "page_view", {
       page_location: pageLocation,
       page_path: pathname,

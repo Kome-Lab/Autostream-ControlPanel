@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -47,6 +48,7 @@ func main() {
 		log.Fatalf("run migrations: %v", err)
 	}
 
+	appSettingsStore := store.NewMariaDBAppSettingsStore(db)
 	srv := httpapi.NewServer(
 		store.NewMariaDBStreamStore(db),
 		httpapi.WithAuthStore(store.NewMariaDBAuthStoreWithSecretKey(db, os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))),
@@ -54,12 +56,12 @@ func main() {
 		httpapi.WithProfileStore(store.NewMariaDBProfileStore(db)),
 		httpapi.WithIntegrationStore(store.NewMariaDBIntegrationStore(db, os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))),
 		httpapi.WithSecuritySettingsStore(store.NewMariaDBSecuritySettingsStore(db)),
-		httpapi.WithAppSettingsStore(store.NewMariaDBAppSettingsStore(db)),
+		httpapi.WithAppSettingsStore(appSettingsStore),
 		httpapi.WithSecretStore(store.NewMariaDBSecretStore(db, os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))),
 		httpapi.WithRuntimeSecretLeaseStore(store.NewMariaDBRuntimeSecretLeaseStore(db)),
 		httpapi.WithOAuthLoginStore(store.NewMariaDBOAuthLoginStore(db)),
 	)
-	handler := withStaticFiles(srv, staticWebDir())
+	handler := withStaticFiles(srv, staticWebDir(), appSettingsStore)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -170,11 +172,12 @@ func openDatabaseWithRetry(parent context.Context, timeout, interval time.Durati
 }
 
 type staticFilesHandler struct {
-	app http.Handler
-	dir string
+	app         http.Handler
+	dir         string
+	appSettings store.AppSettingsStore
 }
 
-func withStaticFiles(app http.Handler, dir string) http.Handler {
+func withStaticFiles(app http.Handler, dir string, appSettings store.AppSettingsStore) http.Handler {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return app
@@ -184,7 +187,7 @@ func withStaticFiles(app http.Handler, dir string) http.Handler {
 		return app
 	}
 	log.Printf("serving Control Panel web UI from %s", dir)
-	return staticFilesHandler{app: app, dir: dir}
+	return staticFilesHandler{app: app, dir: dir, appSettings: appSettings}
 }
 
 func (h staticFilesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -206,6 +209,7 @@ func (h staticFilesHandler) serveStatic(w http.ResponseWriter, r *http.Request) 
 	if cleanPath == "/" {
 		return false
 	}
+	isUINavigation := isHTMLNavigationRequest(r) || isCanonicalControlPanelUIRequest(r, cleanPath)
 	rel := strings.TrimPrefix(cleanPath, "/")
 	full, ok := safeStaticPath(h.dir, rel)
 	if !ok {
@@ -215,43 +219,70 @@ func (h staticFilesHandler) serveStatic(w http.ResponseWriter, r *http.Request) 
 	info, err := os.Stat(full)
 	if err == nil && info.IsDir() {
 		w.Header().Add("Vary", "Accept")
-		if !isHTMLNavigationRequest(r) {
+		if !isUINavigation {
 			return false
 		}
-		if h.serveStaticIndex(w, r, rel) {
+		if h.serveStaticIndex(w, r, rel, cleanPath) {
 			return true
 		}
 		if isControlPanelUIPath(cleanPath) {
-			http.ServeFile(w, r, filepath.Join(h.dir, "index.html"))
+			h.serveStaticDocument(w, r, filepath.Join(h.dir, "index.html"), cleanPath)
 			return true
 		}
 		return false
 	}
 	if err != nil {
-		if isHTMLNavigationRequest(r) && isControlPanelUIPath(cleanPath) {
-			if h.serveStaticIndex(w, r, rel) {
+		if isUINavigation && isControlPanelUIPath(cleanPath) {
+			if h.serveStaticIndex(w, r, rel, cleanPath) {
 				return true
 			}
-			http.ServeFile(w, r, filepath.Join(h.dir, "index.html"))
+			h.serveStaticDocument(w, r, filepath.Join(h.dir, "index.html"), cleanPath)
 			return true
 		}
 		return false
 	}
-	http.ServeFile(w, r, full)
+	h.serveStaticDocument(w, r, full, cleanPath)
 	return true
 }
 
-func (h staticFilesHandler) serveStaticIndex(w http.ResponseWriter, r *http.Request, rel string) bool {
+func (h staticFilesHandler) serveStaticIndex(w http.ResponseWriter, r *http.Request, rel, cleanPath string) bool {
 	indexRel := path.Join(rel, "index.html")
 	indexFull, ok := safeStaticPath(h.dir, indexRel)
 	if !ok {
 		return false
 	}
 	if indexInfo, err := os.Stat(indexFull); err == nil && !indexInfo.IsDir() {
-		http.ServeFile(w, r, indexFull)
+		h.serveStaticDocument(w, r, indexFull, cleanPath)
 		return true
 	}
 	return false
+}
+
+func (h staticFilesHandler) serveStaticDocument(w http.ResponseWriter, r *http.Request, full, cleanPath string) {
+	if h.appSettings == nil || !isCanonicalControlPanelUIRequest(r, cleanPath) {
+		http.ServeFile(w, r, full)
+		return
+	}
+
+	// These documents depend on runtime application settings. Do not let a
+	// disabled or previous measurement ID remain cached after an operator update.
+	w.Header().Set("Cache-Control", "no-store")
+	document, err := os.ReadFile(full)
+	if err != nil {
+		http.ServeFile(w, r, full)
+		return
+	}
+	settings, err := h.appSettings.GetAppSettings(r.Context())
+	if err != nil {
+		log.Printf("load app settings for Google Analytics bootstrap: %v", err)
+	} else if settings.GoogleAnalyticsEnabled {
+		if measurementID, ok := normalizeGoogleAnalyticsMeasurementID(settings.GoogleAnalyticsMeasurementID); ok {
+			document, _ = injectGoogleAnalyticsSnippet(document, measurementID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, filepath.Base(full), time.Time{}, bytes.NewReader(document))
 }
 
 func isHTMLNavigationRequest(r *http.Request) bool {
@@ -265,12 +296,95 @@ func isHTMLNavigationRequest(r *http.Request) bool {
 	return strings.Contains(accept, "text/html")
 }
 
+// Next.js static-export link prefetch and external tag detectors may request UI
+// routes with Accept: */*. Only /login and the canonical /admin namespace are
+// unambiguously UI; legacy top-level paths such as /streams overlap API routes.
+func isCanonicalControlPanelUIRequest(r *http.Request, cleanPath string) bool {
+	if (r.Method != http.MethodGet && r.Method != http.MethodHead) || path.Ext(strings.TrimSuffix(r.URL.Path, "/")) != "" {
+		return false
+	}
+	return isGoogleAnalyticsHTMLPath(cleanPath)
+}
+
+func isGoogleAnalyticsHTMLPath(cleanPath string) bool {
+	return cleanPath == "/login" || cleanPath == "/admin" || strings.HasPrefix(cleanPath, "/admin/")
+}
+
 func isControlPanelUIPath(cleanPath string) bool {
-	if cleanPath == "/admin" || strings.HasPrefix(cleanPath, "/admin/") {
+	if isGoogleAnalyticsHTMLPath(cleanPath) {
 		return true
 	}
 	_, ok := controlPanelUIPaths[cleanPath]
 	return ok
+}
+
+func normalizeGoogleAnalyticsMeasurementID(value string) (string, bool) {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if len(value) < 6 || len(value) > 24 || !strings.HasPrefix(value, "G-") {
+		return "", false
+	}
+	for _, char := range strings.TrimPrefix(value, "G-") {
+		if char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
+		return "", false
+	}
+	return value, true
+}
+
+func injectGoogleAnalyticsSnippet(document []byte, measurementID string) ([]byte, bool) {
+	measurementID, ok := normalizeGoogleAnalyticsMeasurementID(measurementID)
+	if !ok || bytes.Contains(document, []byte(`id="autostream-google-analytics"`)) {
+		return document, false
+	}
+	lowerDocument := bytes.ToLower(document)
+	headStart := bytes.Index(lowerDocument, []byte("<head"))
+	if headStart < 0 || headStart+5 >= len(document) {
+		return document, false
+	}
+	next := document[headStart+5]
+	if next != '>' && next != ' ' && next != '\t' && next != '\r' && next != '\n' {
+		return document, false
+	}
+	headEndOffset := bytes.IndexByte(document[headStart:], '>')
+	if headEndOffset < 0 {
+		return document, false
+	}
+	insertAt := headStart + headEndOffset + 1
+	snippet := fmt.Sprintf(`
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=%[1]s" id="autostream-google-analytics" data-measurement-id="%[1]s"></script>
+<script id="autostream-google-analytics-bootstrap">
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('consent', 'default', {
+  analytics_storage: 'granted',
+  ad_storage: 'denied',
+  ad_user_data: 'denied',
+  ad_personalization: 'denied'
+});
+gtag('js', new Date());
+gtag('config', '%[1]s', {
+  send_page_view: false,
+  allow_google_signals: false,
+  allow_ad_personalization_signals: false,
+  cookie_flags: 'SameSite=Strict;Secure'
+});
+var autostreamGoogleAnalyticsPageLocation = window.location.origin + window.location.pathname;
+window.__AUTOSTREAM_GOOGLE_ANALYTICS_ID__ = '%[1]s';
+window.__AUTOSTREAM_GOOGLE_ANALYTICS_PAGE_VIEW__ = '%[1]s:' + autostreamGoogleAnalyticsPageLocation;
+gtag('event', 'page_view', {
+  page_location: autostreamGoogleAnalyticsPageLocation,
+  page_path: window.location.pathname,
+  page_title: document.title || 'AutoStream Control Panel'
+});
+</script>`, measurementID)
+
+	result := make([]byte, 0, len(document)+len(snippet))
+	result = append(result, document[:insertAt]...)
+	result = append(result, snippet...)
+	result = append(result, document[insertAt:]...)
+	return result, true
 }
 
 var controlPanelUIPaths = map[string]struct{}{

@@ -239,19 +239,24 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
             <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Turnstileを使う場合は有効化してSite keyとSecret keyを保存してください。</div>
           )}
         </SettingsSection>
-        <SettingsSection title="Google Analytics" description="管理画面のページ閲覧だけをGA4へ送信します。検索条件、ユーザー情報、配信内容は送信しません。" action={<Switch checked={googleAnalyticsEnabled} onCheckedChange={setGoogleAnalyticsEnabled} />}>
+        <SettingsSection title="Google Analytics" description="ログイン画面と管理画面のページ閲覧だけをGA4へ送信します。AutoStreamが送るイベントには検索条件、ユーザー情報、配信内容を含めません。" action={<Switch checked={googleAnalyticsEnabled} onCheckedChange={setGoogleAnalyticsEnabled} />}>
           {googleAnalyticsEnabled ? (
-            <Field label="GA4 Measurement ID">
-              <Input
-                value={googleAnalyticsMeasurementID}
-                onChange={(event) => setGoogleAnalyticsMeasurementID(event.target.value.toUpperCase())}
-                placeholder="G-XXXXXXXXXX"
-                maxLength={24}
-                spellCheck={false}
-                aria-invalid={!googleAnalyticsIDValid}
-              />
-              {!googleAnalyticsIDValid ? <span className="text-xs font-normal text-destructive">G-から始まるMeasurement IDを入力してください。</span> : null}
-            </Field>
+            <>
+              <Field label="GA4 Measurement ID">
+                <Input
+                  value={googleAnalyticsMeasurementID}
+                  onChange={(event) => setGoogleAnalyticsMeasurementID(event.target.value.toUpperCase())}
+                  placeholder="G-XXXXXXXXXX"
+                  maxLength={24}
+                  spellCheck={false}
+                  aria-invalid={!googleAnalyticsIDValid}
+                />
+                {!googleAnalyticsIDValid ? <span className="text-xs font-normal text-destructive">G-から始まるMeasurement IDを入力してください。</span> : null}
+              </Field>
+              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                GA4データストリームの「拡張計測機能」はOFFにしてください。ONのままでは、履歴変更のpage_viewやサイト内検索などがGoogle側から別途自動送信されます。
+              </div>
+            </>
           ) : (
             <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">有効化するまでGoogleのスクリプトや計測通信は読み込まれません。</div>
           )}

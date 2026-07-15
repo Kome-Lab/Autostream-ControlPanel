@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,7 +10,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/example/autostream-control-panel/internal/store"
 )
+
+type testAppSettingsStore struct {
+	settings store.AppSettings
+	err      error
+}
+
+func (s testAppSettingsStore) GetAppSettings(ctx context.Context) (store.AppSettings, error) {
+	if err := ctx.Err(); err != nil {
+		return store.AppSettings{}, err
+	}
+	return s.settings, s.err
+}
+
+func (s testAppSettingsStore) UpdateAppSettings(ctx context.Context, settings store.AppSettings) (store.AppSettings, error) {
+	if err := ctx.Err(); err != nil {
+		return store.AppSettings{}, err
+	}
+	return settings, s.err
+}
 
 func TestStaticWebDirUsesConfiguredEnvDir(t *testing.T) {
 	got := staticWebDirFromCandidates(" /custom/web ", []string{t.TempDir()})
@@ -175,6 +198,243 @@ func TestStaticFilesHandlerServesNestedNextIndexForHTMLNavigation(t *testing.T) 
 	}
 }
 
+func TestStaticFilesHandlerServesAdminIndexForNextPrefetchHead(t *testing.T) {
+	root := t.TempDir()
+	adminStreams := filepath.Join(root, "admin", "streams")
+	if err := os.MkdirAll(adminStreams, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adminStreams, "index.html"), []byte("<main>streams</main>"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	appCalled := false
+	handler := staticFilesHandler{
+		app: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			appCalled = true
+			http.Error(w, "api fallback", http.StatusTeapot)
+		}),
+		dir: root,
+	}
+
+	for _, accept := range []string{"", "*/*"} {
+		appCalled = false
+		req := httptest.NewRequest(http.MethodHead, "/admin/streams/", nil)
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusOK || appCalled || res.Body.Len() != 0 {
+			t.Fatalf("HEAD Accept %q response = %d appCalled=%v body=%q", accept, res.Code, appCalled, res.Body.String())
+		}
+		if contentType := res.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/html") {
+			t.Fatalf("HEAD Accept %q content type = %q", accept, contentType)
+		}
+	}
+}
+
+func TestStaticFilesHandlerServesCanonicalUIForMachineAcceptHeaders(t *testing.T) {
+	root := t.TempDir()
+	for _, route := range []string{"login", filepath.Join("admin", "streams")} {
+		dir := filepath.Join(root, route)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><head></head><body>"+route+"</body></html>"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	appCalled := false
+	handler := staticFilesHandler{
+		app: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			appCalled = true
+			http.Error(w, "api fallback", http.StatusTeapot)
+		}),
+		dir: root,
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		for _, requestPath := range []string{"/login/", "/admin/streams/"} {
+			appCalled = false
+			req := httptest.NewRequest(method, requestPath, nil)
+			req.Header.Set("Accept", "*/*")
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusOK || appCalled {
+				t.Fatalf("%s %s response = %d appCalled=%v body=%q", method, requestPath, res.Code, appCalled, res.Body.String())
+			}
+			if method == http.MethodHead && res.Body.Len() != 0 {
+				t.Fatalf("HEAD %s body = %q", requestPath, res.Body.String())
+			}
+			if contentType := res.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/html") {
+				t.Fatalf("%s %s content type = %q", method, requestPath, contentType)
+			}
+		}
+	}
+}
+
+func TestStaticFilesHandlerInjectsGoogleAnalyticsIntoInitialHTML(t *testing.T) {
+	root := t.TempDir()
+	for _, route := range []string{"login", "setup"} {
+		dir := filepath.Join(root, route)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		body := "<!doctype html><html><head><title>Fixture</title></head><body>" + route + "</body></html>"
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(body), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adminStreams := filepath.Join(root, "admin", "streams")
+	if err := os.MkdirAll(adminStreams, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adminStreams, "__next._tree.txt"), []byte("next-tree"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	settings := store.NewMemoryAppSettingsStore()
+	if _, err := settings.UpdateAppSettings(context.Background(), store.AppSettings{
+		GoogleAnalyticsEnabled:       true,
+		GoogleAnalyticsMeasurementID: "G-TEST1234",
+		SMTPEnabled:                  true,
+		SMTPHost:                     "smtp.example.com",
+		SMTPPort:                     587,
+		SMTPStartTLS:                 true,
+		SMTPFrom:                     "AutoStream <noreply@example.com>",
+		SMTPUsername:                 "mailer",
+		SMTPPasswordConfigured:       true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := staticFilesHandler{
+		app:         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "api fallback", http.StatusTeapot) }),
+		dir:         root,
+		appSettings: settings,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/login/", nil)
+	req.Header.Set("Accept", "*/*")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("login response = %d body=%q", res.Code, res.Body.String())
+	}
+	body := res.Body.String()
+	for _, want := range []string{
+		"<head>\n<!-- Google tag (gtag.js) -->",
+		`https://www.googletagmanager.com/gtag/js?id=G-TEST1234`,
+		`data-measurement-id="G-TEST1234"`,
+		`function gtag(){dataLayer.push(arguments);}`,
+		`gtag('config', 'G-TEST1234'`,
+		`window.location.origin + window.location.pathname`,
+		`gtag('event', 'page_view'`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("injected login HTML is missing %q: %s", want, body)
+		}
+	}
+	if strings.Count(body, `gtag('config', 'G-TEST1234'`) != 1 {
+		t.Fatalf("config command count = %d", strings.Count(body, `gtag('config', 'G-TEST1234'`))
+	}
+	for _, secretField := range []string{"smtp.example.com", "noreply@example.com", "mailer"} {
+		if strings.Contains(body, secretField) {
+			t.Fatalf("injected HTML leaked application setting %q", secretField)
+		}
+	}
+	if cacheControl := res.Header().Get("Cache-Control"); cacheControl != "no-store" {
+		t.Fatalf("login Cache-Control = %q", cacheControl)
+	}
+	getContentLength := res.Header().Get("Content-Length")
+	if getContentLength == "" {
+		t.Fatal("login GET response is missing Content-Length")
+	}
+
+	req = httptest.NewRequest(http.MethodHead, "/login/", nil)
+	req.Header.Set("Accept", "*/*")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || res.Body.Len() != 0 {
+		t.Fatalf("login HEAD response = %d body=%q", res.Code, res.Body.String())
+	}
+	if res.Header().Get("Cache-Control") != "no-store" || res.Header().Get("Content-Length") != getContentLength {
+		t.Fatalf("login HEAD headers do not match dynamic GET: %#v", res.Header())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/setup/", nil)
+	req.Header.Set("Accept", "text/html")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if strings.Contains(res.Body.String(), "googletagmanager.com") {
+		t.Fatalf("setup page must not contain Google Analytics: %s", res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/streams/__next._tree.txt", nil)
+	req.Header.Set("Accept", "*/*")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || res.Body.String() != "next-tree" {
+		t.Fatalf("Next route data response = %d body=%q", res.Code, res.Body.String())
+	}
+	if strings.HasPrefix(res.Header().Get("Content-Type"), "text/html") || res.Header().Get("Cache-Control") == "no-store" {
+		t.Fatalf("Next route data received dynamic HTML headers: %#v", res.Header())
+	}
+
+	if _, err := settings.UpdateAppSettings(context.Background(), store.AppSettings{
+		GoogleAnalyticsEnabled:       true,
+		GoogleAnalyticsMeasurementID: "G-NEW5678",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/login/", nil)
+	req.Header.Set("Accept", "*/*")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if !strings.Contains(res.Body.String(), "G-NEW5678") || strings.Contains(res.Body.String(), "G-TEST1234") {
+		t.Fatalf("updated response contains stale measurement ID: %s", res.Body.String())
+	}
+}
+
+func TestStaticFilesHandlerOmitsGoogleAnalyticsForUnavailableSettings(t *testing.T) {
+	root := t.TempDir()
+	login := filepath.Join(root, "login")
+	if err := os.MkdirAll(login, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(login, "index.html"), []byte("<html><head></head><body>login</body></html>"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		settings store.AppSettingsStore
+	}{
+		{name: "disabled", settings: store.NewMemoryAppSettingsStore()},
+		{name: "invalid ID", settings: testAppSettingsStore{settings: store.AppSettings{GoogleAnalyticsEnabled: true, GoogleAnalyticsMeasurementID: `G-BAD<script>`}}},
+		{name: "store error", settings: testAppSettingsStore{err: errors.New("settings unavailable")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := staticFilesHandler{
+				app:         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "api fallback", http.StatusTeapot) }),
+				dir:         root,
+				appSettings: tt.settings,
+			}
+			req := httptest.NewRequest(http.MethodGet, "/login/", nil)
+			req.Header.Set("Accept", "*/*")
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusOK || strings.Contains(res.Body.String(), "googletagmanager.com") {
+				t.Fatalf("response = %d body=%q", res.Code, res.Body.String())
+			}
+			if cacheControl := res.Header().Get("Cache-Control"); cacheControl != "no-store" {
+				t.Fatalf("Cache-Control = %q", cacheControl)
+			}
+		})
+	}
+}
+
 func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>app</main>"), 0o640); err != nil {
@@ -218,6 +478,14 @@ func TestStaticFilesHandlerKeepsAPIFallbackForJSONAndAssetMisses(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusOK || res.Body.String() != "<main>streams</main>" {
 		t.Fatalf("HTML navigation should use the exported route, status = %d body=%q", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodHead, "/streams", nil)
+	req.Header.Set("Accept", "*/*")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusTeapot {
+		t.Fatalf("legacy API HEAD should fall through, status = %d body=%q", res.Code, res.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)

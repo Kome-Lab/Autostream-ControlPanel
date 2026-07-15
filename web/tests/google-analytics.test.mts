@@ -2,10 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createGoogleTagCommandQueue,
   googleAnalyticsPageLocation,
   isGoogleAnalyticsPathAllowed,
   normalizeGoogleAnalyticsMeasurementID,
+  shouldSendGoogleAnalyticsPageView,
 } from "../src/lib/google-analytics.ts";
+
+test("gtag queues Arguments objects instead of normal Arrays", () => {
+  const dataLayer: unknown[] = [];
+  const gtag = createGoogleTagCommandQueue(dataLayer);
+
+  gtag("config", "G-ABCD1234", { send_page_view: false });
+
+  assert.equal(dataLayer.length, 1);
+  assert.equal(Array.isArray(dataLayer[0]), false);
+  assert.deepEqual(Array.from(dataLayer[0] as ArrayLike<unknown>), [
+    "config",
+    "G-ABCD1234",
+    { send_page_view: false },
+  ]);
+});
 
 test("measurement IDs are normalized without accepting scriptable input", () => {
   assert.equal(normalizeGoogleAnalyticsMeasurementID(" g-abcd1234 "), "G-ABCD1234");
@@ -20,6 +37,15 @@ test("page locations contain only origin and pathname", () => {
     "https://panel.example.jp/admin/audit/",
   );
   assert.equal(googleAnalyticsPageLocation("https://panel.example.jp", "?q=secret"), "https://panel.example.jp/");
+});
+
+test("server bootstrap suppresses only the duplicate initial page view", () => {
+  const initialKey = "G-ABCD1234:https://panel.example.jp/login";
+  const adminKey = "G-ABCD1234:https://panel.example.jp/admin/streams/";
+
+  assert.equal(shouldSendGoogleAnalyticsPageView(initialKey, "", initialKey), false);
+  assert.equal(shouldSendGoogleAnalyticsPageView(initialKey, initialKey, undefined), false);
+  assert.equal(shouldSendGoogleAnalyticsPageView(adminKey, initialKey, initialKey), true);
 });
 
 test("analytics is limited to login and authenticated admin routes", () => {
