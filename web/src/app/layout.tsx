@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { I18nProvider } from "@/components/admin/i18n-provider";
+import { GoogleAnalytics } from "@/components/admin/google-analytics";
 import { QueryProvider } from "@/components/admin/query-provider";
 import { ThemeProvider } from "@/components/admin/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <ThemeProvider>
           <I18nProvider>
             <QueryProvider>
+              <GoogleAnalytics />
               <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
             </QueryProvider>
           </I18nProvider>

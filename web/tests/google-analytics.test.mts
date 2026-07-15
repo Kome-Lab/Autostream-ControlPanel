@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   googleAnalyticsPageLocation,
+  isGoogleAnalyticsPathAllowed,
   normalizeGoogleAnalyticsMeasurementID,
 } from "../src/lib/google-analytics.ts";
 
@@ -19,4 +20,17 @@ test("page locations contain only origin and pathname", () => {
     "https://panel.example.jp/admin/audit/",
   );
   assert.equal(googleAnalyticsPageLocation("https://panel.example.jp", "?q=secret"), "https://panel.example.jp/");
+});
+
+test("analytics is limited to login and authenticated admin routes", () => {
+  assert.equal(isGoogleAnalyticsPathAllowed("/login"), true);
+  assert.equal(isGoogleAnalyticsPathAllowed("/login/"), true);
+  assert.equal(isGoogleAnalyticsPathAllowed("/admin"), true);
+  assert.equal(isGoogleAnalyticsPathAllowed("/admin/streams/"), true);
+
+  assert.equal(isGoogleAnalyticsPathAllowed("/"), false);
+  assert.equal(isGoogleAnalyticsPathAllowed("/setup"), false);
+  assert.equal(isGoogleAnalyticsPathAllowed("/auth/email/confirm"), false);
+  assert.equal(isGoogleAnalyticsPathAllowed("/archive/share"), false);
+  assert.equal(isGoogleAnalyticsPathAllowed("/tokens"), false);
 });

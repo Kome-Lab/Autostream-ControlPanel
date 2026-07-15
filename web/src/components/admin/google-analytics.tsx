@@ -3,7 +3,11 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useAppSettings } from "@/features/queries";
-import { googleAnalyticsPageLocation, normalizeGoogleAnalyticsMeasurementID } from "@/lib/google-analytics";
+import {
+  googleAnalyticsPageLocation,
+  isGoogleAnalyticsPathAllowed,
+  normalizeGoogleAnalyticsMeasurementID,
+} from "@/lib/google-analytics";
 
 type GTag = (...args: unknown[]) => void;
 
@@ -20,7 +24,7 @@ export function GoogleAnalytics() {
   const settings = useAppSettings();
   const pathname = usePathname();
   const lastPageView = useRef("");
-  const measurementID = settings.data?.google_analytics_enabled
+  const measurementID = isGoogleAnalyticsPathAllowed(pathname) && settings.data?.google_analytics_enabled
     ? normalizeGoogleAnalyticsMeasurementID(settings.data.google_analytics_measurement_id)
     : "";
 
