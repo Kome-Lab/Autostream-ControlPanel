@@ -54,6 +54,11 @@ import { useTheme } from "@/components/admin/theme-provider";
 import { APIError, apiGet, apiPost, clearCSRFToken } from "@/lib/api/client";
 import { hasAnyPermission, hasPermission } from "@/lib/auth/permissions";
 import { loginPathForLocation } from "@/lib/auth/post-login-redirect";
+import {
+  createNavigationSectionState,
+  navigationSectionStateKey,
+  toggleNavigationSection,
+} from "@/lib/navigation-section-state";
 import { useAppSettings, useCurrentUser, useServiceHealth, useVersion } from "@/features/queries";
 import type { CurrentUser, Locale, SetupStatus } from "@/types/domain";
 import type { TranslationKey } from "@/lib/i18n";
@@ -412,9 +417,19 @@ function Navigation({ pathname, currentUser, mobile = false }: { pathname: strin
 
   return (
     <nav aria-label="管理メニュー" className="space-y-1.5">
-      {visibleSections.map((section, sectionIndex) => (
-        <NavigationSection key={section.key} section={section} pathname={pathname} mobile={mobile} initiallyOpen={sectionIndex === 0} />
-      ))}
+      {visibleSections.map((section, sectionIndex) => {
+        const sectionActive = section.items.some((item) => isActivePath(pathname, item.href));
+        return (
+          <NavigationSection
+            key={navigationSectionStateKey(section.key, sectionActive)}
+            section={section}
+            pathname={pathname}
+            mobile={mobile}
+            initiallyOpen={sectionIndex === 0}
+            sectionActive={sectionActive}
+          />
+        );
+      })}
     </nav>
   );
 }
@@ -424,11 +439,10 @@ function withVersionPrefix(value: string | null | undefined) {
   return normalized.toLowerCase().startsWith("v") ? normalized : `v${normalized}`;
 }
 
-function NavigationSection({ section, pathname, mobile, initiallyOpen }: { section: NavSection; pathname: string; mobile: boolean; initiallyOpen: boolean }) {
+function NavigationSection({ section, pathname, mobile, initiallyOpen, sectionActive }: { section: NavSection; pathname: string; mobile: boolean; initiallyOpen: boolean; sectionActive: boolean }) {
   const { t } = useI18n();
-  const sectionActive = section.items.some((item) => isActivePath(pathname, item.href));
-  const [userOpen, setUserOpen] = useState(initiallyOpen);
-  const open = sectionActive || userOpen;
+  const [sectionState, setSectionState] = useState(() => createNavigationSectionState(initiallyOpen, sectionActive));
+  const open = sectionState.open;
 
   return (
     <div>
@@ -436,7 +450,7 @@ function NavigationSection({ section, pathname, mobile, initiallyOpen }: { secti
         type="button"
         className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-[0.7rem] font-semibold text-sidebar-foreground/56 transition-colors hover:bg-sidebar-accent/45 hover:text-sidebar-foreground"
         aria-expanded={open}
-        onClick={() => setUserOpen((value) => !value)}
+        onClick={() => setSectionState(toggleNavigationSection)}
       >
         <span>{t(section.key)}</span>
         <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
