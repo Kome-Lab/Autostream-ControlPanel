@@ -196,6 +196,15 @@ export type SetupStatus = {
 export type AppSettings = {
   app_name: string;
   timezone: string;
+  google_analytics_enabled?: boolean;
+  google_analytics_measurement_id?: string;
+  turnstile_enabled?: boolean;
+  turnstile_site_key?: string;
+  turnstile_configured?: boolean;
+  updated_at?: string;
+};
+
+export type ManagedAppSettings = AppSettings & {
   smtp_enabled?: boolean;
   smtp_host?: string;
   smtp_port?: number;
@@ -203,10 +212,6 @@ export type AppSettings = {
   smtp_from?: string;
   smtp_username?: string;
   smtp_password_configured?: boolean;
-  turnstile_enabled?: boolean;
-  turnstile_site_key?: string;
-  turnstile_configured?: boolean;
-  updated_at?: string;
 };
 
 export type ServiceUpdateInfo = {

@@ -1,4 +1,4 @@
-import type { AppSettings, AuditLog, CurrentUser, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, WorkerNode } from "@/types/domain";
+import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 const baseTime = "2026-07-02T09:00:00+09:00";
 
@@ -374,9 +374,10 @@ export const mockSetupStatus: SetupStatus = {
   setup_required: false,
 };
 
-export let mockAppSettings: AppSettings = {
+export let mockAppSettings: ManagedAppSettings = {
   app_name: "AutoStream",
   timezone: "Asia/Tokyo",
+  google_analytics_enabled: false,
   smtp_enabled: false,
   smtp_port: 587,
   smtp_starttls: true,
@@ -561,6 +562,7 @@ export function mockGet(path: string): unknown {
     "/auth/oauth/providers": mockLoginOAuthProviders(),
     "/setup/status": mockSetupStatus,
     "/settings/app": mockAppSettings,
+    "/settings/app/manage": mockAppSettings,
     "/version": mockAppVersion,
     "/streams": mockStreams,
     "/workers": mockWorkers,
@@ -610,13 +612,23 @@ export function mockPost(path: string, body?: unknown): unknown {
   }
   if (/^\/auth\/oauth\/[^/]+\/start$/.test(stripQuery(path))) {
     const providerID = decodeURIComponent(stripQuery(path).replace(/^\/auth\/oauth\//, "").replace(/\/start$/, ""));
+    const request = body as Partial<{ redirect_after: string }>;
     const provider = mockLoginOAuthProviders().find((item) => item.id === providerID) || mockLoginOAuthProviders()[0];
     return {
       provider,
-      authorization_url: "/admin/",
+      authorization_url: request.redirect_after || "/admin/",
       state: "mock-oauth-login-state",
       nonce: "mock-oauth-login-nonce",
       expires_at: baseTime,
+    };
+  }
+  const previewLink = stripQuery(path).match(/^\/streams\/([^/]+)\/preview-links$/);
+  if (previewLink) {
+    const streamID = decodeURIComponent(previewLink[1]);
+    return {
+      stream_id: streamID,
+      url: `https://control.example.jp/stream-previews/mock-preview-token-${encodeURIComponent(streamID)}/index.m3u8`,
+      expires_at: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
     };
   }
   if (stripQuery(path) === "/auth/change-password") {
@@ -936,12 +948,14 @@ export function mockPut(path: string, body?: unknown): unknown {
     return { status: "confirmation_sent", target: maskMockEmail(email) };
   }
   if (stripQuery(path) === "/settings/app") {
-    const request = body as Partial<AppSettings> & { smtp_password?: string; turnstile_secret?: string };
+    const request = body as Partial<ManagedAppSettings> & { smtp_password?: string; turnstile_secret?: string };
     const smtpEnabled = Boolean(request.smtp_enabled);
     const turnstileEnabled = Boolean(request.turnstile_enabled);
     mockAppSettings = {
       app_name: request.app_name || mockAppSettings.app_name,
       timezone: request.timezone || mockAppSettings.timezone,
+      google_analytics_enabled: Boolean(request.google_analytics_enabled),
+      google_analytics_measurement_id: request.google_analytics_enabled ? request.google_analytics_measurement_id?.trim().toUpperCase() : undefined,
       smtp_enabled: smtpEnabled,
       smtp_host: smtpEnabled ? request.smtp_host || "" : undefined,
       smtp_port: smtpEnabled ? request.smtp_port || 587 : 587,

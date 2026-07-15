@@ -14,19 +14,21 @@ import (
 )
 
 type AppSettings struct {
-	AppName                string `json:"app_name"`
-	Timezone               string `json:"timezone"`
-	SMTPEnabled            bool   `json:"smtp_enabled"`
-	SMTPHost               string `json:"smtp_host,omitempty"`
-	SMTPPort               int    `json:"smtp_port,omitempty"`
-	SMTPStartTLS           bool   `json:"smtp_starttls"`
-	SMTPFrom               string `json:"smtp_from,omitempty"`
-	SMTPUsername           string `json:"smtp_username,omitempty"`
-	SMTPPasswordConfigured bool   `json:"smtp_password_configured,omitempty"`
-	TurnstileEnabled       bool   `json:"turnstile_enabled,omitempty"`
-	TurnstileSiteKey       string `json:"turnstile_site_key,omitempty"`
-	TurnstileConfigured    bool   `json:"turnstile_configured,omitempty"`
-	UpdatedAt              string `json:"updated_at,omitempty"`
+	AppName                      string `json:"app_name"`
+	Timezone                     string `json:"timezone"`
+	GoogleAnalyticsEnabled       bool   `json:"google_analytics_enabled,omitempty"`
+	GoogleAnalyticsMeasurementID string `json:"google_analytics_measurement_id,omitempty"`
+	SMTPEnabled                  bool   `json:"smtp_enabled"`
+	SMTPHost                     string `json:"smtp_host,omitempty"`
+	SMTPPort                     int    `json:"smtp_port,omitempty"`
+	SMTPStartTLS                 bool   `json:"smtp_starttls"`
+	SMTPFrom                     string `json:"smtp_from,omitempty"`
+	SMTPUsername                 string `json:"smtp_username,omitempty"`
+	SMTPPasswordConfigured       bool   `json:"smtp_password_configured,omitempty"`
+	TurnstileEnabled             bool   `json:"turnstile_enabled,omitempty"`
+	TurnstileSiteKey             string `json:"turnstile_site_key,omitempty"`
+	TurnstileConfigured          bool   `json:"turnstile_configured,omitempty"`
+	UpdatedAt                    string `json:"updated_at,omitempty"`
 }
 
 type AppSettingsStore interface {
@@ -144,14 +146,22 @@ func normalizeAppSettings(settings AppSettings) (AppSettings, error) {
 	settings.SMTPFrom = strings.TrimSpace(settings.SMTPFrom)
 	settings.SMTPUsername = strings.TrimSpace(settings.SMTPUsername)
 	settings.TurnstileSiteKey = strings.TrimSpace(settings.TurnstileSiteKey)
+	settings.GoogleAnalyticsMeasurementID = strings.ToUpper(strings.TrimSpace(settings.GoogleAnalyticsMeasurementID))
 	normalized := AppSettings{
-		AppName:             name,
-		Timezone:            timezone,
-		SMTPPort:            defaultAppSettings.SMTPPort,
-		SMTPStartTLS:        defaultAppSettings.SMTPStartTLS,
-		TurnstileEnabled:    settings.TurnstileEnabled,
-		TurnstileSiteKey:    settings.TurnstileSiteKey,
-		TurnstileConfigured: settings.TurnstileConfigured,
+		AppName:                      name,
+		Timezone:                     timezone,
+		GoogleAnalyticsEnabled:       settings.GoogleAnalyticsEnabled,
+		GoogleAnalyticsMeasurementID: settings.GoogleAnalyticsMeasurementID,
+		SMTPPort:                     defaultAppSettings.SMTPPort,
+		SMTPStartTLS:                 defaultAppSettings.SMTPStartTLS,
+		TurnstileEnabled:             settings.TurnstileEnabled,
+		TurnstileSiteKey:             settings.TurnstileSiteKey,
+		TurnstileConfigured:          settings.TurnstileConfigured,
+	}
+	if !settings.GoogleAnalyticsEnabled {
+		normalized.GoogleAnalyticsMeasurementID = ""
+	} else if !validGoogleAnalyticsMeasurementID(settings.GoogleAnalyticsMeasurementID) {
+		return AppSettings{}, ErrInvalidSettings
 	}
 	if !settings.TurnstileEnabled {
 		normalized.TurnstileSiteKey = ""
@@ -267,6 +277,20 @@ func validTimezoneName(value string) bool {
 func validTurnstileSiteKey(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 255 || strings.ContainsAny(value, "\r\n\t\x00") {
+		return false
+	}
+	return true
+}
+
+func validGoogleAnalyticsMeasurementID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 6 || len(value) > 24 || !strings.HasPrefix(value, "G-") {
+		return false
+	}
+	for _, char := range strings.TrimPrefix(value, "G-") {
+		if char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
 		return false
 	}
 	return true

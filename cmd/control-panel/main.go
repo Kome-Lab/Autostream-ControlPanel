@@ -304,7 +304,7 @@ var controlPanelUIPaths = map[string]struct{}{
 }
 
 func setStaticSecurityHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; frame-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; form-action 'self'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data: blob: https://www.google-analytics.com https://*.google-analytics.com; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self'; connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://www.googletagmanager.com; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.googletagmanager.com; frame-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; form-action 'self'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")

@@ -451,6 +451,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
   const [mode, setMode] = useState(() => rowString(row, ["mode", "config.mode"]) || "live_api_dry_run");
   const [rtmpURL, setRTMPURL] = useState(() => rowString(row, ["rtmp_url", "config.rtmp_url"]) || "rtmps://a.rtmps.youtube.com/live2");
   const [streamKey, setStreamKey] = useState("");
+  const [watchURL, setWatchURL] = useState(() => rowString(row, ["watch_url", "config.watch_url"]));
   const [oauthAccountID, setOAuthAccountID] = useState(() => rowString(row, ["oauth_account_id", "config.oauth_account_id"]) || noneValue);
   const [privacyStatus, setPrivacyStatus] = useState(() => rowString(row, ["privacy_status", "config.privacy_status"]) || "public");
   const [latencyPreference, setLatencyPreference] = useState(() => rowString(row, ["latency_preference", "config.latency_preference"]) || "low");
@@ -473,6 +474,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
             mode,
             rtmp_url: rtmpURL,
             stream_key: streamKey,
+            watch_url: watchURL,
             oauth_account_id: effectiveOAuthAccountID === noneValue ? "" : effectiveOAuthAccountID,
             broadcast_title_template: titleTemplate,
             broadcast_description: description,
@@ -500,6 +502,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
         <TextField label="RTMP URL" value={rtmpURL} onChange={setRTMPURL} required />
         <SelectField label="接続済みGoogleアカウント" value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
         <TextField label="ストリームキー" value={streamKey} onChange={setStreamKey} type="password" description="既存ストリームキー方式で使う場合だけ入力します。" />
+        {mode === "stream_key" ? <TextField label="YouTube視聴URL" value={watchURL} onChange={setWatchURL} placeholder="https://www.youtube.com/watch?v=..." description="配信開始時のDiscord通知に使用します。" required /> : null}
         <TextField label="番組タイトルテンプレート" value={titleTemplate} onChange={setTitleTemplate} />
         <SelectField
           label="公開範囲"

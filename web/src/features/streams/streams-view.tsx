@@ -30,6 +30,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
+import { StreamPreview } from "@/features/streams/stream-preview";
 import type { Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
@@ -77,6 +78,7 @@ export function StreamsView() {
     () => [...createdStreams, ...(streams.data || []).filter((stream) => !createdStreams.some((created) => created.id === stream.id))],
     [createdStreams, streams.data],
   );
+  const currentSelectedStream = selectedStream ? streamRows.find((stream) => stream.id === selectedStream.id) || selectedStream : null;
   const discordLabels = useOptionLabelMap(useResourceOptions("/discord/configs", ["name", "service_id", "id"]));
   const youtubeOutputLabels = useOptionLabelMap(useResourceOptions("/youtube/outputs", ["name", "id"]));
   const archiveAccountLabels = useOptionLabelMap(useOAuthAccountOptions("drive"));
@@ -270,7 +272,7 @@ export function StreamsView() {
       </Sheet>
 
       <StreamDetailsDialog
-        stream={selectedStream}
+        stream={currentSelectedStream}
         onOpenChange={(open) => { if (!open) setSelectedStream(null); }}
         discordLabels={discordLabels}
         youtubeOutputLabels={youtubeOutputLabels}
@@ -308,7 +310,7 @@ function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutpu
   const recording = recordingDescriptor(stream);
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader><DialogTitle>{stream.name}</DialogTitle><DialogDescription>配信前の確認と、配信中・終了後の状況確認に使う情報です。</DialogDescription></DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
           <DetailGroup title="状態"><div className="flex flex-wrap items-center gap-2"><StatusBadge status={stream.status} /><span className={cn("inline-flex rounded-md border px-2 py-1 text-xs font-medium", recording.className)}>{recording.label}</span></div><p className="mt-2 text-xs text-muted-foreground">{recording.detail}</p></DetailGroup>
@@ -317,10 +319,15 @@ function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutpu
           <DetailGroup title="自動開始"><DetailLine label="方式" value={stream.auto_start_trigger === "discord_voice_join" ? "Discord VC参加で自動開始" : "手動開始"} /><DetailLine label="BOT" value={optionLabel(discordLabels, stream.discord_config_id) || "未設定"} /><DetailLine label="VC" value={stream.discord_voice_channel_id || "未設定"} /><DetailLine label="Chat" value={stream.discord_text_channel_id || "未設定"} /></DetailGroup>
           <DetailGroup title="担当Node・映像設定"><DetailLine label="Worker" value={stream.assigned_worker_id || "未割当"} /><DetailLine label="Encoder" value={stream.assigned_encoder_id || "未割当"} /><DetailLine label="Watermark" value={optionLabel(overlayProfileLabels, stream.overlay_profile_id) || "OFF"} /></DetailGroup>
         </div>
+        {isPreviewableStreamStatus(stream.status) ? <StreamPreview stream={stream} /> : null}
         <div className="flex justify-end"><Button asChild variant="outline" size="sm"><Link href={`/admin/audit-logs/?q=${encodeURIComponent(stream.id)}`}>この配信枠の操作履歴を確認</Link></Button></div>
       </DialogContent>
     </Dialog>
   );
+}
+
+function isPreviewableStreamStatus(status: string) {
+  return ["starting", "live", "stopping"].includes(String(status).trim().toLowerCase());
 }
 
 function DetailGroup({ title, children }: { title: string; children: ReactNode }) { return <section className="rounded-lg border bg-muted/15 p-4"><h3 className="mb-3 text-sm font-semibold">{title}</h3>{children}</section>; }

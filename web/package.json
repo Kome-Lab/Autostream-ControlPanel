@@ -7,7 +7,10 @@
     "typecheck": "tsc --noEmit",
     "test:i18n": "node scripts/test-i18n.mjs",
     "test:metrics": "node --no-warnings --test tests/metric-classification.test.mts",
-    "test:oauth-account": "node --no-warnings --test tests/oauth-account.test.mts"
+    "test:oauth-account": "node --no-warnings --test tests/oauth-account.test.mts",
+    "test:auth-redirect": "node --no-warnings --test tests/post-login-redirect.test.mts",
+    "test:analytics": "node --no-warnings --test tests/google-analytics.test.mts",
+    "test:preview": "node --no-warnings --test tests/stream-preview.test.mts"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.19",
@@ -24,6 +27,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
+    "hls.js": "^1.6.16",
     "lucide-react": "^1.24.0",
     "next": "^16.2.10",
     "postcss": "^8.5.19",

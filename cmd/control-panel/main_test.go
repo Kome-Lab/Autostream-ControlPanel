@@ -52,9 +52,13 @@ func TestStaticFilesHandlerServesOnlyFilesUnderRoot(t *testing.T) {
 	csp := res.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "default-src 'self'") ||
 		!strings.Contains(csp, "object-src 'none'") ||
-		!strings.Contains(csp, "img-src 'self' data: blob:") ||
-		strings.Count(csp, "blob:") != 1 ||
-		!strings.Contains(csp, "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com") ||
+		!strings.Contains(csp, "img-src 'self' data: blob: https://www.google-analytics.com https://*.google-analytics.com") ||
+		!strings.Contains(csp, "media-src 'self' blob:") ||
+		!strings.Contains(csp, "worker-src 'self' blob:") ||
+		strings.Count(csp, "blob:") != 3 ||
+		!strings.Contains(csp, "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.googletagmanager.com") ||
+		!strings.Contains(csp, "connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com") ||
+		strings.Contains(csp, "unsafe-eval") ||
 		!strings.Contains(csp, "frame-src 'self' https://challenges.cloudflare.com") ||
 		res.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("static security headers are missing: %#v", res.Header())

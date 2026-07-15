@@ -1,5 +1,11 @@
 import { AdminShell } from "@/components/admin/admin-shell";
+import { GoogleAnalytics } from "@/components/admin/google-analytics";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return <AdminShell>{children}</AdminShell>;
+  return (
+    <>
+      <GoogleAnalytics />
+      <AdminShell>{children}</AdminShell>
+    </>
+  );
 }

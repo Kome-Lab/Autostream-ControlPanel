@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api/client";
-import type { AppSettings, AppVersion, AuditLog, CurrentUser, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
+import type { AppSettings, AppVersion, AuditLog, CurrentUser, ManagedAppSettings, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 export function useCurrentUser() {
   return useQuery({
@@ -25,6 +25,13 @@ export function useAppSettings() {
   return useQuery({
     queryKey: ["settings", "app"],
     queryFn: () => apiGet<AppSettings>("/settings/app"),
+  });
+}
+
+export function useManagedAppSettings() {
+  return useQuery({
+    queryKey: ["settings", "app", "manage"],
+    queryFn: () => apiGet<ManagedAppSettings>("/settings/app/manage"),
   });
 }
 

@@ -180,6 +180,25 @@ func TestOAuthLoginStartReturnsAuthorizationURLWithoutClientSecret(t *testing.T)
 	}
 }
 
+func TestSafeRedirectAfterRejectsExternalAndUnsafeTargets(t *testing.T) {
+	if got := safeRedirectAfter("/admin/streams/?status=waiting#create-stream"); got != "/admin/streams/?status=waiting#create-stream" {
+		t.Fatalf("valid local redirect was rejected: %q", got)
+	}
+	for _, raw := range []string{
+		"https://evil.example/admin/",
+		"//evil.example/admin/",
+		"/admin\\@evil.example/",
+		"/admin/%5cevil.example/",
+		"/admin/%0d%0aLocation:%20https://evil.example/",
+		"/admin/%c2%85Location:%20https://evil.example/",
+		"/admin/%",
+	} {
+		if got := safeRedirectAfter(raw); got != "" {
+			t.Fatalf("unsafe redirect %q was accepted as %q", raw, got)
+		}
+	}
+}
+
 func TestNormalizeOverlayProfileConfigUsesFixedWatermarkCanvas(t *testing.T) {
 	config := normalizeProfileConfig(store.ProfileOverlay, map[string]any{
 		"watermark_enabled":       true,
@@ -522,19 +541,23 @@ func TestOAuthLoginRedirectCallbackRedirectsMFAChallengeToLoginPage(t *testing.T
 	verifier := fakeOAuthVerifier{identity: oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: "google-subject-mfa-login", Email: "operator@example.com", EmailVerified: true}}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(oauthStore), WithOAuthVerifier(verifier), WithSecuritySettingsStore(settings), WithMFAStore(auth))
 
-	state, oauthCookie := startOAuthForTest(t, handler, provider.ID)
+	redirectAfter := "/admin/streams/?status=waiting#create-stream"
+	state, oauthCookie := startOAuthForTestWithRedirect(t, handler, provider.ID, redirectAfter)
 	req := httptest.NewRequest(http.MethodGet, "/auth/oauth/callback?state="+url.QueryEscape(state)+"&code=callback-code", nil)
 	req.AddCookie(oauthCookie)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
 	location := res.Header().Get("Location")
-	if res.Code != http.StatusSeeOther || !strings.HasPrefix(location, "/login#") {
+	if res.Code != http.StatusSeeOther {
 		t.Fatalf("oauth MFA redirect status=%d location=%q body=%s", res.Code, location, res.Body.String())
 	}
 	parsed, err := url.Parse(location)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if parsed.Path != "/login" || parsed.Query().Get("redirect_after") != redirectAfter {
+		t.Fatalf("oauth MFA redirect lost post-login target: %q", location)
 	}
 	fragment, err := url.ParseQuery(parsed.Fragment)
 	if err != nil {
@@ -2734,6 +2757,92 @@ func TestStartStreamResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	}
 }
 
+func TestStartStreamNotifiesDiscordOnlyAfterSuccessfulDispatch(t *testing.T) {
+	tests := []struct {
+		name               string
+		watchURL           string
+		failStart          bool
+		notificationResult servicecall.DispatchResult
+		wantHTTPStatus     int
+		wantStreamStatus   string
+		wantNotifyCalls    int
+		wantResponseCode   string
+		wantNotifiedURL    string
+	}{
+		{name: "notification sent", watchURL: "https://youtu.be/video_01", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_01"},
+		{name: "notification failure does not roll back live stream", watchURL: "https://www.youtube.com/watch?v=video_02", notificationResult: servicecall.DispatchResult{StatusCode: http.StatusBadGateway, Code: "discord_api_unavailable", Error: "service returned status 502"}, wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantResponseCode: "discord_api_unavailable", wantNotifiedURL: "https://www.youtube.com/watch?v=video_02"},
+		{name: "dispatch failure suppresses notification", watchURL: "https://www.youtube.com/watch?v=video_03", failStart: true, wantHTTPStatus: http.StatusBadGateway, wantStreamStatus: "failed", wantNotifyCalls: 0, wantResponseCode: "service_dispatch_failed"},
+		{name: "configured chat requires watch URL", wantHTTPStatus: http.StatusConflict, wantStreamStatus: "created", wantNotifyCalls: 0, wantResponseCode: "youtube_output_invalid_config"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start"}); err != nil {
+				t.Fatal(err)
+			}
+			streams := store.NewMemoryStreamStore()
+			stream, err := streams.CreateStream(t.Context(), "notification stream")
+			if err != nil {
+				t.Fatal(err)
+			}
+			registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+			secrets := store.NewMemorySecretStore()
+			if _, err := secrets.UpdateSecret(t.Context(), "youtube_stream_key_notification", "runtime-secret-stream-key"); err != nil {
+				t.Fatal(err)
+			}
+			profiles := store.NewMemoryProfileStore()
+			discord := createDiscordConfigForTest(t, profiles, "notification discord", "discord_bot-01", "guild-youtube", "voice-youtube", "chat-youtube")
+			youtubeConfig := map[string]any{
+				"mode":                   "stream_key",
+				"rtmp_url":               "rtmps://youtube.example.com/live2",
+				"stream_key_secret_name": "youtube_stream_key_notification",
+			}
+			if tt.watchURL != "" {
+				youtubeConfig["watch_url"] = tt.watchURL
+			}
+			youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "notification-output", youtubeConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dispatcher := &notificationFakeDispatcher{fakeServiceDispatcher: fakeServiceDispatcher{failStart: tt.failStart}, result: tt.notificationResult}
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+			body := `{"discord_config_id":"` + discord.ID + `","discord_guild_id":"guild-youtube","discord_voice_channel_id":"voice-youtube","discord_text_channel_id":"chat-youtube","youtube_output_id":"` + youtube.ID + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(body))
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != tt.wantHTTPStatus {
+				t.Fatalf("start status = %d body = %s", res.Code, res.Body.String())
+			}
+			updated, err := streams.GetStream(t.Context(), stream.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.Status != tt.wantStreamStatus || dispatcher.notifyCalls != tt.wantNotifyCalls {
+				t.Fatalf("unexpected completion state: stream=%s notify_calls=%d body=%s", updated.Status, dispatcher.notifyCalls, res.Body.String())
+			}
+			if tt.wantResponseCode != "" && !strings.Contains(res.Body.String(), tt.wantResponseCode) {
+				t.Fatalf("expected response code %q: %s", tt.wantResponseCode, res.Body.String())
+			}
+			if strings.Contains(toJSONForTest(t, auth.AuditEvents()), "youtube.com/watch") || strings.Contains(toJSONForTest(t, auth.AuditEvents()), "youtu.be/") {
+				t.Fatalf("YouTube watch URL leaked into audit events: %#v", auth.AuditEvents())
+			}
+			if dispatcher.notifyCalls == 1 {
+				if dispatcher.notifiedStream.Status != "live" || dispatcher.notifiedURL != tt.wantNotifiedURL {
+					t.Fatalf("unexpected notification request: stream=%#v url=%q", dispatcher.notifiedStream, dispatcher.notifiedURL)
+				}
+				if !strings.HasPrefix(dispatcher.notifiedEventID, "youtube-live-") {
+					t.Fatalf("unexpected notification event id: %q", dispatcher.notifiedEventID)
+				}
+			}
+		})
+	}
+}
+
 func TestStartStreamRejectsYouTubeOutputWithoutProfileRTMPURL(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
@@ -4835,6 +4944,144 @@ func TestStreamEncoderPreflightRequiresAssignedEncoder(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestStreamPreviewProxiesValidatedPlaylist(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "preview stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	dispatcher := &previewFakeDispatcher{result: servicecall.PreviewAssetResult{StatusCode: http.StatusOK, Success: true, Body: []byte("#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2.0,\nsegment-000001.ts\n")}}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, _ := loginForTest(t, handler, "viewer", "correct horse battery")
+	req := httptest.NewRequest(http.MethodGet, "/streams/"+stream.ID+"/preview/index.m3u8", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || res.Header().Get("Content-Type") != "application/vnd.apple.mpegurl" || res.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("preview response status=%d headers=%#v body=%s", res.Code, res.Header(), res.Body.String())
+	}
+	if dispatcher.calls != 1 || dispatcher.name != "index.m3u8" || !strings.Contains(res.Body.String(), "segment-000001.ts") {
+		t.Fatalf("preview dispatcher/body mismatch: %#v body=%s", dispatcher, res.Body.String())
+	}
+}
+
+func TestStreamPreviewRejectsExternalPlaylistResources(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "unsafe preview stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	dispatcher := &previewFakeDispatcher{result: servicecall.PreviewAssetResult{StatusCode: http.StatusOK, Success: true, Body: []byte("#EXTM3U\nhttps://attacker.example/segment.ts\n")}}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, _ := loginForTest(t, handler, "viewer", "correct horse battery")
+	req := httptest.NewRequest(http.MethodGet, "/streams/"+stream.ID+"/preview/index.m3u8", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadGateway || !strings.Contains(res.Body.String(), "invalid_stream_preview_playlist") || strings.Contains(res.Body.String(), "attacker.example") {
+		t.Fatalf("unsafe preview playlist response status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.jp")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "external preview stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	dispatcher := &previewFakeDispatcher{result: servicecall.PreviewAssetResult{StatusCode: http.StatusOK, Success: true, Body: []byte("#EXTM3U\n#EXTINF:2.0,\nsegment-000001.ts\n")}}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher), WithPreviewSigningKey("preview-signing-key"))
+	cookie, csrf := loginForTest(t, handler, "viewer", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/preview-links", nil)
+	req.Host = "attacker.example"
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated || res.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("preview link status=%d body=%s", res.Code, res.Body.String())
+	}
+	var link struct {
+		URL       string    `json:"url"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&link); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(link.URL)
+	if err != nil || parsed.Host != "panel.example.jp" || !strings.HasSuffix(parsed.Path, "/index.m3u8") || link.ExpiresAt.Before(time.Now().UTC().Add(11*time.Hour)) {
+		t.Fatalf("unexpected preview link: %#v err=%v", link, err)
+	}
+
+	publicReq := httptest.NewRequest(http.MethodGet, parsed.Path, nil)
+	publicRes := httptest.NewRecorder()
+	handler.ServeHTTP(publicRes, publicReq)
+	if publicRes.Code != http.StatusOK || dispatcher.calls != 1 {
+		t.Fatalf("public preview status=%d body=%s calls=%d", publicRes.Code, publicRes.Body.String(), dispatcher.calls)
+	}
+
+	tamperedPath := strings.Replace(parsed.Path, "ast_ingest_v1.", "ast_ingest_v1.X", 1)
+	tamperedRes := httptest.NewRecorder()
+	handler.ServeHTTP(tamperedRes, httptest.NewRequest(http.MethodGet, tamperedPath, nil))
+	if tamperedRes.Code != http.StatusNotFound {
+		t.Fatalf("tampered preview status=%d body=%s", tamperedRes.Code, tamperedRes.Body.String())
+	}
+
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	stoppedRes := httptest.NewRecorder()
+	handler.ServeHTTP(stoppedRes, httptest.NewRequest(http.MethodGet, parsed.Path, nil))
+	if stoppedRes.Code != http.StatusGone || dispatcher.calls != 1 {
+		t.Fatalf("stopped preview status=%d body=%s calls=%d", stoppedRes.Code, stoppedRes.Body.String(), dispatcher.calls)
+	}
+	if strings.Contains(toJSONForTest(t, auth.AuditEvents()), "ast_ingest_v1") {
+		t.Fatalf("preview token leaked into audit events: %#v", auth.AuditEvents())
+	}
+}
+
+func TestConfiguredStreamPreviewURLDoesNotTrustRequestHostFallbacks(t *testing.T) {
+	path := "/stream-previews/signed-token/index.m3u8"
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "")
+	if got := configuredStreamPreviewURL(path); got != path {
+		t.Fatalf("unconfigured preview URL must stay relative: %q", got)
+	}
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "javascript:alert(1)")
+	if got := configuredStreamPreviewURL(path); got != path {
+		t.Fatalf("unsafe public URL must not be used: %q", got)
+	}
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.jp/control")
+	if got := configuredStreamPreviewURL(path); got != "https://panel.example.jp/control"+path {
+		t.Fatalf("configured preview URL was not used: %q", got)
 	}
 }
 
@@ -12443,6 +12690,88 @@ func TestAppSettingsCanBeReadWithoutSession(t *testing.T) {
 	}
 }
 
+func TestPublicAppSettingsExcludeSMTPConfiguration(t *testing.T) {
+	settings := store.NewMemoryAppSettingsStore()
+	if _, err := settings.UpdateAppSettings(t.Context(), store.AppSettings{
+		AppName:                "AutoStream",
+		Timezone:               "Asia/Tokyo",
+		SMTPEnabled:            true,
+		SMTPHost:               "smtp.internal.example",
+		SMTPPort:               587,
+		SMTPStartTLS:           true,
+		SMTPFrom:               "noreply@example.jp",
+		SMTPUsername:           "smtp-user",
+		SMTPPasswordConfigured: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(store.NewMemoryAuthStore()), WithAppSettingsStore(settings))
+	req := httptest.NewRequest(http.MethodGet, "/settings/app", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("public app settings status = %d body = %s", res.Code, res.Body.String())
+	}
+	for _, privateValue := range []string{"smtp.internal.example", "smtp-user", "noreply@example.jp", `"smtp_host"`, `"smtp_username"`, `"smtp_from"`} {
+		if strings.Contains(res.Body.String(), privateValue) {
+			t.Fatalf("public app settings leaked %q: %s", privateValue, res.Body.String())
+		}
+	}
+}
+
+func TestManagedAppSettingsRequirePermissionAndExposeSMTPStatus(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.NewMemoryAppSettingsStore()
+	if _, err := settings.UpdateAppSettings(t.Context(), store.AppSettings{AppName: "AutoStream", Timezone: "Asia/Tokyo", SMTPEnabled: true, SMTPHost: "smtp.internal.example", SMTPPort: 587, SMTPStartTLS: true, SMTPFrom: "noreply@example.jp"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAppSettingsStore(settings))
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/settings/app/manage", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("managed settings without session status = %d body = %s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+	req := httptest.NewRequest(http.MethodGet, "/settings/app/manage", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"smtp_host":"smtp.internal.example"`) {
+		t.Fatalf("managed settings status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestAppSettingsUpdatePersistsGoogleAnalytics(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithAppSettingsStore(store.NewMemoryAppSettingsStore()))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"AutoStream","timezone":"Asia/Tokyo","google_analytics_enabled":true,"google_analytics_measurement_id":"g-abcd1234"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"google_analytics_measurement_id":"G-ABCD1234"`) {
+		t.Fatalf("analytics settings status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{"app_name":"AutoStream","timezone":"Asia/Tokyo","google_analytics_enabled":true,"google_analytics_measurement_id":"G-BAD<script>"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_app_settings") {
+		t.Fatalf("invalid analytics settings status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestAppSettingsUpdatePersistsWithPermission(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"system_settings.update"}); err != nil {
@@ -13101,6 +13430,58 @@ type fakeServiceDispatcher struct {
 	dispatchFailureError     string
 }
 
+type previewFakeDispatcher struct {
+	fakeServiceDispatcher
+	result servicecall.PreviewAssetResult
+	calls  int
+	name   string
+}
+
+type notificationFakeDispatcher struct {
+	fakeServiceDispatcher
+	result          servicecall.DispatchResult
+	notifyCalls     int
+	notifiedStream  store.Stream
+	notifiedEventID string
+	notifiedURL     string
+}
+
+func (f *previewFakeDispatcher) PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name string) servicecall.PreviewAssetResult {
+	f.calls++
+	f.name = name
+	result := f.result
+	if result.ServiceID == "" && len(services) > 0 {
+		result.ServiceID = services[0].ServiceID
+		result.ServiceType = services[0].ServiceType
+	}
+	return result
+}
+
+func (f *notificationFakeDispatcher) NotifyDiscordYouTubeLive(ctx context.Context, stream store.Stream, services []store.RegisteredService, eventID, watchURL string) servicecall.DispatchResult {
+	f.notifyCalls++
+	f.notifiedStream = stream
+	f.notifiedEventID = eventID
+	f.notifiedURL = watchURL
+	result := f.result
+	if result.ServiceID == "" {
+		for _, service := range services {
+			if service.ServiceType == "discord_bot" {
+				result.ServiceID = service.ServiceID
+				result.ServiceType = service.ServiceType
+				break
+			}
+		}
+	}
+	if result.Endpoint == "" {
+		result.Endpoint = "/streams/" + stream.ID + "/notifications/youtube-live"
+	}
+	if result.StatusCode == 0 && result.Error == "" && result.Code == "" {
+		result.StatusCode = http.StatusOK
+		result.Success = true
+	}
+	return result
+}
+
 type fakeYouTubeLiveClient struct {
 	prepareCalls    int
 	completeCalls   int
@@ -13137,6 +13518,30 @@ func (f fakeOAuthConnector) Connect(ctx context.Context, req oauthlogin.ConnectR
 		return oauthlogin.ConnectedAccount{}, f.err
 	}
 	return f.account, nil
+}
+
+func startOAuthForTestWithRedirect(t *testing.T, handler http.Handler, providerID, redirectAfter string) (string, *http.Cookie) {
+	t.Helper()
+	requestBody, err := json.Marshal(map[string]string{"redirect_after": redirectAfter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/auth/oauth/"+providerID+"/start", bytes.NewReader(requestBody))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("oauth start status=%d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.State == "" {
+		t.Fatalf("oauth start response did not include state")
+	}
+	return body.State, findCookieForTest(t, res.Result().Cookies(), oauthStateCookieName)
 }
 
 func startOAuthForTest(t *testing.T, handler http.Handler, providerID string) (string, *http.Cookie) {

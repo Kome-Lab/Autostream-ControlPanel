@@ -520,6 +520,93 @@ func TestDisabledClientReturnsFailureWithoutRequest(t *testing.T) {
 	}
 }
 
+func TestPreviewAssetUsesAssignedEncoderTokenAndBoundsResponse(t *testing.T) {
+	playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2.0,\nsegment-000001.ts\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/streams/stream-01/preview/index.m3u8" {
+			t.Fatalf("unexpected preview path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer service-token" {
+			t.Fatalf("unexpected preview authorization: %q", r.Header.Get("Authorization"))
+		}
+		if !strings.Contains(r.Header.Get("Accept"), "mpegurl") {
+			t.Fatalf("unexpected preview accept header: %q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = w.Write([]byte(playlist))
+	}))
+	defer server.Close()
+
+	client := testClient()
+	result := client.PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "index.m3u8")
+	if !result.Success || string(result.Body) != playlist || result.ContentType != "application/vnd.apple.mpegurl" {
+		t.Fatalf("unexpected preview result: %#v body=%q", result, string(result.Body))
+	}
+}
+
+func TestPreviewAssetRejectsOversizedPlaylist(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", maxPreviewPlaylistBytes+1)))
+	}))
+	defer server.Close()
+	client := testClient()
+	result := client.PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "index.m3u8")
+	if result.Success || result.Code != "preview_asset_too_large" || len(result.Body) != 0 {
+		t.Fatalf("oversized preview was accepted: %#v", result)
+	}
+}
+
+func TestNotifyDiscordYouTubeLiveRetriesTransientFailures(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if r.URL.Path != "/streams/stream-01/notifications/youtube-live" {
+			t.Fatalf("unexpected notification path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer service-token" {
+			t.Fatalf("unexpected notification authorization: %q", r.Header.Get("Authorization"))
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["event_id"] != "youtube-live-event-01" || payload["watch_url"] != "https://www.youtube.com/watch?v=video_01" {
+			t.Fatalf("unexpected notification payload: %#v", payload)
+		}
+		if attempts < 3 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"code": "discord_unavailable"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := testClient()
+	result := client.NotifyDiscordYouTubeLive(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL}}, "youtube-live-event-01", "https://www.youtube.com/watch?v=video_01")
+	if !result.Success || result.StatusCode != http.StatusOK || attempts != 3 {
+		t.Fatalf("unexpected notification result: attempts=%d result=%#v", attempts, result)
+	}
+}
+
+func TestNotifyDiscordYouTubeLiveDoesNotRetryPermanentFailure(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "stream_not_assigned_to_service"})
+	}))
+	defer server.Close()
+
+	client := testClient()
+	result := client.NotifyDiscordYouTubeLive(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL}}, "youtube-live-event-01", "https://www.youtube.com/watch?v=video_01")
+	if result.Success || result.StatusCode != http.StatusForbidden || result.Code != "stream_not_assigned_to_service" || attempts != 1 {
+		t.Fatalf("unexpected permanent failure result: attempts=%d result=%#v", attempts, result)
+	}
+}
+
 func TestStartReadinessIssues(t *testing.T) {
 	now := time.Now().UTC()
 	stale := now.Add(-2 * time.Minute)

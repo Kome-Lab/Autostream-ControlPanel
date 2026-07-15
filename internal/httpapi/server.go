@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/example/autostream-control-panel/internal/ingesttoken"
 	"github.com/example/autostream-control-panel/internal/netpolicy"
 	"github.com/example/autostream-control-panel/internal/oauthlogin"
 	"github.com/example/autostream-control-panel/internal/observability"
@@ -51,37 +52,39 @@ const sensitiveActionAttemptThreshold = 6
 const emailChangeChallengeTTL = 30 * time.Minute
 const defaultArchiveRetentionDays = 30
 const maxArchiveRetentionDays = 3650
+const streamPreviewLinkTTL = 12 * time.Hour
 
 type Server struct {
-	mux            *http.ServeMux
-	handler        http.Handler
-	streams        store.StreamStore
-	auth           store.AuthStore
-	audit          store.AuditStore
-	users          store.UserAdminStore
-	roles          store.RoleStore
-	services       store.ServiceRegistryStore
-	profiles       store.ProfileStore
-	integrations   store.IntegrationStore
-	settings       store.SecuritySettingsStore
-	appSettings    store.AppSettingsStore
-	secrets        store.SecretStore
-	runtimeLeases  store.RuntimeSecretLeaseStore
-	remediation    store.RemediationExecutionStore
-	mfa            store.MFAStore
-	emailChanges   store.EmailChangeStore
-	passkeys       store.PasskeyStore
-	avatars        store.UserAvatarStore
-	oauthLogin     store.OAuthLoginStore
-	oauthVerifier  oauthlogin.Verifier
-	oauthConnector oauthlogin.Connector
-	mailer         Mailer
-	turnstile      TurnstileVerifier
-	obs            observability.Client
-	dispatcher     serviceDispatcher
-	youtubeLive    ytlive.LiveClient
-	setupToken     string
-	loginFailures  *loginFailureLimiter
+	mux               *http.ServeMux
+	handler           http.Handler
+	streams           store.StreamStore
+	auth              store.AuthStore
+	audit             store.AuditStore
+	users             store.UserAdminStore
+	roles             store.RoleStore
+	services          store.ServiceRegistryStore
+	profiles          store.ProfileStore
+	integrations      store.IntegrationStore
+	settings          store.SecuritySettingsStore
+	appSettings       store.AppSettingsStore
+	secrets           store.SecretStore
+	runtimeLeases     store.RuntimeSecretLeaseStore
+	remediation       store.RemediationExecutionStore
+	mfa               store.MFAStore
+	emailChanges      store.EmailChangeStore
+	passkeys          store.PasskeyStore
+	avatars           store.UserAvatarStore
+	oauthLogin        store.OAuthLoginStore
+	oauthVerifier     oauthlogin.Verifier
+	oauthConnector    oauthlogin.Connector
+	mailer            Mailer
+	turnstile         TurnstileVerifier
+	obs               observability.Client
+	dispatcher        serviceDispatcher
+	youtubeLive       ytlive.LiveClient
+	setupToken        string
+	previewSigningKey string
+	loginFailures     *loginFailureLimiter
 }
 
 type serviceDispatcher interface {
@@ -99,6 +102,14 @@ type serviceDispatcher interface {
 
 type startReadinessChecker interface {
 	StartReadinessIssues(services []store.RegisteredService, req servicecall.StartRequest, now time.Time) []servicecall.ReadinessIssue
+}
+
+type previewServiceDispatcher interface {
+	PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name string) servicecall.PreviewAssetResult
+}
+
+type discordLiveNotificationDispatcher interface {
+	NotifyDiscordYouTubeLive(ctx context.Context, stream store.Stream, services []store.RegisteredService, eventID, watchURL string) servicecall.DispatchResult
 }
 
 type ServerOption func(*Server)
@@ -203,9 +214,13 @@ func WithSetupToken(token string) ServerOption {
 	return func(s *Server) { s.setupToken = token }
 }
 
+func WithPreviewSigningKey(key string) ServerOption {
+	return func(s *Server) { s.previewSigningKey = strings.TrimSpace(key) }
+}
+
 func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	defaultOAuth := oauthlogin.HTTPVerifier{}
-	s := &Server{mux: http.NewServeMux(), streams: streams, obs: observability.FromEnv(), dispatcher: servicecall.FromEnv(), youtubeLive: ytlive.LiveAPIClient{}, oauthVerifier: defaultOAuth, oauthConnector: defaultOAuth, turnstile: HTTPSTurnstileVerifier{}, setupToken: os.Getenv("AUTOSTREAM_SETUP_TOKEN"), loginFailures: newLoginFailureLimiter()}
+	s := &Server{mux: http.NewServeMux(), streams: streams, obs: observability.FromEnv(), dispatcher: servicecall.FromEnv(), youtubeLive: ytlive.LiveAPIClient{}, oauthVerifier: defaultOAuth, oauthConnector: defaultOAuth, turnstile: HTTPSTurnstileVerifier{}, setupToken: os.Getenv("AUTOSTREAM_SETUP_TOKEN"), previewSigningKey: strings.TrimSpace(os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY")), loginFailures: newLoginFailureLimiter()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -425,6 +440,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /streams/{id}/mark-failed", s.requirePermission("streams.update", s.markStreamFailed))
 	s.mux.HandleFunc("POST /streams/{id}/retry-upload", s.requirePermission("streams.retry_upload", s.retryUpload))
 	s.mux.HandleFunc("GET /streams/{id}/encoder-preflight", s.requirePermission("streams.read", s.streamEncoderPreflight))
+	s.mux.HandleFunc("GET /streams/{id}/preview/{name}", s.requirePermission("streams.read", s.streamPreviewAsset))
+	s.mux.HandleFunc("POST /streams/{id}/preview-links", s.requirePermission("streams.read", s.createStreamPreviewLink))
 	s.mux.HandleFunc("GET /streams/{id}/audio-status", s.requirePermission("streams.read", s.streamAudioStatus))
 	s.mux.HandleFunc("GET /streams/{id}/worker-events", s.requirePermission("streams.read", s.streamWorkerEvents))
 	s.mux.HandleFunc("POST /streams/{id}/worker-events/test", s.requirePermission("streams.update", s.sendWorkerTestEvent))
@@ -438,11 +455,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /streams/{id}/artifacts/{artifact_id}", s.requirePermission("archives.delete", s.renameStreamArtifact))
 	s.mux.HandleFunc("GET /archive-shares/{token}", s.publicArchiveShare)
 	s.mux.HandleFunc("GET /archive-shares/{token}/download", s.downloadPublicArchiveShare)
+	s.mux.HandleFunc("GET /stream-previews/{token}/{name}", s.publicStreamPreviewAsset)
 	s.mux.HandleFunc("GET /audit-logs", s.requirePermission("audit_logs.read", s.listAuditLogs))
 	s.mux.HandleFunc("GET /audit-logs/export", s.requirePermission("audit_logs.export", s.exportAuditLogs))
 	s.mux.HandleFunc("GET /security/settings", s.requirePermission("system_settings.read", s.securitySettings))
 	s.mux.HandleFunc("PUT /security/settings", s.requirePermission("system_settings.update", s.updateSecuritySettings))
 	s.mux.HandleFunc("GET /settings/app", s.appSettingsView)
+	s.mux.HandleFunc("GET /settings/app/manage", s.requirePermission("system_settings.update", s.managedAppSettingsView))
 	s.mux.HandleFunc("PUT /settings/app", s.requirePermission("system_settings.update", s.updateAppSettings))
 	s.mux.HandleFunc("POST /settings/app/test-email", s.requirePermission("system_settings.update", s.sendAppSettingsTestEmail))
 	s.mux.HandleFunc("GET /version", s.requirePermission("", s.versionInfo))
@@ -1047,7 +1066,7 @@ func (s *Server) continueOAuthLogin(w http.ResponseWriter, r *http.Request, user
 			}
 			s.writeAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.oauth.login", ResourceType: "user", ResourceID: user.ID, Result: "mfa_required", Metadata: map[string]any{"provider_type": provider.ProviderType}})
 			if redirectOnSuccess {
-				redirectOAuthMFAChallenge(w, r, challenge)
+				redirectOAuthMFAChallenge(w, r, challenge, state.RedirectAfter)
 				return
 			}
 			writeJSON(w, http.StatusAccepted, map[string]any{"mfa_required": true, "challenge_token": challenge.Token, "expires_at": challenge.ExpiresAt})
@@ -1065,11 +1084,15 @@ func (s *Server) continueOAuthLogin(w http.ResponseWriter, r *http.Request, user
 	s.completeLogin(w, r, user, settings)
 }
 
-func redirectOAuthMFAChallenge(w http.ResponseWriter, r *http.Request, challenge store.MFAChallenge) {
+func redirectOAuthMFAChallenge(w http.ResponseWriter, r *http.Request, challenge store.MFAChallenge, redirectAfter string) {
 	fragment := url.Values{}
 	fragment.Set("oauth_mfa_challenge", challenge.Token)
 	fragment.Set("expires_at", challenge.ExpiresAt.UTC().Format(time.RFC3339Nano))
-	http.Redirect(w, r, "/login#"+fragment.Encode(), http.StatusSeeOther)
+	target := "/login"
+	if redirectAfter = safeRedirectAfter(redirectAfter); redirectAfter != "" {
+		target += "?" + url.Values{"redirect_after": []string{redirectAfter}}.Encode()
+	}
+	http.Redirect(w, r, target+"#"+fragment.Encode(), http.StatusSeeOther)
 }
 
 func mfaRequiredForUser(settings store.SecuritySettings, user store.User) bool {
@@ -3143,6 +3166,7 @@ type youtubeOutputRequest struct {
 	Mode                   string `json:"mode"`
 	RTMPURL                string `json:"rtmp_url"`
 	StreamKey              string `json:"stream_key"`
+	WatchURL               string `json:"watch_url"`
 	OAuthAccountID         string `json:"oauth_account_id"`
 	BroadcastTitleTemplate string `json:"broadcast_title_template"`
 	BroadcastDescription   string `json:"broadcast_description"`
@@ -3161,6 +3185,7 @@ type youtubeOutputResponse struct {
 	RTMPURL                string    `json:"rtmp_url,omitempty"`
 	StreamKeyConfigured    bool      `json:"stream_key_configured,omitempty"`
 	StreamKeyFingerprint   string    `json:"stream_key_fingerprint,omitempty"`
+	WatchURL               string    `json:"watch_url,omitempty"`
 	OAuthAccountID         string    `json:"oauth_account_id,omitempty"`
 	BroadcastTitleTemplate string    `json:"broadcast_title_template,omitempty"`
 	BroadcastDescription   string    `json:"broadcast_description,omitempty"`
@@ -3363,6 +3388,13 @@ func youtubeOutputConfigFromRequest(body youtubeOutputRequest, id string) (map[s
 	if mode == "stream_key" && id != "" {
 		config["stream_key_secret_name"] = youtubeOutputSecretName(id)
 	}
+	if value := strings.TrimSpace(body.WatchURL); value != "" {
+		normalized, ok := normalizeYouTubeWatchURL(value)
+		if !ok {
+			return nil, errors.New("invalid watch_url")
+		}
+		config["watch_url"] = normalized
+	}
 	if value := strings.TrimSpace(body.OAuthAccountID); value != "" {
 		config["oauth_account_id"] = value
 	}
@@ -3431,6 +3463,7 @@ func youtubeOutputFromProfile(profile store.Profile, statuses []store.SecretStat
 		RTMPURL:                configString(profile.Config, "rtmp_url"),
 		StreamKeyConfigured:    status.Configured,
 		StreamKeyFingerprint:   status.Fingerprint,
+		WatchURL:               configString(profile.Config, "watch_url"),
 		OAuthAccountID:         configString(profile.Config, "oauth_account_id"),
 		BroadcastTitleTemplate: firstNonEmpty(configString(profile.Config, "broadcast_title_template"), configString(profile.Config, "broadcast_title")),
 		BroadcastDescription:   configString(profile.Config, "broadcast_description"),
@@ -5868,6 +5901,7 @@ func youtubeRuntimeConfigFromProfile(profile store.Profile) map[string]any {
 	for key, value := range map[string]string{
 		"rtmp_url":                 configString(profile.Config, "rtmp_url"),
 		"stream_key_secret_name":   configString(profile.Config, "stream_key_secret_name"),
+		"watch_url":                configString(profile.Config, "watch_url"),
 		"oauth_account_id":         firstNonEmpty(configString(profile.Config, "oauth_account_id"), configString(profile.Config, "youtube_oauth_account_id")),
 		"broadcast_title_template": firstNonEmpty(configString(profile.Config, "broadcast_title_template"), configString(profile.Config, "broadcast_title")),
 		"broadcast_description":    configString(profile.Config, "broadcast_description"),
@@ -7993,7 +8027,48 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "service_dispatch_failed", "stream": failed, "dispatch": results})
 		return
 	}
-	s.transitionWithDispatch(w, r, stream.ID, "live", "streams.start", results)
+	s.completeStreamStart(w, r, stream, primaryAssignments, body, results)
+}
+
+func (s *Server) completeStreamStart(w http.ResponseWriter, r *http.Request, stream store.Stream, assignments []store.RegisteredService, req servicecall.StartRequest, dispatch []servicecall.DispatchResult) {
+	dispatch = sanitizeDispatchResults(dispatch)
+	liveStream, err := s.streams.UpdateStreamStatus(r.Context(), stream.ID, "live")
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
+		return
+	}
+
+	var notification *servicecall.DispatchResult
+	watchURL, watchURLOK := normalizeYouTubeWatchURL(mapString(req.YouTubeRuntime, "watch_url"))
+	if watchURLOK && !mapBool(req.YouTubeRuntime, "dry_run") && strings.TrimSpace(req.DiscordTextChannelID) != "" {
+		result := servicecall.DispatchResult{ServiceType: "discord_bot", Code: "discord_youtube_notification_not_supported", Error: "discord youtube notification is not supported"}
+		if notifier, ok := s.dispatcher.(discordLiveNotificationDispatcher); ok {
+			eventID := "youtube-live-" + security.SecretFingerprint(stream.ID+":"+watchURL)
+			result = notifier.NotifyDiscordYouTubeLive(r.Context(), liveStream, assignments, eventID, watchURL)
+		}
+		result = sanitizeDispatchResults([]servicecall.DispatchResult{result})[0]
+		notification = &result
+		current := currentFromContext(r.Context())
+		resultName := "failure"
+		if result.Success {
+			resultName = "success"
+		}
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.discord_youtube_notify", ResourceType: "stream", ResourceID: stream.ID, Result: resultName, Metadata: map[string]any{"service_id": result.ServiceID, "status_code": result.StatusCode, "code": result.Code, "watch_url_fingerprint": security.SecretFingerprint(watchURL)}})
+	}
+
+	current := currentFromContext(r.Context())
+	metadata := map[string]any{"status": "live", "dispatch": dispatch}
+	response := map[string]any{"stream": liveStream, "dispatch": dispatch}
+	if notification != nil {
+		metadata["discord_notification"] = notification
+		response["discord_notification"] = notification
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: liveStream.ID, Result: "success", Metadata: metadata})
+	writeJSON(w, http.StatusOK, response)
 }
 
 var (
@@ -8171,6 +8246,11 @@ func (s *Server) validateYouTubeStreamKeyReadiness(ctx context.Context, profile 
 	if status := secretStatusByName(statuses, secretName); !status.Configured {
 		return errYouTubeOutputStreamKeyUnavailable
 	}
+	if strings.TrimSpace(req.DiscordTextChannelID) != "" {
+		if _, ok := normalizeYouTubeWatchURL(configString(profile.Config, "watch_url")); !ok {
+			return errYouTubeOutputInvalidConfig
+		}
+	}
 	return nil
 }
 
@@ -8255,7 +8335,7 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	if err != nil {
 		return errYouTubeLiveAPIPrepareFailed
 	}
-	if !isSecureRTMPSURL(prepared.RTMPURL) || strings.TrimSpace(prepared.StreamKey) == "" || strings.TrimSpace(prepared.BroadcastID) == "" {
+	if !isSecureRTMPSURL(prepared.RTMPURL) || strings.TrimSpace(prepared.StreamKey) == "" || youtubeWatchURLForBroadcastID(prepared.BroadcastID) == "" {
 		return errYouTubeLiveAPIPrepareFailed
 	}
 	streamKeySecretName := youtubeLiveAPIStreamKeySecretName(stream.ID, profile.ID, prepared.BroadcastID)
@@ -8269,6 +8349,7 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		"output_id":              profile.ID,
 		"oauth_account_id":       oauthAccountID,
 		"broadcast_id":           prepared.BroadcastID,
+		"watch_url":              youtubeWatchURLForBroadcastID(prepared.BroadcastID),
 		"live_stream_id":         prepared.LiveStreamID,
 		"rtmp_url":               prepared.RTMPURL,
 		"stream_key_secret_name": streamKeySecretName,
@@ -8329,6 +8410,15 @@ func (s *Server) applyYouTubeStreamKeyOutput(ctx context.Context, profile store.
 		return errYouTubeOutputStreamKeyUnavailable
 	}
 	req.EncoderStreamKeySecretName = secretName
+	if watchURL, ok := normalizeYouTubeWatchURL(configString(profile.Config, "watch_url")); ok {
+		req.YouTubeRuntime = map[string]any{
+			"mode":             "stream_key",
+			"output_id":        profile.ID,
+			"watch_url":        watchURL,
+			"dry_run":          false,
+			"complete_on_stop": false,
+		}
+	}
 	return nil
 }
 
@@ -8362,6 +8452,55 @@ func (s *Server) applyYouTubeLiveAPIDryRunOutput(ctx context.Context, stream sto
 func isSecureRTMPSURL(value string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(value))
 	return err == nil && parsed.User == nil && parsed.Scheme == "rtmps" && parsed.Host != ""
+}
+
+func youtubeWatchURLForBroadcastID(broadcastID string) string {
+	broadcastID = strings.TrimSpace(broadcastID)
+	if !validYouTubeVideoID(broadcastID) {
+		return ""
+	}
+	return "https://www.youtube.com/watch?" + url.Values{"v": []string{broadcastID}}.Encode()
+}
+
+func normalizeYouTubeWatchURL(value string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" || parsed.Port() != "" {
+		return "", false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	videoID := ""
+	switch host {
+	case "youtube.com", "www.youtube.com", "m.youtube.com":
+		if parsed.Path != "/watch" {
+			return "", false
+		}
+		videoID = parsed.Query().Get("v")
+	case "youtu.be":
+		videoID = strings.Trim(parsed.Path, "/")
+		if strings.Contains(videoID, "/") {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	if !validYouTubeVideoID(videoID) {
+		return "", false
+	}
+	return youtubeWatchURLForBroadcastID(videoID), true
+}
+
+func validYouTubeVideoID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 6 || len(value) > 32 {
+		return false
+	}
+	for _, char := range value {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Server) saveYouTubeRuntime(ctx context.Context, streamID string, runtime map[string]any) error {
@@ -9292,6 +9431,216 @@ func (s *Server) streamEncoderPreflight(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) streamPreviewAsset(w http.ResponseWriter, r *http.Request) {
+	s.writeStreamPreviewAsset(w, r, strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("name")), false)
+}
+
+func (s *Server) createStreamPreviewLink(w http.ResponseWriter, r *http.Request) {
+	streamID := strings.TrimSpace(r.PathValue("id"))
+	stream, assignments, ok := s.prepareActiveStreamPreview(w, r, streamID, false)
+	if !ok {
+		return
+	}
+	if _, ok := s.dispatcher.(previewServiceDispatcher); !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_preview_not_supported"})
+		return
+	}
+	if strings.TrimSpace(s.previewSigningKey) == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_preview_signing_key_required"})
+		return
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(streamPreviewLinkTTL)
+	token, err := ingesttoken.Issue(s.previewSigningKey, ingesttoken.Claims{
+		StreamID:    stream.ID,
+		ServiceID:   "control-panel",
+		ServiceType: "control_panel",
+		Purpose:     "stream_preview",
+		Audience:    "external_player",
+		ExpiresAt:   expiresAt.Unix(),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "stream_preview_link_failed"})
+		return
+	}
+	path := "/stream-previews/" + url.PathEscape(token) + "/index.m3u8"
+	previewURL := configuredStreamPreviewURL(path)
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.preview_link.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"expires_at": expiresAt, "assignment_count": len(assignments)}})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusCreated, map[string]any{"stream_id": stream.ID, "url": previewURL, "expires_at": expiresAt})
+}
+
+func configuredStreamPreviewURL(path string) string {
+	publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("AUTOSTREAM_PUBLIC_URL")), "/")
+	parsed, err := url.Parse(publicURL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return path
+	}
+	return publicURL + path
+}
+
+func (s *Server) publicStreamPreviewAsset(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(s.previewSigningKey) == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_preview_unavailable"})
+		return
+	}
+	claims, err := ingesttoken.Verify(s.previewSigningKey, strings.TrimSpace(r.PathValue("token")), ingesttoken.Expected{
+		ServiceID:   "control-panel",
+		ServiceType: "control_panel",
+		Purpose:     "stream_preview",
+		Audience:    "external_player",
+		Now:         time.Now().UTC(),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "stream_preview_not_found"})
+		return
+	}
+	s.writeStreamPreviewAsset(w, r, claims.StreamID, strings.TrimSpace(r.PathValue("name")), true)
+}
+
+func (s *Server) writeStreamPreviewAsset(w http.ResponseWriter, r *http.Request, streamID, name string, public bool) {
+	if !validStreamPreviewAssetName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stream_preview_asset"})
+		return
+	}
+	stream, assignments, ok := s.prepareActiveStreamPreview(w, r, streamID, public)
+	if !ok {
+		return
+	}
+	dispatcher, ok := s.dispatcher.(previewServiceDispatcher)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_preview_not_supported"})
+		return
+	}
+	result := dispatcher.PreviewAsset(r.Context(), stream, assignments, name)
+	if !result.Success {
+		status := http.StatusBadGateway
+		code := "stream_preview_fetch_failed"
+		if result.StatusCode == http.StatusNotFound {
+			status = http.StatusNotFound
+			code = "stream_preview_not_ready"
+		} else if result.StatusCode == http.StatusConflict {
+			status = http.StatusConflict
+			code = "stream_preview_not_active"
+		}
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	body := result.Body
+	if name == "index.m3u8" {
+		var valid bool
+		body, valid = validatedStreamPreviewPlaylist(body)
+		if !valid {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "invalid_stream_preview_playlist"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Header().Set("Cache-Control", "private, max-age=30")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func (s *Server) prepareActiveStreamPreview(w http.ResponseWriter, r *http.Request, streamID string, public bool) (store.Stream, []store.RegisteredService, bool) {
+	stream, err := s.streams.GetStream(r.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return store.Stream{}, nil, false
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return store.Stream{}, nil, false
+	}
+	if !isStreamPreviewActive(stream.Status) {
+		status := http.StatusConflict
+		if public {
+			status = http.StatusGone
+		}
+		writeJSON(w, status, map[string]string{"code": "stream_preview_not_active"})
+		return store.Stream{}, nil, false
+	}
+	assignments, err := s.streamAssignments(r.Context(), stream.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return store.Stream{}, nil, false
+	}
+	primaryAssignments := primaryStreamAssignments(assignments)
+	if missing := missingServiceTypes(primaryAssignments, requiredRetryUploadServiceTypes); len(missing) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
+		return store.Stream{}, nil, false
+	}
+	return stream, primaryAssignments, true
+}
+
+func isStreamPreviewActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "starting", "live", "stopping":
+		return true
+	default:
+		return false
+	}
+}
+
+func validStreamPreviewAssetName(name string) bool {
+	if name == "index.m3u8" {
+		return true
+	}
+	if len(name) != len("segment-000000.ts") || !strings.HasPrefix(name, "segment-") || !strings.HasSuffix(name, ".ts") {
+		return false
+	}
+	for _, char := range strings.TrimSuffix(strings.TrimPrefix(name, "segment-"), ".ts") {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validatedStreamPreviewPlaylist(body []byte) ([]byte, bool) {
+	if len(body) == 0 || len(body) > 1<<20 || strings.ContainsRune(string(body), '\x00') {
+		return nil, false
+	}
+	normalized := strings.ReplaceAll(string(body), "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	if len(lines) > 256 {
+		return nil, false
+	}
+	firstContent := ""
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		for _, char := range line {
+			if char < 0x20 || (char >= 0x7f && char <= 0x9f) {
+				return nil, false
+			}
+		}
+		if firstContent == "" {
+			firstContent = line
+		}
+		if strings.HasPrefix(line, "#") {
+			if strings.Contains(strings.ToUpper(line), "URI=") {
+				return nil, false
+			}
+			continue
+		}
+		if !validStreamPreviewAssetName(line) || line == "index.m3u8" {
+			return nil, false
+		}
+	}
+	if firstContent != "#EXTM3U" {
+		return nil, false
+	}
+	return []byte(strings.TrimRight(normalized, "\n") + "\n"), true
+}
+
 func (s *Server) streamWorkerEvents(w http.ResponseWriter, r *http.Request) {
 	stream, err := s.streams.GetStream(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
@@ -10045,6 +10394,35 @@ func (s *Server) updateSecuritySettings(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) appSettingsView(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.appSettings.GetAppSettings(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, publicAppSettings{
+		AppName:                      settings.AppName,
+		Timezone:                     settings.Timezone,
+		TurnstileEnabled:             settings.TurnstileEnabled,
+		TurnstileSiteKey:             settings.TurnstileSiteKey,
+		TurnstileConfigured:          s.secretConfigured(r.Context(), store.AppTurnstileSecretName),
+		GoogleAnalyticsEnabled:       settings.GoogleAnalyticsEnabled,
+		GoogleAnalyticsMeasurementID: settings.GoogleAnalyticsMeasurementID,
+		UpdatedAt:                    settings.UpdatedAt,
+	})
+}
+
+type publicAppSettings struct {
+	AppName                      string `json:"app_name"`
+	Timezone                     string `json:"timezone"`
+	TurnstileEnabled             bool   `json:"turnstile_enabled,omitempty"`
+	TurnstileSiteKey             string `json:"turnstile_site_key,omitempty"`
+	TurnstileConfigured          bool   `json:"turnstile_configured,omitempty"`
+	GoogleAnalyticsEnabled       bool   `json:"google_analytics_enabled,omitempty"`
+	GoogleAnalyticsMeasurementID string `json:"google_analytics_measurement_id,omitempty"`
+	UpdatedAt                    string `json:"updated_at,omitempty"`
+}
+
+func (s *Server) managedAppSettingsView(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.appSettings.GetAppSettings(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_failed"})
@@ -11790,10 +12168,23 @@ func isLocalOAuthRedirectHost(host string) bool {
 
 func safeRedirectAfter(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.ContainsAny(value, "\\\x00") {
+	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
+		return ""
+	}
+	decoded, err := url.PathUnescape(value)
+	if err != nil || unsafeRedirectCharacters(value) || unsafeRedirectCharacters(decoded) {
 		return ""
 	}
 	return value
+}
+
+func unsafeRedirectCharacters(value string) bool {
+	for _, char := range value {
+		if char < 0x20 || (char >= 0x7f && char <= 0x9f) || char == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 func emailAllowedForProvider(email string, allowedDomains []string) bool {

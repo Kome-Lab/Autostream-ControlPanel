@@ -12,8 +12,8 @@ import { Switch } from "@/components/ui/switch";
 import { APIError, apiPost, apiPut } from "@/lib/api/client";
 import { defaultTimeZone, formatDateTimeInTimeZone, isValidTimeZone, normalizeTimeZone, timeZoneLabel, timeZoneOptions } from "@/lib/timezone";
 import { useI18n } from "@/components/admin/i18n-provider";
-import { useAppSettings, useCurrentUser } from "@/features/queries";
-import type { AppSettings } from "@/types/domain";
+import { useCurrentUser, useManagedAppSettings } from "@/features/queries";
+import type { ManagedAppSettings } from "@/types/domain";
 
 type TestEmailResponse = {
   status: string;
@@ -24,7 +24,7 @@ const customTimeZoneValue = "__custom_timezone__";
 
 export function SettingsView() {
   const { t } = useI18n();
-  const appSettings = useAppSettings();
+  const appSettings = useManagedAppSettings();
 
   return (
     <div className="space-y-6">
@@ -43,7 +43,7 @@ export function SettingsView() {
             <Skeleton className="h-10 w-full" />
           ) : (
             <AppSettingsForm
-              key={`${appSettings.data?.app_name || "default"}-${appSettings.data?.timezone || defaultTimeZone}-${appSettings.data?.smtp_enabled ? "smtp-on" : "smtp-off"}-${appSettings.data?.turnstile_enabled ? "turnstile-on" : "turnstile-off"}`}
+              key={`${appSettings.data?.app_name || "default"}-${appSettings.data?.timezone || defaultTimeZone}-${appSettings.data?.smtp_enabled ? "smtp-on" : "smtp-off"}-${appSettings.data?.turnstile_enabled ? "turnstile-on" : "turnstile-off"}-${appSettings.data?.google_analytics_enabled ? "analytics-on" : "analytics-off"}`}
               initialSettings={appSettings.data}
             />
           )}
@@ -53,7 +53,7 @@ export function SettingsView() {
   );
 }
 
-function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings }) {
+function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSettings }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const currentUser = useCurrentUser();
@@ -70,6 +70,8 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
   const [turnstileEnabled, setTurnstileEnabled] = useState(Boolean(initialSettings?.turnstile_enabled));
   const [turnstileSiteKey, setTurnstileSiteKey] = useState(initialSettings?.turnstile_site_key || "");
   const [turnstileSecret, setTurnstileSecret] = useState("");
+  const [googleAnalyticsEnabled, setGoogleAnalyticsEnabled] = useState(Boolean(initialSettings?.google_analytics_enabled));
+  const [googleAnalyticsMeasurementID, setGoogleAnalyticsMeasurementID] = useState(initialSettings?.google_analytics_measurement_id || "");
   const [testEmailOverride, setTestEmailOverride] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const trimmedTimezone = timezone.trim();
@@ -81,7 +83,7 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
   const testEmailTo = testEmailOverride ?? currentUserEmail;
   const saveAppSettings = useMutation({
     mutationFn: () =>
-      apiPut<AppSettings>("/settings/app", {
+      apiPut<ManagedAppSettings>("/settings/app", {
         app_name: appName,
         timezone: normalizedTimezone,
         smtp_enabled: smtpEnabled,
@@ -94,6 +96,8 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
         turnstile_enabled: turnstileEnabled,
         turnstile_site_key: turnstileSiteKey,
         turnstile_secret: turnstileSecret,
+        google_analytics_enabled: googleAnalyticsEnabled,
+        google_analytics_measurement_id: googleAnalyticsMeasurementID,
       }),
     onSuccess: async () => {
       setSMTPPassword("");
@@ -111,6 +115,7 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
   });
   const smtpRequiredMissing = smtpEnabled && (!smtpHost.trim() || !smtpFrom.trim());
   const turnstileRequiredMissing = turnstileEnabled && (!turnstileSiteKey.trim() || (!turnstileSecret.trim() && !initialSettings?.turnstile_configured));
+  const googleAnalyticsIDValid = !googleAnalyticsEnabled || /^G-[A-Z0-9]{4,22}$/.test(googleAnalyticsMeasurementID.trim().toUpperCase());
 
   return (
     <div className="space-y-4">
@@ -234,9 +239,26 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: AppSettings })
             <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Turnstileを使う場合は有効化してSite keyとSecret keyを保存してください。</div>
           )}
         </SettingsSection>
+        <SettingsSection title="Google Analytics" description="管理画面のページ閲覧だけをGA4へ送信します。検索条件、ユーザー情報、配信内容は送信しません。" action={<Switch checked={googleAnalyticsEnabled} onCheckedChange={setGoogleAnalyticsEnabled} />}>
+          {googleAnalyticsEnabled ? (
+            <Field label="GA4 Measurement ID">
+              <Input
+                value={googleAnalyticsMeasurementID}
+                onChange={(event) => setGoogleAnalyticsMeasurementID(event.target.value.toUpperCase())}
+                placeholder="G-XXXXXXXXXX"
+                maxLength={24}
+                spellCheck={false}
+                aria-invalid={!googleAnalyticsIDValid}
+              />
+              {!googleAnalyticsIDValid ? <span className="text-xs font-normal text-destructive">G-から始まるMeasurement IDを入力してください。</span> : null}
+            </Field>
+          ) : (
+            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">有効化するまでGoogleのスクリプトや計測通信は読み込まれません。</div>
+          )}
+        </SettingsSection>
       </div>
       {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
-      <Button onClick={() => saveAppSettings.mutate()} disabled={saveAppSettings.isPending || !appName.trim() || !timezoneValid || smtpRequiredMissing || turnstileRequiredMissing}>
+      <Button onClick={() => saveAppSettings.mutate()} disabled={saveAppSettings.isPending || !appName.trim() || !timezoneValid || smtpRequiredMissing || turnstileRequiredMissing || !googleAnalyticsIDValid}>
         <Save className="size-4" />
         {t("save")}
       </Button>

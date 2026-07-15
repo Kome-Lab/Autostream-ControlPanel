@@ -19,6 +19,11 @@ import (
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
+const (
+	maxPreviewPlaylistBytes = 1 << 20
+	maxPreviewSegmentBytes  = 32 << 20
+)
+
 type Config struct {
 	Token                 string
 	Timeout               time.Duration
@@ -133,6 +138,18 @@ type ArchiveArtifactDownloadResult struct {
 	ContentType string        `json:"content_type,omitempty"`
 	SizeBytes   int64         `json:"size_bytes,omitempty"`
 	Body        io.ReadCloser `json:"-"`
+}
+
+type PreviewAssetResult struct {
+	ServiceID   string `json:"service_id"`
+	ServiceType string `json:"service_type"`
+	Endpoint    string `json:"endpoint"`
+	StatusCode  int    `json:"status_code"`
+	Success     bool   `json:"success"`
+	Error       string `json:"error,omitempty"`
+	Code        string `json:"code,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Body        []byte `json:"-"`
 }
 
 func RedactServicePreflightResult(result ServicePreflightResult) ServicePreflightResult {
@@ -499,6 +516,54 @@ func (c Client) EncoderPreflight(ctx context.Context, stream store.Stream, servi
 	return ServicePreflightResult{ServiceType: "encoder_recorder", Endpoint: "/preflight", Error: "assigned encoder_recorder service not found"}
 }
 
+func (c Client) PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name string) PreviewAssetResult {
+	for _, service := range services {
+		if service.ServiceType == "encoder_recorder" {
+			endpoint := "/streams/" + url.PathEscape(stream.ID) + "/preview/" + url.PathEscape(name)
+			return c.getPreviewAsset(ctx, service, endpoint, name)
+		}
+	}
+	return PreviewAssetResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
+}
+
+func (c Client) NotifyDiscordYouTubeLive(ctx context.Context, stream store.Stream, services []store.RegisteredService, eventID, watchURL string) DispatchResult {
+	for _, service := range services {
+		if service.ServiceType != "discord_bot" {
+			continue
+		}
+		endpoint := "/streams/" + url.PathEscape(stream.ID) + "/notifications/youtube-live"
+		payload := map[string]string{"event_id": strings.TrimSpace(eventID), "watch_url": strings.TrimSpace(watchURL)}
+		var result DispatchResult
+		for attempt := 0; attempt < 3; attempt++ {
+			result = c.post(ctx, service, endpoint, payload)
+			if result.Success || !transientNotificationFailure(result.StatusCode) || attempt == 2 {
+				return result
+			}
+			if !waitForServiceRetry(ctx, time.Duration(250*(1<<attempt))*time.Millisecond) {
+				result.Error = "service notification retry canceled"
+				return result
+			}
+		}
+		return result
+	}
+	return DispatchResult{ServiceType: "discord_bot", Error: "assigned discord_bot service not found"}
+}
+
+func transientNotificationFailure(status int) bool {
+	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
+}
+
+func waitForServiceRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) ArchiveArtifactDownloadResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
@@ -686,6 +751,79 @@ func (c Client) getArchiveArtifact(ctx context.Context, service store.Registered
 	result.SizeBytes = response.ContentLength
 	result.Body = response.Body
 	return result
+}
+
+func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredService, endpoint, name string) PreviewAssetResult {
+	result := PreviewAssetResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
+	if !c.Enabled() {
+		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		return result
+	}
+	authToken, err := c.authToken(service)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
+		result.Code = serviceURLIssueCode(err)
+		result.Error = serviceURLMessage(err)
+		return result
+	}
+	reqCtx := ctx
+	if c.Config.Timeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, c.Config.Timeout)
+		defer cancel()
+	}
+	request, err := http.NewRequestWithContext(reqCtx, http.MethodGet, joinURL(service.PublicURL, endpoint), nil)
+	if err != nil {
+		result.Error = "build request failed"
+		return result
+	}
+	request.Header.Set("Authorization", "Bearer "+authToken)
+	request.Header.Set("Accept", previewAcceptHeader(name))
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		result.Error = "service request failed"
+		return result
+	}
+	defer response.Body.Close()
+	result.StatusCode = response.StatusCode
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var errorBody struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(io.LimitReader(response.Body, 16<<10)).Decode(&errorBody); err == nil {
+			result.Code = sanitizeServiceErrorValue(errorBody.Code)
+		}
+		result.Error = fmt.Sprintf("service returned status %d", response.StatusCode)
+		return result
+	}
+	limit := int64(maxPreviewSegmentBytes)
+	if name == "index.m3u8" {
+		limit = maxPreviewPlaylistBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		result.Error = "read preview asset failed"
+		return result
+	}
+	if int64(len(body)) > limit {
+		result.Code = "preview_asset_too_large"
+		result.Error = "preview asset exceeded size limit"
+		return result
+	}
+	result.Success = true
+	result.ContentType = response.Header.Get("Content-Type")
+	result.Body = body
+	return result
+}
+
+func previewAcceptHeader(name string) string {
+	if name == "index.m3u8" {
+		return "application/vnd.apple.mpegurl, application/x-mpegURL"
+	}
+	return "video/mp2t"
 }
 
 func (c Client) getWorkerEvents(ctx context.Context, service store.RegisteredService, endpoint string) WorkerEventsResult {

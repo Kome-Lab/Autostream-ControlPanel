@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TurnstileWidget } from "@/components/auth/turnstile-widget";
 import { APIError, apiGet, apiPost, setCSRFToken } from "@/lib/api/client";
+import { safePostLoginPath } from "@/lib/auth/post-login-redirect";
 import { passkeyAssertionCredentialToJSON, passkeysSupported, publicKeyRequestOptionsFromJSON } from "@/lib/passkeys";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
@@ -44,6 +45,7 @@ export function LoginCard() {
   const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
   const loginSecurityPending = appSettings.isLoading || (turnstileEnabled && !turnstileToken);
   const sessionExpired = searchParams.get("reason") === "session_expired";
+  const postLoginPath = safePostLoginPath(searchParams.get("redirect_after"));
 
   const resetTurnstile = () => {
     setTurnstileToken("");
@@ -69,7 +71,7 @@ export function LoginCard() {
         return;
       }
       setCSRFToken(body.csrf_token);
-      router.push("/admin/");
+      router.replace(postLoginPath);
     } catch (error) {
       resetTurnstile();
       setMessage(authErrorMessage(error, "ログインできませんでした。ユーザー名とパスワードを確認してください。"));
@@ -85,7 +87,7 @@ export function LoginCard() {
     try {
       const body = await apiPost<{ csrf_token?: string }>("/auth/mfa/verify", { challenge_token: mfaChallengeToken, code: mfaCode });
       setCSRFToken(body.csrf_token);
-      router.push("/admin/");
+      router.replace(postLoginPath);
     } catch (error) {
       setMessage(authErrorMessage(error, "2FAコードを確認してください。"));
     } finally {
@@ -97,7 +99,10 @@ export function LoginCard() {
     setBusy(true);
     setMessage("");
     try {
-      const body = await apiPost<OAuthLinkStartResponse>(`/auth/oauth/${encodeURIComponent(providerID)}/start`, { turnstile_token: turnstileToken });
+      const body = await apiPost<OAuthLinkStartResponse>(`/auth/oauth/${encodeURIComponent(providerID)}/start`, {
+        redirect_after: postLoginPath,
+        turnstile_token: turnstileToken,
+      });
       window.location.assign(body.authorization_url);
     } catch (error) {
       resetTurnstile();
@@ -132,7 +137,7 @@ export function LoginCard() {
         return;
       }
       setCSRFToken(result.csrf_token);
-      router.push("/admin/");
+      router.replace(postLoginPath);
     } catch (error) {
       resetTurnstile();
       setMessage(authErrorMessage(error, "Passkeyでログインできませんでした。"));

@@ -53,6 +53,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
 import { APIError, apiGet, apiPost, clearCSRFToken } from "@/lib/api/client";
 import { hasAnyPermission, hasPermission } from "@/lib/auth/permissions";
+import { loginPathForLocation } from "@/lib/auth/post-login-redirect";
 import { useAppSettings, useCurrentUser, useServiceHealth, useVersion } from "@/features/queries";
 import type { CurrentUser, Locale, SetupStatus } from "@/types/domain";
 import type { TranslationKey } from "@/lib/i18n";
@@ -166,7 +167,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
         .catch((error) => {
           if (error instanceof APIError && error.status === 401) {
             clearCSRFToken();
-            window.location.replace("/login?reason=session_expired");
+            window.location.replace(loginPathForLocation(window.location, true));
           }
         })
         .finally(() => {
@@ -189,17 +190,17 @@ export function AdminShell({ children }: { children: ReactNode }) {
     if (!currentUser.isError) return;
     if (sessionExpired) clearCSRFToken();
     if (authenticatedSessionSeen.current) {
-      if (sessionExpired) window.location.replace("/login?reason=session_expired");
+      if (sessionExpired) window.location.replace(loginPathForLocation(window.location, true));
       return;
     }
     let active = true;
     apiGet<SetupStatus>("/setup/status")
       .then((status) => {
         if (!active) return;
-        router.replace(status.setup_required ? "/setup" : "/login");
+        router.replace(status.setup_required ? "/setup" : loginPathForLocation(window.location));
       })
       .catch(() => {
-        if (active) router.replace("/login");
+        if (active) router.replace(loginPathForLocation(window.location));
       });
     return () => {
       active = false;
