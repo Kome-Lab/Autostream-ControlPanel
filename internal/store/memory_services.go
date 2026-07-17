@@ -102,6 +102,67 @@ func (s *MemoryAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 	return token, nil
 }
 
+func (s *MemoryAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID, expectedTokenID string, seal NodeTokenSealer) (ServiceToken, RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if seal == nil {
+		return ServiceToken{}, RegisteredService{}, errNodeTokenSealerRequired
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	expectedTokenID = strings.TrimSpace(expectedTokenID)
+	if serviceID == "" || expectedTokenID == "" {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	service, ok := s.services[serviceID]
+	if !ok || service.TokenID != expectedTokenID {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	oldToken, ok := s.serviceTokens[expectedTokenID]
+	if !ok || oldToken.RevokedAt != nil {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if service.ServiceType != oldToken.ServiceType {
+		return ServiceToken{}, RegisteredService{}, ErrForbidden
+	}
+
+	now := time.Now().UTC()
+	token, _, err := newRotatedServiceToken(oldToken, now)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	ciphertext, nonce, err := seal(token.RawToken)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+
+	oldTokenStillReferenced := false
+	for candidateID, candidate := range s.services {
+		if candidateID != serviceID && candidate.TokenID == oldToken.ID {
+			oldTokenStillReferenced = true
+			break
+		}
+	}
+	if !oldTokenStillReferenced {
+		oldToken.RevokedAt = &now
+	}
+	s.serviceTokens[oldToken.ID] = oldToken
+	s.serviceTokens[token.ID] = token
+	service.TokenID = token.ID
+	service.NodeTokenCiphertext = ciphertext
+	service.NodeTokenNonce = nonce
+	service.NodeTokenRotatedAt = &now
+	service.UpdatedAt = now
+	s.services[serviceID] = service
+	return token, service, nil
+}
+
 func (s *MemoryAuthStore) AuthenticateServiceToken(ctx context.Context, rawToken, requiredScope string) (ServiceToken, error) {
 	if err := ctx.Err(); err != nil {
 		return ServiceToken{}, err
@@ -395,6 +456,73 @@ func (s *MemoryAuthStore) ConsumeServiceConfigureToken(ctx context.Context, serv
 	svc.UpdatedAt = now
 	s.services[serviceID] = svc
 	return svc, nil
+}
+
+func (s *MemoryAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, report ServiceRuntimeReport, seal NodeTokenSealer) (ServiceToken, RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if seal == nil {
+		return ServiceToken{}, RegisteredService{}, errNodeTokenSealerRequired
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	now = now.UTC()
+	report.ServiceID = serviceID
+	report = normalizeServiceRuntimeReport(report)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	service, ok := s.services[serviceID]
+	if !ok {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if service.ConfigureTokenHash == "" || service.ConfigureTokenExpiresAt == nil || service.ConfigureTokenUsedAt != nil || !now.Before(*service.ConfigureTokenExpiresAt) || !security.VerifyTokenHash(rawConfigureToken, service.ConfigureTokenHash) {
+		return ServiceToken{}, RegisteredService{}, ErrUnauthorized
+	}
+	oldToken, ok := s.serviceTokens[service.TokenID]
+	if !ok || oldToken.RevokedAt != nil {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if service.ServiceType != oldToken.ServiceType {
+		return ServiceToken{}, RegisteredService{}, ErrForbidden
+	}
+
+	token, _, err := newRotatedServiceToken(oldToken, now)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	ciphertext, nonce, err := seal(token.RawToken)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+
+	oldTokenStillReferenced := false
+	for candidateID, candidate := range s.services {
+		if candidateID != serviceID && candidate.TokenID == oldToken.ID {
+			oldTokenStillReferenced = true
+			break
+		}
+	}
+	if !oldTokenStillReferenced {
+		oldToken.RevokedAt = &now
+	}
+	s.serviceTokens[oldToken.ID] = oldToken
+	s.serviceTokens[token.ID] = token
+	service = applyServiceRuntimeReport(service, report, now)
+	service.TokenID = token.ID
+	service.NodeTokenCiphertext = ciphertext
+	service.NodeTokenNonce = nonce
+	service.ConfigureTokenUsedAt = &now
+	service.NodeTokenRotatedAt = &now
+	service.UpdatedAt = now
+	s.services[serviceID] = service
+	return token, service, nil
 }
 
 func (s *MemoryAuthStore) SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error) {

@@ -37,6 +37,8 @@ const (
 	oauthStateCookieName         = "autostream_oauth_state"
 	maxControlRequestBytes       = 1 << 20
 	defaultNodeConfigureTokenTTL = 24 * time.Hour
+	minStreamIngestSigningKeyLen = 32
+	minSecretEncryptionKeyLen    = 32
 )
 
 var requiredStartServiceTypes = []string{"discord_bot", "worker", "encoder_recorder"}
@@ -4356,6 +4358,9 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
 	}
+	if !requireNodeStreamIngestSigningKey(w, serviceType) {
+		return
+	}
 	scopes := nodeRegistrationScopes(serviceType, body.AllowRuntimeSecrets, body.AllowRemediation)
 	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, scopes); err != nil {
 		status := http.StatusBadRequest
@@ -4365,6 +4370,14 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 			code = "permission_escalation"
 		}
 		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	if err := validateNodeConfigurationSecretPermissions(currentFromContext(r.Context()).Permissions, serviceType); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+		return
+	}
+	if _, err := nodeRuntimeTokenEncryptionKey(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
 		return
 	}
 	token, err := s.services.CreateServiceToken(r.Context(), serviceType, scopes)
@@ -4457,7 +4470,7 @@ func nodeRegistrationScopes(serviceType string, allowRuntimeSecrets, allowRemedi
 			scopes = append(scopes, "remediation.execute")
 		}
 	}
-	if allowRuntimeSecrets {
+	if serviceType == "encoder_recorder" || allowRuntimeSecrets {
 		scopes = append(scopes, "service.secret.resolve")
 	}
 	return scopes
@@ -4477,11 +4490,11 @@ func (s *Server) issueNodeConfigureToken(ctx context.Context, nodeID string) (st
 }
 
 func (s *Server) persistNodeRuntimeToken(ctx context.Context, nodeID, rawToken string) (store.RegisteredService, error) {
-	key, err := nodeRuntimeTokenEncryptionKey()
+	seal, err := nodeRuntimeTokenSealer()
 	if err != nil || strings.TrimSpace(rawToken) == "" {
 		return store.RegisteredService{}, errors.New("node runtime token encryption key is not configured")
 	}
-	ciphertext, nonce, err := security.EncryptSecret(rawToken, key)
+	ciphertext, nonce, err := seal(rawToken)
 	if err != nil {
 		return store.RegisteredService{}, err
 	}
@@ -4490,10 +4503,28 @@ func (s *Server) persistNodeRuntimeToken(ctx context.Context, nodeID, rawToken s
 
 func nodeRuntimeTokenEncryptionKey() (string, error) {
 	key := strings.TrimSpace(os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))
-	if key == "" {
-		return "", errors.New("node runtime token encryption key is not configured")
+	upper := strings.ToUpper(key)
+	placeholder := strings.Contains(upper, "CHANGE_ME") ||
+		strings.Contains(upper, "REPLACE_ME") ||
+		strings.Contains(upper, "YOUR_ENCRYPTION_KEY") ||
+		(strings.HasPrefix(key, "<") && strings.HasSuffix(key, ">"))
+	if len([]byte(key)) < minSecretEncryptionKeyLen || placeholder {
+		return "", errors.New("node runtime token encryption key must be a non-placeholder value of at least 32 bytes")
 	}
 	return key, nil
+}
+
+func nodeRuntimeTokenSealer() (store.NodeTokenSealer, error) {
+	key, err := nodeRuntimeTokenEncryptionKey()
+	if err != nil {
+		return nil, err
+	}
+	return func(rawToken string) (string, string, error) {
+		if strings.TrimSpace(rawToken) == "" {
+			return "", "", errors.New("node runtime token is empty")
+		}
+		return security.EncryptSecret(rawToken, key)
+	}, nil
 }
 
 func nodeConfigureTokenTTL() time.Duration {
@@ -4637,12 +4668,44 @@ func nodeStreamIngestSigningKey(serviceType string, includeSecret bool) string {
 	if !includeSecret {
 		return ""
 	}
+	if nodeStreamIngestSigningKeyErrorCode(serviceType) != "" {
+		return ""
+	}
 	switch strings.TrimSpace(serviceType) {
 	case "worker", "encoder_recorder":
 		return strings.TrimSpace(os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY"))
 	default:
 		return ""
 	}
+}
+
+func nodeStreamIngestSigningKeyErrorCode(serviceType string) string {
+	switch strings.TrimSpace(serviceType) {
+	case "worker", "encoder_recorder":
+	default:
+		return ""
+	}
+	key := strings.TrimSpace(os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY"))
+	if key == "" {
+		return "stream_ingest_signing_key_required"
+	}
+	upper := strings.ToUpper(key)
+	placeholder := strings.Contains(upper, "CHANGE_ME") ||
+		strings.Contains(upper, "REPLACE_ME") ||
+		strings.Contains(upper, "YOUR_SIGNING_KEY") ||
+		(strings.HasPrefix(key, "<") && strings.HasSuffix(key, ">"))
+	if len([]byte(key)) < minStreamIngestSigningKeyLen || placeholder {
+		return "stream_ingest_signing_key_invalid"
+	}
+	return ""
+}
+
+func requireNodeStreamIngestSigningKey(w http.ResponseWriter, serviceType string) bool {
+	if code := nodeStreamIngestSigningKeyErrorCode(serviceType); code != "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": code})
+		return false
+	}
+	return true
 }
 
 func yamlQuote(value string) string {
@@ -4706,6 +4769,11 @@ func (s *Server) nodeConfiguration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Request) {
+	current := currentFromContext(r.Context())
+	if !security.HasPermission(current.Permissions, "api_tokens.revoke") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
+		return
+	}
 	service, err := s.services.GetService(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
@@ -4715,12 +4783,21 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
 		return
 	}
+	if !s.requireNodeTokenScopePermissions(w, r, service) {
+		return
+	}
+	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
+		return
+	}
+	if _, err := nodeRuntimeTokenEncryptionKey(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
 	token, expiresAt, err := s.issueNodeConfigureToken(r.Context(), service.ServiceID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
 		return
 	}
-	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "nodes.configure_token.rotate", ResourceType: "node", ResourceID: service.ServiceID, Result: "success"})
 	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
 		"node":                       service,
@@ -4745,22 +4822,24 @@ func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
 		return
 	}
-	if _, err := nodeRuntimeTokenEncryptionKey(); err != nil {
+	if !s.requireNodeTokenScopePermissions(w, r, service) {
+		return
+	}
+	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
+		return
+	}
+	seal, err := nodeRuntimeTokenSealer()
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
 		return
 	}
-	token, err := s.services.RotateServiceToken(r.Context(), service.TokenID)
+	token, updated, err := s.services.RotateServiceNodeToken(r.Context(), service.ServiceID, service.TokenID, seal)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
 		return
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "rotate_node_runtime_token_failed"})
-		return
-	}
-	updated, err := s.persistNodeRuntimeToken(r.Context(), service.ServiceID, token.RawToken)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "nodes.runtime_token.rotate", ResourceType: "node", ResourceID: service.ServiceID, Result: "success", Metadata: map[string]any{"token_id": token.ID}})
@@ -4797,7 +4876,32 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 	if configureToken == "" {
 		configureToken = strings.TrimSpace(body.Token)
 	}
-	service, err := s.services.ConsumeServiceConfigureToken(r.Context(), nodeID, configureToken, time.Now().UTC())
+	service, err := s.services.GetService(r.Context(), nodeID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
+		return
+	}
+	seal, err := nodeRuntimeTokenSealer()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
+	token, updated, err := s.services.ConfigureServiceNode(r.Context(), nodeID, configureToken, time.Now().UTC(), store.ServiceRuntimeReport{
+		ServiceID: nodeID,
+		Version:   body.Version,
+		Commit:    body.Commit,
+		BuildDate: body.BuildDate,
+		Hostname:  body.Hostname,
+		OS:        body.OS,
+		Arch:      body.Arch,
+	}, seal)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
 		return
@@ -4807,34 +4911,7 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "consume_configure_token_failed"})
-		return
-	}
-	service, err = s.services.UpdateServiceRuntimeReport(r.Context(), store.ServiceRuntimeReport{
-		ServiceID: service.ServiceID,
-		Version:   body.Version,
-		Commit:    body.Commit,
-		BuildDate: body.BuildDate,
-		Hostname:  body.Hostname,
-		OS:        body.OS,
-		Arch:      body.Arch,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_report_failed"})
-		return
-	}
-	if _, err := nodeRuntimeTokenEncryptionKey(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
-		return
-	}
-	token, err := s.services.RotateServiceToken(r.Context(), service.TokenID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "rotate_runtime_token_failed"})
-		return
-	}
-	updated, err := s.persistNodeRuntimeToken(r.Context(), service.ServiceID, token.RawToken)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "configure_node_failed"})
 		return
 	}
 	writeOneTimeSecretJSON(w, http.StatusOK, map[string]any{
@@ -4913,9 +4990,54 @@ func validateServiceTokenScopePermissions(actorPermissions, scopes []string) err
 	return nil
 }
 
+func validateNodeConfigurationSecretPermissions(actorPermissions []string, serviceType string) error {
+	switch strings.TrimSpace(serviceType) {
+	case "worker", "encoder_recorder":
+		if !security.HasPermission(actorPermissions, "secrets.update") {
+			return store.ErrPermissionEscalation
+		}
+	}
+	return nil
+}
+
+func (s *Server) requireNodeTokenScopePermissions(w http.ResponseWriter, r *http.Request, service store.RegisteredService) bool {
+	tokens, err := s.services.ListServiceTokens(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_service_tokens_failed"})
+		return false
+	}
+	for _, token := range tokens {
+		if token.ID != service.TokenID || token.RevokedAt != nil {
+			continue
+		}
+		if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, token.Scopes); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+			return false
+		}
+		if err := validateNodeConfigurationSecretPermissions(currentFromContext(r.Context()).Permissions, service.ServiceType); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+			return false
+		}
+		return true
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
+	return false
+}
+
 func (s *Server) revokeServiceToken(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := s.services.RevokeServiceToken(r.Context(), id)
+	services, err := s.services.ListServices(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_services_failed"})
+		return
+	}
+	for _, service := range services {
+		if service.TokenID == id && (service.NodeTokenCiphertext != "" || service.NodeTokenNonce != "") {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "node_runtime_token_requires_node_deletion"})
+			return
+		}
+	}
+	err = s.services.RevokeServiceToken(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -4936,6 +5058,37 @@ func (s *Server) rotateServiceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	tokens, err := s.services.ListServiceTokens(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_service_tokens_failed"})
+		return
+	}
+	var existing store.ServiceToken
+	for _, candidate := range tokens {
+		if candidate.ID == id && candidate.RevokedAt == nil {
+			existing = candidate
+			break
+		}
+	}
+	if existing.ID == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err := validateServiceTokenScopePermissions(current.Permissions, existing.Scopes); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+		return
+	}
+	services, err := s.services.ListServices(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_services_failed"})
+		return
+	}
+	for _, service := range services {
+		if service.TokenID == id && (service.NodeTokenCiphertext != "" || service.NodeTokenNonce != "") {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "node_runtime_token_requires_node_rotation"})
+			return
+		}
+	}
 	token, err := s.services.RotateServiceToken(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
@@ -11412,9 +11565,9 @@ func nodeRuntimeToken(service store.RegisteredService) (string, error) {
 	if strings.TrimSpace(service.NodeTokenCiphertext) == "" || strings.TrimSpace(service.NodeTokenNonce) == "" {
 		return "", errors.New("node runtime token is not configured")
 	}
-	key := strings.TrimSpace(os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))
-	if key == "" {
-		return "", errors.New("node runtime token encryption key is not configured")
+	key, err := nodeRuntimeTokenEncryptionKey()
+	if err != nil {
+		return "", err
 	}
 	token, err := security.DecryptSecret(service.NodeTokenCiphertext, service.NodeTokenNonce, key)
 	if err != nil || strings.TrimSpace(token) == "" {

@@ -11169,6 +11169,71 @@ func TestRotateServiceTokenRequiresRevokePermission(t *testing.T) {
 	}
 }
 
+func TestRotateServiceTokenRejectsScopeEscalation(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "rotator", Roles: []string{"token_rotator"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "encoder_recorder", []string{"service.register", "service.secret.resolve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "rotator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/api-tokens/"+token.ID+"/rotate", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "permission_escalation") {
+		t.Fatalf("scope escalation rotation status = %d body = %s", res.Code, res.Body.String())
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), token.RawToken, "service.secret.resolve"); err != nil {
+		t.Fatalf("denied rotation must leave the original token active: %v", err)
+	}
+}
+
+func TestGenericServiceTokenMutationsRejectPanelManagedNodeToken(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{ServiceID: "worker-managed", ServiceType: "worker", ServiceName: "Managed Worker", Host: "worker.example.com", Port: 8443, SSLEnabled: true, PublicURL: "https://worker.example.com:8443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.SetServiceNodeTokenSecret(t.Context(), service.ServiceID, "ciphertext", "nonce"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/api-tokens/"+token.ID+"/rotate", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "node_runtime_token_requires_node_rotation") {
+		t.Fatalf("managed node generic rotation status = %d body = %s", res.Code, res.Body.String())
+	}
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/api-tokens/"+token.ID, nil)
+	revokeReq.AddCookie(cookie)
+	revokeReq.Header.Set("X-CSRF-Token", csrf)
+	revokeRes := httptest.NewRecorder()
+	handler.ServeHTTP(revokeRes, revokeReq)
+	if revokeRes.Code != http.StatusConflict || !strings.Contains(revokeRes.Body.String(), "node_runtime_token_requires_node_deletion") {
+		t.Fatalf("managed node generic revoke status = %d body = %s", revokeRes.Code, revokeRes.Body.String())
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), token.RawToken, "service.heartbeat"); err != nil {
+		t.Fatalf("rejected generic mutation must leave the node token active: %v", err)
+	}
+}
+
 func TestCreateServiceTokenPrecreateRequiresRegisterScope(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read"}); err != nil {
@@ -11239,10 +11304,10 @@ func TestCreateServiceTokenRejectsEmptyScopes(t *testing.T) {
 }
 
 func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
-	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read", "service_health.read", "audit_logs.read"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read", "service_health.read", "audit_logs.read", "secrets.update"}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
@@ -11298,7 +11363,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if !strings.Contains(body.ConfigurationYAML, `ssl_enabled: true`) || !strings.Contains(body.ConfigurationYAML, body.RuntimeToken) || !strings.Contains(body.ConfigurationYAML, `host: "worker.example.com"`) {
 		t.Fatalf("configuration yaml missing node agent settings: %s", body.ConfigurationYAML)
 	}
-	if !strings.Contains(body.ConfigurationYAML, `stream_ingest:`) || !strings.Contains(body.ConfigurationYAML, `signing_key: "test-stream-ingest-signing-key"`) {
+	if !strings.Contains(body.ConfigurationYAML, `stream_ingest:`) || !strings.Contains(body.ConfigurationYAML, `signing_key: "test-stream-ingest-signing-key-32-bytes"`) {
 		t.Fatalf("configuration yaml missing stream ingest signing key: %s", body.ConfigurationYAML)
 	}
 	legacyNodeName := "autostream-" + "node"
@@ -11347,7 +11412,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if configureBody.Config.Auth.TokenID == "" || configureBody.Config.Auth.Token == "" || configureBody.Config.Auth.Token == body.RuntimeToken || !strings.Contains(configureBody.ConfigYML, configureBody.Config.Auth.Token) {
 		t.Fatalf("configure endpoint did not rotate and return runtime token once: %#v", configureBody)
 	}
-	if configureBody.Config.StreamIngest.SigningKey != "test-stream-ingest-signing-key" || !strings.Contains(configureBody.ConfigYML, `signing_key: "test-stream-ingest-signing-key"`) {
+	if configureBody.Config.StreamIngest.SigningKey != "test-stream-ingest-signing-key-32-bytes" || !strings.Contains(configureBody.ConfigYML, `signing_key: "test-stream-ingest-signing-key-32-bytes"`) {
 		t.Fatalf("configure endpoint did not return the stream ingest signing key: %#v", configureBody)
 	}
 	configuredNode, err := auth.GetService(t.Context(), "studio-worker-01")
@@ -11399,28 +11464,29 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 }
 
 func TestNodeConfigurationYAMLScopesSigningKeyToOneTimeWorkerEncoderConfigs(t *testing.T) {
-	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	request := httptest.NewRequest(http.MethodGet, "https://control.example.jp/nodes", nil)
 	worker := store.RegisteredService{ServiceID: "worker-01", ServiceName: "Worker 01", ServiceType: "worker", Host: "worker.example.jp", Port: 8443, SSLEnabled: true}
 
 	oneTime := nodeConfigurationYAML(request, worker, "token-id", "runtime-token")
-	if !strings.Contains(oneTime, `stream_ingest:`) || !strings.Contains(oneTime, `signing_key: "test-stream-ingest-signing-key"`) {
+	if !strings.Contains(oneTime, `stream_ingest:`) || !strings.Contains(oneTime, `signing_key: "test-stream-ingest-signing-key-32-bytes"`) {
 		t.Fatalf("one-time worker config omitted signing key: %s", oneTime)
 	}
 	redacted := nodeConfigurationYAML(request, worker, "token-id", "")
-	if strings.Contains(redacted, "test-stream-ingest-signing-key") || strings.Contains(redacted, "stream_ingest") {
+	if strings.Contains(redacted, "test-stream-ingest-signing-key-32-bytes") || strings.Contains(redacted, "stream_ingest") {
 		t.Fatalf("normal node config leaked signing key: %s", redacted)
 	}
 	discord := worker
 	discord.ServiceType = "discord_bot"
 	discordConfig := nodeConfigurationYAML(request, discord, "token-id", "runtime-token")
-	if strings.Contains(discordConfig, "test-stream-ingest-signing-key") || strings.Contains(discordConfig, "stream_ingest") {
+	if strings.Contains(discordConfig, "test-stream-ingest-signing-key-32-bytes") || strings.Contains(discordConfig, "stream_ingest") {
 		t.Fatalf("discord config received an unrelated signing key: %s", discordConfig)
 	}
 }
 
-func TestNodeAgentConfigurePersistsRuntimeReportBeforeRuntimeTokenSecret(t *testing.T) {
+func TestNodeAgentConfigureRejectsMissingEncryptionBeforeConsumingConfigureToken(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
 	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat", "service.config.read"})
 	if err != nil {
@@ -11454,16 +11520,65 @@ func TestNodeAgentConfigurePersistsRuntimeReportBeforeRuntimeTokenSecret(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedCommit != "abc1234" || got.ReportedBuildDate != "2026-07-09T00:00:00Z" || got.ReportedHostname != "studio-worker-01" || got.ReportedOS != "linux" || got.ReportedArch != "amd64" {
-		t.Fatalf("configure runtime report was not persisted before runtime token storage failure: %#v", got)
+	if got.Status != "pending" || got.ReportedVersion != "" || got.ReportedCommit != "" || got.ReportedBuildDate != "" || got.ReportedHostname != "" || got.ReportedOS != "" || got.ReportedArch != "" {
+		t.Fatalf("configure must not mutate the runtime report before encryption is available: %#v", got)
 	}
 	if got.TokenID != token.ID {
 		t.Fatalf("runtime token should not rotate before encryption is available: old=%s got=%s", token.ID, got.TokenID)
 	}
+	if got.ConfigureTokenUsedAt != nil {
+		t.Fatalf("configure token must remain usable after prerequisite failure: %#v", got)
+	}
+}
+
+func TestNodeRuntimeTokenEncryptionKeyRejectsWeakValues(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "missing"},
+		{name: "short", key: "short-key"},
+		{name: "placeholder", key: "<CHANGE_ME_32_BYTES>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", tc.key)
+			if _, err := nodeRuntimeTokenEncryptionKey(); err == nil {
+				t.Fatalf("weak encryption key %q should be rejected", tc.key)
+			}
+		})
+	}
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	if key, err := nodeRuntimeTokenEncryptionKey(); err != nil || key == "" {
+		t.Fatalf("strong encryption key should be accepted: key=%q err=%v", key, err)
+	}
+}
+
+func TestNodeRuntimeTokenDecryptRequiresValidatedEncryptionKey(t *testing.T) {
+	const weakKey = "short-key"
+	ciphertext, nonce, err := security.EncryptSecret("runtime-token", weakKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := store.RegisteredService{NodeTokenCiphertext: ciphertext, NodeTokenNonce: nonce}
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", weakKey)
+	if _, err := nodeRuntimeToken(service); err == nil || !strings.Contains(err.Error(), "at least 32 bytes") {
+		t.Fatalf("weak decryption key should be rejected, got %v", err)
+	}
+
+	strongKey := "test-secret-encryption-key-32-bytes"
+	ciphertext, nonce, err = security.EncryptSecret("runtime-token", strongKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", strongKey)
+	if got, err := nodeRuntimeToken(store.RegisteredService{NodeTokenCiphertext: ciphertext, NodeTokenNonce: nonce}); err != nil || got != "runtime-token" {
+		t.Fatalf("runtime token decrypt = %q, err=%v", got, err)
+	}
 }
 
 func TestNodeAgentConfigurePersistsRuntimeReportForSupportedNodeTypes(t *testing.T) {
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	for _, serviceType := range []string{"worker", "encoder_recorder", "discord_bot", "observability"} {
@@ -11511,9 +11626,10 @@ func TestNodeAgentConfigurePersistsRuntimeReportForSupportedNodeTypes(t *testing
 }
 
 func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "node-admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "node-admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "secrets.update"}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
@@ -11607,12 +11723,12 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 }
 
 func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
-	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "*.example.com")
 	t.Setenv("AUTOSTREAM_REQUIRE_SERVICE_PUBLIC_ALLOWED_HOSTS", "true")
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "node-admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "services.disable"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "node-admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "services.disable", "secrets.update"}); err != nil {
 		t.Fatal(err)
 	}
 	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat", "service.config.read"})
@@ -11662,7 +11778,7 @@ func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
 	if !strings.Contains(configRes.Body.String(), `"node_api_url":"https://worker-edited.example.com:9443"`) {
 		t.Fatalf("node configuration should use edited endpoint: %s", configRes.Body.String())
 	}
-	if strings.Contains(configRes.Body.String(), "test-stream-ingest-signing-key") || strings.Contains(configRes.Body.String(), "stream_ingest") {
+	if strings.Contains(configRes.Body.String(), "test-stream-ingest-signing-key-32-bytes") || strings.Contains(configRes.Body.String(), "stream_ingest") {
 		t.Fatalf("normal node configuration response leaked one-time signing material: %s", configRes.Body.String())
 	}
 
@@ -11704,7 +11820,7 @@ func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
 	if rotateBody.RuntimeToken == "" || rotateBody.RuntimeTokenID == "" || !strings.Contains(rotateBody.ConfigurationYAML, rotateBody.RuntimeToken) {
 		t.Fatalf("runtime token was not returned once in config: %#v", rotateBody)
 	}
-	if !strings.Contains(rotateBody.ConfigurationYAML, `signing_key: "test-stream-ingest-signing-key"`) {
+	if !strings.Contains(rotateBody.ConfigurationYAML, `signing_key: "test-stream-ingest-signing-key-32-bytes"`) {
 		t.Fatalf("rotated one-time config omitted stream ingest signing key: %#v", rotateBody)
 	}
 	if rotateBody.RuntimeToken == token.RawToken || rotateBody.RuntimeTokenID == token.ID {
@@ -11724,8 +11840,114 @@ func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
 	}
 }
 
+func TestNodeTokenMutationsRejectPermissionEscalation(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "creator", Roles: []string{"node_creator"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{Username: "rotator", Roles: []string{"node_rotator"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "encoder_recorder", []string{"service.register", "service.heartbeat", "service.config.read", "service.secret.resolve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{
+		ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder 01", Host: "encoder.example.com", Port: 8443, SSLEnabled: true, PublicURL: "https://encoder.example.com:8443",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalConfigureHash := security.HashToken("original-configure-token")
+	if _, err := auth.SetServiceConfigureToken(t.Context(), service.ServiceID, originalConfigureHash, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+
+	creatorCookie, creatorCSRF := loginForTest(t, handler, "creator", "correct horse battery")
+	creatorReq := httptest.NewRequest(http.MethodPost, "/nodes/encoder-01/configure-token", nil)
+	creatorReq.AddCookie(creatorCookie)
+	creatorReq.Header.Set("X-CSRF-Token", creatorCSRF)
+	creatorRes := httptest.NewRecorder()
+	handler.ServeHTTP(creatorRes, creatorReq)
+	if creatorRes.Code != http.StatusForbidden || !strings.Contains(creatorRes.Body.String(), "permission_denied") {
+		t.Fatalf("configure token rotation without revoke permission status = %d body = %s", creatorRes.Code, creatorRes.Body.String())
+	}
+
+	rotatorCookie, rotatorCSRF := loginForTest(t, handler, "rotator", "correct horse battery")
+	for _, path := range []string{"/nodes/encoder-01/configure-token", "/nodes/encoder-01/rotate-token"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.AddCookie(rotatorCookie)
+		req.Header.Set("X-CSRF-Token", rotatorCSRF)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "permission_escalation") {
+			t.Fatalf("%s without secrets.update status = %d body = %s", path, res.Code, res.Body.String())
+		}
+	}
+	got, err := auth.GetService(t.Context(), service.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TokenID != token.ID || got.ConfigureTokenHash != originalConfigureHash || got.ConfigureTokenUsedAt != nil {
+		t.Fatalf("denied token operations must not mutate the node: %#v", got)
+	}
+}
+
+func TestNodeTokenMutationsRejectInvalidSigningKeyBeforeMutation(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "<CHANGE_ME_64_BYTES>")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "secrets.update"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{
+		ServiceID: "worker-01", ServiceType: "worker", ServiceName: "Worker 01", Host: "worker.example.com", Port: 8443, SSLEnabled: true, PublicURL: "https://worker.example.com:8443",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configureToken := "original-configure-token"
+	originalConfigureHash := security.HashToken(configureToken)
+	if _, err := auth.SetServiceConfigureToken(t.Context(), service.ServiceID, originalConfigureHash, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	for _, path := range []string{"/nodes/worker-01/configure-token", "/nodes/worker-01/rotate-token"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusServiceUnavailable || !strings.Contains(res.Body.String(), "stream_ingest_signing_key_invalid") {
+			t.Fatalf("%s with invalid signing key status = %d body = %s", path, res.Code, res.Body.String())
+		}
+	}
+	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"worker-01","configureToken":"`+configureToken+`","version":"1.4.1"}`))
+	configureRes := httptest.NewRecorder()
+	handler.ServeHTTP(configureRes, configureReq)
+	if configureRes.Code != http.StatusServiceUnavailable || !strings.Contains(configureRes.Body.String(), "stream_ingest_signing_key_invalid") {
+		t.Fatalf("auto configure with invalid signing key status = %d body = %s", configureRes.Code, configureRes.Body.String())
+	}
+	got, err := auth.GetService(t.Context(), service.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TokenID != token.ID || got.ConfigureTokenHash != originalConfigureHash || got.ConfigureTokenUsedAt != nil || got.Status != "pending" || got.ReportedVersion != "" {
+		t.Fatalf("invalid signing key must fail before mutating the node: %#v", got)
+	}
+}
+
 func TestCreateNodeRegistrationTokenReportsBlockedEndpoint(t *testing.T) {
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "")
 	t.Setenv("AUTOSTREAM_REQUIRE_SERVICE_PUBLIC_ALLOWED_HOSTS", "true")
 	auth := store.NewMemoryAuthStore()
@@ -11748,7 +11970,64 @@ func TestCreateNodeRegistrationTokenReportsBlockedEndpoint(t *testing.T) {
 	}
 }
 
+func TestNodeRegistrationScopesAutomaticallyIncludeEncoderRuntimeSecrets(t *testing.T) {
+	scopes := nodeRegistrationScopes("encoder_recorder", false, false)
+	if !stringSliceContains(scopes, "service.secret.resolve") || !stringSliceContains(scopes, "encoder.status.write") || !stringSliceContains(scopes, "observability.ingest") {
+		t.Fatalf("encoder scopes should include required runtime access automatically: %#v", scopes)
+	}
+}
+
+func TestCreateWorkerOrEncoderNodeRequiresStreamIngestSigningKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+		code string
+	}{
+		{name: "missing", code: "stream_ingest_signing_key_required"},
+		{name: "short", key: "short-signing-key", code: "stream_ingest_signing_key_invalid"},
+		{name: "placeholder", key: "<CHANGE_ME_64_BYTES>", code: "stream_ingest_signing_key_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+			t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", tc.key)
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read", "secrets.update"}); err != nil {
+				t.Fatal(err)
+			}
+			handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+			cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+			for _, serviceType := range []string{"worker", "encoder_recorder"} {
+				req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"`+serviceType+`","node_id":"`+serviceType+`-01","name":"Node 01","host":"node.example.com","port":8443,"ssl_enabled":true}`))
+				req.AddCookie(cookie)
+				req.Header.Set("X-CSRF-Token", csrf)
+				res := httptest.NewRecorder()
+				handler.ServeHTTP(res, req)
+				if res.Code != http.StatusServiceUnavailable || !strings.Contains(res.Body.String(), tc.code) {
+					t.Fatalf("%s with %s signing key status = %d body = %s", serviceType, tc.name, res.Code, res.Body.String())
+				}
+			}
+
+			listReq := httptest.NewRequest(http.MethodGet, "/api-tokens", nil)
+			listReq.AddCookie(cookie)
+			listRes := httptest.NewRecorder()
+			handler.ServeHTTP(listRes, listReq)
+			if listRes.Code != http.StatusOK {
+				t.Fatalf("list token status = %d body = %s", listRes.Code, listRes.Body.String())
+			}
+			var tokens []store.ServiceToken
+			if err := json.NewDecoder(listRes.Body).Decode(&tokens); err != nil {
+				t.Fatal(err)
+			}
+			if len(tokens) != 0 {
+				t.Fatalf("invalid signing key must fail before creating a token: %#v", tokens)
+			}
+		})
+	}
+}
+
 func TestCreateNodeRegistrationTokenRejectsSecretScopeEscalation(t *testing.T) {
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.read"}); err != nil {
 		t.Fatal(err)
@@ -11756,16 +12035,18 @@ func TestCreateNodeRegistrationTokenRejectsSecretScopeEscalation(t *testing.T) {
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"encoder_recorder","node_id":"encoder-01","name":"Encoder 01","public_url":"https://encoder.example.com","version":"0.1.0","allow_runtime_secrets":true}`))
-	req.AddCookie(cookie)
-	req.Header.Set("X-CSRF-Token", csrf)
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("secret scope escalation status = %d body = %s", res.Code, res.Body.String())
-	}
-	if !strings.Contains(res.Body.String(), "permission_escalation") {
-		t.Fatalf("unexpected response: %s", res.Body.String())
+	for _, serviceType := range []string{"worker", "encoder_recorder"} {
+		req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"`+serviceType+`","node_id":"`+serviceType+`-01","name":"Node 01","public_url":"https://node.example.com","version":"0.1.0"}`))
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusForbidden {
+			t.Fatalf("%s secret disclosure escalation status = %d body = %s", serviceType, res.Code, res.Body.String())
+		}
+		if !strings.Contains(res.Body.String(), "permission_escalation") {
+			t.Fatalf("%s unexpected response: %s", serviceType, res.Body.String())
+		}
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api-tokens", nil)
@@ -11784,8 +12065,24 @@ func TestCreateNodeRegistrationTokenRejectsSecretScopeEscalation(t *testing.T) {
 	}
 }
 
+func TestValidateNodeConfigurationSecretPermissions(t *testing.T) {
+	for _, serviceType := range []string{"worker", "encoder_recorder"} {
+		if err := validateNodeConfigurationSecretPermissions([]string{"api_tokens.create"}, serviceType); !errors.Is(err, store.ErrPermissionEscalation) {
+			t.Fatalf("%s without secrets.update error = %v", serviceType, err)
+		}
+		if err := validateNodeConfigurationSecretPermissions([]string{"secrets.update"}, serviceType); err != nil {
+			t.Fatalf("%s with secrets.update error = %v", serviceType, err)
+		}
+	}
+	for _, serviceType := range []string{"discord_bot", "observability"} {
+		if err := validateNodeConfigurationSecretPermissions([]string{"api_tokens.create"}, serviceType); err != nil {
+			t.Fatalf("%s should not require signing-key disclosure permission: %v", serviceType, err)
+		}
+	}
+}
+
 func TestCreateDiscordNodeRegistrationTokenRequiresStartPermission(t *testing.T) {
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "limited", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
 		t.Fatal(err)
@@ -11826,9 +12123,10 @@ func TestCreateDiscordNodeRegistrationTokenRequiresStartPermission(t *testing.T)
 }
 
 func TestCreateWorkerNodeRegistrationTokenIncludesObservabilityIngest(t *testing.T) {
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY", "test-stream-ingest-signing-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "secrets.update"}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
@@ -13320,7 +13618,7 @@ func registerObservabilityNodeForTest(t *testing.T, auth *store.MemoryAuthStore,
 
 func registerObservabilityNodeWithTokenForTest(t *testing.T, auth *store.MemoryAuthStore, token store.ServiceToken, publicURL string) store.RegisteredService {
 	t.Helper()
-	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key")
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 	t.Setenv("AUTOSTREAM_SERVICE_ALLOWED_HOSTS", "127.0.0.1")
 	service := registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
 		ServiceID:   "observability-01",
@@ -13328,7 +13626,7 @@ func registerObservabilityNodeWithTokenForTest(t *testing.T, auth *store.MemoryA
 		ServiceName: "Observability",
 		PublicURL:   publicURL,
 	})
-	ciphertext, nonce, err := security.EncryptSecret(token.RawToken, "test-secret-encryption-key")
+	ciphertext, nonce, err := security.EncryptSecret(token.RawToken, "test-secret-encryption-key-32-bytes")
 	if err != nil {
 		t.Fatal(err)
 	}

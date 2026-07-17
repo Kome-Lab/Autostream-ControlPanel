@@ -23,10 +23,10 @@ import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 
 const nodeTypes = [
-  { value: "worker", label: "Worker Node Agent", defaultPort: 8081 },
-  { value: "encoder_recorder", label: "Encoder / Recorder Node Agent", defaultPort: 8082 },
+  { value: "worker", label: "Worker Node Agent", defaultPort: 8084 },
+  { value: "encoder_recorder", label: "Encoder / Recorder Node Agent", defaultPort: 8081 },
   { value: "discord_bot", label: "Discord Bot Node Agent", defaultPort: 8083 },
-  { value: "observability", label: "Observability Node Agent", defaultPort: 8084 },
+  { value: "observability", label: "Observability Node Agent", defaultPort: 8082 },
 ];
 
 type NodeConfigurationResponse = {
@@ -62,6 +62,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   const timezone = appSettings.data?.timezone;
   const [nodeType, setNodeType] = useState("worker");
   const selectedType = nodeTypes.find((type) => type.value === nodeType) ?? nodeTypes[0];
+  const runtimeSecretsRequired = nodeType === "encoder_recorder";
   const [nodeID, setNodeID] = useState("worker-tokyo-01");
   const [name, setName] = useState("東京本社 Worker 01");
   const [host, setHost] = useState("worker-tokyo-01.example.jp");
@@ -78,7 +79,10 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 
   const allowed = hasPermission(currentUser.data, "api_tokens.create");
   const canRotateRuntimeToken = hasPermission(currentUser.data, "api_tokens.revoke");
+  const canResolveRuntimeSecrets = hasPermission(currentUser.data, "secrets.update");
   const canDeleteNode = hasPermission(currentUser.data, "services.disable");
+  const createIncludesManagedSecret = nodeType === "worker" || nodeType === "encoder_recorder" || allowRuntimeSecrets;
+  const canCreateNode = allowed && (!createIncludesManagedSecret || canResolveRuntimeSecrets);
   const nodeApiUrl = useMemo(() => {
     const scheme = sslEnabled ? "https" : "http";
     const normalizedHost = host.trim();
@@ -105,7 +109,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
         host,
         port: Number.parseInt(port, 10),
         ssl_enabled: sslEnabled,
-        allow_runtime_secrets: allowRuntimeSecrets,
+        allow_runtime_secrets: runtimeSecretsRequired || allowRuntimeSecrets,
         allow_remediation: allowRemediation,
       }),
     onSuccess: async (data) => {
@@ -160,6 +164,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 
   const handleTypeChange = (value: string) => {
     setNodeType(value);
+    setAllowRuntimeSecrets(value === "encoder_recorder");
     const nextType = nodeTypes.find((type) => type.value === value);
     if (nextType) {
       setPort(String(nextType.defaultPort));
@@ -272,17 +277,20 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
       cell: ({ row }) => {
         const node = row.original;
         const nodeID = nodeIdentity(node);
+        const nodeConfigurationIncludesSigningKey = node.service_type === "worker" || node.service_type === "encoder_recorder";
+        const canManageNodeTokens = canRotateRuntimeToken && (!nodeConfigurationIncludesSigningKey || canResolveRuntimeSecrets);
+        const canRegenerateConfigureToken = allowed && canManageNodeTokens;
         return (
           <div className="flex min-w-52 flex-wrap items-center gap-2">
             <Button variant="outline" size="icon-sm" aria-label="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
               <FileCode2 />
             </Button>
-            <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} disabled={!allowed || regenerateConfigureToken.isPending}>
+            <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} {...guardedButtonProps(canRegenerateConfigureToken)} disabled={!canRegenerateConfigureToken || regenerateConfigureToken.isPending}>
               <KeyRound />
             </Button>
-            <RoleGuard allowed={canRotateRuntimeToken}>
+            <RoleGuard allowed={canManageNodeTokens}>
               <DangerConfirm title={`${node.service_name} のRuntime Tokenを再生成しますか`} description="既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。" onConfirm={() => rotateRuntimeToken.mutate(nodeID)} actionLabel="再生成">
-                <Button variant="outline" size="icon-sm" aria-label="Runtime Tokenを再生成" {...guardedButtonProps(canRotateRuntimeToken)} disabled={!canRotateRuntimeToken || rotateRuntimeToken.isPending}>
+                <Button variant="outline" size="icon-sm" aria-label="Runtime Tokenを再生成" {...guardedButtonProps(canManageNodeTokens)} disabled={!canManageNodeTokens || rotateRuntimeToken.isPending}>
                   <RotateCw />
                 </Button>
               </DangerConfirm>
@@ -371,18 +379,19 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             <div className="text-muted-foreground">バージョン、OS、ArchitectureはConfigure実行時または起動後のHeartbeatで報告されます。CapabilityとメトリクスはHeartbeatで更新されます。</div>
           </div>
           <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={allowRuntimeSecrets} onCheckedChange={(value) => setAllowRuntimeSecrets(value === true)} />
-            {t("runtimeSecrets")}
+            <Checkbox checked={runtimeSecretsRequired || allowRuntimeSecrets} disabled={runtimeSecretsRequired} onCheckedChange={(value) => setAllowRuntimeSecrets(value === true)} />
+            {runtimeSecretsRequired ? "実行時シークレットを自動付与（Encoder / Recorder必須）" : t("runtimeSecrets")}
           </label>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox checked={allowRemediation} onCheckedChange={(value) => setAllowRemediation(value === true)} />
             {t("remediation")}
           </label>
-          <Button className="w-full" disabled={!allowed || createToken.isPending} onClick={() => createToken.mutate()}>
+          <Button className="w-full" disabled={!canCreateNode || createToken.isPending} onClick={() => createToken.mutate()}>
             <KeyRound className="size-4" />
             {createToken.isPending ? "Node設定を発行中..." : "Nodeを作成して設定を発行"}
           </Button>
           {!allowed ? <p className="text-sm text-red-600">{t("roleLimited")}</p> : null}
+          {allowed && !canCreateNode ? <p className="text-sm text-red-600">Worker / Encoderの署名鍵または実行時シークレットを発行するには、シークレット更新権限が必要です。</p> : null}
           {createError ? (
             <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="polite">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -734,6 +743,8 @@ function nodeRegistrationErrorMessage(error: unknown) {
       service_not_found: "対象のNodeが見つかりません。一覧を更新してください。",
       permission_denied: "この操作に必要な権限がありません。Runtime Tokenを再生成できる管理者へ依頼してください。",
       store_node_runtime_token_failed: "Control Panelのenvに AUTOSTREAM_SECRET_ENCRYPTION_KEY が設定されていない、または暗号化設定が不正です。設定後にControl Panelを再起動してください。",
+      stream_ingest_signing_key_required: "Control Panelのenvに AUTOSTREAM_STREAM_INGEST_SIGNING_KEY を設定して再起動してから、Worker / Encoder Nodeを作成してください。",
+      stream_ingest_signing_key_invalid: "AUTOSTREAM_STREAM_INGEST_SIGNING_KEY は32バイト以上のランダム値にしてください。CHANGE_ME等のプレースホルダーは使用できません。",
       create_node_configure_token_failed: "Configure Tokenの保存に失敗しました。database接続とControl Panelのログを確認してください。",
       create_node_registration_token_failed: "Node Runtime Tokenの作成に失敗しました。Control Panelのログを確認してください。",
       rotate_node_runtime_token_failed: "Node Runtime Tokenの再生成に失敗しました。Control Panelのログを確認してください。",

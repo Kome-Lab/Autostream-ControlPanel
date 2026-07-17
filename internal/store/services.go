@@ -123,6 +123,10 @@ type ServiceRuntimeReport struct {
 	Arch      string
 }
 
+type NodeTokenSealer func(rawToken string) (ciphertext, nonce string, err error)
+
+var errNodeTokenSealerRequired = errors.New("node token sealer is required")
+
 type NodeAgentAPI struct {
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
@@ -149,6 +153,7 @@ type ServiceRegistryStore interface {
 	ListServiceTokens(ctx context.Context) ([]ServiceToken, error)
 	RevokeServiceToken(ctx context.Context, id string) error
 	RotateServiceToken(ctx context.Context, id string) (ServiceToken, error)
+	RotateServiceNodeToken(ctx context.Context, serviceID, expectedTokenID string, seal NodeTokenSealer) (ServiceToken, RegisteredService, error)
 	AuthenticateServiceToken(ctx context.Context, rawToken, requiredScope string) (ServiceToken, error)
 	PrecreateService(ctx context.Context, token ServiceToken, registration ServiceRegistration) (RegisteredService, error)
 	RegisterService(ctx context.Context, token ServiceToken, registration ServiceRegistration) (RegisteredService, error)
@@ -156,6 +161,7 @@ type ServiceRegistryStore interface {
 	UpdateServiceRuntimeReport(ctx context.Context, report ServiceRuntimeReport) (RegisteredService, error)
 	SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error)
 	ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error)
+	ConfigureServiceNode(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, report ServiceRuntimeReport, seal NodeTokenSealer) (ServiceToken, RegisteredService, error)
 	SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error)
 	ListServices(ctx context.Context) ([]RegisteredService, error)
 	ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error)
@@ -293,6 +299,143 @@ func (s MariaDBAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 		return ServiceToken{}, err
 	}
 	return token, nil
+}
+
+func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID, expectedTokenID string, seal NodeTokenSealer) (ServiceToken, RegisteredService, error) {
+	if seal == nil {
+		return ServiceToken{}, RegisteredService{}, errNodeTokenSealerRequired
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	expectedTokenID = strings.TrimSpace(expectedTokenID)
+	if serviceID == "" || expectedTokenID == "" {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	defer tx.Rollback()
+
+	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	if err == sql.ErrNoRows {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if service.TokenID != expectedTokenID {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+
+	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, expectedTokenID)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if service.ServiceType != oldToken.ServiceType {
+		return ServiceToken{}, RegisteredService{}, ErrForbidden
+	}
+
+	now := time.Now().UTC()
+	token, scopesJSON, err := newRotatedServiceToken(oldToken, now)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	ciphertext, nonce, err := seal(token.RawToken)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, scopesJSON, token.CreatedAt); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`, token.ID, ciphertext, nonce, now, now, service.ServiceID, oldToken.ID)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if affected != 1 {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if err := revokeServiceTokenIfUnreferencedInTx(ctx, tx, oldToken.ID, now); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+
+	service.TokenID = token.ID
+	service.NodeTokenCiphertext = ciphertext
+	service.NodeTokenNonce = nonce
+	service.NodeTokenRotatedAt = &now
+	service.UpdatedAt = now
+	if err := tx.Commit(); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	return token, service, nil
+}
+
+func selectActiveServiceTokenForUpdate(ctx context.Context, tx *sql.Tx, id string) (ServiceToken, error) {
+	var token ServiceToken
+	var scopesJSON string
+	var revoked sql.NullTime
+	err := tx.QueryRowContext(ctx, `SELECT id, service_type, scopes, revoked_at, created_at FROM service_tokens WHERE id = ? FOR UPDATE`, id).Scan(&token.ID, &token.ServiceType, &scopesJSON, &revoked, &token.CreatedAt)
+	if err == sql.ErrNoRows || revoked.Valid {
+		return ServiceToken{}, ErrNotFound
+	}
+	if err != nil {
+		return ServiceToken{}, err
+	}
+	if err := json.Unmarshal([]byte(scopesJSON), &token.Scopes); err != nil {
+		return ServiceToken{}, err
+	}
+	return token, nil
+}
+
+func newRotatedServiceToken(oldToken ServiceToken, now time.Time) (ServiceToken, string, error) {
+	raw, err := security.RandomToken(32)
+	if err != nil {
+		return ServiceToken{}, "", err
+	}
+	token := ServiceToken{
+		ID:          newUUID(),
+		ServiceType: oldToken.ServiceType,
+		Scopes:      append([]string(nil), oldToken.Scopes...),
+		RawToken:    "ast_svc_" + raw,
+		CreatedAt:   now,
+	}
+	token.TokenHash = security.HashToken(token.RawToken)
+	scopesJSON, err := json.Marshal(token.Scopes)
+	if err != nil {
+		return ServiceToken{}, "", err
+	}
+	return token, string(scopesJSON), nil
+}
+
+func revokeServiceTokenInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, `UPDATE service_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, now, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func revokeServiceTokenIfUnreferencedInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+	var serviceID string
+	err := tx.QueryRowContext(ctx, `SELECT service_id FROM services WHERE token_id = ? LIMIT 1 FOR UPDATE`, id).Scan(&serviceID)
+	if err == nil {
+		return nil
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	return revokeServiceTokenInTx(ctx, tx, id, now)
 }
 
 func (s MariaDBAuthStore) AuthenticateServiceToken(ctx context.Context, rawToken, requiredScope string) (ServiceToken, error) {
@@ -545,6 +688,87 @@ func (s MariaDBAuthStore) ConsumeServiceConfigureToken(ctx context.Context, serv
 		return RegisteredService{}, err
 	}
 	return s.getService(ctx, serviceID)
+}
+
+func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, report ServiceRuntimeReport, seal NodeTokenSealer) (ServiceToken, RegisteredService, error) {
+	if seal == nil {
+		return ServiceToken{}, RegisteredService{}, errNodeTokenSealerRequired
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	now = now.UTC()
+	report.ServiceID = serviceID
+	report = normalizeServiceRuntimeReport(report)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	defer tx.Rollback()
+
+	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	if err == sql.ErrNoRows {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	var configureTokenHash string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(configure_token_hash, '') FROM services WHERE service_id = ?`, serviceID).Scan(&configureTokenHash); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if configureTokenHash == "" || service.ConfigureTokenExpiresAt == nil || service.ConfigureTokenUsedAt != nil || !now.Before(*service.ConfigureTokenExpiresAt) || !security.VerifyTokenHash(rawConfigureToken, configureTokenHash) {
+		return ServiceToken{}, RegisteredService{}, ErrUnauthorized
+	}
+
+	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if service.ServiceType != oldToken.ServiceType {
+		return ServiceToken{}, RegisteredService{}, ErrForbidden
+	}
+	token, scopesJSON, err := newRotatedServiceToken(oldToken, now)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	ciphertext, nonce, err := seal(token.RawToken)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, scopesJSON, token.CreatedAt); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, configure_token_used_at = ?, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`,
+		report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, token.ID, ciphertext, nonce, now, now, now, serviceID, oldToken.ID)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	if affected != 1 {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if err := revokeServiceTokenIfUnreferencedInTx(ctx, tx, oldToken.ID, now); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+
+	service = applyServiceRuntimeReport(service, report, now)
+	service.TokenID = token.ID
+	service.NodeTokenCiphertext = ciphertext
+	service.NodeTokenNonce = nonce
+	service.ConfigureTokenUsedAt = &now
+	service.NodeTokenRotatedAt = &now
+	service.UpdatedAt = now
+	if err := tx.Commit(); err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	return token, service, nil
 }
 
 func (s MariaDBAuthStore) SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error) {
@@ -1218,6 +1442,36 @@ func normalizeServiceRuntimeReport(report ServiceRuntimeReport) ServiceRuntimeRe
 	report.OS = truncateServiceReportedValue(strings.TrimSpace(report.OS), 80)
 	report.Arch = truncateServiceReportedValue(strings.TrimSpace(report.Arch), 80)
 	return report
+}
+
+func applyServiceRuntimeReport(service RegisteredService, report ServiceRuntimeReport, now time.Time) RegisteredService {
+	if service.Status == "pending" {
+		service.Status = "registered"
+	}
+	if report.Version != "" {
+		service.Version = report.Version
+		service.ReportedVersion = report.Version
+	}
+	if report.Commit != "" {
+		service.ReportedCommit = report.Commit
+	}
+	if report.BuildDate != "" {
+		service.ReportedBuildDate = report.BuildDate
+	}
+	if report.Hostname != "" {
+		service.ReportedHostname = report.Hostname
+	}
+	if report.OS != "" {
+		service.ReportedOS = report.OS
+	}
+	if report.Arch != "" {
+		service.ReportedArch = report.Arch
+	}
+	if report.Version != "" || report.Commit != "" || report.BuildDate != "" || report.Hostname != "" || report.OS != "" || report.Arch != "" {
+		service.LastReportedAt = &now
+	}
+	service.UpdatedAt = now
+	return service
 }
 
 func truncateServiceReportedValue(value string, max int) string {

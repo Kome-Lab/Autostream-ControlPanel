@@ -3,7 +3,11 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
+	"time"
+
+	"github.com/example/autostream-control-panel/internal/security"
 )
 
 func TestRegisterServiceRejectsServiceIDTakeoverByDifferentToken(t *testing.T) {
@@ -136,5 +140,185 @@ func TestHeartbeatWithoutCurrentStreamPreservesAssignment(t *testing.T) {
 	}
 	if svc.Metrics["encoder.process_alive"] != 0 {
 		t.Fatalf("heartbeat metrics were not stored: %#v", svc.Metrics)
+	}
+}
+
+func TestRotateServiceNodeTokenSealerFailureDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "worker", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "worker-atomic", ServiceType: "worker", ServiceName: "Atomic Worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate service: %v", err)
+	}
+	if _, err := auth.SetServiceNodeTokenSecret(ctx, "worker-atomic", "old-ciphertext", "old-nonce"); err != nil {
+		t.Fatalf("set initial node token secret: %v", err)
+	}
+	beforeService, err := auth.GetService(ctx, "worker-atomic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeTokens, err := auth.ListServiceTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sealErr := errors.New("seal failed")
+	if _, _, err := auth.RotateServiceNodeToken(ctx, "worker-atomic", oldToken.ID, func(string) (string, string, error) {
+		return "", "", sealErr
+	}); !errors.Is(err, sealErr) {
+		t.Fatalf("expected sealer error, got %v", err)
+	}
+
+	afterService, err := auth.GetService(ctx, "worker-atomic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterTokens, err := auth.ListServiceTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterService, beforeService) {
+		t.Fatalf("service mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeService, afterService)
+	}
+	if !reflect.DeepEqual(afterTokens, beforeTokens) {
+		t.Fatalf("tokens mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeTokens, afterTokens)
+	}
+}
+
+func TestRotateServiceNodeTokenPreservesSharedLegacyToken(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "worker", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, serviceID := range []string{"worker-shared-a", "worker-shared-b"} {
+		if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: serviceID, ServiceType: "worker", ServiceName: serviceID, PublicURL: "https://" + serviceID + ".example.com", Capabilities: map[string]any{}}); err != nil {
+			t.Fatalf("precreate %s: %v", serviceID, err)
+		}
+	}
+	newToken, rotated, err := auth.RotateServiceNodeToken(ctx, "worker-shared-a", oldToken.ID, func(string) (string, string, error) {
+		return "new-ciphertext", "new-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("rotate shared legacy token: %v", err)
+	}
+	sibling, err := auth.GetService(ctx, "worker-shared-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.TokenID != newToken.ID || sibling.TokenID != oldToken.ID {
+		t.Fatalf("only the target service should detach: rotated=%#v sibling=%#v", rotated, sibling)
+	}
+	if authenticated, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); err != nil || authenticated.ID != oldToken.ID {
+		t.Fatalf("shared legacy token must remain active for sibling: token=%#v err=%v", authenticated, err)
+	}
+}
+
+func TestConfigureServiceNodeSealerFailureDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "encoder_recorder", []string{"service.register", "service.heartbeat", "service.secret.resolve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "encoder-atomic", ServiceType: "encoder_recorder", ServiceName: "Atomic Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate service: %v", err)
+	}
+	configureToken := "configure-once"
+	now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := auth.SetServiceConfigureToken(ctx, "encoder-atomic", security.HashToken(configureToken), now.Add(time.Hour)); err != nil {
+		t.Fatalf("set configure token: %v", err)
+	}
+	beforeService, err := auth.GetService(ctx, "encoder-atomic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeTokens, err := auth.ListServiceTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sealErr := errors.New("seal failed")
+	if _, _, err := auth.ConfigureServiceNode(ctx, "encoder-atomic", configureToken, now, ServiceRuntimeReport{Version: "1.2.3", Hostname: "encoder-host"}, func(string) (string, string, error) {
+		return "", "", sealErr
+	}); !errors.Is(err, sealErr) {
+		t.Fatalf("expected sealer error, got %v", err)
+	}
+
+	afterService, err := auth.GetService(ctx, "encoder-atomic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterTokens, err := auth.ListServiceTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterService, beforeService) {
+		t.Fatalf("service mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeService, afterService)
+	}
+	if !reflect.DeepEqual(afterTokens, beforeTokens) {
+		t.Fatalf("tokens mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeTokens, afterTokens)
+	}
+}
+
+func TestConfigureServiceNodeCommitsTokenSecretReportAndConsumptionTogether(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "encoder_recorder", []string{"service.register", "service.heartbeat", "service.secret.resolve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "encoder-configure", ServiceType: "encoder_recorder", ServiceName: "Configured Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate service: %v", err)
+	}
+	configureToken := "configure-once"
+	now := time.Date(2026, time.July, 17, 13, 0, 0, 0, time.UTC)
+	if _, err := auth.SetServiceConfigureToken(ctx, "encoder-configure", security.HashToken(configureToken), now.Add(time.Hour)); err != nil {
+		t.Fatalf("set configure token: %v", err)
+	}
+	var sealedRawToken string
+	newToken, service, err := auth.ConfigureServiceNode(ctx, "encoder-configure", configureToken, now, ServiceRuntimeReport{
+		Version: "1.2.3", Commit: "abc123", BuildDate: "2026-07-17", Hostname: "encoder-host", OS: "linux", Arch: "amd64",
+	}, func(rawToken string) (string, string, error) {
+		sealedRawToken = rawToken
+		return "sealed-runtime-token", "runtime-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("configure service node: %v", err)
+	}
+	if sealedRawToken == "" || sealedRawToken != newToken.RawToken || newToken.ID == oldToken.ID {
+		t.Fatalf("unexpected rotated token: old=%#v new=%#v sealed=%q", oldToken, newToken, sealedRawToken)
+	}
+	if service.TokenID != newToken.ID || service.NodeTokenCiphertext != "sealed-runtime-token" || service.NodeTokenNonce != "runtime-nonce" {
+		t.Fatalf("runtime token secret was not committed with service: %#v", service)
+	}
+	if service.ConfigureTokenUsedAt == nil || !service.ConfigureTokenUsedAt.Equal(now) || service.NodeTokenRotatedAt == nil || !service.NodeTokenRotatedAt.Equal(now) {
+		t.Fatalf("configure consumption/rotation timestamps are wrong: %#v", service)
+	}
+	if service.Status != "registered" || service.Version != "1.2.3" || service.ReportedVersion != "1.2.3" || service.ReportedCommit != "abc123" || service.ReportedBuildDate != "2026-07-17" || service.ReportedHostname != "encoder-host" || service.ReportedOS != "linux" || service.ReportedArch != "amd64" {
+		t.Fatalf("runtime report was not committed: %#v", service)
+	}
+	if service.LastReportedAt == nil || !service.LastReportedAt.Equal(now) || !service.UpdatedAt.Equal(now) {
+		t.Fatalf("runtime report timestamps are wrong: %#v", service)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("old runtime token should be revoked, got %v", err)
+	}
+	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "service.heartbeat"); err != nil || authenticated.ID != newToken.ID {
+		t.Fatalf("new runtime token should authenticate: token=%#v err=%v", authenticated, err)
+	}
+	sealerCalled := false
+	if _, _, err := auth.ConfigureServiceNode(ctx, "encoder-configure", configureToken, now.Add(time.Second), ServiceRuntimeReport{}, func(string) (string, string, error) {
+		sealerCalled = true
+		return "unexpected", "unexpected", nil
+	}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("configure token reuse should be rejected, got %v", err)
+	}
+	if sealerCalled {
+		t.Fatal("sealer must not run for an already-consumed configure token")
 	}
 }
