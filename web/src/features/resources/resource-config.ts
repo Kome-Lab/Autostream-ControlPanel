@@ -12,6 +12,7 @@ export type ResourceDefinition = {
     create?: string;
     update?: string;
     delete?: string;
+    test?: string;
   };
 };
 
@@ -244,7 +245,7 @@ export const resourcePages = {
         description: "Discord、Slack、メールなどの通知先と対象イベントです。",
         form: "notification-channel",
         deletable: true,
-        permissions: { read: "notification_channels.read", create: "notification_channels.create", update: "notification_channels.update", delete: "notification_channels.delete" },
+        permissions: { read: "notification_channels.read", create: "notification_channels.create", update: "notification_channels.update", delete: "notification_channels.delete", test: "notification_channels.test" },
         createTemplate: { name: "ops-slack", type: "slack", webhook_url: "https://hooks.slack.com/services/...", enabled: true },
       },
     ],

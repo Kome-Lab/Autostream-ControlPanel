@@ -1547,8 +1547,9 @@ func validateServiceScopes(scopes []string) error {
 	allowed := map[string]bool{
 		"service.register": true, "service.heartbeat": true, "service.logs.write": true, "service.status.write": true, "service.config.read": true, "service.secret.resolve": true,
 		"worker.events.write": true, "encoder.status.write": true, "discord.status.write": true, "observability.ingest": true,
-		"streams.start":       true,
-		"remediation.execute": true,
+		"notifications.email.send": true,
+		"streams.start":            true,
+		"remediation.execute":      true,
 	}
 	for _, scope := range scopes {
 		if !allowed[scope] {

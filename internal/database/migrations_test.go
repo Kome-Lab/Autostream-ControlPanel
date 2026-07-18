@@ -133,3 +133,14 @@ func TestUserAvatarMigrationUsesBoundedBinaryStorageAndUserCascade(t *testing.T)
 		}
 	}
 }
+
+func TestAuditResultMigrationAcceptsNonBinaryAuditOutcomes(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/038_audit_result.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToUpper(string(body))
+	if !strings.Contains(text, "ALTER TABLE AUDIT_LOGS") || !strings.Contains(text, "MODIFY COLUMN RESULT VARCHAR(32) NOT NULL") {
+		t.Fatalf("audit result migration must replace the success/failure enum with a bounded string column:\n%s", string(body))
+	}
+}

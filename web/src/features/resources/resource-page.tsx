@@ -2,7 +2,7 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { Check, Copy, LoaderCircle, Pencil, Plus, RefreshCcw, Send, Trash2 } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,13 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
 import { hasPermission } from "@/lib/auth/permissions";
+import {
+  buildNotificationChannelPayload,
+  normalizeNotificationChannelEventTypeFilter,
+  notificationChannelTestFeedback,
+  notificationChannelTypeLabel,
+  type NotificationChannelTestFeedback,
+} from "@/lib/notification-channel";
 import {
   oauthAccountConfiguredName,
   oauthAccountDisplayName,
@@ -85,6 +92,7 @@ type ResourceAccess = {
   create: boolean;
   update: boolean;
   delete: boolean;
+  test: boolean;
 };
 
 function resourceAccess(resource: ResourceDefinition, currentUser: Parameters<typeof hasPermission>[0]): ResourceAccess {
@@ -95,6 +103,7 @@ function resourceAccess(resource: ResourceDefinition, currentUser: Parameters<ty
     create: allowed(resource.permissions?.create),
     update: allowed(resource.permissions?.update),
     delete: allowed(resource.permissions?.delete),
+    test: allowed(resource.permissions?.test),
   };
 }
 
@@ -183,6 +192,7 @@ function GenericResourcePanel({ resource, access }: { resource: ResourceDefiniti
               deletePending={deleteMutation.isPending}
               canEdit={access.update}
               canDelete={access.delete}
+              canTest={access.test}
               onDelete={(row) => {
                 setDeleteMessage("");
                 deleteMutation.mutate(row);
@@ -319,7 +329,7 @@ function ServiceHealthResourcePanel({ resource, access }: { resource: ResourceDe
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} onDelete={() => undefined} />}
+        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} onDelete={() => undefined} />}
       </CardContent>
     </Card>
   );
@@ -1063,22 +1073,22 @@ function RoleForm({ disabled, submit, initial, submitLabel }: { disabled: boolea
 
 function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
   const row = initial || {};
+  const editing = Boolean(initial);
   const [name, setName] = useState(() => rowString(row, ["name"]) || "ops-discord");
   const [type, setType] = useState(() => rowString(row, ["type"]) || "discord");
   const [webhookURL, setWebhookURL] = useState("");
-  const [emailRecipients, setEmailRecipients] = useState(() => stringListSetting(rowValue(row, ["email_recipients"])).join("\n") || "ops@example.jp");
-  const [smtpHost, setSMTPHost] = useState(() => rowString(row, ["smtp_host"]));
-  const [smtpPort, setSMTPPort] = useState(() => rowString(row, ["smtp_port"]) || "587");
-  const [smtpTLS, setSMTPTLS] = useState(() => rowValue(row, ["smtp_tls"]) !== false);
-  const [smtpFrom, setSMTPFrom] = useState(() => rowString(row, ["smtp_from"]));
-  const [smtpUsername, setSMTPUsername] = useState(() => rowString(row, ["smtp_username"]));
-  const [smtpPassword, setSMTPPassword] = useState("");
-  const [severityFilter, setSeverityFilter] = useState<string[]>(() => stringListSetting(rowValue(row, ["severity_filter"])).length ? stringListSetting(rowValue(row, ["severity_filter"])) : ["critical", "error", "warning"]);
-  const [eventTypeFilter, setEventTypeFilter] = useState<string[]>(() => stringListSetting(rowValue(row, ["event_type_filter"])).length ? stringListSetting(rowValue(row, ["event_type_filter"])) : ["incident.opened"]);
+  const [emailRecipients, setEmailRecipients] = useState(() => editing ? "" : "ops@example.jp");
+  const [severityFilter, setSeverityFilter] = useState<string[]>(() => editing ? stringListSetting(rowValue(row, ["severity_filter"])) : ["critical", "error", "warning"]);
+  const [eventTypeFilter, setEventTypeFilter] = useState<string[]>(() => {
+    const configured = editing ? stringListSetting(rowValue(row, ["event_type_filter"])) : ["incident.opened"];
+    return normalizeNotificationChannelEventTypeFilter(configured);
+  });
   const [enabled, setEnabled] = useState(() => rowValue(row, ["enabled"]) !== false);
   const emailRecipientList = splitList(emailRecipients);
-  const webhookRequired = type === "discord" || type === "slack";
+  const webhookRequired = type !== "email";
   const emailRequired = type === "email";
+  const maskedWebhookURL = rowString(row, ["masked_webhook_url"]);
+  const maskedEmailTarget = rowString(row, ["masked_email_target"]);
 
   return (
     <form
@@ -1086,19 +1096,14 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
       onSubmit={(event) => {
         event.preventDefault();
         submit(
-          compactRecord({
+          buildNotificationChannelPayload({
+            editing,
             name,
             type,
-            webhook_url: webhookRequired ? webhookURL || undefined : undefined,
-            email_recipients: emailRequired ? emailRecipientList : undefined,
-            smtp_host: emailRequired ? smtpHost : "",
-            smtp_port: emailRequired ? numberValue(smtpPort, 587) : undefined,
-            smtp_tls: emailRequired ? smtpTLS : undefined,
-            smtp_from: emailRequired ? smtpFrom : "",
-            smtp_username: emailRequired ? smtpUsername : "",
-            smtp_password: emailRequired ? smtpPassword || undefined : undefined,
-            severity_filter: severityFilter,
-            event_type_filter: eventTypeFilter,
+            webhookURL,
+            emailRecipients: emailRecipientList,
+            severityFilter,
+            eventTypeFilter,
             enabled,
           }),
         );
@@ -1110,35 +1115,38 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
           label="通知方式"
           value={type}
           onChange={setType}
+          disabled={editing}
           options={[
             { value: "discord", label: "Discord Webhook" },
             { value: "slack", label: "Slack Webhook" },
+            { value: "generic", label: "Generic Webhook" },
             { value: "email", label: "メール" },
           ]}
         />
         {webhookRequired ? (
           <TextField
-            label="Webhook URL"
+            label={editing ? "Webhook URL（変更する場合のみ入力）" : "Webhook URL"}
             value={webhookURL}
             onChange={setWebhookURL}
             type="password"
-            description={type === "slack" ? "Slack は hooks.slack.com のIncoming Webhook URLを指定します。" : "保存後はURLの実値を表示しません。"}
-            required
+            description={editing
+              ? `空欄のまま更新すると現在のURLを保持します。保存済みURLの実値は表示しません。${maskedWebhookURL ? ` 現在: ${maskedWebhookURL}` : ""}`
+              : type === "slack" ? "Slack は hooks.slack.com のIncoming Webhook URLを指定します。" : "保存後はURLの実値を表示しません。"}
+            required={!editing}
           />
         ) : null}
       </div>
       {emailRequired ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field label="送信先メール" description="複数指定する場合は改行またはカンマで区切ります。">
-            <Textarea value={emailRecipients} onChange={(event) => setEmailRecipients(event.target.value)} className="min-h-20" required />
+        <div className="space-y-3">
+          <Field
+            label={editing ? "送信先メール（変更する場合のみ入力）" : "送信先メール"}
+            description={editing ? "空欄のまま更新すると現在の送信先を保持します。複数指定は改行またはカンマで区切ります。" : "複数指定する場合は改行またはカンマで区切ります。"}
+          >
+            <Textarea value={emailRecipients} onChange={(event) => setEmailRecipients(event.target.value)} className="min-h-20" required={!editing} />
           </Field>
-          <TextField label="SMTP Host" value={smtpHost} onChange={setSMTPHost} placeholder="smtp.example.jp" required />
-          <NumberField label="SMTP Port" value={smtpPort} onChange={setSMTPPort} min={1} required />
-          <TextField label="From" value={smtpFrom} onChange={setSMTPFrom} type="email" placeholder="autostream@example.jp" required />
-          <TextField label="SMTP Username" value={smtpUsername} onChange={setSMTPUsername} />
-          <TextField label="SMTP Password" value={smtpPassword} onChange={setSMTPPassword} type="password" description="保存後は再表示されません。" />
-          <div className="md:col-span-2">
-            <SwitchField label="STARTTLSを使用する" checked={smtpTLS} onCheckedChange={setSMTPTLS} />
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+            設定画面の「メールサーバー」で構成した共通SMTP設定を使用します。この通知先ではSMTP認証情報の入力は不要です。
+            {editing && maskedEmailTarget ? ` 現在の送信先: ${maskedEmailTarget}` : ""}
           </div>
         </div>
       ) : null}
@@ -1164,11 +1172,13 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
           { value: "diagnostic.created", label: "診断作成" },
           { value: "remediation.pending_approval", label: "復旧承認待ち" },
           { value: "remediation.executed", label: "復旧実行" },
-          { value: "admin.audit", label: "管理操作" },
         ]}
       />
+      <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+        監査ログへ保存された認証済みユーザー操作とsystem操作は、有効な通知先へ常に送信されます。上の選択項目はインシデント、診断、復旧イベントだけを絞り込みます。
+      </p>
       <SwitchField label="有効化" checked={enabled} onCheckedChange={setEnabled} />
-      <FormActions label={submitLabel} disabled={disabled || (webhookRequired && webhookURL.trim() === "" && !initial) || (emailRequired && (emailRecipientList.length === 0 || smtpHost.trim() === "" || smtpFrom.trim() === ""))} />
+      <FormActions label={submitLabel} disabled={disabled || (webhookRequired && webhookURL.trim() === "" && !editing) || (emailRequired && !editing && emailRecipientList.length === 0)} />
     </form>
   );
 }
@@ -1381,11 +1391,11 @@ function NumberField({
   );
 }
 
-function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[] }) {
+function SelectField({ label, value, onChange, options, disabled = false }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[]; disabled?: boolean }) {
   const selected = options.find((option) => option.value === value);
   return (
     <Field label={label}>
-      <Select value={value} onValueChange={onChange}>
+      <Select value={value} onValueChange={onChange} disabled={disabled}>
         <SelectTrigger className="w-full">
           <span className="min-w-0 truncate">{selected?.label || <SelectValue />}</span>
         </SelectTrigger>
@@ -1789,6 +1799,7 @@ function ResourceTable({
   deletePending,
   canEdit,
   canDelete,
+  canTest,
   onDelete,
 }: {
   rows: ResourceRow[];
@@ -1798,16 +1809,36 @@ function ResourceTable({
   deletePending: boolean;
   canEdit: boolean;
   canDelete: boolean;
+  canTest: boolean;
   onDelete: (row: ResourceRow) => void;
 }) {
   const [copiedID, setCopiedID] = useState("");
+  const [testNotice, setTestNotice] = useState<(NotificationChannelTestFeedback & { id: string; pending?: boolean }) | null>(null);
+  const testMutation = useMutation<NotificationChannelTestFeedback, Error, ResourceRow>({
+    mutationFn: async (row) => {
+      const id = resourceRowID(row);
+      if (!id) throw new Error("notification channel id is required");
+      const response = await apiPost<unknown>(`${resource.path}/${encodeURIComponent(id)}/test`);
+      return notificationChannelTestFeedback(response);
+    },
+    onMutate: (row) => {
+      setTestNotice({ id: resourceRowID(row), ok: false, pending: true, message: "テスト送信中です。" });
+    },
+    onSuccess: (feedback, row) => {
+      setTestNotice({ id: resourceRowID(row), ...feedback });
+    },
+    onError: (error, row) => {
+      setTestNotice({ id: resourceRowID(row), ...notificationChannelTestRequestError(error) });
+    },
+  });
   if (rows.length === 0) {
     return <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">データがありません。</div>;
   }
   const showDelete = Boolean(resource.deletable);
   const showEdit = resourceCanEdit(resource);
+  const showTest = Boolean(resource.permissions?.test);
   const showIDCopy = rows.some((row) => resourceRowID(row));
-  const showActions = showDelete || showEdit || showIDCopy;
+  const showActions = showDelete || showEdit || showTest || showIDCopy;
   const copyRowID = async (id: string) => {
     if (!id || typeof navigator === "undefined" || !navigator.clipboard) return;
     try {
@@ -1827,7 +1858,7 @@ function ResourceTable({
             {columns.map((column) => (
               <TableHead key={column}>{columnLabel(column)}</TableHead>
             ))}
-            {showActions ? <TableHead className="w-40 min-w-40 text-right">操作</TableHead> : null}
+            {showActions ? <TableHead className="w-64 min-w-64 text-right">操作</TableHead> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -1835,16 +1866,34 @@ function ResourceTable({
             <TableRow key={String(row.id || row.name || index)}>
               {columns.map((column) => (
                 <TableCell key={column} className="max-w-[360px] whitespace-normal break-words align-top">
-                  {formatCell(row[column], column, timezone)}
+                  {formatResourceCell(resource, row[column], column, timezone)}
                 </TableCell>
               ))}
               {showActions ? (
-                <TableCell className="w-40 min-w-40 text-right">
+                <TableCell className="w-64 min-w-64 text-right">
                   <div className="flex justify-end gap-1">
                     {showIDCopy ? <CopyResourceIDButton id={resourceRowID(row)} copied={copiedID === resourceRowID(row)} onCopy={copyRowID} /> : null}
                     {showEdit ? <EditResourceButton resource={resource} row={row} disabled={!canEdit} /> : null}
+                    {showTest ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!resourceRowID(row) || !canTest || testMutation.isPending}
+                        title={!canTest ? requiredPermissionText(resource.permissions?.test) : undefined}
+                        aria-label={`${resourceRowLabel(row)} へテスト送信`}
+                        onClick={() => testMutation.mutate(row)}
+                      >
+                        {testMutation.isPending && testNotice?.id === resourceRowID(row) ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
+                        {testMutation.isPending && testNotice?.id === resourceRowID(row) ? "送信中" : "テスト送信"}
+                      </Button>
+                    ) : null}
                     {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onDelete={onDelete} /> : null}
                   </div>
+                  {testNotice?.id === resourceRowID(row) ? (
+                    <p role={testNotice.pending || testNotice.ok ? "status" : "alert"} className={`mt-2 text-left text-xs ${testNotice.pending ? "text-muted-foreground" : testNotice.ok ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}`}>
+                      {testNotice.message}
+                    </p>
+                  ) : null}
                 </TableCell>
               ) : null}
             </TableRow>
@@ -1906,7 +1955,7 @@ function EditResourceButton({ resource, row, disabled }: { resource: ResourceDef
 }
 
 function resourceCanEdit(resource: ResourceDefinition) {
-  return Boolean(resource.form && !["security-settings", "notification-channel"].includes(resource.form));
+  return Boolean(resource.form && resource.form !== "security-settings");
 }
 
 function resourceWriteErrorMessage(resource: ResourceDefinition, error: Error, action: "作成" | "更新") {
@@ -1935,8 +1984,8 @@ function resourceWriteErrorMessage(resource: ResourceDefinition, error: Error, a
   if (resource.path === "/observability/notification-channels") {
     const messages: Record<string, string> = {
       invalid_notification_channel: "通知先の必須項目が不足しています。通知方式ごとの入力内容を確認してください。",
-      invalid_webhook_url: "Webhook URLを利用できません。DiscordまたはSlackの正規HTTPS URLを指定してください。",
-      invalid_smtp_channel: "SMTP設定を利用できません。送信先、Host、From、TLS設定を確認してください。",
+      invalid_webhook_url: "Webhook URLを利用できません。通知方式に対応した正規HTTPS URLを指定してください。",
+      invalid_smtp_channel: "共通SMTP設定を利用できません。送信先と「設定 > メールサーバー」の構成を確認してください。",
       secret_encryption_key_required: "Observabilityの秘密情報暗号化キーが未設定です。AUTOSTREAM_SECRET_ENCRYPTION_KEYを設定してObservabilityを再起動してください。",
       observability_auth_failed: "Control PanelとObservabilityのNode Runtime Tokenが一致していません。Observabilityのconfig.ymlを再発行して反映してください。",
       observability_not_configured: "登録済みのObservability Nodeが見つかりません。Node登録、公開URL、config.yml、Service Healthを確認してください。",
@@ -1948,6 +1997,34 @@ function resourceWriteErrorMessage(resource: ResourceDefinition, error: Error, a
     if (messages[error.code || ""]) return messages[error.code || ""];
   }
   return fallback;
+}
+
+function notificationChannelTestRequestError(error: Error): NotificationChannelTestFeedback {
+  if (!(error instanceof APIError)) {
+    return { ok: false, message: "通知テストを送信できませんでした。通信状態を確認してください。" };
+  }
+  const messages: Record<string, string> = {
+    csrf_failed: "ログイン状態が古くなっています。画面を再読み込みしてから再実行してください。",
+    forbidden: "通知テストを送信する権限がありません。",
+    not_found: "通知先が見つかりません。画面を更新してください。",
+    observability_auth_failed: "Control PanelとObservabilityの認証設定を確認してください。",
+    observability_not_configured: "登録済みのObservability Nodeが見つかりません。",
+    observability_rate_limited: "通知テストが集中しています。少し待ってから再実行してください。",
+    observability_request_failed: "Observabilityへ接続できませんでした。Node状態を確認してください。",
+    observability_unavailable: "Observabilityが一時的に利用できません。",
+    rate_limited: "通知が集中しています。少し待ってから再実行してください。",
+    smtp_not_configured: "設定 > メールサーバーで有効なSMTP設定を保存してください。",
+    smtp_requires_tls: "メールサーバーのTLS設定を有効にしてください。",
+    smtp_connect_failed: "メールサーバーへ接続できませんでした。設定と稼働状態を確認してください。",
+    smtp_auth_failed: "メールサーバーの認証に失敗しました。認証設定を確認してください。",
+    smtp_send_failed: "テストメールを送信できませんでした。メールサーバー設定とログを確認してください。",
+    send_failed: "テスト通知を送信できませんでした。通知先設定とログを確認してください。",
+  };
+  const code = error.code || "";
+  if (/^smtp_[a-z0-9_]*_failed$/.test(code)) {
+    return { ok: false, message: "メール送信に失敗しました。メールサーバー設定とログを確認してください。" };
+  }
+  return { ok: false, message: messages[code] || "通知テストを送信できませんでした。" };
 }
 
 function DeleteResourceButton({ row, disabled, permission, onDelete }: { row: ResourceRow; disabled: boolean; permission?: string; onDelete: (row: ResourceRow) => void }) {
@@ -2126,6 +2203,13 @@ function isInternalReferenceColumn(key: string) {
   if (normalized.endsWith("_id")) return true;
   if (normalized.endsWith("_ids")) return true;
   return false;
+}
+
+function formatResourceCell(resource: ResourceDefinition, value: unknown, key = "", timezone?: string): ReactNode {
+  if (resource.path === "/observability/notification-channels" && key === "type" && typeof value === "string") {
+    return notificationChannelTypeLabel(value);
+  }
+  return formatCell(value, key, timezone);
 }
 
 function formatCell(value: unknown, key = "", timezone?: string): ReactNode {

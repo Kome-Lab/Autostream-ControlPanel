@@ -1,9 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"mime"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/example/autostream-control-panel/internal/store"
 )
 
 func TestSMTPEnvelopeFromAcceptsDisplayNameAddress(t *testing.T) {
@@ -13,6 +19,48 @@ func TestSMTPEnvelopeFromAcceptsDisplayNameAddress(t *testing.T) {
 	}
 	if got != "no-reply@example.jp" {
 		t.Fatalf("smtpEnvelopeFrom = %q, want address only", got)
+	}
+}
+
+func TestSMTPMailerHonorsContextDeadlineWhileWaitingForGreeting(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		<-release
+	}()
+
+	host, portValue, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err = (SMTPMailer{}).Send(ctx, store.AppSettings{
+		SMTPEnabled: true,
+		SMTPHost:    host,
+		SMTPPort:    port,
+		SMTPFrom:    "noreply@example.jp",
+	}, "", MailMessage{To: "ops@example.jp", Subject: "deadline test", Text: "body"})
+	if err == nil || safeErrorCode(err) != "smtp_dial_failed" {
+		t.Fatalf("SMTPMailer deadline error = %v, safe code = %q", err, safeErrorCode(err))
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("SMTPMailer ignored context deadline: elapsed=%s err=%v", elapsed, err)
 	}
 }
 

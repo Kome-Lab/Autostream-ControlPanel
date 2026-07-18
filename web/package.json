@@ -11,6 +11,7 @@
     "test:auth-redirect": "node --no-warnings --test tests/post-login-redirect.test.mts",
     "test:analytics": "node --no-warnings --test tests/google-analytics.test.mts",
     "test:navigation": "node --no-warnings --test tests/navigation-section.test.mts",
+    "test:notifications": "node --no-warnings --test tests/notification-channel.test.mts",
     "test:preview": "node --no-warnings --test tests/stream-preview.test.mts"
   },
   "dependencies": {

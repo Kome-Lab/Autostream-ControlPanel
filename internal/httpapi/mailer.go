@@ -147,8 +147,23 @@ func (SMTPMailer) Send(ctx context.Context, settings store.AppSettings, password
 		return errSMTPRequiresTLS
 	}
 	addr := net.JoinHostPort(settings.SMTPHost, fmt.Sprintf("%d", settings.SMTPPort))
-	client, err := smtp.Dial(addr)
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
+		return fmt.Errorf("smtp_dial_failed: %w", err)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("smtp_dial_failed: %w", err)
+		}
+	}
+	stopCancel := context.AfterFunc(ctx, func() {
+		_ = conn.SetDeadline(time.Now())
+	})
+	defer stopCancel()
+	client, err := smtp.NewClient(conn, settings.SMTPHost)
+	if err != nil {
+		_ = conn.Close()
 		return fmt.Errorf("smtp_dial_failed: %w", err)
 	}
 	defer client.Close()

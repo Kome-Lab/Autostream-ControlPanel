@@ -55,38 +55,40 @@ const emailChangeChallengeTTL = 30 * time.Minute
 const defaultArchiveRetentionDays = 30
 const maxArchiveRetentionDays = 3650
 const streamPreviewLinkTTL = 12 * time.Hour
+const adminAuditNotificationTimeout = 30 * time.Second
 
 type Server struct {
-	mux               *http.ServeMux
-	handler           http.Handler
-	streams           store.StreamStore
-	auth              store.AuthStore
-	audit             store.AuditStore
-	users             store.UserAdminStore
-	roles             store.RoleStore
-	services          store.ServiceRegistryStore
-	profiles          store.ProfileStore
-	integrations      store.IntegrationStore
-	settings          store.SecuritySettingsStore
-	appSettings       store.AppSettingsStore
-	secrets           store.SecretStore
-	runtimeLeases     store.RuntimeSecretLeaseStore
-	remediation       store.RemediationExecutionStore
-	mfa               store.MFAStore
-	emailChanges      store.EmailChangeStore
-	passkeys          store.PasskeyStore
-	avatars           store.UserAvatarStore
-	oauthLogin        store.OAuthLoginStore
-	oauthVerifier     oauthlogin.Verifier
-	oauthConnector    oauthlogin.Connector
-	mailer            Mailer
-	turnstile         TurnstileVerifier
-	obs               observability.Client
-	dispatcher        serviceDispatcher
-	youtubeLive       ytlive.LiveClient
-	setupToken        string
-	previewSigningKey string
-	loginFailures     *loginFailureLimiter
+	mux                 *http.ServeMux
+	handler             http.Handler
+	streams             store.StreamStore
+	auth                store.AuthStore
+	audit               store.AuditStore
+	users               store.UserAdminStore
+	roles               store.RoleStore
+	services            store.ServiceRegistryStore
+	profiles            store.ProfileStore
+	integrations        store.IntegrationStore
+	settings            store.SecuritySettingsStore
+	appSettings         store.AppSettingsStore
+	secrets             store.SecretStore
+	runtimeLeases       store.RuntimeSecretLeaseStore
+	remediation         store.RemediationExecutionStore
+	mfa                 store.MFAStore
+	emailChanges        store.EmailChangeStore
+	passkeys            store.PasskeyStore
+	avatars             store.UserAvatarStore
+	oauthLogin          store.OAuthLoginStore
+	oauthVerifier       oauthlogin.Verifier
+	oauthConnector      oauthlogin.Connector
+	mailer              Mailer
+	turnstile           TurnstileVerifier
+	obs                 observability.Client
+	dispatcher          serviceDispatcher
+	youtubeLive         ytlive.LiveClient
+	setupToken          string
+	previewSigningKey   string
+	loginFailures       *loginFailureLimiter
+	serviceEmailLimiter *serviceEmailRateLimiter
 }
 
 type serviceDispatcher interface {
@@ -222,7 +224,7 @@ func WithPreviewSigningKey(key string) ServerOption {
 
 func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	defaultOAuth := oauthlogin.HTTPVerifier{}
-	s := &Server{mux: http.NewServeMux(), streams: streams, obs: observability.FromEnv(), dispatcher: servicecall.FromEnv(), youtubeLive: ytlive.LiveAPIClient{}, oauthVerifier: defaultOAuth, oauthConnector: defaultOAuth, turnstile: HTTPSTurnstileVerifier{}, setupToken: os.Getenv("AUTOSTREAM_SETUP_TOKEN"), previewSigningKey: strings.TrimSpace(os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY")), loginFailures: newLoginFailureLimiter()}
+	s := &Server{mux: http.NewServeMux(), streams: streams, obs: observability.FromEnv(), dispatcher: servicecall.FromEnv(), youtubeLive: ytlive.LiveAPIClient{}, oauthVerifier: defaultOAuth, oauthConnector: defaultOAuth, turnstile: HTTPSTurnstileVerifier{}, setupToken: os.Getenv("AUTOSTREAM_SETUP_TOKEN"), previewSigningKey: strings.TrimSpace(os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY")), loginFailures: newLoginFailureLimiter(), serviceEmailLimiter: newServiceEmailRateLimiter(serviceEmailRateLimit, serviceEmailRateWindow)}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -331,6 +333,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /services/observability/signals", s.serviceObservabilitySignal)
 	s.mux.HandleFunc("POST /services/stream-events", s.serviceStreamEvent)
 	s.mux.HandleFunc("POST /services/stream-artifacts", s.serviceStreamArtifacts)
+	s.mux.HandleFunc("POST /services/notifications/email", s.serviceEmailNotification)
 	s.mux.HandleFunc("POST /services/remediation-actions/execute", s.serviceRemediationExecute)
 	s.mux.HandleFunc("POST /api/node-agent/configure", s.nodeAgentConfigure)
 	s.mux.HandleFunc("POST /api/node-agent/heartbeat", s.nodeAgentHeartbeat)
@@ -479,9 +482,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /observability/incidents/{id}/resolve", s.requirePermission("incidents.resolve", s.observabilityPostActionWithAudit("/incidents/{id}/resolve", "incidents.resolve", "incident")))
 	s.mux.HandleFunc("GET /observability/notification-deliveries", s.requirePermission("notification_channels.read", s.observabilityGet("/notification-deliveries")))
 	s.mux.HandleFunc("GET /observability/notification-channels", s.requirePermission("notification_channels.read", s.observabilityGet("/notification-channels")))
-	s.mux.HandleFunc("POST /observability/notification-channels", s.requirePermission("notification_channels.create", s.observabilityPostProxyStatus("/notification-channels", "notification_channels.create", "notification_channel", http.StatusCreated)))
+	s.mux.HandleFunc("POST /observability/notification-channels", s.requirePermission("notification_channels.create", s.observabilityNotificationChannelPostProxyStatus("/notification-channels", "notification_channels.create", "notification_channel", http.StatusCreated)))
 	s.mux.HandleFunc("GET /observability/notification-channels/{id}", s.requirePermission("notification_channels.read", s.observabilityGetAction("/notification-channels/{id}")))
-	s.mux.HandleFunc("PUT /observability/notification-channels/{id}", s.requirePermission("notification_channels.update", s.observabilityPutProxy("/notification-channels/{id}", "notification_channels.update", "notification_channel")))
+	s.mux.HandleFunc("PUT /observability/notification-channels/{id}", s.requirePermission("notification_channels.update", s.observabilityNotificationChannelPutProxy("/notification-channels/{id}", "notification_channels.update", "notification_channel")))
 	s.mux.HandleFunc("DELETE /observability/notification-channels/{id}", s.requirePermission("notification_channels.delete", s.observabilityDeleteProxy("/notification-channels/{id}", "notification_channels.delete", "notification_channel")))
 	s.mux.HandleFunc("POST /observability/notification-channels/{id}/test", s.requirePermission("notification_channels.test", s.observabilityPostActionWithAuditStatus("/notification-channels/{id}/test", "notification_channels.test", "notification_channel", http.StatusAccepted)))
 }
@@ -4465,7 +4468,7 @@ func nodeRegistrationScopes(serviceType string, allowRuntimeSecrets, allowRemedi
 	case "worker":
 		scopes = append(scopes, "worker.events.write", "observability.ingest")
 	case "observability":
-		scopes = append(scopes, "observability.ingest")
+		scopes = append(scopes, "observability.ingest", "notifications.email.send")
 		if allowRemediation {
 			scopes = append(scopes, "remediation.execute")
 		}
@@ -10396,7 +10399,7 @@ var auditActionGroups = map[string][]string{
 	"stream_lifecycle":      {"streams.create", "streams.start", "streams.stop", "streams.mark_failed", "streams.retry_upload"},
 	"security":              {"auth.login", "auth.logout", "auth.change_password", "users.create", "users.update", "users.disable", "users.lock", "users.unlock", "users.reset_password", "users.force_password_change", "roles.create", "roles.update", "roles.delete"},
 	"secrets":               {"secrets.update", "security.settings.update", "api_tokens.create", "api_tokens.revoke", "api_tokens.rotate"},
-	"notifications":         {"notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test"},
+	"notifications":         {"notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test", "notifications.email.send"},
 }
 
 func auditFilterFromRequest(r *http.Request, defaultLimit int) store.AuditFilter {
@@ -11380,6 +11383,12 @@ func (s *Server) observabilityPostProxyStatus(endpoint, action, resourceType str
 	}
 }
 
+func (s *Server) observabilityNotificationChannelPostProxyStatus(endpoint, action, resourceType string, successStatus int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.observabilityProxyJSONStatusWithTransform(w, r, http.MethodPost, endpoint, action, resourceType, successStatus, sanitizeNotificationChannelCreateProxyPayload)
+	}
+}
+
 func (s *Server) observabilityPutProxy(template, action, resourceType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		endpoint, err := replacePathID(template, r.PathValue("id"))
@@ -11388,6 +11397,17 @@ func (s *Server) observabilityPutProxy(template, action, resourceType string) ht
 			return
 		}
 		s.observabilityProxyJSONStatus(w, r, http.MethodPut, endpoint, action, resourceType, http.StatusOK)
+	}
+}
+
+func (s *Server) observabilityNotificationChannelPutProxy(template, action, resourceType string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		endpoint, err := replacePathID(template, r.PathValue("id"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_observability_id"})
+			return
+		}
+		s.observabilityProxyJSONStatusWithTransform(w, r, http.MethodPut, endpoint, action, resourceType, http.StatusOK, sanitizeNotificationChannelUpdateProxyPayload)
 	}
 }
 
@@ -11418,6 +11438,10 @@ func (s *Server) observabilityProxyJSON(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Request, method, endpoint, action, resourceType string, successStatus int) {
+	s.observabilityProxyJSONStatusWithTransform(w, r, method, endpoint, action, resourceType, successStatus, nil)
+}
+
+func (s *Server) observabilityProxyJSONStatusWithTransform(w http.ResponseWriter, r *http.Request, method, endpoint, action, resourceType string, successStatus int, transform func(map[string]any)) {
 	obs, ok := s.observabilityClientForRequest(w, r)
 	if !ok {
 		return
@@ -11426,6 +11450,9 @@ func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Req
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
+	}
+	if transform != nil {
+		transform(payload)
 	}
 	var (
 		body json.RawMessage
@@ -11469,6 +11496,27 @@ func (s *Server) observabilityProxyJSONStatus(w http.ResponseWriter, r *http.Req
 		},
 	})
 	writeObservabilityJSON(w, successStatus, endpoint, body)
+}
+
+func sanitizeNotificationChannelCreateProxyPayload(payload map[string]any) {
+	for key := range payload {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "smtp_") {
+			delete(payload, key)
+		}
+	}
+	channelType, _ := payload["type"].(string)
+	if strings.EqualFold(strings.TrimSpace(channelType), "email") {
+		payload["uses_global_smtp"] = true
+	}
+}
+
+func sanitizeNotificationChannelUpdateProxyPayload(payload map[string]any) {
+	for key := range payload {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if strings.HasPrefix(normalized, "smtp_") || normalized == "uses_global_smtp" {
+			delete(payload, key)
+		}
+	}
 }
 
 var publicObservabilityErrorCodes = map[string]struct{}{
@@ -11673,6 +11721,7 @@ func publicNotificationChannelFromValue(row map[string]any) map[string]any {
 	copyAllowedJSONField(out, row, "name")
 	copyAllowedJSONField(out, row, "type")
 	copyAllowedJSONField(out, row, "enabled")
+	copyAllowedJSONField(out, row, "uses_global_smtp")
 	copyAllowedJSONField(out, row, "masked_webhook_url")
 	copyAllowedJSONField(out, row, "smtp_password_configured")
 	copyAllowedJSONField(out, row, "masked_email_target")
@@ -12407,6 +12456,13 @@ func (s *Server) writeAudit(r *http.Request, event store.AuditEvent) {
 	if event.Metadata == nil {
 		event.Metadata = map[string]any{}
 	}
+	current := currentFromContext(r.Context())
+	if event.ActorUserID == "" {
+		event.ActorUserID = current.User.ID
+	}
+	if event.ActorUsername == "" {
+		event.ActorUsername = current.User.Username
+	}
 	if err := s.audit.WriteAudit(r.Context(), event); err != nil {
 		log.Printf("audit write failed: action=%s resource_type=%s result=%s error=%v", event.Action, event.ResourceType, event.Result, err)
 		return
@@ -12417,6 +12473,9 @@ func (s *Server) writeAudit(r *http.Request, event store.AuditEvent) {
 func (s *Server) writeSystemAudit(ctx context.Context, event store.AuditEvent) {
 	if s.audit == nil {
 		return
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
 	}
 	if event.ActorUsername == "" {
 		event.ActorUsername = "system"
@@ -12429,7 +12488,9 @@ func (s *Server) writeSystemAudit(ctx context.Context, event store.AuditEvent) {
 	}
 	if err := s.audit.WriteAudit(ctx, event); err != nil {
 		log.Printf("system audit write failed: action=%s resource_type=%s result=%s error=%v", event.Action, event.ResourceType, event.Result, err)
+		return
 	}
+	s.notifyAdminAuditEvent(event)
 }
 
 func (s *Server) notifyAdminAuditEvent(event store.AuditEvent) {
@@ -12446,11 +12507,10 @@ func (s *Server) notifyAdminAuditEvent(event store.AuditEvent) {
 		"resource_id":    strings.TrimSpace(redacted.ResourceID),
 		"actor_username": strings.TrimSpace(redacted.ActorUsername),
 		"summary":        adminAuditNotificationSummary(redacted),
-		"metadata":       redacted.Metadata,
 		"timestamp":      redacted.Timestamp.UTC().Format(time.RFC3339),
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), adminAuditNotificationTimeout)
 		defer cancel()
 		obs, configured, err := s.observabilityClient(ctx)
 		if err != nil || !configured {
@@ -12467,33 +12527,15 @@ func adminAuditEventNotificationAllowed(event store.AuditEvent) bool {
 	if action == "" {
 		return false
 	}
-	if strings.HasPrefix(event.ActorUserID, "service:") || strings.HasPrefix(event.ActorUsername, "service:") {
+	actorUserID := strings.ToLower(strings.TrimSpace(event.ActorUserID))
+	actorUsername := strings.ToLower(strings.TrimSpace(event.ActorUsername))
+	if strings.HasPrefix(actorUserID, "service:") || strings.HasPrefix(actorUsername, "service:") {
 		return false
 	}
-	allowedPrefixes := []string{
-		"setup.",
-		"users.",
-		"roles.",
-		"security.",
-		"secrets.",
-		"app.settings.",
-		"notification_channels.",
-		"integrations.",
-		"oauth_providers.",
-		"oauth_accounts.",
-		"drive_destinations.",
-		"discord_configs.",
-		"youtube_outputs.",
-		"archive_destinations.",
-		"services.",
-		"nodes.",
+	if strings.TrimSpace(event.ActorUserID) != "" {
+		return true
 	}
-	for _, prefix := range allowedPrefixes {
-		if strings.HasPrefix(action, prefix) {
-			return true
-		}
-	}
-	return false
+	return actorUsername == "system"
 }
 
 func adminAuditNotificationSeverity(event store.AuditEvent) string {
@@ -12517,14 +12559,7 @@ func adminAuditNotificationSummary(event store.AuditEvent) string {
 	if result == "" {
 		result = "recorded"
 	}
-	resource := strings.TrimSpace(event.ResourceType)
-	if resource != "" && strings.TrimSpace(event.ResourceID) != "" {
-		resource += " " + strings.TrimSpace(event.ResourceID)
-	}
-	if resource == "" {
-		return "管理イベント: " + action + " / " + result
-	}
-	return "管理イベント: " + action + " / " + resource + " / " + result
+	return "管理イベント: " + action + " / " + result
 }
 
 func (s *Server) writeServiceAudit(r *http.Request, token store.ServiceToken, action, resourceType, resourceID, result string, metadata map[string]any) {

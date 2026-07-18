@@ -266,11 +266,22 @@ func TestAdminAuditEventNotificationPolicy(t *testing.T) {
 		event store.AuditEvent
 		want  bool
 	}{
-		{name: "oauth account update", event: store.AuditEvent{Action: "oauth_accounts.update", ActorUsername: "ops"}, want: true},
-		{name: "notification channel create", event: store.AuditEvent{Action: "notification_channels.create", ActorUsername: "ops"}, want: true},
-		{name: "stream runtime events stay out", event: store.AuditEvent{Action: "streams.start", ActorUsername: "ops"}, want: false},
+		{name: "oauth account update", event: store.AuditEvent{Action: "oauth_accounts.update", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "notification channel create", event: store.AuditEvent{Action: "notification_channels.create", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "stream start", event: store.AuditEvent{Action: "streams.start", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "authenticated login", event: store.AuditEvent{Action: "auth.login", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "mfa", event: store.AuditEvent{Action: "mfa.enroll", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "passkey", event: store.AuditEvent{Action: "passkeys.delete", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "archive", event: store.AuditEvent{Action: "archive.artifact.delete", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "remediation", event: store.AuditEvent{Action: "remediation.approve", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "profile", event: store.AuditEvent{Action: "encoder_profiles.update", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "api token", event: store.AuditEvent{Action: "api_tokens.rotate", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "system actor", event: store.AuditEvent{Action: "youtube.complete", ActorUsername: "system"}, want: true},
+		{name: "unauthenticated login failure", event: store.AuditEvent{Action: "auth.login", ResourceID: "attacker"}, want: false},
+		{name: "username without authenticated id", event: store.AuditEvent{Action: "streams.start", ActorUsername: "ops"}, want: false},
 		{name: "service actor stays out", event: store.AuditEvent{Action: "nodes.update", ActorUsername: "service:worker"}, want: false},
-		{name: "blank action stays out", event: store.AuditEvent{ActorUsername: "ops"}, want: false},
+		{name: "service actor id stays out", event: store.AuditEvent{Action: "streams.start", ActorUserID: "service:encoder_recorder", ActorUsername: "encoder_recorder"}, want: false},
+		{name: "blank action stays out", event: store.AuditEvent{ActorUserID: "user-01", ActorUsername: "ops"}, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -294,8 +305,199 @@ func TestAdminAuditNotificationSummaryUsesRedactedEvent(t *testing.T) {
 	if strings.Contains(summary, "raw-secret-token") || strings.Contains(metadata, "raw-secret-token") {
 		t.Fatalf("admin audit notification leaked raw secret: summary=%q metadata=%s", summary, metadata)
 	}
+	if summary != "管理イベント: secrets.update / success" {
+		t.Fatalf("admin audit summary duplicated structured resource fields: %q", summary)
+	}
 	if severity := adminAuditNotificationSeverity(event); severity != "warning" {
 		t.Fatalf("security-related admin audit severity = %q, want warning", severity)
+	}
+}
+
+func TestAdminAuditNotificationUsesStrictRedactedPayload(t *testing.T) {
+	type receivedRequest struct {
+		body          []byte
+		authorization string
+		decodeErr     error
+		payload       struct {
+			EventType     string `json:"event_type"`
+			Severity      string `json:"severity"`
+			Status        string `json:"status"`
+			Action        string `json:"action"`
+			ResourceType  string `json:"resource_type"`
+			ResourceID    string `json:"resource_id"`
+			ActorUsername string `json:"actor_username"`
+			Summary       string `json:"summary"`
+			Timestamp     string `json:"timestamp"`
+		}
+	}
+	received := make(chan receivedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		got := receivedRequest{body: body, authorization: r.Header.Get("Authorization"), decodeErr: err}
+		if err == nil {
+			decoder := json.NewDecoder(bytes.NewReader(body))
+			decoder.DisallowUnknownFields()
+			got.decodeErr = decoder.Decode(&got.payload)
+		}
+		received <- got
+		if got.decodeErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, []map[string]string{{"status": "success"}})
+	}))
+	defer upstream.Close()
+
+	auth := store.NewMemoryAuthStore()
+	token := registerObservabilityNodeForTest(t, auth, "audit-notification-token", upstream.URL)
+	if _, err := auth.Heartbeat(t.Context(), token, store.ServiceHeartbeat{ServiceID: "observability-01", Status: "online"}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(store.NewMemoryStreamStore(), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	request := httptest.NewRequest(http.MethodPost, "/test-audit", nil)
+	server.writeAudit(request, store.AuditEvent{
+		ActorUserID:   "user-01",
+		ActorUsername: "ops",
+		Action:        "secrets.update",
+		ResourceType:  "secret",
+		ResourceID:    "raw-secret-token",
+		Result:        "success",
+		Metadata: map[string]any{
+			"webhook_url": "https://discord.com/api/webhooks/id/raw-secret-token",
+			"password":    "raw-password",
+		},
+	})
+
+	var got receivedRequest
+	select {
+	case got = <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for admin audit notification")
+	}
+	if got.decodeErr != nil {
+		t.Fatalf("strict notification payload decode failed: %v body=%s", got.decodeErr, got.body)
+	}
+	if got.authorization != "Bearer audit-notification-token" {
+		t.Fatalf("notification authorization = %q", got.authorization)
+	}
+	if got.payload.EventType != "admin.audit" || got.payload.Action != "secrets.update" || got.payload.Status != "success" || got.payload.ActorUsername != "ops" {
+		t.Fatalf("unexpected admin audit notification: %#v", got.payload)
+	}
+	if got.payload.ResourceID != "<redacted>" {
+		t.Fatalf("secret resource id was not redacted: %q", got.payload.ResourceID)
+	}
+	if strings.Contains(string(got.body), "metadata") || strings.Contains(string(got.body), "raw-secret-token") || strings.Contains(string(got.body), "raw-password") {
+		t.Fatalf("notification payload leaked unsupported metadata or a secret: %s", got.body)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(got.body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	wantFields := []string{"event_type", "severity", "status", "action", "resource_type", "resource_id", "actor_username", "summary", "timestamp"}
+	if len(fields) != len(wantFields) {
+		t.Fatalf("notification payload fields = %#v, want exactly %#v", fields, wantFields)
+	}
+	for _, field := range wantFields {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("notification payload is missing %q: %#v", field, fields)
+		}
+	}
+}
+
+func TestWriteAuditEnrichesOnlyAuthenticatedRequestActor(t *testing.T) {
+	audit := store.NewMemoryAuthStore()
+	server := NewServer(store.NewMemoryStreamStore(), WithAuditStore(audit))
+	authenticated := httptest.NewRequest(http.MethodPost, "/streams/stream-01/start", nil)
+	authenticated = authenticated.WithContext(context.WithValue(authenticated.Context(), currentUserKey{}, currentUser{
+		User: store.User{ID: "user-01", Username: "ops"},
+	}))
+	server.writeAudit(authenticated, store.AuditEvent{Action: "streams.start", ResourceType: "stream", ResourceID: "stream-01", Result: "success"})
+
+	public := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	server.writeAudit(public, store.AuditEvent{Action: "auth.login", ResourceType: "user", ResourceID: "attacker", Result: "failure"})
+
+	events := audit.AuditEvents()
+	if len(events) != 2 {
+		t.Fatalf("audit event count = %d, want 2", len(events))
+	}
+	if events[0].ActorUserID != "user-01" || events[0].ActorUsername != "ops" || !adminAuditEventNotificationAllowed(events[0]) {
+		t.Fatalf("authenticated audit actor was not enriched: %#v", events[0])
+	}
+	if events[1].ActorUserID != "" || events[1].ActorUsername != "" || adminAuditEventNotificationAllowed(events[1]) {
+		t.Fatalf("public audit unexpectedly acquired an authenticated actor: %#v", events[1])
+	}
+}
+
+func TestWriteSystemAuditPersistsTimestampAndNotifies(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+		received <- payload
+		writeJSON(w, http.StatusAccepted, []map[string]string{{"status": "success"}})
+	}))
+	defer upstream.Close()
+
+	auth := store.NewMemoryAuthStore()
+	token := registerObservabilityNodeForTest(t, auth, "system-audit-token", upstream.URL)
+	if _, err := auth.Heartbeat(t.Context(), token, store.ServiceHeartbeat{ServiceID: "observability-01", Status: "online"}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(store.NewMemoryStreamStore(), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	server.writeSystemAudit(t.Context(), store.AuditEvent{Action: "youtube.complete", ResourceType: "stream", ResourceID: "stream-01", Result: "success"})
+
+	select {
+	case payload := <-received:
+		if payload["event_type"] != "admin.audit" || payload["action"] != "youtube.complete" || payload["actor_username"] != "system" {
+			t.Fatalf("unexpected system audit notification: %#v", payload)
+		}
+		if timestamp, _ := payload["timestamp"].(string); timestamp == "" {
+			t.Fatalf("system audit notification timestamp is missing: %#v", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for system audit notification")
+	}
+
+	events := auth.AuditEvents()
+	if len(events) != 1 || events[0].ActorUsername != "system" || events[0].Timestamp.IsZero() {
+		t.Fatalf("system audit was not persisted with actor and timestamp: %#v", events)
+	}
+}
+
+type failingAuditStore struct{}
+
+func (failingAuditStore) WriteAudit(context.Context, store.AuditEvent) error {
+	return errors.New("audit store unavailable")
+}
+
+func (failingAuditStore) ListAudit(context.Context, store.AuditFilter) ([]store.AuditEvent, error) {
+	return nil, errors.New("audit store unavailable")
+}
+
+func TestAuditStoreFailureDoesNotNotify(t *testing.T) {
+	received := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		writeJSON(w, http.StatusAccepted, []map[string]string{{"status": "success"}})
+	}))
+	defer upstream.Close()
+
+	services := store.NewMemoryAuthStore()
+	token := registerObservabilityNodeForTest(t, services, "failed-audit-token", upstream.URL)
+	if _, err := services.Heartbeat(t.Context(), token, store.ServiceHeartbeat{ServiceID: "observability-01", Status: "online"}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(store.NewMemoryStreamStore(), WithAuditStore(failingAuditStore{}), WithServiceRegistryStore(services))
+	server.writeAudit(httptest.NewRequest(http.MethodPost, "/test-audit", nil), store.AuditEvent{Action: "streams.start", ResourceType: "stream", ResourceID: "stream-01", Result: "success"})
+	server.writeSystemAudit(t.Context(), store.AuditEvent{Action: "youtube.complete", ResourceType: "stream", ResourceID: "stream-01", Result: "success"})
+
+	select {
+	case <-received:
+		t.Fatal("notification must not be attempted when the audit record was not persisted")
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 
@@ -11977,6 +12179,18 @@ func TestNodeRegistrationScopesAutomaticallyIncludeEncoderRuntimeSecrets(t *test
 	}
 }
 
+func TestNodeRegistrationScopesGrantEmailRelayOnlyToObservability(t *testing.T) {
+	observabilityScopes := nodeRegistrationScopes("observability", false, false)
+	if !stringSliceContains(observabilityScopes, "observability.ingest") || !stringSliceContains(observabilityScopes, "notifications.email.send") {
+		t.Fatalf("observability scopes should include dedicated email relay access: %#v", observabilityScopes)
+	}
+	for _, serviceType := range []string{"worker", "encoder_recorder", "discord_bot"} {
+		if scopes := nodeRegistrationScopes(serviceType, false, false); stringSliceContains(scopes, "notifications.email.send") {
+			t.Fatalf("%s unexpectedly received email relay access: %#v", serviceType, scopes)
+		}
+	}
+}
+
 func TestCreateWorkerOrEncoderNodeRequiresStreamIngestSigningKey(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -12158,8 +12372,13 @@ func TestServiceObservabilitySignalProxiesWithRegisteredNodeIdentity(t *testing.
 	var gotAuth string
 	var gotPayload map[string]any
 	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/notification-events" {
+			writeJSON(w, http.StatusAccepted, []map[string]string{{"status": "success"}})
+			return
+		}
 		if r.URL.Path != "/signals" {
-			t.Fatalf("unexpected observability path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
 		}
 		gotAuth = r.Header.Get("Authorization")
 		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
@@ -13609,7 +13828,7 @@ func registerObservabilityNodeForTest(t *testing.T, auth *store.MemoryAuthStore,
 		ServiceType: "observability",
 		RawToken:    rawToken,
 		TokenHash:   security.HashToken(rawToken),
-		Scopes:      []string{"service.register", "service.heartbeat", "observability.ingest", "remediation.execute"},
+		Scopes:      []string{"service.register", "service.heartbeat", "observability.ingest", "notifications.email.send", "remediation.execute"},
 		CreatedAt:   time.Now().UTC(),
 	}
 	registerObservabilityNodeWithTokenForTest(t, auth, token, publicURL)

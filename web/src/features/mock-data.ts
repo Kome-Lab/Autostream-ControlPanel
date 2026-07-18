@@ -483,7 +483,7 @@ const mockResourceData: Record<string, unknown[]> = {
   "/observability/notification-channels": [
     { id: "chn-1", name: "制作Discord", type: "discord", enabled: true, masked_webhook_url: "https://example.jp/<WEBHOOK_PATH>" },
     { id: "chn-2", name: "運用Slack", type: "slack", enabled: true, masked_webhook_url: "https://hooks.slack.com/<WEBHOOK_PATH>", severity_filter: ["critical", "error", "warning", "info"], event_type_filter: ["incident.opened", "admin.audit"] },
-    { id: "chn-3", name: "運用メール", type: "email", enabled: true, masked_email_target: "o***s@example.jp", smtp_password_configured: true, severity_filter: ["critical", "error"], event_type_filter: ["incident.opened", "incident.resolved"] },
+    { id: "chn-3", name: "運用メール", type: "email", enabled: true, masked_email_target: "o***s@example.jp", uses_global_smtp: true, severity_filter: ["critical", "error"], event_type_filter: ["incident.opened", "incident.resolved"] },
   ],
 };
 
@@ -577,6 +577,18 @@ export function mockGet(path: string): unknown {
 
 export function mockPost(path: string, body?: unknown): unknown {
   const normalizedPath = stripQuery(path);
+  const notificationTest = normalizedPath.match(/^\/observability\/notification-channels\/([^/]+)\/test$/);
+  if (notificationTest) {
+    const id = decodeURIComponent(notificationTest[1]);
+    const rows = mockResourceData["/observability/notification-channels"] as Array<Record<string, unknown>>;
+    const channel = rows.find((row) => row.id === id);
+    if (!channel) throw new Error("not_found");
+    return [{
+      status: "success",
+      channel: channel.type,
+      target: channel.masked_webhook_url || channel.masked_email_target || "<WEBHOOK_URL>",
+    }];
+  }
   const artifactShareCreate = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares$/);
   if (artifactShareCreate) {
     loadMockArchiveShares();
@@ -1008,6 +1020,17 @@ export function mockPut(path: string, body?: unknown): unknown {
     }
     if (collectionPath === "/users" && Array.isArray(request.role_ids)) {
       next.roles = mockRoleNames(request.role_ids.map(String));
+    }
+    if (collectionPath === "/observability/notification-channels") {
+      if (typeof request.webhook_url === "string" && request.webhook_url.trim()) {
+        next.masked_webhook_url = request.type === "slack" ? "https://hooks.slack.com/<WEBHOOK_PATH>" : "https://discord.com/<WEBHOOK_PATH>";
+      }
+      if (Array.isArray(request.email_recipients) && typeof request.email_recipients[0] === "string") {
+        next.masked_email_target = maskMockEmail(request.email_recipients[0]);
+      }
+      for (const key of ["webhook_url", "email_recipients", "smtp_host", "smtp_port", "smtp_tls", "smtp_from", "smtp_username", "smtp_password"]) {
+        delete next[key];
+      }
     }
     (rows as Record<string, unknown>[])[index] = next;
     return next;
