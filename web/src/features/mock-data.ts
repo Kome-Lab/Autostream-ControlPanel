@@ -476,9 +476,9 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "rem-2", status: "executed", action: "switch_worker", target: "worker-standby", created_at: "2026-07-02T08:30:00+09:00" },
   ],
   "/observability/notification-deliveries": [
-    { id: "ntf-1", status: "success", channel: "discord", incident_id: "inc-1", sent_at: baseTime },
-    { id: "ntf-2", status: "retrying", channel: "email", incident_id: "inc-2", sent_at: "2026-07-02T08:40:00+09:00" },
-    { id: "ntf-3", event_type: "admin.audit", status: "success", channel: "slack", incident_id: "", sent_at: "2026-07-02T09:05:00+09:00" },
+    { id: "ntf-1", event_type: "incident.opened", status: "success", channel: "discord", incident_id: "inc-1", created_at: baseTime },
+    { id: "ntf-2", event_type: "incident.updated", status: "retrying", channel: "email", incident_id: "inc-2", created_at: "2026-07-02T08:40:00+09:00" },
+    { id: "ntf-3", event_type: "admin.audit", status: "success", channel: "slack", incident_id: "", metadata: { rule: "integrations.oauth_account.update", summary: "OAuth接続アカウントを更新\n対象: OAuth接続アカウント (acct-01)\n実行者: ops" }, created_at: "2026-07-02T09:05:00+09:00" },
   ],
   "/observability/notification-channels": [
     { id: "chn-1", name: "制作Discord", type: "discord", enabled: true, masked_webhook_url: "https://example.jp/<WEBHOOK_PATH>" },

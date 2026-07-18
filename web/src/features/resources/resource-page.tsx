@@ -17,6 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
+import { auditActionLabel } from "@/lib/audit-action";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
@@ -26,6 +27,7 @@ import {
   normalizeNotificationChannelEventTypeFilter,
   notificationChannelTestFeedback,
   notificationChannelTypeLabel,
+  notificationDeliveryPresentation,
   type NotificationChannelTestFeedback,
 } from "@/lib/notification-channel";
 import {
@@ -2127,6 +2129,15 @@ function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): Reso
       secret_reference: rowString(row, ["name"]),
     };
   }
+  if (resource.path === "/observability/notification-deliveries") {
+    const presentation = notificationDeliveryPresentation(row);
+    return {
+      ...row,
+      event_name: presentation.eventKey,
+      ...(presentation.detail ? { event_detail: presentation.detail } : {}),
+      ...(presentation.sentAt ? { sent_at: presentation.sentAt } : {}),
+    };
+  }
   return row;
 }
 
@@ -2191,7 +2202,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path === "/observability/incidents") return ["title", "severity", "status", "updated_at"];
   if (resource.path === "/observability/diagnostics") return ["check", "status", "target", "updated_at"];
   if (resource.path === "/observability/remediation-actions") return ["action", "status", "target", "created_at"];
-  if (resource.path === "/observability/notification-deliveries") return ["event_type", "channel", "status", "sent_at", "error"];
+  if (resource.path === "/observability/notification-deliveries") return ["event_name", "event_detail", "channel", "status", "sent_at", "error"];
   if (resource.path === "/observability/notification-channels") return ["name", "type", "enabled", "severity_filter", "event_type_filter"];
   if (resource.path === "/observability/metrics") return ["name", "service_type", "status", "value", "updated_at"];
   return [];
@@ -2208,6 +2219,9 @@ function isInternalReferenceColumn(key: string) {
 function formatResourceCell(resource: ResourceDefinition, value: unknown, key = "", timezone?: string): ReactNode {
   if (resource.path === "/observability/notification-channels" && key === "type" && typeof value === "string") {
     return notificationChannelTypeLabel(value);
+  }
+  if (resource.path === "/observability/notification-deliveries" && key === "event_detail" && typeof value === "string") {
+    return <span className="whitespace-pre-line text-sm leading-relaxed">{value}</span>;
   }
   return formatCell(value, key, timezone);
 }
@@ -2259,7 +2273,8 @@ function formatNestedValue(key: string, value: unknown): string {
 
 function formatScalarValue(key: string, value: string | number, timezone?: string) {
   const raw = String(value);
-  if (key === "action") return operationLabel(raw);
+  if (key === "action") return auditActionLabel(raw);
+  if (key === "event_name") return valueLabels[raw] || valueLabels[raw.toLowerCase()] || auditActionLabel(raw);
   if (key === "permissions") return permissionLabel(raw);
   if (key === "account_purpose") return oauthAccountPurposeLabel({ account_purpose: raw });
   if ((key === "id" || key === "name") && columnLabels[raw]) return columnLabels[raw];
@@ -2317,51 +2332,6 @@ function humanizeKey(key: string) {
   if (known) return known;
   return key
     .replace(/_/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function operationLabel(value: string) {
-  const labels: Record<string, string> = {
-    "app.settings.update": "アプリ設定を更新",
-    "archive_destinations.create": "Drive保存先を作成",
-    "archive_destinations.delete": "Drive保存先を削除",
-    "archive_destinations.update": "Drive保存先を更新",
-    "discord_configs.create": "Discord BOT設定を作成",
-    "discord_configs.delete": "Discord BOT設定を削除",
-    "discord_configs.update": "Discord BOT設定を更新",
-    "nodes.delete": "Nodeを削除",
-    "nodes.registration_token.create": "Node設定を発行",
-    "nodes.runtime_token.rotate": "Node Runtime Tokenを再生成",
-    "nodes.update": "Nodeを更新",
-    "notification_channels.create": "通知先を作成",
-    "notification_channels.delete": "通知先を削除",
-    "notification_channels.test": "通知テストを送信",
-    "notification_channels.update": "通知先を更新",
-    "oauth_accounts.create": "OAuth接続アカウントを作成",
-    "oauth_accounts.delete": "OAuth接続アカウントを削除",
-    "oauth_accounts.update": "OAuth接続アカウントを更新",
-    "oauth_providers.create": "OAuthプロバイダを作成",
-    "oauth_providers.delete": "OAuthプロバイダを削除",
-    "oauth_providers.update": "OAuthプロバイダを更新",
-    "roles.create": "ロールを作成",
-    "roles.delete": "ロールを削除",
-    "roles.update": "ロールを更新",
-    "secrets.update": "シークレットを更新",
-    "streams.create": "配信枠を作成",
-    "streams.start": "配信を開始",
-    "streams.stop": "配信を停止",
-    "streams.update": "配信枠を更新",
-    "users.create": "ユーザーを作成",
-    "users.delete": "ユーザーを削除",
-    "users.update": "ユーザーを更新",
-    "workers.restart": "Workerを再起動",
-    "youtube_outputs.create": "YouTube出力を作成",
-    "youtube_outputs.delete": "YouTube出力を削除",
-    "youtube_outputs.update": "YouTube出力を更新",
-  };
-  if (labels[value]) return labels[value];
-  return value
-    .replace(/[_\-.]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
@@ -2457,6 +2427,8 @@ const columnLabels: Record<string, string> = {
   check: "チェック",
   channel: "通知先",
   event_type: "イベント",
+  event_name: "イベント",
+  event_detail: "内容",
   sent_at: "送信日時",
   error: "エラー",
   timestamp: "日時",

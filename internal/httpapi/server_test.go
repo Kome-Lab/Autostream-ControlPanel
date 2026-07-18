@@ -12743,7 +12743,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 		case "/remediation-actions":
 			_, _ = w.Write([]byte(`[{"id":"rem-1","status":"suggested"}]`))
 		case "/notification-deliveries":
-			_, _ = w.Write([]byte(`[{"id":"ntf-1","status":"success","target":"https://discord.com/api/webhooks/id/upstream-secret-token","message":"bearer upstream-secret-token"}]`))
+			_, _ = w.Write([]byte(`[{"id":"ntf-1","event_type":"admin.audit","status":"success","target":"https://discord.com/api/webhooks/id/upstream-secret-token","message":"bearer upstream-secret-token","metadata":{"rule":"secrets.update","summary":"シークレットを更新\n実行者: ops"},"created_at":"2026-07-18T01:32:00Z"}]`))
 		case "/notification-channels":
 			if r.Method == http.MethodPost {
 				_, _ = w.Write([]byte(`{"id":"chn-1","name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/upstream-slack-token","masked_webhook_url":"https://hooks.slack.com/<WEBHOOK_PATH>","smtp_password":"raw-smtp-password","smtp_password_configured":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}`))
@@ -12819,6 +12819,9 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 		}
 		if path == "/observability/notification-channels" && !strings.Contains(res.Body.String(), `"masked_webhook_url":"https://hooks.slack.com/\u003cWEBHOOK_PATH\u003e"`) {
 			t.Fatalf("slack notification public masked URL was not preserved: %s", res.Body.String())
+		}
+		if path == "/observability/notification-deliveries" && (!strings.Contains(res.Body.String(), `"rule":"secrets.update"`) || !strings.Contains(res.Body.String(), `"summary":"シークレットを更新\n実行者: ops"`) || !strings.Contains(res.Body.String(), `"created_at":"2026-07-18T01:32:00Z"`)) {
+			t.Fatalf("notification delivery operation context was not preserved: %s", res.Body.String())
 		}
 	}
 	createReq := httptest.NewRequest(http.MethodPost, "/observability/notification-channels", bytes.NewBufferString(`{"name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/slack-secret-token","enabled":true}`))

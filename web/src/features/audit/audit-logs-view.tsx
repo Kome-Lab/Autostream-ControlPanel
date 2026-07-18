@@ -13,6 +13,7 @@ import { DataTable } from "@/components/tables/data-table";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { useAppSettings, useAuditLogs } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
+import { auditActionLabel } from "@/lib/audit-action";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { AuditLog } from "@/types/domain";
 
@@ -174,52 +175,4 @@ function resourceTypeLabel(value?: string) {
     youtube_output: "YouTube出力",
   };
   return labels[raw] || raw.replace(/_/g, " ");
-}
-
-function auditActionLabel(value?: string) {
-  const raw = (value || "").trim();
-  if (!raw) return "-";
-  const labels: Record<string, string> = {
-    "app.settings.update": "アプリ設定を更新",
-    "archive_destinations.create": "Drive保存先を作成",
-    "archive_destinations.delete": "Drive保存先を削除",
-    "archive_destinations.update": "Drive保存先を更新",
-    "discord_configs.create": "Discord BOT設定を作成",
-    "discord_configs.delete": "Discord BOT設定を削除",
-    "discord_configs.update": "Discord BOT設定を更新",
-    "nodes.delete": "Nodeを削除",
-    "nodes.registration_token.create": "Node設定を発行",
-    "nodes.runtime_token.rotate": "Node Runtime Tokenを再生成",
-    "nodes.update": "Nodeを更新",
-    "notification_channels.create": "通知先を作成",
-    "notification_channels.delete": "通知先を削除",
-    "notification_channels.test": "通知テストを送信",
-    "notification_channels.update": "通知先を更新",
-    "oauth_accounts.create": "OAuth接続アカウントを作成",
-    "oauth_accounts.delete": "OAuth接続アカウントを削除",
-    "oauth_accounts.update": "OAuth接続アカウントを更新",
-    "oauth_providers.create": "OAuthプロバイダを作成",
-    "oauth_providers.delete": "OAuthプロバイダを削除",
-    "oauth_providers.update": "OAuthプロバイダを更新",
-    "roles.create": "ロールを作成",
-    "roles.delete": "ロールを削除",
-    "roles.update": "ロールを更新",
-    "secrets.update": "シークレットを更新",
-    "services.runtime_config.read": "Nodeが実行設定を参照",
-    "streams.create": "配信枠を作成",
-    "streams.start": "配信を開始",
-    "streams.stop": "配信を停止",
-    "streams.update": "配信枠を更新",
-    "users.create": "ユーザーを作成",
-    "users.delete": "ユーザーを削除",
-    "users.update": "ユーザーを更新",
-    "workers.restart": "Workerを再起動",
-    "youtube_outputs.create": "YouTube出力を作成",
-    "youtube_outputs.delete": "YouTube出力を削除",
-    "youtube_outputs.update": "YouTube出力を更新",
-  };
-  if (labels[raw]) return labels[raw];
-  return raw
-    .replace(/[_\-.]+/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

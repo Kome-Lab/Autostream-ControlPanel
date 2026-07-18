@@ -29,6 +29,28 @@ export function notificationChannelTypeLabel(value: string) {
   }
 }
 
+export function notificationDeliveryEventKey(delivery: unknown) {
+  if (!isRecord(delivery)) return "";
+  const eventType = stringValue(delivery.event_type);
+  if (eventType !== "admin.audit") return eventType;
+  const metadata = delivery.metadata;
+  if (!isRecord(metadata)) return eventType;
+  const action = [stringValue(metadata.action), stringValue(metadata.rule)].find((value) => value && value !== "<redacted>");
+  return action || eventType;
+}
+
+export function notificationDeliveryPresentation(delivery: unknown) {
+  const eventKey = notificationDeliveryEventKey(delivery);
+  if (!isRecord(delivery)) return { eventKey, detail: "", sentAt: "" };
+  const metadata = isRecord(delivery.metadata) ? delivery.metadata : {};
+  const detail = stringValue(metadata.summary);
+  return {
+    eventKey,
+    detail: detail === "<redacted>" ? "" : detail,
+    sentAt: stringValue(delivery.created_at) || stringValue(delivery.sent_at),
+  };
+}
+
 export function buildNotificationChannelPayload(input: NotificationChannelPayloadInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     name: input.name.trim(),

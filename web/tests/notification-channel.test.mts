@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { auditActionLabel } from "../src/lib/audit-action.ts";
 import {
   buildNotificationChannelPayload,
   normalizeNotificationChannelEventTypeFilter,
   notificationChannelTestFeedback,
   notificationChannelTypeLabel,
+  notificationDeliveryEventKey,
+  notificationDeliveryPresentation,
 } from "../src/lib/notification-channel.ts";
 
 const basePayload = {
@@ -97,6 +100,129 @@ test("notification channel API types have consistent display labels", () => {
   assert.equal(notificationChannelTypeLabel("slack"), "Slack");
   assert.equal(notificationChannelTypeLabel("email"), "Email");
   assert.equal(notificationChannelTypeLabel("generic"), "Generic Webhook");
+});
+
+test("admin audit delivery history uses the concrete operation name", () => {
+  const eventKey = notificationDeliveryEventKey({
+    event_type: "admin.audit",
+    metadata: { rule: "secrets.update" },
+  });
+
+  assert.equal(eventKey, "secrets.update");
+  assert.equal(auditActionLabel(eventKey), "シークレットを更新");
+});
+
+test("delivery history keeps lifecycle events and readable unknown actions", () => {
+  assert.equal(notificationDeliveryEventKey({ event_type: "incident.opened" }), "incident.opened");
+  assert.equal(notificationDeliveryEventKey({ event_type: "admin.audit", metadata: { action: "custom.operation" } }), "custom.operation");
+  assert.equal(auditActionLabel("custom.operation"), "Custom Operation");
+  assert.equal(notificationDeliveryEventKey({ event_type: "admin.audit", metadata: { action: "<redacted>" } }), "admin.audit");
+  assert.equal(notificationDeliveryEventKey({ event_type: "admin.audit" }), "admin.audit");
+});
+
+test("delivery history projects current and legacy timestamps with safe details", () => {
+  assert.deepEqual(
+    notificationDeliveryPresentation({
+      event_type: "admin.audit",
+      metadata: { action: "streams.retry_upload", summary: "録画ファイルのアップロードを再試行\n実行者: ops" },
+      created_at: "2026-07-18T01:32:00Z",
+    }),
+    {
+      eventKey: "streams.retry_upload",
+      detail: "録画ファイルのアップロードを再試行\n実行者: ops",
+      sentAt: "2026-07-18T01:32:00Z",
+    },
+  );
+  assert.deepEqual(
+    notificationDeliveryPresentation({ event_type: "incident.opened", sent_at: "2026-07-17T23:00:00Z" }),
+    { eventKey: "incident.opened", detail: "", sentAt: "2026-07-17T23:00:00Z" },
+  );
+  assert.equal(notificationDeliveryPresentation({ event_type: "admin.audit", metadata: { summary: "<redacted>" } }).detail, "");
+});
+
+test("known control-panel audit operations have explicit Japanese labels", () => {
+  const actions = [
+    "api_tokens.create",
+    "api_tokens.revoke",
+    "api_tokens.rotate",
+    "app.settings.test_email",
+    "app.settings.update",
+    "archive.artifact.delete",
+    "archive.artifact.download",
+    "archive.artifact.rename",
+    "archive.artifact.share.create",
+    "archive.artifact.share.revoke",
+    "auth.change_password",
+    "auth.email.change_request",
+    "auth.email.confirm",
+    "auth.login",
+    "auth.logout",
+    "auth.oauth.login",
+    "auth.oauth.provision_user",
+    "auth.oauth.start",
+    "auth.oauth_link.create",
+    "auth.oauth_link.delete",
+    "discord_configs.create",
+    "discord_configs.delete",
+    "discord_configs.update",
+    "integrations.drive_destination.create",
+    "integrations.drive_destination.delete",
+    "integrations.drive_destination.update",
+    "integrations.oauth_account.connect",
+    "integrations.oauth_account.create",
+    "integrations.oauth_account.delete",
+    "integrations.oauth_account.update",
+    "integrations.oauth_provider.create",
+    "integrations.oauth_provider.delete",
+    "integrations.oauth_provider.update",
+    "mfa.disable",
+    "mfa.enroll",
+    "mfa.recovery_codes.regenerate",
+    "mfa.verify",
+    "nodes.configure_token.rotate",
+    "nodes.registration_token.create",
+    "nodes.runtime_token.rotate",
+    "nodes.update",
+    "passkeys.delete",
+    "passkeys.registration.start",
+    "remediation.execute",
+    "roles.create",
+    "roles.delete",
+    "roles.update",
+    "secrets.update",
+    "security.settings.update",
+    "services.assign",
+    "services.delete",
+    "services.runtime_config.preview",
+    "services.unassign",
+    "setup.first_admin",
+    "streams.create",
+    "streams.discord_youtube_notify",
+    "streams.preview_link.create",
+    "streams.retry_upload",
+    "streams.start",
+    "streams.stop",
+    "streams.update_settings",
+    "streams.worker_event_test",
+    "users.create",
+    "users.delete",
+    "users.email_welcome",
+    "users.oauth_link.create",
+    "users.oauth_link.delete",
+    "users.reset_password",
+    "users.update",
+    "workers.assign",
+    "workers.restart",
+    "workers.unassign",
+    "youtube.complete",
+    "youtube_outputs.create",
+    "youtube_outputs.delete",
+    "youtube_outputs.update",
+  ];
+  for (const action of actions) {
+    const generic = action.replace(/[_\-.]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+    assert.notEqual(auditActionLabel(action), generic, action);
+  }
 });
 
 test("HTTP-accepted delivery failures are summarized as failures", () => {
