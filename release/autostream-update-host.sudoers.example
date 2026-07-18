@@ -1,0 +1,7 @@
+# This rule intentionally grants one fixed command with one fixed config path.
+# The RPC request is read from stdin; arbitrary argv, paths, units, images and
+# commands are rejected by the root-owned helper configuration and grant.
+Defaults:autostream-update-host !use_pty, always_set_home, env_reset
+Defaults:autostream-update-host env_keep += "SSH_ORIGINAL_COMMAND"
+Cmnd_Alias AUTOSTREAM_UPDATE_HOST_RPC = /usr/local/libexec/autostream-update-host rpc --config /etc/autostream/update-host.json
+autostream-update-host ALL=(root) NOPASSWD: AUTOSTREAM_UPDATE_HOST_RPC

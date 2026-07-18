@@ -1,4 +1,4 @@
-import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, WorkerNode } from "@/types/domain";
+import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, WorkerNode } from "@/types/domain";
 
 const baseTime = "2026-07-02T09:00:00+09:00";
 
@@ -25,6 +25,8 @@ export const mockCurrentUser: CurrentUser = {
     "api_tokens.read",
     "secrets.update",
     "remediation.execute",
+    "system_updates.read",
+    "system_updates.execute",
   ],
 };
 
@@ -403,6 +405,31 @@ export const mockAppVersion = {
   },
 };
 
+export const mockSystemUpdateUpdaters: SystemUpdateAgentStatus[] = [
+  { updater_id: "updater-central", name: "中央Updater", status: "online", online: true, version: "v1.7.0", last_heartbeat_at: baseTime },
+];
+
+export const mockSystemUpdateHosts: SystemUpdateHostStatus[] = [
+  { host_id: "host-control", name: "Control Panelホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
+  { host_id: "host-main", name: "本社メインホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
+  { host_id: "host-city", name: "庁舎スタンバイホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
+  { host_id: "host-field", name: "現場持出ホスト", updater_id: "updater-central", reachability: "unreachable", reachability_checked_at: baseTime, reachability_code: "ssh_timeout" },
+  { host_id: "host-observability", name: "監視ホスト", updater_id: "updater-central", reachability: "unknown" },
+];
+
+export const mockSystemUpdateTargets: SystemUpdateTarget[] = [
+  { target_id: "control-panel", target_type: "control_panel", name: "Control Panel", host_id: "host-control", current_version: "v1.2.3", latest_version: "v1.2.4", update_available: true, deployment_mode: "docker_compose", updater_id: "updater-central", updater_online: true, eligible: true },
+  { target_id: "worker-main", target_type: "worker", name: "本社メインWorker", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, busy: true, current_stream_id: "stream-cable-morning", eligible: true },
+  { target_id: "worker-standby", target_type: "worker", name: "庁舎スタンバイWorker", host_id: "host-city", current_version: "v1.1.8", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, eligible: true },
+  { target_id: "encoder-main", target_type: "encoder_recorder", name: "本社エンコーダー", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.0", update_available: false, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, current_stream_id: "stream-cable-morning", eligible: false, blocked_reason: "update_not_available" },
+  { target_id: "encoder-field", target_type: "encoder_recorder", name: "現場持出エンコーダー", host_id: "host-field", current_version: "v1.1.4", latest_version: "v1.2.0", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, current_stream_id: "stream-fm-special", eligible: false, blocked_reason: "target_unreachable" },
+  { target_id: "observability-main", target_type: "observability", name: "Observability", host_id: "host-observability", current_version: "v1.1.3", latest_version: "v1.1.5", update_available: true, deployment_mode: "docker_compose", updater_id: "updater-central", updater_online: true, eligible: false, blocked_reason: "target_reachability_unknown" },
+];
+
+export const mockSystemUpdateJobs: SystemUpdateJob[] = [
+  { id: "update-demo-1", target_id: "worker-standby", target_type: "worker", current_version: "v1.1.7", target_version: "v1.1.8", deployment_mode: "systemd", status: "succeeded", progress: 100, message: "更新とヘルスチェックが完了しました。", requested_by: "demo-admin", created_at: "2026-07-02T08:10:00+09:00", updated_at: "2026-07-02T08:12:30+09:00", completed_at: "2026-07-02T08:12:30+09:00" },
+];
+
 const mockResourceData: Record<string, unknown[]> = {
   "/profiles/encoder": [
     { id: "enc-profile-1080p", name: "1080p60 標準", width: 1920, height: 1080, fps: 60, bitrate_kbps: 7800, updated_at: baseTime },
@@ -452,6 +479,8 @@ const mockResourceData: Record<string, unknown[]> = {
   "/permissions": [
     { id: "streams.read", name: "streams.read", group: "streams" },
     { id: "system_settings.update", name: "system_settings.update", group: "settings" },
+    { id: "system_updates.read", name: "system_updates.read", group: "system_updates" },
+    { id: "system_updates.execute", name: "system_updates.execute", group: "system_updates" },
   ],
   "/security/settings": [
     { id: "password_min_length", name: "Password minimum length", value: 12 },
@@ -548,6 +577,14 @@ export function mockGet(path: string): unknown {
     const port = node.port || 8443;
     const sslEnabled = node.ssl_enabled ?? true;
     const nodeApiUrl = `${sslEnabled ? "https" : "http"}://${host}:${port}`;
+    if (node.service_type === "update_agent") {
+      return {
+        node,
+        node_api_url: nodeApiUrl,
+        configure_command: "",
+        ...mockUpdaterManualConfiguration(),
+      };
+    }
     return {
       node,
       node_api_url: nodeApiUrl,
@@ -564,6 +601,7 @@ export function mockGet(path: string): unknown {
     "/settings/app": mockAppSettings,
     "/settings/app/manage": mockAppSettings,
     "/version": mockAppVersion,
+    "/system-updates": { updaters: mockSystemUpdateUpdaters, hosts: mockSystemUpdateHosts, targets: mockSystemUpdateTargets, jobs: mockSystemUpdateJobs },
     "/streams": mockStreams,
     "/workers": mockWorkers,
     "/nodes": mockWorkers,
@@ -577,6 +615,40 @@ export function mockGet(path: string): unknown {
 
 export function mockPost(path: string, body?: unknown): unknown {
   const normalizedPath = stripQuery(path);
+  if (normalizedPath === "/system-updates") {
+    const request = body as Partial<{ target_id: string; strategy: string }>;
+    const target = mockSystemUpdateTargets.find((item) => item.target_id === request.target_id);
+    if (!target) throw new Error("target_not_found");
+    const now = new Date().toISOString();
+    const job: SystemUpdateJob = {
+      id: `update-demo-${Date.now()}`,
+      target_id: target.target_id,
+      target_type: target.target_type,
+      current_version: target.current_version,
+      target_version: target.latest_version,
+      deployment_mode: target.deployment_mode,
+      strategy: request.strategy === "when_idle" ? "when_idle" : "maintenance",
+      status: "queued",
+      progress: 0,
+      message: request.strategy === "when_idle" ? "配信終了後に更新を開始します。" : "Updaterの実行待ちです。",
+      requested_by: mockCurrentUser.user.username,
+      created_at: now,
+      updated_at: now,
+    };
+    mockSystemUpdateJobs.unshift(job);
+    return job;
+  }
+  const systemUpdateCancel = normalizedPath.match(/^\/system-updates\/([^/]+)\/cancel$/);
+  if (systemUpdateCancel) {
+    const id = decodeURIComponent(systemUpdateCancel[1]);
+    const job = mockSystemUpdateJobs.find((item) => item.id === id);
+    if (!job) throw new Error("job_not_found");
+    job.status = "cancelled";
+    job.message = "オペレーターが更新をキャンセルしました。";
+    job.updated_at = new Date().toISOString();
+    job.completed_at = job.updated_at;
+    return job;
+  }
   const notificationTest = normalizedPath.match(/^\/observability\/notification-channels\/([^/]+)\/test$/);
   if (notificationTest) {
     const id = decodeURIComponent(notificationTest[1]);
@@ -850,6 +922,15 @@ export function mockPost(path: string, body?: unknown): unknown {
         reported_capabilities: {},
       },
     };
+    if (response.service_type === "update_agent") {
+      response.scopes = ["service.register", "service.heartbeat", "service.config.read", "service.status.write", "updates.claim", "updates.report", "updates.authorize"];
+      delete response.token;
+      delete response.configure_token;
+      delete response.configure_token_expires_at;
+      delete response.configuration_yaml;
+      response.configure_command = "";
+      Object.assign(response, mockUpdaterManualConfiguration());
+    }
     const existingIndex = mockWorkers.findIndex((node) => (node.service_id || node.id) === nodeID);
     if (response.node) {
       if (existingIndex >= 0) {
@@ -864,6 +945,7 @@ export function mockPost(path: string, body?: unknown): unknown {
   if (configureTokenRotate) {
     const nodeID = decodeURIComponent(configureTokenRotate[1]);
     const node = mockWorkers.find((item) => (item.service_id || item.id) === nodeID) || mockWorkers[0];
+    if (node.service_type === "update_agent") throw new Error("manual_configuration_required");
     const configureToken = "ast_cfg_demo_rotated_7c8f1a2d";
     node.configure_token_expires_at = baseTime;
     node.configure_token_used_at = undefined;
@@ -884,6 +966,15 @@ export function mockPost(path: string, body?: unknown): unknown {
     const port = node.port || 8443;
     const sslEnabled = node.ssl_enabled ?? true;
     node.node_token_rotated_at = baseTime;
+    if (node.service_type === "update_agent") {
+      return {
+        node,
+        runtime_token_id: runtimeTokenID,
+        runtime_token: runtimeToken,
+        configure_command: "",
+        ...mockUpdaterManualConfiguration(),
+      };
+    }
     return {
       node,
       runtime_token_id: runtimeTokenID,
@@ -895,12 +986,15 @@ export function mockPost(path: string, body?: unknown): unknown {
 }
 
 function mockConfigureCommand(serviceType: string, nodeID: string, configureToken: string) {
+  if (serviceType === "update_agent") return "";
   const configureBinary = mockConfigureBinary(serviceType);
   return `sudo ${configureBinary} configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "${mockConfigPath(serviceType)}"`;
 }
 
 function mockConfigureBinary(serviceType: string) {
   switch (serviceType) {
+    case "update_agent":
+      return "autostream-updater";
     case "encoder_recorder":
       return "autostream-encoder-recorder";
     case "discord_bot":
@@ -914,6 +1008,8 @@ function mockConfigureBinary(serviceType: string) {
 
 function mockConfigPath(serviceType: string) {
   switch (serviceType) {
+    case "update_agent":
+      return "/etc/autostream/updater.json";
     case "encoder_recorder":
       return "/etc/autostream-encoder-recorder/config.yml";
     case "discord_bot":
@@ -923,6 +1019,14 @@ function mockConfigPath(serviceType: string) {
     default:
       return "/etc/autostream-worker/config.yml";
   }
+}
+
+function mockUpdaterManualConfiguration() {
+  return {
+    manual_configuration_required: true,
+    configuration_path: "/etc/autostream/updater.json",
+    configuration_example: "release/autostream-updater.json.example",
+  };
 }
 
 function mockStreamIngestConfigYAML(serviceType: string) {
@@ -1111,6 +1215,7 @@ export function mockDelete(path: string): unknown {
 
 export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
+  if (/^\/system-updates\/[^/]+\/cancel$/.test(normalizedPath)) return true;
   if (/^\/streams\/[^/]+\/artifacts(?:\/[^/]+)?(?:\/download)?$/.test(normalizedPath)) return true;
   if (/^\/streams\/[^/]+\/artifacts\/[^/]+\/shares(?:\/[^/]+)?$/.test(normalizedPath)) return true;
   if (/^\/archive-shares\/[^/]+(?:\/download)?$/.test(normalizedPath)) return true;
@@ -1147,6 +1252,7 @@ export function mockPathExists(path: string) {
     "/settings/app",
     "/settings/app/test-email",
     "/version",
+    "/system-updates",
     "/streams",
     "/workers",
     "/nodes",

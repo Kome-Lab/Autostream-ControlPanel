@@ -84,7 +84,7 @@ func (s *MemoryAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 	token := ServiceToken{
 		ID:          newUUID(),
 		ServiceType: oldToken.ServiceType,
-		Scopes:      append([]string(nil), oldToken.Scopes...),
+		Scopes:      serviceTokenScopesForRotation(oldToken),
 		RawToken:    "ast_svc_" + raw,
 		CreatedAt:   now,
 	}
@@ -248,6 +248,9 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 		s.mu.Unlock()
 		return RegisteredService{}, ErrForbidden
 	}
+	if existing.ServiceType == "update_agent" && existing.Status != "pending" {
+		svc.Capabilities = existing.Capabilities
+	}
 	svc.CreatedAt = existing.CreatedAt
 	svc.LastHeartbeatAt = existing.LastHeartbeatAt
 	svc.CurrentStreamID = existing.CurrentStreamID
@@ -302,8 +305,11 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		svc.ReportedBuildDate = heartbeatBuildDate
 	}
 	if len(heartbeat.Capabilities) > 0 {
-		svc.Capabilities = sanitizeServiceCapabilities(heartbeat.Capabilities)
-		svc.ReportedCapabilities = svc.Capabilities
+		reportedCapabilities := sanitizeServiceCapabilities(heartbeat.Capabilities)
+		if svc.ServiceType != "update_agent" {
+			svc.Capabilities = reportedCapabilities
+		}
+		svc.ReportedCapabilities = reportedCapabilities
 	}
 	if strings.TrimSpace(heartbeat.Hostname) != "" {
 		svc.ReportedHostname = strings.TrimSpace(heartbeat.Hostname)
@@ -663,6 +669,9 @@ func (s *MemoryAuthStore) AssignServiceToStreamWithRole(ctx context.Context, ser
 	svc, ok := s.services[serviceID]
 	if !ok {
 		return RegisteredService{}, ErrNotFound
+	}
+	if !streamAssignableServiceType(svc.ServiceType) {
+		return RegisteredService{}, ErrInvalidServiceAssignment
 	}
 	targetKey := assignmentKey(streamID, svc.ServiceType, assignmentRole, serviceID)
 	replacedServiceIDs := make(map[string]bool)

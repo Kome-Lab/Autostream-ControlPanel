@@ -28,6 +28,7 @@ import {
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
+import { buildStreamCreatePayload } from "@/lib/stream-create";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { StreamPreview } from "@/features/streams/stream-preview";
@@ -348,10 +349,10 @@ function StreamSlotForm({
 }) {
   const discordConfigs = useResourceOptions("/discord/configs", ["name", "service_id", "id"]);
   const youtubeOutputs = useResourceOptions("/youtube/outputs", ["name", "id"]);
-  const oauthAccounts = useOAuthAccountOptions("drive");
   const encoderProfiles = useResourceOptions("/profiles/encoder", ["name", "id"]);
   const captionProfiles = useResourceOptions("/profiles/caption", ["name", "id"]);
   const overlayProfiles = useResourceOptions("/profiles/overlay", ["name", "id"]);
+  const archiveProfiles = useResourceOptions("/profiles/archive", ["name", "id"]);
   const encoderNodes = useServiceOptions("encoder_recorder");
   const workerNodes = useServiceOptions("worker");
   const [name, setName] = useState("");
@@ -361,19 +362,13 @@ function StreamSlotForm({
   const [textChannelID, setTextChannelID] = useState("");
   const [autoStartFromDiscord, setAutoStartFromDiscord] = useState(true);
   const [youtubeOutputID, setYouTubeOutputID] = useState(noneValue);
-  const [archiveOAuthAccountID, setArchiveOAuthAccountID] = useState(noneValue);
-  const [archiveFolderID, setArchiveFolderID] = useState("");
-  const [archiveSharedDrive, setArchiveSharedDrive] = useState(false);
-  const [archiveSharedDriveID, setArchiveSharedDriveID] = useState("");
-  const [archiveFileName, setArchiveFileName] = useState("");
-  const [archiveRetentionDays, setArchiveRetentionDays] = useState("30");
+  const [archiveProfileID, setArchiveProfileID] = useState(noneValue);
   const [encoderProfileID, setEncoderProfileID] = useState(noneValue);
   const [captionProfileID, setCaptionProfileID] = useState(noneValue);
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [overlayProfileID, setOverlayProfileID] = useState(noneValue);
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
-  const [encoderInputURL, setEncoderInputURL] = useState("");
   const [message, setMessage] = useState("");
 
   const effectiveEncoderServiceID = encoderServiceID ?? singleOptionValue(encoderNodes);
@@ -392,41 +387,30 @@ function StreamSlotForm({
 
   const payload = useMemo(
     () =>
-      compactRecord({
+      buildStreamCreatePayload({
         name,
-        discord_config_id: selectedValue(discordConfigID),
-        discord_guild_id: guildID,
-        discord_voice_channel_id: voiceChannelID,
-        discord_text_channel_id: textChannelID,
-        auto_start_trigger: autoStartFromDiscord ? "discord_voice_join" : "",
-        youtube_output_id: selectedValue(youtubeOutputID),
-        archive_oauth_account_id: selectedValue(archiveOAuthAccountID),
-        archive_folder_id: archiveFolderID,
-        archive_shared_drive: archiveSharedDrive,
-        archive_shared_drive_id: archiveSharedDriveID,
-        archive_file_name: archiveFileName,
-        archive_retention_days: positiveIntOrUndefined(archiveRetentionDays),
-        encoder_profile_id: selectedValue(encoderProfileID),
-        caption_profile_id: selectedValue(captionProfileID),
-        overlay_profile_id: watermarkEnabled ? selectedValue(overlayProfileID) : "",
-        encoder_service_id: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : "",
-        worker_service_id: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : "",
-        encoder_input_url: encoderInputURL,
+        discordConfigID: selectedValue(discordConfigID),
+        discordGuildID: guildID,
+        discordVoiceChannelID: voiceChannelID,
+        discordTextChannelID: textChannelID,
+        autoStartFromDiscord,
+        youtubeOutputID: selectedValue(youtubeOutputID),
+        archiveProfileID: selectedValue(archiveProfileID),
+        encoderProfileID: selectedValue(encoderProfileID),
+        captionProfileID: selectedValue(captionProfileID),
+        watermarkEnabled,
+        overlayProfileID: selectedValue(overlayProfileID),
+        encoderServiceID: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : "",
+        workerServiceID: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : "",
       }),
-    [archiveFileName, archiveFolderID, archiveOAuthAccountID, archiveRetentionDays, archiveSharedDrive, archiveSharedDriveID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderInputURL, encoderProfileID, guildID, name, overlayProfileID, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
+    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderProfileID, guildID, name, overlayProfileID, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
   const autoStartReady = !autoStartFromDiscord || (selectedValue(discordConfigID) !== "" && guildID.trim() !== "" && voiceChannelID.trim() !== "");
-  const hasArchiveUploadTarget = selectedValue(archiveOAuthAccountID) !== "" || archiveFolderID.trim() !== "" || archiveSharedDrive || archiveSharedDriveID.trim() !== "" || archiveFileName.trim() !== "";
-  const archiveReady = !hasArchiveUploadTarget || (selectedValue(archiveOAuthAccountID) !== "" && archiveFolderID.trim() !== "" && (!archiveSharedDrive || archiveSharedDriveID.trim() !== ""));
   const watermarkReady = !watermarkEnabled || selectedValue(overlayProfileID) !== "";
   const nodeAssignmentReady = !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
   const nodeAssignmentPermissionLimited = autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
-  const inputURLReady = externalInputURLIsValid(encoderInputURL);
-  const archiveFileNameReady = !/[\\/]/.test(archiveFileName);
-  const retentionDays = Number.parseInt(archiveRetentionDays, 10);
-  const retentionReady = Number.isFinite(retentionDays) && retentionDays >= 1 && retentionDays <= 3650;
 
   return (
     <Card id="create-stream" className={className}>
@@ -452,7 +436,7 @@ function StreamSlotForm({
             </div>
           </FormSection>
 
-          <FormSection title="開始条件と配信入力" description="自動開始に使うDiscordと担当Node">
+          <FormSection title="開始条件" description="自動開始に使うDiscordと担当Node">
             <label className="mb-3 flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm">
               <Checkbox checked={autoStartFromDiscord} onCheckedChange={(value) => setAutoStartFromDiscord(value === true)} />
               Discord VCへの参加を検知して自動開始
@@ -464,21 +448,15 @@ function StreamSlotForm({
               <TextField label="チャットチャンネルID" value={textChannelID} onChange={setTextChannelID} />
               {canAssignWorker ? <SelectField label="担当Worker Node" value={effectiveWorkerServiceID} onChange={setWorkerServiceID} options={[{ value: noneValue, label: "未選択" }, ...workerNodes]} /> : null}
               {canAssignEncoder ? <SelectField label="担当Encoder Node" value={effectiveEncoderServiceID} onChange={setEncoderServiceID} options={[{ value: noneValue, label: "未選択" }, ...encoderNodes]} /> : null}
-              <TextField label="配信入力URL" value={encoderInputURL} onChange={setEncoderInputURL} placeholder="srt://source.example.com:9000" error={inputURLReady ? undefined : "SRT、RTMP、RTMPS、HTTP、HTTPSの公開URLを入力してください。"} />
             </div>
           </FormSection>
 
-          <FormSection title="出力と録画" description="視聴先と録画ファイルの保存設定">
+          <FormSection title="出力と録画" description="視聴先と事前登録した録画設定">
             <div className="grid gap-3 md:grid-cols-2">
               <SelectField label="YouTube出力" value={youtubeOutputID} onChange={setYouTubeOutputID} options={[{ value: noneValue, label: "未選択" }, ...youtubeOutputs]} />
-              <SelectField label="録画用Googleアカウント" value={archiveOAuthAccountID} onChange={setArchiveOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
-              <TextField label="Drive保存先フォルダーID" value={archiveFolderID} onChange={setArchiveFolderID} />
-              <TextField label="録画ファイル名" value={archiveFileName} onChange={setArchiveFileName} placeholder="未入力なら 配信枠名-年月日.mp4" error={archiveFileNameReady ? undefined : "ファイル名に / または \\ は使えません。"} />
-              <TextField label="Encoder内の保持日数" value={archiveRetentionDays} onChange={setArchiveRetentionDays} type="number" error={retentionReady ? undefined : "1日から3650日の範囲で入力してください。"} />
-              <label className="flex min-h-10 items-center gap-2 self-end rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={archiveSharedDrive} onCheckedChange={(value) => setArchiveSharedDrive(value === true)} />共有ドライブへ保存</label>
-              {archiveSharedDrive ? <TextField label="共有ドライブID" value={archiveSharedDriveID} onChange={setArchiveSharedDriveID} /> : null}
+              <SelectField label="録画プロファイル" value={archiveProfileID} onChange={setArchiveProfileID} options={[{ value: noneValue, label: "録画しない" }, ...archiveProfiles]} />
             </div>
-            {oauthAccounts.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">Drive保存用途で接続されたGoogleアカウントがありません。</p> : null}
+            {archiveProfiles.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">録画する場合は、先に<Link href="/admin/archive/" className="mx-1 underline underline-offset-2">録画・アーカイブ</Link>で録画プロファイルと保存先を作成してください。</p> : null}
           </FormSection>
 
           <FormSection title="映像・字幕" description="配信品質と映像に適用する設定">
@@ -502,12 +480,6 @@ function StreamSlotForm({
               自動開始を使うには、Discord BOT設定、サーバーID、ボイスチャンネルIDが必要です。
             </div>
           ) : null}
-          {hasArchiveUploadTarget && !archiveReady ? (
-            <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              Driveへ録画を保存するには、Googleアカウントと保存先フォルダーIDが必要です。共有ドライブを使う場合は共有ドライブIDも入力してください。
-            </div>
-          ) : null}
           {watermarkEnabled && !watermarkReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -529,7 +501,7 @@ function StreamSlotForm({
           {message ? <div aria-live="polite" className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">{message}</div> : null}
           {!canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !archiveReady || !watermarkReady || !nodeAssignmentReady || !inputURLReady || !archiveFileNameReady || !retentionReady}>
+            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !watermarkReady || !nodeAssignmentReady}>
               <Plus className="size-4" />
               {createStream.isPending ? "作成中..." : "配信枠を作成"}
             </Button>
@@ -696,17 +668,8 @@ function isRecord(value: unknown): value is ResourceRow {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function compactRecord(record: Record<string, unknown>) {
-  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== "" && value !== undefined));
-}
-
 function selectedValue(value: string) {
   return value === noneValue ? "" : value;
-}
-
-function positiveIntOrUndefined(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function singleOptionValue(options: SelectOption[]) {
@@ -721,6 +684,7 @@ function streamCreateErrorMessage(error: unknown) {
       auto_start_discord_required: "Discord VC参加で自動開始する場合は、Discord BOT設定、Guild ID、VC Channel IDを指定してください。",
       discord_config_required: "Discord Guild/VC/Chatを指定する場合はDiscord BOT設定を選択してください。",
       discord_config_not_found: "選択したDiscord BOT設定が見つかりません。",
+      archive_profile_not_found: "選択した録画プロファイルが見つかりません。一覧を更新して選び直してください。",
       encoder_input_url_blocked: "外部入力URLが許可されていません。公開されたSRT/RTMP/HTTPS入力を指定してください。",
       archive_oauth_account_required: "Archiveを設定する場合はOAuth accountを選択してください。",
       archive_folder_id_required: "Archiveを設定する場合はDrive Folder IDを入力してください。",
@@ -757,17 +721,6 @@ function streamStatusAllowsStart(status: Stream["status"]) {
 
 function streamStatusAllowsStop(status: Stream["status"]) {
   return ["starting", "live", "failed"].includes(String(status).toLowerCase());
-}
-
-function externalInputURLIsValid(value: string) {
-  const input = value.trim();
-  if (!input) return true;
-  try {
-    const url = new URL(input);
-    return ["srt:", "rtmp:", "rtmps:", "http:", "https:"].includes(url.protocol) && Boolean(url.hostname) && url.hostname.toLowerCase() !== "localhost" && !url.username && !url.password && !url.hash;
-  } catch {
-    return false;
-  }
 }
 
 function formatDateTime(value?: string, timezone?: string) {

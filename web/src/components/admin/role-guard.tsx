@@ -8,9 +8,10 @@ import { useI18n } from "@/components/admin/i18n-provider";
 type RoleGuardProps = {
   allowed: boolean;
   children: ReactNode;
+  message?: ReactNode;
 };
 
-export function RoleGuard({ allowed, children }: RoleGuardProps) {
+export function RoleGuard({ allowed, children, message }: RoleGuardProps) {
   const { t } = useI18n();
   if (allowed) return <>{children}</>;
   return (
@@ -18,7 +19,7 @@ export function RoleGuard({ allowed, children }: RoleGuardProps) {
       <TooltipTrigger asChild>
         <span className="inline-flex cursor-not-allowed">{children}</span>
       </TooltipTrigger>
-      <TooltipContent>{t("roleLimited")}</TooltipContent>
+      <TooltipContent>{message || t("roleLimited")}</TooltipContent>
     </Tooltip>
   );
 }

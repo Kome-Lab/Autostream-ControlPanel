@@ -182,6 +182,7 @@ var ErrForbidden = errors.New("forbidden")
 var ErrAlreadyExists = errors.New("already exists")
 var ErrInvalidServiceRegistration = errors.New("invalid service registration")
 var ErrInvalidServiceStreamEvent = errors.New("invalid service stream event")
+var ErrInvalidServiceAssignment = errors.New("service type cannot be assigned to a stream")
 
 func (s MariaDBAuthStore) CreateServiceToken(ctx context.Context, serviceType string, scopes []string) (ServiceToken, error) {
 	if err := validateServiceType(serviceType); err != nil {
@@ -277,7 +278,7 @@ func (s MariaDBAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 	token := ServiceToken{
 		ID:          newUUID(),
 		ServiceType: oldToken.ServiceType,
-		Scopes:      append([]string(nil), oldToken.Scopes...),
+		Scopes:      serviceTokenScopesForRotation(oldToken),
 		RawToken:    "ast_svc_" + raw,
 		CreatedAt:   now,
 	}
@@ -399,7 +400,7 @@ func newRotatedServiceToken(oldToken ServiceToken, now time.Time) (ServiceToken,
 	token := ServiceToken{
 		ID:          newUUID(),
 		ServiceType: oldToken.ServiceType,
-		Scopes:      append([]string(nil), oldToken.Scopes...),
+		Scopes:      serviceTokenScopesForRotation(oldToken),
 		RawToken:    "ast_svc_" + raw,
 		CreatedAt:   now,
 	}
@@ -409,6 +410,14 @@ func newRotatedServiceToken(oldToken ServiceToken, now time.Time) (ServiceToken,
 		return ServiceToken{}, "", err
 	}
 	return token, string(scopesJSON), nil
+}
+
+func serviceTokenScopesForRotation(oldToken ServiceToken) []string {
+	scopes := append([]string(nil), oldToken.Scopes...)
+	if oldToken.ServiceType == "observability" && !hasString(scopes, "notifications.email.send") {
+		scopes = append(scopes, "notifications.email.send")
+	}
+	return scopes
 }
 
 func revokeServiceTokenInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
@@ -511,8 +520,8 @@ func (s MariaDBAuthStore) RegisterService(ctx context.Context, token ServiceToke
 		return RegisteredService{}, err
 	}
 	defer tx.Rollback()
-	var existingTokenID, existingType string
-	err = tx.QueryRowContext(ctx, `SELECT token_id, service_type FROM services WHERE service_id = ? FOR UPDATE`, registration.ServiceID).Scan(&existingTokenID, &existingType)
+	var existingTokenID, existingType, existingStatus string
+	err = tx.QueryRowContext(ctx, `SELECT token_id, service_type, status FROM services WHERE service_id = ? FOR UPDATE`, registration.ServiceID).Scan(&existingTokenID, &existingType, &existingStatus)
 	if err == sql.ErrNoRows {
 		return RegisteredService{}, ErrForbidden
 	}
@@ -522,9 +531,10 @@ func (s MariaDBAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	if existingType != registration.ServiceType || existingTokenID != token.ID {
 		return RegisteredService{}, ErrForbidden
 	}
+	preserveConfiguredCapabilities := existingType == "update_agent" && existingStatus != "pending"
 	_, err = tx.ExecContext(ctx, `INSERT INTO services (service_id, service_type, service_name, description, host, port, ssl_enabled, public_url, version, reported_version, reported_commit, reported_build_date, status, capabilities, reported_capabilities, reported_hostname, reported_os, reported_arch, last_reported_at, metrics, token_id, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE service_type = VALUES(service_type), service_name = VALUES(service_name), description = VALUES(description), host = VALUES(host), port = VALUES(port), ssl_enabled = VALUES(ssl_enabled), public_url = VALUES(public_url), version = VALUES(version), reported_version = VALUES(reported_version), reported_commit = VALUES(reported_commit), reported_build_date = VALUES(reported_build_date), status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, capabilities = VALUES(capabilities), reported_capabilities = VALUES(reported_capabilities), reported_hostname = VALUES(reported_hostname), reported_os = VALUES(reported_os), reported_arch = VALUES(reported_arch), last_reported_at = VALUES(last_reported_at), token_id = VALUES(token_id), updated_at = VALUES(updated_at)`, registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description, registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL, registration.Version, registration.Version, registration.Commit, registration.BuildDate, string(capabilities), string(capabilities), registration.Hostname, registration.OS, registration.Arch, now, "{}", token.ID, now, now)
+ON DUPLICATE KEY UPDATE service_type = VALUES(service_type), service_name = VALUES(service_name), description = VALUES(description), host = VALUES(host), port = VALUES(port), ssl_enabled = VALUES(ssl_enabled), public_url = VALUES(public_url), version = VALUES(version), reported_version = VALUES(reported_version), reported_commit = VALUES(reported_commit), reported_build_date = VALUES(reported_build_date), status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, capabilities = CASE WHEN ? THEN capabilities ELSE VALUES(capabilities) END, reported_capabilities = VALUES(reported_capabilities), reported_hostname = VALUES(reported_hostname), reported_os = VALUES(reported_os), reported_arch = VALUES(reported_arch), last_reported_at = VALUES(last_reported_at), token_id = VALUES(token_id), updated_at = VALUES(updated_at)`, registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description, registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL, registration.Version, registration.Version, registration.Commit, registration.BuildDate, string(capabilities), string(capabilities), registration.Hostname, registration.OS, registration.Arch, now, "{}", token.ID, now, now, preserveConfiguredCapabilities)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -574,7 +584,7 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		apiPort = heartbeat.API.Port
 		apiSSL = heartbeat.API.SSLEnabled
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = ?, last_heartbeat_at = ?, current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END, metrics = ?, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, capabilities = CASE WHEN ? = '{}' THEN capabilities ELSE ? END, reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, host = CASE WHEN ? = '' THEN host ELSE ? END, port = CASE WHEN ? = 0 THEN port ELSE ? END, ssl_enabled = CASE WHEN ? = '' THEN ssl_enabled ELSE ? END, public_url = CASE WHEN ? = '' THEN public_url ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ? AND token_id = ?`, heartbeat.Status, now, heartbeat.CurrentStreamID, heartbeat.CurrentStreamID, string(metrics), heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Commit, heartbeat.Commit, heartbeat.BuildDate, heartbeat.BuildDate, string(capabilities), string(capabilities), string(capabilities), string(capabilities), heartbeat.Hostname, heartbeat.Hostname, heartbeat.OS, heartbeat.OS, heartbeat.Arch, heartbeat.Arch, apiHost, apiHost, apiPort, apiPort, apiHost, apiSSL, buildServiceURL(apiHost, apiPort, apiSSL), buildServiceURL(apiHost, apiPort, apiSSL), heartbeat.Version, heartbeat.Commit, heartbeat.BuildDate, string(capabilities), heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, now, now, heartbeat.ServiceID, token.ID)
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = ?, last_heartbeat_at = ?, current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END, metrics = ?, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, capabilities = CASE WHEN service_type = 'update_agent' OR ? = '{}' THEN capabilities ELSE ? END, reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, host = CASE WHEN ? = '' THEN host ELSE ? END, port = CASE WHEN ? = 0 THEN port ELSE ? END, ssl_enabled = CASE WHEN ? = '' THEN ssl_enabled ELSE ? END, public_url = CASE WHEN ? = '' THEN public_url ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ? AND token_id = ?`, heartbeat.Status, now, heartbeat.CurrentStreamID, heartbeat.CurrentStreamID, string(metrics), heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Commit, heartbeat.Commit, heartbeat.BuildDate, heartbeat.BuildDate, string(capabilities), string(capabilities), string(capabilities), string(capabilities), heartbeat.Hostname, heartbeat.Hostname, heartbeat.OS, heartbeat.OS, heartbeat.Arch, heartbeat.Arch, apiHost, apiHost, apiPort, apiPort, apiHost, apiSSL, buildServiceURL(apiHost, apiPort, apiSSL), buildServiceURL(apiHost, apiPort, apiSSL), heartbeat.Version, heartbeat.Commit, heartbeat.BuildDate, string(capabilities), heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, now, now, heartbeat.ServiceID, token.ID)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -899,6 +909,9 @@ func (s MariaDBAuthStore) AssignServiceToStreamWithRole(ctx context.Context, ser
 	if err != nil {
 		return RegisteredService{}, err
 	}
+	if !streamAssignableServiceType(service.ServiceType) {
+		return RegisteredService{}, ErrInvalidServiceAssignment
+	}
 	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -948,6 +961,15 @@ ON DUPLICATE KEY UPDATE assignment_role = VALUES(assignment_role), assigned_by_u
 	service, err = s.getService(ctx, serviceID)
 	service.AssignmentRole = assignmentRole
 	return service, err
+}
+
+func streamAssignableServiceType(serviceType string) bool {
+	switch strings.TrimSpace(serviceType) {
+	case "discord_bot", "encoder_recorder", "worker", "observability":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s MariaDBAuthStore) UnassignServiceFromStream(ctx context.Context, serviceID, actorUserID string) (RegisteredService, error) {
@@ -1358,7 +1380,7 @@ func serviceCapabilitySecretKey(key string) bool {
 
 func validateServiceRegistration(registration ServiceRegistration) error {
 	registration = normalizeServiceRegistration(registration)
-	if strings.TrimSpace(registration.ServiceID) == "" || strings.TrimSpace(registration.ServiceName) == "" || strings.TrimSpace(registration.PublicURL) == "" {
+	if strings.TrimSpace(registration.ServiceID) == "" || strings.EqualFold(strings.TrimSpace(registration.ServiceID), "control-panel") || strings.TrimSpace(registration.ServiceName) == "" || strings.TrimSpace(registration.PublicURL) == "" {
 		return ErrInvalidServiceRegistration
 	}
 	if err := validateServiceType(registration.ServiceType); err != nil {
@@ -1533,7 +1555,7 @@ func fillServiceEndpointFromURL(service *RegisteredService) {
 
 func validateServiceType(serviceType string) error {
 	switch serviceType {
-	case "discord_bot", "encoder_recorder", "worker", "observability":
+	case "discord_bot", "encoder_recorder", "worker", "observability", "update_agent":
 		return nil
 	default:
 		return errors.New("invalid service type")
@@ -1550,6 +1572,9 @@ func validateServiceScopes(scopes []string) error {
 		"notifications.email.send": true,
 		"streams.start":            true,
 		"remediation.execute":      true,
+		"updates.claim":            true,
+		"updates.report":           true,
+		"updates.authorize":        true,
 	}
 	for _, scope := range scopes {
 		if !allowed[scope] {

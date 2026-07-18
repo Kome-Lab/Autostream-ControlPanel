@@ -1,15 +1,19 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -30,6 +34,7 @@ type MailMessage struct {
 	To      string
 	Subject string
 	Text    string
+	HTML    string
 }
 
 type SMTPMailer struct{}
@@ -191,7 +196,7 @@ func (SMTPMailer) Send(ctx context.Context, settings store.AppSettings, password
 	if err != nil {
 		return fmt.Errorf("smtp_data_failed: %w", err)
 	}
-	if _, err := writer.Write([]byte(formatPlainTextEmail(settings.SMTPFrom, message))); err != nil {
+	if _, err := writer.Write([]byte(formatEmail(settings.SMTPFrom, message))); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("smtp_write_failed: %w", err)
 	}
@@ -202,6 +207,13 @@ func (SMTPMailer) Send(ctx context.Context, settings store.AppSettings, password
 	return nil
 }
 
+func formatEmail(from string, message MailMessage) string {
+	if strings.TrimSpace(message.HTML) == "" {
+		return formatPlainTextEmail(from, message)
+	}
+	return formatMultipartAlternativeEmail(from, message)
+}
+
 func formatPlainTextEmail(from string, message MailMessage) string {
 	return "From: " + formatAddressHeader(from) + "\r\n" +
 		"To: " + sanitizeHeaderValue(message.To) + "\r\n" +
@@ -210,6 +222,42 @@ func formatPlainTextEmail(from string, message MailMessage) string {
 		"Content-Type: text/plain; charset=UTF-8\r\n" +
 		"Content-Transfer-Encoding: 8bit\r\n\r\n" +
 		message.Text + "\r\n"
+}
+
+func formatMultipartAlternativeEmail(from string, message MailMessage) string {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writeEmailAlternativePart(writer, `text/plain; charset="UTF-8"`, message.Text); err != nil {
+		return formatPlainTextEmail(from, message)
+	}
+	if err := writeEmailAlternativePart(writer, `text/html; charset="UTF-8"`, message.HTML); err != nil {
+		return formatPlainTextEmail(from, message)
+	}
+	if err := writer.Close(); err != nil {
+		return formatPlainTextEmail(from, message)
+	}
+	return "From: " + formatAddressHeader(from) + "\r\n" +
+		"To: " + sanitizeHeaderValue(message.To) + "\r\n" +
+		"Subject: " + formatSubjectHeader(message.Subject) + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		fmt.Sprintf("Content-Type: multipart/alternative; boundary=%q\r\n\r\n", writer.Boundary()) +
+		body.String()
+}
+
+func writeEmailAlternativePart(writer *multipart.Writer, contentType, body string) error {
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Type", contentType)
+	header.Set("Content-Transfer-Encoding", "quoted-printable")
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return err
+	}
+	encoded := quotedprintable.NewWriter(part)
+	if _, err := encoded.Write([]byte(body)); err != nil {
+		_ = encoded.Close()
+		return err
+	}
+	return encoded.Close()
 }
 
 func smtpEnvelopeFrom(from string) (string, error) {

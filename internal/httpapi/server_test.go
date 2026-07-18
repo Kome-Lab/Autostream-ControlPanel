@@ -281,6 +281,13 @@ func TestAdminAuditEventNotificationPolicy(t *testing.T) {
 		{name: "username without authenticated id", event: store.AuditEvent{Action: "streams.start", ActorUsername: "ops"}, want: false},
 		{name: "service actor stays out", event: store.AuditEvent{Action: "nodes.update", ActorUsername: "service:worker"}, want: false},
 		{name: "service actor id stays out", event: store.AuditEvent{Action: "streams.start", ActorUserID: "service:encoder_recorder", ActorUsername: "encoder_recorder"}, want: false},
+		{name: "updater success reaches channels", event: store.AuditEvent{Action: "system_updates.succeeded", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: true},
+		{name: "updater rollback reaches channels", event: store.AuditEvent{Action: "system_updates.rolled_back", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: true},
+		{name: "updater failure reaches channels", event: store.AuditEvent{Action: "system_updates.failed", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: true},
+		{name: "updater claim stays out", event: store.AuditEvent{Action: "system_updates.claim", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: false},
+		{name: "updater report stays out", event: store.AuditEvent{Action: "system_updates.report", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: false},
+		{name: "updater authorize stays out", event: store.AuditEvent{Action: "system_updates.authorize", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: false},
+		{name: "terminal prefix is not enough", event: store.AuditEvent{Action: "system_updates.succeeded.replay", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: false},
 		{name: "blank action stays out", event: store.AuditEvent{ActorUserID: "user-01", ActorUsername: "ops"}, want: false},
 	}
 	for _, tc := range cases {
@@ -12726,6 +12733,53 @@ func TestWorkerAssignRejectsNonWorker(t *testing.T) {
 	handler.ServeHTTP(assignRes, assignReq)
 	if assignRes.Code != http.StatusBadRequest {
 		t.Fatalf("assign non-worker status = %d body = %s", assignRes.Code, assignRes.Body.String())
+	}
+}
+
+func TestPreferredObservabilityServiceUsesHealthHeartbeatAndNameOrder(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 2, 0, 0, 0, time.UTC)
+	offlineHeartbeat := now.Add(-4 * time.Minute)
+	healthyOlderHeartbeat := now.Add(-30 * time.Second)
+	healthyNewerHeartbeat := now.Add(-10 * time.Second)
+
+	tests := []struct {
+		name     string
+		services []store.RegisteredService
+		wantID   string
+	}{
+		{
+			name: "healthy beats alphabetically first offline node",
+			services: []store.RegisteredService{
+				{ServiceID: "obs-offline", ServiceType: "observability", ServiceName: "A Offline", PublicURL: "https://offline.example.com", Status: "online", LastHeartbeatAt: &offlineHeartbeat},
+				{ServiceID: "obs-healthy", ServiceType: "observability", ServiceName: "Z Healthy", PublicURL: "https://healthy.example.com", Status: "online", LastHeartbeatAt: &healthyOlderHeartbeat},
+			},
+			wantID: "obs-healthy",
+		},
+		{
+			name: "newest heartbeat wins within the same health rank",
+			services: []store.RegisteredService{
+				{ServiceID: "obs-older", ServiceType: "observability", ServiceName: "A Older", PublicURL: "https://older.example.com", Status: "online", LastHeartbeatAt: &healthyOlderHeartbeat},
+				{ServiceID: "obs-newer", ServiceType: "observability", ServiceName: "Z Newer", PublicURL: "https://newer.example.com", Status: "online", LastHeartbeatAt: &healthyNewerHeartbeat},
+			},
+			wantID: "obs-newer",
+		},
+		{
+			name: "name order breaks an equal heartbeat tie",
+			services: []store.RegisteredService{
+				{ServiceID: "obs-zulu", ServiceType: "observability", ServiceName: "Zulu", PublicURL: "https://zulu.example.com", Status: "online", LastHeartbeatAt: &healthyNewerHeartbeat},
+				{ServiceID: "obs-alpha", ServiceType: "observability", ServiceName: "Alpha", PublicURL: "https://alpha.example.com", Status: "online", LastHeartbeatAt: &healthyNewerHeartbeat},
+			},
+			wantID: "obs-alpha",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := preferredObservabilityService(tc.services, now)
+			if !ok || got.ServiceID != tc.wantID {
+				t.Fatalf("preferred observability service = %#v, ok=%v, want %q", got, ok, tc.wantID)
+			}
+		})
 	}
 }
 

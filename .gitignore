@@ -2,6 +2,8 @@ bin/
 coverage.out
 .codex-go-cache/
 .code-go*/
+/.gocache*/
+.local-runtime/
 .env
 *.log
 web/node_modules/

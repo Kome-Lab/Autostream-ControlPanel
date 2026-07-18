@@ -124,6 +124,12 @@ type StreamStore interface {
 	UpsertStreamArtifacts(ctx context.Context, id string, artifacts []StreamArtifact) error
 }
 
+// ActiveStreamStore provides an unbounded active-stream lookup for callers
+// that must not depend on the paginated administrative stream listing.
+type ActiveStreamStore interface {
+	HasActiveStream(ctx context.Context) (bool, error)
+}
+
 type StreamArtifactAdminStore interface {
 	DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error
 	RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error)
@@ -188,6 +194,14 @@ ORDER BY s.created_at DESC LIMIT 100`)
 		streams = append(streams, stream)
 	}
 	return streams, rows.Err()
+}
+
+func (s MariaDBStreamStore) HasActiveStream(ctx context.Context) (bool, error) {
+	var active bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1 FROM streams WHERE LOWER(TRIM(status)) IN ('starting', 'live', 'stopping')
+)`).Scan(&active)
+	return active, err
 }
 
 func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stream, error) {

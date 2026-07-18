@@ -55,9 +55,12 @@ import { APIError, apiGet, apiPost, clearCSRFToken } from "@/lib/api/client";
 import { hasAnyPermission, hasPermission } from "@/lib/auth/permissions";
 import { loginPathForLocation } from "@/lib/auth/post-login-redirect";
 import {
-  createNavigationSectionState,
+  createNavigationSectionsState,
+  isNavigationSectionOpen,
   navigationSectionStateKey,
+  synchronizeNavigationSectionsState,
   toggleNavigationSection,
+  type NavigationSectionsState,
 } from "@/lib/navigation-section-state";
 import { useAppSettings, useCurrentUser, useServiceHealth, useVersion } from "@/features/queries";
 import type { CurrentUser, Locale, SetupStatus } from "@/types/domain";
@@ -123,13 +126,14 @@ const navSections: NavSection[] = [
       navItem("/admin/security/", "security", KeyRound, ["secrets.read_status", "system_settings.read"], "ログイン・MFA・シークレット設定", "Manage login, MFA, and secret settings"),
       navItem("/admin/nodes/", "nodeRegistration", Network, ["api_tokens.create"], "新しいNodeと登録トークンを発行", "Issue nodes and registration tokens"),
       navItem("/admin/registered-nodes/", "registeredNodes", ServerCog, ["api_tokens.create"], "登録済みNodeを編集・削除", "Edit and remove registered nodes"),
-      navItem("/admin/application/", "applicationInfo", Info, ["system_settings.read"], "各サービスのバージョンを確認", "Review service versions"),
+      navItem("/admin/application/", "applicationInfo", Info, ["system_settings.read", "system_updates.read"], "各サービスのバージョンと更新状況を確認", "Review service versions and updates"),
       navItem("/admin/settings/", "settings", Settings, ["system_settings.read"], "表示、時刻、メールサーバー設定", "Manage display, time, and mail settings"),
     ],
   },
 ];
 
 const navItems = navSections.flatMap((section) => section.items);
+const navSectionKeys = navSections.map((section) => section.key);
 
 export function AdminShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -146,6 +150,14 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const username = currentUser.data?.user.username || "";
   const authenticated = Boolean(currentUser.data);
   const sessionExpired = currentUser.error instanceof APIError && currentUser.error.status === 401 && currentUser.error.code === "unauthorized";
+  const activeSectionKey = activeNavigationSectionKey(pathname);
+  const [navigationSectionsState, setNavigationSectionsState] = useState(() =>
+    createNavigationSectionsState(navSectionKeys, navSectionKeys[0] || null, activeSectionKey),
+  );
+  const synchronizedNavigationSectionsState = synchronizeNavigationSectionsState(navigationSectionsState, activeSectionKey);
+  if (synchronizedNavigationSectionsState !== navigationSectionsState) {
+    setNavigationSectionsState(synchronizedNavigationSectionsState);
+  }
   const logout = useMutation({
     mutationFn: () => apiPost<{ status: string }>("/auth/logout"),
     onSettled: () => {
@@ -157,6 +169,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (currentUser.data) authenticatedSessionSeen.current = true;
   }, [currentUser.data]);
+
+  const toggleNavigationSectionByKey = (sectionKey: string) => {
+    setNavigationSectionsState((state) =>
+      toggleNavigationSection(synchronizeNavigationSectionsState(state, activeSectionKey), sectionKey),
+    );
+  };
 
   useEffect(() => {
     if (!authenticated) return;
@@ -271,7 +289,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="px-2.5 py-3">
-            <Navigation pathname={pathname} currentUser={currentUser.data} />
+            <Navigation
+              pathname={pathname}
+              currentUser={currentUser.data}
+              sectionState={synchronizedNavigationSectionsState}
+              onToggleSection={toggleNavigationSectionByKey}
+            />
           </div>
         </ScrollArea>
         <div className="shrink-0 border-t border-sidebar-border px-4 py-3 text-xs text-sidebar-foreground/58">
@@ -310,7 +333,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
                 </div>
                 <ScrollArea className="h-[calc(100vh-4.5rem)]">
                   <div className="p-2.5">
-                    <Navigation pathname={pathname} currentUser={currentUser.data} mobile />
+                    <Navigation
+                      pathname={pathname}
+                      currentUser={currentUser.data}
+                      sectionState={synchronizedNavigationSectionsState}
+                      onToggleSection={toggleNavigationSectionByKey}
+                      mobile
+                    />
                   </div>
                 </ScrollArea>
               </SheetContent>
@@ -410,23 +439,34 @@ export function AdminShell({ children }: { children: ReactNode }) {
   );
 }
 
-function Navigation({ pathname, currentUser, mobile = false }: { pathname: string; currentUser: CurrentUser; mobile?: boolean }) {
+function Navigation({
+  pathname,
+  currentUser,
+  sectionState,
+  onToggleSection,
+  mobile = false,
+}: {
+  pathname: string;
+  currentUser: CurrentUser;
+  sectionState: NavigationSectionsState;
+  onToggleSection: (sectionKey: string) => void;
+  mobile?: boolean;
+}) {
   const visibleSections = navSections
     .map((section) => ({ ...section, items: section.items.filter((item) => canSeeNavItem(item, currentUser)) }))
     .filter((section) => section.items.length > 0);
 
   return (
     <nav aria-label="管理メニュー" className="space-y-1.5">
-      {visibleSections.map((section, sectionIndex) => {
-        const sectionActive = section.items.some((item) => isActivePath(pathname, item.href));
+      {visibleSections.map((section) => {
         return (
           <NavigationSection
-            key={navigationSectionStateKey(section.key, sectionActive)}
+            key={navigationSectionStateKey(section.key)}
             section={section}
             pathname={pathname}
             mobile={mobile}
-            initiallyOpen={sectionIndex === 0}
-            sectionActive={sectionActive}
+            open={isNavigationSectionOpen(sectionState, section.key)}
+            onToggle={() => onToggleSection(section.key)}
           />
         );
       })}
@@ -439,10 +479,8 @@ function withVersionPrefix(value: string | null | undefined) {
   return normalized.toLowerCase().startsWith("v") ? normalized : `v${normalized}`;
 }
 
-function NavigationSection({ section, pathname, mobile, initiallyOpen, sectionActive }: { section: NavSection; pathname: string; mobile: boolean; initiallyOpen: boolean; sectionActive: boolean }) {
+function NavigationSection({ section, pathname, mobile, open, onToggle }: { section: NavSection; pathname: string; mobile: boolean; open: boolean; onToggle: () => void }) {
   const { t } = useI18n();
-  const [sectionState, setSectionState] = useState(() => createNavigationSectionState(initiallyOpen, sectionActive));
-  const open = sectionState.open;
 
   return (
     <div>
@@ -450,7 +488,7 @@ function NavigationSection({ section, pathname, mobile, initiallyOpen, sectionAc
         type="button"
         className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-[0.7rem] font-semibold text-sidebar-foreground/56 transition-colors hover:bg-sidebar-accent/45 hover:text-sidebar-foreground"
         aria-expanded={open}
-        onClick={() => setSectionState(toggleNavigationSection)}
+        onClick={onToggle}
       >
         <span>{t(section.key)}</span>
         <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
@@ -500,6 +538,10 @@ function isSuperAdmin(currentUser?: CurrentUser) {
 
 function activeNavigationItem(pathname: string) {
   return navItems.find((item) => isActivePath(pathname, item.href));
+}
+
+function activeNavigationSectionKey(pathname: string) {
+  return navSections.find((section) => section.items.some((item) => isActivePath(pathname, item.href)))?.key || null;
 }
 
 function isActivePath(pathname: string, href: string) {

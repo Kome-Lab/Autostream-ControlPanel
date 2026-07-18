@@ -50,6 +50,21 @@ func TestCreateServiceTokenRequiresAtLeastOneScope(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentCannotBeAssignedToStream(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.AssignServiceToStream(ctx, "updater-01", "stream-01", "admin"); !errors.Is(err, ErrInvalidServiceAssignment) {
+		t.Fatalf("update_agent assignment err = %v", err)
+	}
+}
+
 func TestPrecreateServiceAllowsSameTokenRegistrationOnly(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()
@@ -215,6 +230,135 @@ func TestRotateServiceNodeTokenPreservesSharedLegacyToken(t *testing.T) {
 	}
 	if authenticated, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); err != nil || authenticated.ID != oldToken.ID {
 		t.Fatalf("shared legacy token must remain active for sibling: token=%#v err=%v", authenticated, err)
+	}
+}
+
+func TestRotateServiceTokenAddsRequiredObservabilityEmailScope(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "observability", []string{"service.register", "service.heartbeat", "observability.ingest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "observability-shared", ServiceType: "observability", ServiceName: "Legacy Observability", PublicURL: "https://observability.example.com", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate observability service: %v", err)
+	}
+
+	newToken, err := auth.RotateServiceToken(ctx, oldToken.ID)
+	if err != nil {
+		t.Fatalf("rotate legacy observability token: %v", err)
+	}
+	wantScopes := []string{"service.register", "service.heartbeat", "observability.ingest", "notifications.email.send"}
+	if !reflect.DeepEqual(newToken.Scopes, wantScopes) {
+		t.Fatalf("rotated observability scopes were not upgraded: got %#v want %#v", newToken.Scopes, wantScopes)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "observability.ingest"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("old runtime token should be revoked, got %v", err)
+	}
+	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "notifications.email.send"); err != nil || authenticated.ID != newToken.ID {
+		t.Fatalf("rotated token should authorize email relay: token=%#v err=%v", authenticated, err)
+	}
+	service, err := auth.GetService(ctx, "observability-shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.TokenID != newToken.ID {
+		t.Fatalf("registered service still references the old token: %#v", service)
+	}
+}
+
+func TestRotateServiceNodeTokenAddsRequiredObservabilityEmailScope(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "observability", []string{"service.register", "service.heartbeat", "observability.ingest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "observability-legacy", ServiceType: "observability", ServiceName: "Legacy Observability", PublicURL: "https://observability.example.com", Capabilities: map[string]any{}}); err != nil {
+		t.Fatalf("precreate observability service: %v", err)
+	}
+
+	newToken, _, err := auth.RotateServiceNodeToken(ctx, "observability-legacy", oldToken.ID, func(string) (string, string, error) {
+		return "new-ciphertext", "new-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("rotate legacy observability token: %v", err)
+	}
+	if !hasString(newToken.Scopes, "observability.ingest") || !hasString(newToken.Scopes, "notifications.email.send") {
+		t.Fatalf("rotated observability scopes were not upgraded: %#v", newToken.Scopes)
+	}
+	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "notifications.email.send"); err != nil || authenticated.ID != newToken.ID {
+		t.Fatalf("rotated token should authorize email relay: token=%#v err=%v", authenticated, err)
+	}
+}
+
+func TestServiceTokenScopesForRotationUpgradesLegacyObservabilityToken(t *testing.T) {
+	originalScopes := []string{"service.register", "service.heartbeat", "observability.ingest"}
+	rotatedScopes := serviceTokenScopesForRotation(ServiceToken{
+		ServiceType: "observability",
+		Scopes:      originalScopes,
+	})
+
+	want := []string{"service.register", "service.heartbeat", "observability.ingest", "notifications.email.send"}
+	if !reflect.DeepEqual(rotatedScopes, want) {
+		t.Fatalf("unexpected rotated scopes: got %#v want %#v", rotatedScopes, want)
+	}
+	if !reflect.DeepEqual(originalScopes, []string{"service.register", "service.heartbeat", "observability.ingest"}) {
+		t.Fatalf("rotation mutated the old token scopes: %#v", originalScopes)
+	}
+
+	alreadyUpgraded := serviceTokenScopesForRotation(ServiceToken{
+		ServiceType: "observability",
+		Scopes:      []string{"observability.ingest", "notifications.email.send"},
+	})
+	if !reflect.DeepEqual(alreadyUpgraded, []string{"observability.ingest", "notifications.email.send"}) {
+		t.Fatalf("email scope was duplicated: %#v", alreadyUpgraded)
+	}
+
+	workerScopes := serviceTokenScopesForRotation(ServiceToken{
+		ServiceType: "worker",
+		Scopes:      []string{"service.register", "service.heartbeat"},
+	})
+	if !reflect.DeepEqual(workerScopes, []string{"service.register", "service.heartbeat"}) {
+		t.Fatalf("non-observability scopes must be preserved unchanged: %#v", workerScopes)
+	}
+}
+
+func TestConfigureServiceNodeAddsRequiredObservabilityEmailScope(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "observability", []string{"service.register", "service.heartbeat", "observability.ingest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{
+		ServiceID:    "observability-configure",
+		ServiceType:  "observability",
+		ServiceName:  "Legacy Observability",
+		PublicURL:    "https://observability.example.com",
+		Capabilities: map[string]any{},
+	}); err != nil {
+		t.Fatalf("precreate observability service: %v", err)
+	}
+
+	configureToken := "configure-observability-once"
+	now := time.Date(2026, time.July, 18, 2, 0, 0, 0, time.UTC)
+	if _, err := auth.SetServiceConfigureToken(ctx, "observability-configure", security.HashToken(configureToken), now.Add(time.Hour)); err != nil {
+		t.Fatalf("set configure token: %v", err)
+	}
+
+	newToken, _, err := auth.ConfigureServiceNode(ctx, "observability-configure", configureToken, now, ServiceRuntimeReport{Version: "1.2.3"}, func(string) (string, string, error) {
+		return "new-ciphertext", "new-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("configure legacy observability node: %v", err)
+	}
+	wantScopes := []string{"service.register", "service.heartbeat", "observability.ingest", "notifications.email.send"}
+	if !reflect.DeepEqual(newToken.Scopes, wantScopes) {
+		t.Fatalf("configured observability scopes were not upgraded: got %#v want %#v", newToken.Scopes, wantScopes)
+	}
+	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "notifications.email.send"); err != nil || authenticated.ID != newToken.ID {
+		t.Fatalf("configured token should authorize email relay: token=%#v err=%v", authenticated, err)
 	}
 }
 

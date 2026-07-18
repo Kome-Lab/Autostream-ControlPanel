@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -55,40 +57,45 @@ const emailChangeChallengeTTL = 30 * time.Minute
 const defaultArchiveRetentionDays = 30
 const maxArchiveRetentionDays = 3650
 const streamPreviewLinkTTL = 12 * time.Hour
-const adminAuditNotificationTimeout = 30 * time.Second
+const (
+	adminAuditNotificationTimeout        = 40 * time.Second
+	notificationObservabilityCallTimeout = 35 * time.Second
+)
 
 type Server struct {
-	mux                 *http.ServeMux
-	handler             http.Handler
-	streams             store.StreamStore
-	auth                store.AuthStore
-	audit               store.AuditStore
-	users               store.UserAdminStore
-	roles               store.RoleStore
-	services            store.ServiceRegistryStore
-	profiles            store.ProfileStore
-	integrations        store.IntegrationStore
-	settings            store.SecuritySettingsStore
-	appSettings         store.AppSettingsStore
-	secrets             store.SecretStore
-	runtimeLeases       store.RuntimeSecretLeaseStore
-	remediation         store.RemediationExecutionStore
-	mfa                 store.MFAStore
-	emailChanges        store.EmailChangeStore
-	passkeys            store.PasskeyStore
-	avatars             store.UserAvatarStore
-	oauthLogin          store.OAuthLoginStore
-	oauthVerifier       oauthlogin.Verifier
-	oauthConnector      oauthlogin.Connector
-	mailer              Mailer
-	turnstile           TurnstileVerifier
-	obs                 observability.Client
-	dispatcher          serviceDispatcher
-	youtubeLive         ytlive.LiveClient
-	setupToken          string
-	previewSigningKey   string
-	loginFailures       *loginFailureLimiter
-	serviceEmailLimiter *serviceEmailRateLimiter
+	mux                     *http.ServeMux
+	handler                 http.Handler
+	streams                 store.StreamStore
+	auth                    store.AuthStore
+	audit                   store.AuditStore
+	users                   store.UserAdminStore
+	roles                   store.RoleStore
+	services                store.ServiceRegistryStore
+	profiles                store.ProfileStore
+	integrations            store.IntegrationStore
+	settings                store.SecuritySettingsStore
+	appSettings             store.AppSettingsStore
+	secrets                 store.SecretStore
+	runtimeLeases           store.RuntimeSecretLeaseStore
+	remediation             store.RemediationExecutionStore
+	systemUpdates           store.SystemUpdateStore
+	systemUpdateOperationMu sync.Mutex
+	mfa                     store.MFAStore
+	emailChanges            store.EmailChangeStore
+	passkeys                store.PasskeyStore
+	avatars                 store.UserAvatarStore
+	oauthLogin              store.OAuthLoginStore
+	oauthVerifier           oauthlogin.Verifier
+	oauthConnector          oauthlogin.Connector
+	mailer                  Mailer
+	turnstile               TurnstileVerifier
+	obs                     observability.Client
+	dispatcher              serviceDispatcher
+	youtubeLive             ytlive.LiveClient
+	setupToken              string
+	previewSigningKey       string
+	loginFailures           *loginFailureLimiter
+	serviceEmailLimiter     *serviceEmailRateLimiter
 }
 
 type serviceDispatcher interface {
@@ -164,6 +171,10 @@ func WithRuntimeSecretLeaseStore(runtimeLeases store.RuntimeSecretLeaseStore) Se
 
 func WithRemediationExecutionStore(remediation store.RemediationExecutionStore) ServerOption {
 	return func(s *Server) { s.remediation = remediation }
+}
+
+func WithSystemUpdateStore(systemUpdates store.SystemUpdateStore) ServerOption {
+	return func(s *Server) { s.systemUpdates = systemUpdates }
 }
 
 func WithMFAStore(mfa store.MFAStore) ServerOption {
@@ -276,6 +287,9 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 			s.remediation = store.NewMemoryRemediationExecutionStore()
 		}
 	}
+	if s.systemUpdates == nil {
+		s.systemUpdates = store.NewMemorySystemUpdateStore()
+	}
 	if s.mfa == nil {
 		if mfa, ok := s.auth.(store.MFAStore); ok {
 			s.mfa = mfa
@@ -335,6 +349,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /services/stream-artifacts", s.serviceStreamArtifacts)
 	s.mux.HandleFunc("POST /services/notifications/email", s.serviceEmailNotification)
 	s.mux.HandleFunc("POST /services/remediation-actions/execute", s.serviceRemediationExecute)
+	s.mux.HandleFunc("POST /services/update-jobs/claim", s.serviceSystemUpdateClaim)
+	s.mux.HandleFunc("POST /services/update-jobs/{id}/report", s.serviceSystemUpdateReport)
+	s.mux.HandleFunc("POST /services/update-jobs/{id}/authorize", s.serviceSystemUpdateAuthorize)
+	s.mux.HandleFunc("POST /services/update-jobs/{id}/mutation-grants", s.serviceSystemUpdateMutationGrantIssue)
+	s.mux.HandleFunc("POST /services/update-jobs/{id}/mutation-grants/consume", s.serviceSystemUpdateMutationGrantConsume)
 	s.mux.HandleFunc("POST /api/node-agent/configure", s.nodeAgentConfigure)
 	s.mux.HandleFunc("POST /api/node-agent/heartbeat", s.nodeAgentHeartbeat)
 	s.mux.HandleFunc("POST /api/node-agent/report", s.nodeAgentReport)
@@ -470,6 +489,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /settings/app", s.requirePermission("system_settings.update", s.updateAppSettings))
 	s.mux.HandleFunc("POST /settings/app/test-email", s.requirePermission("system_settings.update", s.sendAppSettingsTestEmail))
 	s.mux.HandleFunc("GET /version", s.requirePermission("", s.versionInfo))
+	s.mux.HandleFunc("GET /system-updates", s.requirePermission("system_updates.read", s.listSystemUpdates))
+	s.mux.HandleFunc("POST /system-updates", s.requirePermission("system_updates.execute", s.createSystemUpdate))
+	s.mux.HandleFunc("POST /system-updates/{id}/cancel", s.requirePermission("system_updates.execute", s.cancelSystemUpdate))
 	s.mux.HandleFunc("GET /secrets/status", s.requirePermission("secrets.read_status", s.secretStatus))
 	s.mux.HandleFunc("PUT /secrets/{name}", s.requirePermission("secrets.update", s.updateSecret))
 	s.mux.HandleFunc("GET /observability/incidents", s.requirePermission("incidents.read", s.observabilityGet("/incidents")))
@@ -4424,12 +4446,16 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
 		return
 	}
-	configureToken, configureExpiresAt, err := s.issueNodeConfigureToken(r.Context(), service.ServiceID)
-	if err != nil {
-		_ = s.services.RevokeServiceToken(r.Context(), token.ID)
-		_ = s.services.DeleteService(r.Context(), service.ServiceID)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
-		return
+	var configureToken string
+	var configureExpiresAt time.Time
+	if service.ServiceType != "update_agent" {
+		configureToken, configureExpiresAt, err = s.issueNodeConfigureToken(r.Context(), service.ServiceID)
+		if err != nil {
+			_ = s.services.RevokeServiceToken(r.Context(), token.ID)
+			_ = s.services.DeleteService(r.Context(), service.ServiceID)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
+			return
+		}
 	}
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{
@@ -4441,21 +4467,23 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		Result:        "success",
 		Metadata:      map[string]any{"node_type": service.ServiceType, "token_id": token.ID, "scopes": token.Scopes},
 	})
-	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
-		"id":                         token.ID,
-		"service_type":               token.ServiceType,
-		"node_type":                  token.ServiceType,
-		"scopes":                     token.Scopes,
-		"token":                      configureToken,
-		"configure_token":            configureToken,
-		"configure_token_expires_at": configureExpiresAt,
-		"runtime_token_id":           token.ID,
-		"runtime_token":              token.RawToken,
-		"created_at":                 token.CreatedAt,
-		"node":                       service,
-		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, ""),
-		"configuration_yaml":         nodeConfigurationYAML(r, service, token.ID, token.RawToken),
-	})
+	response := map[string]any{
+		"id":               token.ID,
+		"service_type":     token.ServiceType,
+		"node_type":        token.ServiceType,
+		"scopes":           token.Scopes,
+		"runtime_token_id": token.ID,
+		"runtime_token":    token.RawToken,
+		"created_at":       token.CreatedAt,
+		"node":             service,
+	}
+	if configureToken != "" {
+		response["token"] = configureToken
+		response["configure_token"] = configureToken
+		response["configure_token_expires_at"] = configureExpiresAt
+	}
+	addNodeConfigurationMetadata(response, r, service, token.ID, token.RawToken, configureToken)
+	writeOneTimeSecretJSON(w, http.StatusCreated, response)
 }
 
 func nodeRegistrationScopes(serviceType string, allowRuntimeSecrets, allowRemediation bool) []string {
@@ -4472,6 +4500,8 @@ func nodeRegistrationScopes(serviceType string, allowRuntimeSecrets, allowRemedi
 		if allowRemediation {
 			scopes = append(scopes, "remediation.execute")
 		}
+	case "update_agent":
+		scopes = append(scopes, "updates.claim", "updates.report", "updates.authorize")
 	}
 	if serviceType == "encoder_recorder" || allowRuntimeSecrets {
 		scopes = append(scopes, "service.secret.resolve")
@@ -4543,6 +4573,9 @@ func nodeConfigureTokenTTL() time.Duration {
 }
 
 func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, configPath string) string {
+	if strings.TrimSpace(serviceType) == "update_agent" {
+		return ""
+	}
 	panelURL := panelBaseURL(r)
 	if panelURL == "" {
 		panelURL = "https://control.example.com"
@@ -4565,12 +4598,17 @@ func nodeConfigureBinary(serviceType string) string {
 		return "autostream-discord-bot"
 	case "observability":
 		return "autostream-observability"
+	case "update_agent":
+		return "autostream-updater"
 	default:
 		return "autostream-worker"
 	}
 }
 
 func nodeDefaultConfigPath(serviceType string) string {
+	if strings.TrimSpace(serviceType) == "update_agent" {
+		return "/etc/autostream/updater.json"
+	}
 	return "/etc/autostream-" + nodeServiceDirectoryName(serviceType) + "/config.yml"
 }
 
@@ -4619,6 +4657,9 @@ func panelBaseURL(r *http.Request) string {
 }
 
 func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tokenID, rawToken string) string {
+	if service.ServiceType == "update_agent" {
+		return ""
+	}
 	panelURL := panelBaseURL(r)
 	if panelURL == "" {
 		panelURL = "https://control.example.com"
@@ -4665,6 +4706,20 @@ func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tok
 		"",
 	)
 	return strings.Join(lines, "\n")
+}
+
+func addNodeConfigurationMetadata(response map[string]any, r *http.Request, service store.RegisteredService, tokenID, rawToken, configureToken string) {
+	if service.ServiceType == "update_agent" {
+		response["configure_command"] = ""
+		response["configuration_path"] = "/etc/autostream/updater.json"
+		response["configuration_example"] = "release/autostream-updater.json.example"
+		response["manual_configuration_required"] = true
+		return
+	}
+	response["configuration_yaml"] = nodeConfigurationYAML(r, service, tokenID, rawToken)
+	if configureToken != "" {
+		response["configure_command"] = nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, "")
+	}
 }
 
 func nodeStreamIngestSigningKey(serviceType string, includeSecret bool) string {
@@ -4763,12 +4818,12 @@ func (s *Server) nodeConfiguration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"node":               service,
-		"node_api_url":       buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled),
-		"configuration_yaml": nodeConfigurationYAML(r, service, service.TokenID, ""),
-		"configure_command":  nodeConfigureCommand(r, service.ServiceType, service.ServiceID, "<regenerate-configure-token>", ""),
-	})
+	response := map[string]any{
+		"node":         service,
+		"node_api_url": buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled),
+	}
+	addNodeConfigurationMetadata(response, r, service, service.TokenID, "", "<regenerate-configure-token>")
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Request) {
@@ -4787,6 +4842,10 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if !s.requireNodeTokenScopePermissions(w, r, service) {
+		return
+	}
+	if service.ServiceType == "update_agent" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "manual_configuration_required"})
 		return
 	}
 	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
@@ -4846,12 +4905,13 @@ func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "nodes.runtime_token.rotate", ResourceType: "node", ResourceID: service.ServiceID, Result: "success", Metadata: map[string]any{"token_id": token.ID}})
-	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
-		"node":               updated,
-		"runtime_token_id":   token.ID,
-		"runtime_token":      token.RawToken,
-		"configuration_yaml": nodeConfigurationYAML(r, updated, token.ID, token.RawToken),
-	})
+	response := map[string]any{
+		"node":             updated,
+		"runtime_token_id": token.ID,
+		"runtime_token":    token.RawToken,
+	}
+	addNodeConfigurationMetadata(response, r, updated, token.ID, token.RawToken, "")
+	writeOneTimeSecretJSON(w, http.StatusCreated, response)
 }
 
 func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
@@ -4886,6 +4946,10 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	if service.ServiceType == "update_agent" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "manual_configuration_required"})
 		return
 	}
 	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
@@ -4980,6 +5044,9 @@ func validateServiceTokenScopePermissions(actorPermissions, scopes []string) err
 		"service.secret.resolve": "secrets.update",
 		"remediation.execute":    "remediation.execute",
 		"streams.start":          "streams.start",
+		"updates.claim":          "system_updates.execute",
+		"updates.report":         "system_updates.execute",
+		"updates.authorize":      "system_updates.execute",
 	}
 	for _, scope := range scopes {
 		permission := required[strings.TrimSpace(scope)]
@@ -5435,9 +5502,17 @@ func (s *Server) assignService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_service_failed"})
 		return
 	}
+	if existing.ServiceType == "update_agent" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "service_assignment_unsupported"})
+		return
+	}
 	current := currentFromContext(r.Context())
 	service, err := s.services.AssignServiceToStreamWithRole(r.Context(), existing.ServiceID, body.StreamID, current.User.ID, body.AssignmentRole)
 	if err != nil {
+		if errors.Is(err, store.ErrInvalidServiceAssignment) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "service_assignment_unsupported"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_failed"})
 		return
 	}
@@ -5476,6 +5551,19 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_service_failed"})
 		return
 	}
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	current := currentFromContext(r.Context())
+	activeUpdate, err := s.systemUpdates.HasActiveSystemUpdateReference(r.Context(), existing.ServiceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_system_update_active_failed"})
+		return
+	}
+	if activeUpdate {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.delete", ResourceType: "service", ResourceID: existing.ServiceID, Result: "failure", Metadata: map[string]any{"reason": "system_update_active", "service_type": existing.ServiceType}})
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_active"})
+		return
+	}
 	if err := s.services.DeleteService(r.Context(), existing.ServiceID); errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "service_not_found"})
 		return
@@ -5483,7 +5571,6 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_service_failed"})
 		return
 	}
-	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.delete", ResourceType: "service", ResourceID: existing.ServiceID, Result: "success", Metadata: map[string]any{"service_type": existing.ServiceType, "previous_stream_id": existing.CurrentStreamID}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -8124,6 +8211,22 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
 		return
 	}
+	s.systemUpdateOperationMu.Lock()
+	updateOperationLocked := true
+	defer func() {
+		if updateOperationLocked {
+			s.systemUpdateOperationMu.Unlock()
+		}
+	}()
+	if job, active, err := s.activeSystemUpdateForStreamTargets(r.Context(), primaryAssignments); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_service_update_failed"})
+		return
+	} else if active {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "service_update_in_progress", "update_job_id": job.ID, "target_id": job.TargetID, "update_status": job.Status}})
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "service_update_in_progress", "job_id": job.ID, "target_id": job.TargetID, "status": job.Status})
+		return
+	}
 	if err := s.applyDiscordConfig(r.Context(), primaryAssignments, &body); err != nil {
 		current := currentFromContext(r.Context())
 		code := discordConfigCode(err)
@@ -8162,6 +8265,8 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
 		return
 	}
+	s.systemUpdateOperationMu.Unlock()
+	updateOperationLocked = false
 	results := s.dispatcher.Start(r.Context(), stream, primaryAssignments, body)
 	results = sanitizeDispatchResults(results)
 	if hasDispatchFailure(results) {
@@ -9254,6 +9359,12 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 	missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
 	issues := []servicecall.ReadinessIssue{}
 	if len(missing) == 0 {
+		if job, active, err := s.activeSystemUpdateForStreamTargets(r.Context(), primaryAssignments); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_service_update_failed"})
+			return
+		} else if active {
+			issues = append(issues, servicecall.ReadinessIssue{ServiceID: job.TargetID, ServiceType: job.TargetServiceType, Code: "service_update_in_progress", Message: "A required service is being updated."})
+		}
 		if err := s.applyDiscordConfig(r.Context(), primaryAssignments, &body); err != nil {
 			writeJSON(w, discordConfigStatus(err), map[string]string{"code": discordConfigCode(err)})
 			return
@@ -10832,9 +10943,90 @@ type versionInfoResponse struct {
 }
 
 type serviceUpdateInfoResponse struct {
-	LatestVersion     string `json:"latest_version,omitempty"`
-	UpdateCheckSource string `json:"update_check_source"`
-	UpdateCheckError  string `json:"update_check_error,omitempty"`
+	LatestVersion       string `json:"latest_version,omitempty"`
+	UpdateCheckSource   string `json:"update_check_source"`
+	UpdateCheckError    string `json:"update_check_error,omitempty"`
+	ManifestVerified    bool   `json:"-"`
+	ManifestErrorCode   string `json:"-"`
+	MinimumAgentVersion string `json:"-"`
+}
+
+type updateReleaseAsset struct {
+	Name               string `json:"name"`
+	URL                string `json:"url"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+const latestVersionCacheTTL = 5 * time.Minute
+const latestVersionNegativeCacheTTL = 30 * time.Second
+const maxHostUpdateArtifactBytes = int64(256 << 20)
+
+type latestVersionCacheEntry struct {
+	result    serviceUpdateInfoResponse
+	expiresAt time.Time
+	ready     chan struct{}
+	loading   bool
+}
+
+type latestVersionResultCache struct {
+	mu      sync.Mutex
+	entries map[string]*latestVersionCacheEntry
+}
+
+var processLatestVersionCache = &latestVersionResultCache{entries: map[string]*latestVersionCacheEntry{}}
+
+func (c *latestVersionResultCache) get(ctx context.Context, key string, load func(context.Context) serviceUpdateInfoResponse) serviceUpdateInfoResponse {
+	now := time.Now().UTC()
+	c.mu.Lock()
+	if entry := c.entries[key]; entry != nil {
+		if entry.loading {
+			ready := entry.ready
+			c.mu.Unlock()
+			select {
+			case <-ready:
+				return entry.result
+			case <-ctx.Done():
+				return serviceUpdateInfoResponse{UpdateCheckSource: "cache", UpdateCheckError: "update check request canceled", ManifestErrorCode: "release_manifest_invalid"}
+			}
+		}
+		if now.Before(entry.expiresAt) {
+			result := entry.result
+			c.mu.Unlock()
+			return result
+		}
+	}
+	entry := &latestVersionCacheEntry{ready: make(chan struct{}), loading: true}
+	c.entries[key] = entry
+	c.mu.Unlock()
+
+	go func() {
+		loadCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		result := load(loadCtx)
+		ttl := latestVersionCacheTTL
+		if result.UpdateCheckError != "" || result.ManifestErrorCode != "" {
+			ttl = latestVersionNegativeCacheTTL
+		}
+		c.mu.Lock()
+		entry.result = result
+		entry.expiresAt = time.Now().UTC().Add(ttl)
+		entry.loading = false
+		close(entry.ready)
+		c.mu.Unlock()
+	}()
+
+	select {
+	case <-entry.ready:
+		return entry.result
+	case <-ctx.Done():
+		return serviceUpdateInfoResponse{UpdateCheckSource: "cache", UpdateCheckError: "update check request canceled", ManifestErrorCode: "release_manifest_invalid"}
+	}
+}
+
+func (c *latestVersionResultCache) clear() {
+	c.mu.Lock()
+	c.entries = map[string]*latestVersionCacheEntry{}
+	c.mu.Unlock()
 }
 
 type versionUpdateTarget struct {
@@ -10850,6 +11042,7 @@ const (
 	defaultEncoderUpdateCheckURL       = "https://api.github.com/repos/Kome-Lab/Autostream-Encoder-Recorder/releases/latest"
 	defaultDiscordBotUpdateCheckURL    = "https://api.github.com/repos/Kome-Lab/Autostream-DiscordBot/releases/latest"
 	defaultObservabilityUpdateCheckURL = "https://api.github.com/repos/Kome-Lab/Autostream-Observability/releases/latest"
+	defaultDockerUpdateCheckURL        = "https://api.github.com/repos/Kome-Lab/Autostream-Docker/releases/latest"
 )
 
 var controlPanelVersionUpdateTarget = versionUpdateTarget{
@@ -10866,16 +11059,25 @@ var nodeVersionUpdateTargets = []versionUpdateTarget{
 	{serviceType: "observability", latestVersionEnv: "AUTOSTREAM_OBSERVABILITY_LATEST_VERSION", updateCheckURLEnv: "AUTOSTREAM_OBSERVABILITY_UPDATE_CHECK_URL", defaultURL: defaultObservabilityUpdateCheckURL},
 }
 
+var dockerVersionUpdateTarget = versionUpdateTarget{
+	serviceType:       "docker",
+	latestVersionEnv:  "AUTOSTREAM_DOCKER_LATEST_VERSION",
+	updateCheckURLEnv: "AUTOSTREAM_DOCKER_UPDATE_CHECK_URL",
+	defaultURL:        defaultDockerUpdateCheckURL,
+}
+
 func (s *Server) versionInfo(w http.ResponseWriter, r *http.Request) {
-	targets := make([]versionUpdateTarget, 0, len(nodeVersionUpdateTargets)+1)
+	targets := make([]versionUpdateTarget, 0, len(nodeVersionUpdateTargets)+2)
 	targets = append(targets, controlPanelVersionUpdateTarget)
 	targets = append(targets, nodeVersionUpdateTargets...)
+	targets = append(targets, dockerVersionUpdateTarget)
 	updates := latestVersions(r.Context(), targets)
 	panelUpdate := updates[controlPanelVersionUpdateTarget.serviceType]
-	serviceUpdates := make(map[string]serviceUpdateInfoResponse, len(nodeVersionUpdateTargets))
+	serviceUpdates := make(map[string]serviceUpdateInfoResponse, len(nodeVersionUpdateTargets)+1)
 	for _, target := range nodeVersionUpdateTargets {
 		serviceUpdates[target.serviceType] = updates[target.serviceType]
 	}
+	serviceUpdates[dockerVersionUpdateTarget.serviceType] = updates[dockerVersionUpdateTarget.serviceType]
 	writeJSON(w, http.StatusOK, versionInfoResponse{
 		Service:           "control-panel",
 		Version:           version.Current(),
@@ -10896,12 +11098,7 @@ func latestVersions(ctx context.Context, targets []versionUpdateTarget) map[stri
 	for index, target := range targets {
 		go func(index int, target versionUpdateTarget) {
 			defer wait.Done()
-			latest, source, checkErr := latestVersion(ctx, target)
-			results[index] = serviceUpdateInfoResponse{
-				LatestVersion:     latest,
-				UpdateCheckSource: source,
-				UpdateCheckError:  checkErr,
-			}
+			results[index] = latestVersion(ctx, target)
 		}(index, target)
 	}
 	wait.Wait()
@@ -10913,55 +11110,387 @@ func latestVersions(ctx context.Context, targets []versionUpdateTarget) map[stri
 	return updates
 }
 
-func latestVersion(ctx context.Context, target versionUpdateTarget) (string, string, string) {
-	if latest := strings.TrimSpace(os.Getenv(target.latestVersionEnv)); latest != "" {
-		return latest, "env", ""
-	}
+func latestVersion(ctx context.Context, target versionUpdateTarget) serviceUpdateInfoResponse {
+	latestOverride := strings.TrimSpace(os.Getenv(target.latestVersionEnv))
 	rawURL := strings.TrimSpace(os.Getenv(target.updateCheckURLEnv))
-	source := "url"
 	if rawURL == "" {
 		rawURL = target.defaultURL
+	}
+	cacheKey := strings.Join([]string{target.serviceType, latestOverride, rawURL, security.HashToken(strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_TOKEN")))}, "\x00")
+	return processLatestVersionCache.get(ctx, cacheKey, func(loadCtx context.Context) serviceUpdateInfoResponse {
+		return latestVersionUncached(loadCtx, target, latestOverride, rawURL)
+	})
+}
+
+func latestVersionUncached(ctx context.Context, target versionUpdateTarget, latestOverride, rawURL string) serviceUpdateInfoResponse {
+	if latestOverride != "" {
+		return serviceUpdateInfoResponse{LatestVersion: latestOverride, UpdateCheckSource: "env", ManifestErrorCode: "manifest_unverified"}
+	}
+	source := "url"
+	if strings.TrimSpace(os.Getenv(target.updateCheckURLEnv)) == "" {
 		source = "github"
 	} else if strings.EqualFold(rawURL, "disabled") || strings.EqualFold(rawURL, "off") || strings.EqualFold(rawURL, "false") {
-		return "", "disabled", ""
+		return serviceUpdateInfoResponse{UpdateCheckSource: "disabled"}
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", source, "invalid update check url"
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "invalid update check url", ManifestErrorCode: "release_manifest_invalid"}
 	}
 	if parsed.User != nil {
-		return "", source, "update check url must not include credentials"
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "update check url must not include credentials", ManifestErrorCode: "release_manifest_invalid"}
 	}
 	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLocalUpdateCheckHost(parsed.Hostname())) {
-		return "", source, "update check url must use https"
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "update check url must use https", ManifestErrorCode: "release_manifest_invalid"}
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", source, "create update check request failed"
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "create update check request failed", ManifestErrorCode: "release_manifest_invalid"}
 	}
 	req.Header.Set("Accept", "application/json, text/plain")
 	req.Header.Set("User-Agent", "autostream-control-panel/"+version.Current())
-	if token := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_TOKEN")); token != "" {
+	if token := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_TOKEN")); token != "" && source == "github" && trustedGitHubUpdateAPIURL(parsed) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
 	if err != nil {
-		return "", source, "update check request failed"
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "update check request failed", ManifestErrorCode: "release_manifest_invalid"}
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	body, err := readUpdateResponseLimited(resp.Body, 64*1024)
 	if err != nil {
-		return "", source, "read update check response failed"
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "read update check response failed", ManifestErrorCode: "release_manifest_invalid"}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", source, "update check returned HTTP " + strconv.Itoa(resp.StatusCode)
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "update check returned HTTP " + strconv.Itoa(resp.StatusCode), ManifestErrorCode: "release_manifest_invalid"}
 	}
-	if latest := parseLatestVersionResponse(body); latest != "" {
-		return latest, source, ""
+	if source != "github" {
+		if latest := parseLatestVersionResponse(body); latest != "" {
+			return serviceUpdateInfoResponse{LatestVersion: latest, UpdateCheckSource: source, ManifestErrorCode: "manifest_unverified"}
+		}
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "update check response did not include a version", ManifestErrorCode: "manifest_unverified"}
 	}
-	return "", source, "update check response did not include a version"
+
+	var release struct {
+		TagName string               `json:"tag_name"`
+		Assets  []updateReleaseAsset `json:"assets"`
+	}
+	if err := json.Unmarshal(body, &release); err != nil || strings.TrimSpace(release.TagName) == "" {
+		return serviceUpdateInfoResponse{UpdateCheckSource: source, UpdateCheckError: "GitHub release response did not include a valid tag", ManifestErrorCode: "release_manifest_invalid"}
+	}
+	latest := strings.TrimSpace(release.TagName)
+	assets := make(map[string]updateReleaseAsset, len(release.Assets))
+	var manifestAsset updateReleaseAsset
+	for _, asset := range release.Assets {
+		assets[strings.TrimSpace(asset.Name)] = asset
+		if asset.Name == "release-manifest.json" {
+			manifestAsset = asset
+		}
+	}
+	if strings.TrimSpace(manifestAsset.URL) == "" && strings.TrimSpace(manifestAsset.BrowserDownloadURL) == "" {
+		return serviceUpdateInfoResponse{LatestVersion: latest, UpdateCheckSource: source, UpdateCheckError: "release-manifest.json asset is missing", ManifestErrorCode: "release_manifest_missing"}
+	}
+	minimumAgentVersion, err := verifyReleaseManifest(ctx, parsed, manifestAsset, assets, latest, target.serviceType)
+	if err != nil {
+		return serviceUpdateInfoResponse{LatestVersion: latest, UpdateCheckSource: source, UpdateCheckError: "release-manifest.json is unavailable or invalid", ManifestErrorCode: "release_manifest_invalid"}
+	}
+	return serviceUpdateInfoResponse{LatestVersion: latest, UpdateCheckSource: source, ManifestVerified: true, MinimumAgentVersion: minimumAgentVersion}
+}
+
+type updateReleaseManifest struct {
+	SchemaVersion       int    `json:"schema_version"`
+	ReleaseID           string `json:"release_id"`
+	Channel             string `json:"channel"`
+	PublishedAt         string `json:"published_at"`
+	MinimumAgentVersion string `json:"minimum_agent_version"`
+	BundleVersion       string `json:"bundle_version"`
+	GeneratedAt         string `json:"generated_at"`
+	Components          []struct {
+		Service            string            `json:"service"`
+		ServiceType        string            `json:"service_type"`
+		SourceVersion      string            `json:"source_version"`
+		Commit             string            `json:"commit"`
+		Image              string            `json:"image"`
+		ManifestDigest     string            `json:"manifest_digest"`
+		PlatformDigests    map[string]string `json:"platform_digests"`
+		RollbackCompatible bool              `json:"rollback_compatible"`
+		DatabaseSchema     string            `json:"database_schema"`
+		Artifacts          []struct {
+			OS     string `json:"os"`
+			Arch   string `json:"arch"`
+			Name   string `json:"name"`
+			Size   int64  `json:"size"`
+			SHA256 string `json:"sha256"`
+		} `json:"artifacts"`
+	} `json:"components"`
+}
+
+func verifyReleaseManifest(ctx context.Context, releaseURL *url.URL, asset updateReleaseAsset, assets map[string]updateReleaseAsset, releaseID, serviceType string) (string, error) {
+	body, err := fetchReleaseUpdateAsset(ctx, releaseURL, asset, 256*1024, "application/json")
+	if err != nil {
+		return "", err
+	}
+	sidecarAsset, ok := assets["release-manifest.json.sha256"]
+	if !ok {
+		return "", errors.New("release manifest checksum asset is missing")
+	}
+	sidecar, err := fetchReleaseUpdateAsset(ctx, releaseURL, sidecarAsset, 64*1024, "text/plain")
+	if err != nil || !releaseManifestSidecarMatches(body, sidecar) {
+		return "", errors.New("release manifest checksum asset is invalid")
+	}
+	var manifest updateReleaseManifest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
+		return "", err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return "", errors.New("release manifest contains trailing JSON")
+	}
+	publishedAtText := strings.TrimSpace(manifest.PublishedAt)
+	publishedAt, publishedErr := time.Parse(time.RFC3339, publishedAtText)
+	if manifest.SchemaVersion != 1 || strings.TrimSpace(manifest.ReleaseID) != releaseID || !validMinimumUpdateAgentVersion(manifest.MinimumAgentVersion) || publishedErr != nil || publishedAt.IsZero() || !strings.HasSuffix(publishedAtText, "Z") {
+		return "", errors.New("release manifest identity mismatch")
+	}
+	if serviceType == "docker" {
+		if strings.TrimSpace(manifest.BundleVersion) != releaseID || strings.TrimSpace(manifest.GeneratedAt) != publishedAtText {
+			return "", errors.New("Docker release manifest identity mismatch")
+		}
+		if err := validateDockerUpdateManifest(manifest, assets); err != nil {
+			return "", err
+		}
+		return manifest.MinimumAgentVersion, nil
+	}
+	if err := validateHostUpdateManifest(manifest, assets, releaseID, serviceType); err != nil {
+		return "", err
+	}
+	return manifest.MinimumAgentVersion, nil
+}
+
+func fetchReleaseUpdateAsset(ctx context.Context, releaseURL *url.URL, asset updateReleaseAsset, maxBytes int64, browserAccept string) ([]byte, error) {
+	rawAssetURL := strings.TrimSpace(asset.URL)
+	apiAsset := rawAssetURL != ""
+	if !apiAsset {
+		rawAssetURL = strings.TrimSpace(asset.BrowserDownloadURL)
+	}
+	assetURL, err := url.Parse(rawAssetURL)
+	if err != nil || assetURL.Scheme == "" || assetURL.Host == "" || assetURL.User != nil || assetURL.Fragment != "" {
+		return nil, errors.New("invalid release asset URL")
+	}
+	if assetURL.Scheme != "https" && !(assetURL.Scheme == "http" && isLocalUpdateCheckHost(assetURL.Hostname())) {
+		return nil, errors.New("release asset URL must use https")
+	}
+	sameHost := strings.EqualFold(assetURL.Host, releaseURL.Host)
+	githubAssetHost := strings.EqualFold(releaseURL.Hostname(), "api.github.com") && strings.EqualFold(assetURL.Hostname(), "github.com")
+	if !sameHost && !githubAssetHost {
+		return nil, errors.New("release asset host is not trusted")
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, assetURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if apiAsset {
+		req.Header.Set("Accept", "application/octet-stream")
+	} else {
+		req.Header.Set("Accept", browserAccept)
+	}
+	req.Header.Set("User-Agent", "autostream-control-panel/"+version.Current())
+	if apiAsset && sameHost && trustedGitHubUpdateAPIURL(releaseURL) {
+		if token := strings.TrimSpace(os.Getenv("AUTOSTREAM_UPDATE_CHECK_TOKEN")); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+	client := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(next *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many release asset redirects")
+		}
+		if next.URL.Scheme != "https" && !(next.URL.Scheme == "http" && isLocalUpdateCheckHost(next.URL.Hostname())) {
+			return errors.New("release asset redirect must use https")
+		}
+		if len(via) > 0 && !strings.EqualFold(next.URL.Host, via[len(via)-1].URL.Host) {
+			next.Header.Del("Authorization")
+		}
+		return nil
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errors.New("release asset request failed")
+	}
+	return readUpdateResponseLimited(resp.Body, maxBytes)
+}
+
+func readUpdateResponseLimited(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, errors.New("invalid update response size limit")
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, errors.New("update response exceeds size limit")
+	}
+	return body, nil
+}
+
+func releaseManifestSidecarMatches(manifestBody, sidecarBody []byte) bool {
+	line := string(sidecarBody)
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	if strings.ContainsAny(line, "\r\n") {
+		return false
+	}
+	digest, fileName, ok := strings.Cut(line, "  ")
+	if !ok || fileName != "release-manifest.json" || !validUpdateManifestSHA256(digest) {
+		return false
+	}
+	actual := sha256.Sum256(manifestBody)
+	return digest == hex.EncodeToString(actual[:])
+}
+
+func validateHostUpdateManifest(manifest updateReleaseManifest, assets map[string]updateReleaseAsset, releaseID, serviceType string) error {
+	if manifest.Channel != "host" || strings.TrimSpace(manifest.BundleVersion) != "" || strings.TrimSpace(manifest.GeneratedAt) != "" {
+		return errors.New("release manifest channel mismatch")
+	}
+	if _, ok := assets["release-manifest.json.sha256"]; !ok {
+		return errors.New("release manifest checksum asset is missing")
+	}
+	if len(manifest.Components) != 1 {
+		return errors.New("host release manifest must contain exactly one component")
+	}
+	wanted := updateManifestServiceName(serviceType)
+	expectedDatabaseSchema := "none"
+	if wanted == "control-panel" || wanted == "observability" {
+		expectedDatabaseSchema = "backward_compatible"
+	}
+	matches := 0
+	for _, component := range manifest.Components {
+		name := strings.TrimSpace(component.Service)
+		if name != wanted {
+			continue
+		}
+		matches++
+		if strings.TrimSpace(component.ServiceType) != "" || strings.TrimSpace(component.Image) != "" || strings.TrimSpace(component.ManifestDigest) != "" || len(component.PlatformDigests) != 0 || strings.TrimSpace(component.SourceVersion) != releaseID || !validUpdateManifestCommit(component.Commit) || !component.RollbackCompatible || component.DatabaseSchema != expectedDatabaseSchema {
+			return errors.New("release manifest component version mismatch")
+		}
+		arches := map[string]bool{}
+		for _, artifact := range component.Artifacts {
+			expectedName := updateManifestArtifactPrefix(wanted) + "_" + releaseID + "_linux_" + artifact.Arch + ".tar.gz"
+			if artifact.OS != "linux" || (artifact.Arch != "amd64" && artifact.Arch != "arm64") || arches[artifact.Arch] || artifact.Name != expectedName || artifact.Size <= 0 || artifact.Size > maxHostUpdateArtifactBytes || !validUpdateManifestSHA256(artifact.SHA256) {
+				return errors.New("release manifest artifact is invalid")
+			}
+			if _, ok := assets[artifact.Name]; !ok {
+				return errors.New("release manifest artifact asset is missing")
+			}
+			if _, ok := assets[artifact.Name+".sha256"]; !ok {
+				return errors.New("release manifest checksum asset is missing")
+			}
+			arches[artifact.Arch] = true
+		}
+		if len(component.Artifacts) != 2 || !arches["amd64"] || !arches["arm64"] {
+			return errors.New("release manifest artifacts are incomplete")
+		}
+	}
+	if matches != 1 {
+		return errors.New("release manifest component is missing or duplicated")
+	}
+	return nil
+}
+
+func validateDockerUpdateManifest(manifest updateReleaseManifest, assets map[string]updateReleaseAsset) error {
+	if manifest.Channel != "docker" {
+		return errors.New("release manifest channel mismatch")
+	}
+	if _, ok := assets["release-manifest.json.sha256"]; !ok {
+		return errors.New("Docker release manifest checksum asset is missing")
+	}
+	required := map[string]bool{"control-panel": false, "worker": false, "encoder-recorder": false, "discord-bot": false, "observability": false}
+	for _, component := range manifest.Components {
+		name := strings.TrimSpace(component.Service)
+		if _, ok := required[name]; !ok || required[name] {
+			return errors.New("Docker release manifest component set is invalid")
+		}
+		expectedImage := "ghcr.io/kome-lab/autostream-docker/" + name + ":" + manifest.ReleaseID
+		expectedDatabaseSchema := "none"
+		if name == "control-panel" || name == "observability" {
+			expectedDatabaseSchema = "backward_compatible"
+		}
+		if strings.TrimSpace(component.ServiceType) != "" || strings.TrimSpace(component.Commit) != "" || !component.RollbackCompatible || component.DatabaseSchema != expectedDatabaseSchema || len(component.Artifacts) != 0 || !validSystemUpdateVersion(component.SourceVersion) || strings.TrimSpace(component.Image) != expectedImage || !validUpdateManifestDigest(component.ManifestDigest) || len(component.PlatformDigests) != 2 || !validUpdateManifestDigest(component.PlatformDigests["linux/amd64"]) || !validUpdateManifestDigest(component.PlatformDigests["linux/arm64"]) {
+			return errors.New("Docker release manifest component is invalid")
+		}
+		required[name] = true
+	}
+	for _, present := range required {
+		if !present {
+			return errors.New("Docker release manifest components are incomplete")
+		}
+	}
+	return nil
+}
+
+func updateManifestServiceName(serviceType string) string {
+	switch strings.TrimSpace(serviceType) {
+	case "control_panel", "control-panel":
+		return "control-panel"
+	case "encoder_recorder":
+		return "encoder-recorder"
+	case "discord_bot":
+		return "discord-bot"
+	default:
+		return strings.TrimSpace(serviceType)
+	}
+}
+
+func updateManifestArtifactPrefix(serviceName string) string {
+	return "autostream-" + strings.TrimSpace(serviceName)
+}
+
+func validUpdateManifestSHA256(value string) bool {
+	value = strings.TrimSpace(value)
+	if value != strings.ToLower(value) {
+		return false
+	}
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validUpdateManifestCommit(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) != 40 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validMinimumUpdateAgentVersion(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != 'v' {
+		return false
+	}
+	parts, ok := parseVersionParts(value)
+	if !ok {
+		return false
+	}
+	return value == "v"+strconv.Itoa(parts[0])+"."+strconv.Itoa(parts[1])+"."+strconv.Itoa(parts[2])
+}
+
+func validUpdateManifestDigest(value string) bool {
+	value = strings.TrimSpace(value)
+	if value != strings.ToLower(value) {
+		return false
+	}
+	return strings.HasPrefix(value, "sha256:") && validUpdateManifestSHA256(strings.TrimPrefix(value, "sha256:"))
 }
 
 func parseLatestVersionResponse(body []byte) string {
@@ -10979,20 +11508,145 @@ func parseLatestVersionResponse(body []byte) string {
 }
 
 func versionIsNewer(latest, current string) bool {
-	latestParts, latestOK := parseVersionParts(latest)
-	currentParts, currentOK := parseVersionParts(current)
+	latestVersion, latestOK := parseSemanticVersion(latest)
+	currentVersion, currentOK := parseSemanticVersion(current)
 	if !latestOK || !currentOK {
 		return false
 	}
-	for i := 0; i < len(latestParts); i++ {
-		if latestParts[i] > currentParts[i] {
+	for i := 0; i < len(latestVersion.core); i++ {
+		if latestVersion.core[i] > currentVersion.core[i] {
 			return true
 		}
-		if latestParts[i] < currentParts[i] {
+		if latestVersion.core[i] < currentVersion.core[i] {
 			return false
 		}
 	}
-	return false
+	return comparePrerelease(latestVersion.prerelease, currentVersion.prerelease) > 0
+}
+
+type semanticVersion struct {
+	core       [3]int
+	prerelease []string
+}
+
+func parseSemanticVersion(raw string) (semanticVersion, bool) {
+	var result semanticVersion
+	value := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "v"))
+	if value == "" || value == "dev" || strings.Count(value, "+") > 1 {
+		return result, false
+	}
+	if plus := strings.IndexByte(value, '+'); plus >= 0 {
+		if !validSemverIdentifiers(value[plus+1:], false) {
+			return result, false
+		}
+		value = value[:plus]
+	}
+	prerelease := ""
+	if dash := strings.IndexByte(value, '-'); dash >= 0 {
+		prerelease = value[dash+1:]
+		value = value[:dash]
+		if !validSemverIdentifiers(prerelease, true) {
+			return result, false
+		}
+		result.prerelease = strings.Split(prerelease, ".")
+	}
+	fields := strings.Split(value, ".")
+	if len(fields) != 3 {
+		return semanticVersion{}, false
+	}
+	for i, field := range fields {
+		if field == "" || (len(field) > 1 && field[0] == '0') {
+			return semanticVersion{}, false
+		}
+		parsed, err := strconv.Atoi(field)
+		if err != nil || parsed < 0 {
+			return semanticVersion{}, false
+		}
+		result.core[i] = parsed
+	}
+	return result, true
+}
+
+func validSemverIdentifiers(value string, rejectNumericLeadingZero bool) bool {
+	if value == "" {
+		return false
+	}
+	for _, identifier := range strings.Split(value, ".") {
+		if identifier == "" {
+			return false
+		}
+		numeric := true
+		for _, r := range identifier {
+			if (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && r != '-' {
+				return false
+			}
+			if r < '0' || r > '9' {
+				numeric = false
+			}
+		}
+		if rejectNumericLeadingZero && numeric && len(identifier) > 1 && identifier[0] == '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func comparePrerelease(left, right []string) int {
+	if len(left) == 0 && len(right) == 0 {
+		return 0
+	}
+	if len(left) == 0 {
+		return 1
+	}
+	if len(right) == 0 {
+		return -1
+	}
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+	for i := 0; i < limit; i++ {
+		leftNumeric := semverIdentifierNumeric(left[i])
+		rightNumeric := semverIdentifierNumeric(right[i])
+		switch {
+		case leftNumeric && rightNumeric:
+			if len(left[i]) != len(right[i]) {
+				if len(left[i]) > len(right[i]) {
+					return 1
+				}
+				return -1
+			}
+		case leftNumeric:
+			return -1
+		case rightNumeric:
+			return 1
+		}
+		if left[i] > right[i] {
+			return 1
+		}
+		if left[i] < right[i] {
+			return -1
+		}
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	if len(left) < len(right) {
+		return -1
+	}
+	return 0
+}
+
+func semverIdentifierNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseVersionParts(raw string) ([3]int, bool) {
@@ -11022,6 +11676,10 @@ func parseVersionParts(raw string) ([3]int, bool) {
 func isLocalUpdateCheckHost(host string) bool {
 	normalized := strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
 	return normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1"
+}
+
+func trustedGitHubUpdateAPIURL(parsed *url.URL) bool {
+	return parsed != nil && strings.EqualFold(parsed.Scheme, "https") && strings.EqualFold(parsed.Hostname(), "api.github.com")
 }
 
 func productionEnvironment() bool {
@@ -11357,6 +12015,9 @@ func (s *Server) observabilityPostActionWithAuditStatus(template, action, resour
 		if !ok {
 			return
 		}
+		if action == "notification_channels.test" && obs.Timeout < notificationObservabilityCallTimeout {
+			obs.Timeout = notificationObservabilityCallTimeout
+		}
 		endpoint, err := replacePathID(template, r.PathValue("id"))
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_observability_id"})
@@ -11511,11 +12172,23 @@ func sanitizeNotificationChannelCreateProxyPayload(payload map[string]any) {
 }
 
 func sanitizeNotificationChannelUpdateProxyPayload(payload map[string]any) {
-	for key := range payload {
+	migrateToGlobalSMTP := false
+	for key, value := range payload {
 		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "migrate_to_global_smtp" {
+			requested, ok := value.(bool)
+			if ok && requested {
+				migrateToGlobalSMTP = true
+			}
+			delete(payload, key)
+			continue
+		}
 		if strings.HasPrefix(normalized, "smtp_") || normalized == "uses_global_smtp" {
 			delete(payload, key)
 		}
+	}
+	if migrateToGlobalSMTP {
+		payload["uses_global_smtp"] = true
 	}
 }
 
@@ -11587,26 +12260,76 @@ func (s *Server) observabilityClient(ctx context.Context) (observability.Client,
 	if err != nil {
 		return observability.Client{}, false, err
 	}
+	service, ok := preferredObservabilityService(services, time.Now().UTC())
+	if !ok {
+		return observability.Client{}, false, nil
+	}
+	token, err := nodeRuntimeToken(service)
+	if err != nil {
+		return observability.Client{}, false, err
+	}
+	client := observability.Client{
+		BaseURL: service.PublicURL,
+		Token:   token,
+		Timeout: s.obs.Timeout,
+		HTTP:    s.obs.HTTP,
+	}
+	if client.Timeout <= 0 {
+		client.Timeout = 5 * time.Second
+	}
+	return client, true, nil
+}
+
+func preferredObservabilityService(services []store.RegisteredService, now time.Time) (store.RegisteredService, bool) {
+	var selected store.RegisteredService
+	selectedRank := -1
+	found := false
 	for _, service := range services {
 		if service.ServiceType != "observability" || strings.TrimSpace(service.PublicURL) == "" || strings.TrimSpace(service.Status) == "pending" {
 			continue
 		}
-		token, err := nodeRuntimeToken(service)
-		if err != nil {
-			return observability.Client{}, false, err
+		health, _, _ := serviceHealthFields(service, now)
+		rank := observabilityServiceHealthRank(health)
+		if !found || rank > selectedRank || (rank == selectedRank && observabilityServiceBefore(service, selected)) {
+			selected = service
+			selectedRank = rank
+			found = true
 		}
-		client := observability.Client{
-			BaseURL: service.PublicURL,
-			Token:   token,
-			Timeout: s.obs.Timeout,
-			HTTP:    s.obs.HTTP,
-		}
-		if client.Timeout <= 0 {
-			client.Timeout = 5 * time.Second
-		}
-		return client, true, nil
 	}
-	return observability.Client{}, false, nil
+	return selected, found
+}
+
+func observabilityServiceHealthRank(health string) int {
+	switch health {
+	case "healthy":
+		return 3
+	case "warning":
+		return 2
+	case "unconfigured":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func observabilityServiceBefore(candidate, current store.RegisteredService) bool {
+	if candidate.LastHeartbeatAt != nil || current.LastHeartbeatAt != nil {
+		if candidate.LastHeartbeatAt == nil {
+			return false
+		}
+		if current.LastHeartbeatAt == nil {
+			return true
+		}
+		if !candidate.LastHeartbeatAt.Equal(*current.LastHeartbeatAt) {
+			return candidate.LastHeartbeatAt.After(*current.LastHeartbeatAt)
+		}
+	}
+	candidateName := strings.TrimSpace(candidate.ServiceName)
+	currentName := strings.TrimSpace(current.ServiceName)
+	if candidateName != currentName {
+		return candidateName < currentName
+	}
+	return candidate.ServiceID < current.ServiceID
 }
 
 func nodeRuntimeToken(service store.RegisteredService) (string, error) {
@@ -12516,6 +13239,9 @@ func (s *Server) notifyAdminAuditEvent(event store.AuditEvent) {
 		if err != nil || !configured {
 			return
 		}
+		if obs.Timeout < notificationObservabilityCallTimeout {
+			obs.Timeout = notificationObservabilityCallTimeout
+		}
 		if _, err := obs.Post(ctx, "/notification-events", payload); err != nil {
 			log.Printf("admin audit notification failed: action=%s resource_type=%s result=%s error=%v", redacted.Action, redacted.ResourceType, redacted.Result, err)
 		}
@@ -12530,7 +13256,12 @@ func adminAuditEventNotificationAllowed(event store.AuditEvent) bool {
 	actorUserID := strings.ToLower(strings.TrimSpace(event.ActorUserID))
 	actorUsername := strings.ToLower(strings.TrimSpace(event.ActorUsername))
 	if strings.HasPrefix(actorUserID, "service:") || strings.HasPrefix(actorUsername, "service:") {
-		return false
+		switch action {
+		case "system_updates.succeeded", "system_updates.rolled_back", "system_updates.failed":
+			return true
+		default:
+			return false
+		}
 	}
 	if strings.TrimSpace(event.ActorUserID) != "" {
 		return true

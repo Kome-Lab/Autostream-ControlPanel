@@ -34,6 +34,21 @@ func (s *MemoryStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
 	return items, nil
 }
 
+func (s *MemoryStreamStore) HasActiveStream(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, stream := range s.streams {
+		switch strings.ToLower(strings.TrimSpace(stream.Status)) {
+		case "starting", "live", "stopping":
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *MemoryStreamStore) CreateStream(ctx context.Context, name string) (Stream, error) {
 	if err := ctx.Err(); err != nil {
 		return Stream{}, err

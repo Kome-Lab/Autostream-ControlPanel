@@ -20,13 +20,15 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { useAppSettings, useCurrentUser, useNodes } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import { canIssueNodeConfiguration, canRotateNodeRuntimeToken, updaterManualConfiguration } from "@/lib/node-configuration";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 
 const nodeTypes = [
-  { value: "worker", label: "Worker Node Agent", defaultPort: 8084 },
-  { value: "encoder_recorder", label: "Encoder / Recorder Node Agent", defaultPort: 8081 },
-  { value: "discord_bot", label: "Discord Bot Node Agent", defaultPort: 8083 },
-  { value: "observability", label: "Observability Node Agent", defaultPort: 8082 },
+  { value: "worker", label: "Worker Node Agent", defaultPort: 8084, runtimeSecretsRequired: false, description: "番組配信と録画を担当するWorker Node Agent" },
+  { value: "encoder_recorder", label: "Encoder / Recorder Node Agent", defaultPort: 8081, runtimeSecretsRequired: true, description: "映像のエンコードと録画を担当するNode Agent" },
+  { value: "discord_bot", label: "Discord Bot Node Agent", defaultPort: 8083, runtimeSecretsRequired: false, description: "Discordの音声取得と配信操作を担当するNode Agent" },
+  { value: "observability", label: "Observability Node Agent", defaultPort: 8082, runtimeSecretsRequired: false, description: "メトリクス、インシデント、通知を担当するNode Agent" },
+  { value: "update_agent", label: "AutoStream Updater", defaultPort: 8090, runtimeSecretsRequired: false, description: "このホストのサービス更新、検証、ロールバックを担当するUpdater" },
 ];
 
 type NodeConfigurationResponse = {
@@ -39,6 +41,9 @@ type NodeConfigurationResponse = {
   runtime_token?: string;
   configure_command?: string;
   configuration_yaml?: string;
+  configuration_path?: string;
+  configuration_example?: string;
+  manual_configuration_required?: boolean;
   systemd_unit?: string;
   scopes?: string[];
 };
@@ -62,7 +67,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   const timezone = appSettings.data?.timezone;
   const [nodeType, setNodeType] = useState("worker");
   const selectedType = nodeTypes.find((type) => type.value === nodeType) ?? nodeTypes[0];
-  const runtimeSecretsRequired = nodeType === "encoder_recorder";
+  const runtimeSecretsRequired = selectedType.runtimeSecretsRequired;
   const [nodeID, setNodeID] = useState("worker-tokyo-01");
   const [name, setName] = useState("東京本社 Worker 01");
   const [host, setHost] = useState("worker-tokyo-01.example.jp");
@@ -78,11 +83,18 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   const [editForm, setEditForm] = useState<NodeEditForm>({ service_name: "", description: "", host: "", port: "", ssl_enabled: true });
 
   const allowed = hasPermission(currentUser.data, "api_tokens.create");
-  const canRotateRuntimeToken = hasPermission(currentUser.data, "api_tokens.revoke");
+  const canRevokeRuntimeToken = hasPermission(currentUser.data, "api_tokens.revoke");
   const canResolveRuntimeSecrets = hasPermission(currentUser.data, "secrets.update");
+  const canExecuteSystemUpdates = hasPermission(currentUser.data, "system_updates.execute");
   const canDeleteNode = hasPermission(currentUser.data, "services.disable");
   const createIncludesManagedSecret = nodeType === "worker" || nodeType === "encoder_recorder" || allowRuntimeSecrets;
-  const canCreateNode = allowed && (!createIncludesManagedSecret || canResolveRuntimeSecrets);
+  const canCreateNode = canIssueNodeConfiguration({
+    serviceType: nodeType,
+    canCreateTokens: allowed,
+    canResolveManagedSecret: canResolveRuntimeSecrets,
+    requiresManagedSecret: createIncludesManagedSecret,
+    canExecuteSystemUpdates,
+  });
   const nodeApiUrl = useMemo(() => {
     const scheme = sslEnabled ? "https" : "http";
     const normalizedHost = host.trim();
@@ -90,6 +102,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
     if (!normalizedHost || !Number.isFinite(normalizedPort) || normalizedPort <= 0) return "";
     return `${scheme}://${normalizedHost}:${normalizedPort}`;
   }, [host, port, sslEnabled]);
+  const manualUpdaterConfiguration = useMemo(() => updaterManualConfiguration(configuration), [configuration]);
 
   const invalidateNodeQueries = async () => {
     await Promise.all([
@@ -164,10 +177,11 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 
   const handleTypeChange = (value: string) => {
     setNodeType(value);
-    setAllowRuntimeSecrets(value === "encoder_recorder");
     const nextType = nodeTypes.find((type) => type.value === value);
     if (nextType) {
+      setAllowRuntimeSecrets(nextType.runtimeSecretsRequired);
       setPort(String(nextType.defaultPort));
+      setDescription(nextType.description);
     }
   };
 
@@ -278,18 +292,30 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
         const node = row.original;
         const nodeID = nodeIdentity(node);
         const nodeConfigurationIncludesSigningKey = node.service_type === "worker" || node.service_type === "encoder_recorder";
-        const canManageNodeTokens = canRotateRuntimeToken && (!nodeConfigurationIncludesSigningKey || canResolveRuntimeSecrets);
-        const canRegenerateConfigureToken = allowed && canManageNodeTokens;
+        const canManageNodeTokens = canRotateNodeRuntimeToken({
+          serviceType: node.service_type,
+          canCreateTokens: allowed,
+          canRevokeTokens: canRevokeRuntimeToken,
+          canResolveManagedSecret: canResolveRuntimeSecrets,
+          requiresManagedSecret: nodeConfigurationIncludesSigningKey,
+          canExecuteSystemUpdates,
+        });
+        const runtimeTokenPermissionMessage = node.service_type === "update_agent" && !canExecuteSystemUpdates
+          ? "UpdaterのRuntime Token再生成には system_updates.execute 権限が必要です。"
+          : "Runtime Token再生成には api_tokens.create と api_tokens.revoke 権限が必要です。";
+        const canRegenerateConfigureToken = node.service_type !== "update_agent" && allowed && canManageNodeTokens;
         return (
           <div className="flex min-w-52 flex-wrap items-center gap-2">
             <Button variant="outline" size="icon-sm" aria-label="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
               <FileCode2 />
             </Button>
-            <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} {...guardedButtonProps(canRegenerateConfigureToken)} disabled={!canRegenerateConfigureToken || regenerateConfigureToken.isPending}>
-              <KeyRound />
-            </Button>
-            <RoleGuard allowed={canManageNodeTokens}>
-              <DangerConfirm title={`${node.service_name} のRuntime Tokenを再生成しますか`} description="既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。" onConfirm={() => rotateRuntimeToken.mutate(nodeID)} actionLabel="再生成">
+            {node.service_type !== "update_agent" ? (
+              <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} {...guardedButtonProps(canRegenerateConfigureToken)} disabled={!canRegenerateConfigureToken || regenerateConfigureToken.isPending}>
+                <KeyRound />
+              </Button>
+            ) : null}
+            <RoleGuard allowed={canManageNodeTokens} message={runtimeTokenPermissionMessage}>
+              <DangerConfirm title={`${node.service_name} のRuntime Tokenを再生成しますか`} description={node.service_type === "update_agent" ? "既存のRuntime Tokenは無効になります。新しいTokenを /etc/autostream/updater.json へ反映してUpdaterを再起動してください。" : "既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。"} onConfirm={() => rotateRuntimeToken.mutate(nodeID)} actionLabel="再生成">
                 <Button variant="outline" size="icon-sm" aria-label="Runtime Tokenを再生成" {...guardedButtonProps(canManageNodeTokens)} disabled={!canManageNodeTokens || rotateRuntimeToken.isPending}>
                   <RotateCw />
                 </Button>
@@ -391,7 +417,8 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             {createToken.isPending ? "Node設定を発行中..." : "Nodeを作成して設定を発行"}
           </Button>
           {!allowed ? <p className="text-sm text-red-600">{t("roleLimited")}</p> : null}
-          {allowed && !canCreateNode ? <p className="text-sm text-red-600">Worker / Encoderの署名鍵または実行時シークレットを発行するには、シークレット更新権限が必要です。</p> : null}
+          {allowed && createIncludesManagedSecret && !canResolveRuntimeSecrets ? <p className="text-sm text-red-600">Worker / Encoderの署名鍵または実行時シークレットを発行するには、シークレット更新権限が必要です。</p> : null}
+          {allowed && nodeType === "update_agent" && !canExecuteSystemUpdates ? <p className="text-sm text-red-600">Updaterの登録と更新用scopeの発行には、system_updates.execute 権限が必要です。</p> : null}
           {createError ? (
             <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="polite">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -413,7 +440,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             <FileCode2 className="size-5" />
             Configuration
           </CardTitle>
-          <CardDescription>TokenとWorker／Encoder用のstream ingest署名鍵は、生成直後のconfig.ymlでだけ取得できます。</CardDescription>
+          <CardDescription>Node種別に応じた設定ファイルと、生成直後だけ表示されるTokenを安全にNodeへ反映してください。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {configuration ? (
@@ -442,6 +469,21 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                   copied={copied === "runtime-token"}
                   onCopy={() => copyValue("runtime-token", configuration.runtime_token)}
                 />
+              ) : null}
+              {manualUpdaterConfiguration ? (
+                <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
+                  <div className="flex items-center gap-2 font-medium">
+                    <AlertCircle className="size-4 text-amber-600" />
+                    AutoStream Updaterは手動JSON設定が必要です
+                  </div>
+                  <p className="text-muted-foreground">
+                    Updaterには自動Configureコマンドがありません。<code>{manualUpdaterConfiguration.example}</code> をコピーし、
+                    <code>{manualUpdaterConfiguration.path}</code> を作成してください。
+                  </p>
+                  <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
+                    {manualUpdaterConfiguration.steps.map((step) => <li key={step}>{step}</li>)}
+                  </ol>
+                </div>
               ) : null}
               {configuration.configure_command ? (
                 <SecretBlock

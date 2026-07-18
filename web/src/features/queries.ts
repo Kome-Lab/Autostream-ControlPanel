@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api/client";
+import { isSystemUpdateJobActive, normalizeSystemUpdatesResponse } from "@/lib/system-updates";
 import type { AppSettings, AppVersion, AuditLog, CurrentUser, ManagedAppSettings, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 export function useCurrentUser() {
@@ -39,6 +40,17 @@ export function useVersion() {
   return useQuery({
     queryKey: ["version"],
     queryFn: () => apiGet<AppVersion>("/version"),
+  });
+}
+
+export function useSystemUpdates(enabled = true) {
+  return useQuery({
+    queryKey: ["system-updates"],
+    queryFn: async () => normalizeSystemUpdatesResponse(await apiGet<unknown>("/system-updates")),
+    enabled,
+    refetchInterval: (query) => query.state.data?.jobs.some((job) => isSystemUpdateJobActive(job.status)) ? 10_000 : 30_000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
 }
 

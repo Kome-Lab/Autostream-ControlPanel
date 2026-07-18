@@ -1,0 +1,454 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly REMOTE_USER="autostream-update-host"
+readonly REMOTE_GROUP="autostream-update-host"
+readonly REMOTE_HOME="/var/lib/autostream-update-host-login"
+readonly STATE_DIR="/var/lib/autostream-update-host"
+readonly CONFIG_DEST="/etc/autostream/update-host.json"
+readonly BINARY_DEST="/usr/local/libexec/autostream-update-host"
+readonly SUDOERS_DEST="/etc/sudoers.d/autostream-update-host"
+readonly AUTHORIZED_KEYS_DEST="${REMOTE_HOME}/.ssh/authorized_keys"
+readonly SUDO_ALLOWED_COMMAND="/usr/local/libexec/autostream-update-host rpc --config /etc/autostream/update-host.json"
+readonly FORCED_COMMAND="/usr/bin/sudo -n ${SUDO_ALLOWED_COMMAND}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: install-autostream-update-host \
+  --config PATH \
+  --authorized-key PATH \
+  --source-cidr CIDR
+
+Installs the non-resident AutoStream update host helper. The authorized key
+file must contain exactly one ssh-ed25519 public key. The source CIDR must be a
+numeric IPv4 or IPv6 CIDR for the central updater host.
+EOF
+}
+
+die() {
+  printf 'install-autostream-update-host: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command is unavailable: $1"
+}
+
+ensure_root_directory() {
+  local path=$1
+  local create_mode=$2
+  local exact_mode=${3:-}
+  local identity mode
+
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -d ${path} && ! -L ${path} ]] || die "${path} must be a non-symlink directory"
+    identity=$(stat -c '%U:%G' "${path}")
+    mode=$(stat -c '%a' "${path}")
+    [[ ${identity} == "root:root" ]] || die "${path} must be owned by root:root"
+    if [[ -n ${exact_mode} ]]; then
+      [[ ${mode} == "${exact_mode}" ]] || die "${path} must have mode ${exact_mode}"
+    else
+      (( (8#${mode} & 0022) == 0 )) || die "${path} must not be writable by group or other"
+    fi
+    return
+  fi
+  install -d -o root -g root -m "${create_mode}" "${path}"
+}
+
+ensure_bootstrap_directory_tree() {
+  local leaf=$1
+  local relative current component
+  local -a components=()
+
+  [[ ${leaf} =~ ^/opt/autostream/(control-panel|worker|encoder-recorder|discord-bot|observability)(/releases)?$ ]] || \
+    die "helper returned a systemd bootstrap path outside the fixed /opt/autostream service layout"
+  relative=${leaf#/}
+  current=""
+  IFS=/ read -r -a components <<<"${relative}"
+  for component in "${components[@]}"; do
+    [[ ${component} =~ ^[a-z0-9-]+$ ]] || die "helper returned an invalid systemd bootstrap path component"
+    current="${current}/${component}"
+    if [[ -e ${current} || -L ${current} ]]; then
+      ensure_root_directory "${current}" 0755
+      continue
+    fi
+    install -d -o root -g root -m 0755 -- "${current}"
+    bootstrap_created_dirs+=("${current}")
+  done
+}
+
+preflight_destination() {
+  local path=$1
+  local expected_mode=$2
+  local label=$3
+  if [[ ! -e ${path} && ! -L ${path} ]]; then
+    return 1
+  fi
+  [[ -f ${path} && ! -L ${path} ]] || die "existing ${label} is not a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' "${path}") == "root:root:${expected_mode}" ]] || \
+    die "existing ${label} must be root:root ${expected_mode}"
+  return 0
+}
+
+config_source=""
+authorized_key_source=""
+source_cidr=""
+
+while (($# > 0)); do
+  case "$1" in
+    --config)
+      (($# >= 2)) || die "--config requires a path"
+      config_source=$2
+      shift 2
+      ;;
+    --authorized-key)
+      (($# >= 2)) || die "--authorized-key requires a path"
+      authorized_key_source=$2
+      shift 2
+      ;;
+    --source-cidr)
+      (($# >= 2)) || die "--source-cidr requires a CIDR"
+      source_cidr=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ ${EUID} -eq 0 ]] || die "run this installer as root"
+[[ -n ${config_source} ]] || die "--config is required"
+[[ -n ${authorized_key_source} ]] || die "--authorized-key is required"
+[[ -n ${source_cidr} ]] || die "--source-cidr is required"
+
+for command in awk cat chmod chown cmp dirname flock getent grep hostname id install mktemp mv passwd readlink rm rmdir ssh-keygen sshd stat useradd usermod visudo; do
+  require_command "${command}"
+done
+[[ -x /usr/bin/sudo ]] || die "required command is unavailable at fixed path: /usr/bin/sudo"
+[[ -x /bin/sh ]] || die "required login shell is unavailable at fixed path: /bin/sh"
+[[ -x /usr/bin/systemd-run ]] || die "required command is unavailable at fixed path: /usr/bin/systemd-run"
+
+systemd_run_resolved=$(readlink -f -- /usr/bin/systemd-run)
+[[ -f ${systemd_run_resolved} && ! -L ${systemd_run_resolved} && -x ${systemd_run_resolved} ]] || \
+  die "/usr/bin/systemd-run must resolve to a regular executable"
+[[ $(stat -c '%U:%G' "${systemd_run_resolved}") == "root:root" ]] || \
+  die "/usr/bin/systemd-run must resolve to a root-owned executable"
+systemd_run_mode=$(stat -c '%a' "${systemd_run_resolved}")
+(( (8#${systemd_run_mode} & 0022) == 0 )) || die "/usr/bin/systemd-run must not be writable by group or other"
+systemd_run_parent=$(dirname -- "${systemd_run_resolved}")
+while [[ ${systemd_run_parent} != / ]]; do
+  ensure_root_directory "${systemd_run_parent}" 0755
+  systemd_run_parent=$(dirname -- "${systemd_run_parent}")
+done
+systemd_version_output=$(/usr/bin/systemd-run --version) || die "could not read the systemd-run version"
+systemd_major=$(awk '$1 == "systemd" && $2 ~ /^[0-9]+$/ { print $2; exit }' <<<"${systemd_version_output}")
+[[ -n ${systemd_major} ]] && ((10#${systemd_major} >= 236)) || die "systemd 236 or newer is required"
+systemd_run_help=$(/usr/bin/systemd-run --help) || die "could not inspect systemd-run options"
+grep -Fq -- '--collect' <<<"${systemd_run_help}" || die "systemd-run does not support --collect"
+grep -Fq -- '--service-type=' <<<"${systemd_run_help}" || die "systemd-run does not support --service-type"
+
+# Serialize the whole bootstrap transaction before it creates an account,
+# directory, stage file, or destination file.
+exec 9>/run/autostream-update-host-install.lock
+flock -n 9 || die "another update host installation is already running"
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly ARCHIVE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+readonly BINARY_SOURCE="${ARCHIVE_ROOT}/bin/autostream-update-host"
+readonly SUDOERS_SOURCE="${ARCHIVE_ROOT}/sudoers/autostream-update-host"
+
+[[ -f ${BINARY_SOURCE} && ! -L ${BINARY_SOURCE} && -x ${BINARY_SOURCE} ]] || die "verified helper binary is missing from the archive"
+[[ -f ${SUDOERS_SOURCE} && ! -L ${SUDOERS_SOURCE} ]] || die "verified sudoers file is missing from the archive"
+[[ -f ${config_source} && ! -L ${config_source} ]] || die "config source must be a regular non-symlink file"
+[[ -f ${authorized_key_source} && ! -L ${authorized_key_source} ]] || die "authorized key source must be a regular non-symlink file"
+
+config_source="$(readlink -f -- "${config_source}")"
+authorized_key_source="$(readlink -f -- "${authorized_key_source}")"
+
+[[ ${source_cidr} != *[[:space:]\"\',]* ]] || die "source CIDR contains an unsafe character"
+[[ ${source_cidr} =~ ^[0-9A-Fa-f:.]+/[0-9]{1,3}$ ]] || die "source CIDR must be numeric IPv4 or IPv6 CIDR"
+source_address=${source_cidr%/*}
+source_prefix=${source_cidr##*/}
+if [[ ${source_address} == *:* ]]; then
+  ((10#${source_prefix} <= 128)) || die "IPv6 source CIDR prefix must be between 0 and 128"
+else
+  ((10#${source_prefix} <= 32)) || die "IPv4 source CIDR prefix must be between 0 and 32"
+  IFS=. read -r -a ipv4_octets <<<"${source_address}"
+  [[ ${#ipv4_octets[@]} -eq 4 ]] || die "IPv4 source CIDR address is invalid"
+  for octet in "${ipv4_octets[@]}"; do
+    [[ ${octet} =~ ^[0-9]{1,3}$ ]] && ((10#${octet} <= 255)) || die "IPv4 source CIDR address is invalid"
+  done
+fi
+getent ahosts "${source_address}" >/dev/null 2>&1 || die "source CIDR address is invalid"
+
+key_lines=$(awk 'END { print NR }' "${authorized_key_source}")
+[[ ${key_lines} -eq 1 ]] || die "authorized key file must contain exactly one line"
+read -r key_type key_blob _ <"${authorized_key_source}" || die "authorized key file is empty"
+[[ ${key_type} == "ssh-ed25519" && -n ${key_blob} ]] || die "authorized key must be ssh-ed25519"
+
+cleanup_paths=()
+bootstrap_created_dirs=()
+systemd_bootstrap_paths=()
+commit_started=false
+commit_succeeded=false
+binary_existed=false
+config_existed=false
+sudoers_existed=false
+authorized_keys_existed=false
+authorized_key_quiesced=false
+binary_backup=""
+config_backup=""
+sudoers_backup=""
+authorized_keys_backup=""
+
+restore_destination() {
+  local destination=$1
+  local backup=$2
+  local existed=$3
+  if [[ ${existed} == true ]]; then
+    [[ -z ${backup} ]] && return 0
+    [[ -f ${backup} && ! -L ${backup} ]] || return 1
+    mv -f -- "${backup}" "${destination}"
+  else
+    rm -f -- "${destination}"
+  fi
+}
+
+cleanup() {
+  local status=$?
+  local path
+  local rollback_failed=false
+  local ssh_isolated=true
+  trap - EXIT
+  trap '' HUP INT TERM
+  set +e
+  if [[ ${commit_started} == true && ${commit_succeeded} != true ]]; then
+    if [[ ${authorized_keys_existed} == true && ${authorized_key_quiesced} != true && ! -f ${authorized_keys_backup} ]]; then
+      ssh_isolated=false
+    fi
+    # Remove any newly activated key first. Restore the prior key only after
+    # every privileged file has rolled back successfully.
+    if [[ ${authorized_keys_existed} == false || ${authorized_key_quiesced} == true || -f ${authorized_keys_backup} ]]; then
+      if ! rm -f -- "${AUTHORIZED_KEYS_DEST}"; then
+        rollback_failed=true
+        ssh_isolated=false
+      fi
+    fi
+    restore_destination "${SUDOERS_DEST}" "${sudoers_backup}" "${sudoers_existed}" || rollback_failed=true
+    restore_destination "${BINARY_DEST}" "${binary_backup}" "${binary_existed}" || rollback_failed=true
+    restore_destination "${CONFIG_DEST}" "${config_backup}" "${config_existed}" || rollback_failed=true
+    for ((bootstrap_index=${#bootstrap_created_dirs[@]} - 1; bootstrap_index >= 0; bootstrap_index--)); do
+      rmdir -- "${bootstrap_created_dirs[bootstrap_index]}" || rollback_failed=true
+    done
+    if [[ ${authorized_keys_existed} == true && ( ${authorized_key_quiesced} == true || -f ${authorized_keys_backup} ) && ${rollback_failed} == false ]]; then
+      mv -f -- "${authorized_keys_backup}" "${AUTHORIZED_KEYS_DEST}" || rollback_failed=true
+    fi
+    if [[ ${rollback_failed} == true ]]; then
+      if [[ ${ssh_isolated} == true ]]; then
+        printf '%s\n' 'install-autostream-update-host: automatic rollback was incomplete; SSH remains disabled; repair from the console and preserve hidden backup files' >&2
+      else
+        printf '%s\n' 'install-autostream-update-host: EMERGENCY: rollback was incomplete and SSH isolation failed; isolate this host, revoke the updater key, and repair from the console' >&2
+      fi
+    else
+      printf '%s\n' 'install-autostream-update-host: commit failed; prior helper files were restored' >&2
+    fi
+    [[ ${status} -ne 0 ]] || status=1
+  fi
+  for path in "${cleanup_paths[@]}"; do
+    [[ -n ${path} ]] && rm -f -- "${path}"
+  done
+  if [[ ${rollback_failed} != true ]]; then
+    for path in "${binary_backup}" "${config_backup}" "${sudoers_backup}" "${authorized_keys_backup}"; do
+      [[ -n ${path} ]] && rm -f -- "${path}"
+    done
+  fi
+  exit "${status}"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+key_validation_file=$(mktemp)
+cleanup_paths+=("${key_validation_file}")
+printf '%s %s\n' "${key_type}" "${key_blob}" >"${key_validation_file}"
+ssh-keygen -l -f "${key_validation_file}" >/dev/null || die "authorized key is invalid"
+
+if getent passwd "${REMOTE_USER}" >/dev/null; then
+  IFS=: read -r _ _ _ _ _ existing_home existing_shell < <(getent passwd "${REMOTE_USER}")
+  [[ ${existing_home} == "${REMOTE_HOME}" ]] || die "existing ${REMOTE_USER} account has an unexpected home"
+  [[ ${existing_shell} == "/bin/sh" ]] || die "existing ${REMOTE_USER} account has an unexpected shell"
+  [[ $(id -gn "${REMOTE_USER}") == "${REMOTE_GROUP}" ]] || die "existing ${REMOTE_USER} account has an unexpected primary group"
+else
+  if getent group "${REMOTE_GROUP}" >/dev/null; then
+    useradd --system --gid "${REMOTE_GROUP}" --home-dir "${REMOTE_HOME}" --shell /bin/sh --no-create-home "${REMOTE_USER}"
+  else
+    useradd --system --user-group --home-dir "${REMOTE_HOME}" --shell /bin/sh --no-create-home "${REMOTE_USER}"
+  fi
+fi
+[[ $(id -u "${REMOTE_USER}") -ne 0 ]] || die "${REMOTE_USER} must not be uid 0"
+usermod -L "${REMOTE_USER}"
+passwd -S "${REMOTE_USER}" | awk '$2 == "L" || $2 == "LK" { ok=1 } END { exit(ok ? 0 : 1) }' || die "failed to lock ${REMOTE_USER} password"
+
+ensure_root_directory /usr/local/libexec 0755
+ensure_root_directory /etc/autostream 0755
+ensure_root_directory /etc/sudoers.d 0755
+ensure_root_directory "${REMOTE_HOME}" 0755
+ensure_root_directory "${REMOTE_HOME}/.ssh" 0755
+ensure_root_directory "${STATE_DIR}" 0700 700
+
+binary_stage=$(mktemp /usr/local/libexec/.autostream-update-host.new.XXXXXX)
+config_stage=$(mktemp /etc/autostream/.update-host.json.new.XXXXXX)
+sudoers_stage=$(mktemp /etc/sudoers.d/.autostream-update-host.new.XXXXXX)
+authorized_keys_stage=$(mktemp "${REMOTE_HOME}/.ssh/.authorized_keys.new.XXXXXX")
+cleanup_paths+=("${binary_stage}" "${config_stage}" "${sudoers_stage}" "${authorized_keys_stage}")
+
+install -o root -g root -m 0755 "${BINARY_SOURCE}" "${binary_stage}"
+install -o root -g root -m 0600 "${config_source}" "${config_stage}"
+install -o root -g root -m 0440 "${SUDOERS_SOURCE}" "${sudoers_stage}"
+printf 'restrict,from="%s",command="%s" %s %s\n' \
+  "${source_cidr}" "${FORCED_COMMAND}" "${key_type}" "${key_blob}" >"${authorized_keys_stage}"
+chown root:root "${authorized_keys_stage}"
+chmod 0644 "${authorized_keys_stage}"
+
+"${binary_stage}" validate-config --config "${config_stage}"
+bootstrap_paths_stage=$(mktemp)
+cleanup_paths+=("${bootstrap_paths_stage}")
+"${binary_stage}" installer-systemd-paths --config "${config_stage}" >"${bootstrap_paths_stage}"
+mapfile -t systemd_bootstrap_paths <"${bootstrap_paths_stage}"
+(( ${#systemd_bootstrap_paths[@]} <= 10 )) || die "helper returned too many systemd bootstrap paths"
+declare -A seen_systemd_bootstrap_paths=()
+for bootstrap_path in "${systemd_bootstrap_paths[@]}"; do
+  [[ -n ${bootstrap_path} ]] || die "helper returned an empty systemd bootstrap path"
+  [[ ${bootstrap_path} =~ ^/opt/autostream/(control-panel|worker|encoder-recorder|discord-bot|observability)(/releases)?$ ]] || \
+    die "helper returned a systemd bootstrap path outside the fixed /opt/autostream service layout"
+  [[ -z ${seen_systemd_bootstrap_paths[${bootstrap_path}]+set} ]] || die "helper returned a duplicate systemd bootstrap path"
+  seen_systemd_bootstrap_paths["${bootstrap_path}"]=1
+done
+visudo -cf "${sudoers_stage}" >/dev/null
+
+sshd_effective=$(sshd -T -C "user=${REMOTE_USER},host=$(hostname),addr=${source_address}") || die "could not validate effective sshd configuration"
+grep -Eq '^pubkeyauthentication yes$' <<<"${sshd_effective}" || die "sshd does not allow public-key authentication for ${REMOTE_USER}"
+grep -Eq '^authenticationmethods publickey$' <<<"${sshd_effective}" || die "sshd must require publickey-only authentication for ${REMOTE_USER}"
+grep -Eq '^passwordauthentication no$' <<<"${sshd_effective}" || die "sshd password authentication must be disabled for ${REMOTE_USER}"
+grep -Eq '^kbdinteractiveauthentication no$' <<<"${sshd_effective}" || die "sshd keyboard-interactive authentication must be disabled for ${REMOTE_USER}"
+grep -Eq '^forcecommand none$' <<<"${sshd_effective}" || die "an sshd ForceCommand would override the authorized_keys command"
+grep -Eq '^authorizedkeyscommand none$' <<<"${sshd_effective}" || die "sshd AuthorizedKeysCommand must be disabled for ${REMOTE_USER}"
+grep -Eq '^authorizedkeysfile \.ssh/authorized_keys$' <<<"${sshd_effective}" || die "sshd must use only ${AUTHORIZED_KEYS_DEST} for ${REMOTE_USER}"
+grep -Eq '^trustedusercakeys none$' <<<"${sshd_effective}" || die "sshd user certificate authorities must be disabled for ${REMOTE_USER}"
+grep -Eq '^authorizedprincipalsfile none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsFile must be disabled for ${REMOTE_USER}"
+grep -Eq '^authorizedprincipalscommand none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsCommand must be disabled for ${REMOTE_USER}"
+grep -Eq '^authorizedprincipalscommanduser none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsCommandUser must be disabled for ${REMOTE_USER}"
+
+# Complete every existing-destination check before the first rename. Config and
+# key differences are local-policy conflicts and therefore fail closed. Binary
+# and sudoers differences are the verified release payload being installed;
+# their old bytes are backed up for rollback before either is replaced.
+install_config=true
+if preflight_destination "${CONFIG_DEST}" 600 config; then
+  config_existed=true
+  cmp -s "${config_stage}" "${CONFIG_DEST}" || die "existing config differs; review and update it separately before rerunning"
+  install_config=false
+fi
+
+if preflight_destination "${AUTHORIZED_KEYS_DEST}" 644 authorized_keys; then
+  authorized_keys_existed=true
+  cmp -s "${authorized_keys_stage}" "${AUTHORIZED_KEYS_DEST}" || die "existing authorized key or source CIDR differs; rotate it through an explicit maintenance procedure"
+fi
+
+install_binary=true
+if preflight_destination "${BINARY_DEST}" 755 'helper binary'; then
+  binary_existed=true
+  if cmp -s "${binary_stage}" "${BINARY_DEST}"; then
+    install_binary=false
+  fi
+fi
+
+install_sudoers=true
+if preflight_destination "${SUDOERS_DEST}" 440 'sudoers policy'; then
+  sudoers_existed=true
+  visudo -cf "${SUDOERS_DEST}" >/dev/null || die "existing sudoers policy is invalid"
+  if cmp -s "${sudoers_stage}" "${SUDOERS_DEST}"; then
+    install_sudoers=false
+  fi
+fi
+
+if [[ ${config_existed} == true && ${install_config} == true ]]; then
+  config_backup=$(mktemp /etc/autostream/.update-host.json.backup.XXXXXX)
+  install -o root -g root -m 0600 "${CONFIG_DEST}" "${config_backup}"
+fi
+if [[ ${binary_existed} == true && ${install_binary} == true ]]; then
+  binary_backup=$(mktemp /usr/local/libexec/.autostream-update-host.backup.XXXXXX)
+  install -o root -g root -m 0755 "${BINARY_DEST}" "${binary_backup}"
+fi
+if [[ ${sudoers_existed} == true && ${install_sudoers} == true ]]; then
+  sudoers_backup=$(mktemp /etc/sudoers.d/.autostream-update-host.backup.XXXXXX)
+  install -o root -g root -m 0440 "${SUDOERS_DEST}" "${sudoers_backup}"
+fi
+if [[ ${authorized_keys_existed} == true ]]; then
+  authorized_keys_backup=$(mktemp "${REMOTE_HOME}/.ssh/.authorized_keys.backup.XXXXXX")
+  rm -f -- "${authorized_keys_backup}"
+fi
+
+commit_started=true
+for bootstrap_path in "${systemd_bootstrap_paths[@]}"; do
+  ensure_bootstrap_directory_tree "${bootstrap_path}"
+done
+# Quiesce an existing SSH entry point before replacing any privileged file.
+# The staged, identical forced key is activated only after all validations.
+if [[ ${authorized_keys_existed} == true ]]; then
+  mv -f -- "${AUTHORIZED_KEYS_DEST}" "${authorized_keys_backup}"
+  authorized_key_quiesced=true
+fi
+if [[ ${install_config} == true ]]; then
+  mv -f -- "${config_stage}" "${CONFIG_DEST}"
+fi
+if [[ ${install_binary} == true ]]; then
+  mv -f -- "${binary_stage}" "${BINARY_DEST}"
+fi
+if [[ ${install_sudoers} == true ]]; then
+  mv -f -- "${sudoers_stage}" "${SUDOERS_DEST}"
+fi
+
+visudo -cf "${SUDOERS_DEST}" >/dev/null
+sudo_effective=$(COLUMNS=4096 LC_ALL=C /usr/bin/sudo -l -U "${REMOTE_USER}") || die "could not inspect the effective sudo policy"
+grep -Fq 'SSH_ORIGINAL_COMMAND' <<<"${sudo_effective}" || die "sudo does not preserve SSH_ORIGINAL_COMMAND for the forced helper"
+sudo_rules=$(awk '
+  /^User .* may run the following commands on / { commands=1; next }
+  commands && /^[[:space:]]*$/ { next }
+  commands { sub(/^[[:space:]]+/, ""); print }
+' <<<"${sudo_effective}")
+[[ ${sudo_rules} == "(root) NOPASSWD: ${SUDO_ALLOWED_COMMAND}" ]] || \
+  die "${REMOTE_USER} must have exactly one sudo rule: the forced helper entry point"
+LC_ALL=C /usr/bin/sudo -n -l -U "${REMOTE_USER}" -- \
+  "${BINARY_DEST}" rpc --config "${CONFIG_DEST}" >/dev/null || \
+  die "sudo does not authorize the forced helper entry point"
+"${BINARY_DEST}" validate-config --config "${CONFIG_DEST}"
+for bootstrap_path in "${systemd_bootstrap_paths[@]}"; do
+  ensure_root_directory "${bootstrap_path}" 0755
+done
+
+[[ $(stat -c '%U:%G:%a' "${BINARY_DEST}") == "root:root:755" ]]
+[[ $(stat -c '%U:%G:%a' "${CONFIG_DEST}") == "root:root:600" ]]
+[[ $(stat -c '%U:%G:%a' "${SUDOERS_DEST}") == "root:root:440" ]]
+[[ $(stat -c '%U:%G:%a' "${authorized_keys_stage}") == "root:root:644" ]]
+
+# Install the forced key last. Before this rename a first-time installation has
+# no SSH entry point, even if an earlier privileged validation fails.
+mv -f -- "${authorized_keys_stage}" "${AUTHORIZED_KEYS_DEST}"
+commit_succeeded=true
+
+printf '%s\n' "installed non-resident AutoStream update host helper"
+printf 'host user: %s\n' "${REMOTE_USER}"
+printf 'forced command: %s\n' "${FORCED_COMMAND}"
+printf '%s\n' "no persistent systemd unit, daemon, listener, or long-lived host token was installed"

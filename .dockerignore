@@ -1,4 +1,6 @@
 .git
+.gocache*
+.local-runtime
 bin
 coverage.out
 node_modules

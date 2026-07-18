@@ -1,0 +1,36 @@
+{
+  "panel_url": "https://panel.example.com",
+  "node_id": "central-updater",
+  "runtime_token": "replace-with-central-update-agent-runtime-token",
+  "service_name": "Central Updater",
+  "github_token": "replace-with-fine-grained-read-token-for-private-releases",
+  "api": {
+    "bind_host": "127.0.0.1",
+    "host": "127.0.0.1",
+    "port": 8090,
+    "ssl_enabled": false
+  },
+  "state_dir": "/var/lib/autostream-updater",
+  "poll_interval_seconds": 15,
+  "heartbeat_interval_seconds": 30,
+  "hosts": [
+    {
+      "host_id": "host-tokyo-01",
+      "name": "Tokyo Host 01",
+      "address": "192.0.2.20",
+      "port": 22,
+      "user": "autostream-update-host",
+      "identity_file": "/etc/autostream/updater/ssh/host-tokyo-01_ed25519",
+      "known_hosts_file": "/etc/autostream/updater/ssh/known_hosts",
+      "arch": "amd64"
+    }
+  ],
+  "targets": [
+    {
+      "target_id": "control-panel",
+      "host_id": "host-tokyo-01",
+      "service_type": "control_panel",
+      "deployment_mode": "systemd"
+    }
+  ]
+}

@@ -59,6 +59,7 @@ func main() {
 		httpapi.WithAppSettingsStore(appSettingsStore),
 		httpapi.WithSecretStore(store.NewMariaDBSecretStore(db, os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))),
 		httpapi.WithRuntimeSecretLeaseStore(store.NewMariaDBRuntimeSecretLeaseStore(db)),
+		httpapi.WithSystemUpdateStore(store.NewMariaDBSystemUpdateStore(db)),
 		httpapi.WithOAuthLoginStore(store.NewMariaDBOAuthLoginStore(db)),
 	)
 	handler := withStaticFiles(srv, staticWebDir(), appSettingsStore)

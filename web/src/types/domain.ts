@@ -229,12 +229,84 @@ export type AppVersion = ServiceUpdateInfo & {
   service_updates: Record<string, ServiceUpdateInfo>;
 };
 
+export type SystemUpdateStrategy = "when_idle" | "maintenance";
+
+export type SystemUpdateReachability = "reachable" | "unreachable" | "unknown";
+
+export type SystemUpdateAgentStatus = {
+  updater_id: string;
+  name: string;
+  status: string;
+  online: boolean;
+  version: string;
+  last_heartbeat_at?: string;
+};
+
+export type SystemUpdateHostStatus = {
+  host_id: string;
+  name: string;
+  updater_id: string;
+  reachability: SystemUpdateReachability;
+  reachability_checked_at?: string;
+  reachability_code?: string;
+};
+
+export type SystemUpdateTarget = {
+  target_id: string;
+  target_type: string;
+  name: string;
+  host_id: string;
+  current_version?: string;
+  latest_version?: string;
+  update_available: boolean;
+  deployment_mode?: string;
+  updater_id?: string;
+  updater_online: boolean;
+  busy?: boolean;
+  current_stream_id?: string;
+  eligible: boolean;
+  blocked_reason?: string;
+  update_check_source?: string;
+  update_check_error?: string;
+};
+
+export type SystemUpdateJob = {
+  id: string;
+  idempotency_key?: string;
+  target_id: string;
+  target_type: string;
+  current_version?: string;
+  target_version?: string;
+  deployment_mode?: string;
+  strategy?: SystemUpdateStrategy;
+  status: string;
+  progress?: number;
+  code?: string;
+  message?: string;
+  requested_by?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+  sequence?: number;
+  report_sequence?: number;
+  lease_generation?: number;
+  recovery_required?: boolean;
+  last_status?: string;
+};
+
+export type SystemUpdatesResponse = {
+  updaters: SystemUpdateAgentStatus[];
+  hosts: SystemUpdateHostStatus[];
+  targets: SystemUpdateTarget[];
+  jobs: SystemUpdateJob[];
+};
+
 export type NodeRegistrationResponse = {
   id: string;
   service_type: string;
   node_type: string;
   scopes: string[];
-  token: string;
+  token?: string;
   configure_token?: string;
   configure_token_expires_at?: string;
   runtime_token_id?: string;
@@ -242,6 +314,9 @@ export type NodeRegistrationResponse = {
   created_at: string;
   configure_command: string;
   configuration_yaml?: string;
+  configuration_path?: string;
+  configuration_example?: string;
+  manual_configuration_required?: boolean;
   systemd_unit?: string;
   node?: WorkerNode;
 };

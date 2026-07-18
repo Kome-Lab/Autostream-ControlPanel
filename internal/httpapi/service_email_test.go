@@ -103,6 +103,8 @@ func TestServiceEmailNotificationRejectsUnsafeOrOversizedPayload(t *testing.T) {
 		"long subject":        `{"recipients":["ops@example.jp"],"subject":"` + strings.Repeat("a", maxServiceEmailSubjectRunes+1) + `","text":"body"}`,
 		"empty text":          `{"recipients":["ops@example.jp"],"subject":"Alert","text":" \n"}`,
 		"long text":           `{"recipients":["ops@example.jp"],"subject":"Alert","text":"` + strings.Repeat("a", maxServiceEmailTextBytes+1) + `"}`,
+		"NUL html":            `{"recipients":["ops@example.jp"],"subject":"Alert","text":"body","html":"<p>unsafe\u0000html</p>"}`,
+		"long html":           `{"recipients":["ops@example.jp"],"subject":"Alert","text":"body","html":"` + strings.Repeat("a", maxServiceEmailHTMLBytes+1) + `"}`,
 		"trailing json":       validServiceEmailBody() + `{}`,
 	}
 	for name, body := range tests {
@@ -135,7 +137,7 @@ func TestServiceEmailNotificationRequiresGlobalSMTPSettings(t *testing.T) {
 
 func TestServiceEmailNotificationUsesGlobalSMTPWithoutLeakingMessage(t *testing.T) {
 	handler, auth, token, mailer := newServiceEmailTestServer(t, true)
-	body := `{"recipients":["ops@example.jp","oncall@example.jp"],"subject":"Production alert","text":"private incident details"}`
+	body := `{"recipients":["ops@example.jp","oncall@example.jp"],"subject":"Production alert","text":"private incident details","html":"<!doctype html><p>private HTML incident details</p>"}`
 	res := doServiceEmailRequest(t, handler, token.RawToken, body)
 	if res.Code != http.StatusAccepted || !strings.Contains(res.Body.String(), `"status":"sent"`) || !strings.Contains(res.Body.String(), `"recipient_count":2`) {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
@@ -144,7 +146,7 @@ func TestServiceEmailNotificationUsesGlobalSMTPWithoutLeakingMessage(t *testing.
 		t.Fatalf("unexpected messages: %#v", mailer.messages)
 	}
 	for i := range mailer.messages {
-		if mailer.messages[i].Subject != "Production alert" || mailer.messages[i].Text != "private incident details" {
+		if mailer.messages[i].Subject != "Production alert" || mailer.messages[i].Text != "private incident details" || mailer.messages[i].HTML != "<!doctype html><p>private HTML incident details</p>" {
 			t.Fatalf("message %d was changed: %#v", i, mailer.messages[i])
 		}
 		if mailer.settings[i].SMTPHost != "smtp.example.jp" || mailer.passwords[i] != "raw-smtp-password" {
@@ -175,7 +177,7 @@ func TestServiceEmailNotificationSanitizesMailerFailure(t *testing.T) {
 	assertServiceEmailSecretsAbsent(t, res.Body.String()+toJSONForTest(t, auth.AuditEvents()))
 }
 
-func TestNotificationChannelProxyCreatesGlobalSMTPButPreservesModeOnUpdate(t *testing.T) {
+func TestNotificationChannelProxyCreatesGlobalSMTPPreservesModeAndSupportsMigration(t *testing.T) {
 	type upstreamRequest struct {
 		method string
 		path   string
@@ -200,7 +202,11 @@ func TestNotificationChannelProxyCreatesGlobalSMTPButPreservesModeOnUpdate(t *te
 		upstreamRequests = append(upstreamRequests, upstreamRequest{method: r.Method, path: r.URL.Path, body: body})
 		usesGlobalSMTP := body["uses_global_smtp"]
 		if r.Method == http.MethodPut {
-			usesGlobalSMTP = strings.HasSuffix(r.URL.Path, "/global-1")
+			if requestedMode, ok := body["uses_global_smtp"].(bool); ok {
+				usesGlobalSMTP = requestedMode
+			} else {
+				usesGlobalSMTP = strings.HasSuffix(r.URL.Path, "/global-1")
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":                       strings.TrimPrefix(r.URL.Path, "/notification-channels/"),
@@ -230,13 +236,18 @@ func TestNotificationChannelProxyCreatesGlobalSMTPButPreservesModeOnUpdate(t *te
 		path           string
 		requestedMode  bool
 		wantPublicMode bool
+		migrate        bool
 	}{
 		{method: http.MethodPost, path: "/observability/notification-channels", requestedMode: false, wantPublicMode: true},
 		{method: http.MethodPut, path: "/observability/notification-channels/legacy-1", requestedMode: true, wantPublicMode: false},
 		{method: http.MethodPut, path: "/observability/notification-channels/global-1", requestedMode: false, wantPublicMode: true},
+		{method: http.MethodPut, path: "/observability/notification-channels/legacy-1", requestedMode: false, wantPublicMode: true, migrate: true},
 	}
 	for _, request := range requests {
 		body := fmt.Sprintf(`{"name":"Ops email","type":"email","enabled":true,"email_recipients":["ops@example.jp"],"uses_global_smtp":%t,"USES_GLOBAL_SMTP":%t,"smtp_host":"smtp.browser.example.jp","smtp_port":587,"smtp_tls":true,"smtp_from":"from@example.jp","smtp_username":"browser-user","smtp_password":"browser-smtp-password","SMTP_SERVER":"bypass.example.jp"}`, request.requestedMode, !request.requestedMode)
+		if request.migrate {
+			body = fmt.Sprintf(`{"name":"Ops email","type":"email","enabled":true,"email_recipients":["ops@example.jp"],"uses_global_smtp":%t,"USES_GLOBAL_SMTP":%t,"migrate_to_global_smtp":true,"smtp_host":"smtp.browser.example.jp","smtp_password":"browser-smtp-password"}`, request.requestedMode, !request.requestedMode)
+		}
 		if request.method == http.MethodPost {
 			body = fmt.Sprintf(`{"name":"Ops email","type":"email","enabled":true,"email_recipients":["ops@example.jp"],"uses_global_smtp":%t,"smtp_host":"smtp.browser.example.jp","smtp_port":587,"smtp_tls":true,"smtp_from":"from@example.jp","smtp_username":"browser-user","smtp_password":"browser-smtp-password","SMTP_SERVER":"bypass.example.jp"}`, request.requestedMode)
 		}
@@ -259,7 +270,7 @@ func TestNotificationChannelProxyCreatesGlobalSMTPButPreservesModeOnUpdate(t *te
 		}
 	}
 
-	if len(upstreamRequests) != 3 {
+	if len(upstreamRequests) != 4 {
 		t.Fatalf("upstream request count = %d", len(upstreamRequests))
 	}
 	for i, request := range upstreamRequests {
@@ -267,11 +278,18 @@ func TestNotificationChannelProxyCreatesGlobalSMTPButPreservesModeOnUpdate(t *te
 			t.Fatalf("create request did not force global SMTP: %#v", request.body)
 		}
 		if request.method == http.MethodPut {
-			if _, ok := request.body["uses_global_smtp"]; ok {
+			_, migrated := request.body["uses_global_smtp"]
+			if migrated && request.body["uses_global_smtp"] != true {
+				t.Fatalf("update request forwarded an invalid global SMTP migration: %#v", request.body)
+			}
+			if migrated != (i == 3) {
 				t.Fatalf("update request changed existing global SMTP mode: %#v", request.body)
 			}
 			if _, ok := request.body["USES_GLOBAL_SMTP"]; ok {
 				t.Fatalf("update request forwarded a case-variant global SMTP mode: %#v", request.body)
+			}
+			if _, ok := request.body["migrate_to_global_smtp"]; ok {
+				t.Fatalf("update request forwarded the migration control field: %#v", request.body)
 			}
 		}
 		for key := range request.body {
@@ -287,7 +305,7 @@ func TestNotificationChannelProxyCreatesGlobalSMTPButPreservesModeOnUpdate(t *te
 			notificationAudits = append(notificationAudits, event)
 		}
 	}
-	if len(notificationAudits) != 3 {
+	if len(notificationAudits) != 4 {
 		t.Fatalf("notification audits = %#v", notificationAudits)
 	}
 	for _, event := range notificationAudits {
@@ -300,6 +318,42 @@ func TestNotificationChannelProxyCreatesGlobalSMTPButPreservesModeOnUpdate(t *te
 		if strings.Contains(auditJSON, secret) {
 			t.Fatalf("audit leaked %q: %s", secret, auditJSON)
 		}
+	}
+}
+
+func TestSanitizeNotificationChannelUpdateProxyPayloadOnlyMigratesExplicitTrue(t *testing.T) {
+	tests := []struct {
+		name         string
+		migration    any
+		wantMigrated bool
+	}{
+		{name: "true", migration: true, wantMigrated: true},
+		{name: "false", migration: false, wantMigrated: false},
+		{name: "string true", migration: "true", wantMigrated: false},
+		{name: "number", migration: float64(1), wantMigrated: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := map[string]any{
+				"name":                   "Ops email",
+				"migrate_to_global_smtp": test.migration,
+				"USES_GLOBAL_SMTP":       false,
+				"smtp_password":          "browser-secret",
+				" SMTP_HOST ":            "smtp.browser.example.jp",
+			}
+			sanitizeNotificationChannelUpdateProxyPayload(payload)
+
+			mode, migrated := payload["uses_global_smtp"]
+			if migrated != test.wantMigrated || (migrated && mode != true) {
+				t.Fatalf("payload = %#v, want migrated = %t", payload, test.wantMigrated)
+			}
+			for key := range payload {
+				normalized := strings.ToLower(strings.TrimSpace(key))
+				if normalized == "migrate_to_global_smtp" || normalized == "uses_global_smtp" && key != "uses_global_smtp" || strings.HasPrefix(normalized, "smtp_") {
+					t.Fatalf("unsafe control or SMTP field survived sanitization: %#v", payload)
+				}
+			}
+		})
 	}
 }
 
@@ -362,7 +416,7 @@ func serviceEmailBodyWithRecipients(count int) string {
 
 func assertServiceEmailSecretsAbsent(t *testing.T, value string) {
 	t.Helper()
-	for _, secret := range []string{"ops@example.jp", "oncall@example.jp", "Production alert", "private incident details", "raw-smtp-password", "smtp.example.jp", "noreply@example.jp", "autostream"} {
+	for _, secret := range []string{"ops@example.jp", "oncall@example.jp", "Production alert", "private incident details", "private HTML incident details", "raw-smtp-password", "smtp.example.jp", "noreply@example.jp", "autostream"} {
 		if strings.Contains(value, secret) {
 			t.Fatalf("service email response or audit leaked %q: %s", secret, value)
 		}

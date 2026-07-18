@@ -1086,9 +1086,11 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
     return normalizeNotificationChannelEventTypeFilter(configured);
   });
   const [enabled, setEnabled] = useState(() => rowValue(row, ["enabled"]) !== false);
+  const [migrateToGlobalSMTP, setMigrateToGlobalSMTP] = useState(false);
   const emailRecipientList = splitList(emailRecipients);
   const webhookRequired = type !== "email";
   const emailRequired = type === "email";
+  const legacyEmailSMTP = editing && emailRequired && rowValue(row, ["uses_global_smtp"]) === false;
   const maskedWebhookURL = rowString(row, ["masked_webhook_url"]);
   const maskedEmailTarget = rowString(row, ["masked_email_target"]);
 
@@ -1104,6 +1106,7 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
             type,
             webhookURL,
             emailRecipients: emailRecipientList,
+            migrateToGlobalSMTP: legacyEmailSMTP && migrateToGlobalSMTP,
             severityFilter,
             eventTypeFilter,
             enabled,
@@ -1146,10 +1149,29 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
           >
             <Textarea value={emailRecipients} onChange={(event) => setEmailRecipients(event.target.value)} className="min-h-20" required={!editing} />
           </Field>
-          <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-            設定画面の「メールサーバー」で構成した共通SMTP設定を使用します。この通知先ではSMTP認証情報の入力は不要です。
-            {editing && maskedEmailTarget ? ` 現在の送信先: ${maskedEmailTarget}` : ""}
-          </div>
+          {legacyEmailSMTP ? (
+            <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-100">
+              <p>この通知先は旧形式の個別SMTP設定を使用しています。</p>
+              <label className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-background px-3 py-2 dark:border-amber-700">
+                <span>
+                  <span className="block font-medium">共通SMTP設定へ移行</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">有効にして保存すると、設定画面の「メールサーバー」を使用し、旧個別SMTP認証情報を削除します。この操作は元に戻せません。</span>
+                </span>
+                <Switch
+                  aria-label="共通SMTP設定へ移行"
+                  checked={migrateToGlobalSMTP}
+                  disabled={disabled}
+                  onCheckedChange={(value) => setMigrateToGlobalSMTP(Boolean(value))}
+                />
+              </label>
+              {maskedEmailTarget ? <p>現在の送信先: {maskedEmailTarget}</p> : null}
+            </div>
+          ) : (
+            <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              設定画面の「メールサーバー」で構成した共通SMTP設定を使用します。この通知先ではSMTP認証情報の入力は不要です。
+              {editing && maskedEmailTarget ? ` 現在の送信先: ${maskedEmailTarget}` : ""}
+            </div>
+          )}
         </div>
       ) : null}
       <CheckboxList
@@ -1634,6 +1656,7 @@ const permissionGroupLabels: Record<string, string> = {
 	secrets: "シークレット",
 	api_tokens: "Node/API token",
 	system_settings: "システム設定",
+	system_updates: "システム更新",
 	incidents: "インシデント",
 	diagnostics: "診断",
 	remediation: "復旧操作",
@@ -1656,6 +1679,7 @@ function permissionGroupLabel(group: string) {
 
 function permissionLabel(value: string) {
 	if (value === "*") return "すべての操作を許可";
+	if (value === "system_updates.execute") return "システム更新を実行";
 	const dot = value.lastIndexOf(".");
 	if (dot < 0) return humanizePermissionText(value);
 	const groupKey = value.slice(0, dot);
@@ -2021,6 +2045,15 @@ function notificationChannelTestRequestError(error: Error): NotificationChannelT
     smtp_auth_failed: "メールサーバーの認証に失敗しました。認証設定を確認してください。",
     smtp_send_failed: "テストメールを送信できませんでした。メールサーバー設定とログを確認してください。",
     send_failed: "テスト通知を送信できませんでした。通知先設定とログを確認してください。",
+    missing_service_scope: "Observability NodeのRuntime Tokenにメール送信権限がありません。Control PanelでRuntime Tokenを再生成し、Observabilityのconfig.ymlへ反映してサービスを再起動してください。",
+    missing_service_token: "ObservabilityからControl Panelへ接続するRuntime Tokenが設定されていません。Nodeのconfig.ymlを再発行して反映してください。",
+    invalid_service_token: "Control PanelとObservabilityのRuntime Tokenが一致していません。Nodeのconfig.ymlを再発行して反映してください。",
+    service_token_not_registered: "Observability NodeのRuntime TokenがControl Panelに登録されていません。Node登録とRuntime Tokenを確認してください。",
+    service_type_not_allowed: "Observability Nodeに別のサービス種別のRuntime Tokenが設定されています。Nodeのconfig.ymlを再発行して反映してください。",
+    service_registry_not_configured: "Control PanelのNodeサービス登録を利用できません。Control Panelの設定とログを確認してください。",
+    list_services_failed: "登録済みNode情報を取得できませんでした。Control Panelのログを確認してください。",
+    app_settings_failed: "共通SMTP設定を読み込めませんでした。Control Panelの設定とログを確認してください。",
+    secret_encryption_key_required: "Control Panelのシークレット暗号化キーが未設定です。Control Panelの設定を確認してください。",
   };
   const code = error.code || "";
   if (/^smtp_[a-z0-9_]*_failed$/.test(code)) {

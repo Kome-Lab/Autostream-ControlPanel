@@ -144,3 +144,75 @@ func TestAuditResultMigrationAcceptsNonBinaryAuditOutcomes(t *testing.T) {
 		t.Fatalf("audit result migration must replace the success/failure enum with a bounded string column:\n%s", string(body))
 	}
 }
+
+func TestSystemUpdateJobsMigrationEnforcesSingleActiveTargetAndPermissions(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/039_system_update_jobs.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, required := range []string{"ALTER TABLE service_tokens", "ALTER TABLE services", "ALTER TABLE service_metric_snapshots", "'update_agent'", "active_target_id", "uq_system_update_jobs_active_target", "executing_agent_service_id", "uq_system_update_jobs_executing_agent", "uq_system_update_jobs_idempotency", "lease_generation", "reconciling", "lease_token_hash", "lease_expires_at", "system_updates.read", "system_updates.execute"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("system update migration is missing %q:\n%s", required, text)
+		}
+	}
+}
+
+func TestSystemUpdateHostSlotMigrationReplacesAgentWideExecutionUniqueness(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/040_system_update_host_slots.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, required := range []string{
+		"execution_host_id VARCHAR(191)",
+		"COALESCE(NULLIF(TRIM(agent_service_id), ''), target_id)",
+		"MODIFY COLUMN execution_host_id VARCHAR(191) NOT NULL",
+		"DROP INDEX IF EXISTS uq_system_update_jobs_executing_agent",
+		"executing_host_id VARCHAR(191) GENERATED ALWAYS AS",
+		"uq_system_update_jobs_executing_agent_host",
+		"(executing_agent_service_id, executing_host_id)",
+		"idx_system_update_jobs_agent_host_claim",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("system update host slot migration is missing %q:\n%s", required, text)
+		}
+	}
+	backfillAt := strings.Index(text, "SET execution_host_id")
+	notNullAt := strings.Index(text, "MODIFY COLUMN execution_host_id")
+	dropAgentUniqueAt := strings.Index(text, "DROP INDEX IF EXISTS uq_system_update_jobs_executing_agent")
+	hostUniqueAt := strings.Index(text, "CREATE UNIQUE INDEX IF NOT EXISTS uq_system_update_jobs_executing_agent_host")
+	if backfillAt < 0 || notNullAt < 0 || dropAgentUniqueAt < 0 || hostUniqueAt < 0 || !(backfillAt < notNullAt && notNullAt < dropAgentUniqueAt && dropAgentUniqueAt < hostUniqueAt) {
+		t.Fatalf("system update host migration must backfill before NOT NULL and replace the old unique key before creating the host lane key:\n%s", text)
+	}
+}
+
+func TestSystemUpdateMutationGrantMigrationStoresOnlyHashedSingleUseTokens(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/041_system_update_mutation_grants.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS system_update_mutation_grants",
+		"token_hash CHAR(64) NOT NULL",
+		"UNIQUE KEY uq_system_update_mutation_grants_token_hash",
+		"lease_generation BIGINT NOT NULL",
+		"host_id VARCHAR(191) NOT NULL",
+		"operation VARCHAR(16) NOT NULL",
+		"plan_sha256 CHAR(64) NOT NULL",
+		"session_id VARCHAR(128) NOT NULL",
+		"expires_at DATETIME(6) NOT NULL",
+		"consumed_at DATETIME(6) NULL",
+		"REFERENCES system_update_jobs(id) ON DELETE CASCADE",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("system update mutation grant migration is missing %q:\n%s", required, text)
+		}
+	}
+	for _, forbidden := range []string{"grant_token", "lease_token VARCHAR", "runtime_token"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("system update mutation grant migration must not persist raw secret column %q:\n%s", forbidden, text)
+		}
+	}
+}

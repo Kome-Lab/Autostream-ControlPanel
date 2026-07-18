@@ -1,5 +1,6 @@
 export type NotificationChannelPayloadInput = {
   editing: boolean;
+  migrateToGlobalSMTP?: boolean;
   name: string;
   type: string;
   webhookURL: string;
@@ -61,6 +62,7 @@ export function buildNotificationChannelPayload(input: NotificationChannelPayloa
   };
   if (input.type === "email") {
     if (!input.editing) payload.uses_global_smtp = true;
+    if (input.editing && input.migrateToGlobalSMTP) payload.migrate_to_global_smtp = true;
     if (input.emailRecipients.length > 0) payload.email_recipients = input.emailRecipients;
     return payload;
   }
@@ -131,6 +133,15 @@ function sanitizedError(value: unknown) {
     smtp_send_failed: "テストメールを送信できませんでした。メールサーバー設定とログを確認してください。",
     send_failed: "テスト通知を送信できませんでした。通知先設定とログを確認してください。",
     rate_limited: "通知が集中しています。少し待ってから再実行してください。",
+    missing_service_scope: "Observability NodeのRuntime Tokenにメール送信権限がありません。Control PanelでRuntime Tokenを再生成し、Observabilityのconfig.ymlへ反映してサービスを再起動してください。",
+    missing_service_token: "ObservabilityからControl Panelへ接続するRuntime Tokenが設定されていません。Nodeのconfig.ymlを再発行して反映してください。",
+    invalid_service_token: "Control PanelとObservabilityのRuntime Tokenが一致していません。Nodeのconfig.ymlを再発行して反映してください。",
+    service_token_not_registered: "Observability NodeのRuntime TokenがControl Panelに登録されていません。Node登録とRuntime Tokenを確認してください。",
+    service_type_not_allowed: "Observability Nodeに別のサービス種別のRuntime Tokenが設定されています。Nodeのconfig.ymlを再発行して反映してください。",
+    service_registry_not_configured: "Control PanelのNodeサービス登録を利用できません。Control Panelの設定とログを確認してください。",
+    list_services_failed: "登録済みNode情報を取得できませんでした。Control Panelのログを確認してください。",
+    app_settings_failed: "共通SMTP設定を読み込めませんでした。Control Panelの設定とログを確認してください。",
+    secret_encryption_key_required: "Control Panelのシークレット暗号化キーが未設定です。Control Panelの設定を確認してください。",
   };
   if (safeMessages[code]) return safeMessages[code];
   if (code === "rate_limited" || code.endsWith("_rate_limited")) {
@@ -139,17 +150,11 @@ function sanitizedError(value: unknown) {
   if (/^smtp_[a-z0-9_]*_failed$/.test(code)) {
     return "メール送信に失敗しました。メールサーバー設定とログを確認してください。";
   }
-  if (
-    /https?:\/\//i.test(error) ||
-    /discord\.com\/api\/webhooks/i.test(error) ||
-    /hooks\.slack\.com\/services/i.test(error) ||
-    /\b(?:bearer|authorization)\s+/i.test(error) ||
-    /(?:token|secret|password|api[_-]?key)\s*[=:]/i.test(error) ||
-    /\b(?:token|secret|password|api[_-]?key)[-_][\w.-]+/i.test(error)
-  ) {
-    return "詳細は安全のため表示されません。";
+  const webhookStatus = code.match(/^webhook delivery returned status (\d{3})$/);
+  if (webhookStatus) {
+    return `Webhook送信先がHTTP status ${webhookStatus[1]}を返しました。`;
   }
-  return error.slice(0, 512);
+  return "詳細は安全のため表示されません。";
 }
 
 function stringValue(value: unknown) {

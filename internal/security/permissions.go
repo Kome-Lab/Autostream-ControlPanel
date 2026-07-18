@@ -17,6 +17,7 @@ var DefaultPermissions = []string{
 	"secrets.read_status", "secrets.create", "secrets.update", "secrets.delete",
 	"api_tokens.read", "api_tokens.create", "api_tokens.revoke",
 	"system_settings.read", "system_settings.update",
+	"system_updates.read", "system_updates.execute",
 	"incidents.read", "incidents.acknowledge", "incidents.resolve",
 	"diagnostics.read", "diagnostics.run",
 	"remediation.read", "remediation.approve", "remediation.execute",

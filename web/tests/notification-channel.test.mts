@@ -34,6 +34,24 @@ test("email edit with a blank recipient preserves the target and existing SMTP m
   });
 });
 
+test("legacy email SMTP migrates only when explicitly requested", () => {
+  const payload = buildNotificationChannelPayload({
+    ...basePayload,
+    migrateToGlobalSMTP: true,
+  });
+
+  assert.deepEqual(payload, {
+    name: "ops email",
+    type: "email",
+    migrate_to_global_smtp: true,
+    severity_filter: ["critical"],
+    event_type_filter: ["incident.opened"],
+    enabled: true,
+  });
+  assert.equal("uses_global_smtp" in payload, false);
+  assert.equal(Object.keys(payload).some((key) => key.startsWith("smtp_")), false);
+});
+
 test("email edit replaces only recipients and never sends SMTP credentials", () => {
   const payload = buildNotificationChannelPayload({
     ...basePayload,
@@ -153,6 +171,8 @@ test("known control-panel audit operations have explicit Japanese labels", () =>
     "archive.artifact.share.create",
     "archive.artifact.share.revoke",
     "auth.change_password",
+    "auth.avatar.update",
+    "auth.avatar.delete",
     "auth.email.change_request",
     "auth.email.confirm",
     "auth.login",
@@ -160,6 +180,8 @@ test("known control-panel audit operations have explicit Japanese labels", () =>
     "auth.oauth.login",
     "auth.oauth.provision_user",
     "auth.oauth.start",
+    "auth.passkey.login.start",
+    "auth.passkey.login.finish",
     "auth.oauth_link.create",
     "auth.oauth_link.delete",
     "discord_configs.create",
@@ -185,6 +207,7 @@ test("known control-panel audit operations have explicit Japanese labels", () =>
     "nodes.update",
     "passkeys.delete",
     "passkeys.registration.start",
+    "passkeys.registration.finish",
     "remediation.execute",
     "roles.create",
     "roles.delete",
@@ -204,6 +227,15 @@ test("known control-panel audit operations have explicit Japanese labels", () =>
     "streams.stop",
     "streams.update_settings",
     "streams.worker_event_test",
+    "system_updates.create",
+    "system_updates.request",
+    "system_updates.cancel",
+    "system_updates.report",
+    "system_updates.claim",
+    "system_updates.authorize",
+    "system_updates.succeeded",
+    "system_updates.rolled_back",
+    "system_updates.failed",
     "users.create",
     "users.delete",
     "users.email_welcome",
@@ -259,6 +291,25 @@ test("SMTP delivery error codes become safe user guidance", () => {
   }
 });
 
+test("email relay configuration errors become safe actionable guidance", () => {
+  const cases = [
+    { code: "missing_service_scope", expected: /Runtime Tokenを再生成/ },
+    { code: "invalid_service_token", expected: /config\.ymlを再発行/ },
+    { code: "app_settings_failed", expected: /共通SMTP設定を読み込めません/ },
+    { code: "secret_encryption_key_required", expected: /暗号化キーが未設定/ },
+  ];
+
+  for (const item of cases) {
+    const feedback = notificationChannelTestFeedback([
+      { status: "failure", target: "o***s@example.jp", error: item.code },
+    ]);
+
+    assert.equal(feedback.ok, false);
+    assert.match(feedback.message, item.expected);
+    assert.doesNotMatch(feedback.message, new RegExp(item.code));
+  }
+});
+
 test("rate limited delivery errors become safe retry guidance", () => {
   const feedback = notificationChannelTestFeedback([
     { status: "failure", target: "o***s@example.jp", error: "rate_limited" },
@@ -291,5 +342,19 @@ test("raw targets and unsafe error details are not displayed", () => {
   assert.equal(feedback.ok, false);
   assert.doesNotMatch(feedback.message, /raw-token/);
   assert.doesNotMatch(feedback.message, /discord\.com/);
+  assert.match(feedback.message, /安全のため表示されません/);
+});
+
+test("unknown raw delivery errors are hidden even when they contain no obvious secret", () => {
+  const feedback = notificationChannelTestFeedback([
+    {
+      status: "failure",
+      target: "o***s@example.jp",
+      error: "dial tcp 10.0.0.25:25: i/o timeout",
+    },
+  ]);
+
+  assert.equal(feedback.ok, false);
+  assert.doesNotMatch(feedback.message, /10\.0\.0\.25|dial tcp|timeout/);
   assert.match(feedback.message, /安全のため表示されません/);
 });

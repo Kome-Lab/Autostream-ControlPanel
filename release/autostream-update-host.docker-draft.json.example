@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "host_id": "host-tokyo-01",
+  "panel_url": "https://panel.example.com",
+  "arch": "amd64",
+  "state_dir": "/var/lib/autostream-update-host",
+  "targets": [
+    {
+      "target_id": "worker-docker",
+      "host_id": "host-tokyo-01",
+      "service_type": "worker",
+      "deployment_mode": "docker",
+      "health_url": "http://127.0.0.1:8081/health",
+      "version_url": "http://127.0.0.1:8081/version",
+      "docker": {
+        "docker_path": "/usr/bin/docker",
+        "compose_project": "autostream",
+        "project_dir": "/opt/autostream/docker",
+        "compose_files": [
+          "/opt/autostream/docker/docker-compose.yml"
+        ],
+        "service": "worker",
+        "image_repo": "ghcr.io/kome-lab/autostream-docker/worker",
+        "image_variable": "AUTOSTREAM_DOCKER_VERSION",
+        "version_env_file": "/etc/autostream/docker-version.env",
+        "compose_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "current_version": "v1.2.3",
+        "channel": "docker"
+      }
+    }
+  ]
+}

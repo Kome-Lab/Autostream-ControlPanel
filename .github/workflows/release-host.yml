@@ -31,6 +31,9 @@ jobs:
     env:
       SERVICE_NAME: control-panel
       ARTIFACT_PREFIX: autostream-control-panel
+      # First release implementing the central-only ConfigSHA/grant protocol.
+      # Keep this compatibility floor fixed; do not raise it for every release.
+      MINIMUM_AGENT_VERSION: v1.7.0
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -48,14 +51,17 @@ jobs:
       - name: Resolve release metadata
         id: meta
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUSH_RELEASE: ${{ inputs.push_release }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME}"
             push_release="true"
           else
-            version="${{ inputs.version }}"
-            push_release="${{ inputs.push_release }}"
+            version="${INPUT_VERSION}"
+            push_release="${INPUT_PUSH_RELEASE}"
           fi
           if [[ "${version}" =~ ^v\. ]]; then
             echo "Version must look like v1.2.3, not ${version}. Remove the dot after v." >&2
@@ -87,19 +93,244 @@ jobs:
           for arch in amd64 arm64; do
             artifact="${ARTIFACT_PREFIX}_${version}_linux_${arch}"
             root="staging/${artifact}"
-            mkdir -p "${root}/bin" "${root}/systemd" "${root}/share/autostream-control-panel"
+            helper_artifact="autostream-update-host_${version}_linux_${arch}"
+            helper_root="staging/${helper_artifact}"
+            mkdir -p "${root}/backup" "${root}/bin" "${root}/systemd" "${root}/share/autostream-control-panel"
+            mkdir -p "${helper_root}/bin" "${helper_root}/install" "${helper_root}/sudoers"
             build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             ldflags="-s -w -X github.com/example/autostream-control-panel/internal/version.Version=${version} -X github.com/example/autostream-control-panel/internal/version.Commit=${GITHUB_SHA} -X github.com/example/autostream-control-panel/internal/version.BuildDate=${build_date}"
             GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go build -trimpath -ldflags="${ldflags}" -o "${root}/bin/${SERVICE_NAME}" ./cmd/control-panel
+            GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go build -trimpath -ldflags="${ldflags}" -o "${root}/bin/autostream-updater" ./cmd/autostream-updater
+            GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go build -trimpath -ldflags="${ldflags}" -o "${helper_root}/bin/autostream-update-host" ./cmd/autostream-update-host
             cp .env.example "${root}/.env.example"
             cp systemd/*.service.example "${root}/systemd/"
+            cp release/autostream-updater.json.example "${root}/autostream-updater.json.example"
+            cp release/autostream-backup-control-panel.example "${root}/backup/autostream-backup-control-panel"
+            chmod 0755 "${root}/backup/autostream-backup-control-panel"
             test -d web/out
             cp -R web/out/. "${root}/share/autostream-control-panel/"
             cp release/README.install.md "${root}/README.install.md"
-            (cd "${root}" && find . -type f -print0 | sort -z | xargs -0 sha256sum > checksums.txt)
+            (cd "${root}" && find . -type f ! -path './checksums.txt' -print0 | sort -z | xargs -0 sha256sum > checksums.txt)
             tar -C staging -czf "artifacts/${artifact}.tar.gz" "${artifact}"
-            sha256sum "artifacts/${artifact}.tar.gz" > "artifacts/${artifact}.tar.gz.sha256"
+            (cd artifacts && sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256")
+            checksum_path="artifacts/${artifact}.tar.gz.sha256"
+            test "$(wc -l < "${checksum_path}")" -eq 1
+            LC_ALL=C grep -Eq '^[0-9a-f]{64}  [^/[:space:]]+$' "${checksum_path}"
+            test "$(awk 'NR == 1 { print $2 }' "${checksum_path}")" = "${artifact}.tar.gz"
+
+            cp release/autostream-update-host.json.example "${helper_root}/autostream-update-host.json.example"
+            cp release/autostream-update-host.docker-draft.json.example "${helper_root}/autostream-update-host.docker-draft.json.example"
+            cp release/autostream-update-host.sudoers.example "${helper_root}/sudoers/autostream-update-host"
+            cp release/install-autostream-update-host "${helper_root}/install/install-autostream-update-host"
+            cp release/README.bootstrap.md "${helper_root}/README.bootstrap.md"
+            chmod 0755 "${helper_root}/install/install-autostream-update-host"
+            (cd "${helper_root}" && find . -type f ! -path './checksums.txt' -print0 | sort -z | xargs -0 sha256sum > checksums.txt)
+            tar -C staging -czf "artifacts/${helper_artifact}.tar.gz" "${helper_artifact}"
+            (cd artifacts && sha256sum "${helper_artifact}.tar.gz" > "${helper_artifact}.tar.gz.sha256")
+            helper_checksum_path="artifacts/${helper_artifact}.tar.gz.sha256"
+            test "$(wc -l < "${helper_checksum_path}")" -eq 1
+            LC_ALL=C grep -Eq '^[0-9a-f]{64}  [^/[:space:]]+$' "${helper_checksum_path}"
+            test "$(awk 'NR == 1 { print $2 }' "${helper_checksum_path}")" = "${helper_artifact}.tar.gz"
+            helper_listing="$(tar -tzf "artifacts/${helper_artifact}.tar.gz")"
+            if grep -q "^${helper_artifact}/systemd/" <<< "${helper_listing}"; then
+              echo "Remote helper artifact must not contain a systemd unit" >&2
+              exit 1
+            fi
           done
+
+      - name: Create host release manifest
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_SERVICE: control-panel
+          DATABASE_SCHEMA: backward_compatible
+        run: |
+          set -euo pipefail
+          release_artifacts='[]'
+          for arch in amd64 arm64; do
+            name="${ARTIFACT_PREFIX}_${RELEASE_VERSION}_linux_${arch}.tar.gz"
+            path="artifacts/${name}"
+            checksum_path="${path}.sha256"
+            test -f "${path}"
+            test -f "${checksum_path}"
+
+            declared_sha="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
+            declared_name="$(awk 'NR == 1 { print $2 }' "${checksum_path}")"
+            actual_sha="$(sha256sum "${path}" | awk '{ print $1 }')"
+            if [[ "$(wc -l < "${checksum_path}")" -ne 1 ]] || ! LC_ALL=C grep -Eq '^[0-9a-f]{64}  [^/[:space:]]+$' "${checksum_path}"; then
+              echo "Checksum file ${checksum_path} has an invalid format" >&2
+              exit 1
+            fi
+            if [[ ! "${declared_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "Invalid SHA-256 in ${checksum_path}" >&2
+              exit 1
+            fi
+            if [[ "${declared_name}" != "${name}" ]]; then
+              echo "Checksum file ${checksum_path} names ${declared_name}, expected ${name}" >&2
+              exit 1
+            fi
+            if [[ "${declared_sha}" != "${actual_sha}" ]]; then
+              echo "Checksum mismatch for ${name}" >&2
+              exit 1
+            fi
+            (cd artifacts && sha256sum --check --strict "${name}.sha256")
+
+            size="$(stat -c %s "${path}")"
+            release_artifacts="$(
+              jq -c \
+                --arg arch "${arch}" \
+                --arg name "${name}" \
+                --arg sha256 "${actual_sha}" \
+                --argjson size "${size}" \
+                '. + [{os: "linux", arch: $arch, name: $name, size: $size, sha256: $sha256}]' \
+                <<< "${release_artifacts}"
+            )"
+          done
+
+          jq -n \
+            --arg release_id "${RELEASE_VERSION}" \
+            --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg service "${RELEASE_SERVICE}" \
+            --arg source_version "${RELEASE_VERSION}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg database_schema "${DATABASE_SCHEMA}" \
+            --arg minimum_agent_version "${MINIMUM_AGENT_VERSION}" \
+            --argjson artifacts "${release_artifacts}" \
+            '{
+              schema_version: 1,
+              release_id: $release_id,
+              channel: "host",
+              published_at: $published_at,
+              minimum_agent_version: $minimum_agent_version,
+              components: [{
+                service: $service,
+                source_version: $source_version,
+                commit: $commit,
+                artifacts: $artifacts,
+                rollback_compatible: true,
+                database_schema: $database_schema
+              }]
+            }' > artifacts/release-manifest.json
+
+          jq -e \
+            --arg version "${RELEASE_VERSION}" \
+            --arg service "${RELEASE_SERVICE}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg database_schema "${DATABASE_SCHEMA}" \
+            --arg minimum_agent_version "${MINIMUM_AGENT_VERSION}" \
+            '(.schema_version == 1) and
+             (.release_id == $version) and
+             (.channel == "host") and
+             (.published_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+             (.minimum_agent_version == $minimum_agent_version) and
+             (.components | length == 1) and
+             (.components[0].service == $service) and
+             (.components[0].source_version == $version) and
+             (.components[0].commit == $commit) and
+             (.components[0].rollback_compatible == true) and
+             (.components[0].database_schema == $database_schema) and
+             (.components[0].artifacts | length == 2) and
+             (all(.components[0].artifacts[];
+               .os == "linux" and
+               (.arch == "amd64" or .arch == "arm64") and
+               (.name | type == "string") and
+               (.size | type == "number" and . > 0) and
+               (.sha256 | test("^[0-9a-f]{64}$"))))' \
+            artifacts/release-manifest.json > /dev/null
+
+          (cd artifacts && sha256sum release-manifest.json > release-manifest.json.sha256)
+          if [[ "$(wc -l < artifacts/release-manifest.json.sha256)" != "1" ]]; then
+            echo "release-manifest.json.sha256 must contain exactly one line" >&2
+            exit 1
+          fi
+          if ! LC_ALL=C grep -Eq '^[0-9a-f]{64}  release-manifest\.json$' artifacts/release-manifest.json.sha256; then
+            echo "release-manifest.json.sha256 has an invalid format" >&2
+            exit 1
+          fi
+          (cd artifacts && sha256sum --check --strict release-manifest.json.sha256)
+
+      - name: Create update host bootstrap manifest
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          helper_artifacts='[]'
+          for arch in amd64 arm64; do
+            name="autostream-update-host_${RELEASE_VERSION}_linux_${arch}.tar.gz"
+            path="artifacts/${name}"
+            checksum_path="${path}.sha256"
+            test -f "${path}"
+            test -f "${checksum_path}"
+
+            declared_sha="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
+            declared_name="$(awk 'NR == 1 { print $2 }' "${checksum_path}")"
+            actual_sha="$(sha256sum "${path}" | awk '{ print $1 }')"
+            if [[ "$(wc -l < "${checksum_path}")" -ne 1 ]] || ! LC_ALL=C grep -Eq '^[0-9a-f]{64}  [^/[:space:]]+$' "${checksum_path}"; then
+              echo "Checksum file ${checksum_path} has an invalid format" >&2
+              exit 1
+            fi
+            if [[ ! "${declared_sha}" =~ ^[0-9a-f]{64}$ ]] || [[ "${declared_name}" != "${name}" ]] || [[ "${declared_sha}" != "${actual_sha}" ]]; then
+              echo "Checksum identity mismatch for ${name}" >&2
+              exit 1
+            fi
+            (cd artifacts && sha256sum --check --strict "${name}.sha256")
+
+            size="$(stat -c %s "${path}")"
+            helper_artifacts="$(
+              jq -c \
+                --arg arch "${arch}" \
+                --arg name "${name}" \
+                --arg sha256 "${actual_sha}" \
+                --argjson size "${size}" \
+                '. + [{os: "linux", arch: $arch, name: $name, size: $size, sha256: $sha256}]' \
+                <<< "${helper_artifacts}"
+            )"
+          done
+
+          jq -n \
+            --arg release_id "${RELEASE_VERSION}" \
+            --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg helper_version "${RELEASE_VERSION}" \
+            --arg minimum_controller_version "${RELEASE_VERSION}" \
+            --argjson artifacts "${helper_artifacts}" \
+            '{
+              schema_version: 1,
+              release_id: $release_id,
+              channel: "update-host-bootstrap",
+              published_at: $published_at,
+              commit: $commit,
+              helper_version: $helper_version,
+              protocol_version: 1,
+              minimum_controller_version: $minimum_controller_version,
+              artifacts: $artifacts
+            }' > artifacts/update-host-bootstrap-manifest.json
+
+          jq -e \
+            --arg version "${RELEASE_VERSION}" \
+            --arg commit "${GITHUB_SHA}" \
+            '(.schema_version == 1) and
+             (.release_id == $version) and
+             (.channel == "update-host-bootstrap") and
+             (.published_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+             (.commit == $commit and (.commit | test("^[0-9a-f]{40}$"))) and
+             (.helper_version == $version) and
+             (.protocol_version == 1) and
+             (.minimum_controller_version == $version) and
+             (.artifacts | length == 2) and
+             ([.artifacts[].arch] | sort == ["amd64", "arm64"]) and
+             (all(.artifacts[];
+               .os == "linux" and
+               (.name == ("autostream-update-host_" + $version + "_linux_" + .arch + ".tar.gz")) and
+               (.size | type == "number" and . > 0) and
+               (.sha256 | test("^[0-9a-f]{64}$"))))' \
+            artifacts/update-host-bootstrap-manifest.json > /dev/null
+
+          (cd artifacts && sha256sum update-host-bootstrap-manifest.json > update-host-bootstrap-manifest.json.sha256)
+          test "$(wc -l < artifacts/update-host-bootstrap-manifest.json.sha256)" -eq 1
+          LC_ALL=C grep -Eq '^[0-9a-f]{64}  update-host-bootstrap-manifest\.json$' artifacts/update-host-bootstrap-manifest.json.sha256
+          (cd artifacts && sha256sum --check --strict update-host-bootstrap-manifest.json.sha256)
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -111,18 +342,377 @@ jobs:
     needs: release-host
     if: needs.release-host.outputs.push_release == 'true'
     runs-on: blacksmith-2vcpu-ubuntu-2404
+    concurrency:
+      group: host-release-publish-${{ needs.release-host.outputs.version }}
+      cancel-in-progress: false
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: host-release-dry-run
           path: artifacts
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e # v3
+      - name: Validate immutable release namespace and local asset set
+        id: preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.release-host.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          releases_json="${RUNNER_TEMP}/host-release-pages.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "${releases_json}"
+          existing_release_count="$(
+            jq -s --arg tag "${RELEASE_VERSION}" \
+              '[.[][] | select(.tag_name == $tag)] | length' \
+              "${releases_json}"
+          )"
+          if [[ "${existing_release_count}" != "0" ]]; then
+            echo "Release ${RELEASE_VERSION} already exists (including drafts); refusing to modify it." >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            if [[ "${GITHUB_REF_NAME}" != "${RELEASE_VERSION}" ]]; then
+              echo "Triggered tag ${GITHUB_REF_NAME} does not match ${RELEASE_VERSION}." >&2
+              exit 1
+            fi
+
+            tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}")"
+            ref_type="$(jq -r '.object.type' <<< "${tag_ref}")"
+            ref_sha="$(jq -r '.object.sha' <<< "${tag_ref}")"
+            depth=0
+            while [[ "${ref_type}" == "tag" ]]; do
+              depth=$((depth + 1))
+              if (( depth > 8 )); then
+                echo "Annotated tag ${RELEASE_VERSION} exceeds the dereference limit." >&2
+                exit 1
+              fi
+              tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${ref_sha}")"
+              ref_type="$(jq -r '.object.type' <<< "${tag_object}")"
+              ref_sha="$(jq -r '.object.sha' <<< "${tag_object}")"
+            done
+            if [[ "${ref_type}" != "commit" || "${ref_sha}" != "${GITHUB_SHA}" ]]; then
+              echo "Tag ${RELEASE_VERSION} does not resolve to workflow commit ${GITHUB_SHA}." >&2
+              exit 1
+            fi
+          else
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}" > "${RUNNER_TEMP}/existing-tag.json" 2> "${RUNNER_TEMP}/existing-tag.err"; then
+              echo "Tag ${RELEASE_VERSION} already exists; workflow_dispatch may not overwrite or reuse it." >&2
+              exit 1
+            elif ! grep -q 'HTTP 404' "${RUNNER_TEMP}/existing-tag.err"; then
+              cat "${RUNNER_TEMP}/existing-tag.err" >&2
+              exit 1
+            fi
+          fi
+
+          expected_names="${RUNNER_TEMP}/host-release-expected-names.txt"
+          actual_names="${RUNNER_TEMP}/host-release-actual-names.txt"
+          cat > "${expected_names}" <<EOF
+          autostream-control-panel_${RELEASE_VERSION}_linux_amd64.tar.gz
+          autostream-control-panel_${RELEASE_VERSION}_linux_amd64.tar.gz.sha256
+          autostream-control-panel_${RELEASE_VERSION}_linux_arm64.tar.gz
+          autostream-control-panel_${RELEASE_VERSION}_linux_arm64.tar.gz.sha256
+          autostream-update-host_${RELEASE_VERSION}_linux_amd64.tar.gz
+          autostream-update-host_${RELEASE_VERSION}_linux_amd64.tar.gz.sha256
+          autostream-update-host_${RELEASE_VERSION}_linux_arm64.tar.gz
+          autostream-update-host_${RELEASE_VERSION}_linux_arm64.tar.gz.sha256
+          release-manifest.json
+          release-manifest.json.sha256
+          update-host-bootstrap-manifest.json
+          update-host-bootstrap-manifest.json.sha256
+          EOF
+          LC_ALL=C sort -o "${expected_names}" "${expected_names}"
+
+          unexpected_entry="$(find artifacts -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          if [[ -n "${unexpected_entry}" ]]; then
+            echo "Release staging contains a non-file entry: ${unexpected_entry}" >&2
+            exit 1
+          fi
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "${actual_names}"
+          diff -u "${expected_names}" "${actual_names}"
+
+          expected_assets='[]'
+          while IFS= read -r name; do
+            path="artifacts/${name}"
+            size="$(stat -c %s "${path}")"
+            digest="sha256:$(sha256sum "${path}" | awk '{ print $1 }')"
+            expected_assets="$(
+              jq -c \
+                --arg name "${name}" \
+                --argjson size "${size}" \
+                --arg digest "${digest}" \
+                '. + [{name: $name, size: $size, digest: $digest}]' \
+                <<< "${expected_assets}"
+            )"
+          done < "${expected_names}"
+          jq -S 'sort_by(.name)' <<< "${expected_assets}" > "${RUNNER_TEMP}/host-release-expected-assets.json"
+
+          draft_tag="${RELEASE_VERSION}-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "draft_tag=${draft_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create unpublished staging release
+        id: create-draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.release-host.outputs.version }}
+          DRAFT_TAG: ${{ steps.preflight.outputs.draft_tag }}
+        run: |
+          set -euo pipefail
+          release_id="$(
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="${DRAFT_TAG}" \
+              -f target_commitish="${GITHUB_SHA}" \
+              -f name="${RELEASE_VERSION}" \
+              -f body="Unpublished AutoStream host release staging for ${RELEASE_VERSION} at ${GITHUB_SHA}." \
+              -F draft=true \
+              -F prerelease=false \
+              --jq '.id'
+          )"
+          if [[ ! "${release_id}" =~ ^[0-9]+$ ]]; then
+            echo "GitHub did not return a numeric staging release id." >&2
+            exit 1
+          fi
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload all assets to staging release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_RELEASE_ID: ${{ steps.create-draft.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find artifacts -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)
+          if [[ "${#assets[@]}" -ne 12 ]]; then
+            echo "Expected 12 release assets, found ${#assets[@]}." >&2
+            exit 1
+          fi
+          index=0
+          for asset in "${assets[@]}"; do
+            name="${asset##*/}"
+            response="${RUNNER_TEMP}/host-release-upload-${index}.json"
+            curl --silent --show-error --fail-with-body --location \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --request POST \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              --header 'Content-Type: application/octet-stream' \
+              --data-binary "@${asset}" \
+              --output "${response}" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}/assets?name=${name}"
+            size="$(stat -c %s "${asset}")"
+            digest="sha256:$(sha256sum "${asset}" | awk '{ print $1 }')"
+            jq -e \
+              --arg name "${name}" \
+              --argjson size "${size}" \
+              --arg digest "${digest}" \
+              '(.name == $name) and
+               (.size == $size) and
+               (.digest == $digest) and
+               (.state == "uploaded")' \
+              "${response}" > /dev/null
+            index=$((index + 1))
+          done
+
+      - name: Verify staging release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_TAG: ${{ steps.preflight.outputs.draft_tag }}
+          DRAFT_RELEASE_ID: ${{ steps.create-draft.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          release_json="${RUNNER_TEMP}/host-release-draft.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}" > "${release_json}"
+          jq -e \
+            --arg tag "${DRAFT_TAG}" \
+            --arg commit "${GITHUB_SHA}" \
+            '(.tag_name == $tag) and
+             (.target_commitish == $commit) and
+             (.draft == true) and
+             (.published_at == null)' \
+            "${release_json}" > /dev/null
+
+          assets_pages="${RUNNER_TEMP}/host-release-asset-pages.json"
+          uploaded_assets="${RUNNER_TEMP}/host-release-uploaded-assets.json"
+          uploaded_projection="${RUNNER_TEMP}/host-release-uploaded-projection.json"
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}/assets?per_page=100" \
+            > "${assets_pages}"
+          jq -s -S \
+            '[.[][] | {name, size, digest, state}] | sort_by(.name)' \
+            "${assets_pages}" > "${uploaded_assets}"
+          jq -e \
+            '(length == 12) and
+             (all(.[];
+               (.name | test("^[A-Za-z0-9._-]+$")) and
+               (.size | type == "number" and . > 0) and
+               (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+               (.state == "uploaded")))' \
+            "${uploaded_assets}" > /dev/null
+          jq -S '[.[] | {name, size, digest}]' \
+            "${uploaded_assets}" > "${uploaded_projection}"
+          diff -u "${RUNNER_TEMP}/host-release-expected-assets.json" "${uploaded_projection}"
+
+      - name: Attest release manifest
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
-          tag_name: ${{ needs.release-host.outputs.version }}
-          files: artifacts/*
+          subject-path: artifacts/release-manifest.json
+          create-storage-record: false
 
+      - name: Attest update host bootstrap manifest
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: artifacts/update-host-bootstrap-manifest.json
+          create-storage-record: false
 
+      - name: Publish verified release atomically
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.release-host.outputs.version }}
+          DRAFT_TAG: ${{ steps.preflight.outputs.draft_tag }}
+          DRAFT_RELEASE_ID: ${{ steps.create-draft.outputs.release_id }}
+        run: |
+          set -euo pipefail
+
+          releases_json="${RUNNER_TEMP}/host-release-prepublish-pages.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "${releases_json}"
+          existing_release_count="$(
+            jq -s --arg tag "${RELEASE_VERSION}" \
+              '[.[][] | select(.tag_name == $tag)] | length' \
+              "${releases_json}"
+          )"
+          if [[ "${existing_release_count}" != "0" ]]; then
+            echo "Release ${RELEASE_VERSION} appeared during staging; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}" > "${RUNNER_TEMP}/prepublish-tag.json" 2> "${RUNNER_TEMP}/prepublish-tag.err"; then
+              echo "Tag ${RELEASE_VERSION} appeared during staging; refusing to overwrite or reuse it." >&2
+              exit 1
+            elif ! grep -q 'HTTP 404' "${RUNNER_TEMP}/prepublish-tag.err"; then
+              cat "${RUNNER_TEMP}/prepublish-tag.err" >&2
+              exit 1
+            fi
+          else
+            tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}")"
+            ref_type="$(jq -r '.object.type' <<< "${tag_ref}")"
+            ref_sha="$(jq -r '.object.sha' <<< "${tag_ref}")"
+            depth=0
+            while [[ "${ref_type}" == "tag" ]]; do
+              depth=$((depth + 1))
+              if (( depth > 8 )); then
+                echo "Annotated tag ${RELEASE_VERSION} exceeds the dereference limit before publish." >&2
+                exit 1
+              fi
+              tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${ref_sha}")"
+              ref_type="$(jq -r '.object.type' <<< "${tag_object}")"
+              ref_sha="$(jq -r '.object.sha' <<< "${tag_object}")"
+            done
+            if [[ "${ref_type}" != "commit" || "${ref_sha}" != "${GITHUB_SHA}" ]]; then
+              echo "Tag ${RELEASE_VERSION} moved during staging; refusing to publish mismatched assets." >&2
+              exit 1
+            fi
+          fi
+
+          staging_ref="${RUNNER_TEMP}/host-release-staging-tag.json"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" > "${staging_ref}" 2> "${RUNNER_TEMP}/host-release-staging-tag.err"; then
+            if ! jq -e \
+              --arg commit "${GITHUB_SHA}" \
+              '(.object.type == "commit") and (.object.sha == $commit)' \
+              "${staging_ref}" > /dev/null; then
+              echo "Refusing to delete staging tag ${DRAFT_TAG}: it is not the workflow-owned commit." >&2
+              exit 1
+            fi
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${DRAFT_TAG}"
+          elif ! grep -q 'HTTP 404' "${RUNNER_TEMP}/host-release-staging-tag.err"; then
+            cat "${RUNNER_TEMP}/host-release-staging-tag.err" >&2
+            exit 1
+          fi
+
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}" \
+            -f tag_name="${RELEASE_VERSION}" \
+            -f target_commitish="${GITHUB_SHA}" \
+            -f name="${RELEASE_VERSION}" \
+            -F draft=false \
+            -F prerelease=false \
+            > "${RUNNER_TEMP}/host-release-published.json"
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}" \
+            > "${RUNNER_TEMP}/host-release-published-check.json"
+          jq -e \
+            --arg tag "${RELEASE_VERSION}" \
+            '(.tag_name == $tag) and
+             (.draft == false) and
+             (.published_at | type == "string" and length > 0) and
+             (.assets | length == 12)' \
+            "${RUNNER_TEMP}/host-release-published-check.json" > /dev/null
+          jq -S '[.assets[] | {name, size, digest}] | sort_by(.name)' \
+            "${RUNNER_TEMP}/host-release-published-check.json" \
+            > "${RUNNER_TEMP}/host-release-published-assets.json"
+          diff -u \
+            "${RUNNER_TEMP}/host-release-expected-assets.json" \
+            "${RUNNER_TEMP}/host-release-published-assets.json"
+
+      - name: Delete unpublished staging release
+        if: ${{ always() && steps.create-draft.outputs.release_id != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.release-host.outputs.version }}
+          DRAFT_TAG: ${{ steps.preflight.outputs.draft_tag }}
+          DRAFT_RELEASE_ID: ${{ steps.create-draft.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          release_json="${RUNNER_TEMP}/host-release-cleanup.json"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}" > "${release_json}" 2> "${RUNNER_TEMP}/host-release-cleanup.err"; then
+            if grep -q 'HTTP 404' "${RUNNER_TEMP}/host-release-cleanup.err"; then
+              echo "Staging release ${DRAFT_RELEASE_ID} is already absent."
+              exit 0
+            fi
+            cat "${RUNNER_TEMP}/host-release-cleanup.err" >&2
+            exit 1
+          fi
+
+          release_tag="$(jq -r '.tag_name' "${release_json}")"
+          is_draft="$(jq -r '.draft' "${release_json}")"
+          if [[ "${is_draft}" == "true" ]]; then
+            if [[ "${release_tag}" != "${DRAFT_TAG}" ]]; then
+              echo "Refusing to delete staging release ${DRAFT_RELEASE_ID}: unexpected tag ${release_tag}." >&2
+              exit 1
+            fi
+            staging_ref="${RUNNER_TEMP}/host-release-cleanup-tag.json"
+            staging_tag_exists=false
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" > "${staging_ref}" 2> "${RUNNER_TEMP}/host-release-cleanup-tag.err"; then
+              if ! jq -e \
+                --arg commit "${GITHUB_SHA}" \
+                '(.object.type == "commit") and (.object.sha == $commit)' \
+                "${staging_ref}" > /dev/null; then
+                echo "Refusing to delete staging tag ${DRAFT_TAG}: it is not the workflow-owned commit." >&2
+                exit 1
+              fi
+              staging_tag_exists=true
+            elif ! grep -q 'HTTP 404' "${RUNNER_TEMP}/host-release-cleanup-tag.err"; then
+              cat "${RUNNER_TEMP}/host-release-cleanup-tag.err" >&2
+              exit 1
+            fi
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}"
+            if [[ "${staging_tag_exists}" == "true" ]]; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${DRAFT_TAG}"
+            fi
+            echo "Deleted unpublished staging release ${DRAFT_RELEASE_ID}."
+          elif [[ "${release_tag}" == "${RELEASE_VERSION}" ]]; then
+            echo "Verified release ${RELEASE_VERSION} is published; no staging draft remains."
+          else
+            echo "Release ${DRAFT_RELEASE_ID} is published under unexpected tag ${release_tag}; refusing mutation." >&2
+            exit 1
+          fi

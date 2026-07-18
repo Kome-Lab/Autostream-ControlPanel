@@ -13,6 +13,7 @@ const (
 	maxServiceEmailRecipients   = 20
 	maxServiceEmailSubjectRunes = 200
 	maxServiceEmailTextBytes    = 16 * 1024
+	maxServiceEmailHTMLBytes    = 64 * 1024
 	serviceEmailRateLimit       = 60
 	serviceEmailRateWindow      = time.Minute
 )
@@ -67,6 +68,7 @@ type serviceEmailNotificationRequest struct {
 	Recipients []string `json:"recipients"`
 	Subject    string   `json:"subject"`
 	Text       string   `json:"text"`
+	HTML       string   `json:"html,omitempty"`
 }
 
 func (s *Server) serviceEmailNotification(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +111,7 @@ func (s *Server) serviceEmailNotification(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	recipients, subject, text, valid := normalizeServiceEmailNotification(body)
+	recipients, subject, text, html, valid := normalizeServiceEmailNotification(body)
 	if !valid {
 		s.writeServiceAudit(r, token, "notifications.email.send", "service", service.ServiceID, "failure", map[string]any{"reason": "invalid_email_notification", "recipient_count": len(body.Recipients)})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_email_notification"})
@@ -123,7 +125,7 @@ func (s *Server) serviceEmailNotification(w http.ResponseWriter, r *http.Request
 		return
 	}
 	for _, recipient := range recipients {
-		if err := s.mailer.Send(r.Context(), settings, password, MailMessage{To: recipient, Subject: subject, Text: text}); err != nil {
+		if err := s.mailer.Send(r.Context(), settings, password, MailMessage{To: recipient, Subject: subject, Text: text, HTML: html}); err != nil {
 			code := safeErrorCode(err)
 			s.writeServiceAudit(r, token, "notifications.email.send", "service", service.ServiceID, "failure", map[string]any{"reason": code, "recipient_count": len(recipients)})
 			writeJSON(w, smtpTestStatus(code), map[string]string{"code": code})
@@ -134,23 +136,23 @@ func (s *Server) serviceEmailNotification(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "sent", "recipient_count": len(recipients)})
 }
 
-func normalizeServiceEmailNotification(body serviceEmailNotificationRequest) ([]string, string, string, bool) {
+func normalizeServiceEmailNotification(body serviceEmailNotificationRequest) ([]string, string, string, string, bool) {
 	if len(body.Recipients) == 0 || len(body.Recipients) > maxServiceEmailRecipients {
-		return nil, "", "", false
+		return nil, "", "", "", false
 	}
 	recipients := make([]string, 0, len(body.Recipients))
 	seen := make(map[string]struct{}, len(body.Recipients))
 	for _, value := range body.Recipients {
 		if len(value) > 320 || strings.ContainsRune(value, '\x00') {
-			return nil, "", "", false
+			return nil, "", "", "", false
 		}
 		recipient, ok := normalizeSMTPTestRecipient(value)
 		if !ok {
-			return nil, "", "", false
+			return nil, "", "", "", false
 		}
 		key := strings.ToLower(recipient)
 		if _, duplicate := seen[key]; duplicate {
-			return nil, "", "", false
+			return nil, "", "", "", false
 		}
 		seen[key] = struct{}{}
 		recipients = append(recipients, recipient)
@@ -158,10 +160,17 @@ func normalizeServiceEmailNotification(body serviceEmailNotificationRequest) ([]
 
 	subject := strings.TrimSpace(body.Subject)
 	if subject == "" || len([]rune(subject)) > maxServiceEmailSubjectRunes || strings.ContainsAny(body.Subject, "\r\n\x00") {
-		return nil, "", "", false
+		return nil, "", "", "", false
 	}
 	if strings.TrimSpace(body.Text) == "" || len(body.Text) > maxServiceEmailTextBytes || strings.ContainsRune(body.Text, '\x00') {
-		return nil, "", "", false
+		return nil, "", "", "", false
 	}
-	return recipients, subject, body.Text, true
+	if len(body.HTML) > maxServiceEmailHTMLBytes || strings.ContainsRune(body.HTML, '\x00') {
+		return nil, "", "", "", false
+	}
+	html := body.HTML
+	if strings.TrimSpace(html) == "" {
+		html = ""
+	}
+	return recipients, subject, body.Text, html, true
 }
