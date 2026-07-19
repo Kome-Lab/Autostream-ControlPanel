@@ -160,3 +160,32 @@ func TestComposeModelSecurityRejectsPrivilegeAndDockerSocket(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateTrustedFrozenComposeRejectsNonRootOwnedFile(t *testing.T) {
+	if RequireRemoteHelperRoot() == nil {
+		t.Skip("requires a non-root Unix test process")
+	}
+	repo := "ghcr.io/kome-lab/autostream-docker/worker"
+	platform := "sha256:" + strings.Repeat("e", 64)
+	raw := []byte(`{"services":{"worker":{"image":"` + repo + `@` + platform + `"}}}`)
+	modelHash, err := composeModelHash(raw, "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "compose-frozen.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isRootOwner(info) {
+		t.Fatal("non-root fixture is unexpectedly root-owned")
+	}
+	docker := &DockerTarget{Service: "worker", ImageRepo: repo, ComposeConfigSHA256: modelHash}
+	err = validateTrustedFrozenCompose(path, docker, repo+"@"+platform)
+	if err == nil || err.Error() != "trusted frozen compose model is unavailable" {
+		t.Fatalf("non-root-owned frozen compose result = %v", err)
+	}
+}

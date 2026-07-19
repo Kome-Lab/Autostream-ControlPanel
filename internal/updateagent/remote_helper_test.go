@@ -223,7 +223,7 @@ func TestRemoteSystemdStageAndApplyRejectStaleCurrentVersion(t *testing.T) {
 
 func TestRemoteSystemdSmokeUsesArtifactRelativeBinaryUnderRootOnlyState(t *testing.T) {
 	cfg := validHelperTestConfig(t)
-	if err := ensureRemoteStateDirectories(cfg); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "stages"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	artifactRoot := filepath.Join(cfg.StateDir, "stages", "root-only-parent", "artifact")
@@ -540,7 +540,7 @@ func TestRemoteDockerApplyRechecksCompleteBaselineAfterGrant(t *testing.T) {
 		t.Run(mutation, func(t *testing.T) {
 			target, plan, runner, staged := remoteDockerMutationFixture(t)
 			gateCalled := false
-			_, err := applyDockerWithGateAndBaseline(context.Background(), target, plan, runner, func(context.Context) error {
+			_, err := applyDockerWithGateAndBaselineWithOwnerCheck(context.Background(), target, plan, runner, func(context.Context) error {
 				gateCalled = true
 				runner.afterGate = true
 				runner.mutation = mutation
@@ -554,7 +554,7 @@ func TestRemoteDockerApplyRechecksCompleteBaselineAfterGrant(t *testing.T) {
 					}
 				}
 				return nil
-			}, true, &staged, runner.targetImage)
+			}, true, &staged, runner.targetImage, acceptTestFixtureOwner)
 			if err == nil || !strings.Contains(err.Error(), "while consuming") || !gateCalled {
 				t.Fatalf("post-grant %s drift result=%v gate_called=%v", mutation, err, gateCalled)
 			}
@@ -575,7 +575,7 @@ func TestRemoteDockerApplyRechecksStagedInputsAfterGrant(t *testing.T) {
 		t.Run(mutation, func(t *testing.T) {
 			target, plan, runner, staged := remoteDockerMutationFixture(t)
 			gateCalled := false
-			_, err := applyDockerWithGateAndBaseline(context.Background(), target, plan, runner, func(context.Context) error {
+			_, err := applyDockerWithGateAndBaselineWithOwnerCheck(context.Background(), target, plan, runner, func(context.Context) error {
 				gateCalled = true
 				runner.afterGate = true
 				runner.mutation = mutation
@@ -583,7 +583,7 @@ func TestRemoteDockerApplyRechecksStagedInputsAfterGrant(t *testing.T) {
 					return os.WriteFile(filepath.Join(plan.StageDir, "compose-frozen.json"), []byte(`{"services":{}}`), 0o600)
 				}
 				return nil
-			}, true, &staged, runner.targetImage)
+			}, true, &staged, runner.targetImage, acceptTestFixtureOwner)
 			if err == nil || !strings.Contains(err.Error(), "staged Docker inputs changed") || !gateCalled {
 				t.Fatalf("post-grant %s drift result=%v gate_called=%v", mutation, err, gateCalled)
 			}
@@ -654,6 +654,15 @@ func remoteDockerMutationFixture(t *testing.T) (Target, ApplyPlan, *remoteDocker
 		ExpectedVersion: newSource, ExpectedImageDigest: "sha256:" + strings.Repeat("8", 64), ExpectedPlatformDigest: targetPlatform,
 	}
 	return target, plan, runner, observation.Baseline
+}
+
+func acceptTestFixtureOwner(os.FileInfo) bool { return true }
+
+func TestDockerApplyOwnerCheckFailsClosedWhenMissing(t *testing.T) {
+	_, err := applyDockerWithGateAndBaselineWithOwnerCheck(context.Background(), Target{}, ApplyPlan{}, nil, nil, false, nil, "", nil)
+	if err == nil || err.Error() != "trusted Docker owner policy is missing" {
+		t.Fatalf("missing owner policy result = %v", err)
+	}
 }
 
 func TestReconcileCheckpointPreviousVersionMustMatchImmutablePlan(t *testing.T) {

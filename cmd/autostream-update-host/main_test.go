@@ -25,37 +25,52 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
-func TestRunInstallerSystemdPathsWritesOnlyPlannerOutput(t *testing.T) {
-	original := loadRemoteSystemdBootstrapPaths
-	defer func() { loadRemoteSystemdBootstrapPaths = original }()
-	loadRemoteSystemdBootstrapPaths = func(path string) ([]string, error) {
+func TestWriteInstallerSystemdPathsWritesOnlyPlannerOutput(t *testing.T) {
+	load := func(path string) ([]string, error) {
 		if path != "/root/policy.json" {
 			t.Fatalf("config path = %q", path)
 		}
 		return []string{"/opt/autostream/control-panel", "/opt/autostream/control-panel/releases"}, nil
 	}
 
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"installer-systemd-paths", "--config", "/root/policy.json"}, panicCLIReader{}, &stdout, &stderr, func(string) string { return "" })
+	var stdout bytes.Buffer
+	err := writeInstallerSystemdPaths("/root/policy.json", &stdout, load)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "/opt/autostream/control-panel\n/opt/autostream/control-panel/releases\n"; got != want || stderr.Len() != 0 {
-		t.Fatalf("stdout=%q stderr=%q", got, stderr.String())
+	if got, want := stdout.String(), "/opt/autostream/control-panel\n/opt/autostream/control-panel/releases\n"; got != want {
+		t.Fatalf("stdout=%q", got)
 	}
 }
 
-func TestRunInstallerSystemdPathsFailsClosedWithoutOutput(t *testing.T) {
-	original := loadRemoteSystemdBootstrapPaths
-	defer func() { loadRemoteSystemdBootstrapPaths = original }()
-	loadRemoteSystemdBootstrapPaths = func(string) ([]string, error) {
+func TestWriteInstallerSystemdPathsFailsClosedWithoutOutput(t *testing.T) {
+	load := func(string) ([]string, error) {
 		return nil, errors.New("sensitive detail")
+	}
+
+	var stdout bytes.Buffer
+	err := writeInstallerSystemdPaths("/root/policy.json", &stdout, load)
+	if err == nil || err.Error() != "installer systemd path policy rejected" || stdout.Len() != 0 || strings.Contains(err.Error(), "sensitive detail") {
+		t.Fatalf("err=%v stdout=%q", err, stdout.String())
+	}
+}
+
+func TestRunInstallerSystemdPathsRejectsNonRootBeforePlanner(t *testing.T) {
+	if updateagent.RequireRemoteHelperRoot() == nil {
+		t.Skip("requires a non-root test process")
+	}
+	original := loadRemoteSystemdBootstrapPaths
+	t.Cleanup(func() { loadRemoteSystemdBootstrapPaths = original })
+	called := false
+	loadRemoteSystemdBootstrapPaths = func(string) ([]string, error) {
+		called = true
+		return []string{"/must/not/be/reached"}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"installer-systemd-paths", "--config", "/root/policy.json"}, panicCLIReader{}, &stdout, &stderr, func(string) string { return "" })
-	if err == nil || err.Error() != "installer systemd path policy rejected" || stdout.Len() != 0 || strings.Contains(stderr.String(), "sensitive detail") {
-		t.Fatalf("err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	if err == nil || err.Error() != "installer-systemd-paths requires root" || called || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("err=%v planner_called=%v stdout=%q stderr=%q", err, called, stdout.String(), stderr.String())
 	}
 }
 

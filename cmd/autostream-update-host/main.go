@@ -102,16 +102,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if updateagent.RequireRemoteHelperRoot() != nil {
 			return errors.New("installer-systemd-paths requires root")
 		}
-		paths, err := loadRemoteSystemdBootstrapPaths(*configPath)
-		if err != nil {
-			return errors.New("installer systemd path policy rejected")
-		}
-		for _, directory := range paths {
-			if _, err := fmt.Fprintln(stdout, directory); err != nil {
-				return errors.New("write installer systemd paths")
-			}
-		}
-		return nil
+		return writeInstallerSystemdPaths(*configPath, stdout, loadRemoteSystemdBootstrapPaths)
 
 	case "worker":
 		// worker is an internal systemd transient-unit entrypoint. It is not
@@ -133,6 +124,22 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	default:
 		return errors.New("usage: validate-config, rpc, bootstrap-docker-target, or installer-systemd-paths")
 	}
+}
+
+func writeInstallerSystemdPaths(configPath string, stdout io.Writer, load func(string) ([]string, error)) error {
+	if load == nil {
+		return errors.New("installer systemd path policy rejected")
+	}
+	paths, err := load(configPath)
+	if err != nil {
+		return errors.New("installer systemd path policy rejected")
+	}
+	for _, directory := range paths {
+		if _, err := fmt.Fprintln(stdout, directory); err != nil {
+			return errors.New("write installer systemd paths")
+		}
+	}
+	return nil
 }
 
 func newFlagSet(name string, output io.Writer) *flag.FlagSet {

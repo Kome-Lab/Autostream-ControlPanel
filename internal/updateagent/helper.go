@@ -926,6 +926,13 @@ func applyDockerWithGate(ctx context.Context, target Target, plan ApplyPlan, run
 }
 
 func applyDockerWithGateAndBaseline(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner, mutationGate func(context.Context) error, trustedImageStaged bool, stagedBaseline *dockerMutationBaseline, expectedStagedImageID string) (ApplyResult, error) {
+	return applyDockerWithGateAndBaselineWithOwnerCheck(ctx, target, plan, runner, mutationGate, trustedImageStaged, stagedBaseline, expectedStagedImageID, isRootOwner)
+}
+
+func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner, mutationGate func(context.Context) error, trustedImageStaged bool, stagedBaseline *dockerMutationBaseline, expectedStagedImageID string, trustedOwner func(os.FileInfo) bool) (ApplyResult, error) {
+	if trustedOwner == nil {
+		return ApplyResult{}, errors.New("trusted Docker owner policy is missing")
+	}
 	if !versionPattern.MatchString(plan.ExpectedVersion) || !digestPattern.MatchString(plan.ExpectedImageDigest) || !digestPattern.MatchString(plan.ExpectedPlatformDigest) {
 		return ApplyResult{}, errors.New("trusted Docker release metadata is missing")
 	}
@@ -974,7 +981,7 @@ func applyDockerWithGateAndBaseline(ctx context.Context, target Target, plan App
 			return ApplyResult{}, errors.New("staged Docker image binding is missing")
 		}
 		frozenPath := filepath.Join(plan.StageDir, "compose-frozen.json")
-		newID, err = verifyTrustedStagedDockerInputs(ctx, runner, d, frozenPath, digestRef, plan.ExpectedPlatformDigest)
+		newID, err = verifyTrustedStagedDockerInputsWithOwnerCheck(ctx, runner, d, frozenPath, digestRef, plan.ExpectedPlatformDigest, trustedOwner)
 		if err != nil {
 			return ApplyResult{}, err
 		}
@@ -996,7 +1003,7 @@ func applyDockerWithGateAndBaseline(ctx context.Context, target Target, plan App
 				return ApplyResult{}, errors.New("Docker target changed while consuming the mutation grant")
 			}
 			stagedCtx, stagedCancel := context.WithTimeout(ctx, 10*time.Second)
-			afterGrantID, stagedErr := verifyTrustedStagedDockerInputs(stagedCtx, runner, d, frozenPath, digestRef, plan.ExpectedPlatformDigest)
+			afterGrantID, stagedErr := verifyTrustedStagedDockerInputsWithOwnerCheck(stagedCtx, runner, d, frozenPath, digestRef, plan.ExpectedPlatformDigest, trustedOwner)
 			stagedCancel()
 			if stagedErr != nil || afterGrantID != newID || afterGrantID != normalizeDigest(expectedStagedImageID) {
 				return ApplyResult{}, errors.New("staged Docker inputs changed while consuming the mutation grant")
@@ -1124,8 +1131,8 @@ func applyDockerWithGateAndBaseline(ctx context.Context, target Target, plan App
 	return ApplyResult{Status: "rolled_back", ArtifactDigest: normalizeDigest(plan.ExpectedImageDigest), PreviousDigest: normalizeDigest(previousID), RolledBack: true, Message: firstError(upErr, verifyErr).Error()}, nil
 }
 
-func verifyTrustedStagedDockerInputs(ctx context.Context, runner CommandRunner, d *DockerTarget, frozenPath, digestRef, expectedPlatformDigest string) (string, error) {
-	if err := validateTrustedFrozenCompose(frozenPath, d, digestRef); err != nil {
+func verifyTrustedStagedDockerInputsWithOwnerCheck(ctx context.Context, runner CommandRunner, d *DockerTarget, frozenPath, digestRef, expectedPlatformDigest string, trustedOwner func(os.FileInfo) bool) (string, error) {
+	if err := validateTrustedFrozenComposeWithOwnerCheck(frozenPath, d, digestRef, trustedOwner); err != nil {
 		return "", err
 	}
 	newIDOut, inspectErr := runner.Run(ctx, d.ProjectDir, dockerCommandEnv(), d.DockerPath, "image", "inspect", "--format={{.Id}}", digestRef)
@@ -1192,8 +1199,15 @@ func verifyComposeConfig(ctx context.Context, runner CommandRunner, d *DockerTar
 }
 
 func validateTrustedFrozenCompose(path string, d *DockerTarget, expectedImage string) error {
+	return validateTrustedFrozenComposeWithOwnerCheck(path, d, expectedImage, isRootOwner)
+}
+
+func validateTrustedFrozenComposeWithOwnerCheck(path string, d *DockerTarget, expectedImage string, trustedOwner func(os.FileInfo) bool) error {
+	if trustedOwner == nil {
+		return errors.New("trusted frozen compose model is unavailable")
+	}
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 16<<20 || !isRootOwner(info) {
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 16<<20 || !trustedOwner(info) {
 		return errors.New("trusted frozen compose model is unavailable")
 	}
 	raw, err := os.ReadFile(path)

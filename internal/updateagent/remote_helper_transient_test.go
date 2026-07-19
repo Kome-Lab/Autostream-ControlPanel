@@ -100,6 +100,9 @@ func TestTerminalLedgerReplayRequiresAuthorizedApplyOrReconcile(t *testing.T) {
 }
 
 func TestTransientReturnRemovesUnconsumedMutationGrantFile(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned transient request policy")
+	}
 	cfg := validHelperTestConfig(t)
 	for _, dir := range []string{cfg.StateDir, filepath.Join(cfg.StateDir, "requests"), filepath.Join(cfg.StateDir, "results"), filepath.Join(cfg.StateDir, "ledger")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -131,6 +134,9 @@ func TestTransientReturnRemovesUnconsumedMutationGrantFile(t *testing.T) {
 }
 
 func TestLauncherErrorWipesMutationGrantBeforeUnlink(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned transient request policy")
+	}
 	cfg := validHelperTestConfig(t)
 	for _, dir := range []string{cfg.StateDir, filepath.Join(cfg.StateDir, "requests"), filepath.Join(cfg.StateDir, "results"), filepath.Join(cfg.StateDir, "ledger")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -161,6 +167,56 @@ func TestLauncherErrorWipesMutationGrantBeforeUnlink(t *testing.T) {
 	}
 	if bytes.Contains(captured, []byte(secret)) {
 		t.Fatal("launcher error unlinked the grant request without wiping its inode")
+	}
+}
+
+func TestWipeRemoteWorkerRequestZerosHardLinkedInode(t *testing.T) {
+	dir := t.TempDir()
+	requestPath := filepath.Join(dir, "request")
+	capturePath := filepath.Join(dir, "capture")
+	secret := []byte("mutation-grant-must-be-zeroed")
+	payload := append([]byte(`{"grant":"`), secret...)
+	payload = append(payload, []byte(`","suffix":"keep-length"}`)...)
+	if len(payload) == 0 || len(payload) > RemoteProtocolMaxFrameBytes {
+		t.Fatal("invalid test payload")
+	}
+	if err := os.WriteFile(requestPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(requestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(requestPath, capturePath); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := os.Lstat(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(expected, linked) {
+		t.Fatal("capture is not a hard link to the request inode")
+	}
+
+	wipeRemoteWorkerRequest(requestPath, expected)
+	if err := os.Remove(requestPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(requestPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original request survived unlink: %v", err)
+	}
+	got, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(payload) {
+		t.Fatalf("wiped inode length = %d, want %d", len(got), len(payload))
+	}
+	if bytes.Contains(got, secret) {
+		t.Fatal("hard-linked inode retained the mutation grant")
+	}
+	if !bytes.Equal(got, make([]byte, len(payload))) {
+		t.Fatal("hard-linked inode was not completely zeroed")
 	}
 }
 
