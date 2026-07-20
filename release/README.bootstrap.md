@@ -149,6 +149,10 @@ loopback endpoints on this host. Every `version_url` must use the common
 `/updater/version` path. Do not use the Control Panel's authenticated `/version`
 Application Info endpoint as a helper probe. Unit names, paths, backup commands,
 Compose files, and image repositories come only from this root-owned policy.
+For Control Panel and Observability targets, set the second `backup_argv` item
+to the exact database name from that service's `DATABASE_URL`. The packaged
+example uses the standard Control Panel database name; custom names must be
+replaced before validation and installation.
 
 Before installing this helper, manually seed every target with a verified
 manifest release that already implements `/updater/version`, then confirm that

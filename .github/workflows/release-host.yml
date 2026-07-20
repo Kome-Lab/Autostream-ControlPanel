@@ -77,6 +77,24 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Test backup script with root-owned Linux fixtures
+        run: |
+          docker run --rm \
+            --user 0:0 \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 256m \
+            --cpus 1 \
+            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+            /bin/bash /workspace/internal/security/testdata/run-backup-script-root-smoke.sh \
+              /workspace/release/autostream-backup-control-panel.example \
+              /var/backups/autostream/control-panel \
+              autostream_control_panel \
+              autostream-kometubu_panel
+
       - name: Build web assets
         working-directory: web
         run: |

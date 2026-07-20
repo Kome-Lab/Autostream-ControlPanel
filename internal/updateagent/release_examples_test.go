@@ -19,7 +19,8 @@ func TestControlPanelInstallGuidePreparesUpdaterBackup(t *testing.T) {
 		`test -x "$RELEASE_DIR/backup/autostream-backup-control-panel"`,
 		`sudo install -o root -g root -m 0700 "$RELEASE_DIR/backup/autostream-backup-control-panel" /usr/local/sbin/autostream-backup-control-panel`,
 		"sudo chmod 0600 /etc/autostream/mariadb-backup.cnf",
-		"GRANT SELECT, SHOW VIEW, TRIGGER ON `autostream_control_panel`.*",
+		"GRANT SELECT, SHOW VIEW, TRIGGER ON \\`${DATABASE_NAME}\\`.*",
+		"exact `DATABASE_NAME` must be used for the MariaDB grant, the real dump, and the",
 		"sudo /usr/local/sbin/autostream-backup-control-panel",
 	} {
 		if !strings.Contains(guide, want) {

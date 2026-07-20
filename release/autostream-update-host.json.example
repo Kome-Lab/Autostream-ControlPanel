@@ -13,7 +13,8 @@
       "health_url": "http://127.0.0.1:8080/health",
       "version_url": "http://127.0.0.1:8080/updater/version",
       "backup_argv": [
-        "/usr/local/sbin/autostream-backup-control-panel"
+        "/usr/local/sbin/autostream-backup-control-panel",
+        "autostream_control_panel"
       ],
       "systemd": {
         "systemctl_path": "/usr/bin/systemctl",
