@@ -332,6 +332,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /{$}", s.rootRedirect)
 	s.mux.HandleFunc("GET /health", s.health)
+	s.mux.HandleFunc("GET /updater/version", s.updaterVersion)
 	s.mux.HandleFunc("GET /setup/status", s.setupStatus)
 	s.mux.HandleFunc("POST /setup/first-admin", s.setupFirstAdmin)
 	s.mux.HandleFunc("POST /auth/login", s.login)
@@ -600,6 +601,10 @@ func oauthStateTokenCookieMatches(r *http.Request, stateToken string) bool {
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "control-panel"})
+}
+
+func (s *Server) updaterVersion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": version.Current()})
 }
 
 func (s *Server) rootRedirect(w http.ResponseWriter, r *http.Request) {

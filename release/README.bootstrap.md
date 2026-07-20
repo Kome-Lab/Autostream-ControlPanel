@@ -145,8 +145,15 @@ ${EDITOR:-vi} "$ARTIFACT_DIR/update-host.json"
 The top-level `host_id` and every target's `host_id` must match. Set `arch` to
 the archive architecture. `state_dir` should remain
 `/var/lib/autostream-update-host`. Target health and version URLs must be
-loopback endpoints on this host. Unit names, paths, backup commands, Compose
-files, and image repositories come only from this root-owned policy.
+loopback endpoints on this host. Every `version_url` must use the common
+`/updater/version` path. Do not use the Control Panel's authenticated `/version`
+Application Info endpoint as a helper probe. Unit names, paths, backup commands,
+Compose files, and image repositories come only from this root-owned policy.
+
+Before installing this helper, manually seed every target with a verified
+manifest release that already implements `/updater/version`, then confirm that
+endpoint on the target's configured loopback port. A pre-endpoint release must
+not be used as the first managed release or rollback baseline.
 
 The packaged `autostream-update-host.json.example` is a complete systemd target
 so it can pass the installer validation after its host-specific values and
@@ -229,10 +236,10 @@ COMPOSE_SHA="$(bootstrap_docker_digest)"
 
 On success, stdout contains only the lowercase 64-hex digest. Before producing
 it, the helper verifies the trusted release manifest, current image and
-platform digest, running container, loopback health version, and Compose
-security model, then seeds the configured version env file with the verified
-immutable bundle pin. A failure produces no digest and does not authorize the
-draft. Revoke the short-lived token after this command.
+platform digest, running container, loopback health and `/updater/version`
+responses, and Compose security model, then seeds the configured version env
+file with the verified immutable bundle pin. A failure produces no digest and
+does not authorize the draft. Revoke the short-lived token after this command.
 
 Replace the sentinel in a separate final file, then run the normal strict
 validation. For multiple Docker targets, merge the separately bootstrapped

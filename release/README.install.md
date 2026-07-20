@@ -54,7 +54,6 @@ jq -e --arg version "$VERSION" --arg asset "$ASSET" --arg sha "$DIGEST" \
 
 RELEASE_ROOT=/opt/autostream/control-panel/releases
 RELEASE_DIR="$RELEASE_ROOT/${VERSION}-${DIGEST:0:12}"
-CURRENT_LINK=/opt/autostream/control-panel/current
 sudo test ! -e "$RELEASE_DIR"
 sudo install -d -o root -g root -m 0755 "$RELEASE_DIR"
 sudo tar --no-same-owner --strip-components=1 -xzf "$ARTIFACT_ROOT/artifacts/$ASSET" -C "$RELEASE_DIR"
@@ -65,12 +64,98 @@ printf '%s\n' "$VERSION" | sudo tee "$RELEASE_DIR/.version" >/dev/null
 sudo chown root:root "$RELEASE_DIR/.artifact-sha256" "$RELEASE_DIR/.version"
 sudo chmod 0444 "$RELEASE_DIR/.artifact-sha256" "$RELEASE_DIR/.version"
 sudo /usr/sbin/runuser -u autostream -- "$RELEASE_DIR/bin/control-panel" --version | grep -F -- "$VERSION"
+```
+
+## Prepare the updater backup command
+
+A Control Panel target is fail-closed unless its fixed backup command exists
+and succeeds. Install the verified script from this release and prepare its
+private directory and MariaDB client defaults before enabling the updater:
+
+```bash
+set -euo pipefail
+VERSION="${VERSION:?export VERSION=vX.Y.Z before continuing}"
+ARCH="${ARCH:-amd64}"
+ASSET="autostream-control-panel_${VERSION}_linux_${ARCH}.tar.gz"
+ARTIFACT_ROOT=/opt/autostream/releases
+DIGEST="$(awk 'NR == 1 { print $1 }' "$ARTIFACT_ROOT/artifacts/$ASSET.sha256")"
+[[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
+RELEASE_DIR="/opt/autostream/control-panel/releases/${VERSION}-${DIGEST:0:12}"
+sudo test -d "$RELEASE_DIR"
+test -x "$RELEASE_DIR/backup/autostream-backup-control-panel"
+sudo install -d -o root -g root -m 0700 /var/backups/autostream/control-panel
+sudo install -o root -g root -m 0700 "$RELEASE_DIR/backup/autostream-backup-control-panel" /usr/local/sbin/autostream-backup-control-panel
+sudo install -d -o root -g root -m 0750 /etc/autostream
+if ! sudo test -e /etc/autostream/mariadb-backup.cnf; then
+  sudo install -o root -g root -m 0600 /dev/null /etc/autostream/mariadb-backup.cnf
+else
+  echo "preserving existing /etc/autostream/mariadb-backup.cnf"
+fi
+sudo chown root:root /etc/autostream/mariadb-backup.cnf
+sudo chmod 0600 /etc/autostream/mariadb-backup.cnf
+```
+
+Set the root-only defaults file to a dedicated backup account. A shared host
+may reuse this account/file for Observability after granting that database
+separately:
+
+```ini
+[client]
+host=127.0.0.1
+port=3306
+protocol=tcp
+user=autostream_backup
+password=replace-with-a-long-random-password
+```
+
+From an interactive MariaDB root session, create the account if necessary and
+grant only the Control Panel database privileges. Replace the password before
+executing the `CREATE USER` statement:
+
+```sql
+CREATE USER IF NOT EXISTS 'autostream_backup'@'127.0.0.1' IDENTIFIED BY 'replace-with-a-long-random-password';
+GRANT SELECT, SHOW VIEW, TRIGGER ON `autostream_control_panel`.* TO 'autostream_backup'@'127.0.0.1';
+```
+
+Test ownership, mode, credentials, and a real dump before adding
+`/usr/local/sbin/autostream-backup-control-panel` to `backup_argv`:
+
+```bash
+set -euo pipefail
+test "$(sudo stat -c '%u:%a' /etc/autostream/mariadb-backup.cnf)" = "0:600"
+test "$(sudo stat -c '%u:%a' /usr/local/sbin/autostream-backup-control-panel)" = "0:700"
+sudo /usr/local/sbin/autostream-backup-control-panel
+```
+
+The script uses `umask 077` and atomically renames a timestamped, non-empty
+dump only after `mariadb-dump` succeeds. Configure retention and encrypted
+off-host copying separately. The updater rejects a missing backup executable,
+a symlink, or a path that is not root-owned or is writable by group/other
+users; a nonzero dump exit aborts the update before stopping the Control Panel.
+
+## Activate the managed release
+
+Only after the real backup succeeds, switch the managed link and install the
+unit. Recompute the release directory from the already verified sidecar so this
+separate shell cannot silently select a different archive:
+
+```bash
+set -euo pipefail
+VERSION="${VERSION:?export VERSION=vX.Y.Z before continuing}"
+ARCH="${ARCH:-amd64}"
+ASSET="autostream-control-panel_${VERSION}_linux_${ARCH}.tar.gz"
+ARTIFACT_ROOT=/opt/autostream/releases
+DIGEST="$(awk 'NR == 1 { print $1 }' "$ARTIFACT_ROOT/artifacts/$ASSET.sha256")"
+[[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
+RELEASE_DIR="/opt/autostream/control-panel/releases/${VERSION}-${DIGEST:0:12}"
+CURRENT_LINK=/opt/autostream/control-panel/current
+sudo test -d "$RELEASE_DIR"
+test "$(sudo cat "$RELEASE_DIR/.version")" = "$VERSION"
 
 sudo ln -s "$RELEASE_DIR" "${CURRENT_LINK}.next"
 sudo mv -Tf "${CURRENT_LINK}.next" "$CURRENT_LINK"
 sudo ln -sfn "$CURRENT_LINK/bin/control-panel" /usr/local/bin/control-panel
 sudo install -d -o autostream -g autostream /var/lib/autostream/control-panel
-sudo install -d -o root -g root -m 0755 /etc/autostream
 sudo install -o root -g root -m 0644 "$RELEASE_DIR/systemd/autostream-control-panel.service.example" /etc/systemd/system/autostream-control-panel.service
 if ! sudo test -e /etc/autostream/control-panel.env; then
   sudo install -o root -g root -m 0640 "$RELEASE_DIR/.env.example" /etc/autostream/control-panel.env
@@ -86,6 +171,7 @@ Keep `AUTOSTREAM_WEB_DIR` pointed at the managed `current` link, then run:
 
 ```bash
 set -euo pipefail
+VERSION="${VERSION:?export VERSION=vX.Y.Z before continuing}"
 sudo systemctl daemon-reload
 sudo systemctl enable autostream-control-panel
 sudo systemctl restart autostream-control-panel
@@ -93,7 +179,15 @@ PID="$(sudo systemctl show --property=MainPID --value autostream-control-panel)"
 EXPECTED="$(sudo readlink -f /opt/autostream/control-panel/current/bin/control-panel)"
 test "$(sudo readlink -f "/proc/$PID/exe")" = "$EXPECTED"
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/health >/dev/null
+test "$(curl --fail --silent --show-error --max-time 10 \
+  http://127.0.0.1:8080/updater/version | jq -r '.version')" = "$VERSION"
 ```
+
+Use the host's configured loopback port if it differs from `8080`.
+`/updater/version` is the loopback endpoint used by the update helper. The
+existing Control Panel `/version` route remains the authenticated Application
+Info API and must not be configured as a target `version_url`. Block the exact
+`/updater/version` path at any public reverse proxy.
 
 Do not fabricate `.artifact-sha256` or `.version` from an unverified local
 binary. Releases without `release-manifest.json` remain manual-only; publish a

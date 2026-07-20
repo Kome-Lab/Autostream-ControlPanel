@@ -13686,6 +13686,41 @@ func TestVersionEndpointShowsBuildInfoAndUpdate(t *testing.T) {
 	}
 }
 
+func TestUpdaterVersionEndpointIsUnauthenticatedAndMinimal(t *testing.T) {
+	previousVersion := version.Version
+	version.Version = "v1.7.1"
+	t.Setenv("SERVICE_VERSION", "from-environment")
+	t.Cleanup(func() {
+		version.Version = previousVersion
+	})
+
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(store.NewMemoryAuthStore()))
+	req := httptest.NewRequest(http.MethodGet, "/updater/version", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("updater version status = %d body = %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("updater version content type = %q", got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode updater version response: %v", err)
+	}
+	if len(payload) != 1 || payload["version"] != "v1.7.1" {
+		t.Fatalf("unexpected updater version response: %#v", payload)
+	}
+
+	protectedReq := httptest.NewRequest(http.MethodGet, "/version", nil)
+	protectedRes := httptest.NewRecorder()
+	handler.ServeHTTP(protectedRes, protectedReq)
+	if protectedRes.Code != http.StatusUnauthorized {
+		t.Fatalf("authenticated application version status = %d body = %s", protectedRes.Code, protectedRes.Body.String())
+	}
+}
+
 func TestVersionEndpointChecksConfiguredUpdateURL(t *testing.T) {
 	previousVersion, previousCommit, previousBuildDate := version.Version, version.Commit, version.BuildDate
 	version.Version, version.Commit, version.BuildDate = "v1.3.5", "abc123", "2026-07-07T00:00:00Z"
@@ -13727,6 +13762,7 @@ func TestVersionEndpointChecksConfiguredUpdateURL(t *testing.T) {
 
 func TestVersionEndpointCanDisableUpdateCheck(t *testing.T) {
 	t.Setenv("AUTOSTREAM_UPDATE_CHECK_URL", "off")
+	t.Setenv(dockerVersionUpdateTarget.latestVersionEnv, "v9.9.9")
 	disableNodeVersionUpdateChecks(t)
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", nil); err != nil {
@@ -13750,6 +13786,8 @@ func disableNodeVersionUpdateChecks(t *testing.T) {
 		t.Setenv(target.latestVersionEnv, "")
 		t.Setenv(target.updateCheckURLEnv, "off")
 	}
+	t.Setenv(dockerVersionUpdateTarget.latestVersionEnv, "")
+	t.Setenv(dockerVersionUpdateTarget.updateCheckURLEnv, "off")
 }
 
 func TestSetupFirstAdminUsesConfiguredPasswordMinimum(t *testing.T) {
