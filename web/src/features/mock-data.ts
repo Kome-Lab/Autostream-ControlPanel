@@ -581,8 +581,7 @@ export function mockGet(path: string): unknown {
       return {
         node,
         node_api_url: nodeApiUrl,
-        configure_command: "",
-        ...mockUpdaterManualConfiguration(),
+        ...mockUpdaterConfigurationMetadata(),
       };
     }
     return {
@@ -924,12 +923,8 @@ export function mockPost(path: string, body?: unknown): unknown {
     };
     if (response.service_type === "update_agent") {
       response.scopes = ["service.register", "service.heartbeat", "service.config.read", "service.status.write", "updates.claim", "updates.report", "updates.authorize"];
-      delete response.token;
-      delete response.configure_token;
-      delete response.configure_token_expires_at;
       delete response.configuration_yaml;
-      response.configure_command = "";
-      Object.assign(response, mockUpdaterManualConfiguration());
+      Object.assign(response, mockUpdaterConfigurationMetadata());
     }
     const existingIndex = mockWorkers.findIndex((node) => (node.service_id || node.id) === nodeID);
     if (response.node) {
@@ -945,7 +940,6 @@ export function mockPost(path: string, body?: unknown): unknown {
   if (configureTokenRotate) {
     const nodeID = decodeURIComponent(configureTokenRotate[1]);
     const node = mockWorkers.find((item) => (item.service_id || item.id) === nodeID) || mockWorkers[0];
-    if (node.service_type === "update_agent") throw new Error("manual_configuration_required");
     const configureToken = "ast_cfg_demo_rotated_7c8f1a2d";
     node.configure_token_expires_at = baseTime;
     node.configure_token_used_at = undefined;
@@ -954,6 +948,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       configure_token: configureToken,
       configure_token_expires_at: baseTime,
       configure_command: mockConfigureCommand(node.service_type, node.service_id || node.id, configureToken),
+      ...(node.service_type === "update_agent" ? mockUpdaterConfigurationMetadata() : {}),
     };
   }
   const runtimeTokenRotate = stripQuery(path).match(/^\/nodes\/([^/]+)\/rotate-token$/);
@@ -971,8 +966,7 @@ export function mockPost(path: string, body?: unknown): unknown {
         node,
         runtime_token_id: runtimeTokenID,
         runtime_token: runtimeToken,
-        configure_command: "",
-        ...mockUpdaterManualConfiguration(),
+        ...mockUpdaterConfigurationMetadata(),
       };
     }
     return {
@@ -986,8 +980,10 @@ export function mockPost(path: string, body?: unknown): unknown {
 }
 
 function mockConfigureCommand(serviceType: string, nodeID: string, configureToken: string) {
-  if (serviceType === "update_agent") return "";
   const configureBinary = mockConfigureBinary(serviceType);
+  if (serviceType === "update_agent") {
+    return `sudo ${configureBinary} configure --panel-url "https://control.example.jp" --node "${nodeID}" --config "${mockConfigPath(serviceType)}"`;
+  }
   return `sudo ${configureBinary} configure --panel-url "https://control.example.jp" --token "${configureToken}" --node "${nodeID}" --config "${mockConfigPath(serviceType)}"`;
 }
 
@@ -1021,9 +1017,8 @@ function mockConfigPath(serviceType: string) {
   }
 }
 
-function mockUpdaterManualConfiguration() {
+function mockUpdaterConfigurationMetadata() {
   return {
-    manual_configuration_required: true,
     configuration_path: "/etc/autostream/updater.json",
     configuration_example: "release/autostream-updater.json.example",
   };

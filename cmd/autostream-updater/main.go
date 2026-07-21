@@ -52,6 +52,11 @@ func run(args []string) error {
 		fmt.Println("configuration and runtime targets valid")
 		return nil
 	}
+	if len(args) > 0 && args[0] == "configure" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runUpdaterConfigure(ctx, args[1:], defaultUpdaterConfigureDependencies())
+	}
 	if len(args) == 0 || args[0] == "run" {
 		if len(args) > 0 {
 			args = args[1:]
@@ -76,7 +81,7 @@ func run(args []string) error {
 		}
 		return coordinator.Run(ctx)
 	}
-	return errors.New("usage: autostream-updater run --config PATH | validate-config --config PATH | --version")
+	return errors.New("usage: autostream-updater configure --panel-url URL --node ID [--config PATH] | run --config PATH | validate-config --config PATH | --version")
 }
 
 func requireCentralConfig(cfg updateagent.Config) error {

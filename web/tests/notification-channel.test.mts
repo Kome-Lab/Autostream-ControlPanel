@@ -128,6 +128,8 @@ test("admin audit delivery history uses the concrete operation name", () => {
 
   assert.equal(eventKey, "secrets.update");
   assert.equal(auditActionLabel(eventKey), "シークレットを更新");
+  assert.equal(auditActionLabel("nodes.configure.stage"), "Node自動設定を準備");
+  assert.equal(auditActionLabel("nodes.configure"), "Node自動設定を有効化");
 });
 
 test("delivery history keeps lifecycle events and readable unknown actions", () => {
@@ -201,6 +203,8 @@ test("known control-panel audit operations have explicit Japanese labels", () =>
     "mfa.enroll",
     "mfa.recovery_codes.regenerate",
     "mfa.verify",
+    "nodes.configure",
+    "nodes.configure.stage",
     "nodes.configure_token.rotate",
     "nodes.registration_token.create",
     "nodes.runtime_token.rotate",

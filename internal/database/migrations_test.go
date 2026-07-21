@@ -216,3 +216,38 @@ func TestSystemUpdateMutationGrantMigrationStoresOnlyHashedSingleUseTokens(t *te
 		}
 	}
 }
+
+func TestUpdateAgentStagedTokenMigrationStoresNoRawSecrets(t *testing.T) {
+	initBody, err := embeddedMigrations.ReadFile("migrations/001_init.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(initBody), "staged_node_token_id") {
+		t.Fatal("staged updater columns must be introduced by migration 042 so the real upgrade path is exercised")
+	}
+
+	body, err := embeddedMigrations.ReadFile("migrations/042_update_agent_staged_token.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, required := range []string{
+		"staged_node_previous_token_id",
+		"staged_node_token_id",
+		"staged_node_token_hash CHAR(64)",
+		"staged_node_token_scopes JSON",
+		"staged_node_token_ciphertext TEXT",
+		"staged_node_token_nonce VARCHAR(128)",
+		"staged_node_activation_token_hash CHAR(64)",
+		"staged_node_token_at DATETIME(6)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("staged token migration missing %q: %s", required, text)
+		}
+	}
+	for _, forbidden := range []string{"runtime_token TEXT", "activation_token TEXT", "configure_token TEXT"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("staged token migration persists raw secret column %q: %s", forbidden, text)
+		}
+	}
+}

@@ -11560,7 +11560,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if body.Node.Version != "" || body.Node.ReportedVersion != "" || len(body.Node.Capabilities) != 0 || len(body.Node.ReportedCapabilities) != 0 {
 		t.Fatalf("manual version/capabilities must not be stored during node creation: %#v", body.Node)
 	}
-	expectedConfigureCommand := `sudo autostream-worker configure --panel-url "http://example.com" --token ` + strconv.Quote(body.ConfigureToken) + ` --node "studio-worker-01" --config "/etc/autostream-worker/config.yml"`
+	expectedConfigureCommand := `sudo autostream-worker configure --panel-url 'http://example.com' --token ` + posixShellQuote(body.ConfigureToken) + ` --node 'studio-worker-01' --config '/etc/autostream-worker/config.yml'`
 	if body.ConfigureCommand != expectedConfigureCommand {
 		t.Fatalf("missing configure command fields: %s", body.ConfigureCommand)
 	}
@@ -11669,6 +11669,26 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 	if strings.Contains(auditBody, `"token_id"`) && !strings.Contains(auditBody, `"\u003credacted\u003e"`) {
 		t.Fatalf("audit log token binding was not redacted: %s", auditBody)
+	}
+}
+
+func TestNodeConfigureCommandUsesPOSIXShellQuoting(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.com/it's/$(touch pwn)")
+	command := nodeConfigureCommand(nil, "update_agent", "updater'$(touch pwn)`id`", "ast_cfg_secret'$(touch token)", "/etc/autostream/updater'config.json")
+	for _, quoted := range []string{
+		posixShellQuote("https://panel.example.com/it's/$(touch pwn)"),
+		posixShellQuote("updater'$(touch pwn)`id`"),
+		posixShellQuote("/etc/autostream/updater'config.json"),
+	} {
+		if !strings.Contains(command, quoted) {
+			t.Fatalf("configure command omitted shell-safe argument %q: %s", quoted, command)
+		}
+	}
+	if strings.Contains(command, `"$(touch`) || strings.Contains(command, "\"`id`\"") {
+		t.Fatalf("configure command left command substitution in double quotes: %s", command)
+	}
+	if strings.Contains(command, "ast_cfg_secret") || strings.Contains(command, "--token") {
+		t.Fatalf("updater configure command exposed the Configure Token in argv: %s", command)
 	}
 }
 

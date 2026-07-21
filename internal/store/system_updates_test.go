@@ -286,6 +286,15 @@ func TestControlPanelServiceIDIsReservedForSyntheticUpdateTarget(t *testing.T) {
 	}
 }
 
+func TestServiceRegistrationRejectsShellUnsafeServiceID(t *testing.T) {
+	for _, serviceID := range []string{"updater $(touch /tmp/pwn)", "updater`id`", "updater'quoted", strings.Repeat("a", 129)} {
+		err := validateServiceRegistration(ServiceRegistration{ServiceID: serviceID, ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com"})
+		if !errors.Is(err, ErrInvalidServiceRegistration) {
+			t.Fatalf("unsafe service ID %q was accepted: %v", serviceID, err)
+		}
+	}
+}
+
 func TestMemorySystemUpdateStoreDoesNotClaimIneligibleOrUnexpiredWork(t *testing.T) {
 	updates := NewMemorySystemUpdateStore()
 	_, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{

@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -541,7 +543,7 @@ func TestUpdateAgentAssignmentEndpointIsRejected(t *testing.T) {
 	}
 }
 
-func TestUpdateAgentOnboardingRequiresManualJSONConfiguration(t *testing.T) {
+func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "service_health.read", "system_updates.execute"}); err != nil {
@@ -558,25 +560,32 @@ func TestUpdateAgentOnboardingRequiresManualJSONConfiguration(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create updater status = %d body = %s", created.Code, created.Body.String())
 	}
-	assertManual := func(t *testing.T, body string, requireRuntimeToken bool) {
-		t.Helper()
-		for _, want := range []string{`"manual_configuration_required":true`, `"configuration_path":"/etc/autostream/updater.json"`, `"configuration_example":"release/autostream-updater.json.example"`, `"configure_command":""`} {
-			if !strings.Contains(body, want) {
-				t.Fatalf("manual updater configuration response missing %s: %s", want, body)
-			}
-		}
-		for _, forbidden := range []string{"autostream-updater configure", "/etc/autostream-update-agent/config.yml", `"configuration_yaml"`, `"configure_token"`} {
-			if strings.Contains(body, forbidden) {
-				t.Fatalf("updater response contains invalid auto-configuration %q: %s", forbidden, body)
-			}
-		}
-		if requireRuntimeToken && !strings.Contains(body, `"runtime_token":"ast_svc_`) {
-			t.Fatalf("manual updater response omitted one-time runtime token: %s", body)
-		}
+	if created.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("updater registration secret response cache control = %q", created.Header().Get("Cache-Control"))
 	}
-	assertManual(t, created.Body.String(), true)
-	if !strings.Contains(created.Body.String(), `"updates.authorize"`) {
-		t.Fatalf("updater registration omitted authorize scope: %s", created.Body.String())
+	var createdBody struct {
+		ConfigureToken       string   `json:"configure_token"`
+		ConfigureCommand     string   `json:"configure_command"`
+		ConfigurationPath    string   `json:"configuration_path"`
+		ConfigurationExample string   `json:"configuration_example"`
+		ManualRequired       bool     `json:"manual_configuration_required"`
+		RuntimeToken         string   `json:"runtime_token"`
+		Scopes               []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createdBody); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(createdBody.ConfigureToken, "ast_cfg_") || !strings.Contains(createdBody.ConfigureCommand, "autostream-updater configure") || strings.Contains(createdBody.ConfigureCommand, createdBody.ConfigureToken) || strings.Contains(createdBody.ConfigureCommand, "--token") {
+		t.Fatalf("updater configure metadata = %#v", createdBody)
+	}
+	if createdBody.ConfigurationPath != "/etc/autostream/updater.json" || createdBody.ConfigurationExample != "release/autostream-updater.json.example" || createdBody.ManualRequired {
+		t.Fatalf("updater configuration metadata = %#v", createdBody)
+	}
+	if !slices.Contains(createdBody.Scopes, "updates.authorize") {
+		t.Fatalf("updater registration omitted authorize scope: %#v", createdBody.Scopes)
+	}
+	if !strings.HasPrefix(createdBody.RuntimeToken, "ast_svc_") {
+		t.Fatalf("updater registration omitted initial runtime token: %#v", createdBody)
 	}
 
 	configuration := httptest.NewRequest(http.MethodGet, "/nodes/updater-01/configuration", nil)
@@ -586,22 +595,156 @@ func TestUpdateAgentOnboardingRequiresManualJSONConfiguration(t *testing.T) {
 	if configurationResult.Code != http.StatusOK {
 		t.Fatalf("get updater configuration status = %d body = %s", configurationResult.Code, configurationResult.Body.String())
 	}
-	assertManual(t, configurationResult.Body.String(), false)
+	if strings.Contains(configurationResult.Body.String(), `"configure_command"`) || strings.Contains(configurationResult.Body.String(), "regenerate-configure-token") || strings.Contains(configurationResult.Body.String(), `"manual_configuration_required":true`) {
+		t.Fatalf("get updater configuration exposed a fake or legacy configure workflow: %s", configurationResult.Body.String())
+	}
 
 	regenerate := httptest.NewRequest(http.MethodPost, "/nodes/updater-01/configure-token", nil)
 	regenerate.AddCookie(cookie)
 	regenerate.Header.Set("X-CSRF-Token", csrf)
 	regenerateResult := httptest.NewRecorder()
 	handler.ServeHTTP(regenerateResult, regenerate)
-	if regenerateResult.Code != http.StatusConflict || !strings.Contains(regenerateResult.Body.String(), "manual_configuration_required") {
+	if regenerateResult.Code != http.StatusCreated {
 		t.Fatalf("updater configure-token status = %d body = %s", regenerateResult.Code, regenerateResult.Body.String())
 	}
+	if regenerateResult.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("configure token secret response cache control = %q", regenerateResult.Header().Get("Cache-Control"))
+	}
+	var regenerated struct {
+		ConfigureToken   string `json:"configure_token"`
+		ConfigureCommand string `json:"configure_command"`
+	}
+	if err := json.NewDecoder(regenerateResult.Body).Decode(&regenerated); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(regenerated.ConfigureToken, "ast_cfg_") || strings.Contains(regenerated.ConfigureCommand, regenerated.ConfigureToken) || strings.Contains(regenerated.ConfigureCommand, "--token") || !strings.Contains(regenerated.ConfigureCommand, "autostream-updater configure") {
+		t.Fatalf("regenerated updater configure metadata = %#v", regenerated)
+	}
+	oldConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+createdBody.ConfigureToken+`"}`))
+	oldConfigureResult := httptest.NewRecorder()
+	handler.ServeHTTP(oldConfigureResult, oldConfigure)
+	if oldConfigureResult.Code != http.StatusUnauthorized || !strings.Contains(oldConfigureResult.Body.String(), "invalid_configure_token") {
+		t.Fatalf("superseded updater configure token status = %d body = %s", oldConfigureResult.Code, oldConfigureResult.Body.String())
+	}
 
-	agentConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", strings.NewReader(`{"nodeId":"updater-01","configureToken":"must-not-work"}`))
+	legacyConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
+	legacyConfigureResult := httptest.NewRecorder()
+	handler.ServeHTTP(legacyConfigureResult, legacyConfigure)
+	if legacyConfigureResult.Code != http.StatusConflict || !strings.Contains(legacyConfigureResult.Body.String(), "two_phase_configure_required") {
+		t.Fatalf("legacy updater configure status = %d body = %s", legacyConfigureResult.Code, legacyConfigureResult.Body.String())
+	}
+
+	agentConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
 	agentConfigureResult := httptest.NewRecorder()
 	handler.ServeHTTP(agentConfigureResult, agentConfigure)
-	if agentConfigureResult.Code != http.StatusConflict || !strings.Contains(agentConfigureResult.Body.String(), "manual_configuration_required") {
+	if agentConfigureResult.Code != http.StatusOK {
 		t.Fatalf("updater agent configure status = %d body = %s", agentConfigureResult.Code, agentConfigureResult.Body.String())
+	}
+	if agentConfigureResult.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("configured runtime token response cache control = %q", agentConfigureResult.Header().Get("Cache-Control"))
+	}
+	assertExactKeys := func(label string, fields map[string]json.RawMessage, expected ...string) {
+		t.Helper()
+		got := make([]string, 0, len(fields))
+		for name := range fields {
+			got = append(got, name)
+		}
+		slices.Sort(got)
+		slices.Sort(expected)
+		if !slices.Equal(got, expected) {
+			t.Fatalf("%s keys = %#v; want %#v", label, got, expected)
+		}
+	}
+	var configuredEnvelope map[string]json.RawMessage
+	if err := json.Unmarshal(agentConfigureResult.Body.Bytes(), &configuredEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	assertExactKeys("updater configure response", configuredEnvelope, "activation_expires_at", "activation_token", "config", "configuration_id")
+	var configuredBody struct {
+		ConfigurationID string                     `json:"configuration_id"`
+		ActivationToken string                     `json:"activation_token"`
+		Config          map[string]json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(agentConfigureResult.Body.Bytes(), &configuredBody); err != nil {
+		t.Fatal(err)
+	}
+	assertExactKeys("updater configure", configuredBody.Config, "panel_url", "node_id", "runtime_token", "service_name", "service_type", "api")
+	var configuredAPI map[string]json.RawMessage
+	if err := json.Unmarshal(configuredBody.Config["api"], &configuredAPI); err != nil {
+		t.Fatal(err)
+	}
+	assertExactKeys("updater configure API", configuredAPI, "host", "port", "ssl_enabled")
+	var configuredRuntimeToken string
+	if err := json.Unmarshal(configuredBody.Config["runtime_token"], &configuredRuntimeToken); err != nil {
+		t.Fatal(err)
+	}
+	if configuredBody.ConfigurationID == "" || !strings.HasPrefix(configuredBody.ActivationToken, "ast_act_") {
+		t.Fatalf("updater stage omitted activation credentials: %#v", configuredBody)
+	}
+	for _, want := range []string{`"panel_url":`, `"node_id":"updater-01"`, `"runtime_token":"ast_svc_`, `"service_name":"Updater 01"`, `"service_type":"update_agent"`, `"host":"updater.example.com"`, `"port":8090`, `"ssl_enabled":true`} {
+		if !strings.Contains(agentConfigureResult.Body.String(), want) {
+			t.Fatalf("updater configure response missing %s: %s", want, agentConfigureResult.Body.String())
+		}
+	}
+	for _, forbidden := range []string{regenerated.ConfigureToken, `"config_yml"`, `"configuration_yaml"`, `"github_token"`, `"hosts"`, `"targets"`, `"identity_file"`} {
+		if strings.Contains(agentConfigureResult.Body.String(), forbidden) {
+			t.Fatalf("updater configure response leaked local-only field %q: %s", forbidden, agentConfigureResult.Body.String())
+		}
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), createdBody.RuntimeToken, "service.heartbeat"); err != nil {
+		t.Fatalf("initial updater runtime token stopped before activation: %v", err)
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), configuredRuntimeToken, "updates.claim"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("staged updater runtime token was active before activation: %v", err)
+	}
+	stagedService, err := auth.GetService(t.Context(), "updater-01")
+	if err != nil || stagedService.TokenID == configuredBody.ConfigurationID || stagedService.StagedNodeTokenID != configuredBody.ConfigurationID {
+		t.Fatalf("updater stage changed the active token: %#v err=%v", stagedService, err)
+	}
+	replay := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
+	replayResult := httptest.NewRecorder()
+	handler.ServeHTTP(replayResult, replay)
+	if replayResult.Code != http.StatusUnauthorized || !strings.Contains(replayResult.Body.String(), "invalid_configure_token") {
+		t.Fatalf("replayed updater configure token status = %d body = %s", replayResult.Code, replayResult.Body.String())
+	}
+	activate := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`","version":"v1.7.0","commit":"abc123","build_date":"2026-07-21","hostname":"central-host","os":"linux","arch":"amd64"}`))
+	activateResult := httptest.NewRecorder()
+	handler.ServeHTTP(activateResult, activate)
+	if activateResult.Code != http.StatusOK || !strings.Contains(activateResult.Body.String(), `"state":"activated"`) || activateResult.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("updater activation status = %d body = %s", activateResult.Code, activateResult.Body.String())
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), createdBody.RuntimeToken, "service.heartbeat"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("initial updater runtime token survived activation: %v", err)
+	}
+	for _, scope := range []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"} {
+		if _, err := auth.AuthenticateServiceToken(t.Context(), configuredRuntimeToken, scope); err != nil {
+			t.Fatalf("activated updater runtime token lacks %s: %v", scope, err)
+		}
+	}
+	activateReplay := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`"}`))
+	activateReplayResult := httptest.NewRecorder()
+	handler.ServeHTTP(activateReplayResult, activateReplay)
+	if activateReplayResult.Code != http.StatusOK || !strings.Contains(activateReplayResult.Body.String(), `"state":"already_activated"`) {
+		t.Fatalf("idempotent updater activation status = %d body = %s", activateReplayResult.Code, activateReplayResult.Body.String())
+	}
+	audits, err := auth.ListAudit(t.Context(), store.AuditFilter{Actions: []string{"nodes.configure"}, Limit: 10})
+	if err != nil || len(audits) != 1 || audits[0].ResourceID != "updater-01" || strings.Contains(fmt.Sprint(audits[0].Metadata), configuredRuntimeToken) || strings.Contains(fmt.Sprint(audits[0].Metadata), regenerated.ConfigureToken) || strings.Contains(fmt.Sprint(audits[0].Metadata), configuredBody.ActivationToken) {
+		t.Fatalf("updater configure audit = %#v, %v", audits, err)
+	}
+
+	outstandingRequest := httptest.NewRequest(http.MethodPost, "/nodes/updater-01/configure-token", nil)
+	outstandingRequest.AddCookie(cookie)
+	outstandingRequest.Header.Set("X-CSRF-Token", csrf)
+	outstandingResult := httptest.NewRecorder()
+	handler.ServeHTTP(outstandingResult, outstandingRequest)
+	if outstandingResult.Code != http.StatusCreated {
+		t.Fatalf("create outstanding configure token status = %d body = %s", outstandingResult.Code, outstandingResult.Body.String())
+	}
+	var outstanding struct {
+		ConfigureToken string `json:"configure_token"`
+	}
+	if err := json.NewDecoder(outstandingResult.Body).Decode(&outstanding); err != nil {
+		t.Fatal(err)
 	}
 
 	rotate := httptest.NewRequest(http.MethodPost, "/nodes/updater-01/rotate-token", nil)
@@ -612,7 +755,18 @@ func TestUpdateAgentOnboardingRequiresManualJSONConfiguration(t *testing.T) {
 	if rotateResult.Code != http.StatusCreated {
 		t.Fatalf("rotate updater runtime token status = %d body = %s", rotateResult.Code, rotateResult.Body.String())
 	}
-	assertManual(t, rotateResult.Body.String(), true)
+	if rotateResult.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("rotated runtime token response cache control = %q", rotateResult.Header().Get("Cache-Control"))
+	}
+	if !strings.Contains(rotateResult.Body.String(), `"runtime_token":"ast_svc_`) || !strings.Contains(rotateResult.Body.String(), `"configuration_path":"/etc/autostream/updater.json"`) || strings.Contains(rotateResult.Body.String(), `"manual_configuration_required":true`) {
+		t.Fatalf("rotate updater runtime token response = %s", rotateResult.Body.String())
+	}
+	invalidated := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+outstanding.ConfigureToken+`"}`))
+	invalidatedResult := httptest.NewRecorder()
+	handler.ServeHTTP(invalidatedResult, invalidated)
+	if invalidatedResult.Code != http.StatusUnauthorized || !strings.Contains(invalidatedResult.Body.String(), "invalid_configure_token") {
+		t.Fatalf("runtime rotation did not invalidate configure token: status=%d body=%s", invalidatedResult.Code, invalidatedResult.Body.String())
+	}
 }
 
 func TestServiceDeletionIsFencedByActiveTargetOrUpdaterJob(t *testing.T) {

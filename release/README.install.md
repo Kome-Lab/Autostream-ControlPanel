@@ -231,9 +231,11 @@ sudo rule, Docker socket, `systemctl` authority, or root helper. Privileged
 target policy remains on each managed host in root-owned
 `/etc/autostream/update-host.json`.
 
-Create one `Update Agent` Node in the Control Panel for the central updater.
-Copy its one-time Node Runtime Token into the central configuration only. Do not
-create an Update Agent Node or copy this token to every managed host.
+Install the central binary and sample first, but do not register its single
+`Update Agent` Node yet. Complete each managed host's root policy and SSH
+bootstrap, then finish the central local inventory before issuing the short-lived
+Configure Token. Do not install a persistent updater on managed hosts or copy
+any token to them.
 
 ```bash
 set -euo pipefail
@@ -277,12 +279,6 @@ sudo install -o root -g root -m 0644 \
   /etc/systemd/system/autostream-updater.service
 ```
 
-Edit `/etc/autostream/updater.json` and replace every placeholder. Its `hosts`
-entries contain only SSH routing and host identity. Its `targets` entries
-contain only `target_id`, `host_id`, service type, and deployment mode. Never
-copy remote unit names, filesystem paths, image repositories, or commands into
-an update job or browser-controlled field.
-
 Generate a different Ed25519 key for each managed host. Install each private
 key as `root:autostream-updater 0640` below `/etc/autostream/updater/ssh`; the
 controller can read but cannot replace it. Keep the directory and every parent
@@ -317,13 +313,60 @@ key to a managed host.
 
 Each remote host is installed from the separate
 `autostream-update-host_<version>_linux_<arch>.tar.gz` artifact. Follow its
-`README.bootstrap.md`. That process installs a forced SSH command and
-non-resident helper, not a daemon or token. Apply and reconcile use only a
-collected transient systemd worker so an SSH disconnect cannot interrupt a
-mutation; no persistent unit is installed on the managed host.
+`README.bootstrap.md` through its final restricted-probe verification. Complete
+that host's root-owned `/etc/autostream/update-host.json` target policy during
+the bootstrap. The process installs a forced SSH command and non-resident
+helper, not a daemon or token. Apply and reconcile use only a collected
+transient systemd worker so an SSH disconnect cannot interrupt a mutation; no
+persistent unit is installed on the managed host.
 
-After all host IDs, target mappings, keys, and host keys agree, start the
-central controller:
+Only after every managed host has passed that bootstrap, edit the local settings
+in `/etc/autostream/updater.json`. Set `github_token`, `api`, `state_dir`,
+polling intervals, and the complete `hosts` and `targets` inventory for this
+central host. Its `hosts` entries contain only SSH routing and host identity.
+Its `targets` entries contain only `target_id`, `host_id`, service type, and
+deployment mode. Never copy remote unit names, filesystem paths, image
+repositories, or commands into an update job or browser-controlled field.
+
+Now create exactly one `Update Agent` Node in the Control Panel for this central
+updater. If the Node already exists, generate a new Configure Token from its
+Configuration view. Do not create an Update Agent Node for each managed host,
+and do not hand-copy the Node Runtime Token into the JSON file.
+
+Copy the token-free Auto Configure command shown by the Node registration screen
+and run that exact command on the central host. It has this shape:
+
+```bash
+sudo autostream-updater configure \
+  --panel-url "https://control.example.com" \
+  --node "central-updater" \
+  --config "/etc/autostream/updater.json"
+```
+
+The command does not contain the Configure Token. It reads the separately
+displayed one-time Token from the terminal with echo disabled, or from bounded
+standard input for automation, so the secret never appears in process
+arguments. It stages a new Runtime Token, atomically updates only `panel_url`,
+`node_id`, `runtime_token`, and `service_name`, reloads the installed file, and
+validates that installed configuration before activating the new Token. The old
+Runtime Token remains valid until that activation succeeds. Locally controlled
+`github_token`, `api`, `state_dir`, intervals, `hosts`, `targets`, SSH paths,
+and all other local policy are preserved.
+
+Do not restart the updater when the command reports a staging, installation,
+validation, or activation failure. Follow the error and issue a new Configure
+Token before retrying. The activation request itself is idempotent and is
+retried with the same activation credential when the result is transiently
+uncertain. If the activation response remains uncertain, the Control Panel may
+already have activated the staged Token, so the CLI cannot determine which
+Runtime Token is active. A failure after the atomic update can also leave the
+staged identity in `updater.json`. If the updater is not running, do not start
+it; if it is already running, leave the current process untouched. Issue a
+fresh Configure Token and rerun the same token-free command. Never record
+either one-time secret.
+
+After activation succeeds, validate the completed configuration without
+restarting the central updater:
 
 ```bash
 set -euo pipefail
@@ -332,8 +375,15 @@ sudo -u autostream-updater test -w /var/lib/autostream-updater
 sudo -u autostream-updater -- /usr/local/bin/autostream-updater validate-config \
   --config /etc/autostream/updater.json
 sudo systemd-analyze verify /etc/systemd/system/autostream-updater.service
+```
+
+Only after every validation succeeds, enable and restart the central updater:
+
+```bash
+set -euo pipefail
 sudo systemctl daemon-reload
-sudo systemctl enable --now autostream-updater
+sudo systemctl enable autostream-updater
+sudo systemctl restart autostream-updater
 sudo systemctl status autostream-updater
 sudo journalctl -u autostream-updater -n 100 --no-pager
 ```

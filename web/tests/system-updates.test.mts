@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { auditActionLabel } from "../src/lib/audit-action.ts";
@@ -24,7 +25,9 @@ import {
   systemUpdateTargetBlockedReason,
 } from "../src/lib/system-updates.ts";
 import type { SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateTarget } from "../src/types/domain.ts";
+import { mockPost } from "../src/features/mock-data.ts";
 import {
+  canRegenerateNodeConfigureToken,
   canIssueNodeConfiguration,
   canRotateNodeRuntimeToken,
   UPDATER_CONFIGURATION_EXAMPLE,
@@ -267,19 +270,20 @@ test("system update audit actions have concrete Japanese labels", () => {
   assert.equal(auditActionLabel("system_updates.succeeded"), "システム更新に成功");
 });
 
-test("updater onboarding renders only the manual updater.json workflow", () => {
+test("updater onboarding prefers auto configure and keeps a safe legacy fallback", () => {
   assert.equal(updaterManualConfiguration({ manual_configuration_required: false }), null);
+  assert.equal(updaterManualConfiguration({
+    manual_configuration_required: true,
+    configure_command: "sudo autostream-updater configure --node central-updater",
+  }), null);
   const manual = updaterManualConfiguration({ manual_configuration_required: true });
   assert.equal(manual?.path, UPDATER_CONFIGURATION_PATH);
   assert.equal(manual?.example, UPDATER_CONFIGURATION_EXAMPLE);
   assert.match(manual?.steps.join("\n") || "", /Node Runtime Token/);
-  assert.match(manual?.steps.join("\n") || "", /backup_argv/);
-  assert.match(manual?.steps.join("\n") || "", /compose_config_sha256/);
-  assert.match(manual?.steps.join("\n") || "", /bootstrap-docker-target/);
-  assert.match(manual?.steps.join("\n") || "", /sudo \/usr\/local\/bin\/autostream-updater/);
-  assert.match(manual?.steps.join("\n") || "", /全ゼロsentinel/);
+  assert.match(manual?.steps.join("\n") || "", /GitHub/);
+  assert.match(manual?.steps.join("\n") || "", /hosts、targets、SSH/);
   assert.match(manual?.steps.join("\n") || "", /validate-config/);
-  assert.ok((manual?.steps.join("\n").indexOf("bootstrap-docker-target") ?? -1) < (manual?.steps.join("\n").indexOf("validate-config") ?? -1));
+  assert.doesNotMatch(manual?.steps.join("\n") || "", /backup_argv|compose_config_sha256|bootstrap-docker-target|全ゼロsentinel/);
   assert.doesNotMatch(`${manual?.path}\n${manual?.example}\n${manual?.steps.join("\n")}`, /autostream-updater configure|autostream-update-agent\/config\.yml/);
 });
 
@@ -293,7 +297,49 @@ test("updater token operations require update execution permission", () => {
   };
   assert.equal(canIssueNodeConfiguration(base), false);
   assert.equal(canIssueNodeConfiguration({ ...base, canExecuteSystemUpdates: true }), true);
+  assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: true }), false);
+  assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: true, canExecuteSystemUpdates: true }), true);
+  assert.equal(canRegenerateNodeConfigureToken(
+    { ...base, canRevokeTokens: true, canExecuteSystemUpdates: true },
+    { manual_configuration_required: true },
+  ), false);
+  assert.equal(canRegenerateNodeConfigureToken(
+    { ...base, canRevokeTokens: true, canExecuteSystemUpdates: true },
+    { manual_configuration_required: true, configure_command: "sudo autostream-updater configure --node central-updater" },
+  ), true);
+  assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: false, canExecuteSystemUpdates: true }), false);
   assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: true }), false);
   assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: true, canExecuteSystemUpdates: true }), true);
   assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: false, canExecuteSystemUpdates: true }), false);
+});
+
+test("updater mock configure command keeps the one-time token out of argv", () => {
+  const response = mockPost("/nodes/registration-tokens", {
+    node_type: "update_agent",
+    node_id: "central-updater",
+    name: "Central Updater",
+    host: "127.0.0.1",
+    port: 8090,
+    ssl_enabled: false,
+  }) as { configure_token?: string; configure_command?: string };
+
+  assert.match(response.configure_token || "", /^ast_cfg_/);
+  assert.match(response.configure_command || "", /sudo autostream-updater configure/);
+  assert.doesNotMatch(response.configure_command || "", /--token|ast_cfg_/);
+});
+
+test("updater configure failure guidance requires a fresh token before restart", () => {
+  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /設定処理が失敗または結果不確定の場合は、Updaterを再起動しないでください。/);
+  assert.match(source, /新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行/);
+  assert.doesNotMatch(source, /失敗または結果不確定の場合も旧Runtime Tokenは維持/);
+  assert.doesNotMatch(source, /同じコマンドで再開|再生成を求められた場合だけ/);
+});
+
+test("updater node description identifies its central multi-host responsibility", () => {
+  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /value: "update_agent"[^{}\r\n]*description: "各管理対象ホストのサービス更新、検証、ロールバックを中央から担当するUpdater"/);
+  assert.doesNotMatch(source, /value: "update_agent"[^{}\r\n]*description: "このホストのサービス更新、検証、ロールバックを担当するUpdater"/);
 });

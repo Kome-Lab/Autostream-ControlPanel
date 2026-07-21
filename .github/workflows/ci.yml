@@ -11,6 +11,21 @@ permissions:
 jobs:
   go:
     runs-on: ubuntu-24.04
+    services:
+      mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_ci
+          MARIADB_USER: autostream_ci
+          MARIADB_PASSWORD: autostream-ci-password
+          MARIADB_ROOT_PASSWORD: autostream-ci-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -18,6 +33,35 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.mod
       - run: go test ./...
+      - name: Test MariaDB update agent persistence
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/mariadb-update-agent-test.json"
+          go test ./internal/store \
+            -run '^TestMariaDBUpdateAgentRegistrationSmoke$' \
+            -count=1 \
+            -json | tee "${result}"
+          if jq -e \
+            'select(.Test == "TestMariaDBUpdateAgentRegistrationSmoke" and .Action == "skip")' \
+            "${result}" > /dev/null; then
+            echo "TestMariaDBUpdateAgentRegistrationSmoke was skipped" >&2
+            exit 1
+          fi
+          jq -e \
+            'select(.Test == "TestMariaDBUpdateAgentRegistrationSmoke" and .Action == "pass")' \
+            "${result}" > /dev/null
+      - name: Test updater config with root-owned Linux fixtures
+        run: |
+          getent group autostream-updater >/dev/null 2>&1 || sudo groupadd --system autostream-updater
+          sudo install -d -o root -g root -m 0700 /root/autostream-updater-root-tests /root/.cache/go-build-autostream
+          sudo env \
+            PATH="${PATH}" \
+            GOCACHE="/root/.cache/go-build-autostream" \
+            TMPDIR="/root/autostream-updater-root-tests" \
+            go test ./internal/updateagent -run '^TestPreparedUpdaterConfig' -count=1
       - name: Test backup script with root-owned Linux fixtures
         run: |
           docker run --rm \

@@ -7,10 +7,17 @@ import (
 	"github.com/example/autostream-control-panel/internal/updateagent"
 )
 
-func TestUsageExposesOnlyCentralRunAndValidation(t *testing.T) {
+func TestUsageExposesCentralConfigureRunAndValidation(t *testing.T) {
 	err := run([]string{"unknown"})
-	if err == nil || !strings.Contains(err.Error(), "validate-config") || strings.Contains(err.Error(), "bootstrap-docker-target") || strings.Contains(err.Error(), "helper") {
+	if err == nil || !strings.Contains(err.Error(), "configure") || !strings.Contains(err.Error(), "validate-config") || strings.Contains(err.Error(), "--token") || strings.Contains(err.Error(), "bootstrap-docker-target") || strings.Contains(err.Error(), "helper") {
 		t.Fatalf("usage error = %v", err)
+	}
+}
+
+func TestConfigureRequiresPanelURLBeforeLocalMutation(t *testing.T) {
+	err := run([]string{"configure", "--node", "central-updater", "--config", t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "--panel-url is required") {
+		t.Fatalf("configure missing panel URL = %v", err)
 	}
 }
 

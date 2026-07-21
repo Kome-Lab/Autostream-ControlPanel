@@ -54,6 +54,8 @@ const auditActionLabels: Record<string, string> = {
   "mfa.disable": "MFAを無効化",
   "mfa.recovery_codes.regenerate": "MFAリカバリーコードを再発行",
   "mfa.verify": "MFAを確認",
+  "nodes.configure": "Node自動設定を有効化",
+  "nodes.configure.stage": "Node自動設定を準備",
   "nodes.configure_token.rotate": "Node設定トークンを再生成",
   "nodes.delete": "Nodeを削除",
   "nodes.registration_token.create": "Node登録トークンを発行",

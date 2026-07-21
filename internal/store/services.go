@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/example/autostream-control-panel/internal/netpolicy"
 	"github.com/example/autostream-control-panel/internal/security"
 )
+
+var serviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 type ServiceToken struct {
 	ID          string     `json:"id"`
@@ -26,38 +29,46 @@ type ServiceToken struct {
 }
 
 type RegisteredService struct {
-	ServiceID               string         `json:"service_id"`
-	ServiceType             string         `json:"service_type"`
-	ServiceName             string         `json:"service_name"`
-	Description             string         `json:"description,omitempty"`
-	Host                    string         `json:"host,omitempty"`
-	Port                    int            `json:"port,omitempty"`
-	SSLEnabled              bool           `json:"ssl_enabled"`
-	PublicURL               string         `json:"public_url"`
-	Version                 string         `json:"version"`
-	ReportedVersion         string         `json:"reported_version,omitempty"`
-	ReportedCommit          string         `json:"reported_commit,omitempty"`
-	ReportedBuildDate       string         `json:"reported_build_date,omitempty"`
-	Status                  string         `json:"status"`
-	AssignmentRole          string         `json:"assignment_role,omitempty"`
-	LastHeartbeatAt         *time.Time     `json:"last_heartbeat_at,omitempty"`
-	LastReportedAt          *time.Time     `json:"last_reported_at,omitempty"`
-	CurrentStreamID         string         `json:"current_stream_id,omitempty"`
-	Capabilities            map[string]any `json:"capabilities"`
-	ReportedCapabilities    map[string]any `json:"reported_capabilities,omitempty"`
-	Metrics                 map[string]any `json:"metrics,omitempty"`
-	TokenID                 string         `json:"-"`
-	NodeTokenCiphertext     string         `json:"-"`
-	NodeTokenNonce          string         `json:"-"`
-	ReportedHostname        string         `json:"reported_hostname,omitempty"`
-	ReportedOS              string         `json:"reported_os,omitempty"`
-	ReportedArch            string         `json:"reported_arch,omitempty"`
-	ConfigureTokenHash      string         `json:"-"`
-	ConfigureTokenExpiresAt *time.Time     `json:"configure_token_expires_at,omitempty"`
-	ConfigureTokenUsedAt    *time.Time     `json:"configure_token_used_at,omitempty"`
-	NodeTokenRotatedAt      *time.Time     `json:"node_token_rotated_at,omitempty"`
-	CreatedAt               time.Time      `json:"created_at"`
-	UpdatedAt               time.Time      `json:"updated_at"`
+	ServiceID                     string         `json:"service_id"`
+	ServiceType                   string         `json:"service_type"`
+	ServiceName                   string         `json:"service_name"`
+	Description                   string         `json:"description,omitempty"`
+	Host                          string         `json:"host,omitempty"`
+	Port                          int            `json:"port,omitempty"`
+	SSLEnabled                    bool           `json:"ssl_enabled"`
+	PublicURL                     string         `json:"public_url"`
+	Version                       string         `json:"version"`
+	ReportedVersion               string         `json:"reported_version,omitempty"`
+	ReportedCommit                string         `json:"reported_commit,omitempty"`
+	ReportedBuildDate             string         `json:"reported_build_date,omitempty"`
+	Status                        string         `json:"status"`
+	AssignmentRole                string         `json:"assignment_role,omitempty"`
+	LastHeartbeatAt               *time.Time     `json:"last_heartbeat_at,omitempty"`
+	LastReportedAt                *time.Time     `json:"last_reported_at,omitempty"`
+	CurrentStreamID               string         `json:"current_stream_id,omitempty"`
+	Capabilities                  map[string]any `json:"capabilities"`
+	ReportedCapabilities          map[string]any `json:"reported_capabilities,omitempty"`
+	Metrics                       map[string]any `json:"metrics,omitempty"`
+	TokenID                       string         `json:"-"`
+	NodeTokenCiphertext           string         `json:"-"`
+	NodeTokenNonce                string         `json:"-"`
+	StagedNodePreviousTokenID     string         `json:"-"`
+	StagedNodeTokenID             string         `json:"-"`
+	StagedNodeTokenHash           string         `json:"-"`
+	StagedNodeTokenScopes         []string       `json:"-"`
+	StagedNodeTokenCiphertext     string         `json:"-"`
+	StagedNodeTokenNonce          string         `json:"-"`
+	StagedNodeActivationTokenHash string         `json:"-"`
+	StagedNodeTokenAt             *time.Time     `json:"-"`
+	ReportedHostname              string         `json:"reported_hostname,omitempty"`
+	ReportedOS                    string         `json:"reported_os,omitempty"`
+	ReportedArch                  string         `json:"reported_arch,omitempty"`
+	ConfigureTokenHash            string         `json:"-"`
+	ConfigureTokenExpiresAt       *time.Time     `json:"configure_token_expires_at,omitempty"`
+	ConfigureTokenUsedAt          *time.Time     `json:"configure_token_used_at,omitempty"`
+	NodeTokenRotatedAt            *time.Time     `json:"node_token_rotated_at,omitempty"`
+	CreatedAt                     time.Time      `json:"created_at"`
+	UpdatedAt                     time.Time      `json:"updated_at"`
 }
 
 type ServiceRegistration struct {
@@ -125,6 +136,24 @@ type ServiceRuntimeReport struct {
 
 type NodeTokenSealer func(rawToken string) (ciphertext, nonce string, err error)
 
+type StagedServiceNodeConfiguration struct {
+	Token               ServiceToken
+	Service             RegisteredService
+	ActivationToken     string
+	ActivationExpiresAt time.Time
+}
+
+func clearStagedNodeConfiguration(service *RegisteredService) {
+	service.StagedNodePreviousTokenID = ""
+	service.StagedNodeTokenID = ""
+	service.StagedNodeTokenHash = ""
+	service.StagedNodeTokenScopes = nil
+	service.StagedNodeTokenCiphertext = ""
+	service.StagedNodeTokenNonce = ""
+	service.StagedNodeActivationTokenHash = ""
+	service.StagedNodeTokenAt = nil
+}
+
 var errNodeTokenSealerRequired = errors.New("node token sealer is required")
 
 type NodeAgentAPI struct {
@@ -162,6 +191,8 @@ type ServiceRegistryStore interface {
 	SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error)
 	ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error)
 	ConfigureServiceNode(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, report ServiceRuntimeReport, seal NodeTokenSealer) (ServiceToken, RegisteredService, error)
+	StageServiceNodeConfiguration(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, seal NodeTokenSealer) (StagedServiceNodeConfiguration, error)
+	ActivateServiceNodeConfiguration(ctx context.Context, serviceID, configurationID, rawActivationToken string, now time.Time, report ServiceRuntimeReport) (ServiceToken, RegisteredService, bool, error)
 	SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error)
 	ListServices(ctx context.Context) ([]RegisteredService, error)
 	ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error)
@@ -183,6 +214,7 @@ var ErrAlreadyExists = errors.New("already exists")
 var ErrInvalidServiceRegistration = errors.New("invalid service registration")
 var ErrInvalidServiceStreamEvent = errors.New("invalid service stream event")
 var ErrInvalidServiceAssignment = errors.New("service type cannot be assigned to a stream")
+var ErrTwoPhaseConfigureRequired = errors.New("two-phase configure is required")
 
 func (s MariaDBAuthStore) CreateServiceToken(ctx context.Context, serviceType string, scopes []string) (ServiceToken, error) {
 	if err := validateServiceType(serviceType); err != nil {
@@ -290,7 +322,7 @@ func (s MariaDBAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, string(body), token.CreatedAt); err != nil {
 		return ServiceToken{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, node_token_rotated_at = ?, updated_at = ? WHERE token_id = ?`, token.ID, now, now, oldToken.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE token_id = ?`, token.ID, now, now, oldToken.ID); err != nil {
 		return ServiceToken{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE service_tokens SET revoked_at = ? WHERE id = ?`, now, oldToken.ID); err != nil {
@@ -317,7 +349,7 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
 	if err == sql.ErrNoRows {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
@@ -349,7 +381,7 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, scopesJSON, token.CreatedAt); err != nil {
 		return ServiceToken{}, RegisteredService{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`, token.ID, ciphertext, nonce, now, now, service.ServiceID, oldToken.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, configure_token_hash = NULL, configure_token_expires_at = NULL, configure_token_used_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`, token.ID, ciphertext, nonce, now, now, service.ServiceID, oldToken.ID)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, err
 	}
@@ -367,6 +399,10 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	service.TokenID = token.ID
 	service.NodeTokenCiphertext = ciphertext
 	service.NodeTokenNonce = nonce
+	service.ConfigureTokenHash = ""
+	service.ConfigureTokenExpiresAt = nil
+	service.ConfigureTokenUsedAt = nil
+	clearStagedNodeConfiguration(&service)
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	if err := tx.Commit(); err != nil {
@@ -658,7 +694,7 @@ func (s MariaDBAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report
 
 func (s MariaDBAuthStore) SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error) {
 	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET configure_token_hash = ?, configure_token_expires_at = ?, configure_token_used_at = NULL, updated_at = ? WHERE service_id = ?`, tokenHash, expiresAt, now, serviceID)
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET configure_token_hash = ?, configure_token_expires_at = ?, configure_token_used_at = NULL, staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, updated_at = ? WHERE service_id = ?`, tokenHash, expiresAt, now, serviceID)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -681,7 +717,7 @@ func (s MariaDBAuthStore) ConsumeServiceConfigureToken(ctx context.Context, serv
 	var tokenHash string
 	var expiresAt sql.NullTime
 	var usedAt sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT configure_token_hash, configure_token_expires_at, configure_token_used_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID).Scan(&tokenHash, &expiresAt, &usedAt)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(configure_token_hash, ''), configure_token_expires_at, configure_token_used_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID).Scan(&tokenHash, &expiresAt, &usedAt)
 	if err == sql.ErrNoRows {
 		return RegisteredService{}, ErrNotFound
 	}
@@ -718,12 +754,15 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
 	if err == sql.ErrNoRows {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, err
+	}
+	if service.ServiceType == "update_agent" {
+		return ServiceToken{}, RegisteredService{}, ErrTwoPhaseConfigureRequired
 	}
 	var configureTokenHash string
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(configure_token_hash, '') FROM services WHERE service_id = ?`, serviceID).Scan(&configureTokenHash); err != nil {
@@ -781,6 +820,165 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	return token, service, nil
 }
 
+func (s MariaDBAuthStore) StageServiceNodeConfiguration(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, seal NodeTokenSealer) (StagedServiceNodeConfiguration, error) {
+	if seal == nil {
+		return StagedServiceNodeConfiguration{}, errNodeTokenSealerRequired
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return StagedServiceNodeConfiguration{}, ErrNotFound
+	}
+	now = now.UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	defer tx.Rollback()
+
+	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	if err == sql.ErrNoRows {
+		return StagedServiceNodeConfiguration{}, ErrNotFound
+	}
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	if service.ServiceType != "update_agent" {
+		return StagedServiceNodeConfiguration{}, ErrForbidden
+	}
+	var configureTokenHash string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(configure_token_hash, '') FROM services WHERE service_id = ?`, serviceID).Scan(&configureTokenHash); err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	if configureTokenHash == "" || service.ConfigureTokenExpiresAt == nil || service.ConfigureTokenUsedAt != nil || !now.Before(*service.ConfigureTokenExpiresAt) || !security.VerifyTokenHash(rawConfigureToken, configureTokenHash) {
+		return StagedServiceNodeConfiguration{}, ErrUnauthorized
+	}
+	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	if oldToken.ServiceType != "update_agent" {
+		return StagedServiceNodeConfiguration{}, ErrForbidden
+	}
+	token, scopesJSON, err := newRotatedServiceToken(oldToken, now)
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	ciphertext, nonce, err := seal(token.RawToken)
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	activationRandom, err := security.RandomToken(32)
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	activationToken := "ast_act_" + activationRandom
+	result, err := tx.ExecContext(ctx, `UPDATE services SET staged_node_previous_token_id = ?, staged_node_token_id = ?, staged_node_token_hash = ?, staged_node_token_scopes = ?, staged_node_token_ciphertext = ?, staged_node_token_nonce = ?, staged_node_activation_token_hash = ?, staged_node_token_at = ?, configure_token_used_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`, oldToken.ID, token.ID, token.TokenHash, scopesJSON, ciphertext, nonce, security.HashToken(activationToken), now, now, now, serviceID, oldToken.ID)
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	if affected != 1 {
+		return StagedServiceNodeConfiguration{}, ErrNotFound
+	}
+	service.StagedNodePreviousTokenID = oldToken.ID
+	service.StagedNodeTokenID = token.ID
+	service.StagedNodeTokenHash = token.TokenHash
+	service.StagedNodeTokenScopes = append([]string(nil), token.Scopes...)
+	service.StagedNodeTokenCiphertext = ciphertext
+	service.StagedNodeTokenNonce = nonce
+	service.StagedNodeActivationTokenHash = security.HashToken(activationToken)
+	service.StagedNodeTokenAt = &now
+	service.ConfigureTokenUsedAt = &now
+	service.UpdatedAt = now
+	if err := tx.Commit(); err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
+	return StagedServiceNodeConfiguration{Token: token, Service: service, ActivationToken: activationToken, ActivationExpiresAt: *service.ConfigureTokenExpiresAt}, nil
+}
+
+func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, serviceID, configurationID, rawActivationToken string, now time.Time, report ServiceRuntimeReport) (ServiceToken, RegisteredService, bool, error) {
+	serviceID = strings.TrimSpace(serviceID)
+	configurationID = strings.TrimSpace(configurationID)
+	rawActivationToken = strings.TrimSpace(rawActivationToken)
+	if serviceID == "" || configurationID == "" || rawActivationToken == "" {
+		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	now = now.UTC()
+	report.ServiceID = serviceID
+	report = normalizeServiceRuntimeReport(report)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	defer tx.Rollback()
+	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	if err == sql.ErrNoRows {
+		return ServiceToken{}, RegisteredService{}, false, ErrNotFound
+	}
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	if service.ServiceType != "update_agent" {
+		return ServiceToken{}, RegisteredService{}, false, ErrForbidden
+	}
+	if service.StagedNodeTokenID != configurationID || service.StagedNodeTokenHash == "" || service.StagedNodeActivationTokenHash == "" || !security.VerifyTokenHash(rawActivationToken, service.StagedNodeActivationTokenHash) {
+		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	if service.TokenID == service.StagedNodeTokenID {
+		token, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
+		if err != nil {
+			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+		}
+		token.TokenHash = service.StagedNodeTokenHash
+		return token, service, true, nil
+	}
+	if service.ConfigureTokenExpiresAt == nil || !now.Before(*service.ConfigureTokenExpiresAt) || service.StagedNodeTokenAt == nil || service.TokenID != service.StagedNodePreviousTokenID {
+		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
+	if err != nil || oldToken.ServiceType != "update_agent" {
+		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	token := ServiceToken{ID: service.StagedNodeTokenID, ServiceType: "update_agent", Scopes: append([]string(nil), service.StagedNodeTokenScopes...), TokenHash: service.StagedNodeTokenHash, CreatedAt: service.StagedNodeTokenAt.UTC()}
+	if err := validateServiceScopes(token.Scopes); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	scopesJSON, err := json.Marshal(token.Scopes)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, string(scopesJSON), token.CreatedAt); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = staged_node_token_ciphertext, node_token_nonce = staged_node_token_nonce, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ? AND staged_node_token_id = ?`, report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, token.ID, now, now, serviceID, oldToken.ID, token.ID)
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	if affected != 1 {
+		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	if err := revokeServiceTokenIfUnreferencedInTx(ctx, tx, oldToken.ID, now); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	service = applyServiceRuntimeReport(service, report, now)
+	service.TokenID = token.ID
+	service.NodeTokenCiphertext = service.StagedNodeTokenCiphertext
+	service.NodeTokenNonce = service.StagedNodeTokenNonce
+	service.NodeTokenRotatedAt = &now
+	service.UpdatedAt = now
+	if err := tx.Commit(); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	return token, service, false, nil
+}
+
 func (s MariaDBAuthStore) SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error) {
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE services SET node_token_ciphertext = ?, node_token_nonce = ?, updated_at = ? WHERE service_id = ?`, ciphertext, nonce, now, serviceID)
@@ -798,7 +996,7 @@ func (s MariaDBAuthStore) SetServiceNodeTokenSecret(ctx context.Context, service
 }
 
 func (s MariaDBAuthStore) ListServices(ctx context.Context) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
+	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.staged_node_previous_token_id, ''), COALESCE(s.staged_node_token_id, ''), COALESCE(s.staged_node_token_hash, ''), COALESCE(s.staged_node_token_scopes, '[]'), COALESCE(s.staged_node_token_ciphertext, ''), COALESCE(s.staged_node_token_nonce, ''), COALESCE(s.staged_node_activation_token_hash, ''), s.staged_node_token_at, COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
 FROM services s
 LEFT JOIN stream_service_assignments a ON a.service_id = s.service_id AND a.stream_id = s.current_stream_id
 ORDER BY s.service_type, s.service_name`)
@@ -818,7 +1016,7 @@ ORDER BY s.service_type, s.service_name`)
 }
 
 func (s MariaDBAuthStore) ListWorkers(ctx context.Context) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
+	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.staged_node_previous_token_id, ''), COALESCE(s.staged_node_token_id, ''), COALESCE(s.staged_node_token_hash, ''), COALESCE(s.staged_node_token_scopes, '[]'), COALESCE(s.staged_node_token_ciphertext, ''), COALESCE(s.staged_node_token_nonce, ''), COALESCE(s.staged_node_activation_token_hash, ''), s.staged_node_token_at, COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
 FROM services s
 LEFT JOIN stream_service_assignments a ON a.service_id = s.service_id AND a.stream_id = s.current_stream_id
 WHERE s.service_type = 'worker'
@@ -995,7 +1193,7 @@ func (s MariaDBAuthStore) UnassignServiceFromStream(ctx context.Context, service
 }
 
 func (s MariaDBAuthStore) ListStreamAssignments(ctx context.Context, streamID string) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, a.assignment_role
+	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.staged_node_previous_token_id, ''), COALESCE(s.staged_node_token_id, ''), COALESCE(s.staged_node_token_hash, ''), COALESCE(s.staged_node_token_scopes, '[]'), COALESCE(s.staged_node_token_ciphertext, ''), COALESCE(s.staged_node_token_nonce, ''), COALESCE(s.staged_node_activation_token_hash, ''), s.staged_node_token_at, COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, a.assignment_role
 FROM stream_service_assignments a
 JOIN services s ON s.service_id = a.service_id
 WHERE a.stream_id = ?
@@ -1139,7 +1337,7 @@ func sanitizeServiceEventValue(value any) any {
 }
 
 func (s MariaDBAuthStore) getService(ctx context.Context, id string) (RegisteredService, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ?`, id)
 	service, err := scanService(row)
 	if err == sql.ErrNoRows {
 		return RegisteredService{}, ErrNotFound
@@ -1176,10 +1374,12 @@ func scanService(row serviceScanner) (RegisteredService, error) {
 	var capabilities string
 	var reportedCapabilities string
 	var metrics string
+	var stagedTokenScopes string
+	var stagedTokenAt sql.NullTime
 	var configureExpires sql.NullTime
 	var configureUsed sql.NullTime
 	var nodeTokenRotated sql.NullTime
-	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt)
+	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.StagedNodePreviousTokenID, &service.StagedNodeTokenID, &service.StagedNodeTokenHash, &stagedTokenScopes, &service.StagedNodeTokenCiphertext, &service.StagedNodeTokenNonce, &service.StagedNodeActivationTokenHash, &stagedTokenAt, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -1202,6 +1402,10 @@ func scanService(row serviceScanner) (RegisteredService, error) {
 	}
 	if service.ReportedVersion == "" {
 		service.ReportedVersion = service.Version
+	}
+	_ = json.Unmarshal([]byte(stagedTokenScopes), &service.StagedNodeTokenScopes)
+	if stagedTokenAt.Valid {
+		service.StagedNodeTokenAt = &stagedTokenAt.Time
 	}
 	_ = json.Unmarshal([]byte(metrics), &service.Metrics)
 	if service.Metrics == nil {
@@ -1238,10 +1442,12 @@ func scanServiceWithExtraRole(row serviceScanner) (RegisteredService, error) {
 	var capabilities string
 	var reportedCapabilities string
 	var metrics string
+	var stagedTokenScopes string
+	var stagedTokenAt sql.NullTime
 	var configureExpires sql.NullTime
 	var configureUsed sql.NullTime
 	var nodeTokenRotated sql.NullTime
-	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt, &service.AssignmentRole)
+	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.StagedNodePreviousTokenID, &service.StagedNodeTokenID, &service.StagedNodeTokenHash, &stagedTokenScopes, &service.StagedNodeTokenCiphertext, &service.StagedNodeTokenNonce, &service.StagedNodeActivationTokenHash, &stagedTokenAt, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt, &service.AssignmentRole)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -1264,6 +1470,10 @@ func scanServiceWithExtraRole(row serviceScanner) (RegisteredService, error) {
 	}
 	if service.ReportedVersion == "" {
 		service.ReportedVersion = service.Version
+	}
+	_ = json.Unmarshal([]byte(stagedTokenScopes), &service.StagedNodeTokenScopes)
+	if stagedTokenAt.Valid {
+		service.StagedNodeTokenAt = &stagedTokenAt.Time
 	}
 	_ = json.Unmarshal([]byte(metrics), &service.Metrics)
 	if service.Metrics == nil {
@@ -1380,7 +1590,7 @@ func serviceCapabilitySecretKey(key string) bool {
 
 func validateServiceRegistration(registration ServiceRegistration) error {
 	registration = normalizeServiceRegistration(registration)
-	if strings.TrimSpace(registration.ServiceID) == "" || strings.EqualFold(strings.TrimSpace(registration.ServiceID), "control-panel") || strings.TrimSpace(registration.ServiceName) == "" || strings.TrimSpace(registration.PublicURL) == "" {
+	if !serviceIDPattern.MatchString(registration.ServiceID) || strings.EqualFold(registration.ServiceID, "control-panel") || strings.TrimSpace(registration.ServiceName) == "" || strings.TrimSpace(registration.PublicURL) == "" {
 		return ErrInvalidServiceRegistration
 	}
 	if err := validateServiceType(registration.ServiceType); err != nil {

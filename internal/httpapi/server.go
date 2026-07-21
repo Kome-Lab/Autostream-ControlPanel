@@ -356,6 +356,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /services/update-jobs/{id}/mutation-grants", s.serviceSystemUpdateMutationGrantIssue)
 	s.mux.HandleFunc("POST /services/update-jobs/{id}/mutation-grants/consume", s.serviceSystemUpdateMutationGrantConsume)
 	s.mux.HandleFunc("POST /api/node-agent/configure", s.nodeAgentConfigure)
+	s.mux.HandleFunc("POST /api/node-agent/configure/stage", s.nodeAgentConfigureStage)
+	s.mux.HandleFunc("POST /api/node-agent/configure/activate", s.nodeAgentConfigureActivate)
 	s.mux.HandleFunc("POST /api/node-agent/heartbeat", s.nodeAgentHeartbeat)
 	s.mux.HandleFunc("POST /api/node-agent/report", s.nodeAgentReport)
 	s.mux.HandleFunc("POST /api/node-agent/events", s.serviceStreamEvent)
@@ -4453,14 +4455,12 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 	}
 	var configureToken string
 	var configureExpiresAt time.Time
-	if service.ServiceType != "update_agent" {
-		configureToken, configureExpiresAt, err = s.issueNodeConfigureToken(r.Context(), service.ServiceID)
-		if err != nil {
-			_ = s.services.RevokeServiceToken(r.Context(), token.ID)
-			_ = s.services.DeleteService(r.Context(), service.ServiceID)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
-			return
-		}
+	configureToken, configureExpiresAt, err = s.issueNodeConfigureToken(r.Context(), service.ServiceID)
+	if err != nil {
+		_ = s.services.RevokeServiceToken(r.Context(), token.ID)
+		_ = s.services.DeleteService(r.Context(), service.ServiceID)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
+		return
 	}
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{
@@ -4578,9 +4578,6 @@ func nodeConfigureTokenTTL() time.Duration {
 }
 
 func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, configPath string) string {
-	if strings.TrimSpace(serviceType) == "update_agent" {
-		return ""
-	}
 	panelURL := panelBaseURL(r)
 	if panelURL == "" {
 		panelURL = "https://control.example.com"
@@ -4589,10 +4586,19 @@ func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, config
 		configPath = nodeDefaultConfigPath(serviceType)
 	}
 	configureBinary := nodeConfigureBinary(serviceType)
-	return `sudo ` + configureBinary + ` configure --panel-url ` + strconv.Quote(panelURL) +
-		" --token " + strconv.Quote(rawToken) +
-		" --node " + strconv.Quote(nodeID) +
-		" --config " + strconv.Quote(configPath)
+	if serviceType == "update_agent" {
+		return `sudo ` + configureBinary + ` configure --panel-url ` + posixShellQuote(panelURL) +
+			" --node " + posixShellQuote(nodeID) +
+			" --config " + posixShellQuote(configPath)
+	}
+	return `sudo ` + configureBinary + ` configure --panel-url ` + posixShellQuote(panelURL) +
+		" --token " + posixShellQuote(rawToken) +
+		" --node " + posixShellQuote(nodeID) +
+		" --config " + posixShellQuote(configPath)
+}
+
+func posixShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func nodeConfigureBinary(serviceType string) string {
@@ -4715,10 +4721,11 @@ func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tok
 
 func addNodeConfigurationMetadata(response map[string]any, r *http.Request, service store.RegisteredService, tokenID, rawToken, configureToken string) {
 	if service.ServiceType == "update_agent" {
-		response["configure_command"] = ""
 		response["configuration_path"] = "/etc/autostream/updater.json"
 		response["configuration_example"] = "release/autostream-updater.json.example"
-		response["manual_configuration_required"] = true
+		if configureToken != "" {
+			response["configure_command"] = nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, "")
+		}
 		return
 	}
 	response["configuration_yaml"] = nodeConfigurationYAML(r, service, tokenID, rawToken)
@@ -4827,7 +4834,7 @@ func (s *Server) nodeConfiguration(w http.ResponseWriter, r *http.Request) {
 		"node":         service,
 		"node_api_url": buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled),
 	}
-	addNodeConfigurationMetadata(response, r, service, service.TokenID, "", "<regenerate-configure-token>")
+	addNodeConfigurationMetadata(response, r, service, service.TokenID, "", "")
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -4847,10 +4854,6 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if !s.requireNodeTokenScopePermissions(w, r, service) {
-		return
-	}
-	if service.ServiceType == "update_agent" {
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "manual_configuration_required"})
 		return
 	}
 	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
@@ -4954,7 +4957,7 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if service.ServiceType == "update_agent" {
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "manual_configuration_required"})
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_required"})
 		return
 	}
 	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
@@ -4986,11 +4989,198 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "configure_node_failed"})
 		return
 	}
+	s.writeAudit(r, store.AuditEvent{
+		ActorUsername: "node-configure",
+		Action:        "nodes.configure",
+		ResourceType:  "node",
+		ResourceID:    updated.ServiceID,
+		Result:        "success",
+		Metadata: map[string]any{
+			"service_type": updated.ServiceType,
+			"version":      updated.ReportedVersion,
+			"commit":       updated.ReportedCommit,
+			"build_date":   updated.ReportedBuildDate,
+			"hostname":     updated.ReportedHostname,
+			"os":           updated.ReportedOS,
+			"arch":         updated.ReportedArch,
+		},
+	})
 	writeOneTimeSecretJSON(w, http.StatusOK, map[string]any{
 		"config":             nodeAgentConfigResponse(r, updated, token.ID, token.RawToken),
 		"config_yml":         nodeConfigurationYAML(r, updated, token.ID, token.RawToken),
 		"configuration_yaml": nodeConfigurationYAML(r, updated, token.ID, token.RawToken),
 	})
+}
+
+func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NodeID         string `json:"nodeId"`
+		ConfigureToken string `json:"configureToken"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxControlRequestBytes+1))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	nodeID := strings.TrimSpace(body.NodeID)
+	configureToken := strings.TrimSpace(body.ConfigureToken)
+	if nodeID == "" || configureToken == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	service, err := s.services.GetService(r.Context(), nodeID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	if service.ServiceType != "update_agent" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
+		return
+	}
+	seal, err := nodeRuntimeTokenSealer()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
+	staged, err := s.services.StageServiceNodeConfiguration(r.Context(), nodeID, configureToken, time.Now().UTC(), seal)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
+		return
+	case errors.Is(err, store.ErrUnauthorized):
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_configure_token"})
+		return
+	case errors.Is(err, store.ErrForbidden):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
+		return
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "stage_node_configuration_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{
+		ActorUsername: "node-configure",
+		Action:        "nodes.configure.stage",
+		ResourceType:  "node",
+		ResourceID:    staged.Service.ServiceID,
+		Result:        "success",
+		Metadata: map[string]any{
+			"service_type":     staged.Service.ServiceType,
+			"configuration_id": staged.Token.ID,
+		},
+	})
+	writeOneTimeSecretJSON(w, http.StatusOK, map[string]any{
+		"configuration_id":      staged.Token.ID,
+		"activation_token":      staged.ActivationToken,
+		"activation_expires_at": staged.ActivationExpiresAt,
+		"config":                updaterNodeConfigurationResponse(r, staged.Service, staged.Token.RawToken),
+	})
+}
+
+func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NodeID          string `json:"nodeId"`
+		ConfigurationID string `json:"configurationId"`
+		ActivationToken string `json:"activationToken"`
+		Version         string `json:"version"`
+		Commit          string `json:"commit"`
+		BuildDate       string `json:"build_date"`
+		Hostname        string `json:"hostname"`
+		OS              string `json:"os"`
+		Arch            string `json:"arch"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxControlRequestBytes+1))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	nodeID := strings.TrimSpace(body.NodeID)
+	configurationID := strings.TrimSpace(body.ConfigurationID)
+	activationToken := strings.TrimSpace(body.ActivationToken)
+	if nodeID == "" || configurationID == "" || activationToken == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	_, updated, alreadyActivated, err := s.services.ActivateServiceNodeConfiguration(r.Context(), nodeID, configurationID, activationToken, time.Now().UTC(), store.ServiceRuntimeReport{
+		ServiceID: nodeID,
+		Version:   body.Version,
+		Commit:    body.Commit,
+		BuildDate: body.BuildDate,
+		Hostname:  body.Hostname,
+		OS:        body.OS,
+		Arch:      body.Arch,
+	})
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
+		return
+	case errors.Is(err, store.ErrUnauthorized):
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_activation_token"})
+		return
+	case errors.Is(err, store.ErrForbidden):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
+		return
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "activate_node_configuration_failed"})
+		return
+	}
+	state := "activated"
+	if alreadyActivated {
+		state = "already_activated"
+	} else {
+		s.writeAudit(r, store.AuditEvent{
+			ActorUsername: "node-configure",
+			Action:        "nodes.configure",
+			ResourceType:  "node",
+			ResourceID:    updated.ServiceID,
+			Result:        "success",
+			Metadata: map[string]any{
+				"service_type": updated.ServiceType,
+				"version":      updated.ReportedVersion,
+				"commit":       updated.ReportedCommit,
+				"build_date":   updated.ReportedBuildDate,
+				"hostname":     updated.ReportedHostname,
+				"os":           updated.ReportedOS,
+				"arch":         updated.ReportedArch,
+			},
+		})
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"state": state, "configuration_id": configurationID})
+}
+
+func updaterNodeConfigurationResponse(r *http.Request, service store.RegisteredService, rawToken string) map[string]any {
+	panelURL := panelBaseURL(r)
+	if panelURL == "" {
+		panelURL = "https://control.example.com"
+	}
+	return map[string]any{
+		"panel_url":     panelURL,
+		"node_id":       service.ServiceID,
+		"runtime_token": rawToken,
+		"service_name":  service.ServiceName,
+		"service_type":  service.ServiceType,
+		"api": map[string]any{
+			"host":        service.Host,
+			"port":        service.Port,
+			"ssl_enabled": service.SSLEnabled,
+		},
+	}
 }
 
 func nodeAgentConfigResponse(r *http.Request, service store.RegisteredService, tokenID, rawToken string) map[string]any {

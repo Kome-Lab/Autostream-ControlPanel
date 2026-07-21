@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/database"
+	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
@@ -48,6 +49,60 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	}
 	if registered.ServiceType != "update_agent" || len(registered.Capabilities) == 0 {
 		t.Fatalf("registered update_agent did not retain TOFU capabilities: %#v", registered)
+	}
+	stageNow := time.Now().UTC()
+	configureToken := "mariadb-staged-configure-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if _, err := auth.SetServiceConfigureToken(ctx, serviceID, security.HashToken(configureToken), stageNow.Add(time.Hour)); err != nil {
+		t.Fatalf("set MariaDB updater configure token: %v", err)
+	}
+	staged, err := auth.StageServiceNodeConfiguration(ctx, serviceID, configureToken, stageNow, func(string) (string, string, error) {
+		return "mariadb-staged-ciphertext", "mariadb-staged-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("stage MariaDB updater configuration: %v", err)
+	}
+	stagedService, err := auth.GetService(ctx, serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stagedService.TokenID != token.ID || stagedService.StagedNodeTokenID != staged.Token.ID || stagedService.ConfigureTokenUsedAt == nil {
+		t.Fatalf("MariaDB stage changed active identity: %#v", stagedService)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, token.RawToken, "updates.claim"); err != nil {
+		t.Fatalf("MariaDB old token stopped before activation: %v", err)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, staged.Token.RawToken, "updates.claim"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("MariaDB staged token authenticated before activation: %v", err)
+	}
+	activatedToken, registered, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(ctx, serviceID, staged.Token.ID, staged.ActivationToken, stageNow.Add(time.Second), store.ServiceRuntimeReport{Version: "v1.1.0", Hostname: "mariadb-updater", OS: "linux", Arch: "amd64"})
+	if err != nil || alreadyActivated || activatedToken.ID != staged.Token.ID || registered.TokenID != staged.Token.ID {
+		t.Fatalf("activate MariaDB updater configuration: token=%#v service=%#v already=%v err=%v", activatedToken, registered, alreadyActivated, err)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, token.RawToken, "service.heartbeat"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("MariaDB old token survived activation: %v", err)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, staged.Token.RawToken, "updates.claim"); err != nil {
+		t.Fatalf("MariaDB staged token did not activate: %v", err)
+	}
+	if _, _, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(ctx, serviceID, staged.Token.ID, staged.ActivationToken, stageNow.Add(2*time.Second), store.ServiceRuntimeReport{}); err != nil || !alreadyActivated {
+		t.Fatalf("MariaDB activation replay: already=%v err=%v", alreadyActivated, err)
+	}
+	token = staged.Token
+	outstandingConfigureToken := "mariadb-outstanding-configure-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if _, err := auth.SetServiceConfigureToken(ctx, serviceID, security.HashToken(outstandingConfigureToken), time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("set outstanding MariaDB updater configure token: %v", err)
+	}
+	token, registered, err = auth.RotateServiceNodeToken(ctx, serviceID, token.ID, func(string) (string, string, error) {
+		return "mariadb-rotated-ciphertext", "mariadb-rotated-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("rotate MariaDB updater runtime token: %v", err)
+	}
+	if registered.ConfigureTokenExpiresAt != nil || registered.ConfigureTokenUsedAt != nil || registered.StagedNodeTokenID != "" {
+		t.Fatalf("MariaDB runtime rotation retained configure/staging metadata: %#v", registered)
+	}
+	if _, err := auth.ConsumeServiceConfigureToken(ctx, serviceID, outstandingConfigureToken, time.Now().UTC()); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("MariaDB runtime rotation left configure token usable: %v", err)
 	}
 	if _, err := auth.AssignServiceToStream(ctx, serviceID, "stream-not-used", "mariadb-smoke"); !errors.Is(err, store.ErrInvalidServiceAssignment) {
 		t.Fatalf("MariaDB update_agent assignment err = %v", err)
