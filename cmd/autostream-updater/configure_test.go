@@ -37,8 +37,9 @@ func stagedUpdaterConfiguration(panelURL, runtimeToken string) updateagent.Updat
 func completeUpdaterConfigureDependencies(t *testing.T, prepared *fakePreparedUpdaterConfig, output *strings.Builder) updaterConfigureDependencies {
 	t.Helper()
 	return updaterConfigureDependencies{
-		Prepare:   func(string) (preparedUpdaterConfig, error) { return prepared, nil },
-		ReadToken: func(context.Context) (string, error) { return "configure-secret", nil },
+		Initialize: func(string, string) (bool, error) { return false, nil },
+		Prepare:    func(string) (preparedUpdaterConfig, error) { return prepared, nil },
+		ReadToken:  func(context.Context) (string, error) { return "configure-secret", nil },
 		Stage: func(context.Context, string, string, string, time.Duration) (updateagent.UpdaterStagedConfiguration, error) {
 			return stagedUpdaterConfiguration("https://panel.example.com", "runtime-secret"), nil
 		},
@@ -48,6 +49,84 @@ func completeUpdaterConfigureDependencies(t *testing.T, prepared *fakePreparedUp
 		},
 		Hostname: func() (string, error) { return "central-host", nil },
 		Output:   output,
+	}
+}
+
+func TestConfigureInitializesMissingConfigBeforeTokenInput(t *testing.T) {
+	prepareCalled := false
+	readCalled := false
+	dependencies := completeUpdaterConfigureDependencies(t, &fakePreparedUpdaterConfig{}, &strings.Builder{})
+	dependencies.Initialize = func(path, examplePath string) (bool, error) {
+		if path != "/etc/autostream/updater.json" {
+			t.Fatalf("initialize path = %q", path)
+		}
+		if examplePath != "/opt/autostream/control-panel/current/autostream-updater.json.example" {
+			t.Fatalf("initialize example = %q", examplePath)
+		}
+		return true, nil
+	}
+	dependencies.Prepare = func(string) (preparedUpdaterConfig, error) {
+		prepareCalled = true
+		return nil, errors.New("prepare must not run after initialization")
+	}
+	dependencies.ReadToken = func(context.Context) (string, error) {
+		readCalled = true
+		return "must-not-be-read", nil
+	}
+	err := runUpdaterConfigure(context.Background(), []string{"--panel-url", "https://panel.example.com", "--node", "central-updater"}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "created /etc/autostream/updater.json") || !strings.Contains(err.Error(), "complete local policy") || !strings.Contains(err.Error(), "rerun the same command") || !strings.Contains(err.Error(), "Configure Token was not requested or consumed") || prepareCalled || readCalled {
+		t.Fatalf("initialize result err=%v prepare_called=%v read_called=%v", err, prepareCalled, readCalled)
+	}
+}
+
+func TestConfigurePassesExplicitInitializationPaths(t *testing.T) {
+	readCalled := false
+	dependencies := completeUpdaterConfigureDependencies(t, &fakePreparedUpdaterConfig{}, &strings.Builder{})
+	dependencies.Initialize = func(path, examplePath string) (bool, error) {
+		if path != "/srv/autostream/updater.json" || examplePath != "/srv/autostream/updater.example.json" {
+			t.Fatalf("explicit initialize paths = %q, %q", path, examplePath)
+		}
+		return true, nil
+	}
+	dependencies.ReadToken = func(context.Context) (string, error) {
+		readCalled = true
+		return "must-not-be-read", nil
+	}
+	err := runUpdaterConfigure(context.Background(), []string{
+		"--panel-url", "https://panel.example.com",
+		"--node", "central-updater",
+		"--config", "/srv/autostream/updater.json",
+		"--init-from", "/srv/autostream/updater.example.json",
+	}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "created /srv/autostream/updater.json") || readCalled {
+		t.Fatalf("explicit initialization err=%v read_called=%v", err, readCalled)
+	}
+}
+
+func TestConfigureReportsInitializerFailureBeforeTokenInput(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		created bool
+		want    string
+	}{
+		{name: "before install", want: "initialize updater config"},
+		{name: "after install", created: true, want: "configuration may have been installed at /etc/autostream/updater.json but final verification failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			readCalled := false
+			dependencies := completeUpdaterConfigureDependencies(t, &fakePreparedUpdaterConfig{}, &strings.Builder{})
+			dependencies.Initialize = func(string, string) (bool, error) {
+				return test.created, errors.New("initializer failed")
+			}
+			dependencies.ReadToken = func(context.Context) (string, error) {
+				readCalled = true
+				return "must-not-be-read", nil
+			}
+			err := runUpdaterConfigure(context.Background(), []string{"--panel-url", "https://panel.example.com", "--node", "central-updater"}, dependencies)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "Configure Token was not requested or consumed") || readCalled {
+				t.Fatalf("initializer failure err=%v read_called=%v", err, readCalled)
+			}
+		})
 	}
 }
 

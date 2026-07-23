@@ -81,7 +81,7 @@ func run(args []string) error {
 		}
 		return coordinator.Run(ctx)
 	}
-	return errors.New("usage: autostream-updater configure --panel-url URL --node ID [--config PATH] | run --config PATH | validate-config --config PATH | --version")
+	return errors.New("usage: autostream-updater configure --panel-url URL --node ID [--config PATH] [--init-from PATH] | run --config PATH | validate-config --config PATH | --version")
 }
 
 func requireCentralConfig(cfg updateagent.Config) error {

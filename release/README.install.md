@@ -231,11 +231,12 @@ sudo rule, Docker socket, `systemctl` authority, or root helper. Privileged
 target policy remains on each managed host in root-owned
 `/etc/autostream/update-host.json`.
 
-Install the central binary and sample first, but do not register its single
-`Update Agent` Node yet. Complete each managed host's root policy and SSH
-bootstrap, then finish the central local inventory before issuing the short-lived
-Configure Token. Do not install a persistent updater on managed hosts or copy
-any token to them.
+Install the central binary and fixed directories first, but do not copy the
+sample to `/etc/autostream/updater.json` by hand. Complete each managed host's
+root policy and SSH bootstrap before registering the central updater. The first
+Auto Configure run creates a missing configuration from the bundled sample and
+stops before it asks for or consumes the short-lived Configure Token. Do not
+install a persistent updater on managed hosts or copy any token to them.
 
 ```bash
 set -euo pipefail
@@ -261,14 +262,9 @@ else
     "$RELEASE_DIR/bin/autostream-updater" /usr/local/bin/autostream-updater
 fi
 
-if ! sudo test -e /etc/autostream/updater.json; then
-  sudo install -o root -g autostream-updater -m 0640 \
-    "$RELEASE_DIR/autostream-updater.json.example" /etc/autostream/updater.json
-else
-  echo "preserving existing /etc/autostream/updater.json; review the new example"
-fi
-sudo chown root:autostream-updater /etc/autostream/updater.json
-sudo chmod 0640 /etc/autostream/updater.json
+Auto-initialization requires the `autostream-updater` binary from this same
+Control Panel release. Install the bundled binary before running Auto Configure;
+older updater binaries do not create a missing `updater.json` automatically.
 
 if ! sudo test -e /etc/autostream/updater/ssh/known_hosts; then
   sudo install -o root -g autostream-updater -m 0640 /dev/null \
@@ -320,18 +316,11 @@ helper, not a daemon or token. Apply and reconcile use only a collected
 transient systemd worker so an SSH disconnect cannot interrupt a mutation; no
 persistent unit is installed on the managed host.
 
-Only after every managed host has passed that bootstrap, edit the local settings
-in `/etc/autostream/updater.json`. Set `github_token`, `api`, `state_dir`,
-polling intervals, and the complete `hosts` and `targets` inventory for this
-central host. Its `hosts` entries contain only SSH routing and host identity.
-Its `targets` entries contain only `target_id`, `host_id`, service type, and
-deployment mode. Never copy remote unit names, filesystem paths, image
-repositories, or commands into an update job or browser-controlled field.
-
-Now create exactly one `Update Agent` Node in the Control Panel for this central
-updater. If the Node already exists, generate a new Configure Token from its
-Configuration view. Do not create an Update Agent Node for each managed host,
-and do not hand-copy the Node Runtime Token into the JSON file.
+Only after every managed host has passed that bootstrap, create exactly one
+`Update Agent` Node in the Control Panel for this central updater. If the Node
+already exists, generate a new Configure Token from its Configuration view. Do
+not create an Update Agent Node for each managed host, and do not hand-copy the
+Node Runtime Token into the JSON file.
 
 Copy the token-free Auto Configure command shown by the Node registration screen
 and run that exact command on the central host. It has this shape:
@@ -343,15 +332,40 @@ sudo autostream-updater configure \
   --config "/etc/autostream/updater.json"
 ```
 
-The command does not contain the Configure Token. It reads the separately
-displayed one-time Token from the terminal with echo disabled, or from bounded
-standard input for automation, so the secret never appears in process
-arguments. It stages a new Runtime Token, atomically updates only `panel_url`,
-`node_id`, `runtime_token`, and `service_name`, reloads the installed file, and
-validates that installed configuration before activating the new Token. The old
-Runtime Token remains valid until that activation succeeds. Locally controlled
-`github_token`, `api`, `state_dir`, intervals, `hosts`, `targets`, SSH paths,
-and all other local policy are preserved.
+If `/etc/autostream/updater.json` is missing, this first run atomically creates
+it from
+`/opt/autostream/control-panel/current/autostream-updater.json.example` as
+`root:autostream-updater` with mode `0640`. It then exits with instructions to
+complete the local policy; it does not ask for, read, or consume the Configure
+Token, and it does not stage a Runtime Token. This is an intentional non-zero
+safety checkpoint, so a `set -e` installer stops before starting an incomplete
+updater. If the configuration already exists, the initializer never overwrites
+or replaces it.
+
+After that first run, edit the local settings in
+`/etc/autostream/updater.json`. Set `github_token`, `api`, `state_dir`, polling
+intervals, and the complete `hosts` and `targets` inventory for this central
+host. Its `hosts` entries contain only SSH routing and host identity. Its
+`targets` entries contain only `target_id`, `host_id`, service type, and
+deployment mode. Never copy remote unit names, filesystem paths, image
+repositories, or commands into an update job or browser-controlled field.
+
+Rerun the exact same token-free Auto Configure command after the local policy
+is complete. It validates the local configuration before asking for the Token,
+so a validation failure also leaves the one-time Token unread and unconsumed.
+If the displayed Token expires while the local policy is being prepared,
+generate a fresh Configure Token from the same Node and rerun the same command.
+
+The command itself does not contain the Configure Token. After local validation
+succeeds, it reads the separately displayed one-time Token from the terminal
+with echo disabled, or from bounded standard input for automation, so the
+secret never appears in process arguments. It stages a new Runtime Token,
+atomically updates only `panel_url`, `node_id`, `runtime_token`, and
+`service_name`, reloads the installed file, and validates that installed
+configuration before activating the new Token. The old Runtime Token remains
+valid until that activation succeeds. Locally controlled `github_token`, `api`,
+`state_dir`, intervals, `hosts`, `targets`, SSH paths, and all other local
+policy are preserved.
 
 Do not restart the updater when the command reports a staging, installation,
 validation, or activation failure. Follow the error and issue a new Configure

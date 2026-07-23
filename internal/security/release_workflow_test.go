@@ -18,6 +18,21 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		t.Fatal("host release does not require the first central-only updater version")
 	}
 
+	packagingContract := []string{
+		"- name: Package linux artifacts",
+		`cp release/autostream-updater.json.example "${root}/autostream-updater.json.example"`,
+		`find . -type f ! -path './checksums.txt' -print0 | sort -z | xargs -0 sha256sum > checksums.txt`,
+		`tar -C staging -czf "artifacts/${artifact}.tar.gz" "${artifact}"`,
+	}
+	position := 0
+	for _, marker := range packagingContract {
+		relative := strings.Index(workflow[position:], marker)
+		if relative < 0 {
+			t.Fatalf("release workflow is missing ordered updater packaging marker %q", marker)
+		}
+		position += relative + len(marker)
+	}
+
 	orderedContract := []string{
 		"group: host-release-publish-${{ needs.release-host.outputs.version }}",
 		"- name: Validate immutable release namespace and local asset set",
@@ -38,7 +53,7 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		"if: ${{ always() && steps.create-draft.outputs.release_id != '' }}",
 		"gh api --method DELETE \"repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}\"",
 	}
-	position := 0
+	position = 0
 	for _, marker := range orderedContract {
 		relative := strings.Index(workflow[position:], marker)
 		if relative < 0 {

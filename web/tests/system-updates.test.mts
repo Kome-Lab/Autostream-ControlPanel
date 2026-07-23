@@ -337,6 +337,19 @@ test("updater configure failure guidance requires a fresh token before restart",
   assert.doesNotMatch(source, /同じコマンドで再開|再生成を求められた場合だけ/);
 });
 
+test("updater configure initializes a missing local config before token input", () => {
+  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /updater\.jsonがなければ、初回実行でリリース同梱サンプルから自動生成/);
+  assert.match(source, /Configure Tokenを入力・消費せずに停止/);
+  assert.match(source, /安全チェックポイントは意図的に非ゼロ終了/);
+  assert.match(source, /ローカル設定を完成させ、同じtoken-free commandを再実行/);
+  assert.match(source, /既存のupdater\.jsonは上書きしません/);
+  assert.match(source, /同じControl Panelリリースに同梱されたUpdaterが必要/);
+  assert.match(source, /旧Updaterは先に更新/);
+  assert.doesNotMatch(source, /初回はサンプルを基にローカル設定を用意してください/);
+});
+
 test("updater node description identifies its central multi-host responsibility", () => {
   const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
 

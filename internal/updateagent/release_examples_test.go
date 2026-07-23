@@ -42,6 +42,53 @@ func TestControlPanelInstallGuidePreparesUpdaterBackup(t *testing.T) {
 	}
 }
 
+func TestUpdaterExampleRequiresLocalPolicyBeforeConfigureTokenInput(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "release", "autostream-updater.json.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var example struct {
+		GitHubToken string `json:"github_token"`
+	}
+	if err := json.Unmarshal(body, &example); err != nil {
+		t.Fatal(err)
+	}
+	if example.GitHubToken != "" {
+		t.Fatalf("unedited updater example must require github_token, got %q", example.GitHubToken)
+	}
+}
+
+func TestControlPanelInstallGuideUsesUpdaterAutoInitialization(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "release", "README.install.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide := strings.Join(strings.Fields(string(body)), " ")
+	for _, marker := range []string{
+		"If `/etc/autostream/updater.json` is missing, this first run atomically creates",
+		"`root:autostream-updater` with mode `0640`",
+		"intentional non-zero",
+		"safety checkpoint",
+		"Auto-initialization requires the `autostream-updater` binary from this same Control Panel release",
+		"older updater binaries do not create a missing `updater.json` automatically",
+		"does not ask for, read, or consume the Configure Token",
+		"Rerun the exact same token-free Auto Configure command",
+		"never overwrites or replaces it",
+	} {
+		if !strings.Contains(guide, marker) {
+			t.Fatalf("control panel install guide is missing updater initialization marker %q", marker)
+		}
+	}
+	for _, obsolete := range []string{
+		"if ! sudo test -e /etc/autostream/updater.json; then",
+		`"$RELEASE_DIR/autostream-updater.json.example" /etc/autostream/updater.json`,
+	} {
+		if strings.Contains(guide, obsolete) {
+			t.Fatalf("control panel install guide contains obsolete updater initialization %q", obsolete)
+		}
+	}
+}
+
 func TestDockerDraftWorkerUsesCanonicalLoopbackPort(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "release", "autostream-update-host.docker-draft.json.example"))
 	if err != nil {

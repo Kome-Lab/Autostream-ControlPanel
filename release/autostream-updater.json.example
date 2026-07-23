@@ -3,7 +3,7 @@
   "node_id": "central-updater",
   "runtime_token": "replace-with-central-update-agent-runtime-token",
   "service_name": "Central Updater",
-  "github_token": "replace-with-fine-grained-read-token-for-private-releases",
+  "github_token": "",
   "api": {
     "bind_host": "127.0.0.1",
     "host": "127.0.0.1",

@@ -14,6 +14,15 @@ import (
 	"testing"
 )
 
+func readUpdaterReleaseExample(t *testing.T) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "release", "autostream-updater.json.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 func TestPrepareUpdaterConfigRejectsNonRootBeforeFilesystemMutation(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("non-root rejection coverage")
@@ -25,6 +34,310 @@ func TestPrepareUpdaterConfigRejectsNonRootBeforeFilesystemMutation(t *testing.T
 	}
 	if _, statErr := os.Lstat(filepath.Dir(path)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("non-root prepare mutated filesystem: %v", statErr)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("non-root rejection coverage")
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "must-not-exist", "updater.json")
+	created, err := InitializeUpdaterConfig(path, filepath.Join(root, "missing-example.json"))
+	if created || err == nil || !strings.Contains(err.Error(), "requires root") {
+		t.Fatalf("non-root initialize = %v, %v", created, err)
+	}
+	if _, statErr := os.Lstat(filepath.Dir(path)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("non-root initialize mutated filesystem: %v", statErr)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationCreatesThroughCurrentSymlinkAndNeverOverwrites(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	releaseDir := filepath.Join(root, "releases", "v1.2.3")
+	if err := os.MkdirAll(releaseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	example := readUpdaterReleaseExample(t)
+	examplePath := filepath.Join(releaseDir, "autostream-updater.json.example")
+	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(root, "current")
+	if err := os.Symlink(releaseDir, current); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "etc")
+	if err := os.Mkdir(configDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "updater.json")
+	created, err := initializeUpdaterConfig(configPath, filepath.Join(current, "autostream-updater.json.example"), 0)
+	if err != nil || !created {
+		t.Fatalf("initialize = %v, %v", created, err)
+	}
+	installed, err := os.ReadFile(configPath)
+	if err != nil || string(installed) != string(example) {
+		t.Fatalf("installed example = %q, %v", installed, err)
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || stat.Gid != 0 || info.Mode().Perm() != 0o640 {
+		t.Fatalf("initialized owner/mode = %#v %o", info.Sys(), info.Mode().Perm())
+	}
+	created, err = initializeUpdaterConfig(configPath, filepath.Join(root, "missing-example.json"), 0)
+	if err != nil || created {
+		t.Fatalf("existing initialize = %v, %v", created, err)
+	}
+	preserved, err := os.ReadFile(configPath)
+	if err != nil || string(preserved) != string(example) {
+		t.Fatalf("existing config was changed = %q, %v", preserved, err)
+	}
+	entries, err := os.ReadDir(configDir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "updater.json" {
+		t.Fatalf("initializer left temporary files: %#v, %v", entries, err)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationPreservesDestinationCreatedAtInstall(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	example := []byte(`{"panel_url":"https://panel.example.com","node_id":"central-updater","runtime_token":"replace-after-stage","service_name":"Central Updater","github_token":"","api":{"bind_host":"127.0.0.1","host":"127.0.0.1","port":8090,"ssl_enabled":false},"state_dir":"/var/lib/autostream-updater","hosts":[],"targets":[]}` + "\n")
+	examplePath := filepath.Join(root, "example.json")
+	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "updater.json")
+	competitor := []byte("operator-created-during-install\n")
+	created, err := initializeUpdaterConfigWithInstaller(configPath, examplePath, 0, func(tempPath, path string) error {
+		if err := os.WriteFile(path, competitor, 0o600); err != nil {
+			return err
+		}
+		return installUpdaterConfigNoReplace(tempPath, path)
+	})
+	if created || !errors.Is(err, syscall.EEXIST) {
+		t.Fatalf("racing initialize = %v, %v", created, err)
+	}
+	preserved, readErr := os.ReadFile(configPath)
+	if readErr != nil || string(preserved) != string(competitor) {
+		t.Fatalf("racing destination was replaced = %q, %v", preserved, readErr)
+	}
+	entries, readDirErr := os.ReadDir(root)
+	if readDirErr != nil || len(entries) != 2 {
+		t.Fatalf("initializer left temporary files: %#v, %v", entries, readDirErr)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationPreservesInstalledFileWhenRenameResultIsUncertain(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	example := readUpdaterReleaseExample(t)
+	examplePath := filepath.Join(root, "example.json")
+	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "updater.json")
+	created, err := initializeUpdaterConfigWithInstaller(configPath, examplePath, 0, func(tempPath, path string) error {
+		if err := installUpdaterConfigNoReplace(tempPath, path); err != nil {
+			return err
+		}
+		return syscall.EIO
+	})
+	if !created || !errors.Is(err, syscall.EIO) || !strings.Contains(err.Error(), "was installed") {
+		t.Fatalf("uncertain initialize = %v, %v", created, err)
+	}
+	installed, readErr := os.ReadFile(configPath)
+	if readErr != nil || string(installed) != string(example) {
+		t.Fatalf("uncertain installed config was damaged = %q, %v", installed, readErr)
+	}
+	entries, readDirErr := os.ReadDir(root)
+	if readDirErr != nil || len(entries) != 2 {
+		t.Fatalf("uncertain initializer left temporary files: %#v, %v", entries, readDirErr)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationReconcilesInstalledFileAfterExistResult(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	example := readUpdaterReleaseExample(t)
+	examplePath := filepath.Join(root, "example.json")
+	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "updater.json")
+	created, err := initializeUpdaterConfigWithInstaller(configPath, examplePath, 0, func(tempPath, path string) error {
+		if err := installUpdaterConfigNoReplace(tempPath, path); err != nil {
+			return err
+		}
+		return syscall.EEXIST
+	})
+	if !created || !errors.Is(err, syscall.EEXIST) || !strings.Contains(err.Error(), "was installed") {
+		t.Fatalf("exist-after-install initialize = %v, %v", created, err)
+	}
+	installed, readErr := os.ReadFile(configPath)
+	if readErr != nil || string(installed) != string(example) {
+		t.Fatalf("exist-after-install config was damaged = %q, %v", installed, readErr)
+	}
+	entries, readDirErr := os.ReadDir(root)
+	if readDirErr != nil || len(entries) != 2 {
+		t.Fatalf("exist-after-install initializer left temporary files: %#v, %v", entries, readDirErr)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationDoesNotWipeUnlocatableInodeAfterExistResult(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	example := readUpdaterReleaseExample(t)
+	examplePath := filepath.Join(root, "example.json")
+	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "updater.json")
+	relocatedPath := filepath.Join(root, "relocated.json")
+	created, err := initializeUpdaterConfigWithInstaller(configPath, examplePath, 0, func(tempPath, _ string) error {
+		if err := installUpdaterConfigNoReplace(tempPath, relocatedPath); err != nil {
+			return err
+		}
+		return syscall.EEXIST
+	})
+	if !created || !errors.Is(err, syscall.EEXIST) || !strings.Contains(err.Error(), "result is uncertain") {
+		t.Fatalf("unlocatable exist initialize = %v, %v", created, err)
+	}
+	relocated, readErr := os.ReadFile(relocatedPath)
+	if readErr != nil || string(relocated) != string(example) {
+		t.Fatalf("unlocatable inode was damaged = %q, %v", relocated, readErr)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationCleansTemporaryFileWhenInstallFailsBeforeRename(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	examplePath := filepath.Join(root, "example.json")
+	if err := os.WriteFile(examplePath, readUpdaterReleaseExample(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "updater.json")
+	created, err := initializeUpdaterConfigWithInstaller(configPath, examplePath, 0, func(string, string) error {
+		return syscall.EIO
+	})
+	if created || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("failed initialize = %v, %v", created, err)
+	}
+	if _, statErr := os.Lstat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed initialize created destination: %v", statErr)
+	}
+	entries, readDirErr := os.ReadDir(root)
+	if readDirErr != nil || len(entries) != 1 || entries[0].Name() != "example.json" {
+		t.Fatalf("failed initializer left temporary files: %#v, %v", entries, readDirErr)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationRejectsUnsafeOrMalformedExample(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	for _, test := range []struct {
+		name    string
+		content []byte
+		mode    os.FileMode
+		want    string
+	}{
+		{name: "malformed", content: []byte(`{"panel_url":`), mode: 0o644, want: "decode"},
+		{name: "nonempty-github-token", content: []byte(`{"github_token":"replace-with-fine-grained-read-token-for-private-releases"}`), mode: 0o644, want: "github_token must be empty"},
+		{name: "group-writable", content: []byte(`{}`), mode: 0o664, want: "root-owned"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			examplePath := filepath.Join(root, "example.json")
+			if err := os.WriteFile(examplePath, test.content, test.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(examplePath, test.mode); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(root, "updater.json")
+			created, err := initializeUpdaterConfig(configPath, examplePath, 0)
+			if created || err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("unsafe example initialize = %v, %v", created, err)
+			}
+			if _, statErr := os.Lstat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("unsafe example created config: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationRejectsSymlinkHopThroughWritableDirectory(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	safe := filepath.Join(root, "safe")
+	writable := filepath.Join(root, "writable")
+	if err := os.Mkdir(safe, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(writable, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(writable, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	examplePath := filepath.Join(safe, "example.json")
+	if err := os.WriteFile(examplePath, readUpdaterReleaseExample(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	redirect := filepath.Join(writable, "redirect")
+	if err := os.Symlink(safe, redirect); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(root, "current")
+	if err := os.Symlink(redirect, current); err != nil {
+		t.Fatal(err)
+	}
+	created, err := initializeUpdaterConfig(filepath.Join(root, "updater.json"), filepath.Join(current, "example.json"), 0)
+	if created || err == nil || !strings.Contains(err.Error(), "not writable by group or other users") {
+		t.Fatalf("writable symlink hop initialize = %v, %v", created, err)
 	}
 }
 

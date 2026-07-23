@@ -16,12 +16,15 @@ import (
 	"github.com/example/autostream-control-panel/internal/version"
 )
 
+const defaultUpdaterConfigExamplePath = "/opt/autostream/control-panel/current/autostream-updater.json.example"
+
 type preparedUpdaterConfig interface {
 	Commit(updateagent.UpdaterConfigureIdentity) error
 	Abort()
 }
 
 type updaterConfigureDependencies struct {
+	Initialize        func(string, string) (bool, error)
 	Prepare           func(string) (preparedUpdaterConfig, error)
 	ReadToken         func(context.Context) (string, error)
 	Stage             func(context.Context, string, string, string, time.Duration) (updateagent.UpdaterStagedConfiguration, error)
@@ -33,6 +36,7 @@ type updaterConfigureDependencies struct {
 
 func defaultUpdaterConfigureDependencies() updaterConfigureDependencies {
 	return updaterConfigureDependencies{
+		Initialize: updateagent.InitializeUpdaterConfig,
 		Prepare: func(path string) (preparedUpdaterConfig, error) {
 			return updateagent.PrepareUpdaterConfig(path)
 		},
@@ -54,12 +58,13 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 	panelURL := flags.String("panel-url", "", "Control Panel base URL")
 	nodeID := flags.String("node", "", "registered Update Agent node ID")
 	configPath := flags.String("config", "/etc/autostream/updater.json", "root-owned updater configuration")
+	initFrom := flags.String("init-from", defaultUpdaterConfigExamplePath, "root-controlled example used only when the updater configuration is missing")
 	timeout := flags.Duration("timeout", 30*time.Second, "Control Panel configure request timeout")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("configure accepts only --panel-url, --node, --config, and --timeout")
+		return errors.New("configure accepts only --panel-url, --node, --config, --init-from, and --timeout")
 	}
 	if strings.TrimSpace(*panelURL) == "" {
 		return errors.New("--panel-url is required")
@@ -70,11 +75,22 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 	if *timeout <= 0 || *timeout > 5*time.Minute {
 		return errors.New("--timeout must be greater than zero and at most 5m")
 	}
-	if dependencies.Prepare == nil || dependencies.ReadToken == nil || dependencies.Stage == nil || dependencies.ValidateInstalled == nil || dependencies.Activate == nil || dependencies.Hostname == nil || dependencies.Output == nil {
+	if dependencies.Initialize == nil || dependencies.Prepare == nil || dependencies.ReadToken == nil || dependencies.Stage == nil || dependencies.ValidateInstalled == nil || dependencies.Activate == nil || dependencies.Hostname == nil || dependencies.Output == nil {
 		return errors.New("configure dependencies are incomplete")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+
+	created, err := dependencies.Initialize(*configPath, *initFrom)
+	if err != nil {
+		if created {
+			return fmt.Errorf("initialize updater config: configuration may have been installed at %s but final verification failed; inspect it before rerunning; Configure Token was not requested or consumed: %w", *configPath, err)
+		}
+		return fmt.Errorf("initialize updater config; Configure Token was not requested or consumed: %w", err)
+	}
+	if created {
+		return fmt.Errorf("created %s from %s; complete local policy (github_token, api, state_dir, hosts, targets, and SSH files), then rerun the same command; Configure Token was not requested or consumed", *configPath, *initFrom)
 	}
 
 	prepared, err := dependencies.Prepare(*configPath)

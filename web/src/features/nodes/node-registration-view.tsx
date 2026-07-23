@@ -505,8 +505,10 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                 <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-4 text-sm">
                   <div className="font-medium">Updaterの自動設定</div>
                   <p className="text-muted-foreground">
-                    表示コマンドはPanel接続情報（panel_url、node_id、Runtime Token、service_name）だけを更新します。
-                    GitHub Token、API、hosts、targets、SSH設定は既存値を保持するため、初回はサンプルを基にローカル設定を用意してください。
+                    updater.jsonがなければ、初回実行でリリース同梱サンプルから自動生成し、Configure Tokenを入力・消費せずに停止します。この安全チェックポイントは意図的に非ゼロ終了します。既存のupdater.jsonは上書きしません。
+                    作成されたファイルのGitHub Token、API、hosts、targets、SSH設定などのローカル設定を完成させ、同じtoken-free commandを再実行してください。
+                    この自動生成には同じControl Panelリリースに同梱されたUpdaterが必要です。旧Updaterは先に更新してください。
+                    ローカル設定完成後の実行ではPanel接続情報（panel_url、node_id、Runtime Token、service_name）だけを更新し、その他の既存値を保持します。
                     コマンド自体にConfigure Tokenは含まれず、実行時にTTYまたは標準入力から安全に読み取ります。
                     設定処理が失敗または結果不確定の場合は、Updaterを再起動しないでください。Configurationで新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行してください。
                     activation成功後はvalidate-configで検証し、Updaterを再起動します。
