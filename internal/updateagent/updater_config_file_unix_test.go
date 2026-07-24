@@ -43,7 +43,7 @@ func TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutati
 	}
 	root := t.TempDir()
 	path := filepath.Join(root, "must-not-exist", "updater.json")
-	created, err := InitializeUpdaterConfig(path, filepath.Join(root, "missing-example.json"))
+	created, err := InitializeUpdaterConfig(path, "")
 	if created || err == nil || !strings.Contains(err.Error(), "requires root") {
 		t.Fatalf("non-root initialize = %v, %v", created, err)
 	}
@@ -103,6 +103,65 @@ func TestPreparedUpdaterConfigInitializationCreatesThroughCurrentSymlinkAndNever
 		t.Fatalf("existing config was changed = %q, %v", preserved, err)
 	}
 	entries, err := os.ReadDir(configDir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "updater.json" {
+		t.Fatalf("initializer left temporary files: %#v, %v", entries, err)
+	}
+}
+
+func TestPreparedUpdaterConfigInitializationCreatesFromBuiltInExampleAndNeverOverwrites(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned updater config initialization")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "updater.json")
+	created, err := initializeUpdaterConfig(configPath, "", 0)
+	if err != nil || !created {
+		t.Fatalf("initialize built-in example = %v, %v", created, err)
+	}
+	installed, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := readUpdaterReleaseExample(t); string(installed) != string(want) {
+		t.Fatalf("installed built-in example differs from release example:\ngot  %q\nwant %q", installed, want)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(installed, &fields); err != nil {
+		t.Fatal(err)
+	}
+	githubTokenJSON, ok := fields["github_token"]
+	var githubToken string
+	if !ok || json.Unmarshal(githubTokenJSON, &githubToken) != nil || githubToken != "" {
+		t.Fatalf("built-in example github_token = %q, present=%v", githubToken, ok)
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || stat.Gid != 0 || info.Mode().Perm() != 0o640 {
+		t.Fatalf("initialized owner/mode = %#v %o", info.Sys(), info.Mode().Perm())
+	}
+	if prepared, err := prepareUpdaterConfig(configPath, 0); prepared != nil || err == nil || !strings.Contains(err.Error(), "github_token is required") {
+		t.Fatalf("incomplete built-in policy preflight = %#v, %v", prepared, err)
+	}
+
+	created, err = initializeUpdaterConfig(configPath, "", 0)
+	if err != nil || created {
+		t.Fatalf("existing initialize = %v, %v", created, err)
+	}
+	preserved, err := os.ReadFile(configPath)
+	if err != nil || string(preserved) != string(installed) {
+		t.Fatalf("existing config was changed = %q, %v", preserved, err)
+	}
+	preservedInfo, err := os.Stat(configPath)
+	if err != nil || !os.SameFile(info, preservedInfo) {
+		t.Fatalf("existing config identity changed: %v", err)
+	}
+	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "updater.json" {
 		t.Fatalf("initializer left temporary files: %#v, %v", entries, err)
 	}
@@ -277,6 +336,7 @@ func TestPreparedUpdaterConfigInitializationRejectsUnsafeOrMalformedExample(t *t
 		want    string
 	}{
 		{name: "malformed", content: []byte(`{"panel_url":`), mode: 0o644, want: "decode"},
+		{name: "missing-github-token", content: []byte(`{}`), mode: 0o644, want: "github_token must be empty"},
 		{name: "nonempty-github-token", content: []byte(`{"github_token":"replace-with-fine-grained-read-token-for-private-releases"}`), mode: 0o644, want: "github_token must be empty"},
 		{name: "group-writable", content: []byte(`{}`), mode: 0o664, want: "root-owned"},
 	} {

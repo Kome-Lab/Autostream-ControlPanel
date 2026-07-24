@@ -60,8 +60,8 @@ func TestConfigureInitializesMissingConfigBeforeTokenInput(t *testing.T) {
 		if path != "/etc/autostream/updater.json" {
 			t.Fatalf("initialize path = %q", path)
 		}
-		if examplePath != "/opt/autostream/control-panel/current/autostream-updater.json.example" {
-			t.Fatalf("initialize example = %q", examplePath)
+		if examplePath != "" {
+			t.Fatalf("default initialization must use the built-in example, got %q", examplePath)
 		}
 		return true, nil
 	}
@@ -74,7 +74,7 @@ func TestConfigureInitializesMissingConfigBeforeTokenInput(t *testing.T) {
 		return "must-not-be-read", nil
 	}
 	err := runUpdaterConfigure(context.Background(), []string{"--panel-url", "https://panel.example.com", "--node", "central-updater"}, dependencies)
-	if err == nil || !strings.Contains(err.Error(), "created /etc/autostream/updater.json") || !strings.Contains(err.Error(), "complete local policy") || !strings.Contains(err.Error(), "rerun the same command") || !strings.Contains(err.Error(), "Configure Token was not requested or consumed") || prepareCalled || readCalled {
+	if err == nil || !strings.Contains(err.Error(), "created /etc/autostream/updater.json from the built-in example") || !strings.Contains(err.Error(), "complete local policy") || !strings.Contains(err.Error(), "rerun the same command") || !strings.Contains(err.Error(), "Configure Token was not requested or consumed") || prepareCalled || readCalled {
 		t.Fatalf("initialize result err=%v prepare_called=%v read_called=%v", err, prepareCalled, readCalled)
 	}
 }
@@ -100,6 +100,50 @@ func TestConfigurePassesExplicitInitializationPaths(t *testing.T) {
 	}, dependencies)
 	if err == nil || !strings.Contains(err.Error(), "created /srv/autostream/updater.json") || readCalled {
 		t.Fatalf("explicit initialization err=%v read_called=%v", err, readCalled)
+	}
+}
+
+func TestConfigureExplicitInvalidInitializationOverrideFailsBeforeTokenInput(t *testing.T) {
+	readCalled := false
+	dependencies := completeUpdaterConfigureDependencies(t, &fakePreparedUpdaterConfig{}, &strings.Builder{})
+	dependencies.Initialize = func(path, examplePath string) (bool, error) {
+		if path != "/etc/autostream/updater.json" || examplePath != "/missing/updater.example.json" {
+			t.Fatalf("explicit initialize paths = %q, %q", path, examplePath)
+		}
+		return false, errors.New("stat updater config example path: no such file")
+	}
+	dependencies.ReadToken = func(context.Context) (string, error) {
+		readCalled = true
+		return "must-not-be-read", nil
+	}
+	err := runUpdaterConfigure(context.Background(), []string{
+		"--panel-url", "https://panel.example.com",
+		"--node", "central-updater",
+		"--init-from", "/missing/updater.example.json",
+	}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "stat updater config example path") || !strings.Contains(err.Error(), "Configure Token was not requested or consumed") || readCalled {
+		t.Fatalf("invalid explicit initialization err=%v read_called=%v", err, readCalled)
+	}
+}
+
+func TestConfigureRejectsEmptyInitializationOverrideBeforeLocalMutation(t *testing.T) {
+	for _, value := range []string{"", "   "} {
+		t.Run("value="+value, func(t *testing.T) {
+			initializeCalled := false
+			dependencies := completeUpdaterConfigureDependencies(t, &fakePreparedUpdaterConfig{}, &strings.Builder{})
+			dependencies.Initialize = func(string, string) (bool, error) {
+				initializeCalled = true
+				return false, nil
+			}
+			err := runUpdaterConfigure(context.Background(), []string{
+				"--panel-url", "https://panel.example.com",
+				"--node", "central-updater",
+				"--init-from", value,
+			}, dependencies)
+			if err == nil || !strings.Contains(err.Error(), "--init-from must be a non-empty clean absolute path") || initializeCalled {
+				t.Fatalf("empty initialization override err=%v initialize_called=%v", err, initializeCalled)
+			}
+		})
 	}
 }
 

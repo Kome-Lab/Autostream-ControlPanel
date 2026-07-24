@@ -16,8 +16,6 @@ import (
 	"github.com/example/autostream-control-panel/internal/version"
 )
 
-const defaultUpdaterConfigExamplePath = "/opt/autostream/control-panel/current/autostream-updater.json.example"
-
 type preparedUpdaterConfig interface {
 	Commit(updateagent.UpdaterConfigureIdentity) error
 	Abort()
@@ -58,7 +56,7 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 	panelURL := flags.String("panel-url", "", "Control Panel base URL")
 	nodeID := flags.String("node", "", "registered Update Agent node ID")
 	configPath := flags.String("config", "/etc/autostream/updater.json", "root-owned updater configuration")
-	initFrom := flags.String("init-from", defaultUpdaterConfigExamplePath, "root-controlled example used only when the updater configuration is missing")
+	initFrom := flags.String("init-from", "", "optional root-controlled example override used only when the updater configuration is missing")
 	timeout := flags.Duration("timeout", 30*time.Second, "Control Panel configure request timeout")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -75,6 +73,15 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 	if *timeout <= 0 || *timeout > 5*time.Minute {
 		return errors.New("--timeout must be greater than zero and at most 5m")
 	}
+	initFromWasSet := false
+	flags.Visit(func(current *flag.Flag) {
+		if current.Name == "init-from" {
+			initFromWasSet = true
+		}
+	})
+	if initFromWasSet && strings.TrimSpace(*initFrom) == "" {
+		return errors.New("--init-from must be a non-empty clean absolute path when provided")
+	}
 	if dependencies.Initialize == nil || dependencies.Prepare == nil || dependencies.ReadToken == nil || dependencies.Stage == nil || dependencies.ValidateInstalled == nil || dependencies.Activate == nil || dependencies.Hostname == nil || dependencies.Output == nil {
 		return errors.New("configure dependencies are incomplete")
 	}
@@ -82,7 +89,8 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 		return err
 	}
 
-	created, err := dependencies.Initialize(*configPath, *initFrom)
+	initializationSource := *initFrom
+	created, err := dependencies.Initialize(*configPath, initializationSource)
 	if err != nil {
 		if created {
 			return fmt.Errorf("initialize updater config: configuration may have been installed at %s but final verification failed; inspect it before rerunning; Configure Token was not requested or consumed: %w", *configPath, err)
@@ -90,7 +98,11 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 		return fmt.Errorf("initialize updater config; Configure Token was not requested or consumed: %w", err)
 	}
 	if created {
-		return fmt.Errorf("created %s from %s; complete local policy (github_token, api, state_dir, hosts, targets, and SSH files), then rerun the same command; Configure Token was not requested or consumed", *configPath, *initFrom)
+		sourceDescription := "the built-in example"
+		if initializationSource != "" {
+			sourceDescription = initializationSource
+		}
+		return fmt.Errorf("created %s from %s; complete local policy (github_token, api, state_dir, hosts, targets, and SSH files), then rerun the same command; Configure Token was not requested or consumed", *configPath, sourceDescription)
 	}
 
 	prepared, err := dependencies.Prepare(*configPath)

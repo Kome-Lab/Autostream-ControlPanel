@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	releaseassets "github.com/example/autostream-control-panel/release"
 	"golang.org/x/sys/unix"
 )
 
-// InitializeUpdaterConfig installs the shipped example only when updater.json
-// is missing. Existing operator-owned configuration is never opened or changed
-// here; PrepareUpdaterConfig validates it in the next configure invocation.
+// InitializeUpdaterConfig installs the example embedded in autostream-updater
+// only when updater.json is missing. An explicit examplePath remains available
+// as a backwards-compatible, root-controlled override. Existing operator-owned
+// configuration is never opened or changed here; PrepareUpdaterConfig validates
+// it in the next configure invocation.
 func InitializeUpdaterConfig(path, examplePath string) (bool, error) {
 	installGID, err := updaterConfigInstallGID()
 	if err != nil {
@@ -46,7 +49,7 @@ func initializeUpdaterConfigWithInstaller(path, examplePath string, installGID i
 		return false, fmt.Errorf("stat updater config destination: %w", err)
 	}
 
-	example, err := readUpdaterConfigInitializationExample(examplePath)
+	example, err := updaterConfigInitializationExample(examplePath)
 	if err != nil {
 		return false, err
 	}
@@ -138,6 +141,13 @@ func installUpdaterConfigNoReplace(tempPath, path string) error {
 	return unix.Renameat2(unix.AT_FDCWD, tempPath, unix.AT_FDCWD, path, unix.RENAME_NOREPLACE)
 }
 
+func updaterConfigInitializationExample(path string) ([]byte, error) {
+	if path == "" {
+		return validateUpdaterConfigInitializationExample(releaseassets.UpdaterConfigExample())
+	}
+	return readUpdaterConfigInitializationExample(path)
+}
+
 func readUpdaterConfigInitializationExample(path string) ([]byte, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, errors.New("updater config example path must be a clean absolute path")
@@ -161,6 +171,13 @@ func readUpdaterConfigInitializationExample(path string) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(file, configMaxBytes+1))
 	if err != nil || len(data) == 0 || len(data) > configMaxBytes {
 		return nil, errors.New("read updater config example")
+	}
+	return validateUpdaterConfigInitializationExample(data)
+}
+
+func validateUpdaterConfigInitializationExample(data []byte) ([]byte, error) {
+	if len(data) == 0 || len(data) > configMaxBytes {
+		return nil, errors.New("updater config example must be non-empty and bounded")
 	}
 	template, err := prepareUpdaterConfigTemplate(data)
 	if err != nil {

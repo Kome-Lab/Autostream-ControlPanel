@@ -231,12 +231,13 @@ sudo rule, Docker socket, `systemctl` authority, or root helper. Privileged
 target policy remains on each managed host in root-owned
 `/etc/autostream/update-host.json`.
 
-Install the central binary and fixed directories first, but do not copy the
-sample to `/etc/autostream/updater.json` by hand. Complete each managed host's
-root policy and SSH bootstrap before registering the central updater. The first
-Auto Configure run creates a missing configuration from the bundled sample and
-stops before it asks for or consumes the short-lived Configure Token. Do not
-install a persistent updater on managed hosts or copy any token to them.
+Install the central binary and fixed directories first. Do not copy or install
+an updater JSON sample: the binary contains the initial configuration. Complete
+each managed host's root policy and SSH bootstrap before registering the central
+updater. The first Auto Configure run creates a missing configuration from that
+built-in example and stops before it asks for or consumes the short-lived
+Configure Token. Do not install a persistent updater on managed hosts or copy
+any token to them.
 
 ```bash
 set -euo pipefail
@@ -263,8 +264,9 @@ else
 fi
 
 Auto-initialization requires the `autostream-updater` binary from this same
-Control Panel release. Install the bundled binary before running Auto Configure;
-older updater binaries do not create a missing `updater.json` automatically.
+Control Panel release because the example is compiled into that binary. Install
+the bundled binary before running Auto Configure; older updater binaries do not
+create a missing `updater.json` automatically.
 
 if ! sudo test -e /etc/autostream/updater/ssh/known_hosts; then
   sudo install -o root -g autostream-updater -m 0640 /dev/null \
@@ -333,14 +335,15 @@ sudo autostream-updater configure \
 ```
 
 If `/etc/autostream/updater.json` is missing, this first run atomically creates
-it from
-`/opt/autostream/control-panel/current/autostream-updater.json.example` as
-`root:autostream-updater` with mode `0640`. It then exits with instructions to
-complete the local policy; it does not ask for, read, or consume the Configure
-Token, and it does not stage a Runtime Token. This is an intentional non-zero
-safety checkpoint, so a `set -e` installer stops before starting an incomplete
-updater. If the configuration already exists, the initializer never overwrites
-or replaces it.
+it from the example compiled into `/usr/local/bin/autostream-updater` as
+`root:autostream-updater` with mode `0640`. No example file or `--init-from`
+argument is required. It then exits with instructions to complete the local
+policy; it does not ask for, read, or consume the Configure Token, and it does
+not stage a Runtime Token. This is an intentional non-zero safety checkpoint,
+so a `set -e` installer stops before starting an incomplete updater. If the
+configuration already exists, the initializer never overwrites or replaces it.
+`--init-from PATH` remains available only as an explicit compatibility override;
+an invalid explicit path fails instead of falling back to the built-in example.
 
 After that first run, edit the local settings in
 `/etc/autostream/updater.json`. Set `github_token`, `api`, `state_dir`, polling

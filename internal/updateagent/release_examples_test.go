@@ -70,6 +70,9 @@ func TestControlPanelInstallGuideUsesUpdaterAutoInitialization(t *testing.T) {
 		"intentional non-zero",
 		"safety checkpoint",
 		"Auto-initialization requires the `autostream-updater` binary from this same Control Panel release",
+		"the example is compiled into that binary",
+		"No example file or `--init-from` argument is required",
+		"`--init-from PATH` remains available only as an explicit compatibility override",
 		"older updater binaries do not create a missing `updater.json` automatically",
 		"does not ask for, read, or consume the Configure Token",
 		"Rerun the exact same token-free Auto Configure command",
@@ -82,6 +85,7 @@ func TestControlPanelInstallGuideUsesUpdaterAutoInitialization(t *testing.T) {
 	for _, obsolete := range []string{
 		"if ! sudo test -e /etc/autostream/updater.json; then",
 		`"$RELEASE_DIR/autostream-updater.json.example" /etc/autostream/updater.json`,
+		"`/opt/autostream/control-panel/current/autostream-updater.json.example` as",
 	} {
 		if strings.Contains(guide, obsolete) {
 			t.Fatalf("control panel install guide contains obsolete updater initialization %q", obsolete)

@@ -505,7 +505,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                 <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-4 text-sm">
                   <div className="font-medium">Updaterの自動設定</div>
                   <p className="text-muted-foreground">
-                    updater.jsonがなければ、初回実行でリリース同梱サンプルから自動生成し、Configure Tokenを入力・消費せずに停止します。この安全チェックポイントは意図的に非ゼロ終了します。既存のupdater.jsonは上書きしません。
+                    updater.jsonがなければ、初回実行でUpdater本体に内蔵された初期設定から自動生成し、Configure Tokenを入力・消費せずに停止します。サンプルファイルの配置や--init-from指定は不要です。この安全チェックポイントは意図的に非ゼロ終了します。既存のupdater.jsonは上書きしません。
                     作成されたファイルのGitHub Token、API、hosts、targets、SSH設定などのローカル設定を完成させ、同じtoken-free commandを再実行してください。
                     この自動生成には同じControl Panelリリースに同梱されたUpdaterが必要です。旧Updaterは先に更新してください。
                     ローカル設定完成後の実行ではPanel接続情報（panel_url、node_id、Runtime Token、service_name）だけを更新し、その他の既存値を保持します。
