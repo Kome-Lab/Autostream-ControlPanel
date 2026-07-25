@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -26,6 +27,7 @@ const (
 	defaultSSHOperationTimeout = 30 * time.Minute
 	defaultSSHOutputLimit      = RemoteProtocolMaxFrameBytes
 	sshStderrLimit             = 16 << 10
+	maxHostPublicKeyBytes      = 4096
 
 	SSHErrorTimeout                 = "ssh_timeout"
 	SSHErrorConnectionRefused       = "ssh_connection_refused"
@@ -34,6 +36,8 @@ const (
 	SSHErrorRemoteHelperUnavailable = "remote_helper_unavailable"
 	SSHErrorRemoteConfigInvalid     = "remote_config_invalid"
 )
+
+var errSSHPinnedHostKeyMismatch = errors.New("pinned SSH host key mismatch")
 
 // SSHTransportError exposes only a stable allow-listed status code. The
 // underlying network/SSH error remains available to errors.Is without ever
@@ -100,6 +104,7 @@ type SSHHost struct {
 	User           string `json:"user"`
 	IdentityFile   string `json:"identity_file"`
 	KnownHostsFile string `json:"known_hosts_file"`
+	HostPublicKey  string `json:"host_public_key,omitempty"`
 	Arch           string `json:"arch"`
 }
 
@@ -126,19 +131,51 @@ func (h SSHHost) Validate() error {
 	if err := validateSSHFile(h.IdentityFile, true); err != nil {
 		return fmt.Errorf("identity_file: %w", err)
 	}
-	if err := validateSSHFile(h.KnownHostsFile, false); err != nil {
-		return fmt.Errorf("known_hosts_file: %w", err)
-	}
-	if filepath.Clean(h.IdentityFile) == filepath.Clean(h.KnownHostsFile) {
-		return errors.New("identity_file and known_hosts_file must differ")
+	hasKnownHosts := h.KnownHostsFile != ""
+	hasPinnedHostKey := h.HostPublicKey != ""
+	if hasKnownHosts == hasPinnedHostKey {
+		return errors.New("exactly one of known_hosts_file or host_public_key is required")
 	}
 	if _, err := h.identityFingerprint(); err != nil {
 		return errors.New("identity_file is not a usable SSH private key")
 	}
-	if _, err := loadKnownHostsCallback(h.KnownHostsFile); err != nil {
-		return errors.New("known_hosts_file is invalid")
+	if hasKnownHosts {
+		if err := validateSSHFile(h.KnownHostsFile, false); err != nil {
+			return fmt.Errorf("known_hosts_file: %w", err)
+		}
+		if filepath.Clean(h.IdentityFile) == filepath.Clean(h.KnownHostsFile) {
+			return errors.New("identity_file and known_hosts_file must differ")
+		}
+		if _, err := loadKnownHostsCallback(h.KnownHostsFile); err != nil {
+			return errors.New("known_hosts_file is invalid")
+		}
+	} else if _, err := parsePinnedHostPublicKey(h.HostPublicKey); err != nil {
+		return fmt.Errorf("host_public_key: %w", err)
 	}
 	return nil
+}
+
+func parsePinnedHostPublicKey(value string) (ssh.PublicKey, error) {
+	if value == "" || len(value) > maxHostPublicKeyBytes || value != strings.TrimSpace(value) {
+		return nil, errors.New("must be one bounded authorized-key line")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return nil, errors.New("must not contain control characters")
+		}
+	}
+	fields := strings.Fields(value)
+	if len(fields) != 2 || fields[0] != ssh.KeyAlgoED25519 {
+		return nil, errors.New("must contain only an ssh-ed25519 key without options or comments")
+	}
+	publicKey, comment, options, rest, err := ssh.ParseAuthorizedKey([]byte(value))
+	if err != nil || comment != "" || len(options) != 0 || len(rest) != 0 || publicKey.Type() != ssh.KeyAlgoED25519 {
+		return nil, errors.New("must contain only a valid ssh-ed25519 key")
+	}
+	if strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey))) != value {
+		return nil, errors.New("must use canonical authorized-key encoding")
+	}
+	return publicKey, nil
 }
 
 func (h SSHHost) identityFingerprint() (string, error) {
@@ -203,11 +240,19 @@ func validateSSHFileSnapshot(path string, info os.FileInfo, private bool) error 
 }
 
 func (h SSHHost) validateRootOwnedFiles() error {
-	for _, item := range []struct {
+	items := []struct {
 		path    string
 		private bool
 		label   string
-	}{{h.IdentityFile, true, "identity_file"}, {h.KnownHostsFile, false, "known_hosts_file"}} {
+	}{{h.IdentityFile, true, "identity_file"}}
+	if h.KnownHostsFile != "" {
+		items = append(items, struct {
+			path    string
+			private bool
+			label   string
+		}{h.KnownHostsFile, false, "known_hosts_file"})
+	}
+	for _, item := range items {
 		file, pathInfo, err := openSSHFile(item.path, item.private)
 		if err != nil {
 			return fmt.Errorf("%s: %w", item.label, err)
@@ -386,7 +431,7 @@ func (e SSHRemoteExecutor) dial(ctx context.Context, host SSHHost) (*ssh.Client,
 	if err != nil {
 		return nil, newSSHTransportError(SSHErrorRemoteConfigInvalid, err)
 	}
-	hostKeyCallback, err := loadKnownHostsCallback(host.KnownHostsFile)
+	hostKeyCallback, err := hostKeyCallbackForSSHHost(host)
 	if err != nil {
 		return nil, newSSHTransportError(SSHErrorRemoteConfigInvalid, err)
 	}
@@ -427,7 +472,7 @@ func (e SSHRemoteExecutor) dial(ctx context.Context, host SSHHost) (*ssh.Client,
 			return nil, sshContextError(ctx)
 		}
 		var keyErr *knownhosts.KeyError
-		if errors.As(err, &keyErr) {
+		if errors.As(err, &keyErr) || errors.Is(err, errSSHPinnedHostKeyMismatch) {
 			return nil, newSSHTransportError(SSHErrorHostKeyMismatch, err)
 		}
 		var netErr net.Error
@@ -438,6 +483,23 @@ func (e SSHRemoteExecutor) dial(ctx context.Context, host SSHHost) (*ssh.Client,
 	}
 	_ = raw.SetDeadline(time.Time{})
 	return ssh.NewClient(connection, channels, requests), nil
+}
+
+func hostKeyCallbackForSSHHost(host SSHHost) (ssh.HostKeyCallback, error) {
+	if host.HostPublicKey == "" {
+		return loadKnownHostsCallback(host.KnownHostsFile)
+	}
+	expected, err := parsePinnedHostPublicKey(host.HostPublicKey)
+	if err != nil {
+		return nil, err
+	}
+	expectedBytes := expected.Marshal()
+	return func(_ string, _ net.Addr, actual ssh.PublicKey) error {
+		if actual == nil || !bytes.Equal(actual.Marshal(), expectedBytes) {
+			return errSSHPinnedHostKeyMismatch
+		}
+		return nil
+	}, nil
 }
 
 func loadSSHSigner(path string) (ssh.Signer, error) {

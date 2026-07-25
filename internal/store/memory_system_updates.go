@@ -149,6 +149,24 @@ func (s *MemorySystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id,
 	return publicMemorySystemUpdateJob(job), nil
 }
 
+func (s *MemorySystemUpdateStore) ShouldClearSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	agentServiceID = strings.TrimSpace(agentServiceID)
+	activeJobID = strings.TrimSpace(activeJobID)
+	if agentServiceID == "" || activeJobID == "" || len(activeJobID) > 64 || containsControl(activeJobID) {
+		return false, ErrInvalidSystemUpdate
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[activeJobID]
+	if !ok {
+		return true, nil
+	}
+	return job.AgentServiceID != agentServiceID || !isExecutingSystemUpdateStatus(job.Status), nil
+}
+
 func (s *MemorySystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemUpdateClaim{}, false, err

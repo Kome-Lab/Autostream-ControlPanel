@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api/client";
-import { isSystemUpdateJobActive, normalizeSystemUpdatesResponse } from "@/lib/system-updates";
+import { APIError, apiGet } from "@/lib/api/client";
+import { emptyUpdaterSettings, isSystemUpdateJobActive, normalizeSystemUpdatesResponse, normalizeUpdaterSettingsResponse } from "@/lib/system-updates";
 import type { AppSettings, AppVersion, AuditLog, CurrentUser, ManagedAppSettings, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 export function useCurrentUser() {
@@ -51,6 +51,24 @@ export function useSystemUpdates(enabled = true) {
     refetchInterval: (query) => query.state.data?.jobs.some((job) => isSystemUpdateJobActive(job.status)) ? 10_000 : 30_000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: "always",
+  });
+}
+
+export function useUpdaterSettings(updaterID: string, enabled = true) {
+  return useQuery({
+    queryKey: ["system-updates", "updaters", updaterID, "settings"],
+    queryFn: async () => {
+      try {
+        const response = await apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/settings`);
+        return normalizeUpdaterSettingsResponse(response, updaterID);
+      } catch (error) {
+        if (error instanceof APIError && error.status === 404 && error.code === "updater_policy_not_configured") {
+          return emptyUpdaterSettings(updaterID);
+        }
+        throw error;
+      }
+    },
+    enabled: enabled && Boolean(updaterID),
   });
 }
 

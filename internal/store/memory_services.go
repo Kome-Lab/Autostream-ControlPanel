@@ -571,6 +571,9 @@ func (s *MemoryAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 	if oldToken.ServiceType != "update_agent" {
 		return StagedServiceNodeConfiguration{}, ErrForbidden
 	}
+	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
 	token, _, err := newRotatedServiceToken(oldToken, now)
 	if err != nil {
 		return StagedServiceNodeConfiguration{}, err
@@ -632,6 +635,9 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 		if !ok || token.RevokedAt != nil || token.TokenHash != service.StagedNodeTokenHash {
 			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 		}
+		if err := validateRequiredUpdateAgentScopes(token.ServiceType, token.Scopes); err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
 		return token, service, true, nil
 	}
 	if service.ConfigureTokenExpiresAt == nil || !now.Before(*service.ConfigureTokenExpiresAt) || service.StagedNodeTokenAt == nil || service.TokenID != service.StagedNodePreviousTokenID {
@@ -640,6 +646,12 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	oldToken, ok := s.serviceTokens[service.TokenID]
 	if !ok || oldToken.RevokedAt != nil || oldToken.ServiceType != "update_agent" {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	if err := validateRequiredUpdateAgentScopes(service.ServiceType, service.StagedNodeTokenScopes); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
 	}
 	token := ServiceToken{ID: service.StagedNodeTokenID, ServiceType: "update_agent", Scopes: append([]string(nil), service.StagedNodeTokenScopes...), TokenHash: service.StagedNodeTokenHash, CreatedAt: service.StagedNodeTokenAt.UTC()}
 	if err := validateServiceScopes(token.Scopes); err != nil {

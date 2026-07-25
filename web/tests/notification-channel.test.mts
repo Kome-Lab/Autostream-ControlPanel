@@ -237,6 +237,7 @@ test("known control-panel audit operations have explicit Japanese labels", () =>
     "system_updates.report",
     "system_updates.claim",
     "system_updates.authorize",
+    "system_updates.updater_policy.save",
     "system_updates.succeeded",
     "system_updates.rolled_back",
     "system_updates.failed",

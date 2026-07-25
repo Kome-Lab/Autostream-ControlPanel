@@ -22,6 +22,7 @@ const (
 	ModeSystemd            = "systemd"
 	ModeDocker             = "docker"
 	configMaxBytes         = 1 << 20
+	ManagedUpdaterStateDir = "/var/lib/autostream-updater"
 )
 
 var (
@@ -50,6 +51,16 @@ type Config struct {
 	Hosts                    []SSHHost `json:"hosts,omitempty"`
 	Targets                  []Target  `json:"targets"`
 	hostsSpecified           bool
+	configFields             map[string]bool
+
+	// The following values are runtime-only heartbeat state for a managed
+	// policy. They are never written to updater.json or a durable journal.
+	PolicyRevision           int64             `json:"-"`
+	PolicyDesiredRevision    int64             `json:"-"`
+	PolicyStatus             string            `json:"-"`
+	PolicyErrorCode          string            `json:"-"`
+	SSHClientPublicKeys      map[string]string `json:"-"`
+	SSHClientKeyFingerprints map[string]string `json:"-"`
 }
 
 // UnmarshalJSON distinguishes an absent hosts field (legacy local mode) from
@@ -73,6 +84,10 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	*c = Config(decoded)
 	_, c.hostsSpecified = fields["hosts"]
+	c.configFields = make(map[string]bool, len(fields))
+	for name := range fields {
+		c.configFields[name] = true
+	}
 	return nil
 }
 
@@ -153,6 +168,63 @@ type DockerTarget struct {
 
 func LoadConfig(path string, requireRootOwned bool) (Config, error) {
 	return loadConfig(path, requireRootOwned, false)
+}
+
+// LoadManagedBootstrapConfig loads the root-controlled, identity-only
+// updater.json used by Panel-managed installations. The exact field set is
+// enforced so release credentials and declarative host policy cannot silently
+// drift back into the bootstrap file.
+func LoadManagedBootstrapConfig(path string, requireRootOwned bool) (Config, error) {
+	if !filepath.IsAbs(path) {
+		return Config{}, errors.New("config path must be absolute")
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("stat config: %w", err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() || pathInfo.Size() <= 0 || pathInfo.Size() > configMaxBytes {
+		return Config{}, errors.New("config must be a bounded regular non-symlink file")
+	}
+	file, openedInfo, err := openVerifiedConfig(path, pathInfo)
+	if err != nil {
+		return Config{}, err
+	}
+	defer file.Close()
+	if requireRootOwned {
+		if openedInfo.Mode().Perm()&0o007 != 0 || openedInfo.Mode().Perm()&0o022 != 0 {
+			return Config{}, errors.New("config must be root-owned, not writable by group, and inaccessible to other users")
+		}
+		if err := validateRootOwnedFileAndParents(path, openedInfo, "config"); err != nil {
+			return Config{}, err
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(file, configMaxBytes+1))
+	if err != nil || len(data) == 0 || len(data) > configMaxBytes {
+		return Config{}, errors.New("read config")
+	}
+	var identity struct {
+		PanelURL     string `json:"panel_url"`
+		NodeID       string `json:"node_id"`
+		RuntimeToken string `json:"runtime_token"`
+		ServiceName  string `json:"service_name"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&identity); err != nil {
+		return Config{}, errors.New("managed updater bootstrap must contain identity fields only")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return Config{}, errors.New("managed updater bootstrap contains trailing data")
+	}
+	cfg := Config{
+		PanelURL: identity.PanelURL, NodeID: identity.NodeID, RuntimeToken: identity.RuntimeToken, ServiceName: identity.ServiceName,
+		configFields: map[string]bool{"panel_url": true, "node_id": true, "runtime_token": true, "service_name": true},
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 // LoadBootstrapConfig accepts the explicit all-zero compose approval digest
@@ -240,7 +312,14 @@ func (c Config) validate(allowBootstrapSentinel bool) error {
 	if strings.TrimSpace(c.RuntimeToken) == "" {
 		return errors.New("runtime_token is required")
 	}
-	if strings.TrimSpace(c.GitHubToken) == "" {
+	if c.IsManagedBootstrap() {
+		if len(strings.TrimSpace(c.ServiceName)) > 255 {
+			return errors.New("service_name must be at most 255 characters")
+		}
+		return nil
+	}
+	centralMode := c.Hosts != nil || c.hostsSpecified
+	if strings.TrimSpace(c.GitHubToken) == "" && (!centralMode || c.PolicyRevision <= 0) {
 		return errors.New("github_token is required for private release artifacts")
 	}
 	if err := c.API.Validate(); err != nil {
@@ -249,7 +328,6 @@ func (c Config) validate(allowBootstrapSentinel bool) error {
 	if !filepath.IsAbs(c.StateDir) || filepath.Clean(c.StateDir) == string(filepath.Separator) {
 		return errors.New("state_dir must be a non-root absolute path")
 	}
-	centralMode := c.Hosts != nil || c.hostsSpecified
 	if centralMode {
 		if len(c.HelperArgv) != 0 {
 			return errors.New("helper_argv is forbidden when hosts are configured")
@@ -339,10 +417,40 @@ func (c Config) validate(allowBootstrapSentinel bool) error {
 	if c.PollIntervalSeconds < 0 || c.PollIntervalSeconds > 3600 {
 		return errors.New("poll_interval_seconds must be between 0 and 3600")
 	}
-	if c.HeartbeatIntervalSeconds < 0 || c.HeartbeatIntervalSeconds > 3600 {
-		return errors.New("heartbeat_interval_seconds must be between 0 and 3600")
+	if c.HeartbeatIntervalSeconds < 0 || c.HeartbeatIntervalSeconds > 60 {
+		return errors.New("heartbeat_interval_seconds must be between 0 and 60")
 	}
 	return nil
+}
+
+// IsManagedBootstrap reports whether c contains only the four durable identity
+// fields used to fetch declarative policy from the Control Panel.
+func (c Config) IsManagedBootstrap() bool {
+	if strings.TrimSpace(c.PanelURL) == "" || strings.TrimSpace(c.NodeID) == "" ||
+		strings.TrimSpace(c.RuntimeToken) == "" || strings.TrimSpace(c.ServiceName) == "" {
+		return false
+	}
+	if len(c.configFields) > 0 {
+		if len(c.configFields) != 4 {
+			return false
+		}
+		for _, field := range []string{"panel_url", "node_id", "runtime_token", "service_name"} {
+			if !c.configFields[field] {
+				return false
+			}
+		}
+		return true
+	}
+	return strings.TrimSpace(c.GitHubToken) == "" && c.API == (APIConfig{}) &&
+		strings.TrimSpace(c.StateDir) == "" && len(c.HelperArgv) == 0 &&
+		c.Hosts == nil && c.Targets == nil
+}
+
+func (c Config) EffectiveStateDir() string {
+	if c.IsManagedBootstrap() {
+		return ManagedUpdaterStateDir
+	}
+	return c.StateDir
 }
 
 func (a APIConfig) Validate() error {

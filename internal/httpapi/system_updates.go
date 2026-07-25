@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/version"
+	"golang.org/x/crypto/ssh"
 )
 
 const systemUpdateClaimLeaseTTL = 2 * time.Minute
@@ -40,34 +42,53 @@ type systemUpdateTargetResponse struct {
 }
 
 type systemUpdateAgentResponse struct {
-	UpdaterID     string     `json:"updater_id"`
-	Name          string     `json:"name"`
-	Status        string     `json:"status"`
-	Online        bool       `json:"online"`
-	Version       string     `json:"version"`
-	LastHeartbeat *time.Time `json:"last_heartbeat_at,omitempty"`
+	UpdaterID                string            `json:"updater_id"`
+	Name                     string            `json:"name"`
+	Status                   string            `json:"status"`
+	Online                   bool              `json:"online"`
+	Version                  string            `json:"version"`
+	LastHeartbeat            *time.Time        `json:"last_heartbeat_at,omitempty"`
+	DesiredRevision          int64             `json:"desired_revision,omitempty"`
+	AppliedRevision          int64             `json:"applied_revision,omitempty"`
+	PolicyStatus             string            `json:"policy_status,omitempty"`
+	PolicyErrorCode          string            `json:"policy_error_code,omitempty"`
+	SSHClientPublicKeys      map[string]string `json:"ssh_client_public_keys,omitempty"`
+	SSHClientKeyFingerprints map[string]string `json:"ssh_client_key_fingerprints,omitempty"`
 }
 
 type systemUpdateHostResponse struct {
-	HostID       string     `json:"host_id"`
-	Name         string     `json:"name"`
-	UpdaterID    string     `json:"updater_id"`
-	Reachability string     `json:"reachability"`
-	CheckedAt    *time.Time `json:"reachability_checked_at,omitempty"`
-	Code         string     `json:"reachability_code,omitempty"`
+	HostID                  string     `json:"host_id"`
+	Name                    string     `json:"name"`
+	UpdaterID               string     `json:"updater_id"`
+	Reachability            string     `json:"reachability"`
+	CheckedAt               *time.Time `json:"reachability_checked_at,omitempty"`
+	Code                    string     `json:"reachability_code,omitempty"`
+	SSHClientPublicKey      string     `json:"ssh_client_public_key,omitempty"`
+	SSHClientKeyFingerprint string     `json:"ssh_client_key_fingerprint,omitempty"`
 }
 
 type systemUpdateAgentAssignment struct {
-	AgentID          string
-	AgentVersion     string
-	DeploymentMode   string
-	CurrentVersion   string
-	Available        bool
-	HostID           string
-	HostName         string
-	HostReachability string
-	HostCheckedAt    *time.Time
-	HostCode         string
+	AgentID                string
+	AgentVersion           string
+	DeploymentMode         string
+	CurrentVersion         string
+	Available              bool
+	HostID                 string
+	HostName               string
+	HostReachability       string
+	HostCheckedAt          *time.Time
+	HostCode               string
+	TargetServiceType      string
+	PolicyManaged          bool
+	PolicyReady            bool
+	PolicyBlockedReason    string
+	ReleaseTokenRequired   bool
+	ReleaseTokenConfigured bool
+}
+
+type systemUpdateClaimResponse struct {
+	store.SystemUpdateClaim
+	ReleaseToken string `json:"release_token,omitempty"`
 }
 
 func (s *Server) listSystemUpdates(w http.ResponseWriter, r *http.Request) {
@@ -258,6 +279,42 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	if activeJobID != "" {
+		clearActiveJob, err := s.systemUpdates.ShouldClearSystemUpdateActiveJob(r.Context(), agent.ServiceID, activeJobID)
+		if errors.Is(err, store.ErrInvalidSystemUpdate) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_system_update_active_job_failed"})
+			return
+		}
+		if clearActiveJob {
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, http.StatusOK, map[string]bool{"clear_active_job_id": true})
+			return
+		}
+	}
+	releaseToken := ""
+	_, policyErr := s.updaterPolicies.GetUpdaterPolicy(r.Context(), agent.ServiceID)
+	switch {
+	case policyErr == nil:
+		releaseToken, err = s.updaterPolicies.GetUpdaterReleaseTokenValue(r.Context())
+		if errors.Is(err, store.ErrNotFound) {
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_release_token_not_configured"})
+			return
+		}
+		if err != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_release_token_failed"})
+			return
+		}
+	case errors.Is(policyErr, store.ErrNotFound):
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_policy_failed"})
+		return
+	}
 	claim, clearActiveJob, err := s.systemUpdates.ClaimSystemUpdateJob(r.Context(), agent.ServiceID, hostID, activeJobID, eligibleTargets, now, systemUpdateClaimLeaseTTL)
 	if err == nil && clearActiveJob {
 		w.Header().Set("Cache-Control", "no-store")
@@ -287,7 +344,7 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeServiceAudit(r, token, "system_updates.claim", "system_update", claim.Job.ID, "success", map[string]any{"agent_service_id": agent.ServiceID, "host_id": hostID, "target_id": claim.Job.TargetID, "target_version": claim.Job.TargetVersion, "lease_generation": claim.LeaseGeneration, "recovery_required": claim.RecoveryRequired, "last_status": claim.LastStatus})
-	writeOneTimeSecretJSON(w, http.StatusOK, claim)
+	writeOneTimeSecretJSON(w, http.StatusOK, systemUpdateClaimResponse{SystemUpdateClaim: claim, ReleaseToken: releaseToken})
 }
 
 func (s *Server) serviceSystemUpdateReport(w http.ResponseWriter, r *http.Request) {
@@ -399,8 +456,24 @@ func (s *Server) systemUpdateSnapshot(ctx context.Context) ([]systemUpdateTarget
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	policyItems, err := s.updaterPolicies.ListUpdaterPolicies(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	policies := make(map[string]store.UpdaterPolicy, len(policyItems))
+	for _, policy := range policyItems {
+		policies[policy.UpdaterID] = policy
+	}
+	releaseTokenConfigured := false
+	if len(policies) > 0 {
+		releaseTokenStatus, err := s.updaterReleaseTokenStatus(ctx)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		releaseTokenConfigured = releaseTokenStatus.Configured
+	}
 	now := time.Now().UTC()
-	agents, updaters, hosts := systemUpdateAgentTopology(services, now)
+	agents, updaters, hosts := systemUpdateAgentTopologyWithPolicies(services, now, policies, releaseTokenConfigured)
 	checks := latestVersions(ctx, append(append([]versionUpdateTarget{}, controlPanelVersionUpdateTarget), append(nodeVersionUpdateTargets, dockerVersionUpdateTarget)...))
 	panelBusy, err := s.systemUpdateControlPanelBusy(ctx)
 	if err != nil {
@@ -466,6 +539,21 @@ func buildSystemUpdateTarget(targetID, serviceType, name, serviceVersion, curren
 		target.BlockedReason = "updater_missing"
 		return target
 	}
+	if assignment.PolicyManaged && !assignment.PolicyReady {
+		target.BlockedReason = assignment.PolicyBlockedReason
+		if target.BlockedReason == "" {
+			target.BlockedReason = "updater_policy_pending"
+		}
+		return target
+	}
+	if assignment.TargetServiceType != "" && assignment.TargetServiceType != serviceType {
+		target.BlockedReason = "updater_policy_target_type_mismatch"
+		return target
+	}
+	if assignment.ReleaseTokenRequired && !assignment.ReleaseTokenConfigured {
+		target.BlockedReason = "updater_release_token_not_configured"
+		return target
+	}
 	if !assignment.Available {
 		target.BlockedReason = "updater_offline"
 		return target
@@ -520,6 +608,10 @@ func systemUpdateAgentAssignments(services []store.RegisteredService) map[string
 }
 
 func systemUpdateAgentTopology(services []store.RegisteredService, now time.Time) (map[string]systemUpdateAgentAssignment, []systemUpdateAgentResponse, []systemUpdateHostResponse) {
+	return systemUpdateAgentTopologyWithPolicies(services, now, nil, false)
+}
+
+func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, now time.Time, policies map[string]store.UpdaterPolicy, releaseTokenConfigured bool) (map[string]systemUpdateAgentAssignment, []systemUpdateAgentResponse, []systemUpdateHostResponse) {
 	agentServices := make([]store.RegisteredService, 0)
 	for _, service := range services {
 		if service.ServiceType == "update_agent" {
@@ -540,11 +632,24 @@ func systemUpdateAgentTopology(services []store.RegisteredService, now time.Time
 	hostsByID := map[string]systemUpdateHostResponse{}
 	for _, agent := range agentServices {
 		agentVersion := systemUpdateAgentVersion(agent)
-		updaters = append(updaters, systemUpdateAgentResponse{
+		reportedHosts := newSystemUpdateReportedHostSnapshot(agent)
+		updater := systemUpdateAgentResponse{
 			UpdaterID: agent.ServiceID, Name: systemUpdateDisplayName(agent.ServiceName, agent.ServiceID), Status: strings.TrimSpace(agent.Status),
 			Online: systemUpdateAgentAvailable(agent, now), Version: agentVersion, LastHeartbeat: agent.LastHeartbeatAt,
-		})
-		approved := approvedSystemUpdateAgentTargetAssignments(agent, now)
+		}
+		var managedPolicy *store.UpdaterPolicy
+		if policy, ok := policies[agent.ServiceID]; ok {
+			managedPolicy = &policy
+			updater.DesiredRevision = policy.Revision
+			updater.AppliedRevision, updater.PolicyStatus, updater.PolicyErrorCode = systemUpdateManagedPolicyReport(agent)
+			managedHostIDs := make(map[string]bool, len(policy.Hosts))
+			for _, host := range policy.Hosts {
+				managedHostIDs[host.HostID] = true
+			}
+			updater.SSHClientPublicKeys, updater.SSHClientKeyFingerprints = systemUpdateSSHClientKeys(reportedHosts, managedHostIDs)
+		}
+		updaters = append(updaters, updater)
+		approved := approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(agent, now, managedPolicy, reportedHosts)
 		for _, targetID := range sortedApprovedSystemUpdateTargetIDs(approved) {
 			if _, exists := assignments[targetID]; exists {
 				continue
@@ -562,6 +667,9 @@ func systemUpdateAgentTopology(services []store.RegisteredService, now time.Time
 				CurrentVersion: approvedTarget.CurrentVersion, Available: systemUpdateAgentAvailable(agent, now),
 				HostID: approvedTarget.Host.HostID, HostName: approvedTarget.Host.Name, HostReachability: approvedTarget.Host.Reachability,
 				HostCheckedAt: approvedTarget.Host.CheckedAt, HostCode: approvedTarget.Host.Code,
+				TargetServiceType: approvedTarget.ServiceType, PolicyManaged: approvedTarget.PolicyManaged,
+				PolicyReady: approvedTarget.PolicyReady, PolicyBlockedReason: approvedTarget.PolicyBlockedReason,
+				ReleaseTokenRequired: approvedTarget.PolicyManaged, ReleaseTokenConfigured: releaseTokenConfigured,
 			}
 		}
 	}
@@ -588,7 +696,21 @@ func (s *Server) systemUpdateTargetsForAgentClaim(ctx context.Context, agent sto
 }
 
 func (s *Server) systemUpdateTargetsForAgentHostClaim(ctx context.Context, agent store.RegisteredService, hostID string, allowBusyRecovery bool) (map[string]string, error) {
-	approved := approvedSystemUpdateAgentTargetAssignments(agent, time.Now().UTC())
+	var managedPolicy *store.UpdaterPolicy
+	policy, err := s.updaterPolicies.GetUpdaterPolicy(ctx, agent.ServiceID)
+	switch {
+	case err == nil:
+		managedPolicy = &policy
+	case errors.Is(err, store.ErrNotFound):
+	default:
+		return nil, err
+	}
+	var approved map[string]systemUpdateApprovedTarget
+	if allowBusyRecovery && managedPolicy != nil {
+		approved = reportedSystemUpdateAgentTargetAssignments(agent, time.Now().UTC())
+	} else {
+		approved = approvedSystemUpdateAgentTargetAssignmentsForPolicy(agent, time.Now().UTC(), managedPolicy)
+	}
 	services, err := s.services.ListServices(ctx)
 	if err != nil {
 		return nil, err
@@ -600,6 +722,9 @@ func (s *Server) systemUpdateTargetsForAgentHostClaim(ctx context.Context, agent
 	eligible := map[string]string{}
 	for _, targetID := range sortedApprovedSystemUpdateTargetIDs(approved) {
 		targetApproval := approved[targetID]
+		if targetApproval.PolicyManaged && !targetApproval.PolicyReady {
+			continue
+		}
 		if hostID != "" && targetApproval.Host.HostID != hostID {
 			continue
 		}
@@ -608,6 +733,9 @@ func (s *Server) systemUpdateTargetsForAgentHostClaim(ctx context.Context, agent
 		}
 		mode := targetApproval.DeploymentMode
 		if targetID == "control-panel" {
+			if targetApproval.ServiceType != "" && targetApproval.ServiceType != "control_panel" {
+				continue
+			}
 			busy, err := s.systemUpdateControlPanelBusy(ctx)
 			if err != nil {
 				return nil, err
@@ -618,7 +746,7 @@ func (s *Server) systemUpdateTargetsForAgentHostClaim(ctx context.Context, agent
 			continue
 		}
 		target, ok := byID[targetID]
-		if !ok || target.ServiceType == "update_agent" {
+		if !ok || target.ServiceType == "update_agent" || (targetApproval.ServiceType != "" && targetApproval.ServiceType != target.ServiceType) {
 			continue
 		}
 		busy, err := s.systemUpdateServiceBusy(ctx, target)
@@ -702,12 +830,31 @@ func approvedSystemUpdateAgentTargets(agent store.RegisteredService) (map[string
 }
 
 type systemUpdateApprovedTarget struct {
-	DeploymentMode string
-	CurrentVersion string
-	Host           systemUpdateHostResponse
+	DeploymentMode      string
+	CurrentVersion      string
+	ServiceType         string
+	Host                systemUpdateHostResponse
+	PolicyManaged       bool
+	PolicyReady         bool
+	PolicyBlockedReason string
 }
 
 func approvedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time) map[string]systemUpdateApprovedTarget {
+	return approvedSystemUpdateAgentTargetAssignmentsForPolicy(agent, now, nil)
+}
+
+func approvedSystemUpdateAgentTargetAssignmentsForPolicy(agent store.RegisteredService, now time.Time, policy *store.UpdaterPolicy) map[string]systemUpdateApprovedTarget {
+	return approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(agent, now, policy, newSystemUpdateReportedHostSnapshot(agent))
+}
+
+func approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(agent store.RegisteredService, now time.Time, policy *store.UpdaterPolicy, reportedHosts systemUpdateReportedHostSnapshot) map[string]systemUpdateApprovedTarget {
+	if policy != nil {
+		return approvedManagedSystemUpdateAgentTargetAssignments(agent, now, *policy, reportedHosts)
+	}
+	return approvedLegacySystemUpdateAgentTargetAssignments(agent, now, reportedHosts)
+}
+
+func approvedLegacySystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time, reportedHostStatus systemUpdateReportedHostSnapshot) map[string]systemUpdateApprovedTarget {
 	configuredManaged := capabilityStringSlice(agent.Capabilities["managed_targets"])
 	configuredModes := capabilityStringMap(agent.Capabilities["deployment_modes"])
 	configuredHosts := capabilityStringMap(agent.Capabilities["target_hosts"])
@@ -741,35 +888,214 @@ func approvedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, n
 		approved[targetID] = systemUpdateApprovedTarget{
 			DeploymentMode: configuredMode,
 			CurrentVersion: strings.TrimSpace(reportedVersions[targetID]),
-			Host:           systemUpdateHostStatus(agent, hostID, now),
+			Host:           reportedHostStatus.status(hostID, now),
 		}
 	}
 	return approved
 }
 
-func systemUpdateHostStatus(agent store.RegisteredService, hostID string, now time.Time) systemUpdateHostResponse {
-	host := systemUpdateHostResponse{HostID: hostID, Name: hostID, UpdaterID: agent.ServiceID, Reachability: "unknown"}
-	names := capabilityStringMap(agent.ReportedCapabilities["host_names"])
-	if name := strings.TrimSpace(names[hostID]); validSystemUpdateHostDisplayName(name) {
+func approvedManagedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time, policy store.UpdaterPolicy, reportedHostStatus systemUpdateReportedHostSnapshot) map[string]systemUpdateApprovedTarget {
+	appliedRevision, policyStatus, _ := systemUpdateManagedPolicyReport(agent)
+	policyApplied := appliedRevision == policy.Revision && policyStatus == "applied"
+	reportedManaged := capabilityStringSlice(agent.ReportedCapabilities["managed_targets"])
+	reportedModes := capabilityStringMap(agent.ReportedCapabilities["deployment_modes"])
+	reportedHosts := capabilityStringMap(agent.ReportedCapabilities["target_hosts"])
+	reportedVersions := capabilityStringMap(agent.ReportedCapabilities["deployed_versions"])
+	reportedSet := make(map[string]bool, len(reportedManaged))
+	for _, targetID := range reportedManaged {
+		reportedSet[targetID] = true
+	}
+	hosts := make(map[string]store.UpdaterPolicyHost, len(policy.Hosts))
+	for _, host := range policy.Hosts {
+		hosts[host.HostID] = host
+	}
+	approved := make(map[string]systemUpdateApprovedTarget, len(policy.Targets))
+	for _, target := range policy.Targets {
+		hostPolicy, ok := hosts[target.HostID]
+		if !ok {
+			continue
+		}
+		host := reportedHostStatus.status(target.HostID, now)
+		host.Name = hostPolicy.Name
+		entry := systemUpdateApprovedTarget{
+			DeploymentMode: target.DeploymentMode, CurrentVersion: strings.TrimSpace(reportedVersions[target.TargetID]),
+			ServiceType: target.ServiceType, Host: host, PolicyManaged: true,
+		}
+		switch {
+		case policyStatus == "failed":
+			entry.PolicyBlockedReason = "updater_policy_failed"
+		case !policyApplied:
+			entry.PolicyBlockedReason = "updater_policy_pending"
+		case !reportedSet[target.TargetID] ||
+			strings.ToLower(strings.TrimSpace(reportedModes[target.TargetID])) != target.DeploymentMode ||
+			strings.TrimSpace(reportedHosts[target.TargetID]) != target.HostID:
+			entry.PolicyBlockedReason = "updater_policy_mismatch"
+		default:
+			entry.PolicyReady = true
+		}
+		approved[target.TargetID] = entry
+	}
+	return approved
+}
+
+func reportedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time) map[string]systemUpdateApprovedTarget {
+	reportedManaged := capabilityStringSlice(agent.ReportedCapabilities["managed_targets"])
+	reportedModes := capabilityStringMap(agent.ReportedCapabilities["deployment_modes"])
+	reportedHosts := capabilityStringMap(agent.ReportedCapabilities["target_hosts"])
+	reportedVersions := capabilityStringMap(agent.ReportedCapabilities["deployed_versions"])
+	reportedHostStatus := newSystemUpdateReportedHostSnapshot(agent)
+	approved := make(map[string]systemUpdateApprovedTarget, len(reportedManaged))
+	for _, targetID := range reportedManaged {
+		if !validSystemUpdateCapabilityIdentifier(targetID) {
+			continue
+		}
+		mode := strings.ToLower(strings.TrimSpace(reportedModes[targetID]))
+		if mode != "systemd" && mode != "docker" {
+			continue
+		}
+		hostID := strings.TrimSpace(reportedHosts[targetID])
+		if !validSystemUpdateCapabilityIdentifier(hostID) {
+			continue
+		}
+		approved[targetID] = systemUpdateApprovedTarget{
+			DeploymentMode: mode, CurrentVersion: strings.TrimSpace(reportedVersions[targetID]),
+			Host: reportedHostStatus.status(hostID, now), PolicyManaged: true, PolicyReady: true,
+		}
+	}
+	return approved
+}
+
+type systemUpdateReportedHostSnapshot struct {
+	updaterID                string
+	names                    map[string]string
+	sshClientPublicKeys      map[string]string
+	sshClientKeyFingerprints map[string]string
+	checkedAt                map[string]string
+	statuses                 map[string]string
+	codes                    map[string]string
+}
+
+func newSystemUpdateReportedHostSnapshot(agent store.RegisteredService) systemUpdateReportedHostSnapshot {
+	rawClientKeys := capabilityStringMap(agent.ReportedCapabilities["ssh_client_public_keys"])
+	clientKeys := make(map[string]string, len(rawClientKeys))
+	clientFingerprints := make(map[string]string, len(rawClientKeys))
+	for hostID, raw := range rawClientKeys {
+		if !validSystemUpdateCapabilityIdentifier(hostID) {
+			continue
+		}
+		key, err := parseUpdaterED25519PublicKey(raw)
+		if err != nil {
+			continue
+		}
+		clientKeys[hostID] = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+		clientFingerprints[hostID] = ssh.FingerprintSHA256(key)
+	}
+	return systemUpdateReportedHostSnapshot{
+		updaterID:                agent.ServiceID,
+		names:                    capabilityStringMap(agent.ReportedCapabilities["host_names"]),
+		sshClientPublicKeys:      clientKeys,
+		sshClientKeyFingerprints: clientFingerprints,
+		checkedAt:                capabilityStringMap(agent.ReportedCapabilities["host_checked_at"]),
+		statuses:                 capabilityStringMap(agent.ReportedCapabilities["host_statuses"]),
+		codes:                    capabilityStringMap(agent.ReportedCapabilities["host_codes"]),
+	}
+}
+
+func (snapshot systemUpdateReportedHostSnapshot) status(hostID string, now time.Time) systemUpdateHostResponse {
+	host := systemUpdateHostResponse{HostID: hostID, Name: hostID, UpdaterID: snapshot.updaterID, Reachability: "unknown"}
+	if name := strings.TrimSpace(snapshot.names[hostID]); validSystemUpdateHostDisplayName(name) {
 		host.Name = name
 	}
-	checkedValues := capabilityStringMap(agent.ReportedCapabilities["host_checked_at"])
-	checkedAt, checked := parseSystemUpdateHostCheckedAt(checkedValues[hostID], now)
+	host.SSHClientPublicKey = snapshot.sshClientPublicKeys[hostID]
+	host.SSHClientKeyFingerprint = snapshot.sshClientKeyFingerprints[hostID]
+	checkedAt, checked := parseSystemUpdateHostCheckedAt(snapshot.checkedAt[hostID], now)
 	if checkedAt != nil {
 		host.CheckedAt = checkedAt
 	}
 	if !checked {
 		return host
 	}
-	status := strings.ToLower(strings.TrimSpace(capabilityStringMap(agent.ReportedCapabilities["host_statuses"])[hostID]))
+	status := strings.ToLower(strings.TrimSpace(snapshot.statuses[hostID]))
 	if status != "reachable" && status != "unreachable" {
 		return host
 	}
 	host.Reachability = status
 	if status == "unreachable" {
-		host.Code = allowedSystemUpdateHostCode(capabilityStringMap(agent.ReportedCapabilities["host_codes"])[hostID])
+		host.Code = allowedSystemUpdateHostCode(snapshot.codes[hostID])
 	}
 	return host
+}
+
+func systemUpdateManagedPolicyReport(agent store.RegisteredService) (int64, string, string) {
+	revision, _ := capabilityInt64(agent.ReportedCapabilities["policy_revision"])
+	status := strings.ToLower(strings.TrimSpace(capabilityString(agent.ReportedCapabilities["policy_status"])))
+	switch status {
+	case "applied", "pending", "failed":
+	default:
+		status = "pending"
+	}
+	errorCode := strings.ToLower(strings.TrimSpace(capabilityString(agent.ReportedCapabilities["policy_error_code"])))
+	if !validSystemUpdatePolicyErrorCode(errorCode) ||
+		(status != "failed" && !(status == "pending" && errorCode == "active_job_pending")) {
+		errorCode = ""
+	}
+	return revision, status, errorCode
+}
+
+func systemUpdateSSHClientKeys(reported systemUpdateReportedHostSnapshot, allowedHostIDs map[string]bool) (map[string]string, map[string]string) {
+	keys := make(map[string]string, len(allowedHostIDs))
+	fingerprints := make(map[string]string, len(allowedHostIDs))
+	for hostID, key := range reported.sshClientPublicKeys {
+		if !allowedHostIDs[hostID] || !validSystemUpdateCapabilityIdentifier(hostID) {
+			continue
+		}
+		keys[hostID] = key
+		fingerprints[hostID] = reported.sshClientKeyFingerprints[hostID]
+	}
+	return keys, fingerprints
+}
+
+func capabilityInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		if typed >= 0 {
+			return int64(typed), true
+		}
+	case int64:
+		if typed >= 0 {
+			return typed, true
+		}
+	case float64:
+		integer := int64(typed)
+		if typed >= 0 && float64(integer) == typed {
+			return integer, true
+		}
+	case json.Number:
+		integer, err := typed.Int64()
+		if err == nil && integer >= 0 {
+			return integer, true
+		}
+	case string:
+		integer, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		if err == nil && integer >= 0 {
+			return integer, true
+		}
+	}
+	return 0, false
+}
+
+func capabilityString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func validSystemUpdatePolicyErrorCode(value string) bool {
+	switch value {
+	case "", "policy_fetch_failed", "policy_invalid", "ssh_identity_failed", "ssh_connectivity_failed", "policy_snapshot_failed", "coordinator_start_failed", "active_job_pending":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseSystemUpdateHostCheckedAt(raw string, now time.Time) (*time.Time, bool) {

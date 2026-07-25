@@ -127,6 +127,9 @@ func (s *MemorySecretStore) ListSecretStatus(ctx context.Context) ([]SecretStatu
 		known[name] = status
 	}
 	for name, status := range s.secrets {
+		if !allowedSecretName(name) {
+			continue
+		}
 		status.Name = name
 		known[name] = status
 	}
@@ -237,6 +240,9 @@ func (s MariaDBSecretStore) ListSecretStatus(ctx context.Context) ([]SecretStatu
 		var updatedAt time.Time
 		if err := rows.Scan(&status.Name, &status.Fingerprint, &updatedAt); err != nil {
 			return nil, err
+		}
+		if !allowedSecretName(status.Name) {
+			continue
 		}
 		status.Configured = true
 		status.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)

@@ -240,6 +240,13 @@ export type SystemUpdateAgentStatus = {
   online: boolean;
   version: string;
   last_heartbeat_at?: string;
+  desired_revision?: number;
+  applied_revision?: number;
+  policy_status?: string;
+  policy_error_code?: string;
+  policy_error?: string;
+  ssh_client_public_keys?: Record<string, string>;
+  ssh_client_key_fingerprints?: Record<string, string>;
 };
 
 export type SystemUpdateHostStatus = {
@@ -299,6 +306,57 @@ export type SystemUpdatesResponse = {
   hosts: SystemUpdateHostStatus[];
   targets: SystemUpdateTarget[];
   jobs: SystemUpdateJob[];
+};
+
+export type UpdaterSettingsAPI = {
+  bind_host: string;
+  host: string;
+  port: number;
+  ssl_enabled: boolean;
+  tls_cert_file?: string;
+  tls_key_file?: string;
+};
+
+export type UpdaterSettingsHost = {
+  host_id: string;
+  name: string;
+  address: string;
+  port: number;
+  user: string;
+  arch: string;
+  host_public_key: string;
+  host_key_fingerprint?: string;
+  host_public_key_fingerprint?: string;
+  ssh_client_public_key?: string;
+  ssh_client_key_fingerprint?: string;
+};
+
+export type UpdaterSettingsTarget = {
+  target_id: string;
+  host_id: string;
+  service_type: string;
+  deployment_mode: string;
+};
+
+export type UpdaterSettings = {
+  updater_id: string;
+  revision: number;
+  api: UpdaterSettingsAPI;
+  poll_interval_seconds: number;
+  heartbeat_interval_seconds: number;
+  hosts: UpdaterSettingsHost[];
+  targets: UpdaterSettingsTarget[];
+  github_token_configured: boolean;
+  github_token_fingerprint?: string;
+  updated_at?: string;
+};
+
+export type UpdaterSettingsUpdate = Pick<
+  UpdaterSettings,
+  "api" | "poll_interval_seconds" | "heartbeat_interval_seconds" | "hosts" | "targets"
+> & {
+  expected_revision: number;
+  github_token?: string;
 };
 
 export type NodeRegistrationResponse = {

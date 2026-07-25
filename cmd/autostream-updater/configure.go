@@ -82,27 +82,24 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 	if initFromWasSet && strings.TrimSpace(*initFrom) == "" {
 		return errors.New("--init-from must be a non-empty clean absolute path when provided")
 	}
-	if dependencies.Initialize == nil || dependencies.Prepare == nil || dependencies.ReadToken == nil || dependencies.Stage == nil || dependencies.ValidateInstalled == nil || dependencies.Activate == nil || dependencies.Hostname == nil || dependencies.Output == nil {
+	if dependencies.Prepare == nil || dependencies.ReadToken == nil || dependencies.Stage == nil || dependencies.ValidateInstalled == nil || dependencies.Activate == nil || dependencies.Hostname == nil || dependencies.Output == nil {
 		return errors.New("configure dependencies are incomplete")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	initializationSource := *initFrom
-	created, err := dependencies.Initialize(*configPath, initializationSource)
-	if err != nil {
-		if created {
-			return fmt.Errorf("initialize updater config: configuration may have been installed at %s but final verification failed; inspect it before rerunning; Configure Token was not requested or consumed: %w", *configPath, err)
+	if initFromWasSet {
+		if dependencies.Initialize == nil {
+			return errors.New("legacy updater config initializer is unavailable")
 		}
-		return fmt.Errorf("initialize updater config; Configure Token was not requested or consumed: %w", err)
-	}
-	if created {
-		sourceDescription := "the built-in example"
-		if initializationSource != "" {
-			sourceDescription = initializationSource
+		created, err := dependencies.Initialize(*configPath, *initFrom)
+		if err != nil {
+			if created {
+				return fmt.Errorf("initialize updater config: configuration may have been installed at %s but final verification failed; inspect it before rerunning; Configure Token was not requested or consumed: %w", *configPath, err)
+			}
+			return fmt.Errorf("initialize updater config; Configure Token was not requested or consumed: %w", err)
 		}
-		return fmt.Errorf("created %s from %s; complete local policy (github_token, api, state_dir, hosts, targets, and SSH files), then rerun the same command; Configure Token was not requested or consumed", *configPath, sourceDescription)
 	}
 
 	prepared, err := dependencies.Prepare(*configPath)
@@ -155,6 +152,6 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 	if result.ConfigurationID != staged.ConfigurationID || (result.State != "activated" && result.State != "already_activated") {
 		return postCommitError("activation", errors.New("Control Panel returned an unexpected activation result"))
 	}
-	fmt.Fprintf(dependencies.Output, "Updater identity activated in %s. Run validate-config, then restart autostream-updater.\n", *configPath)
+	fmt.Fprintf(dependencies.Output, "Updater identity generated and activated in %s. Control Panel settings will apply automatically; the autostream-updater service may now be started.\n", *configPath)
 	return nil
 }

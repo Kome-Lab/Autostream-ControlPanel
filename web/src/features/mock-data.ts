@@ -1,4 +1,4 @@
-import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, WorkerNode } from "@/types/domain";
+import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, UpdaterSettings, UpdaterSettingsUpdate, WorkerNode } from "@/types/domain";
 
 const baseTime = "2026-07-02T09:00:00+09:00";
 
@@ -406,8 +406,63 @@ export const mockAppVersion = {
 };
 
 export const mockSystemUpdateUpdaters: SystemUpdateAgentStatus[] = [
-  { updater_id: "updater-central", name: "中央Updater", status: "online", online: true, version: "v1.7.0", last_heartbeat_at: baseTime },
+  {
+    updater_id: "updater-central",
+    name: "中央Updater",
+    status: "online",
+    online: true,
+    version: "v1.7.0",
+    last_heartbeat_at: baseTime,
+    desired_revision: 1,
+    applied_revision: 1,
+    policy_status: "applied",
+    ssh_client_public_keys: {
+      "host-control": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockControl autostream-updater@central",
+      "host-main": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockMain autostream-updater@central",
+    },
+    ssh_client_key_fingerprints: {
+      "host-control": "SHA256:mock-control-client-key",
+      "host-main": "SHA256:mock-main-client-key",
+    },
+  },
 ];
+
+let mockUpdaterSettings: UpdaterSettings = {
+  updater_id: "updater-central",
+  revision: 1,
+  api: { bind_host: "127.0.0.1", host: "127.0.0.1", port: 8090, ssl_enabled: false, tls_cert_file: "", tls_key_file: "" },
+  poll_interval_seconds: 15,
+  heartbeat_interval_seconds: 30,
+  hosts: [
+    {
+      host_id: "host-control",
+      name: "Control Panelホスト",
+      address: "127.0.0.1",
+      port: 55850,
+      user: "autostream-update-host",
+      arch: "amd64",
+      host_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockHostControl root@control",
+      host_key_fingerprint: "SHA256:mock-control-host-key",
+    },
+    {
+      host_id: "host-main",
+      name: "本社メインホスト",
+      address: "192.0.2.10",
+      port: 55850,
+      user: "autostream-update-host",
+      arch: "amd64",
+      host_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockHostMain root@main",
+      host_key_fingerprint: "SHA256:mock-main-host-key",
+    },
+  ],
+  targets: [
+    { target_id: "control-panel", host_id: "host-control", service_type: "control_panel", deployment_mode: "systemd" },
+    { target_id: "worker-main", host_id: "host-main", service_type: "worker", deployment_mode: "systemd" },
+  ],
+  github_token_configured: true,
+  github_token_fingerprint: "sha256:mock-token",
+  updated_at: baseTime,
+};
 
 export const mockSystemUpdateHosts: SystemUpdateHostStatus[] = [
   { host_id: "host-control", name: "Control Panelホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
@@ -532,6 +587,12 @@ let mockArchiveSharesLoaded = false;
 
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  const updaterSettings = normalizedPath.match(/^\/system-updates\/updaters\/([^/]+)\/settings$/);
+  if (updaterSettings) {
+    const updaterID = decodeURIComponent(updaterSettings[1]);
+    if (updaterID !== mockUpdaterSettings.updater_id) throw new Error("updater_not_found");
+    return structuredClone(mockUpdaterSettings);
+  }
   if (normalizedPath === "/auth/me") {
     return {
       user: { ...mockCurrentUser.user, roles: [...(mockCurrentUser.user.roles || [])] },
@@ -990,7 +1051,7 @@ function mockConfigureCommand(serviceType: string, nodeID: string, configureToke
 function mockConfigureBinary(serviceType: string) {
   switch (serviceType) {
     case "update_agent":
-      return "autostream-updater";
+      return "/usr/local/bin/autostream-updater";
     case "encoder_recorder":
       return "autostream-encoder-recorder";
     case "discord_bot":
@@ -1020,7 +1081,6 @@ function mockConfigPath(serviceType: string) {
 function mockUpdaterConfigurationMetadata() {
   return {
     configuration_path: "/etc/autostream/updater.json",
-    configuration_example: "release/autostream-updater.json.example",
   };
 }
 
@@ -1031,6 +1091,39 @@ function mockStreamIngestConfigYAML(serviceType: string) {
 
 export function mockPut(path: string, body?: unknown): unknown {
   const normalizedPath = stripQuery(path);
+  const updaterSettings = normalizedPath.match(/^\/system-updates\/updaters\/([^/]+)\/settings$/);
+  if (updaterSettings) {
+    const updaterID = decodeURIComponent(updaterSettings[1]);
+    if (updaterID !== mockUpdaterSettings.updater_id) throw new Error("updater_not_found");
+    const request = (body || {}) as UpdaterSettingsUpdate;
+    if (Number(request.expected_revision) !== mockUpdaterSettings.revision) throw new Error("conflict");
+    const nextRevision = mockUpdaterSettings.revision + 1;
+    const tokenProvided = Object.prototype.hasOwnProperty.call(request, "github_token");
+    const token = tokenProvided ? String(request.github_token || "") : "";
+    mockUpdaterSettings = {
+      updater_id: updaterID,
+      revision: nextRevision,
+      api: { ...request.api },
+      poll_interval_seconds: request.poll_interval_seconds,
+      heartbeat_interval_seconds: request.heartbeat_interval_seconds,
+      hosts: request.hosts.map((host) => ({ ...host })),
+      targets: request.targets.map((target) => ({ ...target })),
+      github_token_configured: tokenProvided ? Boolean(token) : mockUpdaterSettings.github_token_configured,
+      github_token_fingerprint: tokenProvided
+        ? (token ? "sha256:mock-updated-token" : "")
+        : mockUpdaterSettings.github_token_fingerprint,
+      updated_at: new Date().toISOString(),
+    };
+    const updater = mockSystemUpdateUpdaters.find((item) => item.updater_id === updaterID);
+    if (updater) {
+      updater.desired_revision = nextRevision;
+      updater.applied_revision = nextRevision;
+      updater.policy_status = "applied";
+      updater.policy_error_code = "";
+      updater.policy_error = "";
+    }
+    return structuredClone(mockUpdaterSettings);
+  }
   const artifactUpdate = stripQuery(path).match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)$/);
   if (artifactUpdate) {
     const streamID = decodeURIComponent(artifactUpdate[1]);
@@ -1210,6 +1303,7 @@ export function mockDelete(path: string): unknown {
 
 export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
+  if (/^\/system-updates\/updaters\/[^/]+\/settings$/.test(normalizedPath)) return true;
   if (/^\/system-updates\/[^/]+\/cancel$/.test(normalizedPath)) return true;
   if (/^\/streams\/[^/]+\/artifacts(?:\/[^/]+)?(?:\/download)?$/.test(normalizedPath)) return true;
   if (/^\/streams\/[^/]+\/artifacts\/[^/]+\/shares(?:\/[^/]+)?$/.test(normalizedPath)) return true;

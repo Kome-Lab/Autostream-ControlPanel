@@ -14,13 +14,8 @@ import (
 	"testing"
 )
 
-func readUpdaterReleaseExample(t *testing.T) []byte {
-	t.Helper()
-	body, err := os.ReadFile(filepath.Join("..", "..", "release", "autostream-updater.json.example"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return body
+func legacyUpdaterConfigExample() []byte {
+	return []byte("{\"github_token\":\"\"}\n")
 }
 
 func TestPrepareUpdaterConfigRejectsNonRootBeforeFilesystemMutation(t *testing.T) {
@@ -64,7 +59,7 @@ func TestPreparedUpdaterConfigInitializationCreatesThroughCurrentSymlinkAndNever
 	if err := os.MkdirAll(releaseDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	example := readUpdaterReleaseExample(t)
+	example := legacyUpdaterConfigExample()
 	examplePath := filepath.Join(releaseDir, "autostream-updater.json.example")
 	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
 		t.Fatal(err)
@@ -108,7 +103,7 @@ func TestPreparedUpdaterConfigInitializationCreatesThroughCurrentSymlinkAndNever
 	}
 }
 
-func TestPreparedUpdaterConfigInitializationCreatesFromBuiltInExampleAndNeverOverwrites(t *testing.T) {
+func TestPreparedUpdaterConfigInitializationRequiresExplicitExampleWithoutMutation(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root-owned updater config initialization")
 	}
@@ -118,52 +113,12 @@ func TestPreparedUpdaterConfigInitializationCreatesFromBuiltInExampleAndNeverOve
 	}
 	configPath := filepath.Join(root, "updater.json")
 	created, err := initializeUpdaterConfig(configPath, "", 0)
-	if err != nil || !created {
-		t.Fatalf("initialize built-in example = %v, %v", created, err)
-	}
-	installed, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := readUpdaterReleaseExample(t); string(installed) != string(want) {
-		t.Fatalf("installed built-in example differs from release example:\ngot  %q\nwant %q", installed, want)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(installed, &fields); err != nil {
-		t.Fatal(err)
-	}
-	githubTokenJSON, ok := fields["github_token"]
-	var githubToken string
-	if !ok || json.Unmarshal(githubTokenJSON, &githubToken) != nil || githubToken != "" {
-		t.Fatalf("built-in example github_token = %q, present=%v", githubToken, ok)
-	}
-	info, err := os.Stat(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != 0 || stat.Gid != 0 || info.Mode().Perm() != 0o640 {
-		t.Fatalf("initialized owner/mode = %#v %o", info.Sys(), info.Mode().Perm())
-	}
-	if prepared, err := prepareUpdaterConfig(configPath, 0); prepared != nil || err == nil || !strings.Contains(err.Error(), "github_token is required") {
-		t.Fatalf("incomplete built-in policy preflight = %#v, %v", prepared, err)
-	}
-
-	created, err = initializeUpdaterConfig(configPath, "", 0)
-	if err != nil || created {
-		t.Fatalf("existing initialize = %v, %v", created, err)
-	}
-	preserved, err := os.ReadFile(configPath)
-	if err != nil || string(preserved) != string(installed) {
-		t.Fatalf("existing config was changed = %q, %v", preserved, err)
-	}
-	preservedInfo, err := os.Stat(configPath)
-	if err != nil || !os.SameFile(info, preservedInfo) {
-		t.Fatalf("existing config identity changed: %v", err)
+	if created || err == nil || !strings.Contains(err.Error(), "explicit updater config example path is required") {
+		t.Fatalf("missing explicit example initialize = %v, %v", created, err)
 	}
 	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) != 1 || entries[0].Name() != "updater.json" {
-		t.Fatalf("initializer left temporary files: %#v, %v", entries, err)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("missing explicit example mutated filesystem: %#v, %v", entries, err)
 	}
 }
 
@@ -209,7 +164,7 @@ func TestPreparedUpdaterConfigInitializationPreservesInstalledFileWhenRenameResu
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	example := readUpdaterReleaseExample(t)
+	example := legacyUpdaterConfigExample()
 	examplePath := filepath.Join(root, "example.json")
 	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
 		t.Fatal(err)
@@ -242,7 +197,7 @@ func TestPreparedUpdaterConfigInitializationReconcilesInstalledFileAfterExistRes
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	example := readUpdaterReleaseExample(t)
+	example := legacyUpdaterConfigExample()
 	examplePath := filepath.Join(root, "example.json")
 	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
 		t.Fatal(err)
@@ -275,7 +230,7 @@ func TestPreparedUpdaterConfigInitializationDoesNotWipeUnlocatableInodeAfterExis
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	example := readUpdaterReleaseExample(t)
+	example := legacyUpdaterConfigExample()
 	examplePath := filepath.Join(root, "example.json")
 	if err := os.WriteFile(examplePath, example, 0o644); err != nil {
 		t.Fatal(err)
@@ -306,7 +261,7 @@ func TestPreparedUpdaterConfigInitializationCleansTemporaryFileWhenInstallFailsB
 		t.Fatal(err)
 	}
 	examplePath := filepath.Join(root, "example.json")
-	if err := os.WriteFile(examplePath, readUpdaterReleaseExample(t), 0o644); err != nil {
+	if err := os.WriteFile(examplePath, legacyUpdaterConfigExample(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "updater.json")
@@ -384,7 +339,7 @@ func TestPreparedUpdaterConfigInitializationRejectsSymlinkHopThroughWritableDire
 		t.Fatal(err)
 	}
 	examplePath := filepath.Join(safe, "example.json")
-	if err := os.WriteFile(examplePath, readUpdaterReleaseExample(t), 0o644); err != nil {
+	if err := os.WriteFile(examplePath, legacyUpdaterConfigExample(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	redirect := filepath.Join(writable, "redirect")
@@ -455,14 +410,19 @@ func TestPreparedUpdaterConfigRootOwnedAtomicMergeAndDriftFence(t *testing.T) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"panel_url": identity.PanelURL, "node_id": identity.NodeID, "runtime_token": identity.RuntimeToken, "service_name": identity.ServiceName, "github_token": "local-github-secret", "state_dir": "/var/lib/custom-updater"} {
+	if len(fields) != 4 {
+		t.Fatalf("configured managed bootstrap fields = %v", fields)
+	}
+	for name, want := range map[string]string{"panel_url": identity.PanelURL, "node_id": identity.NodeID, "runtime_token": identity.RuntimeToken, "service_name": identity.ServiceName} {
 		var got string
 		if err := json.Unmarshal(fields[name], &got); err != nil || got != want {
 			t.Fatalf("configured %s = %q, %v; want %q", name, got, err, want)
 		}
 	}
-	if strings.Contains(string(data), "must-not-persist.example.com") || !strings.Contains(string(data), "updater.internal") {
-		t.Fatalf("local API policy changed: %s", data)
+	for _, forbidden := range []string{"local-github-secret", "must-not-persist.example.com", "updater.internal", "state_dir", "hosts", "targets", "identity_file", "known_hosts"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("legacy field %q remained in managed bootstrap: %s", forbidden, data)
+		}
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -486,7 +446,7 @@ func TestPreparedUpdaterConfigRootOwnedAtomicMergeAndDriftFence(t *testing.T) {
 	}
 }
 
-func TestPreparedUpdaterConfigRejectsMissingAndInvalidLocalPolicyBeforeTokenInput(t *testing.T) {
+func TestPreparedUpdaterConfigCreatesMissingIdentityAndMigratesIncompleteLegacySample(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root-owned updater config policy")
 	}
@@ -495,16 +455,25 @@ func TestPreparedUpdaterConfigRejectsMissingAndInvalidLocalPolicyBeforeTokenInpu
 		if err := os.Chmod(root, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		prepared, err := prepareUpdaterConfig(filepath.Join(root, "updater.json"), 0)
-		if prepared != nil || err == nil || !strings.Contains(err.Error(), "existing updater config is required") {
-			t.Fatalf("missing local policy prepare = %#v, %v", prepared, err)
+		path := filepath.Join(root, "updater.json")
+		prepared, err := prepareUpdaterConfig(path, 0)
+		if err != nil {
+			t.Fatalf("missing identity preflight: %v", err)
 		}
-		entries, readErr := os.ReadDir(root)
-		if readErr != nil || len(entries) != 0 {
-			t.Fatalf("missing local policy left files: %#v, %v", entries, readErr)
+		defer prepared.Abort()
+		identity := UpdaterConfigureIdentity{
+			PanelURL: "https://panel.example.com", NodeID: "central-updater",
+			RuntimeToken: "runtime-token", ServiceName: "Central Updater", ServiceType: ServiceTypeUpdateAgent,
+		}
+		if err := prepared.Commit(identity); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadManagedBootstrapConfig(path, true)
+		if err != nil || !cfg.IsManagedBootstrap() {
+			t.Fatalf("generated managed identity = %#v, %v", cfg, err)
 		}
 	})
-	t.Run("invalid", func(t *testing.T) {
+	t.Run("incomplete legacy sample", func(t *testing.T) {
 		root := t.TempDir()
 		if err := os.Chmod(root, 0o700); err != nil {
 			t.Fatal(err)
@@ -515,12 +484,20 @@ func TestPreparedUpdaterConfigRejectsMissingAndInvalidLocalPolicyBeforeTokenInpu
 			t.Fatal(err)
 		}
 		prepared, err := prepareUpdaterConfig(path, 0)
-		if prepared != nil || err == nil || !strings.Contains(err.Error(), "before Configure Token input") || !strings.Contains(err.Error(), "github_token") {
-			t.Fatalf("invalid local policy prepare = %#v, %v", prepared, err)
+		if err != nil {
+			t.Fatalf("incomplete legacy sample prepare = %v", err)
 		}
-		entries, readErr := os.ReadDir(root)
-		if readErr != nil || len(entries) != 1 || entries[0].Name() != "updater.json" {
-			t.Fatalf("invalid local policy left files: %#v, %v", entries, readErr)
+		defer prepared.Abort()
+		identity := UpdaterConfigureIdentity{
+			PanelURL: "https://panel.example.com", NodeID: "central-updater",
+			RuntimeToken: "runtime-token", ServiceName: "Central Updater", ServiceType: ServiceTypeUpdateAgent,
+		}
+		if err := prepared.Commit(identity); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadManagedBootstrapConfig(path, true)
+		if err != nil || !cfg.IsManagedBootstrap() {
+			t.Fatalf("migrated managed identity = %#v, %v", cfg, err)
 		}
 	})
 }

@@ -35,12 +35,28 @@ func run(args []string) error {
 		if flags.NArg() != 0 {
 			return errors.New("validate-config requires only --config PATH")
 		}
-		cfg, err := updateagent.LoadConfig(*configPath, true)
+		cfg, err := loadUpdaterConfig(*configPath)
 		if err != nil {
 			return err
 		}
 		if err := requireCentralConfig(cfg); err != nil {
 			return err
+		}
+		if cfg.IsManagedBootstrap() {
+			if managedValidationRunsAsRoot() {
+				return errors.New("managed validate-config must run as the autostream-updater service user; use sudo -u autostream-updater autostream-updater validate-config --config /etc/autostream/updater.json")
+			}
+			policy, changed, err := (updateagent.PanelClient{BaseURL: cfg.PanelURL, Token: cfg.RuntimeToken}).FetchManagedPolicy(context.Background(), cfg.NodeID, 0)
+			if err != nil {
+				return err
+			}
+			if !changed || policy == nil {
+				return errors.New("Control Panel did not return a managed updater policy")
+			}
+			cfg, err = policy.Materialize(cfg)
+			if err != nil {
+				return err
+			}
 		}
 		results, err := updateagent.ValidateCentralHosts(context.Background(), cfg, updateagent.SSHRemoteExecutor{})
 		if err != nil {
@@ -66,7 +82,7 @@ func run(args []string) error {
 		if err := flags.Parse(args); err != nil {
 			return err
 		}
-		cfg, err := updateagent.LoadConfig(*configPath, true)
+		cfg, err := loadUpdaterConfig(*configPath)
 		if err != nil {
 			return err
 		}
@@ -75,16 +91,33 @@ func run(args []string) error {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		if cfg.IsManagedBootstrap() {
+			return updateagent.NewManagedSupervisor(cfg).Run(ctx)
+		}
 		coordinator, err := updateagent.NewCentralCoordinator(cfg)
 		if err != nil {
 			return err
 		}
 		return coordinator.Run(ctx)
 	}
-	return errors.New("usage: autostream-updater configure --panel-url URL --node ID [--config PATH] [--init-from PATH] | run --config PATH | validate-config --config PATH | --version")
+	return errors.New("usage: autostream-updater configure --panel-url URL --node ID [--config PATH] | run --config PATH | validate-config --config PATH | --version")
+}
+
+func loadUpdaterConfig(path string) (updateagent.Config, error) {
+	cfg, err := updateagent.LoadConfig(path, true)
+	if err != nil {
+		return updateagent.Config{}, err
+	}
+	if cfg.IsManagedBootstrap() {
+		return updateagent.LoadManagedBootstrapConfig(path, true)
+	}
+	return cfg, nil
 }
 
 func requireCentralConfig(cfg updateagent.Config) error {
+	if cfg.IsManagedBootstrap() {
+		return nil
+	}
 	if len(cfg.Hosts) == 0 {
 		return errors.New("central updater configuration requires at least one hosts entry")
 	}

@@ -62,6 +62,10 @@ func OpenJournal(stateDir string) (*Journal, error) {
 		j.data.ActiveJob.LeaseToken = ""
 		scrubbed = true
 	}
+	if j.data.ActiveJob != nil && !j.data.ActiveJob.ReleaseToken.Empty() {
+		j.data.ActiveJob.ReleaseToken = ""
+		scrubbed = true
+	}
 	// A restarted process cannot safely reuse an old execution lease. Drop
 	// tokenless pending reports and preserve the active cursor so the next poll
 	// obtains a fresh recovery claim and report sequence instead of becoming
@@ -103,6 +107,7 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 	defer j.mu.Unlock()
 	copy := *job
 	copy.LeaseToken = ""
+	copy.ReleaseToken = ""
 	j.data.ActiveJob = &copy
 	j.data.NextSeq = job.ReportSequence
 	if j.data.NextSeq == 0 {

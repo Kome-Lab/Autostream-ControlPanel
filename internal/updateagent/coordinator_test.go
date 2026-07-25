@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,17 +35,23 @@ func (l *coordinatorEventLog) snapshot() []string {
 type coordinatorTestPanel struct {
 	mu sync.Mutex
 
-	jobs       map[string][]UpdateJob
-	claimHosts []string
-	reports    []JobReport
-	reportJobs []string
-	grants     []MutationGrantRequest
-	events     *coordinatorEventLog
+	jobs           map[string][]UpdateJob
+	claimHosts     []string
+	claimActiveIDs []string
+	reports        []JobReport
+	reportJobs     []string
+	grants         []MutationGrantRequest
+	events         *coordinatorEventLog
 
-	heartbeatOnce sync.Once
-	heartbeatSeen chan struct{}
-	lastDeployed  map[string]string
-	lastHosts     map[string]HostHeartbeat
+	heartbeatOnce               sync.Once
+	heartbeatSeen               chan struct{}
+	heartbeatErrors             []error
+	successfulHeartbeats        int
+	rejectClaimsBeforeHeartbeat bool
+	claimStarted                chan string
+	claimRelease                <-chan struct{}
+	lastDeployed                map[string]string
+	lastHosts                   map[string]HostHeartbeat
 }
 
 func (p *coordinatorTestPanel) RegisterWithHosts(_ context.Context, _ Config, _ map[string]string, _ map[string]HostHeartbeat) error {
@@ -55,23 +62,57 @@ func (p *coordinatorTestPanel) HeartbeatWithHosts(_ context.Context, _ Config, _
 	p.mu.Lock()
 	p.lastDeployed = cloneStringMap(deployed)
 	p.lastHosts = cloneHostHeartbeats(hosts)
+	var err error
+	if len(p.heartbeatErrors) > 0 {
+		err = p.heartbeatErrors[0]
+		p.heartbeatErrors = append([]error(nil), p.heartbeatErrors[1:]...)
+	}
+	if err == nil {
+		p.successfulHeartbeats++
+	}
 	p.mu.Unlock()
+	if p.events != nil {
+		if err != nil {
+			p.events.add("heartbeat:error")
+		} else {
+			p.events.add("heartbeat:ok")
+		}
+	}
 	if p.heartbeatSeen != nil {
 		p.heartbeatOnce.Do(func() { close(p.heartbeatSeen) })
 	}
-	return nil
+	return err
 }
 
-func (p *coordinatorTestPanel) ClaimHost(_ context.Context, _, hostID, _ string) (*UpdateJob, bool, error) {
+func (p *coordinatorTestPanel) ClaimHost(ctx context.Context, _, hostID, activeJobID string) (*UpdateJob, bool, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.claimHosts = append(p.claimHosts, hostID)
+	p.claimActiveIDs = append(p.claimActiveIDs, activeJobID)
+	if p.rejectClaimsBeforeHeartbeat && p.successfulHeartbeats == 0 {
+		p.mu.Unlock()
+		return nil, false, errors.New("updater_offline")
+	}
 	queue := p.jobs[hostID]
 	if len(queue) == 0 {
+		p.mu.Unlock()
 		return nil, false, nil
 	}
 	job := queue[0]
 	p.jobs[hostID] = append([]UpdateJob(nil), queue[1:]...)
+	p.mu.Unlock()
+	if p.events != nil {
+		p.events.add("claim:" + activeJobID)
+	}
+	if p.claimStarted != nil {
+		p.claimStarted <- activeJobID
+	}
+	if p.claimRelease != nil {
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		case <-p.claimRelease:
+		}
+	}
 	return &job, false, nil
 }
 
@@ -258,6 +299,328 @@ func TestCentralCoordinatorRunsDifferentHostsInParallel(t *testing.T) {
 	if maxStage != 2 {
 		t.Fatalf("different-host max concurrent stages = %d, want 2", maxStage)
 	}
+}
+
+func TestCentralCoordinatorDrainBlocksClaimsAndDefersRecoveryCursor(t *testing.T) {
+	t.Run("draining blocks claims", func(t *testing.T) {
+		c, panel, _ := newCoordinatorFixture(t, "host-a")
+		release, ready, err := c.BeginPolicyReplacement(t.Context())
+		if err != nil || !ready {
+			t.Fatalf("begin drain ready=%v err=%v", ready, err)
+		}
+		release(true)
+		if err := c.workers["host-a"].pollOnce(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if len(panel.claimHosts) != 0 {
+			t.Fatalf("claims while draining = %v", panel.claimHosts)
+		}
+	})
+
+	t.Run("active recovery cursor defers replacement", func(t *testing.T) {
+		c, panel, _ := newCoordinatorFixture(t, "host-a", "host-b")
+		active := coordinatorJob("host-a", "target-host-a", "job-active")
+		active.LeaseToken = ""
+		if err := c.workers["host-a"].journal.SetActive(&active); err != nil {
+			t.Fatal(err)
+		}
+		release, ready, err := c.BeginPolicyReplacement(t.Context())
+		if err != nil || ready || release != nil || !c.draining.Load() {
+			t.Fatalf("active drain release=%v ready=%v draining=%v err=%v", release != nil, ready, c.draining.Load(), err)
+		}
+		panel.jobs["host-b"] = []UpdateJob{coordinatorJob("host-b", "target-host-b", "job-b")}
+		if err := c.workers["host-b"].pollOnce(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if len(panel.claimHosts) != 0 {
+			t.Fatalf("pending replacement allowed a new host claim: %v", panel.claimHosts)
+		}
+		if err := c.workers["host-a"].journal.ClearActive(); err != nil {
+			t.Fatal(err)
+		}
+		release, ready, err = c.BeginPolicyReplacement(t.Context())
+		if err != nil || !ready || release == nil {
+			t.Fatalf("drain after recovery ready=%v release=%v err=%v", ready, release != nil, err)
+		}
+		release(false)
+		if c.draining.Load() {
+			t.Fatal("aborted replacement did not reopen claims")
+		}
+	})
+}
+
+func TestCentralCoordinatorStartManagedFailsBeforeReadyWhenStatusPortIsOccupied(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	coordinator, _, _ := newCoordinatorFixture(t, "host-a")
+	coordinator.Config.API = APIConfig{BindHost: "127.0.0.1", Host: "127.0.0.1", Port: port}
+	done, err := coordinator.StartManaged(t.Context())
+	if err == nil || done != nil || !strings.Contains(err.Error(), "listen for central updater status") {
+		t.Fatalf("occupied listener readiness = done:%v err:%v", done != nil, err)
+	}
+}
+
+func TestCentralCoordinatorStartManagedFailsBeforeReadyWhenTLSIdentityIsInvalid(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, _, _ := newCoordinatorFixture(t, "host-a")
+	coordinator.Config.API = APIConfig{
+		BindHost: "127.0.0.1", Host: "127.0.0.1", Port: port, SSLEnabled: true,
+		TLSCertFile: filepath.Join(t.TempDir(), "missing.crt"),
+		TLSKeyFile:  filepath.Join(t.TempDir(), "missing.key"),
+	}
+	done, err := coordinator.StartManaged(t.Context())
+	if err == nil || done != nil || err.Error() != "load central updater status TLS identity" {
+		t.Fatalf("invalid TLS readiness = done:%v err:%v", done != nil, err)
+	}
+	rebound, bindErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if bindErr != nil {
+		t.Fatalf("failed TLS readiness leaked listener: %v", bindErr)
+	}
+	_ = rebound.Close()
+}
+
+func TestCentralCoordinatorStartManagedRefreshesHeartbeatAndProbeBeforeRecoveryClaim(t *testing.T) {
+	c, panel, remote := newCoordinatorFixture(t, "host-control")
+	c.Logf = func(string, ...any) {}
+	c.Config.API.Port = 0
+	c.Config.PollIntervalSeconds = 1
+	controlTarget := Target{
+		TargetID: "control-panel", HostID: "host-control",
+		ServiceType: "control_panel", DeploymentMode: ModeSystemd,
+	}
+	worker := c.workers["host-control"]
+	worker.targets = map[string]Target{controlTarget.TargetID: controlTarget}
+	c.Config.Targets = []Target{controlTarget}
+	delete(c.probeConfigSHA256, "host-control")
+	remote.probes["host-control"] = coordinatorProbe(c.Config, "host-control", "v1.2.2")
+	interrupted := UpdateJob{
+		ID: "job-stale-recovery", HostID: "host-control", TargetID: controlTarget.TargetID,
+		ServiceType: controlTarget.ServiceType, DeploymentMode: controlTarget.DeploymentMode,
+		CurrentVersion: "v1.2.2", TargetVersion: "v1.2.3", LeaseGeneration: 1,
+	}
+	if err := worker.journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	recovery := interrupted
+	recovery.LeaseToken = "lease-stale-recovery"
+	recovery.LeaseGeneration = 2
+	recovery.ReportSequence = 1
+	recovery.RecoveryRequired = true
+	panel.jobs["host-control"] = []UpdateJob{recovery}
+	panel.events = &coordinatorEventLog{}
+	panel.heartbeatErrors = []error{errors.New("panel temporarily unavailable"), nil}
+	panel.rejectClaimsBeforeHeartbeat = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	done, err := c.StartManaged(ctx)
+	if err != nil {
+		cancel()
+		t.Fatalf("coordinator did not recover after refreshing its stale heartbeat: %v", err)
+	}
+	if done == nil {
+		cancel()
+		t.Fatal("coordinator returned ready without a runtime completion channel")
+	}
+	panel.mu.Lock()
+	claimActiveIDs := append([]string(nil), panel.claimActiveIDs...)
+	successfulHeartbeats := panel.successfulHeartbeats
+	panel.mu.Unlock()
+	events := panel.events.snapshot()
+	if len(events) < 3 || events[0] != "heartbeat:error" || events[1] != "heartbeat:ok" || events[2] != "claim:"+interrupted.ID {
+		cancel()
+		t.Fatalf("recovery did not refresh heartbeat before active claim: %v", events)
+	}
+	if len(claimActiveIDs) == 0 || claimActiveIDs[0] != interrupted.ID || successfulHeartbeats == 0 {
+		cancel()
+		t.Fatalf("stale recovery claims=%v successful_heartbeats=%d", claimActiveIDs, successfulHeartbeats)
+	}
+	if active := worker.journal.Active(); active != nil {
+		cancel()
+		t.Fatalf("StartManaged returned before recovery completed: %+v", active)
+	}
+	cancel()
+	if runErr := <-done; !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("coordinator shutdown = %v", runErr)
+	}
+}
+
+func TestCentralCoordinatorStartManagedWithoutRecoveryDoesNotRequirePanelHeartbeat(t *testing.T) {
+	c, panel, _ := newCoordinatorFixture(t, "host-a")
+	c.Logf = func(string, ...any) {}
+	c.Config.API.Port = 0
+	panel.heartbeatErrors = []error{errors.New("panel temporarily unavailable")}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := c.StartManaged(ctx)
+	if err != nil || done == nil {
+		cancel()
+		t.Fatalf("ordinary startup became dependent on a synchronous heartbeat: done=%v err=%v", done != nil, err)
+	}
+	cancel()
+	if runErr := <-done; !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("coordinator shutdown = %v", runErr)
+	}
+}
+
+func TestCentralCoordinatorStartManagedBlocksFreshClaimsUntilPolicyActivation(t *testing.T) {
+	c, panel, remote := newCoordinatorFixture(t, "host-a")
+	c.Logf = func(string, ...any) {}
+	c.Config.API.Port = 0
+	c.Config.PollIntervalSeconds = 3600
+	c.Config.PolicyRevision = 1
+	c.Config.PolicyDesiredRevision = 2
+	c.Config.PolicyStatus = PolicyStatusPending
+	remote.probes["host-a"] = coordinatorProbe(c.Config, "host-a", "v1.2.2")
+	panel.jobs["host-a"] = []UpdateJob{coordinatorJob("host-a", "target-host-a", "job-after-activation")}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := c.StartManaged(ctx)
+	if err != nil || done == nil {
+		cancel()
+		t.Fatalf("managed runtime readiness = done:%v err:%v", done != nil, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	panel.mu.Lock()
+	claimsBeforeActivation := append([]string(nil), panel.claimActiveIDs...)
+	panel.mu.Unlock()
+	if len(claimsBeforeActivation) != 0 {
+		cancel()
+		t.Fatalf("fresh claims escaped before policy activation: %v", claimsBeforeActivation)
+	}
+
+	c.ActivatePolicy()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		panel.mu.Lock()
+		claimsAfterActivation := append([]string(nil), panel.claimActiveIDs...)
+		panel.mu.Unlock()
+		if len(claimsAfterActivation) > 0 {
+			if claimsAfterActivation[0] != "" {
+				cancel()
+				t.Fatalf("first activated claim unexpectedly carried a recovery cursor: %v", claimsAfterActivation)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("fresh claims did not resume after policy activation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if runErr := <-done; !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("coordinator shutdown = %v", runErr)
+	}
+}
+
+func TestCentralCoordinatorReadyPolicyKeepsImmediateFirstClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		policyRevision  int64
+		policyStatus    string
+		desiredRevision int64
+	}{
+		{name: "legacy"},
+		{name: "applied", policyRevision: 1, desiredRevision: 1, policyStatus: PolicyStatusApplied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, panel, remote := newCoordinatorFixture(t, "host-a")
+			c.Logf = func(string, ...any) {}
+			c.Config.API.Port = 0
+			c.Config.PollIntervalSeconds = 3600
+			c.Config.PolicyRevision = tc.policyRevision
+			c.Config.PolicyDesiredRevision = tc.desiredRevision
+			c.Config.PolicyStatus = tc.policyStatus
+			remote.probes["host-a"] = coordinatorProbe(c.Config, "host-a", "v1.2.2")
+			panel.jobs["host-a"] = []UpdateJob{coordinatorJob("host-a", "target-host-a", "job-immediate-"+tc.name)}
+			panel.claimStarted = make(chan string, 1)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done, err := c.StartManaged(ctx)
+			if err != nil || done == nil {
+				cancel()
+				t.Fatalf("ready runtime startup = done:%v err:%v", done != nil, err)
+			}
+			select {
+			case activeJobID := <-panel.claimStarted:
+				if activeJobID != "" {
+					cancel()
+					t.Fatalf("ready runtime first claim carried recovery cursor %q", activeJobID)
+				}
+			case <-time.After(time.Second):
+				cancel()
+				t.Fatal("ready runtime lost its immediate first claim behind the activation gate")
+			}
+			cancel()
+			if runErr := <-done; !errors.Is(runErr, context.Canceled) {
+				t.Fatalf("coordinator shutdown = %v", runErr)
+			}
+		})
+	}
+}
+
+func TestCentralCoordinatorCanceledRecoveryClosesPreparedStatusListener(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c, panel, _ := newCoordinatorFixture(t, "host-control")
+	c.Logf = func(string, ...any) {}
+	c.Config.API = APIConfig{BindHost: "127.0.0.1", Host: "127.0.0.1", Port: port}
+	controlTarget := Target{
+		TargetID: "control-panel", HostID: "host-control",
+		ServiceType: "control_panel", DeploymentMode: ModeSystemd,
+	}
+	c.Config.Targets = []Target{controlTarget}
+	worker := c.workers["host-control"]
+	worker.targets = map[string]Target{controlTarget.TargetID: controlTarget}
+	interrupted := UpdateJob{
+		ID: "job-canceled-recovery", HostID: "host-control", TargetID: controlTarget.TargetID,
+		ServiceType: controlTarget.ServiceType, DeploymentMode: controlTarget.DeploymentMode,
+		CurrentVersion: "v1.2.2", TargetVersion: "v1.2.3", LeaseGeneration: 1,
+	}
+	if err := worker.journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	panel.heartbeatSeen = make(chan struct{})
+	panel.heartbeatErrors = []error{errors.New("panel unavailable")}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan error, 1)
+	go func() {
+		_, startErr := c.StartManaged(ctx)
+		started <- startErr
+	}()
+	select {
+	case <-panel.heartbeatSeen:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("recovery heartbeat was not attempted")
+	}
+	cancel()
+	if startErr := <-started; !errors.Is(startErr, context.Canceled) {
+		t.Fatalf("canceled recovery startup = %v", startErr)
+	}
+	rebound, bindErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if bindErr != nil {
+		t.Fatalf("canceled recovery leaked prepared listener: %v", bindErr)
+	}
+	_ = rebound.Close()
 }
 
 func TestCentralCoordinatorMakesControlPanelUpdateGloballyExclusive(t *testing.T) {
@@ -570,6 +933,12 @@ func TestCentralCoordinatorBindsProbedHelperConfigDigestIntoEveryRemotePlan(t *t
 func TestCentralCoordinatorDoesNotPersistExecutionSecrets(t *testing.T) {
 	c, panel, remote := newCoordinatorFixture(t, "host-a")
 	job := coordinatorJob("host-a", "target-host-a", "job-secret-scan")
+	job.ReleaseToken = NewRemoteSecret("claim-scoped-release-secret")
+	var downloaderToken string
+	c.NewDownloader = func(token RemoteSecret) CoordinatorDownloader {
+		downloaderToken = token.Reveal()
+		return c.Downloader
+	}
 	panel.jobs["host-a"] = []UpdateJob{job}
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -593,7 +962,7 @@ func TestCentralCoordinatorDoesNotPersistExecutionSecrets(t *testing.T) {
 		t.Fatal("timed out waiting for grant-authorized apply")
 	}
 
-	for _, forbidden := range []string{job.LeaseToken, c.Config.GitHubToken, "grant-1"} {
+	for _, forbidden := range []string{job.LeaseToken, job.ReleaseToken.Reveal(), c.Config.GitHubToken, "grant-1", "[REDACTED]"} {
 		err := filepath.Walk(c.Config.StateDir, func(path string, info os.FileInfo, walkErr error) error {
 			if walkErr != nil || info.IsDir() {
 				return walkErr
@@ -628,6 +997,12 @@ func TestCentralCoordinatorDoesNotPersistExecutionSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	finished = true
+	remote.mu.Lock()
+	stageToken := remote.stageTokens[0]
+	remote.mu.Unlock()
+	if downloaderToken != job.ReleaseToken.Reveal() || stageToken != job.ReleaseToken.Reveal() {
+		t.Fatalf("job-scoped credential downloader=%q stage=%q", downloaderToken, stageToken)
+	}
 }
 
 func TestCentralCoordinatorUncertainApplyUsesFreshReconcileGrant(t *testing.T) {

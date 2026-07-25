@@ -12218,6 +12218,18 @@ func TestNodeRegistrationScopesGrantEmailRelayOnlyToObservability(t *testing.T) 
 	}
 }
 
+func TestNodeRegistrationScopesIncludeUpdateAgentClaimContract(t *testing.T) {
+	scopes := nodeRegistrationScopes("update_agent", false, false)
+	if !validUpdateAgentServiceTokenScopes("update_agent", scopes) {
+		t.Fatalf("update agent node registration scopes do not satisfy the claim contract: %#v", scopes)
+	}
+	for _, required := range []string{"service.register", "service.heartbeat"} {
+		if !stringSliceContains(scopes, required) {
+			t.Fatalf("update agent node registration omitted %s: %#v", required, scopes)
+		}
+	}
+}
+
 func TestCreateWorkerOrEncoderNodeRequiresStreamIngestSigningKey(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -12307,7 +12319,7 @@ func TestCreateNodeRegistrationTokenRejectsSecretScopeEscalation(t *testing.T) {
 }
 
 func TestValidateNodeConfigurationSecretPermissions(t *testing.T) {
-	for _, serviceType := range []string{"worker", "encoder_recorder"} {
+	for _, serviceType := range []string{"worker", "encoder_recorder", "update_agent"} {
 		if err := validateNodeConfigurationSecretPermissions([]string{"api_tokens.create"}, serviceType); !errors.Is(err, store.ErrPermissionEscalation) {
 			t.Fatalf("%s without secrets.update error = %v", serviceType, err)
 		}

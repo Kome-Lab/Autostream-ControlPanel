@@ -168,7 +168,6 @@ jobs:
             GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go build -trimpath -ldflags="${ldflags}" -o "${helper_root}/bin/autostream-update-host" ./cmd/autostream-update-host
             cp .env.example "${root}/.env.example"
             cp systemd/*.service.example "${root}/systemd/"
-            cp release/autostream-updater.json.example "${root}/autostream-updater.json.example"
             cp release/autostream-backup-control-panel.example "${root}/backup/autostream-backup-control-panel"
             chmod 0755 "${root}/backup/autostream-backup-control-panel"
             test -d web/out

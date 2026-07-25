@@ -18,20 +18,21 @@ import (
 )
 
 type UpdateJob struct {
-	ID             string `json:"id"`
-	HostID         string `json:"host_id,omitempty"`
-	TargetID       string `json:"target_id"`
-	TargetType     string `json:"target_type,omitempty"`
-	ServiceType    string `json:"service_type"`
-	DeploymentMode string `json:"deployment_mode"`
-	CurrentVersion string `json:"current_version,omitempty"`
-	TargetVersion  string `json:"target_version"`
-	Version        string `json:"version,omitempty"`
-	LeaseToken     string `json:"lease_token,omitempty"`
-	LeaseExpiresAt string `json:"lease_expires_at,omitempty"`
-	Status         string `json:"status,omitempty"`
-	Progress       int    `json:"progress,omitempty"`
-	Sequence       uint64 `json:"sequence,omitempty"`
+	ID             string       `json:"id"`
+	HostID         string       `json:"host_id,omitempty"`
+	TargetID       string       `json:"target_id"`
+	TargetType     string       `json:"target_type,omitempty"`
+	ServiceType    string       `json:"service_type"`
+	DeploymentMode string       `json:"deployment_mode"`
+	CurrentVersion string       `json:"current_version,omitempty"`
+	TargetVersion  string       `json:"target_version"`
+	Version        string       `json:"version,omitempty"`
+	LeaseToken     string       `json:"lease_token,omitempty"`
+	ReleaseToken   RemoteSecret `json:"-"`
+	LeaseExpiresAt string       `json:"lease_expires_at,omitempty"`
+	Status         string       `json:"status,omitempty"`
+	Progress       int          `json:"progress,omitempty"`
+	Sequence       uint64       `json:"sequence,omitempty"`
 	// ReportSequence is local-only. Claim responses define it as the exact
 	// sequence to use for the first report, while Sequence remains the last
 	// sequence stored by the server.
@@ -55,14 +56,15 @@ func (j UpdateJob) EffectiveType() string {
 }
 
 type ClaimResponse struct {
-	Job              *UpdateJob `json:"job,omitempty"`
-	LeaseToken       string     `json:"lease_token,omitempty"`
-	LeaseExpiresAt   string     `json:"lease_expires_at,omitempty"`
-	ReportSequence   uint64     `json:"report_sequence,omitempty"`
-	LeaseGeneration  uint64     `json:"lease_generation,omitempty"`
-	RecoveryRequired bool       `json:"recovery_required,omitempty"`
-	LastStatus       string     `json:"last_status,omitempty"`
-	ClearActiveJobID bool       `json:"clear_active_job_id,omitempty"`
+	Job              *UpdateJob   `json:"job,omitempty"`
+	LeaseToken       string       `json:"lease_token,omitempty"`
+	ReleaseToken     RemoteSecret `json:"release_token,omitempty"`
+	LeaseExpiresAt   string       `json:"lease_expires_at,omitempty"`
+	ReportSequence   uint64       `json:"report_sequence,omitempty"`
+	LeaseGeneration  uint64       `json:"lease_generation,omitempty"`
+	RecoveryRequired bool         `json:"recovery_required,omitempty"`
+	LastStatus       string       `json:"last_status,omitempty"`
+	ClearActiveJobID bool         `json:"clear_active_job_id,omitempty"`
 	UpdateJob
 }
 
@@ -195,12 +197,27 @@ func coordinatorCapabilities(cfg Config, deployedVersions map[string]string, hos
 			hostArches[hostID] = host.Arch
 		}
 	}
-	return map[string]any{
+	capabilities := map[string]any{
 		"update_executor": true, "managed_targets": targets, "deployment_modes": modes,
 		"target_hosts": targetHosts, "deployed_versions": deployedVersions,
 		"host_statuses": hostStatuses, "host_checked_at": hostCheckedAt,
 		"host_codes": hostCodes, "host_names": hostNames, "host_arches": hostArches,
 	}
+	if cfg.PolicyRevision > 0 || cfg.PolicyDesiredRevision > 0 || strings.TrimSpace(cfg.PolicyStatus) != "" {
+		capabilities["policy_revision"] = cfg.PolicyRevision
+		desiredRevision := cfg.PolicyDesiredRevision
+		if desiredRevision <= 0 {
+			desiredRevision = cfg.PolicyRevision
+		}
+		capabilities["policy_desired_revision"] = desiredRevision
+		capabilities["policy_status"] = normalizePolicyStatus(cfg.PolicyStatus)
+		if (normalizePolicyStatus(cfg.PolicyStatus) == PolicyStatusFailed || normalizePolicyStatus(cfg.PolicyStatus) == PolicyStatusPending) && strings.TrimSpace(cfg.PolicyErrorCode) != "" {
+			capabilities["policy_error_code"] = safePolicyErrorCode(cfg.PolicyErrorCode)
+		}
+		capabilities["ssh_client_public_keys"] = cloneCapabilityStringMap(cfg.SSHClientPublicKeys)
+		capabilities["ssh_client_key_fingerprints"] = cloneCapabilityStringMap(cfg.SSHClientKeyFingerprints)
+	}
+	return capabilities
 }
 
 func (c PanelClient) Claim(ctx context.Context, serviceID, activeJobID string) (*UpdateJob, bool, error) {
@@ -236,6 +253,9 @@ func (c PanelClient) ClaimHost(ctx context.Context, serviceID, hostID, activeJob
 	}
 	if job.LeaseToken == "" {
 		job.LeaseToken = response.LeaseToken
+	}
+	if job.ReleaseToken.Empty() {
+		job.ReleaseToken = response.ReleaseToken
 	}
 	if job.LeaseExpiresAt == "" {
 		job.LeaseExpiresAt = response.LeaseExpiresAt
@@ -316,9 +336,31 @@ func safePanelErrorCode(code string) string {
 		"issue_system_update_mutation_grant_failed",
 		"consume_system_update_mutation_grant_failed":
 		return strings.TrimSpace(code)
+	case "updater_policy_not_configured",
+		"updater_policy_revision_ahead",
+		"updater_policy_revision_invalid",
+		"invalid_updater_policy_request":
+		return strings.TrimSpace(code)
 	default:
 		return ""
 	}
+}
+
+func normalizePolicyStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case PolicyStatusApplied, PolicyStatusPending, PolicyStatusFailed:
+		return strings.TrimSpace(status)
+	default:
+		return PolicyStatusFailed
+	}
+}
+
+func cloneCapabilityStringMap(values map[string]string) map[string]string {
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func IsPermanentReportError(err error) bool {

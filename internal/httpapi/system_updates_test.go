@@ -546,7 +546,7 @@ func TestUpdateAgentAssignmentEndpointIsRejected(t *testing.T) {
 func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "service_health.read", "system_updates.execute"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "service_health.read", "system_updates.execute", "secrets.update"}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
@@ -563,22 +563,22 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if created.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("updater registration secret response cache control = %q", created.Header().Get("Cache-Control"))
 	}
+	createdPayload := append([]byte(nil), created.Body.Bytes()...)
 	var createdBody struct {
-		ConfigureToken       string   `json:"configure_token"`
-		ConfigureCommand     string   `json:"configure_command"`
-		ConfigurationPath    string   `json:"configuration_path"`
-		ConfigurationExample string   `json:"configuration_example"`
-		ManualRequired       bool     `json:"manual_configuration_required"`
-		RuntimeToken         string   `json:"runtime_token"`
-		Scopes               []string `json:"scopes"`
+		ConfigureToken    string   `json:"configure_token"`
+		ConfigureCommand  string   `json:"configure_command"`
+		ConfigurationPath string   `json:"configuration_path"`
+		ManualRequired    bool     `json:"manual_configuration_required"`
+		RuntimeToken      string   `json:"runtime_token"`
+		Scopes            []string `json:"scopes"`
 	}
-	if err := json.NewDecoder(created.Body).Decode(&createdBody); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(createdPayload)).Decode(&createdBody); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(createdBody.ConfigureToken, "ast_cfg_") || !strings.Contains(createdBody.ConfigureCommand, "autostream-updater configure") || strings.Contains(createdBody.ConfigureCommand, createdBody.ConfigureToken) || strings.Contains(createdBody.ConfigureCommand, "--token") {
+	if !strings.HasPrefix(createdBody.ConfigureToken, "ast_cfg_") || !strings.HasPrefix(createdBody.ConfigureCommand, "sudo /usr/local/bin/autostream-updater configure ") || strings.Contains(createdBody.ConfigureCommand, createdBody.ConfigureToken) || strings.Contains(createdBody.ConfigureCommand, "--token") {
 		t.Fatalf("updater configure metadata = %#v", createdBody)
 	}
-	if createdBody.ConfigurationPath != "/etc/autostream/updater.json" || createdBody.ConfigurationExample != "release/autostream-updater.json.example" || createdBody.ManualRequired {
+	if createdBody.ConfigurationPath != "/etc/autostream/updater.json" || createdBody.ManualRequired || bytes.Contains(createdPayload, []byte(`"configuration_example"`)) {
 		t.Fatalf("updater configuration metadata = %#v", createdBody)
 	}
 	if !slices.Contains(createdBody.Scopes, "updates.authorize") {
@@ -617,7 +617,7 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if err := json.NewDecoder(regenerateResult.Body).Decode(&regenerated); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(regenerated.ConfigureToken, "ast_cfg_") || strings.Contains(regenerated.ConfigureCommand, regenerated.ConfigureToken) || strings.Contains(regenerated.ConfigureCommand, "--token") || !strings.Contains(regenerated.ConfigureCommand, "autostream-updater configure") {
+	if !strings.HasPrefix(regenerated.ConfigureToken, "ast_cfg_") || strings.Contains(regenerated.ConfigureCommand, regenerated.ConfigureToken) || strings.Contains(regenerated.ConfigureCommand, "--token") || !strings.HasPrefix(regenerated.ConfigureCommand, "sudo /usr/local/bin/autostream-updater configure ") {
 		t.Fatalf("regenerated updater configure metadata = %#v", regenerated)
 	}
 	oldConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+createdBody.ConfigureToken+`"}`))

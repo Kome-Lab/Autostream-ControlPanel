@@ -212,6 +212,7 @@ type ServiceRegistryStore interface {
 var ErrForbidden = errors.New("forbidden")
 var ErrAlreadyExists = errors.New("already exists")
 var ErrInvalidServiceRegistration = errors.New("invalid service registration")
+var ErrInvalidServiceScope = errors.New("invalid service scope")
 var ErrInvalidServiceStreamEvent = errors.New("invalid service stream event")
 var ErrInvalidServiceAssignment = errors.New("service type cannot be assigned to a stream")
 var ErrTwoPhaseConfigureRequired = errors.New("two-phase configure is required")
@@ -859,6 +860,9 @@ func (s MariaDBAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 	if oldToken.ServiceType != "update_agent" {
 		return StagedServiceNodeConfiguration{}, ErrForbidden
 	}
+	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
+		return StagedServiceNodeConfiguration{}, err
+	}
 	token, scopesJSON, err := newRotatedServiceToken(oldToken, now)
 	if err != nil {
 		return StagedServiceNodeConfiguration{}, err
@@ -932,6 +936,9 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 		if err != nil {
 			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 		}
+		if err := validateRequiredUpdateAgentScopes(token.ServiceType, token.Scopes); err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
 		token.TokenHash = service.StagedNodeTokenHash
 		return token, service, true, nil
 	}
@@ -941,6 +948,12 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
 	if err != nil || oldToken.ServiceType != "update_agent" {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
+	}
+	if err := validateRequiredUpdateAgentScopes(service.ServiceType, service.StagedNodeTokenScopes); err != nil {
+		return ServiceToken{}, RegisteredService{}, false, err
 	}
 	token := ServiceToken{ID: service.StagedNodeTokenID, ServiceType: "update_agent", Scopes: append([]string(nil), service.StagedNodeTokenScopes...), TokenHash: service.StagedNodeTokenHash, CreatedAt: service.StagedNodeTokenAt.UTC()}
 	if err := validateServiceScopes(token.Scopes); err != nil {
@@ -1774,7 +1787,7 @@ func validateServiceType(serviceType string) error {
 
 func validateServiceScopes(scopes []string) error {
 	if len(scopes) == 0 {
-		return errors.New("service token requires at least one scope")
+		return ErrInvalidServiceScope
 	}
 	allowed := map[string]bool{
 		"service.register": true, "service.heartbeat": true, "service.logs.write": true, "service.status.write": true, "service.config.read": true, "service.secret.resolve": true,
@@ -1788,7 +1801,19 @@ func validateServiceScopes(scopes []string) error {
 	}
 	for _, scope := range scopes {
 		if !allowed[scope] {
-			return errors.New("invalid service scope")
+			return ErrInvalidServiceScope
+		}
+	}
+	return nil
+}
+
+func validateRequiredUpdateAgentScopes(serviceType string, scopes []string) error {
+	if strings.TrimSpace(serviceType) != "update_agent" {
+		return nil
+	}
+	for _, required := range []string{"updates.claim", "updates.report", "updates.authorize"} {
+		if !hasString(scopes, required) {
+			return ErrInvalidServiceScope
 		}
 	}
 	return nil

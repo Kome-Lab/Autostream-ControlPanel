@@ -24,6 +24,9 @@ to the host over SSH only when it has an authorized update job.
   values are rejected before an RPC body is processed.
 - `/etc/autostream/update-host.json` is `root:root 0600`. It contains only host
   identity and fixed target policy. It contains no long-lived token.
+- Every managed update requires a job-scoped GitHub Release Token whether the
+  source repository is public or private. The helper receives it only over
+  bounded standard input during stage and never persists it.
 - No helper process is running while the host is idle. Probe runs in the bounded forced
   command. Stage, apply, and reconcile are handed to bounded transient systemd
   services so a download or authorized mutation can finish, or reach a
@@ -213,9 +216,10 @@ sudo jq -e \
   "$DRAFT" >/dev/null
 ```
 
-Create a short-lived, read-only GitHub token that can read the private Docker
-release metadata. Do not put it in the draft, an environment variable, a
-command argument, shell history, or root's Docker config. The helper accepts
+Create a short-lived, read-only GitHub Release Token. This baseline operation
+requires it whether the repository is public or private. Do not put it in the
+draft, an environment variable, a command argument, shell history, or root's
+Docker config. The helper accepts
 one printable-ASCII token of at most 16 KiB from standard input, strips only a
 final LF or CRLF, and never persists it. Run `sudo -v` before creating the pipe
 so sudo cannot consume the token as a password:
@@ -224,7 +228,7 @@ so sudo cannot consume the token as a password:
 sudo -v
 bootstrap_docker_digest() {
   local token
-  IFS= read -r -s -p 'One-time GitHub token: ' token </dev/tty
+  IFS= read -r -s -p 'One-time GitHub Release Token: ' token </dev/tty
   printf '\n' >&2
   printf '%s\n' "$token" |
     sudo -n "$RELEASE_DIR/bin/autostream-update-host" \
@@ -274,9 +278,10 @@ Compose digest: it approves an exact canonical model and is a security boundary.
 
 ## Install once on the managed host
 
-Obtain the central updater's host-specific Ed25519 public key as a file. Do not
-reuse a personal administrator key or one fleet-wide private key. Then run the
-installer as root on the managed host:
+Obtain the host-specific Ed25519 client public key reported by the central
+updater on the Control Panel's **System Updates** page and save only that public
+key as a file. Do not reuse a personal administrator key or one fleet-wide key.
+Then run the installer as root on the managed host:
 
 ```bash
 sudo "$RELEASE_DIR/install/install-autostream-update-host" \
@@ -322,15 +327,18 @@ worker.
 
 ## Verify from the central updater
 
-Pin the managed host's SSH host key in the central updater's root-owned
-`known_hosts` file. Do not use `StrictHostKeyChecking=accept-new` for production
-bootstrap. Verify the host-key fingerprint through the server console or an
-independent inventory before accepting it.
+Enter the managed host's complete SSH server public key on the Control Panel's
+**System Updates** page. Verify its fingerprint through the server console or
+an independent inventory before saving it. Do not trust `ssh-keyscan` output by
+itself and do not use first-connection key acceptance.
 
-After adding the host to the central `/etc/autostream/updater.json`, run its
-configuration validation and restricted probe. A raw interactive SSH session,
-PTY, port forwarding, SCP, and SFTP must fail; only the framed update RPC is
-accepted.
+Saving makes the central updater pull and validate the new revision
+automatically; no updater restart is required. `applied` means that desired
+revision is active and is separate from host reachability. Before this helper
+and its authorized client public key are installed, the host is shown as
+`unreachable`; the updater retries its restricted probe automatically. A raw
+interactive SSH session, PTY, port forwarding, SCP, and SFTP must fail; only
+the framed update RPC is accepted.
 
 On the managed host, these checks must succeed:
 
@@ -350,14 +358,21 @@ Expected modes are `root:root:755`, `root:root:600`, `root:root:440`, and
 `root:root:644`, respectively. While idle, there must be no
 `autostream-update-host` process or listening port.
 
-## Rotation and removal
+## Removal and current rotation limitation
 
-Rotate a controller key only during an explicit maintenance operation. Verify
-that no update is active, install the new public key atomically, prove a
-restricted probe with the new private key, and then delete the old private key.
-Changing the source CIDR follows the same process.
+Do not generate or replace the updater's private key by hand. This release does
+not expose a supported client-key rotation action in System Updates. If a client
+private key may be compromised, stop the central updater and remove that key's
+authorization from the managed host. Do not re-enable the host until a release
+with the supported rotation flow is installed. Changing only the source CIDR
+does not rotate the key; rerun the verified helper installer with the same
+reported public key after confirming that no update is active.
 
-To remove a host, first remove its targets from the central updater and verify
-that no job is active. Then remove the forced key and sudoers rule before the
-binary and config. Do not delete service releases, Docker version files,
-backups, or rollback checkpoints until their retention policy permits it.
+To remove a host, verify that no job is active, remove the host and its targets
+in System Updates, save, and wait for the policy to become applied. Only after
+the durable policy commit does the central updater prune that host's local
+private key. Then remove the forced key and sudoers rule on the managed host
+before the binary and config. Re-adding the same host ID generates a new client
+key; never restore the old authorization. Do not delete service releases,
+Docker version files, backups, or rollback checkpoints until their retention
+policy permits it.

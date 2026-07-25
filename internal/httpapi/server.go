@@ -79,6 +79,7 @@ type Server struct {
 	runtimeLeases           store.RuntimeSecretLeaseStore
 	remediation             store.RemediationExecutionStore
 	systemUpdates           store.SystemUpdateStore
+	updaterPolicies         store.UpdaterPolicyAdminStore
 	systemUpdateOperationMu sync.Mutex
 	mfa                     store.MFAStore
 	emailChanges            store.EmailChangeStore
@@ -175,6 +176,10 @@ func WithRemediationExecutionStore(remediation store.RemediationExecutionStore) 
 
 func WithSystemUpdateStore(systemUpdates store.SystemUpdateStore) ServerOption {
 	return func(s *Server) { s.systemUpdates = systemUpdates }
+}
+
+func WithUpdaterPolicyStore(updaterPolicies store.UpdaterPolicyAdminStore) ServerOption {
+	return func(s *Server) { s.updaterPolicies = updaterPolicies }
 }
 
 func WithMFAStore(mfa store.MFAStore) ServerOption {
@@ -290,6 +295,9 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	if s.systemUpdates == nil {
 		s.systemUpdates = store.NewMemorySystemUpdateStore()
 	}
+	if s.updaterPolicies == nil {
+		s.updaterPolicies = store.NewMemoryUpdaterPolicyStore()
+	}
 	if s.mfa == nil {
 		if mfa, ok := s.auth.(store.MFAStore); ok {
 			s.mfa = mfa
@@ -350,6 +358,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /services/stream-artifacts", s.serviceStreamArtifacts)
 	s.mux.HandleFunc("POST /services/notifications/email", s.serviceEmailNotification)
 	s.mux.HandleFunc("POST /services/remediation-actions/execute", s.serviceRemediationExecute)
+	s.mux.HandleFunc("POST /services/update-agent/policy", s.serviceUpdaterPolicy)
 	s.mux.HandleFunc("POST /services/update-jobs/claim", s.serviceSystemUpdateClaim)
 	s.mux.HandleFunc("POST /services/update-jobs/{id}/report", s.serviceSystemUpdateReport)
 	s.mux.HandleFunc("POST /services/update-jobs/{id}/authorize", s.serviceSystemUpdateAuthorize)
@@ -495,6 +504,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /system-updates", s.requirePermission("system_updates.read", s.listSystemUpdates))
 	s.mux.HandleFunc("POST /system-updates", s.requirePermission("system_updates.execute", s.createSystemUpdate))
 	s.mux.HandleFunc("POST /system-updates/{id}/cancel", s.requirePermission("system_updates.execute", s.cancelSystemUpdate))
+	s.mux.HandleFunc("GET /system-updates/updaters/{id}/settings", s.requirePermission("system_updates.read", s.getUpdaterPolicy))
+	s.mux.HandleFunc("PUT /system-updates/updaters/{id}/settings", s.requirePermission("system_updates.execute", s.updateUpdaterPolicy))
 	s.mux.HandleFunc("GET /secrets/status", s.requirePermission("secrets.read_status", s.secretStatus))
 	s.mux.HandleFunc("PUT /secrets/{name}", s.requirePermission("secrets.update", s.updateSecret))
 	s.mux.HandleFunc("GET /observability/incidents", s.requirePermission("incidents.read", s.observabilityGet("/incidents")))
@@ -4278,6 +4289,16 @@ func (s *Server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "service_register_scope_required"})
 		return
 	}
+	if !validUpdateAgentServiceTokenScopes(body.ServiceType, body.Scopes) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_scope"})
+		return
+	}
+	if strings.TrimSpace(body.ServiceType) == "update_agent" {
+		if err := validateNodeConfigurationSecretPermissions(currentFromContext(r.Context()).Permissions, body.ServiceType); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+			return
+		}
+	}
 	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, body.Scopes); err != nil {
 		status := http.StatusBadRequest
 		code := "invalid_service_scope"
@@ -4610,7 +4631,7 @@ func nodeConfigureBinary(serviceType string) string {
 	case "observability":
 		return "autostream-observability"
 	case "update_agent":
-		return "autostream-updater"
+		return "/usr/local/bin/autostream-updater"
 	default:
 		return "autostream-worker"
 	}
@@ -4722,7 +4743,6 @@ func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tok
 func addNodeConfigurationMetadata(response map[string]any, r *http.Request, service store.RegisteredService, tokenID, rawToken, configureToken string) {
 	if service.ServiceType == "update_agent" {
 		response["configuration_path"] = "/etc/autostream/updater.json"
-		response["configuration_example"] = "release/autostream-updater.json.example"
 		if configureToken != "" {
 			response["configure_command"] = nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, "")
 		}
@@ -5063,6 +5083,9 @@ func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request)
 	case errors.Is(err, store.ErrForbidden):
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
 		return
+	case errors.Is(err, store.ErrInvalidServiceScope):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "invalid_service_scope"})
+		return
 	case err != nil:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "stage_node_configuration_failed"})
 		return
@@ -5134,6 +5157,9 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 		return
 	case errors.Is(err, store.ErrForbidden):
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
+		return
+	case errors.Is(err, store.ErrInvalidServiceScope):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "invalid_service_scope"})
 		return
 	case err != nil:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "activate_node_configuration_failed"})
@@ -5255,9 +5281,21 @@ func validateServiceTokenScopePermissions(actorPermissions, scopes []string) err
 	return nil
 }
 
+func validUpdateAgentServiceTokenScopes(serviceType string, scopes []string) bool {
+	if strings.TrimSpace(serviceType) != "update_agent" {
+		return true
+	}
+	for _, required := range []string{"updates.claim", "updates.report", "updates.authorize"} {
+		if !stringSliceContains(scopes, required) {
+			return false
+		}
+	}
+	return true
+}
+
 func validateNodeConfigurationSecretPermissions(actorPermissions []string, serviceType string) error {
 	switch strings.TrimSpace(serviceType) {
-	case "worker", "encoder_recorder":
+	case "worker", "encoder_recorder", "update_agent":
 		if !security.HasPermission(actorPermissions, "secrets.update") {
 			return store.ErrPermissionEscalation
 		}
@@ -5274,6 +5312,11 @@ func (s *Server) requireNodeTokenScopePermissions(w http.ResponseWriter, r *http
 	for _, token := range tokens {
 		if token.ID != service.TokenID || token.RevokedAt != nil {
 			continue
+		}
+		if token.ServiceType != service.ServiceType ||
+			!validUpdateAgentServiceTokenScopes(service.ServiceType, token.Scopes) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_scope"})
+			return false
 		}
 		if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, token.Scopes); err != nil {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
@@ -5339,9 +5382,19 @@ func (s *Server) rotateServiceToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	}
+	if !validUpdateAgentServiceTokenScopes(existing.ServiceType, existing.Scopes) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_scope"})
+		return
+	}
 	if err := validateServiceTokenScopePermissions(current.Permissions, existing.Scopes); err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
 		return
+	}
+	if existing.ServiceType == "update_agent" {
+		if err := validateNodeConfigurationSecretPermissions(current.Permissions, existing.ServiceType); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+			return
+		}
 	}
 	services, err := s.services.ListServices(r.Context())
 	if err != nil {

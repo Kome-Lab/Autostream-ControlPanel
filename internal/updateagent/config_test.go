@@ -223,6 +223,32 @@ func TestCentralConfigRequiresStrictHostRoutingAndForbidsLocalHelper(t *testing.
 	})
 }
 
+func TestOnlyManagedCentralPolicyMayOmitLegacyGitHubToken(t *testing.T) {
+	cfg := validCentralTestConfig(t)
+	cfg.GitHubToken = ""
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "github_token") {
+		t.Fatalf("legacy central config omitted github token: %v", err)
+	}
+	cfg.PolicyRevision = 1
+	cfg.PolicyDesiredRevision = 1
+	cfg.PolicyStatus = PolicyStatusApplied
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("managed in-memory central policy rejected job-scoped token mode: %v", err)
+	}
+}
+
+func TestCentralConfigCapsHeartbeatIntervalBelowReachabilityDeadline(t *testing.T) {
+	cfg := validCentralTestConfig(t)
+	cfg.HeartbeatIntervalSeconds = 60
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("safe heartbeat interval rejected: %v", err)
+	}
+	cfg.HeartbeatIntervalSeconds = 61
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "between 0 and 60") {
+		t.Fatalf("heartbeat interval beyond the reachability deadline accepted: %v", err)
+	}
+}
+
 func TestCentralConfigRejectsUnsafeOrSharedSSHCredentials(t *testing.T) {
 	t.Run("root user", func(t *testing.T) {
 		cfg := validCentralTestConfig(t)

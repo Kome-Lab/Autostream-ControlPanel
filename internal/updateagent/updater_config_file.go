@@ -52,24 +52,15 @@ func prepareUpdaterConfig(path string, installGID int) (*PreparedUpdaterConfig, 
 	if err != nil {
 		return nil, err
 	}
-	if !existed {
-		return nil, errors.New("existing updater config is required; install and complete local policy before configuring")
-	}
-	template, err := prepareUpdaterConfigTemplate(existing)
-	if err != nil {
-		if existingFile != nil {
-			_ = existingFile.Close()
+	template := updaterConfigTemplate{}
+	if existed {
+		template, err = prepareUpdaterConfigTemplate(existing)
+		if err != nil {
+			if existingFile != nil {
+				_ = existingFile.Close()
+			}
+			return nil, err
 		}
-		return nil, err
-	}
-	// The one-time Configure Token must not be consumed until the complete local
-	// policy (release credentials, hosts, targets, SSH files, and API settings)
-	// is already usable under the production root-owned loader.
-	if _, err := LoadConfig(path, true); err != nil {
-		if existingFile != nil {
-			_ = existingFile.Close()
-		}
-		return nil, fmt.Errorf("validate existing updater config before Configure Token input: %w", err)
 	}
 
 	temp, err := os.CreateTemp(parent, ".updater.json.configure-*")
@@ -127,8 +118,9 @@ func prepareUpdaterConfig(path string, installGID int) (*PreparedUpdaterConfig, 
 	return prepared, nil
 }
 
-// Commit replaces only the Panel-owned updater identity after rechecking that
-// neither the destination nor its root-controlled parent changed since Prepare.
+// Commit replaces any legacy local policy with the four-field managed
+// bootstrap after rechecking that neither the destination nor its
+// root-controlled parent changed since Prepare.
 func (p *PreparedUpdaterConfig) Commit(identity UpdaterConfigureIdentity) error {
 	if p == nil || p.temp == nil || p.committed {
 		return errors.New("updater config update is not prepared")

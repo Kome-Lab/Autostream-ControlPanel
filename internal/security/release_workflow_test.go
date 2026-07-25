@@ -20,7 +20,6 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 
 	packagingContract := []string{
 		"- name: Package linux artifacts",
-		`cp release/autostream-updater.json.example "${root}/autostream-updater.json.example"`,
 		`find . -type f ! -path './checksums.txt' -print0 | sort -z | xargs -0 sha256sum > checksums.txt`,
 		`tar -C staging -czf "artifacts/${artifact}.tar.gz" "${artifact}"`,
 	}
@@ -63,6 +62,7 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 	}
 
 	for _, forbidden := range []string{
+		"autostream-updater.json.example",
 		"softprops/action-gh-release",
 		"overwrite_files:",
 		"--clobber",
@@ -70,5 +70,8 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		if strings.Contains(workflow, forbidden) {
 			t.Fatalf("release workflow contains unsafe direct-publication marker %q", forbidden)
 		}
+	}
+	if _, err := os.Stat(filepath.Join("..", "..", "release", "autostream-updater.json.example")); !os.IsNotExist(err) {
+		t.Fatalf("obsolete updater policy sample must not be shipped; stat error = %v", err)
 	}
 }

@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,8 +46,12 @@ type CentralCoordinator struct {
 	Config     Config
 	Panel      CoordinatorPanel
 	Downloader CoordinatorDownloader
-	Remote     RemoteExecutor
-	Logf       func(string, ...any)
+	// NewDownloader creates a job-scoped downloader from the one-use release
+	// token returned by claim. The resulting value is never retained in durable
+	// state. Downloader remains for legacy configs and test injection.
+	NewDownloader func(RemoteSecret) CoordinatorDownloader
+	Remote        RemoteExecutor
+	Logf          func(string, ...any)
 
 	ProbeTimeout      time.Duration
 	MutationTimeout   time.Duration
@@ -60,12 +66,16 @@ type CentralCoordinator struct {
 	// prevents other workers from claiming, granting, or reporting jobs while
 	// the API they depend on may be restarting.
 	executionGate sync.RWMutex
+	replacementMu sync.Mutex
 
 	statusMu          sync.RWMutex
 	hostStatus        map[string]HostHeartbeat
 	probeVersions     map[string]map[string]string
 	probeConfigSHA256 map[string]string
 	updating          atomic.Int64
+	draining          atomic.Bool
+	policyActivation  chan struct{}
+	policyActivate    sync.Once
 	now               func() time.Time
 }
 
@@ -109,15 +119,19 @@ func NewCentralCoordinator(cfg Config) (*CentralCoordinator, error) {
 		return nil, errors.New("central host state root must be a private non-symlink directory")
 	}
 	c := &CentralCoordinator{
-		Config:            cfg,
-		Panel:             PanelClient{BaseURL: cfg.PanelURL, Token: cfg.RuntimeToken},
-		Downloader:        ReleaseDownloader{Token: cfg.GitHubToken},
+		Config:     cfg,
+		Panel:      PanelClient{BaseURL: cfg.PanelURL, Token: cfg.RuntimeToken},
+		Downloader: ReleaseDownloader{Token: cfg.GitHubToken},
+		NewDownloader: func(token RemoteSecret) CoordinatorDownloader {
+			return ReleaseDownloader{Token: token.Reveal()}
+		},
 		Remote:            SSHRemoteExecutor{},
 		Logf:              log.Printf,
 		workers:           make(map[string]*centralHostWorker, len(cfg.Hosts)),
 		hostStatus:        make(map[string]HostHeartbeat, len(cfg.Hosts)),
 		probeVersions:     make(map[string]map[string]string, len(cfg.Hosts)),
 		probeConfigSHA256: make(map[string]string, len(cfg.Hosts)),
+		policyActivation:  make(chan struct{}),
 		now:               time.Now,
 	}
 	for _, host := range cfg.Hosts {
@@ -153,77 +167,135 @@ func NewCentralCoordinator(cfg Config) (*CentralCoordinator, error) {
 }
 
 func (c *CentralCoordinator) Run(ctx context.Context) error {
+	done, err := c.StartManaged(ctx)
+	if err != nil {
+		return err
+	}
+	c.ActivatePolicy()
+	return <-done
+}
+
+// StartManaged completes every startup operation that can fail before
+// returning. In particular, the status listener and TLS identity are opened
+// synchronously and interrupted Control Panel work is reconciled. A supervisor
+// can therefore persist and announce a new policy only after this method
+// succeeds.
+func (c *CentralCoordinator) StartManaged(ctx context.Context) (<-chan error, error) {
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
 	}
 	if c.Panel == nil || c.Downloader == nil || c.Remote == nil {
-		return errors.New("central coordinator dependencies are incomplete")
+		return nil, errors.New("central coordinator dependencies are incomplete")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// A pending managed candidate remains closed until its supervisor durably
+	// commits the desired policy. Legacy and already-applied runtimes start
+	// immediately and preserve their existing first-poll behavior.
+	if c.Config.PolicyStatus == PolicyStatusPending {
+		c.draining.Store(true)
+	} else {
+		c.ActivatePolicy()
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
-	defer cancelRun()
 	for _, worker := range c.workers {
 		if interrupted := worker.journal.Active(); interrupted != nil {
 			c.Logf("host %s interrupted update %s will only be reconciled", worker.host.HostID, interrupted.ID)
 		}
 	}
 
-	// Resolve unknown to a bounded, explicit reachability result before a new
-	// job can be claimed. All hosts are probed concurrently.
-	c.probeAll(runCtx)
-	server, serverErrors := c.startStatusServer()
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
+	server, listener, err := c.prepareStatusServer()
+	if err != nil {
+		cancelRun()
+		return nil, err
+	}
 	// A restarted coordinator must resolve an interrupted Control Panel update
 	// before any other host worker can claim work. The active journal is the
 	// durable part of the global barrier; recovery only reconciles host state and
 	// never reapplies the interrupted mutation.
 	if err := c.recoverInterruptedControlPanel(runCtx); err != nil {
+		_ = listener.Close()
+		cancelRun()
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
-		return fmt.Errorf("recover interrupted Control Panel update: %w", err)
+		return nil, fmt.Errorf("recover interrupted Control Panel update: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = listener.Close()
+		cancelRun()
+		return nil, err
 	}
 
-	var wg sync.WaitGroup
-	for _, worker := range c.workers {
-		worker := worker
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		defer cancelRun()
+		serverErrors := make(chan error, 1)
+		serverStopped := make(chan struct{})
+		go func() {
+			defer close(serverStopped)
+			err := server.Serve(listener)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrors <- err
+			}
+			close(serverErrors)
+		}()
+
+		var wg sync.WaitGroup
+		// Reachability is runtime status, not an activation gate. Probes run
+		// concurrently after listener/recovery readiness, and workers will not
+		// claim from a host until its bounded probe succeeds.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			worker.run(runCtx)
+			c.probeAll(runCtx)
 		}()
-	}
-	heartbeatDone := make(chan struct{})
-	go func() {
-		defer close(heartbeatDone)
-		c.heartbeatLoop(runCtx)
-	}()
+		for _, worker := range c.workers {
+			worker := worker
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if !c.waitForPolicyActivation(runCtx) {
+					return
+				}
+				worker.run(runCtx)
+			}()
+		}
+		heartbeatDone := make(chan struct{})
+		go func() {
+			defer close(heartbeatDone)
+			c.heartbeatLoop(runCtx)
+		}()
 
-	select {
-	case <-ctx.Done():
+		var runErr error
+		select {
+		case <-ctx.Done():
+			runErr = ctx.Err()
+		case err, ok := <-serverErrors:
+			if !ok || err == nil {
+				runErr = errors.New("central updater status server stopped")
+			} else {
+				runErr = err
+			}
+		case <-heartbeatDone:
+			if ctx.Err() != nil {
+				runErr = ctx.Err()
+			} else {
+				runErr = errors.New("central updater heartbeat loop stopped")
+			}
+		}
 		cancelRun()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = server.Shutdown(shutdownCtx)
+		cancel()
+		<-serverStopped
 		wg.Wait()
 		<-heartbeatDone
-		return ctx.Err()
-	case err, ok := <-serverErrors:
-		cancelRun()
-		wg.Wait()
-		<-heartbeatDone
-		if !ok || err == nil {
-			return errors.New("central updater status server stopped")
-		}
-		return err
-	case <-heartbeatDone:
-		cancelRun()
-		wg.Wait()
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return errors.New("central updater heartbeat loop stopped")
-	}
+		done <- runErr
+	}()
+	return done, nil
 }
 
 func (w *centralHostWorker) run(ctx context.Context) {
@@ -245,15 +317,15 @@ func (c *CentralCoordinator) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(c.Config.HeartbeatInterval())
 	defer ticker.Stop()
 	for {
-		deployed, hosts := c.statusSnapshot()
+		cfg, deployed, hosts := c.heartbeatSnapshot()
 		status := "online"
 		if c.updating.Load() > 0 {
 			status = "updating"
 		}
-		if err := c.Panel.RegisterWithHosts(ctx, c.Config, deployed, hosts); err != nil && ctx.Err() == nil {
+		if err := c.Panel.RegisterWithHosts(ctx, cfg, deployed, hosts); err != nil && ctx.Err() == nil {
 			c.Logf("central updater register: %v", err)
 		}
-		if err := c.Panel.HeartbeatWithHosts(ctx, c.Config, status, deployed, hosts); err != nil && ctx.Err() == nil {
+		if err := c.Panel.HeartbeatWithHosts(ctx, cfg, status, deployed, hosts); err != nil && ctx.Err() == nil {
 			c.Logf("central updater heartbeat: %v", err)
 		}
 		select {
@@ -262,6 +334,38 @@ func (c *CentralCoordinator) heartbeatLoop(ctx context.Context) {
 		case <-ticker.C:
 			c.probeAll(ctx)
 		}
+	}
+}
+
+func (c *CentralCoordinator) recoveryHeartbeat(ctx context.Context) error {
+	cfg, deployed, hosts := c.heartbeatSnapshot()
+	if err := c.Panel.HeartbeatWithHosts(ctx, cfg, "updating", deployed, hosts); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
+	return nil
+}
+
+// ActivatePolicy opens fresh job claims after a managed supervisor has
+// durably committed the policy backing this ready runtime. Run calls it
+// immediately for the legacy non-supervised lifecycle.
+func (c *CentralCoordinator) ActivatePolicy() {
+	c.draining.Store(false)
+	c.policyActivate.Do(func() {
+		if c.policyActivation != nil {
+			close(c.policyActivation)
+		}
+	})
+}
+
+func (c *CentralCoordinator) waitForPolicyActivation(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-c.policyActivation:
+		return true
 	}
 }
 
@@ -285,7 +389,23 @@ func (c *CentralCoordinator) recoverInterruptedControlPanel(ctx context.Context)
 			return nil
 		}
 		c.Logf("host %s interrupted Control Panel update %s is blocking all other host claims until reconciliation", worker.host.HostID, active.ID)
-		if err := worker.pollOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		// A restart may leave the updater beyond the Control Panel's heartbeat
+		// availability deadline. Refresh it before every recovery claim, rather
+		// than only once, so a long or repeatedly interrupted reconciliation
+		// cannot become permanently fenced as updater_offline. No ordinary host
+		// workers have started yet, so this only enables the durable
+		// active_job_id recovery cursor.
+		if err := c.recoveryHeartbeat(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			c.Logf("host %s Control Panel recovery heartbeat: %v", worker.host.HostID, err)
+		} else if err := c.ensureRecoveryBaseline(ctx, worker, active); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			c.Logf("host %s Control Panel recovery probe: %v", worker.host.HostID, err)
+		} else if err := worker.pollOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			c.Logf("host %s Control Panel recovery poll: %v", worker.host.HostID, err)
 		}
 		if ctx.Err() != nil {
@@ -304,6 +424,24 @@ func (c *CentralCoordinator) recoverInterruptedControlPanel(ctx context.Context)
 		case <-timer.C:
 		}
 	}
+}
+
+func (c *CentralCoordinator) ensureRecoveryBaseline(ctx context.Context, worker *centralHostWorker, active *UpdateJob) error {
+	intentPath := filepath.Join(worker.stateDir(), active.ID, "intent.json")
+	if _, err := loadCoordinatorIntent(intentPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if _, ok := c.hostConfigSHA256(worker.host.HostID); ok {
+		return nil
+	}
+	c.probeHost(ctx, worker)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := c.hostConfigSHA256(worker.host.HostID); !ok {
+		return errors.New("remote helper config digest is unavailable")
+	}
+	return nil
 }
 
 func (c *CentralCoordinator) interruptedControlPanelWorker() (*centralHostWorker, *UpdateJob) {
@@ -416,6 +554,33 @@ func (c *CentralCoordinator) hostConfigSHA256(hostID string) (string, bool) {
 	return digest, ok && digestPattern.MatchString(digest)
 }
 
+func (c *CentralCoordinator) releaseTokenForJob(job UpdateJob) RemoteSecret {
+	if !job.ReleaseToken.Empty() {
+		return job.ReleaseToken
+	}
+	return NewRemoteSecret(strings.TrimSpace(c.Config.GitHubToken))
+}
+
+func (c *CentralCoordinator) downloaderForJob(job UpdateJob) (CoordinatorDownloader, error) {
+	if job.ReleaseToken.Empty() {
+		if strings.TrimSpace(c.Config.GitHubToken) == "" {
+			return nil, errors.New("release credential is unavailable for this update job")
+		}
+		if c.Downloader == nil {
+			return nil, errors.New("legacy release downloader is unavailable")
+		}
+		return c.Downloader, nil
+	}
+	if c.NewDownloader == nil {
+		return nil, errors.New("job-scoped release downloader is unavailable")
+	}
+	downloader := c.NewDownloader(job.ReleaseToken)
+	if downloader == nil {
+		return nil, errors.New("job-scoped release downloader is unavailable")
+	}
+	return downloader, nil
+}
+
 func (c *CentralCoordinator) statusSnapshot() (map[string]string, map[string]HostHeartbeat) {
 	c.statusMu.RLock()
 	defer c.statusMu.RUnlock()
@@ -439,7 +604,125 @@ func (c *CentralCoordinator) statusSnapshot() (map[string]string, map[string]Hos
 	return deployed, hosts
 }
 
+func (c *CentralCoordinator) heartbeatSnapshot() (Config, map[string]string, map[string]HostHeartbeat) {
+	c.statusMu.RLock()
+	defer c.statusMu.RUnlock()
+	cfg := c.Config
+	cfg.SSHClientPublicKeys = cloneCapabilityStringMap(c.Config.SSHClientPublicKeys)
+	cfg.SSHClientKeyFingerprints = cloneCapabilityStringMap(c.Config.SSHClientKeyFingerprints)
+	hosts := make(map[string]HostHeartbeat, len(c.hostStatus))
+	deployed := make(map[string]string)
+	for id, status := range c.hostStatus {
+		hosts[id] = status
+	}
+	for _, versions := range c.probeVersions {
+		for targetID, current := range versions {
+			deployed[targetID] = current
+		}
+	}
+	for _, worker := range c.workers {
+		for targetID, current := range worker.journal.DeployedVersions() {
+			if _, observed := deployed[targetID]; !observed {
+				deployed[targetID] = current
+			}
+		}
+	}
+	return cfg, deployed, hosts
+}
+
+// SetPolicyState changes only runtime heartbeat metadata. Applied and desired
+// revisions are explicit so a ready-but-not-yet-durable candidate can report
+// pending without claiming that the new revision is committed. Raw errors are
+// never accepted; callers supply one of the allow-listed stable codes.
+func (c *CentralCoordinator) SetPolicyState(appliedRevision, desiredRevision int64, status, errorCode string, publicKeys, fingerprints map[string]string) {
+	if appliedRevision < 0 || desiredRevision < appliedRevision {
+		return
+	}
+	c.statusMu.Lock()
+	defer c.statusMu.Unlock()
+	c.Config.PolicyStatus = normalizePolicyStatus(status)
+	c.Config.PolicyRevision = appliedRevision
+	c.Config.PolicyDesiredRevision = desiredRevision
+	c.Config.PolicyErrorCode = ""
+	if c.Config.PolicyStatus == PolicyStatusFailed {
+		c.Config.PolicyErrorCode = safePolicyErrorCode(errorCode)
+	} else if c.Config.PolicyStatus == PolicyStatusPending && strings.TrimSpace(errorCode) == PolicyErrorActiveJob {
+		c.Config.PolicyErrorCode = PolicyErrorActiveJob
+	}
+	if publicKeys != nil {
+		c.Config.SSHClientPublicKeys = cloneCapabilityStringMap(publicKeys)
+	}
+	if fingerprints != nil {
+		c.Config.SSHClientKeyFingerprints = cloneCapabilityStringMap(fingerprints)
+	}
+}
+
+// SetPolicyStatus retains the original single-revision convenience contract
+// for focused callers and tests.
+func (c *CentralCoordinator) SetPolicyStatus(revision int64, status, errorCode string, publicKeys, fingerprints map[string]string) {
+	c.statusMu.RLock()
+	appliedRevision := c.Config.PolicyRevision
+	c.statusMu.RUnlock()
+	if normalizePolicyStatus(status) == PolicyStatusApplied {
+		appliedRevision = revision
+	}
+	c.SetPolicyState(appliedRevision, revision, status, errorCode, publicKeys, fingerprints)
+}
+
+// BeginPolicyReplacement prevents new claims, waits for in-flight execution to
+// leave the shared gate, and then verifies no recovery cursor remains. The
+// returned release function receives whether replacement is committed.
+// A committed drain remains closed to new claims while the canceled Run exits;
+// an aborted drain safely resumes the existing coordinator.
+func (c *CentralCoordinator) BeginPolicyReplacement(ctx context.Context) (release func(bool), ready bool, err error) {
+	c.replacementMu.Lock()
+	defer c.replacementMu.Unlock()
+	wasDraining := c.draining.Swap(true)
+	acquired := make(chan struct{})
+	go func() {
+		c.executionGate.Lock()
+		close(acquired)
+	}()
+	select {
+	case <-ctx.Done():
+		go func() {
+			<-acquired
+			c.executionGate.Unlock()
+			if !wasDraining {
+				c.draining.Store(false)
+			}
+		}()
+		return nil, false, ctx.Err()
+	case <-acquired:
+	}
+	for _, worker := range c.workers {
+		if worker.journal.Active() != nil {
+			c.executionGate.Unlock()
+			return nil, false, nil
+		}
+	}
+	var once sync.Once
+	return func(replacing bool) {
+		once.Do(func() {
+			c.executionGate.Unlock()
+			if !replacing {
+				c.draining.Store(false)
+			}
+		})
+	}, true, nil
+}
+
+// AbortPolicyReplacement reopens claims after a pending or failed policy is
+// abandoned. It is only called when BeginPolicyReplacement is not holding the
+// execution writer gate.
+func (c *CentralCoordinator) AbortPolicyReplacement() {
+	c.draining.Store(false)
+}
+
 func (w *centralHostWorker) pollOnce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.coordinator.executionGate.RLock()
@@ -449,10 +732,16 @@ func (w *centralHostWorker) pollOnce(ctx context.Context) error {
 			w.coordinator.executionGate.RUnlock()
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := w.flushReports(ctx); err != nil {
 		return err
 	}
 	active := w.journal.Active()
+	if w.coordinator.draining.Load() && active == nil {
+		return nil
+	}
 	if active == nil && !w.coordinator.hostReachable(w.host.HostID) {
 		return nil
 	}
@@ -502,6 +791,7 @@ func (w *centralHostWorker) processJobWithReadGate(ctx context.Context, job Upda
 	// no recovery value. Report credentials also remain process-memory-only.
 	persistedJob := job
 	persistedJob.LeaseToken = ""
+	persistedJob.ReleaseToken = ""
 	if err := w.journal.SetActive(&persistedJob); err != nil {
 		return err
 	}
@@ -718,7 +1008,11 @@ func (w *centralHostWorker) preparePlan(ctx context.Context, job UpdateJob, targ
 				return ApplyPlan{}, err
 			}
 		}
-		artifact, err := w.coordinator.Downloader.Download(ctx, target.ServiceType, targetVersion, w.host.Arch, filepath.Join(verificationDir, "artifact"))
+		downloader, err := w.coordinator.downloaderForJob(job)
+		if err != nil {
+			return ApplyPlan{}, err
+		}
+		artifact, err := downloader.Download(ctx, target.ServiceType, targetVersion, w.host.Arch, filepath.Join(verificationDir, "artifact"))
 		if err != nil {
 			return ApplyPlan{}, err
 		}
@@ -735,7 +1029,11 @@ func (w *centralHostWorker) preparePlan(ctx context.Context, job UpdateJob, targ
 		if err != nil {
 			return ApplyPlan{}, err
 		}
-		resolved, err := w.coordinator.Downloader.ResolveDockerReleaseForArch(ctx, targetVersion, target.ServiceType, imageRepo, "docker", w.host.Arch, filepath.Join(verificationDir, "docker"))
+		downloader, err := w.coordinator.downloaderForJob(job)
+		if err != nil {
+			return ApplyPlan{}, err
+		}
+		resolved, err := downloader.ResolveDockerReleaseForArch(ctx, targetVersion, target.ServiceType, imageRepo, "docker", w.host.Arch, filepath.Join(verificationDir, "docker"))
 		if err != nil {
 			return ApplyPlan{}, err
 		}
@@ -877,7 +1175,7 @@ func (w *centralHostWorker) stageRemote(ctx context.Context, job UpdateJob, plan
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := w.coordinator.Remote.Stage(stageCtx, w.host, plan, NewRemoteSecret(w.coordinator.Config.GitHubToken))
+		result, err := w.coordinator.Remote.Stage(stageCtx, w.host, plan, w.coordinator.releaseTokenForJob(job))
 		done <- outcome{result: result, err: err}
 	}()
 	ticker := time.NewTicker(w.coordinator.keepaliveInterval())
@@ -1102,22 +1400,26 @@ func (c *CentralCoordinator) reportAckTimeout() time.Duration {
 	return 10 * time.Minute
 }
 
-func (c *CentralCoordinator) startStatusServer() (*http.Server, <-chan error) {
+func (c *CentralCoordinator) prepareStatusServer() (*http.Server, net.Listener, error) {
 	server := &http.Server{Addr: c.Config.API.BindAddress(), Handler: c.statusHandler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
-	errs := make(chan error, 1)
-	go func() {
-		var err error
-		if c.Config.API.SSLEnabled {
-			err = server.ListenAndServeTLS(c.Config.API.TLSCertFile, c.Config.API.TLSKeyFile)
-		} else {
-			err = server.ListenAndServe()
-		}
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errs <- err
-		}
-		close(errs)
-	}()
-	return server, errs
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen for central updater status: %w", err)
+	}
+	if !c.Config.API.SSLEnabled {
+		return server, listener, nil
+	}
+	certificate, err := tls.LoadX509KeyPair(c.Config.API.TLSCertFile, c.Config.API.TLSKeyFile)
+	if err != nil {
+		_ = listener.Close()
+		return nil, nil, errors.New("load central updater status TLS identity")
+	}
+	tlsConfig := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+	}
+	server.TLSConfig = tlsConfig
+	return server, tls.NewListener(listener, tlsConfig), nil
 }
 
 func (c *CentralCoordinator) statusHandler() http.Handler {

@@ -568,10 +568,106 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentConfigurationRejectsLegacyScopesBeforeStageOrActivation(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	legacyToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const serviceID = "updater-legacy-scope"
+	if _, err := auth.PrecreateService(ctx, legacyToken, ServiceRegistration{
+		ServiceID: serviceID, ServiceType: "update_agent", ServiceName: "Legacy Updater",
+		PublicURL: "https://legacy-updater.example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.July, 21, 3, 20, 0, 0, time.UTC)
+	configureToken := "configure-legacy-update-agent"
+	if _, err := auth.SetServiceConfigureToken(ctx, serviceID, security.HashToken(configureToken), now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sealerCalled := false
+	if _, err := auth.StageServiceNodeConfiguration(ctx, serviceID, configureToken, now, func(string) (string, string, error) {
+		sealerCalled = true
+		return "ciphertext", "nonce", nil
+	}); !errors.Is(err, ErrInvalidServiceScope) {
+		t.Fatalf("legacy updater stage err = %v, want ErrInvalidServiceScope", err)
+	}
+	if sealerCalled {
+		t.Fatal("legacy updater stage generated a replacement secret before rejecting its scopes")
+	}
+	service, err := auth.GetService(ctx, serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.TokenID != legacyToken.ID || service.ConfigureTokenUsedAt != nil || service.StagedNodeTokenID != "" {
+		t.Fatalf("rejected legacy updater stage mutated service: %#v", service)
+	}
+
+	// Simulate an incomplete staged configuration persisted by a pre-upgrade
+	// server. Activation must validate the staged scopes again under the store
+	// lock so deployment across the stage/activate boundary stays fail closed.
+	const stagedTokenID = "legacy-staged-token"
+	const stagedRawToken = "ast_svc_legacy_staged"
+	const activationToken = "ast_act_legacy_staged"
+	stageTime := now.Add(time.Minute)
+	auth.mu.Lock()
+	service = auth.services[serviceID]
+	service.StagedNodePreviousTokenID = legacyToken.ID
+	service.StagedNodeTokenID = stagedTokenID
+	service.StagedNodeTokenHash = security.HashToken(stagedRawToken)
+	service.StagedNodeTokenScopes = []string{"service.register", "service.heartbeat"}
+	service.StagedNodeTokenCiphertext = "legacy-staged-ciphertext"
+	service.StagedNodeTokenNonce = "legacy-staged-nonce"
+	service.StagedNodeActivationTokenHash = security.HashToken(activationToken)
+	service.StagedNodeTokenAt = &stageTime
+	service.ConfigureTokenUsedAt = &stageTime
+	auth.services[serviceID] = service
+	auth.mu.Unlock()
+
+	if _, _, _, err := auth.ActivateServiceNodeConfiguration(
+		ctx,
+		serviceID,
+		stagedTokenID,
+		activationToken,
+		now.Add(2*time.Hour),
+		ServiceRuntimeReport{},
+	); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expired legacy updater activation err = %v, want ErrUnauthorized", err)
+	}
+	if _, _, _, err := auth.ActivateServiceNodeConfiguration(
+		ctx,
+		serviceID,
+		stagedTokenID,
+		activationToken,
+		now.Add(2*time.Minute),
+		ServiceRuntimeReport{},
+	); !errors.Is(err, ErrInvalidServiceScope) {
+		t.Fatalf("legacy updater activation err = %v, want ErrInvalidServiceScope", err)
+	}
+	service, err = auth.GetService(ctx, serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.TokenID != legacyToken.ID ||
+		service.StagedNodeTokenID != stagedTokenID ||
+		service.NodeTokenCiphertext != "" ||
+		service.NodeTokenNonce != "" {
+		t.Fatalf("rejected legacy updater activation mutated service: %#v", service)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, legacyToken.RawToken, "service.heartbeat"); err != nil {
+		t.Fatalf("rejected legacy updater activation invalidated old token: %v", err)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, stagedRawToken, "service.heartbeat"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("rejected legacy updater activation enabled staged token: %v", err)
+	}
+}
+
 func TestUpdateAgentConfigurationRejectsExpiredActivationWithoutChangingActiveToken(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()
-	oldToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat", "updates.claim"})
+	oldToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +700,7 @@ func TestUpdateAgentConfigurationRejectsExpiredActivationWithoutChangingActiveTo
 func TestRegeneratingConfigureTokenDiscardsInactiveUpdateAgentStage(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()
-	oldToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat", "updates.claim"})
+	oldToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"})
 	if err != nil {
 		t.Fatal(err)
 	}

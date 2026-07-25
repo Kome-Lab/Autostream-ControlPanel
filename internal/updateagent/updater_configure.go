@@ -242,7 +242,7 @@ func validateUpdaterStagedConfiguration(staged UpdaterStagedConfiguration, panel
 }
 
 func ValidateInstalledUpdaterIdentity(path string, identity UpdaterConfigureIdentity) error {
-	cfg, err := LoadConfig(path, true)
+	cfg, err := LoadManagedBootstrapConfig(path, true)
 	if err != nil {
 		return fmt.Errorf("validate installed updater config: %w", err)
 	}
@@ -314,7 +314,7 @@ type updaterConfigTemplate struct {
 
 func prepareUpdaterConfigTemplate(existing []byte) (updaterConfigTemplate, error) {
 	if len(bytes.TrimSpace(existing)) == 0 {
-		return updaterConfigTemplate{}, errors.New("existing updater config is required before configuring Panel-owned identity")
+		return updaterConfigTemplate{fields: map[string]json.RawMessage{}}, nil
 	}
 	var fields map[string]json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(existing))
@@ -337,10 +337,7 @@ func (t updaterConfigTemplate) merge(identity UpdaterConfigureIdentity) ([]byte,
 	if err := validateUpdaterConfigureIdentity(identity, identity.NodeID, ""); err != nil {
 		return nil, err
 	}
-	fields := make(map[string]json.RawMessage, len(t.fields)+4)
-	for name, value := range t.fields {
-		fields[name] = append(json.RawMessage(nil), value...)
-	}
+	fields := make(map[string]json.RawMessage, 4)
 	for name, value := range map[string]string{
 		"panel_url":     strings.TrimSpace(identity.PanelURL),
 		"node_id":       strings.TrimSpace(identity.NodeID),

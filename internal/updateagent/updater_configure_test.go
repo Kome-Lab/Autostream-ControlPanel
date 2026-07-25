@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +17,7 @@ func (f updaterRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return f(request)
 }
 
-func TestMergeUpdaterConfiguredIdentityPreservesLocalPolicy(t *testing.T) {
+func TestMergeUpdaterConfiguredIdentityReplacesLegacyPolicyWithManagedBootstrap(t *testing.T) {
 	cfg := validCentralTestConfig(t)
 	cfg.PanelURL = "https://old-panel.example.com"
 	cfg.NodeID = "old-updater"
@@ -42,33 +41,36 @@ func TestMergeUpdaterConfiguredIdentityPreservesLocalPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 4 {
+		t.Fatalf("managed bootstrap fields = %v, want exactly four identity fields", fields)
+	}
 	var got Config
 	if err := json.Unmarshal(merged, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.PanelURL != identity.PanelURL || got.NodeID != identity.NodeID || got.RuntimeToken != identity.RuntimeToken || got.ServiceName != identity.ServiceName {
+	if got.PanelURL != identity.PanelURL || got.NodeID != identity.NodeID || got.RuntimeToken != identity.RuntimeToken || got.ServiceName != identity.ServiceName || !got.IsManagedBootstrap() {
 		t.Fatalf("configured identity = %#v", got)
 	}
-	gotTargets, err := json.Marshal(got.Targets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantTargets, err := json.Marshal(cfg.Targets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.GitHubToken != cfg.GitHubToken || got.StateDir != cfg.StateDir || got.PollIntervalSeconds != cfg.PollIntervalSeconds || got.HeartbeatIntervalSeconds != cfg.HeartbeatIntervalSeconds || !reflect.DeepEqual(got.API, cfg.API) || !reflect.DeepEqual(got.Hosts, cfg.Hosts) || string(gotTargets) != string(wantTargets) {
-		t.Fatalf("local policy changed: got=%#v want=%#v", got, cfg)
-	}
-	if strings.Contains(string(merged), "configure-token") || strings.Contains(string(merged), "panel-supplied.example.com") {
-		t.Fatalf("configure-only data entered updater config: %s", merged)
+	for _, forbidden := range []string{"github_token", "api", "state_dir", "hosts", "targets", "helper_argv", "identity_file", "known_hosts", "local-github-secret", "github-local-secret", "panel-supplied.example.com"} {
+		if strings.Contains(string(merged), forbidden) {
+			t.Fatalf("legacy or configure-only field %q remained in managed bootstrap: %s", forbidden, merged)
+		}
 	}
 }
 
-func TestMergeUpdaterConfiguredIdentityRequiresExistingLocalPolicy(t *testing.T) {
+func TestMergeUpdaterConfiguredIdentityCreatesManagedBootstrapWithoutExistingPolicy(t *testing.T) {
 	identity := UpdaterConfigureIdentity{PanelURL: "https://panel.example.com", NodeID: "central-updater", RuntimeToken: "runtime-token", ServiceName: "Central Updater", ServiceType: "update_agent"}
-	if _, err := mergeUpdaterConfiguredIdentity(nil, identity); err == nil || !strings.Contains(err.Error(), "existing updater config") {
-		t.Fatalf("missing local policy merge = %v", err)
+	merged, err := mergeUpdaterConfiguredIdentity(nil, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &fields); err != nil || len(fields) != 4 {
+		t.Fatalf("generated managed bootstrap = %s, %v", merged, err)
 	}
 }
 

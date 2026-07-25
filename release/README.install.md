@@ -15,7 +15,13 @@ non-resident `autostream-update-host` bootstrap artifact.
 - A reverse proxy with HTTPS for production.
 - A production database and secret values supplied outside Git.
 
-## Install a verified managed release
+## Install a verified managed release for the Control Panel target
+
+Use this section only when the Control Panel itself will be updated as a managed
+target with rollback. Installing only the central updater does not require
+migrating an existing `/usr/local/bin/control-panel` and
+`/usr/share/autostream-control-panel` installation. For that existing direct
+layout, skip to **Install the central updater once**.
 
 The systemd unit runs the Control Panel through
 `/opt/autostream/control-panel/current`. Seed that link from the same immutable
@@ -85,7 +91,7 @@ sudo test -d "$RELEASE_DIR"
 test -x "$RELEASE_DIR/backup/autostream-backup-control-panel"
 sudo install -d -o root -g root -m 0700 /var/backups/autostream/control-panel
 sudo install -o root -g root -m 0700 "$RELEASE_DIR/backup/autostream-backup-control-panel" /usr/local/sbin/autostream-backup-control-panel
-sudo install -d -o root -g root -m 0750 /etc/autostream
+sudo install -d -o root -g root -m 0755 /etc/autostream
 if ! sudo test -e /etc/autostream/mariadb-backup.cnf; then
   sudo install -o root -g root -m 0600 /dev/null /etc/autostream/mariadb-backup.cnf
 else
@@ -231,19 +237,13 @@ sudo rule, Docker socket, `systemctl` authority, or root helper. Privileged
 target policy remains on each managed host in root-owned
 `/etc/autostream/update-host.json`.
 
-Install the central binary and fixed directories first. Do not copy or install
-an updater JSON sample: the binary contains the initial configuration. Complete
-each managed host's root policy and SSH bootstrap before registering the central
-updater. The first Auto Configure run creates a missing configuration from that
-built-in example and stops before it asks for or consumes the short-lived
-Configure Token. Do not install a persistent updater on managed hosts or copy
-any token to them.
+Install the central binary and service directly from the extracted Control Panel
+archive. This procedure uses the existing `/usr/local/bin` Control Panel layout
+and `/usr/share/autostream-control-panel`; it does not assume that
+`/opt/autostream/control-panel/current/bin` exists. Replace `vX.Y.Z` below with
+the extracted release version.
 
 ```bash
-set -euo pipefail
-RELEASE_DIR="$(readlink -f /opt/autostream/control-panel/current)"
-test -x "$RELEASE_DIR/bin/autostream-updater"
-
 getent group autostream-updater >/dev/null 2>&1 || \
   sudo groupadd --system autostream-updater
 id -u autostream-updater >/dev/null 2>&1 || \
@@ -253,161 +253,84 @@ id -u autostream-updater >/dev/null 2>&1 || \
 sudo install -d -o autostream-updater -g autostream-updater -m 0700 \
   /var/lib/autostream-updater
 sudo install -d -o root -g root -m 0755 /etc/autostream
-sudo install -d -o root -g autostream-updater -m 0750 \
-  /etc/autostream/updater /etc/autostream/updater/ssh
-
-if sudo systemctl is-active --quiet autostream-updater; then
-  echo "central updater is running; update its binary only after active jobs finish"
-else
-  sudo install -o root -g root -m 0755 \
-    "$RELEASE_DIR/bin/autostream-updater" /usr/local/bin/autostream-updater
-fi
-
-Auto-initialization requires the `autostream-updater` binary from this same
-Control Panel release because the example is compiled into that binary. Install
-the bundled binary before running Auto Configure; older updater binaries do not
-create a missing `updater.json` automatically.
-
-if ! sudo test -e /etc/autostream/updater/ssh/known_hosts; then
-  sudo install -o root -g autostream-updater -m 0640 /dev/null \
-    /etc/autostream/updater/ssh/known_hosts
-fi
+cd /opt/autostream/releases/artifacts/autostream-control-panel_vX.Y.Z_linux_amd64
+sudo install -o root -g root -m 0755 \
+  bin/autostream-updater /usr/local/bin/autostream-updater
 sudo install -o root -g root -m 0644 \
-  "$RELEASE_DIR/systemd/autostream-updater.service.example" \
+  systemd/autostream-updater.service.example \
   /etc/systemd/system/autostream-updater.service
+sudo systemctl daemon-reload
 ```
 
-Generate a different Ed25519 key for each managed host. Install each private
-key as `root:autostream-updater 0640` below `/etc/autostream/updater/ssh`; the
-controller can read but cannot replace it. Keep the directory and every parent
-root-owned and not writable by group or other users. Apply the same ownership
-boundary to the dedicated `known_hosts` file, then pin the corresponding server
-host key after verifying its fingerprint through an independent management
-channel. Production must use strict host-key checking; do not use `accept-new`.
-
-For the example host, generate and lock down the controller key without putting
-the private key in a user-owned staging directory:
+Create exactly one `Update Agent` Node in the Control Panel for this central
+updater. Do not create one for every managed host. Copy the command shown in the
+Node Configuration view and run it once on the central host:
 
 ```bash
-set -euo pipefail
-HOST_ID=host-tokyo-01
-KEY="/etc/autostream/updater/ssh/${HOST_ID}_ed25519"
-sudo test ! -e "$KEY"
-sudo test ! -e "$KEY.pub"
-sudo ssh-keygen -q -t ed25519 -N '' \
-  -C "autostream-updater:${HOST_ID}" -f "$KEY"
-sudo chown root:autostream-updater "$KEY"
-sudo chmod 0640 "$KEY"
-sudo chown root:root "$KEY.pub"
-sudo chmod 0644 "$KEY.pub"
-sudo stat -c '%U:%G:%a %n' "$KEY" "$KEY.pub"
+sudo /usr/local/bin/autostream-updater configure --panel-url "https://control.example.com" --node "central-updater"
 ```
 
-Transfer only `KEY.pub` to that host's bootstrap administrator. Fetch the host
-key into a temporary file, compare its `ssh-keygen -lf` fingerprint with the
-server console or inventory, and only then add its exact line to the dedicated
-root-owned `known_hosts` file using `sudoedit`. Do not copy a private controller
-key to a managed host.
+Paste the separately displayed Configure Token into the prompt. The updater
+reads it from the TTY or bounded standard input with echo disabled, so it is not
+placed in the command, process arguments, or shell history. In this one run the
+updater stages the identity, atomically creates
+`/etc/autostream/updater.json` as `root:autostream-updater 0640`, validates it,
+and activates the Runtime Token. The generated file contains only the Control
+Panel connection identity. Do not edit it and do not add a GitHub Release
+Token, host, target, or SSH setting to it.
+
+Enable the service after configure succeeds:
+
+```bash
+sudo -u autostream-updater test -r /etc/autostream/updater.json
+sudo -u autostream-updater test -w /var/lib/autostream-updater
+sudo systemd-analyze verify /etc/systemd/system/autostream-updater.service
+sudo systemctl enable --now autostream-updater
+sudo systemctl status autostream-updater
+```
+
+Open **Application Info > System Updates**, select the central updater, and
+configure:
+
+- the GitHub Release Token. The GitHub Release Token is required for every
+  managed update, whether the repository is public or private. It is write-only
+  in the Control Panel and is never shown after saving.
+- the loopback API port and the poll and heartbeat intervals;
+- each host ID, name, address, SSH port, SSH user, and architecture;
+- the complete SSH server public key, verified through an independent channel;
+- the targets assigned to each host.
+
+Do not trust `ssh-keyscan` output by itself. Compare the fingerprint with the
+server console or another independent inventory before saving the complete host
+public key. The Control Panel stores the GitHub Release Token as an encrypted
+secret and delivers it only once to the updater that claims an authorized
+update job.
+
+Saving starts automatic pull and validation. No service restart is required.
+For every new host the updater generates a separate Ed25519 client key and
+reports only its public key to the System Updates page. Copy that reported
+public key into a file for that host's bootstrap administrator; never copy the
+private key.
 
 Each remote host is installed from the separate
 `autostream-update-host_<version>_linux_<arch>.tar.gz` artifact. Follow its
-`README.bootstrap.md` through its final restricted-probe verification. Complete
-that host's root-owned `/etc/autostream/update-host.json` target policy during
-the bootstrap. The process installs a forced SSH command and non-resident
-helper, not a daemon or token. Apply and reconcile use only a collected
-transient systemd worker so an SSH disconnect cannot interrupt a mutation; no
-persistent unit is installed on the managed host.
+`README.bootstrap.md`, using the reported client public key as
+`--authorized-key`. The bootstrap installs the root-owned
+`/etc/autostream/update-host.json`, forced SSH command, and non-resident helper,
+not a daemon or token.
 
-Only after every managed host has passed that bootstrap, create exactly one
-`Update Agent` Node in the Control Panel for this central updater. If the Node
-already exists, generate a new Configure Token from its Configuration view. Do
-not create an Update Agent Node for each managed host, and do not hand-copy the
-Node Runtime Token into the JSON file.
-
-Copy the token-free Auto Configure command shown by the Node registration screen
-and run that exact command on the central host. It has this shape:
-
-```bash
-sudo autostream-updater configure \
-  --panel-url "https://control.example.com" \
-  --node "central-updater" \
-  --config "/etc/autostream/updater.json"
-```
-
-If `/etc/autostream/updater.json` is missing, this first run atomically creates
-it from the example compiled into `/usr/local/bin/autostream-updater` as
-`root:autostream-updater` with mode `0640`. No example file or `--init-from`
-argument is required. It then exits with instructions to complete the local
-policy; it does not ask for, read, or consume the Configure Token, and it does
-not stage a Runtime Token. This is an intentional non-zero safety checkpoint,
-so a `set -e` installer stops before starting an incomplete updater. If the
-configuration already exists, the initializer never overwrites or replaces it.
-`--init-from PATH` remains available only as an explicit compatibility override;
-an invalid explicit path fails instead of falling back to the built-in example.
-
-After that first run, edit the local settings in
-`/etc/autostream/updater.json`. Set `github_token`, `api`, `state_dir`, polling
-intervals, and the complete `hosts` and `targets` inventory for this central
-host. Its `hosts` entries contain only SSH routing and host identity. Its
-`targets` entries contain only `target_id`, `host_id`, service type, and
-deployment mode. Never copy remote unit names, filesystem paths, image
-repositories, or commands into an update job or browser-controlled field.
-
-Rerun the exact same token-free Auto Configure command after the local policy
-is complete. It validates the local configuration before asking for the Token,
-so a validation failure also leaves the one-time Token unread and unconsumed.
-If the displayed Token expires while the local policy is being prepared,
-generate a fresh Configure Token from the same Node and rerun the same command.
-
-The command itself does not contain the Configure Token. After local validation
-succeeds, it reads the separately displayed one-time Token from the terminal
-with echo disabled, or from bounded standard input for automation, so the
-secret never appears in process arguments. It stages a new Runtime Token,
-atomically updates only `panel_url`, `node_id`, `runtime_token`, and
-`service_name`, reloads the installed file, and validates that installed
-configuration before activating the new Token. The old Runtime Token remains
-valid until that activation succeeds. Locally controlled `github_token`, `api`,
-`state_dir`, intervals, `hosts`, `targets`, SSH paths, and all other local
-policy are preserved.
-
-Do not restart the updater when the command reports a staging, installation,
-validation, or activation failure. Follow the error and issue a new Configure
-Token before retrying. The activation request itself is idempotent and is
-retried with the same activation credential when the result is transiently
-uncertain. If the activation response remains uncertain, the Control Panel may
-already have activated the staged Token, so the CLI cannot determine which
-Runtime Token is active. A failure after the atomic update can also leave the
-staged identity in `updater.json`. If the updater is not running, do not start
-it; if it is already running, leave the current process untouched. Issue a
-fresh Configure Token and rerun the same token-free command. Never record
-either one-time secret.
-
-After activation succeeds, validate the completed configuration without
-restarting the central updater:
-
-```bash
-set -euo pipefail
-sudo -u autostream-updater test -r /etc/autostream/updater.json
-sudo -u autostream-updater test -w /var/lib/autostream-updater
-sudo -u autostream-updater -- /usr/local/bin/autostream-updater validate-config \
-  --config /etc/autostream/updater.json
-sudo systemd-analyze verify /etc/systemd/system/autostream-updater.service
-```
-
-Only after every validation succeeds, enable and restart the central updater:
-
-```bash
-set -euo pipefail
-sudo systemctl daemon-reload
-sudo systemctl enable autostream-updater
-sudo systemctl restart autostream-updater
-sudo systemctl status autostream-updater
-sudo journalctl -u autostream-updater -n 100 --no-pager
-```
+The settings view reports `applied`, `pending`, or `failed`. `applied` means the
+updater accepted the desired revision and is running with it; it does not mean
+every host is reachable. A missing helper, an uninstalled client public key, a
+server-key mismatch, or a remote-policy mismatch is shown separately as host
+`unreachable`. The updater retries host probes automatically. If an update job
+is active when settings are saved, it defers applying the new revision until
+that job reaches a safe terminal state. A failed revision leaves the previous
+applied settings active.
 
 The unit is intentionally hardened with `NoNewPrivileges`, an empty capability
 set, a read-only system image, and a single writable state directory. If it
-cannot start, fix the config, key ownership, known-host pin, or OS systemd
+cannot start, fix the connection identity, state ownership, or OS systemd
 compatibility. Do not weaken the unit or add a broad sudo rule.
 
 ## Database backup and Docker credentials
@@ -426,16 +349,15 @@ it as the initial rollback baseline. Never add assets to an existing tag.
 ## Update the central updater binary
 
 The central updater is not one of its own managed targets. It stays at the
-fixed `/usr/local/bin/autostream-updater` path so a Control Panel `current` link
-switch cannot replace a running controller. Wait until no update job is active,
-verify and stage the new Control Panel host artifact, then replace it explicitly:
+fixed `/usr/local/bin/autostream-updater` path. Wait until no update job is
+active, verify and extract the new Control Panel host artifact, then replace it
+explicitly. Replace `vX.Y.Z` with the extracted release version:
 
 ```bash
-set -euo pipefail
-RELEASE_DIR="$(readlink -f /opt/autostream/control-panel/current)"
+cd /opt/autostream/releases/artifacts/autostream-control-panel_vX.Y.Z_linux_amd64
 sudo systemctl stop autostream-updater
 sudo install -o root -g root -m 0755 \
-  "$RELEASE_DIR/bin/autostream-updater" \
+  bin/autostream-updater \
   /usr/local/bin/autostream-updater.next
 sudo mv -f /usr/local/bin/autostream-updater.next \
   /usr/local/bin/autostream-updater

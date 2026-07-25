@@ -20,7 +20,7 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { useAppSettings, useCurrentUser, useNodes } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
-import { canIssueNodeConfiguration, canRegenerateNodeConfigureToken, canRotateNodeRuntimeToken, updaterManualConfiguration } from "@/lib/node-configuration";
+import { canIssueNodeConfiguration, canRegenerateNodeConfigureToken, canRotateNodeRuntimeToken } from "@/lib/node-configuration";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 
 const nodeTypes = [
@@ -88,11 +88,12 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   const canExecuteSystemUpdates = hasPermission(currentUser.data, "system_updates.execute");
   const canDeleteNode = hasPermission(currentUser.data, "services.disable");
   const createIncludesManagedSecret = nodeType === "worker" || nodeType === "encoder_recorder" || allowRuntimeSecrets;
+  const createRequiresSecretUpdate = createIncludesManagedSecret || nodeType === "update_agent";
   const canCreateNode = canIssueNodeConfiguration({
     serviceType: nodeType,
     canCreateTokens: allowed,
     canResolveManagedSecret: canResolveRuntimeSecrets,
-    requiresManagedSecret: createIncludesManagedSecret,
+    requiresManagedSecret: createRequiresSecretUpdate,
     canExecuteSystemUpdates,
   });
   const nodeApiUrl = useMemo(() => {
@@ -102,9 +103,8 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
     if (!normalizedHost || !Number.isFinite(normalizedPort) || normalizedPort <= 0) return "";
     return `${scheme}://${normalizedHost}:${normalizedPort}`;
   }, [host, port, sslEnabled]);
-  const manualUpdaterConfiguration = useMemo(() => updaterManualConfiguration(configuration), [configuration]);
   const updaterConfigureCommandAvailable = configuration?.node?.service_type === "update_agent" && Boolean(configuration.configure_command?.trim());
-  const updaterConfigureTokenRequired = configuration?.node?.service_type === "update_agent" && !updaterConfigureCommandAvailable && !manualUpdaterConfiguration;
+  const updaterConfigureTokenRequired = configuration?.node?.service_type === "update_agent" && !updaterConfigureCommandAvailable;
 
   const invalidateNodeQueries = async () => {
     await Promise.all([
@@ -294,8 +294,6 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
         const node = row.original;
         const nodeID = nodeIdentity(node);
         const nodeConfigurationIncludesSigningKey = node.service_type === "worker" || node.service_type === "encoder_recorder";
-        const selectedNodeConfiguration = configuration?.node && nodeIdentity(configuration.node) === nodeID ? configuration : null;
-        const legacyManualUpdater = node.service_type === "update_agent" && updaterManualConfiguration(selectedNodeConfiguration) !== null;
         const tokenPermissions = {
           serviceType: node.service_type,
           canCreateTokens: allowed,
@@ -305,33 +303,35 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
           canExecuteSystemUpdates,
         };
         const canManageNodeTokens = canRotateNodeRuntimeToken(tokenPermissions);
-        const canRegenerateConfigureToken = canRegenerateNodeConfigureToken(tokenPermissions, selectedNodeConfiguration);
+        const canRegenerateConfigureToken = canRegenerateNodeConfigureToken(tokenPermissions);
         const configureTokenPermissionMessage = !allowed
           ? "Configure Token再生成には api_tokens.create 権限が必要です。"
           : !canRevokeRuntimeToken
             ? "Configure Token再生成には api_tokens.revoke 権限が必要です。"
             : nodeConfigurationIncludesSigningKey && !canResolveRuntimeSecrets
               ? "Worker / EncoderのConfigure Token再生成には secrets.update 権限が必要です。"
-              : node.service_type === "update_agent" && !canExecuteSystemUpdates
-                ? "UpdaterのConfigure Token再生成には system_updates.execute 権限が必要です。"
-                : "Configure Tokenを再生成する権限がありません。";
-        const runtimeTokenPermissionMessage = node.service_type === "update_agent" && !canExecuteSystemUpdates
-          ? "UpdaterのRuntime Token再生成には system_updates.execute 権限が必要です。"
-          : "Runtime Token再生成には api_tokens.create と api_tokens.revoke 権限が必要です。";
+              : node.service_type === "update_agent" && !canResolveRuntimeSecrets
+                ? "UpdaterのConfigure Token再生成には secrets.update 権限が必要です。"
+                : node.service_type === "update_agent" && !canExecuteSystemUpdates
+                  ? "UpdaterのConfigure Token再生成には system_updates.execute 権限が必要です。"
+                  : "Configure Tokenを再生成する権限がありません。";
+        const runtimeTokenPermissionMessage = node.service_type === "update_agent" && !canResolveRuntimeSecrets
+          ? "UpdaterのRuntime Token再生成には secrets.update 権限が必要です。"
+          : node.service_type === "update_agent" && !canExecuteSystemUpdates
+            ? "UpdaterのRuntime Token再生成には system_updates.execute 権限が必要です。"
+            : "Runtime Token再生成には api_tokens.create と api_tokens.revoke 権限が必要です。";
         return (
           <div className="flex min-w-52 flex-wrap items-center gap-2">
             <Button variant="outline" size="icon-sm" aria-label="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
               <FileCode2 />
             </Button>
-            {!legacyManualUpdater ? (
-              <RoleGuard allowed={canRegenerateConfigureToken} message={configureTokenPermissionMessage}>
-                <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} {...guardedButtonProps(canRegenerateConfigureToken)} disabled={!canRegenerateConfigureToken || regenerateConfigureToken.isPending}>
-                  <KeyRound />
-                </Button>
-              </RoleGuard>
-            ) : null}
+            <RoleGuard allowed={canRegenerateConfigureToken} message={configureTokenPermissionMessage}>
+              <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} {...guardedButtonProps(canRegenerateConfigureToken)} disabled={!canRegenerateConfigureToken || regenerateConfigureToken.isPending}>
+                <KeyRound />
+              </Button>
+            </RoleGuard>
             <RoleGuard allowed={canManageNodeTokens} message={runtimeTokenPermissionMessage}>
-              <DangerConfirm title={`${node.service_name} のRuntime Tokenを再生成しますか`} description={node.service_type === "update_agent" ? "既存のRuntime Tokenは無効になります。表示された新しいTokenを updater.json へ反映してUpdaterを再起動してください。自動反映する場合は、この操作ではなくConfigure Tokenを再生成して表示コマンドを実行します。" : "既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。"} onConfirm={() => rotateRuntimeToken.mutate(nodeID)} actionLabel="再生成">
+              <DangerConfirm title={`${node.service_name} のRuntime Tokenを再生成しますか`} description={node.service_type === "update_agent" ? "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示されたコマンドをUpdaterホストで実行してください。" : "既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。"} onConfirm={() => rotateRuntimeToken.mutate(nodeID)} actionLabel="再生成">
                 <Button variant="outline" size="icon-sm" aria-label="Runtime Tokenを再生成" {...guardedButtonProps(canManageNodeTokens)} disabled={!canManageNodeTokens || rotateRuntimeToken.isPending}>
                   <RotateCw />
                 </Button>
@@ -434,6 +434,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
           </Button>
           {!allowed ? <p className="text-sm text-red-600">{t("roleLimited")}</p> : null}
           {allowed && createIncludesManagedSecret && !canResolveRuntimeSecrets ? <p className="text-sm text-red-600">Worker / Encoderの署名鍵または実行時シークレットを発行するには、シークレット更新権限が必要です。</p> : null}
+          {allowed && nodeType === "update_agent" && !canResolveRuntimeSecrets ? <p className="text-sm text-red-600">Updaterの登録とRuntime Tokenの発行には、secrets.update 権限が必要です。</p> : null}
           {allowed && nodeType === "update_agent" && !canExecuteSystemUpdates ? <p className="text-sm text-red-600">Updaterの登録と更新用scopeの発行には、system_updates.execute 権限が必要です。</p> : null}
           {createError ? (
             <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="polite">
@@ -486,32 +487,13 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                   onCopy={() => copyValue("runtime-token", configuration.runtime_token)}
                 />
               ) : null}
-              {manualUpdaterConfiguration ? (
-                <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
-                  <div className="flex items-center gap-2 font-medium">
-                    <AlertCircle className="size-4 text-amber-600" />
-                    旧バージョン用: Updater JSON手動設定
-                  </div>
-                  <p className="text-muted-foreground">
-                    この応答には自動Configureコマンドがありません。<code>{manualUpdaterConfiguration.example}</code> をコピーし、
-                    <code>{manualUpdaterConfiguration.path}</code> を作成してください。
-                  </p>
-                  <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                    {manualUpdaterConfiguration.steps.map((step) => <li key={step}>{step}</li>)}
-                  </ol>
-                </div>
-              ) : null}
               {updaterConfigureCommandAvailable ? (
                 <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-4 text-sm">
                   <div className="font-medium">Updaterの自動設定</div>
                   <p className="text-muted-foreground">
-                    updater.jsonがなければ、初回実行でUpdater本体に内蔵された初期設定から自動生成し、Configure Tokenを入力・消費せずに停止します。サンプルファイルの配置や--init-from指定は不要です。この安全チェックポイントは意図的に非ゼロ終了します。既存のupdater.jsonは上書きしません。
-                    作成されたファイルのGitHub Token、API、hosts、targets、SSH設定などのローカル設定を完成させ、同じtoken-free commandを再実行してください。
-                    この自動生成には同じControl Panelリリースに同梱されたUpdaterが必要です。旧Updaterは先に更新してください。
-                    ローカル設定完成後の実行ではPanel接続情報（panel_url、node_id、Runtime Token、service_name）だけを更新し、その他の既存値を保持します。
-                    コマンド自体にConfigure Tokenは含まれず、実行時にTTYまたは標準入力から安全に読み取ります。
+                    表示されたコマンドを中央Updaterホストで1回実行すると、Panel接続情報を安全に初期設定します。ホスト、更新対象、GitHub Release Tokenは「アプリケーション情報」の中央Updater設定から登録でき、保存後はUpdaterが自動で反映します。ローカル設定ファイルを手作業で編集する必要はありません。
+                    コマンド自体にConfigure Tokenは含まれず、実行時にTTYまたは標準入力から読み取ります。
                     設定処理が失敗または結果不確定の場合は、Updaterを再起動しないでください。Configurationで新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行してください。
-                    activation成功後はvalidate-configで検証し、Updaterを再起動します。
                   </p>
                 </div>
               ) : null}
@@ -571,11 +553,11 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
               Token運用
             </div>
             <div className="text-muted-foreground">
-              Configure Tokenは1回限りの設定取得用、Node Runtime TokenはPanelとNode Agent間の通常通信認証用です。UpdaterのConfigureコマンドはPanel接続情報だけを更新し、ホスト固有のGitHub Token、API、hosts、targets、SSH設定を保持します。
+              Configure Tokenは1回限りの初期設定用、Node Runtime TokenはPanelとNode Agent間の通常通信認証用です。Updaterの管理対象ホスト、サービス、GitHub Release Tokenは「アプリケーション情報」で設定します。
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
               <RotateCw className="size-4" />
-              Updaterの接続情報を更新する場合はConfigure Tokenを再生成し、表示コマンドを実行後にvalidate-configと再起動を行います。
+              UpdaterのPanel接続情報を更新する場合はConfigure Tokenを再生成し、表示されたコマンドを中央Updaterホストで実行します。
             </div>
           </div>
         </CardContent>
@@ -825,7 +807,7 @@ function nodeRegistrationErrorMessage(error: unknown) {
       store_node_runtime_token_failed: "Control Panelのenvに AUTOSTREAM_SECRET_ENCRYPTION_KEY が設定されていない、または暗号化設定が不正です。設定後にControl Panelを再起動してください。",
       stream_ingest_signing_key_required: "Control Panelのenvに AUTOSTREAM_STREAM_INGEST_SIGNING_KEY を設定して再起動してから、Worker / Encoder Nodeを作成してください。",
       stream_ingest_signing_key_invalid: "AUTOSTREAM_STREAM_INGEST_SIGNING_KEY は32バイト以上のランダム値にしてください。CHANGE_ME等のプレースホルダーは使用できません。",
-      manual_configuration_required: "このControl PanelではUpdaterのConfigure Token再生成に対応していません。Configurationに表示される旧バージョン用の手動JSON設定を使用してください。",
+      manual_configuration_required: "Control PanelまたはUpdaterが古く、自動設定に対応していません。両方を同じ新しいReleaseへ更新してください。",
       create_node_configure_token_failed: "Configure Tokenの保存に失敗しました。database接続とControl Panelのログを確認してください。",
       create_node_registration_token_failed: "Node Runtime Tokenの作成に失敗しました。Control Panelのログを確認してください。",
       rotate_node_runtime_token_failed: "Node Runtime Tokenの再生成に失敗しました。Control Panelのログを確認してください。",

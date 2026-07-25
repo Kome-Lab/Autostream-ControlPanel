@@ -8,6 +8,8 @@ import {
   isControlPanelUpdateTarget,
   isSystemUpdateJobActive,
   isSystemUpdateJobCancellable,
+  isUpdaterPolicyHostID,
+  normalizeUpdaterSettingsResponse,
   normalizeSystemUpdatesResponse,
   requestSystemUpdateWithRecovery,
   runSystemUpdatesSequentially,
@@ -18,21 +20,20 @@ import {
   systemUpdateHostReachabilityMessage,
   systemUpdateJobStatusLabel,
   systemUpdateMayDisconnectPanel,
+  systemUpdatePolicyErrorMessage,
   systemUpdateJobFromResponse,
+  systemUpdateUpdaterPolicyState,
   systemUpdateProgress,
   systemUpdateRequest,
   systemUpdateStrategyForTarget,
   systemUpdateTargetBlockedReason,
 } from "../src/lib/system-updates.ts";
-import type { SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateTarget } from "../src/types/domain.ts";
-import { mockPost } from "../src/features/mock-data.ts";
+import type { SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateTarget, UpdaterSettings } from "../src/types/domain.ts";
+import { mockGet, mockPost, mockPut } from "../src/features/mock-data.ts";
 import {
   canRegenerateNodeConfigureToken,
   canIssueNodeConfiguration,
   canRotateNodeRuntimeToken,
-  UPDATER_CONFIGURATION_EXAMPLE,
-  UPDATER_CONFIGURATION_PATH,
-  updaterManualConfiguration,
 } from "../src/lib/node-configuration.ts";
 
 const baseTarget: SystemUpdateTarget = {
@@ -209,8 +210,141 @@ test("wire responses are normalized across the public and legacy field names", (
   assert.equal(legacy.jobs[0].last_status, "");
 });
 
+test("central updater policy status and generated SSH client keys are normalized fail closed", () => {
+  const response = normalizeSystemUpdatesResponse({
+    updaters: [{
+      updater_id: "updater-main",
+      name: "Central Updater",
+      status: "online",
+      online: true,
+      desired_revision: 4,
+      applied_revision: 3,
+      policy_status: "pending",
+      policy_error_code: "",
+      ssh_client_public_keys: { "host-main": "ssh-ed25519 AAAATEST autostream-updater@central" },
+      ssh_client_key_fingerprints: { "host-main": "SHA256:client-key" },
+    }],
+  });
+  assert.equal(response.updaters[0].desired_revision, 4);
+  assert.equal(response.updaters[0].applied_revision, 3);
+  assert.equal(response.updaters[0].ssh_client_public_keys?.["host-main"], "ssh-ed25519 AAAATEST autostream-updater@central");
+  assert.deepEqual(systemUpdateUpdaterPolicyState(response.updaters[0]), { label: "反映待ち", tone: "secondary", ready: false });
+  assert.deepEqual(systemUpdateUpdaterPolicyState({ ...response.updaters[0], applied_revision: 4, policy_status: "applied" }), { label: "反映済み", tone: "default", ready: true });
+  assert.deepEqual(systemUpdateUpdaterPolicyState({ ...response.updaters[0], policy_status: "failed" }), { label: "反映失敗", tone: "destructive", ready: false });
+  assert.deepEqual(systemUpdateUpdaterPolicyState({ ...response.updaters[0], online: false }), { label: "オフライン", tone: "destructive", ready: false });
+  assert.deepEqual(systemUpdateUpdaterPolicyState({ updater_id: "new", name: "New", status: "online", online: true, version: "" }), { label: "未設定", tone: "outline", ready: false });
+  assert.match(systemUpdatePolicyErrorMessage("active_job_pending"), /処理完了後に自動で反映/);
+});
+
+test("updater settings response keeps only the panel-managed policy contract", () => {
+  const settings = normalizeUpdaterSettingsResponse({
+    updater_id: "updater-main",
+    revision: 7,
+    api: { bind_host: "127.0.0.1", host: "127.0.0.1", port: 8090, ssl_enabled: false },
+    poll_interval_seconds: 30,
+    heartbeat_interval_seconds: 15,
+    hosts: [{
+      host_id: "host-main",
+      name: "Main",
+      address: "10.0.0.10",
+      port: 55850,
+      user: "autostream-update-host",
+      arch: "amd64",
+      host_public_key: "ssh-ed25519 AAAAHOST root@main",
+      host_public_key_fingerprint: "SHA256:host-key",
+      ssh_client_public_key: "ssh-ed25519 AAAACLIENT autostream-updater@central",
+      ssh_client_key_fingerprint: "SHA256:client-key",
+    }],
+    targets: [{ target_id: "worker-main", host_id: "host-main", service_type: "worker", deployment_mode: "systemd" }],
+    github_token_configured: true,
+    github_token_fingerprint: "sha256:token",
+    updated_at: "2026-07-25T00:00:00Z",
+    github_token: "must-not-be-returned",
+    known_hosts_file: "/etc/autostream/updater/ssh/known_hosts",
+  });
+
+  assert.equal(settings.api.port, 8090);
+  assert.equal(settings.hosts[0].host_public_key, "ssh-ed25519 AAAAHOST root@main");
+  assert.equal(settings.hosts[0].host_key_fingerprint, "SHA256:host-key");
+  assert.equal(settings.hosts[0].ssh_client_public_key, "ssh-ed25519 AAAACLIENT autostream-updater@central");
+  assert.equal(settings.github_token_configured, true);
+  assert.equal("github_token" in settings, false);
+  assert.equal("known_hosts_file" in settings, false);
+});
+
+test("updater policy host IDs exclude colon while retaining safe separators", () => {
+  assert.equal(isUpdaterPolicyHostID("host-main_01.example"), true);
+  assert.equal(isUpdaterPolicyHostID("host:main"), false);
+  assert.equal(isUpdaterPolicyHostID("-host-main"), false);
+  assert.equal(isUpdaterPolicyHostID(`h${"a".repeat(127)}`), true);
+  assert.equal(isUpdaterPolicyHostID(`h${"a".repeat(128)}`), false);
+});
+
+test("updater settings save preserves, deletes, and replaces the write-only GitHub token explicitly", () => {
+  const path = "/system-updates/updaters/updater-central/settings";
+  const current = mockGet(path) as UpdaterSettings;
+  const request = {
+    api: current.api,
+    poll_interval_seconds: current.poll_interval_seconds,
+    heartbeat_interval_seconds: current.heartbeat_interval_seconds,
+    hosts: current.hosts,
+    targets: current.targets,
+  };
+
+  const preserved = mockPut(path, { ...request, expected_revision: current.revision }) as UpdaterSettings;
+  assert.equal(preserved.github_token_configured, true);
+  const deleted = mockPut(path, { ...request, expected_revision: preserved.revision, github_token: "" }) as UpdaterSettings;
+  assert.equal(deleted.github_token_configured, false);
+  const replaced = mockPut(path, { ...request, expected_revision: deleted.revision, github_token: "github_pat_test" }) as UpdaterSettings;
+  assert.equal(replaced.github_token_configured, true);
+});
+
+test("system update UI manages updater policy in the panel and never instructs manual trust files", () => {
+  const applicationSource = readFileSync(new URL("../src/features/application/application-info-view.tsx", import.meta.url), "utf8");
+  const settingsSource = readFileSync(new URL("../src/features/application/updater-settings-panel.tsx", import.meta.url), "utf8");
+  const nodeSource = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+
+  assert.match(applicationSource, /canManageUpdaterSecrets=\{hasPermission\(currentUser\.data, "secrets\.update"\)\}/);
+  assert.match(applicationSource, /canEdit=\{canExecute && canManageUpdaterSecrets\}/);
+  assert.match(settingsSource, /設定を保存/);
+  assert.match(settingsSource, /Updaterが自動で反映/);
+  assert.match(settingsSource, /別の安全な経路.*照合/s);
+  assert.match(settingsSource, /設定の変更には system_updates\.execute と secrets\.update の両方の権限が必要/);
+  assert.match(settingsSource, /system_updates\.execute/);
+  assert.match(settingsSource, /secrets\.update/);
+  assert.match(settingsSource, /GitHub Release Token/);
+  assert.match(settingsSource, /公開・非公開Releaseのどちらでも必須/);
+  assert.match(settingsSource, /host_public_key/);
+  assert.match(settingsSource, /ssh_client_public_keys/);
+  assert.match(settingsSource, /const \[baseRevision, setBaseRevision\] = useState\(settings\.revision\)/);
+  assert.match(settingsSource, /expected_revision: expectedRevision/);
+  assert.doesNotMatch(settingsSource, /expected_revision: settings\.revision/);
+  assert.match(settingsSource, /\{ value: "docker", label: "Docker" \}/);
+  assert.match(settingsSource, /min=\{5\}[\s\S]*max=\{3600\}/);
+  const heartbeatField = settingsSource.match(/label="Heartbeat間隔（秒）"[\s\S]*?<\/Field>/)?.[0] ?? "";
+  assert.match(heartbeatField, /hint="5〜60秒の範囲で設定してください。"/);
+  assert.match(heartbeatField, /min=\{5\}[\s\S]*max=\{60\}/);
+  assert.doesNotMatch(heartbeatField, /max=\{3600\}/);
+  assert.match(settingsSource, /requiredHeartbeatInterval\(form\.heartbeatInterval\)/);
+  assert.match(settingsSource, /Heartbeat間隔は5〜60秒の整数で入力してください。現在の値を5〜60秒に変更してから保存してください。/);
+  assert.match(settingsSource, /中央UpdaterのSSH秘密鍵は廃棄され、再追加時は新しい鍵になります/);
+  assert.match(settingsSource, /authorized_keys・sudoers・helper設定を撤去/);
+  assert.match(settingsSource, /\^ssh-ed25519\\s\+/);
+  assert.match(nodeSource, /Updaterの登録とRuntime Tokenの発行には、secrets\.update 権限が必要/);
+  assert.doesNotMatch(`${settingsSource}\n${nodeSource}`, /known_hosts|JSON手動設定|updater\.json.*編集|updater\.json.*設定を完成/);
+});
+
 test("central updater availability and target host reachability stay independent and fail closed", () => {
-  const online: SystemUpdateAgentStatus = { updater_id: "updater-main", name: "Central Updater", status: "online", online: true, version: "v1.7.0" };
+  const online: SystemUpdateAgentStatus = {
+    updater_id: "updater-main",
+    name: "Central Updater",
+    status: "online",
+    online: true,
+    version: "v1.7.0",
+    desired_revision: 2,
+    applied_revision: 2,
+    policy_status: "applied",
+  };
   const offline: SystemUpdateAgentStatus = { ...online, status: "offline", online: false };
   const reachable: SystemUpdateHostStatus = { host_id: "host-main", name: "Main Host", updater_id: online.updater_id, reachability: "reachable" };
   const unreachable: SystemUpdateHostStatus = { ...reachable, reachability: "unreachable", reachability_code: "ssh_timeout" };
@@ -222,6 +356,8 @@ test("central updater availability and target host reachability stay independent
   assert.deepEqual(systemUpdateConnectivity(baseTarget, [online], [unknown]), { updater: online, host: unknown, agentOnline: true, reachability: "unknown", ready: false });
   assert.deepEqual(systemUpdateConnectivity(baseTarget, [], [reachable]), { updater: undefined, host: undefined, agentOnline: false, reachability: "unknown", ready: false });
   assert.deepEqual(systemUpdateConnectivity(baseTarget, [online], [{ ...reachable, updater_id: "other-updater" }]), { updater: online, host: undefined, agentOnline: true, reachability: "unknown", ready: false });
+  assert.equal(systemUpdateConnectivity(baseTarget, [{ ...online, applied_revision: 1, policy_status: "pending" }], [reachable]).ready, false);
+  assert.equal(systemUpdateConnectivity(baseTarget, [{ ...online, policy_status: "failed" }], [reachable]).ready, false);
   assert.equal(systemUpdateHostReachabilityLabel("reachable"), "到達可");
   assert.equal(systemUpdateHostReachabilityLabel("unreachable"), "接続不可");
   assert.equal(systemUpdateHostReachabilityLabel("unknown"), "未確認");
@@ -249,11 +385,18 @@ test("update API codes are shown as actionable Japanese guidance", () => {
   assert.equal(systemUpdateTargetBlockedReason("updater_missing"), "中央Updaterが設定されていません。");
   assert.equal(systemUpdateTargetBlockedReason("target_unreachable"), "中央Updaterから対象ホストへ接続できません。");
   assert.equal(systemUpdateTargetBlockedReason("target_reachability_unknown"), "対象ホストへの接続状態をまだ確認できません。");
+  assert.match(systemUpdateTargetBlockedReason("updater_policy_pending"), /設定の反映を待っています/);
+  assert.match(systemUpdateTargetBlockedReason("updater_policy_failed"), /反映できませんでした/);
+  assert.match(systemUpdateTargetBlockedReason("updater_policy_mismatch"), /反映が完了していません/);
+  assert.match(systemUpdateTargetBlockedReason("updater_policy_target_type_mismatch"), /サービス種別/);
+  assert.match(systemUpdateTargetBlockedReason("updater_release_token_not_configured"), /GitHub Release Tokenが未設定/);
   assert.equal(systemUpdateErrorMessage({ code: "target_unreachable" }), "中央Updaterから対象ホストへ接続できません。");
   assert.equal(systemUpdateTargetBlockedReason("release_manifest_missing"), "更新用リリース情報が公開されていないため、適用できません。");
   assert.equal(systemUpdateTargetBlockedReason("release_manifest_invalid"), "更新用リリース情報を検証できないため、適用できません。");
   assert.equal(systemUpdateTargetBlockedReason("manifest_unverified"), "最新バージョンは確認できましたが、更新用リリース情報を検証できないため自動適用できません。");
   assert.equal(systemUpdateTargetBlockedReason("updater_version_incompatible"), "minimum_agent_versionを満たすように中央Updaterを更新してください。");
+  assert.match(systemUpdatePolicyErrorMessage("policy_snapshot_failed"), /更新操作を停止して自動再試行/);
+  assert.match(systemUpdatePolicyErrorMessage("ssh_connectivity_failed"), /SSH接続/);
 });
 
 test("deployment and progress presentation makes Docker bundle management explicit", () => {
@@ -267,50 +410,35 @@ test("system update audit actions have concrete Japanese labels", () => {
   assert.equal(auditActionLabel("system_updates.create"), "システム更新を依頼");
   assert.equal(auditActionLabel("system_updates.cancel"), "システム更新をキャンセル");
   assert.equal(auditActionLabel("system_updates.report"), "システム更新の進捗を報告");
+  assert.equal(auditActionLabel("system_updates.updater_policy.save"), "中央Updater設定を保存");
   assert.equal(auditActionLabel("system_updates.succeeded"), "システム更新に成功");
 });
 
-test("updater onboarding prefers auto configure and keeps a safe legacy fallback", () => {
-  assert.equal(updaterManualConfiguration({ manual_configuration_required: false }), null);
-  assert.equal(updaterManualConfiguration({
-    manual_configuration_required: true,
-    configure_command: "sudo autostream-updater configure --node central-updater",
-  }), null);
-  const manual = updaterManualConfiguration({ manual_configuration_required: true });
-  assert.equal(manual?.path, UPDATER_CONFIGURATION_PATH);
-  assert.equal(manual?.example, UPDATER_CONFIGURATION_EXAMPLE);
-  assert.match(manual?.steps.join("\n") || "", /Node Runtime Token/);
-  assert.match(manual?.steps.join("\n") || "", /GitHub/);
-  assert.match(manual?.steps.join("\n") || "", /hosts、targets、SSH/);
-  assert.match(manual?.steps.join("\n") || "", /validate-config/);
-  assert.doesNotMatch(manual?.steps.join("\n") || "", /backup_argv|compose_config_sha256|bootstrap-docker-target|全ゼロsentinel/);
-  assert.doesNotMatch(`${manual?.path}\n${manual?.example}\n${manual?.steps.join("\n")}`, /autostream-updater configure|autostream-update-agent\/config\.yml/);
-});
-
-test("updater token operations require update execution permission", () => {
+test("updater token operations require update execution and secret permissions", () => {
   const base = {
     serviceType: "update_agent",
     canCreateTokens: true,
-    canResolveManagedSecret: true,
+    canResolveManagedSecret: false,
     requiresManagedSecret: false,
     canExecuteSystemUpdates: false,
   };
   assert.equal(canIssueNodeConfiguration(base), false);
-  assert.equal(canIssueNodeConfiguration({ ...base, canExecuteSystemUpdates: true }), true);
+  assert.equal(canIssueNodeConfiguration({ ...base, canExecuteSystemUpdates: true }), false);
+  assert.equal(canIssueNodeConfiguration({ ...base, canResolveManagedSecret: true }), false);
+  assert.equal(canIssueNodeConfiguration({ ...base, canResolveManagedSecret: true, canExecuteSystemUpdates: true }), true);
   assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: true }), false);
-  assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: true, canExecuteSystemUpdates: true }), true);
-  assert.equal(canRegenerateNodeConfigureToken(
-    { ...base, canRevokeTokens: true, canExecuteSystemUpdates: true },
-    { manual_configuration_required: true },
-  ), false);
-  assert.equal(canRegenerateNodeConfigureToken(
-    { ...base, canRevokeTokens: true, canExecuteSystemUpdates: true },
-    { manual_configuration_required: true, configure_command: "sudo autostream-updater configure --node central-updater" },
-  ), true);
-  assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: false, canExecuteSystemUpdates: true }), false);
+  assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: true, canResolveManagedSecret: true, canExecuteSystemUpdates: true }), true);
+  assert.equal(canRegenerateNodeConfigureToken({ ...base, canRevokeTokens: false, canResolveManagedSecret: true, canExecuteSystemUpdates: true }), false);
   assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: true }), false);
-  assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: true, canExecuteSystemUpdates: true }), true);
-  assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: false, canExecuteSystemUpdates: true }), false);
+  assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: true, canResolveManagedSecret: true, canExecuteSystemUpdates: true }), true);
+  assert.equal(canRotateNodeRuntimeToken({ ...base, canRevokeTokens: false, canResolveManagedSecret: true, canExecuteSystemUpdates: true }), false);
+  assert.equal(canIssueNodeConfiguration({
+    serviceType: "observability",
+    canCreateTokens: true,
+    canResolveManagedSecret: false,
+    requiresManagedSecret: false,
+    canExecuteSystemUpdates: false,
+  }), true);
 });
 
 test("updater mock configure command keeps the one-time token out of argv", () => {
@@ -321,11 +449,15 @@ test("updater mock configure command keeps the one-time token out of argv", () =
     host: "127.0.0.1",
     port: 8090,
     ssl_enabled: false,
-  }) as { configure_token?: string; configure_command?: string };
+  }) as { configure_token?: string; configure_command?: string; scopes?: string[] };
 
   assert.match(response.configure_token || "", /^ast_cfg_/);
-  assert.match(response.configure_command || "", /sudo autostream-updater configure/);
+  assert.match(response.configure_command || "", /sudo \/usr\/local\/bin\/autostream-updater configure/);
   assert.doesNotMatch(response.configure_command || "", /--token|ast_cfg_/);
+  assert.equal(
+    ["updates.claim", "updates.report", "updates.authorize"].every((scope) => response.scopes?.includes(scope)),
+    true,
+  );
 });
 
 test("updater configure failure guidance requires a fresh token before restart", () => {
@@ -337,18 +469,14 @@ test("updater configure failure guidance requires a fresh token before restart",
   assert.doesNotMatch(source, /同じコマンドで再開|再生成を求められた場合だけ/);
 });
 
-test("updater configure initializes a missing local config before token input", () => {
+test("updater configure delegates managed policy to the system update screen", () => {
   const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /updater\.jsonがなければ、初回実行でUpdater本体に内蔵された初期設定から自動生成/);
-  assert.match(source, /サンプルファイルの配置や--init-from指定は不要/);
-  assert.match(source, /Configure Tokenを入力・消費せずに停止/);
-  assert.match(source, /安全チェックポイントは意図的に非ゼロ終了/);
-  assert.match(source, /ローカル設定を完成させ、同じtoken-free commandを再実行/);
-  assert.match(source, /既存のupdater\.jsonは上書きしません/);
-  assert.match(source, /同じControl Panelリリースに同梱されたUpdaterが必要/);
-  assert.match(source, /旧Updaterは先に更新/);
-  assert.doesNotMatch(source, /初回はサンプルを基にローカル設定を用意してください/);
+  assert.match(source, /中央Updaterホストで1回実行/);
+  assert.match(source, /「アプリケーション情報」の中央Updater設定から登録/);
+  assert.match(source, /保存後はUpdaterが自動で反映/);
+  assert.match(source, /ローカル設定ファイルを手作業で編集する必要はありません/);
+  assert.doesNotMatch(source, /updater\.json|known_hosts|--init-from|JSON手動設定/);
 });
 
 test("updater node description identifies its central multi-host responsibility", () => {

@@ -6,6 +6,7 @@ import type {
   SystemUpdateStrategy,
   SystemUpdateTarget,
   SystemUpdatesResponse,
+  UpdaterSettings,
 } from "@/types/domain";
 
 const activeStatuses = new Set([
@@ -35,6 +36,10 @@ const cancellableStatuses = new Set(["queued"]);
 
 export function isControlPanelUpdateTarget(target: Pick<SystemUpdateTarget, "target_id" | "target_type">) {
   return target.target_type === "control_panel" || target.target_id === "control-panel";
+}
+
+export function isUpdaterPolicyHostID(value: string) {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 }
 
 export function isSystemUpdateJobActive(status?: string) {
@@ -116,7 +121,47 @@ export function systemUpdateConnectivity(
   const host = updater && hostCandidate?.updater_id === updater.updater_id ? hostCandidate : undefined;
   const reachability: SystemUpdateReachability = host?.reachability || "unknown";
   const agentOnline = updater?.online === true;
-  return { updater, host, agentOnline, reachability, ready: agentOnline && reachability === "reachable" };
+  const policyReady = updater ? systemUpdateUpdaterPolicyState(updater).ready : false;
+  return { updater, host, agentOnline, reachability, ready: agentOnline && policyReady && reachability === "reachable" };
+}
+
+export function systemUpdateUpdaterPolicyState(updater: SystemUpdateAgentStatus): {
+  label: "未設定" | "反映待ち" | "反映済み" | "反映失敗" | "オフライン";
+  tone: "default" | "secondary" | "destructive" | "outline";
+  ready: boolean;
+} {
+  if (!updater.online) return { label: "オフライン", tone: "destructive", ready: false };
+  const status = normalize(updater.policy_status);
+  const desiredRevision = optionalNumberValue(updater.desired_revision);
+  const appliedRevision = optionalNumberValue(updater.applied_revision);
+  if (["failed", "error", "rejected", "invalid"].includes(status)) {
+    return { label: "反映失敗", tone: "destructive", ready: false };
+  }
+  if (status === "unconfigured" || desiredRevision === undefined || desiredRevision <= 0) {
+    return { label: "未設定", tone: "outline", ready: false };
+  }
+  if (
+    ["pending", "applying", "validating", "waiting"].includes(status)
+    || appliedRevision === undefined
+    || appliedRevision !== desiredRevision
+  ) {
+    return { label: "反映待ち", tone: "secondary", ready: false };
+  }
+  return { label: "反映済み", tone: "default", ready: true };
+}
+
+export function systemUpdatePolicyErrorMessage(code?: string) {
+  const messages: Record<string, string> = {
+    policy_fetch_failed: "Control Panelから新しい設定を取得できませんでした。接続を確認すると自動で再試行します。",
+    policy_invalid: "保存された設定をUpdaterが検証できませんでした。入力内容を確認してください。",
+    ssh_identity_failed: "対象ホストへ接続するSSH鍵を準備できませんでした。Updaterのデータ領域と権限を確認してください。",
+    ssh_connectivity_failed: "対象ホストへSSH接続できません。接続先、SSHポート、ユーザー、公開鍵を確認してください。",
+    policy_snapshot_failed: "新しい設定の安全な保存処理に問題が発生しました。更新操作を停止して自動再試行しています。",
+    coordinator_start_failed: "新しい設定でUpdaterを開始できませんでした。旧設定を維持しています。",
+    active_job_pending: "更新処理中のため反映を待っています。処理完了後に自動で反映します。",
+  };
+  const normalized = normalize(code);
+  return messages[normalized] || String(code || "").trim();
 }
 
 export function systemUpdateHostReachabilityLabel(reachability?: SystemUpdateReachability) {
@@ -174,6 +219,84 @@ export function normalizeSystemUpdatesResponse(value: unknown): SystemUpdatesRes
   return { updaters, hosts, targets, jobs };
 }
 
+export function emptyUpdaterSettings(updaterID: string): UpdaterSettings {
+  return {
+    updater_id: updaterID,
+    revision: 0,
+    api: {
+      bind_host: "127.0.0.1",
+      host: "127.0.0.1",
+      port: 8090,
+      ssl_enabled: false,
+      tls_cert_file: "",
+      tls_key_file: "",
+    },
+    poll_interval_seconds: 15,
+    heartbeat_interval_seconds: 30,
+    hosts: [],
+    targets: [],
+    github_token_configured: false,
+    github_token_fingerprint: "",
+    updated_at: "",
+  };
+}
+
+export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdaterID = ""): UpdaterSettings {
+  const settings = recordValue(value);
+  const updaterID = stringValue(settings.updater_id) || fallbackUpdaterID;
+  const defaults = emptyUpdaterSettings(updaterID);
+  const api = recordValue(settings.api);
+  const hosts = Array.isArray(settings.hosts)
+    ? settings.hosts.map((value) => {
+      const host = recordValue(value);
+      const fingerprint = stringValue(host.host_key_fingerprint || host.host_public_key_fingerprint);
+      return {
+        host_id: stringValue(host.host_id),
+        name: stringValue(host.name || host.host_id),
+        address: stringValue(host.address),
+        port: positiveIntegerValue(host.port, 22),
+        user: stringValue(host.user) || "autostream-update-host",
+        arch: stringValue(host.arch) || "amd64",
+        host_public_key: stringValue(host.host_public_key),
+        host_key_fingerprint: fingerprint,
+        host_public_key_fingerprint: fingerprint,
+        ssh_client_public_key: stringValue(host.ssh_client_public_key),
+        ssh_client_key_fingerprint: stringValue(host.ssh_client_key_fingerprint),
+      };
+    }).filter((host) => host.host_id)
+    : [];
+  const targets = Array.isArray(settings.targets)
+    ? settings.targets.map((value) => {
+      const target = recordValue(value);
+      return {
+        target_id: stringValue(target.target_id),
+        host_id: stringValue(target.host_id),
+        service_type: stringValue(target.service_type || target.target_type),
+        deployment_mode: stringValue(target.deployment_mode),
+      };
+    }).filter((target) => target.target_id)
+    : [];
+  return {
+    updater_id: updaterID,
+    revision: nonNegativeIntegerValue(settings.revision, 0),
+    api: {
+      bind_host: stringValue(api.bind_host) || defaults.api.bind_host,
+      host: stringValue(api.host) || defaults.api.host,
+      port: positiveIntegerValue(api.port, defaults.api.port),
+      ssl_enabled: api.ssl_enabled === true,
+      tls_cert_file: stringValue(api.tls_cert_file),
+      tls_key_file: stringValue(api.tls_key_file),
+    },
+    poll_interval_seconds: positiveIntegerValue(settings.poll_interval_seconds, defaults.poll_interval_seconds),
+    heartbeat_interval_seconds: positiveIntegerValue(settings.heartbeat_interval_seconds, defaults.heartbeat_interval_seconds),
+    hosts,
+    targets,
+    github_token_configured: settings.github_token_configured === true,
+    github_token_fingerprint: stringValue(settings.github_token_fingerprint),
+    updated_at: stringValue(settings.updated_at),
+  };
+}
+
 export function systemUpdateJobFromResponse(value: unknown): SystemUpdateJob {
   const response = recordValue(value);
   const nestedJob = recordValue(response.job);
@@ -205,6 +328,11 @@ export function systemUpdateTargetBlockedReason(reason?: string) {
     updater_unavailable: "中央Updaterに接続できません。",
     target_unreachable: "中央Updaterから対象ホストへ接続できません。",
     target_reachability_unknown: "対象ホストへの接続状態をまだ確認できません。",
+    updater_policy_pending: "保存したUpdater設定の反映を待っています。",
+    updater_policy_failed: "保存したUpdater設定を反映できませんでした。Updater設定画面を確認してください。",
+    updater_policy_mismatch: "中央Updaterの設定反映が完了していません。",
+    updater_policy_target_type_mismatch: "更新対象のサービス種別がUpdater設定と一致していません。",
+    updater_release_token_not_configured: "GitHub Release Tokenが未設定です。Updater設定画面で保存してください。",
     updater_version_incompatible: "minimum_agent_versionを満たすように中央Updaterを更新してください。",
     current_version_unknown: "現在のバージョンが未報告です。",
     latest_version_unknown: "最新バージョンを確認できません。",
@@ -258,6 +386,18 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     invalid_target: "更新対象の指定が正しくありません。",
     invalid_system_update_request: "更新要求の内容が正しくありません。一覧を再取得してから再試行してください。",
     invalid_system_update_response: "更新サービスから正しい応答を受け取れませんでした。一覧を再取得してください。",
+    invalid_updater_policy: "Updater設定に不正な項目があります。入力内容を確認してください。",
+    invalid_updater_host_public_key: "SSHホスト公開鍵を確認できません。対象ホストで確認したssh-ed25519公開鍵の全文を入力してください。",
+    updater_policy_revision_conflict: "Updater設定が別の操作で更新されました。設定画面を開き直してから再度保存してください。",
+    updater_policy_pending: "保存したUpdater設定の反映を待っています。反映完了後にもう一度お試しください。",
+    updater_policy_failed: "保存したUpdater設定を反映できませんでした。Updater設定画面の状態を確認してください。",
+    updater_policy_mismatch: "Control Panelと中央Updaterの設定が一致していません。設定の反映完了を待ってください。",
+    updater_policy_target_type_mismatch: "更新対象のサービス種別がUpdater設定と一致していません。対象設定を確認してください。",
+    updater_release_token_not_configured: "GitHub Release Tokenが未設定です。Updater設定画面で保存してください。",
+    ssh_connectivity_failed: "対象ホストへSSH接続できません。接続先、SSHポート、ユーザー、公開鍵を確認してください。",
+    policy_snapshot_failed: "Updater設定の安全な保存に失敗しました。中央Updaterのログとデータディレクトリを確認してください。",
+    update_updater_release_token_failed: "GitHub Release Tokenを安全に保存できませんでした。Control Panelの暗号化設定を確認してください。",
+    save_updater_policy_failed: "Updater設定を保存できませんでした。Control Panelのログを確認してください。",
     invalid_strategy: "更新方法の指定が正しくありません。",
     stream_active: "配信中のため、今すぐ更新できません。空き次第の更新を選択してください。",
     target_busy: "この対象では別の更新処理が進行中です。",
@@ -391,7 +531,7 @@ function normalizeSystemUpdateTarget(value: unknown): SystemUpdateTarget {
 function normalizeSystemUpdateAgent(value: unknown): SystemUpdateAgentStatus {
   const updater = recordValue(value);
   const updaterID = stringValue(updater.updater_id);
-  return {
+  const normalized: SystemUpdateAgentStatus = {
     updater_id: updaterID,
     name: stringValue(updater.name) || updaterID,
     status: stringValue(updater.status),
@@ -399,6 +539,22 @@ function normalizeSystemUpdateAgent(value: unknown): SystemUpdateAgentStatus {
     version: stringValue(updater.version),
     last_heartbeat_at: stringValue(updater.last_heartbeat_at),
   };
+  const desiredRevision = optionalNumberValue(updater.desired_revision);
+  const appliedRevision = optionalNumberValue(updater.applied_revision);
+  const policyStatus = stringValue(updater.policy_status);
+  const policyError = stringValue(updater.policy_error_code || updater.policy_error);
+  const publicKeys = stringRecordValue(updater.ssh_client_public_keys);
+  const keyFingerprints = stringRecordValue(updater.ssh_client_key_fingerprints);
+  if (desiredRevision !== undefined) normalized.desired_revision = desiredRevision;
+  if (appliedRevision !== undefined) normalized.applied_revision = appliedRevision;
+  if (policyStatus) normalized.policy_status = policyStatus;
+  if (policyError) {
+    normalized.policy_error_code = policyError;
+    normalized.policy_error = policyError;
+  }
+  if (Object.keys(publicKeys).length > 0) normalized.ssh_client_public_keys = publicKeys;
+  if (Object.keys(keyFingerprints).length > 0) normalized.ssh_client_key_fingerprints = keyFingerprints;
+  return normalized;
 }
 
 function normalizeSystemUpdateHost(value: unknown): SystemUpdateHostStatus {
@@ -463,4 +619,23 @@ function optionalNumberValue(value: unknown) {
   if (value === undefined || value === null || value === "") return undefined;
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function positiveIntegerValue(value: unknown, fallback: number) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(number) && number > 0 ? number : fallback;
+}
+
+function nonNegativeIntegerValue(value: unknown, fallback: number) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : fallback;
+}
+
+function stringRecordValue(value: unknown) {
+  const record = recordValue(value);
+  return Object.fromEntries(
+    Object.entries(record)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1].trim()))
+      .map(([key, item]) => [key, item.trim()]),
+  );
 }

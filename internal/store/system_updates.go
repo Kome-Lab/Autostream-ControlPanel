@@ -131,6 +131,7 @@ type SystemUpdateStore interface {
 	ListSystemUpdateJobs(ctx context.Context, limit int) ([]SystemUpdateJob, error)
 	GetSystemUpdateJobByIdempotency(ctx context.Context, requestedByUserID, idempotencyKey string) (SystemUpdateJob, error)
 	GetActiveSystemUpdateJob(ctx context.Context, targetID string) (SystemUpdateJob, error)
+	ShouldClearSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (bool, error)
 	CreateSystemUpdateJob(ctx context.Context, params CreateSystemUpdateJobParams) (job SystemUpdateJob, created bool, err error)
 	CancelSystemUpdateJob(ctx context.Context, id, actorUserID string) (SystemUpdateJob, error)
 	ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (claim SystemUpdateClaim, clearActiveJob bool, err error)
@@ -154,6 +155,22 @@ func (s *MariaDBSystemUpdateStore) GetActiveSystemUpdateJob(ctx context.Context,
 		return SystemUpdateJob{}, ErrInvalidSystemUpdate
 	}
 	return s.getActiveSystemUpdateForTarget(ctx, targetID)
+}
+
+func (s *MariaDBSystemUpdateStore) ShouldClearSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (bool, error) {
+	agentServiceID = strings.TrimSpace(agentServiceID)
+	activeJobID = strings.TrimSpace(activeJobID)
+	if agentServiceID == "" || activeJobID == "" || len(activeJobID) > 64 || containsControl(activeJobID) {
+		return false, ErrInvalidSystemUpdate
+	}
+	job, err := scanSystemUpdateJob(s.db.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ?`, activeJobID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return job.AgentServiceID != agentServiceID || !isExecutingSystemUpdateStatus(job.Status), nil
 }
 
 type MariaDBSystemUpdateStore struct {

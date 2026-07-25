@@ -517,8 +517,14 @@ func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *te
 	if err != nil || clearActive || recovered.Job.ID != activeJob.ID || recovered.Job.Status != SystemUpdateStatusReconciling || recovered.LeaseGeneration != initial.LeaseGeneration+1 || !recovered.RecoveryRequired {
 		t.Fatalf("active_job_id did not fence/recover same job: %#v clear=%v err=%v", recovered, clearActive, err)
 	}
+	if clear, err := updates.ShouldClearSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || clear {
+		t.Fatalf("executing active_job_id was marked for clear: clear=%v err=%v", clear, err)
+	}
 	if _, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: recovered.LeaseToken, LeaseGeneration: recovered.LeaseGeneration, Sequence: recovered.ReportSequence, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(2*time.Minute), 45*time.Minute); err != nil || !applied {
 		t.Fatalf("finish active recovery: applied=%v err=%v", applied, err)
+	}
+	if clear, err := updates.ShouldClearSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || !clear {
+		t.Fatalf("terminal active_job_id was not marked for clear: clear=%v err=%v", clear, err)
 	}
 	clearedClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", activeJob.ID, eligible, now.Add(3*time.Minute), 2*time.Minute)
 	if err != nil || !clearActive || clearedClaim.Job.ID != "" {
@@ -530,6 +536,9 @@ func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *te
 	}
 	if _, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "missing-job", nil, now.Add(4*time.Minute), 2*time.Minute); err != nil || !clearActive {
 		t.Fatalf("missing active_job_id clear = %v err=%v", clearActive, err)
+	}
+	if clear, err := updates.ShouldClearSystemUpdateActiveJob(t.Context(), "updater-01", "missing-job"); err != nil || !clear {
+		t.Fatalf("missing active_job_id was not marked for clear: clear=%v err=%v", clear, err)
 	}
 	next, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now.Add(5*time.Minute), 2*time.Minute)
 	if err != nil || next.Job.ID != queuedJob.ID {

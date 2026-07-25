@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAppSettings, useCurrentUser, useNodes, useServiceHealth, useSystemUpdates, useVersion } from "@/features/queries";
+import { UpdaterSettingsPanel } from "@/features/application/updater-settings-panel";
 import { apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
@@ -38,9 +39,11 @@ import {
   systemUpdateJobTone,
   systemUpdateJobFromResponse,
   systemUpdateMayDisconnectPanel,
+  systemUpdatePolicyErrorMessage,
   systemUpdateProgress,
   systemUpdateStrategyForTarget,
   systemUpdateTargetBlockedReason,
+  systemUpdateUpdaterPolicyState,
 } from "@/lib/system-updates";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { AppVersion, ServiceUpdateInfo, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, SystemUpdatesResponse, WorkerNode } from "@/types/domain";
@@ -235,6 +238,7 @@ export function ApplicationInfoView() {
       <SystemUpdatesCard
         canRead={canReadSystemUpdates}
         canExecute={canExecuteSystemUpdates}
+        canManageUpdaterSecrets={hasPermission(currentUser.data, "secrets.update")}
         updaters={updaters}
         hosts={hosts}
         targets={targets}
@@ -306,6 +310,7 @@ export function ApplicationInfoView() {
 function SystemUpdatesCard({
   canRead,
   canExecute,
+  canManageUpdaterSecrets,
   updaters,
   hosts,
   targets,
@@ -326,6 +331,7 @@ function SystemUpdatesCard({
 }: {
   canRead: boolean;
   canExecute: boolean;
+  canManageUpdaterSecrets: boolean;
   updaters: SystemUpdateAgentStatus[];
   hosts: SystemUpdateHostStatus[];
   targets: SystemUpdateTarget[];
@@ -366,7 +372,14 @@ function SystemUpdatesCard({
           中央Updaterの稼働状態と、そこから各対象ホストへの接続状態は別々に表示されます。
         </div>
 
-        {canRead && !isError && !isLoading ? <CentralUpdaterStatus updaters={updaters} timezone={timezone} /> : null}
+        {canRead && !isError && !isLoading ? (
+          <CentralUpdaterStatus
+            updaters={updaters}
+            timezone={timezone}
+            canEdit={canExecute && canManageUpdaterSecrets}
+            canManageSecrets={canManageUpdaterSecrets}
+          />
+        ) : null}
 
         {!canRead ? (
           <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象と履歴を確認するには「system_updates.read」権限が必要です。</div>
@@ -443,7 +456,17 @@ function SystemUpdatesCard({
   );
 }
 
-function CentralUpdaterStatus({ updaters, timezone }: { updaters: SystemUpdateAgentStatus[]; timezone?: string }) {
+function CentralUpdaterStatus({
+  updaters,
+  timezone,
+  canEdit,
+  canManageSecrets,
+}: {
+  updaters: SystemUpdateAgentStatus[];
+  timezone?: string;
+  canEdit: boolean;
+  canManageSecrets: boolean;
+}) {
   return (
     <div className="rounded-lg border bg-muted/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -457,16 +480,23 @@ function CentralUpdaterStatus({ updaters, timezone }: { updaters: SystemUpdateAg
         <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">中央Updaterが登録されていません。更新ジョブは開始できません。</p>
       ) : (
         <div className="mt-3 grid gap-2 lg:grid-cols-2">
-          {updaters.map((updater) => (
-            <div key={updater.updater_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-background/70 p-3 text-xs">
-              <div className="min-w-0">
-                <div className="truncate font-medium">{updater.name || updater.updater_id}</div>
-                <div className="mt-0.5 text-muted-foreground">{updater.updater_id}{updater.version ? ` · ${updater.version}` : ""}</div>
-                <div className="mt-0.5 text-muted-foreground">最終Heartbeat: {formatOptionalDate(updater.last_heartbeat_at, timezone)}</div>
+          {updaters.map((updater) => {
+            const policy = systemUpdateUpdaterPolicyState(updater);
+            return (
+              <div key={updater.updater_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-background/70 p-3 text-xs">
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{updater.name || updater.updater_id}</div>
+                  <div className="mt-0.5 text-muted-foreground">{updater.updater_id}{updater.version ? ` · ${updater.version}` : ""}</div>
+                  <div className="mt-0.5 text-muted-foreground">最終Heartbeat: {formatOptionalDate(updater.last_heartbeat_at, timezone)}</div>
+                  {updater.policy_error_code || updater.policy_error ? <div className="mt-1 break-words text-destructive">反映情報: {systemUpdatePolicyErrorMessage(updater.policy_error_code || updater.policy_error)}</div> : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={policy.tone}>{policy.label}</Badge>
+                  <UpdaterSettingsPanel updater={updater} canEdit={canEdit} canManageSecrets={canManageSecrets} />
+                </div>
               </div>
-              <Badge variant={updater.online ? "default" : "destructive"}>{updater.online ? (String(updater.status).toLowerCase() === "updating" ? "オンライン・更新処理中" : "オンライン") : "オフライン"}</Badge>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -476,6 +506,7 @@ function CentralUpdaterStatus({ updaters, timezone }: { updaters: SystemUpdateAg
 function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob, canExecute, disabled, onRequest }: { target: SystemUpdateTarget; updaters: SystemUpdateAgentStatus[]; hosts: SystemUpdateHostStatus[]; timezone?: string; activeJob?: SystemUpdateJob; canExecute: boolean; disabled: boolean; onRequest: () => void }) {
   const strategy = systemUpdateStrategyForTarget(target);
   const connectivity = systemUpdateConnectivity(target, updaters, hosts);
+  const updaterPolicy = connectivity.updater ? systemUpdateUpdaterPolicyState(connectivity.updater) : null;
   const canStart = updateCanStart(target, activeJob, updaters, hosts);
   const hostName = connectivity.host?.name || target.host_id || "ホスト未設定";
   const reachabilityLabel = systemUpdateHostReachabilityLabel(connectivity.reachability);
@@ -486,6 +517,12 @@ function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob,
       ? systemUpdateTargetBlockedReason("updater_not_configured")
       : !connectivity.agentOnline
         ? systemUpdateTargetBlockedReason("updater_offline")
+        : !updaterPolicy?.ready
+          ? updaterPolicy?.label === "反映失敗"
+            ? "中央Updaterの設定反映に失敗しています。設定画面でエラーを確認してください。"
+            : updaterPolicy?.label === "未設定"
+              ? "中央Updaterの設定が未設定です。設定を保存してください。"
+              : "中央Updaterが新しい設定を反映中です。反映済みになるまでお待ちください。"
         : connectivity.reachability === "unreachable"
           ? systemUpdateTargetBlockedReason("target_unreachable")
           : connectivity.reachability === "unknown"

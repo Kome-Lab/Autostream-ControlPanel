@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -191,6 +192,10 @@ func remoteSSHHostForServer(t *testing.T, server *remoteSSHTestServer, identityP
 	}
 }
 
+func authorizedSSHKeyLine(key ssh.PublicKey) string {
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+}
+
 func TestSSHRemoteExecutorUsesPinnedHostKeyFixedCommandAndStdinProtocol(t *testing.T) {
 	identityPath, authorizedKey := writeRemoteSSHIdentity(t)
 	server := newRemoteSSHTestServer(t, authorizedKey, func(request RemoteRPCRequest) RemoteRPCResponse {
@@ -213,6 +218,50 @@ func TestSSHRemoteExecutorUsesPinnedHostKeyFixedCommandAndStdinProtocol(t *testi
 	}
 	if observation.request.Operation != "probe" || observation.request.Plan != nil || !observation.request.MutationGrant.Empty() || !observation.request.ReleaseToken.Empty() {
 		t.Fatalf("remote probe request = %#v", observation.request)
+	}
+}
+
+func TestSSHRemoteExecutorUsesManagedPinnedHostPublicKey(t *testing.T) {
+	identityPath, authorizedKey := writeRemoteSSHIdentity(t)
+	server := newRemoteSSHTestServer(t, authorizedKey, func(RemoteRPCRequest) RemoteRPCResponse {
+		probe := localProbePlatform("edge-01", "v1.0.0", "sha256:"+strings.Repeat("a", 64), []RemoteProbeTarget{{TargetID: "worker-01", ServiceType: "worker", DeploymentMode: ModeSystemd, CurrentVersion: "v1.0.0"}})
+		probe.OS = "linux"
+		probe.Arch = "amd64"
+		return RemoteRPCResponse{Version: RemoteProtocolVersion, Probe: &probe}
+	})
+	address, port := server.address(t)
+	host := SSHHost{
+		HostID: "edge-01", Name: "Edge 01", Address: address, Port: port, User: "autostream_update",
+		IdentityFile: identityPath, HostPublicKey: authorizedSSHKeyLine(server.hostSigner.PublicKey()), Arch: "amd64",
+	}
+	if _, err := (SSHRemoteExecutor{DialTimeout: 3 * time.Second}).Probe(context.Background(), host); err != nil {
+		t.Fatalf("managed pinned-key probe: %v", err)
+	}
+}
+
+func TestSSHRemoteExecutorReportsStableMismatchForManagedPinnedHostPublicKey(t *testing.T) {
+	identityPath, authorizedKey := writeRemoteSSHIdentity(t)
+	server := newRemoteSSHTestServer(t, authorizedKey, func(RemoteRPCRequest) RemoteRPCResponse {
+		panic("remote command must not run with a mismatched managed host key")
+	})
+	server.allowHandshakeFailure = true
+	_, wrongPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSigner, err := ssh.NewSignerFromKey(wrongPrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, port := server.address(t)
+	host := SSHHost{
+		HostID: "edge-01", Name: "Edge 01", Address: address, Port: port, User: "autostream_update",
+		IdentityFile: identityPath, HostPublicKey: authorizedSSHKeyLine(wrongSigner.PublicKey()), Arch: "amd64",
+	}
+	_, err = (SSHRemoteExecutor{DialTimeout: 3 * time.Second}).Probe(context.Background(), host)
+	var transportErr *SSHTransportError
+	if err == nil || !errors.As(err, &transportErr) || transportErr.Code != SSHErrorHostKeyMismatch {
+		t.Fatalf("managed pinned-key mismatch result = %v", err)
 	}
 }
 
@@ -552,5 +601,57 @@ func TestSSHHostValidationRejectsUnsafeAccountsFilesAndAddresses(t *testing.T) {
 		if err := base.Validate(); err == nil || !strings.Contains(err.Error(), "group-readable") {
 			t.Fatalf("world-readable identity result = %v", err)
 		}
+	}
+}
+
+func TestSSHHostValidationAcceptsExactlyOneStrictHostKeySource(t *testing.T) {
+	identityPath, publicKey := writeRemoteSSHIdentity(t)
+	line := authorizedSSHKeyLine(publicKey)
+	base := SSHHost{
+		HostID: "edge-01", Name: "Edge 01", Address: "edge-01.example.com", Port: 22, User: "autostream_update",
+		IdentityFile: identityPath, HostPublicKey: line, Arch: "amd64",
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("managed host: %v", err)
+	}
+
+	knownHostsPath := writeRemoteSSHKnownHosts(t, "edge-01.example.com", publicKey)
+	_, secondPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSigner, err := ssh.NewSignerFromKey(secondPrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaPublicKey, err := ssh.NewPublicKey(&rsaPrivateKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		edit func(*SSHHost)
+	}{
+		{name: "neither source", edit: func(host *SSHHost) { host.HostPublicKey = "" }},
+		{name: "both sources", edit: func(host *SSHHost) { host.KnownHostsFile = knownHostsPath }},
+		{name: "comment", edit: func(host *SSHHost) { host.HostPublicKey += " server-comment" }},
+		{name: "authorized key option", edit: func(host *SSHHost) { host.HostPublicKey = "restrict " + host.HostPublicKey }},
+		{name: "trailing second key", edit: func(host *SSHHost) { host.HostPublicKey += " " + authorizedSSHKeyLine(secondSigner.PublicKey()) }},
+		{name: "control character", edit: func(host *SSHHost) { host.HostPublicKey += "\n" }},
+		{name: "oversize", edit: func(host *SSHHost) { host.HostPublicKey = strings.Repeat("a", 4097) }},
+		{name: "non ed25519", edit: func(host *SSHHost) { host.HostPublicKey = authorizedSSHKeyLine(rsaPublicKey) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := base
+			tc.edit(&host)
+			if err := host.Validate(); err == nil {
+				t.Fatalf("invalid managed host key source was accepted: %#v", host)
+			}
+		})
 	}
 }

@@ -11,15 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	releaseassets "github.com/example/autostream-control-panel/release"
 	"golang.org/x/sys/unix"
 )
 
-// InitializeUpdaterConfig installs the example embedded in autostream-updater
-// only when updater.json is missing. An explicit examplePath remains available
-// as a backwards-compatible, root-controlled override. Existing operator-owned
-// configuration is never opened or changed here; PrepareUpdaterConfig validates
-// it in the next configure invocation.
+// InitializeUpdaterConfig installs an explicit root-controlled legacy policy
+// only when updater.json is missing. Managed configuration does not use this
+// initializer; PrepareUpdaterConfig creates its four-field identity directly.
+// Existing operator-owned configuration is never opened or changed here;
+// PrepareUpdaterConfig validates it in the next configure phase.
 func InitializeUpdaterConfig(path, examplePath string) (bool, error) {
 	installGID, err := updaterConfigInstallGID()
 	if err != nil {
@@ -143,7 +142,7 @@ func installUpdaterConfigNoReplace(tempPath, path string) error {
 
 func updaterConfigInitializationExample(path string) ([]byte, error) {
 	if path == "" {
-		return validateUpdaterConfigInitializationExample(releaseassets.UpdaterConfigExample())
+		return nil, errors.New("explicit updater config example path is required")
 	}
 	return readUpdaterConfigInitializationExample(path)
 }
