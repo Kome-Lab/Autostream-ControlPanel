@@ -548,6 +548,7 @@ func TestListUpdateHostBootstrapAttestationsFailsAtPageLimit(t *testing.T) {
 func TestUpdateHostBootstrapProvenanceContextIsBounded(t *testing.T) {
 	startedAt := time.Now()
 	ctx, cancel, err := newUpdateHostBootstrapProvenanceContext(context.Background())
+	returnedAt := time.Now()
 	if err != nil {
 		t.Fatalf("bounded context: %v", err)
 	}
@@ -556,10 +557,15 @@ func TestUpdateHostBootstrapProvenanceContextIsBounded(t *testing.T) {
 	if !ok {
 		t.Fatal("bounded context has no deadline")
 	}
-	remaining := deadline.Sub(startedAt)
-	if remaining > updateHostBootstrapProvenanceTimeout ||
-		remaining < updateHostBootstrapProvenanceTimeout-time.Second {
-		t.Fatalf("bounded deadline = %s", remaining)
+	earliest := startedAt.Add(updateHostBootstrapProvenanceTimeout)
+	latest := returnedAt.Add(updateHostBootstrapProvenanceTimeout)
+	if deadline.Before(earliest) || deadline.After(latest) {
+		t.Fatalf(
+			"bounded deadline = %v, want between %v and %v",
+			deadline,
+			earliest,
+			latest,
+		)
 	}
 
 	parent, parentCancel := context.WithTimeout(context.Background(), time.Minute)
