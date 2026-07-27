@@ -50,10 +50,30 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	if registered.ServiceType != "update_agent" || len(registered.Capabilities) == 0 {
 		t.Fatalf("registered update_agent did not retain TOFU capabilities: %#v", registered)
 	}
+	if _, err := auth.Heartbeat(ctx, token, store.ServiceHeartbeat{
+		ServiceID: serviceID, Status: "online", Version: "v1.0.0", Capabilities: capabilities,
+	}); err != nil {
+		t.Fatalf("pre-activation MariaDB heartbeat: %v", err)
+	}
 	stageNow := time.Now().UTC()
 	configureToken := "mariadb-staged-configure-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	if _, err := auth.SetServiceConfigureToken(ctx, serviceID, security.HashToken(configureToken), stageNow.Add(time.Hour)); err != nil {
 		t.Fatalf("set MariaDB updater configure token: %v", err)
+	}
+	lookedUp, err := auth.GetService(ctx, serviceID)
+	if err != nil {
+		t.Fatalf("get MariaDB updater before configure-token validation: %v", err)
+	}
+	if lookedUp.ConfigureTokenHash != "" {
+		t.Fatal("MariaDB GetService unexpectedly exposed configure token hash")
+	}
+	validConfigureToken, err := auth.ValidateServiceConfigureToken(ctx, serviceID, configureToken, stageNow)
+	if err != nil || !validConfigureToken {
+		t.Fatalf("validate MariaDB updater configure token: valid=%v err=%v", validConfigureToken, err)
+	}
+	validConfigureToken, err = auth.ValidateServiceConfigureToken(ctx, serviceID, "wrong-configure-token", stageNow)
+	if err != nil || validConfigureToken {
+		t.Fatalf("invalid MariaDB updater configure token validation: valid=%v err=%v", validConfigureToken, err)
 	}
 	staged, err := auth.StageServiceNodeConfiguration(ctx, serviceID, configureToken, stageNow, func(string) (string, string, error) {
 		return "mariadb-staged-ciphertext", "mariadb-staged-nonce", nil
@@ -78,6 +98,9 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	if err != nil || alreadyActivated || activatedToken.ID != staged.Token.ID || registered.TokenID != staged.Token.ID {
 		t.Fatalf("activate MariaDB updater configuration: token=%#v service=%#v already=%v err=%v", activatedToken, registered, alreadyActivated, err)
 	}
+	if registered.LastHeartbeatAt != nil || len(registered.ReportedCapabilities) != 0 {
+		t.Fatalf("MariaDB activation retained stale heartbeat/capabilities: %#v", registered)
+	}
 	if _, err := auth.AuthenticateServiceToken(ctx, token.RawToken, "service.heartbeat"); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("MariaDB old token survived activation: %v", err)
 	}
@@ -88,6 +111,11 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 		t.Fatalf("MariaDB activation replay: already=%v err=%v", alreadyActivated, err)
 	}
 	token = staged.Token
+	if _, err := auth.Heartbeat(ctx, token, store.ServiceHeartbeat{
+		ServiceID: serviceID, Status: "online", Version: "v1.1.0", Capabilities: capabilities,
+	}); err != nil {
+		t.Fatalf("pre-rotation MariaDB heartbeat: %v", err)
+	}
 	outstandingConfigureToken := "mariadb-outstanding-configure-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	if _, err := auth.SetServiceConfigureToken(ctx, serviceID, security.HashToken(outstandingConfigureToken), time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatalf("set outstanding MariaDB updater configure token: %v", err)
@@ -98,8 +126,10 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rotate MariaDB updater runtime token: %v", err)
 	}
-	if registered.ConfigureTokenExpiresAt != nil || registered.ConfigureTokenUsedAt != nil || registered.StagedNodeTokenID != "" {
-		t.Fatalf("MariaDB runtime rotation retained configure/staging metadata: %#v", registered)
+	if registered.ConfigureTokenExpiresAt != nil || registered.ConfigureTokenUsedAt != nil ||
+		registered.StagedNodeTokenID != "" || registered.LastHeartbeatAt != nil ||
+		len(registered.ReportedCapabilities) != 0 {
+		t.Fatalf("MariaDB runtime rotation retained configure/staging/heartbeat metadata: %#v", registered)
 	}
 	if _, err := auth.ConsumeServiceConfigureToken(ctx, serviceID, outstandingConfigureToken, time.Now().UTC()); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("MariaDB runtime rotation left configure token usable: %v", err)

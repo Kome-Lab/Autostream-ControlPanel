@@ -243,6 +243,11 @@ func TestRotateServiceNodeTokenInvalidatesOutstandingConfigureToken(t *testing.T
 	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "updater-rotate", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Capabilities: map[string]any{}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := auth.Heartbeat(ctx, oldToken, ServiceHeartbeat{
+		ServiceID: "updater-rotate", Status: "online", Capabilities: map[string]any{"generation": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	configureToken := "outstanding-configure-token"
 	if _, err := auth.SetServiceConfigureToken(ctx, "updater-rotate", security.HashToken(configureToken), time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatal(err)
@@ -259,8 +264,76 @@ func TestRotateServiceNodeTokenInvalidatesOutstandingConfigureToken(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.ConfigureTokenHash != "" || service.ConfigureTokenExpiresAt != nil || service.ConfigureTokenUsedAt != nil {
-		t.Fatalf("runtime rotation retained configure token metadata: %#v", service)
+	if service.ConfigureTokenHash != "" || service.ConfigureTokenExpiresAt != nil ||
+		service.ConfigureTokenUsedAt != nil || service.LastHeartbeatAt != nil ||
+		len(service.ReportedCapabilities) != 0 {
+		t.Fatalf("runtime rotation retained configure token or liveness metadata: %#v", service)
+	}
+}
+
+func TestRevokeServiceTokenClearsRuntimeReadinessAndRejectsPreviouslyAuthenticatedHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(
+		ctx,
+		"update_agent",
+		[]string{"service.register", "service.heartbeat", "updates.claim"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{
+		ServiceID:   "updater-revoke",
+		ServiceType: "update_agent",
+		ServiceName: "Updater",
+		PublicURL:   "https://updater.example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authenticated, err := auth.AuthenticateServiceToken(
+		ctx,
+		token.RawToken,
+		"service.heartbeat",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Heartbeat(ctx, authenticated, ServiceHeartbeat{
+		ServiceID: "updater-revoke",
+		Status:    "online",
+		Capabilities: map[string]any{
+			"bootstrap_encryption_key_fingerprint": "stale-fingerprint",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := auth.RevokeServiceToken(ctx, token.ID); err != nil {
+		t.Fatal(err)
+	}
+	service, err := auth.GetService(ctx, "updater-revoke")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.LastHeartbeatAt != nil || len(service.ReportedCapabilities) != 0 {
+		t.Fatalf("revocation retained runtime readiness: %#v", service)
+	}
+	if _, err := auth.Heartbeat(ctx, authenticated, ServiceHeartbeat{
+		ServiceID:    "updater-revoke",
+		Status:       "online",
+		Capabilities: map[string]any{"restored": true},
+	}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("previously authenticated token restored heartbeat after revoke: %v", err)
+	}
+	service, err = auth.GetService(ctx, "updater-revoke")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.LastHeartbeatAt != nil || len(service.ReportedCapabilities) != 0 {
+		t.Fatalf("rejected heartbeat restored runtime readiness: %#v", service)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, token.RawToken, "updates.claim"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked token still authenticated: %v", err)
 	}
 }
 
@@ -273,6 +346,11 @@ func TestRotateServiceTokenAddsRequiredObservabilityEmailScope(t *testing.T) {
 	}
 	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "observability-shared", ServiceType: "observability", ServiceName: "Legacy Observability", PublicURL: "https://observability.example.com", Capabilities: map[string]any{}}); err != nil {
 		t.Fatalf("precreate observability service: %v", err)
+	}
+	if _, err := auth.Heartbeat(ctx, oldToken, ServiceHeartbeat{
+		ServiceID: "observability-shared", Status: "online", Capabilities: map[string]any{"generation": "old"},
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	newToken, err := auth.RotateServiceToken(ctx, oldToken.ID)
@@ -293,8 +371,9 @@ func TestRotateServiceTokenAddsRequiredObservabilityEmailScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.TokenID != newToken.ID {
-		t.Fatalf("registered service still references the old token: %#v", service)
+	if service.TokenID != newToken.ID || service.LastHeartbeatAt != nil ||
+		len(service.ReportedCapabilities) != 0 {
+		t.Fatalf("generic rotation retained old identity/liveness metadata: %#v", service)
 	}
 }
 
@@ -450,6 +529,11 @@ func TestConfigureServiceNodeCommitsTokenSecretReportAndConsumptionTogether(t *t
 	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "encoder-configure", ServiceType: "encoder_recorder", ServiceName: "Configured Encoder", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}}); err != nil {
 		t.Fatalf("precreate service: %v", err)
 	}
+	if _, err := auth.Heartbeat(ctx, oldToken, ServiceHeartbeat{
+		ServiceID: "encoder-configure", Status: "pending", Capabilities: map[string]any{"generation": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	configureToken := "configure-once"
 	now := time.Date(2026, time.July, 17, 13, 0, 0, 0, time.UTC)
 	if _, err := auth.SetServiceConfigureToken(ctx, "encoder-configure", security.HashToken(configureToken), now.Add(time.Hour)); err != nil {
@@ -480,6 +564,9 @@ func TestConfigureServiceNodeCommitsTokenSecretReportAndConsumptionTogether(t *t
 	if service.LastReportedAt == nil || !service.LastReportedAt.Equal(now) || !service.UpdatedAt.Equal(now) {
 		t.Fatalf("runtime report timestamps are wrong: %#v", service)
 	}
+	if service.LastHeartbeatAt != nil || len(service.ReportedCapabilities) != 0 {
+		t.Fatalf("configure retained old identity liveness metadata: %#v", service)
+	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("old runtime token should be revoked, got %v", err)
 	}
@@ -507,6 +594,11 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "updater-staged", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Capabilities: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Heartbeat(ctx, oldToken, ServiceHeartbeat{
+		ServiceID: "updater-staged", Status: "pending", Capabilities: map[string]any{"generation": "old"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 3, 0, 0, 0, time.UTC)
@@ -551,6 +643,9 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 	}
 	if alreadyActivated || activatedToken.ID != staged.Token.ID || activatedService.TokenID != staged.Token.ID || activatedService.NodeTokenCiphertext != "staged-ciphertext" || activatedService.NodeTokenNonce != "staged-nonce" || activatedService.Status != "registered" || activatedService.ReportedVersion != "v1.7.0" {
 		t.Fatalf("activation was not atomic: token=%#v service=%#v already=%v", activatedToken, activatedService, alreadyActivated)
+	}
+	if activatedService.LastHeartbeatAt != nil || len(activatedService.ReportedCapabilities) != 0 {
+		t.Fatalf("activation retained old identity liveness metadata: %#v", activatedService)
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("old token survived activation: %v", err)
@@ -697,7 +792,7 @@ func TestUpdateAgentConfigurationRejectsExpiredActivationWithoutChangingActiveTo
 	}
 }
 
-func TestRegeneratingConfigureTokenDiscardsInactiveUpdateAgentStage(t *testing.T) {
+func TestRegeneratingConfigureTokenRetainsPendingTombstoneAndInvalidatesOldStage(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()
 	oldToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"})
@@ -722,13 +817,26 @@ func TestRegeneratingConfigureTokenDiscardsInactiveUpdateAgentStage(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.TokenID != oldToken.ID || service.StagedNodeTokenID != "" || service.StagedNodeActivationTokenHash != "" || service.ConfigureTokenUsedAt != nil {
-		t.Fatalf("configure regeneration retained an inactive stage: %#v", service)
+	if service.TokenID != oldToken.ID || service.StagedNodeTokenID != staged.Token.ID ||
+		service.StagedNodePreviousTokenID != "" || service.StagedNodeTokenHash != "" ||
+		len(service.StagedNodeTokenScopes) != 0 || service.StagedNodeTokenCiphertext != "" ||
+		service.StagedNodeTokenNonce != "" || service.StagedNodeActivationTokenHash != "" ||
+		service.StagedNodeTokenAt != nil || service.ConfigureTokenUsedAt != nil {
+		t.Fatalf("configure regeneration did not retain a secret-free pending tombstone: %#v", service)
 	}
 	if _, _, _, err := auth.ActivateServiceNodeConfiguration(ctx, "updater-restage", staged.Token.ID, staged.ActivationToken, now.Add(time.Minute), ServiceRuntimeReport{}); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("discarded activation remained usable: %v", err)
+		t.Fatalf("invalidated activation remained usable: %v", err)
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "updates.claim"); err != nil {
 		t.Fatalf("active token changed while discarding stage: %v", err)
+	}
+	replacement, err := auth.StageServiceNodeConfiguration(ctx, "updater-restage", "replacement-configure", now.Add(time.Minute), func(string) (string, string, error) {
+		return "replacement-cipher", "replacement-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("replacement stage did not overwrite tombstone: %v", err)
+	}
+	if replacement.Token.ID == staged.Token.ID || replacement.Service.StagedNodeTokenID != replacement.Token.ID {
+		t.Fatalf("replacement stage did not bind a fresh pending identity: %#v", replacement)
 	}
 }

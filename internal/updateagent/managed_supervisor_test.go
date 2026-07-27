@@ -1717,3 +1717,9 @@ func TestManagedSupervisorConfirmsLoadedSnapshotDurabilityBeforePruneOrActivatio
 	cancel()
 	<-done
 }
+
+func TestMaterializePolicyErrorCodeClassifiesBootstrapEnvelopeIdentityFailure(t *testing.T) {
+	if got := materializePolicyErrorCode(errors.New("initialize bootstrap envelope identity: unsafe state directory")); got != PolicyErrorSSHIdentity {
+		t.Fatalf("bootstrap envelope identity error code=%q", got)
+	}
+}

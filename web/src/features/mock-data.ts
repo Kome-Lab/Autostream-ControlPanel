@@ -1,4 +1,4 @@
-import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, UpdaterSettings, UpdaterSettingsUpdate, WorkerNode } from "@/types/domain";
+import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, UpdaterHostBootstrapJob, UpdaterHostBootstrapRequest, UpdaterSettings, UpdaterSettingsUpdate, WorkerNode } from "@/types/domain";
 
 const baseTime = "2026-07-02T09:00:00+09:00";
 
@@ -424,6 +424,8 @@ export const mockSystemUpdateUpdaters: SystemUpdateAgentStatus[] = [
       "host-control": "SHA256:mock-control-client-key",
       "host-main": "SHA256:mock-main-client-key",
     },
+    bootstrap_encryption_public_key: "BJyOxKf1A_sVcFK8CDwtgHrwjGdJdiTQiOf3kidPHjnIZpzvhyczkLsUDFqEPWVnhkWGe5YbpjlafiIdMO7s_iU",
+    bootstrap_encryption_key_fingerprint: "SHA256:zAub8CwOeAN1WI8elABGIcIi2gdIyoxvFPxQ7HcqRlo",
   },
 ];
 
@@ -484,6 +486,8 @@ export const mockSystemUpdateTargets: SystemUpdateTarget[] = [
 export const mockSystemUpdateJobs: SystemUpdateJob[] = [
   { id: "update-demo-1", target_id: "worker-standby", target_type: "worker", current_version: "v1.1.7", target_version: "v1.1.8", deployment_mode: "systemd", status: "succeeded", progress: 100, message: "更新とヘルスチェックが完了しました。", requested_by: "demo-admin", created_at: "2026-07-02T08:10:00+09:00", updated_at: "2026-07-02T08:12:30+09:00", completed_at: "2026-07-02T08:12:30+09:00" },
 ];
+
+const mockUpdaterHostBootstrapJobs: UpdaterHostBootstrapJob[] = [];
 
 const mockResourceData: Record<string, unknown[]> = {
   "/profiles/encoder": [
@@ -587,6 +591,12 @@ let mockArchiveSharesLoaded = false;
 
 export function mockGet(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  const updaterBootstrapJobs = normalizedPath.match(/^\/system-updates\/updaters\/([^/]+)\/bootstrap-jobs$/);
+  if (updaterBootstrapJobs) {
+    const updaterID = decodeURIComponent(updaterBootstrapJobs[1]);
+    if (updaterID !== mockUpdaterSettings.updater_id) throw new Error("updater_not_found");
+    return { jobs: structuredClone(mockUpdaterHostBootstrapJobs.filter((job) => job.updater_id === updaterID)) };
+  }
   const updaterSettings = normalizedPath.match(/^\/system-updates\/updaters\/([^/]+)\/settings$/);
   if (updaterSettings) {
     const updaterID = decodeURIComponent(updaterSettings[1]);
@@ -675,6 +685,58 @@ export function mockGet(path: string): unknown {
 
 export function mockPost(path: string, body?: unknown): unknown {
   const normalizedPath = stripQuery(path);
+  const updaterBootstrapJobs = normalizedPath.match(/^\/system-updates\/updaters\/([^/]+)\/bootstrap-jobs$/);
+  if (updaterBootstrapJobs) {
+    const updaterID = decodeURIComponent(updaterBootstrapJobs[1]);
+    if (updaterID !== mockUpdaterSettings.updater_id) throw new Error("updater_not_found");
+    const request = (body || {}) as UpdaterHostBootstrapRequest;
+    if (request.expected_revision !== mockUpdaterSettings.revision) throw new Error("updater_policy_revision_conflict");
+    const hostIDs = [...new Set((request.host_ids || []).map((hostID) => String(hostID || "").trim()).filter(Boolean))].sort();
+    const recipientFingerprint = (request as { recipient_key_fingerprint?: unknown }).recipient_key_fingerprint;
+    if (
+      !request.job_id
+      || !request.idempotency_key
+      || hostIDs.length === 0
+      || request.envelope?.version !== 1
+      || typeof recipientFingerprint !== "string"
+      || !recipientFingerprint
+      || recipientFingerprint !== recipientFingerprint.trim()
+    ) {
+      throw new Error("invalid_updater_host_bootstrap_request");
+    }
+    const currentRecipientFingerprint = mockSystemUpdateUpdaters.find(
+      (updater) => updater.updater_id === updaterID,
+    )?.bootstrap_encryption_key_fingerprint;
+    if (!currentRecipientFingerprint || recipientFingerprint !== currentRecipientFingerprint) {
+      throw new Error("bootstrap_recipient_key_changed");
+    }
+    const configuredHostIDs = new Set(mockUpdaterSettings.hosts.map((host) => host.host_id));
+    if (hostIDs.some((hostID) => !configuredHostIDs.has(hostID))) throw new Error("updater_host_not_found");
+    const existing = mockUpdaterHostBootstrapJobs.find((job) => job.idempotency_key === request.idempotency_key);
+    if (existing) return { jobs: [structuredClone(existing)] };
+    const now = new Date().toISOString();
+    const job: UpdaterHostBootstrapJob = {
+      id: request.job_id,
+      idempotency_key: request.idempotency_key,
+      updater_id: updaterID,
+      expected_revision: request.expected_revision,
+      status: "succeeded",
+      host_ids: hostIDs,
+      hosts: hostIDs.map((hostID) => ({
+        host_id: hostID,
+        status: "succeeded",
+        progress: 100,
+        message: "helperの導入と動作確認が完了しました。",
+        updated_at: now,
+        completed_at: now,
+      })),
+      created_at: now,
+      updated_at: now,
+      completed_at: now,
+    };
+    mockUpdaterHostBootstrapJobs.unshift(job);
+    return { jobs: [structuredClone(job)] };
+  }
   if (normalizedPath === "/system-updates") {
     const request = body as Partial<{ target_id: string; strategy: string }>;
     const target = mockSystemUpdateTargets.find((item) => item.target_id === request.target_id);
@@ -1303,6 +1365,7 @@ export function mockDelete(path: string): unknown {
 
 export function mockPathExists(path: string) {
   const normalizedPath = stripQuery(path);
+  if (/^\/system-updates\/updaters\/[^/]+\/bootstrap-jobs$/.test(normalizedPath)) return true;
   if (/^\/system-updates\/updaters\/[^/]+\/settings$/.test(normalizedPath)) return true;
   if (/^\/system-updates\/[^/]+\/cancel$/.test(normalizedPath)) return true;
   if (/^\/streams\/[^/]+\/artifacts(?:\/[^/]+)?(?:\/download)?$/.test(normalizedPath)) return true;

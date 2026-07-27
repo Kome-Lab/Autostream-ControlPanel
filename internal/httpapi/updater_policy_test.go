@@ -143,6 +143,109 @@ func TestUpdaterPolicyAdminNormalizesHostKeyCommentAndKeepsReleaseTokenWriteOnly
 	}
 }
 
+func TestUpdaterPolicySaveRejectsEveryActiveBootstrapStateWithoutMutation(t *testing.T) {
+	for _, bootstrapState := range []UpdateHostBootstrapStatus{
+		UpdateHostBootstrapStatusQueued,
+		UpdateHostBootstrapStatusClaimed,
+		UpdateHostBootstrapStatusRunning,
+	} {
+		t.Run(string(bootstrapState), func(t *testing.T) {
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(
+				store.User{ID: "policy-admin", Username: "policy-admin"},
+				"correct horse battery",
+				[]string{"system_updates.read", "system_updates.execute", "secrets.update"},
+			); err != nil {
+				t.Fatal(err)
+			}
+			registerUpdateAgentForPolicyTest(t, auth, "updater-01")
+			policies := store.NewMemoryUpdaterPolicyStore()
+			hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
+			originalPolicy, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
+				t.Context(),
+				"updater-01",
+				0,
+				updaterPolicyForHTTPTest(hostKey),
+				stringPointerForBootstrapTest("github_pat_original"),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			broker := NewUpdateHostBootstrapBroker()
+			job, replayed, err := broker.Create(UpdateHostBootstrapCreateParams{
+				UpdaterID: "updater-01", ExpectedRevision: originalPolicy.Revision,
+				ClientJobID: "bootstrap-job", IdempotencyKey: "bootstrap-once",
+				RecipientKeyFingerprint: bootstrapBrokerRecipientFingerprint(1),
+				HostIDs:                 []string{"host-01"}, Envelope: []byte("opaque-credential"),
+			})
+			if err != nil || replayed {
+				t.Fatalf("create bootstrap job = (%#v, %v, %v)", job, replayed, err)
+			}
+			var claim UpdateHostBootstrapClaim
+			if bootstrapState == UpdateHostBootstrapStatusClaimed || bootstrapState == UpdateHostBootstrapStatusRunning {
+				recipientFingerprint := bootstrapBrokerRecipientFingerprint(1)
+				claim, err = broker.Claim(
+					"updater-01",
+					originalPolicy.Revision,
+					recipientFingerprint,
+					recipientFingerprint,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if bootstrapState == UpdateHostBootstrapStatusRunning {
+				if _, err := broker.Accept(job.ID, "updater-01", originalPolicy.Revision, claim.LeaseToken); err != nil {
+					t.Fatal(err)
+				}
+			}
+			handler := NewServer(
+				store.NewMemoryStreamStore(),
+				WithAuthStore(auth),
+				WithAuditStore(auth),
+				WithServiceRegistryStore(auth),
+				WithUpdaterPolicyStore(policies),
+				WithUpdateHostBootstrapBroker(broker),
+			)
+			cookie, csrf := loginForTest(t, handler, "policy-admin", "correct horse battery")
+			replacement := updaterPolicyForHTTPTest(hostKey)
+			payload, err := json.Marshal(map[string]any{
+				"expected_revision":          originalPolicy.Revision,
+				"api":                        replacement.API,
+				"poll_interval_seconds":      replacement.PollIntervalSeconds,
+				"heartbeat_interval_seconds": replacement.HeartbeatIntervalSeconds,
+				"hosts":                      replacement.Hosts,
+				"targets":                    replacement.Targets,
+				"github_token":               "github_pat_changed",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(
+				http.MethodPut,
+				"/system-updates/updaters/updater-01/settings",
+				bytes.NewReader(payload),
+			)
+			request.AddCookie(cookie)
+			request.Header.Set("X-CSRF-Token", csrf)
+			result := httptest.NewRecorder()
+			handler.ServeHTTP(result, request)
+			if result.Code != http.StatusConflict ||
+				!strings.Contains(result.Body.String(), `"code":"updater_host_bootstrap_in_progress"`) {
+				t.Fatalf("active bootstrap policy save status=%d body=%s", result.Code, result.Body.String())
+			}
+			storedPolicy, err := policies.GetUpdaterPolicy(t.Context(), "updater-01")
+			if err != nil || storedPolicy.Revision != originalPolicy.Revision {
+				t.Fatalf("policy mutated during active bootstrap: policy=%#v err=%v", storedPolicy, err)
+			}
+			storedToken, err := policies.GetUpdaterReleaseTokenValue(t.Context())
+			if err != nil || storedToken != "github_pat_original" {
+				t.Fatalf("release token mutated during active bootstrap: token=%q err=%v", storedToken, err)
+			}
+		})
+	}
+}
+
 func TestParseUpdaterED25519PublicKeyAcceptsCommentButRejectsUnsafeForms(t *testing.T) {
 	t.Parallel()
 

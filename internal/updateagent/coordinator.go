@@ -51,6 +51,7 @@ type CentralCoordinator struct {
 	// state. Downloader remains for legacy configs and test injection.
 	NewDownloader func(RemoteSecret) CoordinatorDownloader
 	Remote        RemoteExecutor
+	Bootstrap     *BootstrapController
 	Logf          func(string, ...any)
 
 	ProbeTimeout      time.Duration
@@ -86,6 +87,17 @@ type centralHostWorker struct {
 	journal     *Journal
 	mu          sync.Mutex
 }
+
+// Bootstrap credentials expire independently of ordinary update jobs. Keep
+// their claim cadence short and fixed so a large poll_interval_seconds cannot
+// consume most of the one-time credential lifetime.
+const bootstrapPollCadence = 15 * time.Second
+
+var (
+	ErrHostMaintenanceUnknownHost = errors.New("host maintenance target is not configured")
+	ErrHostMaintenanceDraining    = errors.New("host maintenance is blocked by policy replacement")
+	ErrHostMaintenanceActiveJob   = errors.New("host maintenance is blocked by an active update job")
+)
 
 // coordinatorIntent is the durable, secret-free update identity used to
 // rebind an interrupted operation to a fresh lease generation and session. It
@@ -126,6 +138,7 @@ func NewCentralCoordinator(cfg Config) (*CentralCoordinator, error) {
 			return ReleaseDownloader{Token: token.Reveal()}
 		},
 		Remote:            SSHRemoteExecutor{},
+		Bootstrap:         NewBootstrapController(),
 		Logf:              log.Printf,
 		workers:           make(map[string]*centralHostWorker, len(cfg.Hosts)),
 		hostStatus:        make(map[string]HostHeartbeat, len(cfg.Hosts)),
@@ -263,6 +276,16 @@ func (c *CentralCoordinator) StartManaged(ctx context.Context) (<-chan error, er
 				worker.run(runCtx)
 			}()
 		}
+		if c.Bootstrap != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if !c.waitForPolicyActivation(runCtx) {
+					return
+				}
+				c.bootstrapLoop(runCtx)
+			}()
+		}
 		heartbeatDone := make(chan struct{})
 		go func() {
 			defer close(heartbeatDone)
@@ -296,6 +319,45 @@ func (c *CentralCoordinator) StartManaged(ctx context.Context) (<-chan error, er
 		done <- runErr
 	}()
 	return done, nil
+}
+
+func (c *CentralCoordinator) bootstrapLoop(ctx context.Context) {
+	ticker := time.NewTicker(bootstrapPollCadence)
+	defer ticker.Stop()
+	for {
+		cfg := c.bootstrapConfigSnapshot()
+		if !c.draining.Load() &&
+			cfg.PolicyRevision > 0 &&
+			strings.TrimSpace(cfg.BootstrapEncryptionPublicKey) != "" {
+			controller := c.Bootstrap
+			if controller.Remote == nil {
+				controllerCopy := *controller
+				controllerCopy.Remote = c.Remote
+				controller = &controllerCopy
+			}
+			if err := controller.PollOnce(ctx, cfg, c); err != nil && ctx.Err() == nil {
+				// Crypto and transport causes may be secret-bearing. This fixed
+				// message is the entire runtime logging boundary.
+				c.Logf("managed updater bootstrap poll failed")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *CentralCoordinator) bootstrapConfigSnapshot() Config {
+	c.statusMu.RLock()
+	defer c.statusMu.RUnlock()
+	cfg := c.Config
+	cfg.SSHClientPublicKeys = cloneCapabilityStringMap(c.Config.SSHClientPublicKeys)
+	cfg.SSHClientKeyFingerprints = cloneCapabilityStringMap(c.Config.SSHClientKeyFingerprints)
+	cfg.Hosts = append([]SSHHost(nil), c.Config.Hosts...)
+	cfg.Targets = append([]Target(nil), c.Config.Targets...)
+	return cfg
 }
 
 func (w *centralHostWorker) run(ctx context.Context) {
@@ -717,6 +779,45 @@ func (c *CentralCoordinator) BeginPolicyReplacement(ctx context.Context) (releas
 // execution writer gate.
 func (c *CentralCoordinator) AbortPolicyReplacement() {
 	c.draining.Store(false)
+}
+
+// RunHostMaintenance serializes a short-lived host bootstrap transaction with
+// that host's ordinary update worker and with global policy replacement. The
+// lock order deliberately matches pollOnce: host worker first, then the shared
+// execution gate. This prevents a bootstrap from racing a claim or using a
+// host policy while it is being replaced.
+func (c *CentralCoordinator) RunHostMaintenance(
+	ctx context.Context,
+	hostID string,
+	run func(SSHHost, []Target) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if run == nil {
+		return errors.New("host maintenance callback is required")
+	}
+	worker, ok := c.workers[strings.TrimSpace(hostID)]
+	if !ok {
+		return ErrHostMaintenanceUnknownHost
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	c.executionGate.RLock()
+	defer c.executionGate.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.draining.Load() {
+		return ErrHostMaintenanceDraining
+	}
+	if worker.journal.Active() != nil {
+		return ErrHostMaintenanceActiveJob
+	}
+	targets := append([]Target(nil), c.Config.TargetsForHost(worker.host.HostID)...)
+	c.updating.Add(1)
+	defer c.updating.Add(-1)
+	return run(worker.host, targets)
 }
 
 func (w *centralHostWorker) pollOnce(ctx context.Context) error {

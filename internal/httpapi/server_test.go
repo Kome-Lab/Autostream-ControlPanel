@@ -284,6 +284,9 @@ func TestAdminAuditEventNotificationPolicy(t *testing.T) {
 		{name: "updater success reaches channels", event: store.AuditEvent{Action: "system_updates.succeeded", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: true},
 		{name: "updater rollback reaches channels", event: store.AuditEvent{Action: "system_updates.rolled_back", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: true},
 		{name: "updater failure reaches channels", event: store.AuditEvent{Action: "system_updates.failed", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: true},
+		{name: "bootstrap success reaches channels", event: store.AuditEvent{Action: "system_updates.bootstrap.succeeded", ActorUserID: "service:update_agent", ActorUsername: "update_agent"}, want: true},
+		{name: "bootstrap failure reaches channels", event: store.AuditEvent{Action: "system_updates.bootstrap.failed", ActorUserID: "service:update_agent", ActorUsername: "update_agent"}, want: true},
+		{name: "bootstrap progress stays out", event: store.AuditEvent{Action: "system_updates.bootstrap.report", ActorUserID: "service:update_agent", ActorUsername: "update_agent"}, want: false},
 		{name: "updater claim stays out", event: store.AuditEvent{Action: "system_updates.claim", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: false},
 		{name: "updater report stays out", event: store.AuditEvent{Action: "system_updates.report", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: false},
 		{name: "updater authorize stays out", event: store.AuditEvent{Action: "system_updates.authorize", ActorUserID: "service:updater-01", ActorUsername: "updater-01"}, want: false},
@@ -384,7 +387,7 @@ func TestAdminAuditNotificationUsesStrictRedactedPayload(t *testing.T) {
 	if got.decodeErr != nil {
 		t.Fatalf("strict notification payload decode failed: %v body=%s", got.decodeErr, got.body)
 	}
-	if got.authorization != "Bearer audit-notification-token" {
+	if got.authorization != "Bearer "+token.RawToken {
 		t.Fatalf("notification authorization = %q", got.authorization)
 	}
 	if got.payload.EventType != "admin.audit" || got.payload.Action != "secrets.update" || got.payload.Status != "success" || got.payload.ActorUsername != "ops" {
@@ -12427,7 +12430,7 @@ func TestServiceObservabilitySignalProxiesWithRegisteredNodeIdentity(t *testing.
 		_, _ = w.Write([]byte(`{"signal":{"id":"sig-01"}}`))
 	}))
 	defer obs.Close()
-	registerObservabilityNodeForTest(t, auth, "admin-token", obs.URL)
+	observabilityToken := registerObservabilityNodeForTest(t, auth, "admin-token", obs.URL)
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 	token := createBoundServiceTokenForTest(t, handler, cookie, csrf, "worker", "worker-01", []string{"service.register", "service.heartbeat", "observability.ingest"})
@@ -12440,7 +12443,7 @@ func TestServiceObservabilitySignalProxiesWithRegisteredNodeIdentity(t *testing.
 	if res.Code != http.StatusAccepted {
 		t.Fatalf("proxy signal status = %d body = %s", res.Code, res.Body.String())
 	}
-	if gotAuth != "Bearer admin-token" {
+	if gotAuth != "Bearer "+observabilityToken.RawToken {
 		t.Fatalf("observability proxy used wrong auth: %q", gotAuth)
 	}
 	if gotPayload["service_id"] != "worker-01" || gotPayload["service_type"] != "worker" {
@@ -12974,7 +12977,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	if approveRes.Code != http.StatusOK || !strings.Contains(approveRes.Body.String(), "approved") {
 		t.Fatalf("approve status = %d body = %s", approveRes.Code, approveRes.Body.String())
 	}
-	if gotAuth != "Bearer secret-token" {
+	if gotAuth != "Bearer "+observabilityToken.RawToken {
 		t.Fatalf("unexpected upstream auth: %s", gotAuth)
 	}
 	events = auth.AuditEvents()
@@ -13948,15 +13951,15 @@ func registerServiceWithTokenForTest(t *testing.T, auth *store.MemoryAuthStore, 
 	return service
 }
 
-func registerObservabilityNodeForTest(t *testing.T, auth *store.MemoryAuthStore, rawToken, publicURL string) store.ServiceToken {
+func registerObservabilityNodeForTest(t *testing.T, auth *store.MemoryAuthStore, _ string, publicURL string) store.ServiceToken {
 	t.Helper()
-	token := store.ServiceToken{
-		ID:          "observability-node-token",
-		ServiceType: "observability",
-		RawToken:    rawToken,
-		TokenHash:   security.HashToken(rawToken),
-		Scopes:      []string{"service.register", "service.heartbeat", "observability.ingest", "notifications.email.send", "remediation.execute"},
-		CreatedAt:   time.Now().UTC(),
+	token, err := auth.CreateServiceToken(
+		t.Context(),
+		"observability",
+		[]string{"service.register", "service.heartbeat", "observability.ingest", "notifications.email.send", "remediation.execute"},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
 	registerObservabilityNodeWithTokenForTest(t, auth, token, publicURL)
 	return token

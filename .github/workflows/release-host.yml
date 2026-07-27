@@ -71,12 +71,19 @@ jobs:
           INPUT_PUSH_RELEASE: ${{ inputs.push_release }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME}"
             push_release="true"
-          else
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             version="${INPUT_VERSION}"
-            push_release="${INPUT_PUSH_RELEASE}"
+            if [[ "${INPUT_PUSH_RELEASE}" == "true" ]]; then
+              echo "workflow_dispatch may build artifacts only; runtime provenance requires a push event for refs/tags/<version>. Set push_release=false and publish by pushing the version tag." >&2
+              exit 1
+            fi
+            push_release="false"
+          else
+            echo "Unsupported host release event ${GITHUB_EVENT_NAME}; refusing to resolve release metadata." >&2
+            exit 1
           fi
           if [[ "${version}" =~ ^v\. ]]; then
             echo "Version must look like v1.2.3, not ${version}. Remove the dot after v." >&2
@@ -418,6 +425,28 @@ jobs:
           name: host-release-dry-run
           path: artifacts
 
+      - name: Require repository immutable releases
+        shell: bash
+        env:
+          # GitHub documents Administration (read) for this settings endpoint.
+          # The normal GITHUB_TOKEN does not expose that permission. Prefer a
+          # least-privileged GitHub App token; the repository secret is only a
+          # fallback for installations that cannot mint one in this workflow.
+          GH_TOKEN: ${{ secrets.AUTOSTREAM_RELEASE_SETTINGS_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          settings_json="${RUNNER_TEMP}/immutable-release-settings.json"
+          settings_error="${RUNNER_TEMP}/immutable-release-settings.err"
+          if ! gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+            > "${settings_json}" 2> "${settings_error}"; then
+            cat "${settings_error}" >&2
+            echo "Cannot prove that immutable releases are enabled. Enable the repository setting and, when GITHUB_TOKEN cannot read it, configure AUTOSTREAM_RELEASE_SETTINGS_TOKEN with Administration (read) only." >&2
+            exit 1
+          fi
+          jq -e '(.enabled == true)' "${settings_json}" > /dev/null
+
       - name: Validate immutable release namespace and local asset set
         id: preflight
         shell: bash
@@ -643,6 +672,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.release-host.outputs.version }}
           DRAFT_TAG: ${{ steps.preflight.outputs.draft_tag }}
           DRAFT_RELEASE_ID: ${{ steps.create-draft.outputs.release_id }}
+          IMMUTABILITY_TOKEN: ${{ secrets.AUTOSTREAM_RELEASE_SETTINGS_TOKEN || github.token }}
         run: |
           set -euo pipefail
 
@@ -702,6 +732,18 @@ jobs:
             exit 1
           fi
 
+          settings_json="${RUNNER_TEMP}/immutable-release-settings-prepublish.json"
+          settings_error="${RUNNER_TEMP}/immutable-release-settings-prepublish.err"
+          if ! GH_TOKEN="${IMMUTABILITY_TOKEN}" gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+            > "${settings_json}" 2> "${settings_error}"; then
+            cat "${settings_error}" >&2
+            echo "Cannot re-confirm immutable releases immediately before publication; keeping the release unpublished." >&2
+            exit 1
+          fi
+          jq -e '(.enabled == true)' "${settings_json}" > /dev/null
+
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}" \
             -f tag_name="${RELEASE_VERSION}" \
             -f target_commitish="${GITHUB_SHA}" \
@@ -716,8 +758,12 @@ jobs:
             --arg tag "${RELEASE_VERSION}" \
             '(.tag_name == $tag) and
              (.draft == false) and
+             (.immutable == true) and
              (.published_at | type == "string" and length > 0) and
-             (.assets | length == 12)' \
+             (.assets | length == 12) and
+             (all(.assets[];
+               (.state == "uploaded") and
+               (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))))' \
             "${RUNNER_TEMP}/host-release-published-check.json" > /dev/null
           jq -S '[.assets[] | {name, size, digest}] | sort_by(.name)' \
             "${RUNNER_TEMP}/host-release-published-check.json" \
@@ -725,6 +771,7 @@ jobs:
           diff -u \
             "${RUNNER_TEMP}/host-release-expected-assets.json" \
             "${RUNNER_TEMP}/host-release-published-assets.json"
+          echo "verification_state=verified" >> "${GITHUB_OUTPUT}"
 
       - name: Delete unpublished staging release
         if: ${{ always() && steps.create-draft.outputs.release_id != '' }}
@@ -734,6 +781,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.release-host.outputs.version }}
           DRAFT_TAG: ${{ steps.preflight.outputs.draft_tag }}
           DRAFT_RELEASE_ID: ${{ steps.create-draft.outputs.release_id }}
+          PUBLISH_VERIFICATION_STATE: ${{ steps.publish.outputs.verification_state }}
         run: |
           set -euo pipefail
           release_json="${RUNNER_TEMP}/host-release-cleanup.json"
@@ -774,7 +822,13 @@ jobs:
             fi
             echo "Deleted unpublished staging release ${DRAFT_RELEASE_ID}."
           elif [[ "${release_tag}" == "${RELEASE_VERSION}" ]]; then
-            echo "Verified release ${RELEASE_VERSION} is published; no staging draft remains."
+            if [[ "${PUBLISH_VERIFICATION_STATE}" == "verified" ]]; then
+              echo "Verified release ${RELEASE_VERSION} is published; no staging draft remains."
+            else
+              echo "Release ${RELEASE_VERSION} is published-but-unverified; do not consume or promote its assets." >&2
+              echo "Recovery: inspect the immutable state, release attestation, tag commit, and exact asset digests. If verification cannot be established, publish a new version instead of reusing this tag." >&2
+              exit 1
+            fi
           else
             echo "Release ${DRAFT_RELEASE_ID} is published under unexpected tag ${release_tag}; refusing mutation." >&2
             exit 1

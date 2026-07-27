@@ -6,7 +6,13 @@ import type {
   SystemUpdateStrategy,
   SystemUpdateTarget,
   SystemUpdatesResponse,
+  UpdaterHostBootstrapHostResult,
+  UpdaterHostBootstrapJob,
+  UpdaterHostBootstrapJobsResponse,
+  UpdaterHostBootstrapRequest,
   UpdaterSettings,
+  UpdaterSettingsHost,
+  UpdaterSettingsTarget,
 } from "@/types/domain";
 
 const activeStatuses = new Set([
@@ -33,6 +39,39 @@ const activeStatuses = new Set([
 ]);
 
 const cancellableStatuses = new Set(["queued"]);
+
+const activeBootstrapStatuses = new Set([
+  "awaiting_credentials",
+  "queued",
+  "claimed",
+  "connecting",
+  "uploading",
+  "verifying",
+  "installing",
+  "probing",
+  "running",
+]);
+
+const terminalBootstrapStatuses = new Set([
+  "succeeded",
+  "failed",
+  "partial_failed",
+  "credential_expired",
+  "canceled",
+]);
+
+const terminalBootstrapHostStatuses = new Set([
+  "succeeded",
+  "failed",
+]);
+
+const standardBootstrapServiceTypes = new Set([
+  "control_panel",
+  "encoder_recorder",
+  "observability",
+  "discord_bot",
+  "worker",
+]);
 
 export function isControlPanelUpdateTarget(target: Pick<SystemUpdateTarget, "target_id" | "target_type">) {
   return target.target_type === "control_panel" || target.target_id === "control-panel";
@@ -150,6 +189,172 @@ export function systemUpdateUpdaterPolicyState(updater: SystemUpdateAgentStatus)
   return { label: "反映済み", tone: "default", ready: true };
 }
 
+export function isUpdaterHostBootstrapJobActive(status?: string) {
+  return activeBootstrapStatuses.has(normalize(status));
+}
+
+export function activeUpdaterHostBootstrapStatus(jobs: UpdaterHostBootstrapJob[]) {
+  for (const job of jobs) {
+    if (isUpdaterHostBootstrapJobActive(job.status)) return job.status;
+    if (terminalBootstrapStatuses.has(normalize(job.status))) continue;
+    const activeHost = job.hosts.find((host) => isUpdaterHostBootstrapJobActive(host.status));
+    if (activeHost) return activeHost.status;
+  }
+  return "";
+}
+
+export function systemUpdateHostBootstrapStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    awaiting_credentials: "認証情報待ち",
+    queued: "待機中",
+    claimed: "Updater受付済み",
+    connecting: "SSH接続中",
+    uploading: "helper転送中",
+    verifying: "検証中",
+    installing: "導入中",
+    probing: "動作確認中",
+    running: "処理中",
+    succeeded: "利用可能",
+    failed: "失敗",
+    partial_failed: "一部失敗",
+    credential_expired: "認証情報期限切れ",
+    canceled: "キャンセル済み",
+    checking: "状態確認中",
+    updater_offline: "Updaterオフライン",
+    policy_pending: "設定反映待ち",
+    release_token_pending: "Release Token未設定",
+    host_unsaved: "設定保存待ち",
+    host_key_pending: "ホスト鍵確認待ち",
+    client_key_pending: "公開鍵生成待ち",
+    encryption_key_pending: "暗号鍵待ち",
+    unsupported_profile: "手動導入対象",
+    blocked: "開始不可",
+  };
+  return labels[normalize(status)] || status || "未セットアップ";
+}
+
+export type UpdaterHostBootstrapEligibilityReason =
+  | ""
+  | "updater_offline"
+  | "policy_pending"
+  | "release_token_pending"
+  | "host_unsaved"
+  | "host_key_pending"
+  | "client_key_pending"
+  | "encryption_key_pending"
+  | "unsupported_profile"
+  | "bootstrap_active"
+  | "already_configured";
+
+export function updaterHostBootstrapConfirmationContext(
+  updater: SystemUpdateAgentStatus,
+  expectedRevision: number,
+  selectedHostIDs: string[],
+  selectedHosts: UpdaterSettingsHost[],
+) {
+  if (selectedHostIDs.length === 0) return "";
+  return JSON.stringify({
+    version: 1,
+    updater_id: updater.updater_id,
+    expected_revision: expectedRevision,
+    encryption_public_key: updater.bootstrap_encryption_public_key || "",
+    encryption_key_fingerprint: updater.bootstrap_encryption_key_fingerprint || "",
+    host_ids: [...selectedHostIDs].sort(),
+    hosts: [...selectedHosts]
+      .sort((left, right) => left.host_id.localeCompare(right.host_id))
+      .map((host) => ({
+        host_id: host.host_id,
+        host_public_key: host.host_public_key,
+        host_key_fingerprint: host.host_key_fingerprint || host.host_public_key_fingerprint || "",
+        ssh_client_public_key: updater.ssh_client_public_keys?.[host.host_id] || "",
+        ssh_client_key_fingerprint: updater.ssh_client_key_fingerprints?.[host.host_id] || "",
+      })),
+  });
+}
+
+export function updaterHostBootstrapEligibility({
+  updater,
+  expectedRevision,
+  savedHost,
+  currentHost,
+  savedTargets,
+  currentTargets,
+  releaseTokenConfigured,
+  bootstrapStatus,
+}: {
+  updater: SystemUpdateAgentStatus;
+  expectedRevision: number;
+  savedHost?: UpdaterSettingsHost;
+  currentHost?: UpdaterSettingsHost;
+  savedTargets: UpdaterSettingsTarget[];
+  currentTargets: UpdaterSettingsTarget[];
+  releaseTokenConfigured: boolean;
+  bootstrapStatus?: string;
+}): { ready: boolean; reason: UpdaterHostBootstrapEligibilityReason } {
+  if (!updater.online) return { ready: false, reason: "updater_offline" };
+  const policyState = systemUpdateUpdaterPolicyState(updater);
+  if (
+    !policyState.ready
+    || expectedRevision <= 0
+    || updater.desired_revision !== expectedRevision
+    || updater.applied_revision !== expectedRevision
+  ) {
+    return { ready: false, reason: "policy_pending" };
+  }
+  if (!releaseTokenConfigured) return { ready: false, reason: "release_token_pending" };
+  if (!savedHost || !currentHost || !sameUpdaterSettingsHost(savedHost, currentHost)) {
+    return { ready: false, reason: "host_unsaved" };
+  }
+  if (!sameUpdaterBootstrapTargetsForHost(savedHost.host_id, savedTargets, currentTargets)) {
+    return { ready: false, reason: "host_unsaved" };
+  }
+  if (savedHost.user !== "autostream-update-host") {
+    return { ready: false, reason: "unsupported_profile" };
+  }
+  if (!updaterHostBootstrapProfileSupported(savedHost.host_id, savedTargets)) {
+    return { ready: false, reason: "unsupported_profile" };
+  }
+  if (!(savedHost.host_key_fingerprint || savedHost.host_public_key_fingerprint)) {
+    return { ready: false, reason: "host_key_pending" };
+  }
+  const clientPublicKey = updater.ssh_client_public_keys?.[savedHost.host_id] || "";
+  const clientKeyFingerprint = updater.ssh_client_key_fingerprints?.[savedHost.host_id] || "";
+  if (!clientPublicKey || !clientKeyFingerprint) return { ready: false, reason: "client_key_pending" };
+  if (!updater.bootstrap_encryption_public_key || !updater.bootstrap_encryption_key_fingerprint) {
+    return { ready: false, reason: "encryption_key_pending" };
+  }
+  if (isUpdaterHostBootstrapJobActive(bootstrapStatus)) return { ready: false, reason: "bootstrap_active" };
+  if (normalize(bootstrapStatus) === "succeeded") return { ready: true, reason: "already_configured" };
+  return { ready: true, reason: "" };
+}
+
+export function isUpdaterHostBootstrapBulkCandidate(
+  eligibility: ReturnType<typeof updaterHostBootstrapEligibility>,
+) {
+  return eligibility.ready && eligibility.reason !== "already_configured";
+}
+
+export function updaterHostBootstrapEligibilityMessage(
+  reason: UpdaterHostBootstrapEligibilityReason | undefined,
+  statusKnown: boolean,
+) {
+  if (!statusKnown) return "セットアップ状態を確認中です。";
+  const messages: Record<UpdaterHostBootstrapEligibilityReason, string> = {
+    "": "ホストをセットアップします。",
+    updater_offline: "中央Updaterがオフラインです。",
+    policy_pending: "保存した設定が中央Updaterへ反映されるまでお待ちください。",
+    release_token_pending: "GitHub Release Tokenを保存してからホストセットアップを開始してください。",
+    host_unsaved: "このホストの変更を先に保存してください。",
+    host_key_pending: "保存済みSSHホスト鍵のFingerprintを確認できるまでお待ちください。",
+    client_key_pending: "対象ホスト用のUpdater公開鍵が生成されるまでお待ちください。",
+    encryption_key_pending: "Updaterのbootstrap暗号鍵が報告されるまでお待ちください。",
+    unsupported_profile: "v1の自動セットアップは標準systemdサービスだけに対応しています。Docker、非標準ポート・パス、カスタム構成は手動導入してください。",
+    bootstrap_active: "このホストのセットアップが進行中です。",
+    already_configured: "このホストはセットアップ済みです。必要な場合は再セットアップできます。",
+  };
+  return messages[reason || ""];
+}
+
 export function systemUpdatePolicyErrorMessage(code?: string) {
   const messages: Record<string, string> = {
     policy_fetch_failed: "Control Panelから新しい設定を取得できませんでした。接続を確認すると自動で再試行します。",
@@ -207,6 +412,69 @@ export async function requestSystemUpdateWithRecovery(
       // Preserve the original request failure; React Query may retry this same operation/key.
     }
     throw originalError;
+  }
+}
+
+export async function requestUpdaterHostBootstrapWithRecovery(
+  request: UpdaterHostBootstrapRequest,
+  send: (request: UpdaterHostBootstrapRequest) => Promise<UpdaterHostBootstrapJobsResponse>,
+  refreshJobs: () => Promise<UpdaterHostBootstrapJob[]>,
+): Promise<UpdaterHostBootstrapJobsResponse> {
+  let originalError: unknown;
+  try {
+    return bootstrapResponseForRequest(await send(request), request);
+  } catch (error) {
+    originalError = error;
+  }
+
+  const recovered = await recoverUpdaterHostBootstrapJob(request, refreshJobs);
+  if (recovered) return { jobs: [recovered] };
+  if (!ambiguousUpdaterHostBootstrapCreateError(originalError)) throw originalError;
+
+  try {
+    // A retry is safe only because the exact same job ID, idempotency key, host
+    // set, and encrypted envelope are reused. The broker returns the existing
+    // job when the first POST committed but its response was lost.
+    return bootstrapResponseForRequest(await send(request), request);
+  } catch (retryError) {
+    const recoveredAfterRetry = await recoverUpdaterHostBootstrapJob(request, refreshJobs);
+    if (recoveredAfterRetry) return { jobs: [recoveredAfterRetry] };
+    // Once the first POST is ambiguous, a later 4xx does not prove that the
+    // first request was rejected: authentication, policy, or token state may
+    // have changed after it committed. Only an exact correlated job or a
+    // successful replay resolves the original ambiguity.
+    throw new UpdaterHostBootstrapRequestAmbiguousError(retryError);
+  }
+}
+
+export type UpdaterHostBootstrapRequestIdentity = Pick<
+  UpdaterHostBootstrapRequest,
+  "job_id" | "idempotency_key" | "expected_revision" | "host_ids"
+>;
+
+export function updaterHostBootstrapRequestIdentity(
+  request: UpdaterHostBootstrapRequest,
+): UpdaterHostBootstrapRequestIdentity {
+  return {
+    job_id: request.job_id,
+    idempotency_key: request.idempotency_key,
+    expected_revision: request.expected_revision,
+    host_ids: [...request.host_ids],
+  };
+}
+
+export async function recoverUpdaterHostBootstrapRequest(
+  request: UpdaterHostBootstrapRequestIdentity,
+  refreshJobs: () => Promise<UpdaterHostBootstrapJob[]>,
+): Promise<UpdaterHostBootstrapJobsResponse | undefined> {
+  const recovered = await recoverUpdaterHostBootstrapJob(request, refreshJobs);
+  return recovered ? { jobs: [recovered] } : undefined;
+}
+
+export class UpdaterHostBootstrapRequestAmbiguousError extends Error {
+  constructor(cause?: unknown) {
+    super("updater_host_bootstrap_request_ambiguous", { cause });
+    this.name = "UpdaterHostBootstrapRequestAmbiguousError";
   }
 }
 
@@ -295,6 +563,17 @@ export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdater
     github_token_fingerprint: stringValue(settings.github_token_fingerprint),
     updated_at: stringValue(settings.updated_at),
   };
+}
+
+export function normalizeUpdaterHostBootstrapJobsResponse(
+  value: unknown,
+  fallbackUpdaterID = "",
+): UpdaterHostBootstrapJobsResponse {
+  const response = recordValue(value);
+  const jobs = Array.isArray(response.jobs)
+    ? response.jobs.map((value) => normalizeUpdaterHostBootstrapJob(value, fallbackUpdaterID)).filter((job) => job.id)
+    : [];
+  return { jobs };
 }
 
 export function systemUpdateJobFromResponse(value: unknown): SystemUpdateJob {
@@ -388,6 +667,38 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     invalid_system_update_response: "更新サービスから正しい応答を受け取れませんでした。一覧を再取得してください。",
     invalid_updater_policy: "Updater設定に不正な項目があります。入力内容を確認してください。",
     invalid_updater_host_public_key: "SSHホスト公開鍵を確認できません。対象ホストで確認したssh-ed25519公開鍵の全文を入力してください。",
+    invalid_updater_host_bootstrap_request: "ホストセットアップ要求の内容が正しくありません。設定を再取得してから再試行してください。",
+    updater_host_not_found: "セットアップ対象ホストが保存済み設定に見つかりません。",
+    updater_host_bootstrap_not_ready: "対象ホストは現在セットアップを開始できる状態ではありません。",
+    updater_host_bootstrap_status_unavailable: "セットアップ状態を再確認できませんでした。通信状態を確認して再試行してください。",
+    updater_host_bootstrap_context_changed: "確認後にUpdaterまたはホスト設定が変わりました。認証情報とFingerprintを再確認してください。",
+    updater_host_bootstrap_in_progress: "ホストの自動セットアップ中はUpdater設定を変更できません。完了後に再試行してください。",
+    bootstrap_webcrypto_unavailable: "このブラウザでは認証情報を安全に暗号化できません。HTTPS接続と対応ブラウザを確認してください。",
+    bootstrap_encryption_public_key_invalid: "Updaterが報告したbootstrap暗号鍵を検証できません。Updaterを更新して再接続してください。",
+    bootstrap_administrator_user_invalid: "一時管理者SSHユーザーにはroot以外のLinuxユーザー名を入力してください。",
+    bootstrap_private_key_invalid: "OpenSSHまたはPEM形式の一時SSH秘密鍵を入力してください。",
+    bootstrap_passphrase_too_long: "秘密鍵パスフレーズが長すぎます。",
+    bootstrap_host_keys_unconfirmed: "Updater暗号鍵と各ホストのSSHホスト鍵Fingerprintを確認してください。",
+    bootstrap_host_ids_invalid: "セットアップ対象ホストを選択してください。",
+    bootstrap_host_ids_duplicate: "セットアップ対象ホストが重複しています。画面を再取得してください。",
+    bootstrap_envelope_context_invalid: "セットアップ対象と設定Revisionの組み合わせが不正です。画面を再取得してください。",
+    bootstrap_credentials_invalid: "一時管理者SSHユーザーと秘密鍵を確認してください。",
+    bootstrap_envelope_too_large: "一時SSH秘密鍵が大きすぎるため安全に送信できません。",
+    invalid_bootstrap_envelope: "暗号化した一時認証情報をControl Panelが検証できませんでした。画面を再取得してください。",
+    invalid_bootstrap_host_selection: "セットアップ対象ホストの選択が保存済み設定と一致しません。",
+    invalid_bootstrap_job_request: "ホストセットアップ要求の内容が正しくありません。",
+    bootstrap_job_not_found: "ホストセットアップ処理が見つかりません。状態を再取得してください。",
+    bootstrap_job_conflict: "別のホストセットアップが進行中、または同じ要求の状態が変わっています。",
+    bootstrap_job_operation_failed: "ホストセットアップ処理を保存または更新できませんでした。",
+    bootstrap_policy_revision_mismatch: "Updater設定が変わりました。設定と状態を再取得してから再試行してください。",
+    updater_policy_not_applied: "保存したUpdater設定の反映が完了するまでお待ちください。",
+    bootstrap_encryption_key_unavailable: "Updaterのbootstrap暗号鍵を取得できません。Updaterの接続状態を確認してください。",
+    bootstrap_recipient_key_changed: "Updaterのbootstrap暗号鍵が変わりました。状態を再取得し、Fingerprintを確認してから再試行してください。",
+    unsupported_bootstrap_profile: "選択したホスト構成は標準の自動セットアップに対応していません。手動導入を使用してください。",
+    secure_transport_required: "一時認証情報を扱うためHTTPS接続が必要です。",
+    bootstrap_broker_unavailable: "一時認証情報をUpdaterへ安全に引き渡せませんでした。時間を置いて再試行してください。",
+    bootstrap_claim_timeout: "Updaterが有効時間内に一時認証情報を受け取れませんでした。状態を再取得してから再試行してください。",
+    credential_expired: "一時認証情報の有効期限が切れました。新しい認証情報で再試行してください。",
     updater_policy_revision_conflict: "Updater設定が別の操作で更新されました。設定画面を開き直してから再度保存してください。",
     updater_policy_pending: "保存したUpdater設定の反映を待っています。反映完了後にもう一度お試しください。",
     updater_policy_failed: "保存したUpdater設定を反映できませんでした。Updater設定画面の状態を確認してください。",
@@ -545,6 +856,10 @@ function normalizeSystemUpdateAgent(value: unknown): SystemUpdateAgentStatus {
   const policyError = stringValue(updater.policy_error_code || updater.policy_error);
   const publicKeys = stringRecordValue(updater.ssh_client_public_keys);
   const keyFingerprints = stringRecordValue(updater.ssh_client_key_fingerprints);
+  const bootstrapEncryptionPublicKey = stringValue(updater.bootstrap_encryption_public_key);
+  const bootstrapEncryptionKeyFingerprint = stringValue(
+    updater.bootstrap_encryption_key_fingerprint || updater.bootstrap_encryption_public_key_fingerprint,
+  );
   if (desiredRevision !== undefined) normalized.desired_revision = desiredRevision;
   if (appliedRevision !== undefined) normalized.applied_revision = appliedRevision;
   if (policyStatus) normalized.policy_status = policyStatus;
@@ -554,7 +869,135 @@ function normalizeSystemUpdateAgent(value: unknown): SystemUpdateAgentStatus {
   }
   if (Object.keys(publicKeys).length > 0) normalized.ssh_client_public_keys = publicKeys;
   if (Object.keys(keyFingerprints).length > 0) normalized.ssh_client_key_fingerprints = keyFingerprints;
+  if (bootstrapEncryptionPublicKey) normalized.bootstrap_encryption_public_key = bootstrapEncryptionPublicKey;
+  if (bootstrapEncryptionKeyFingerprint) normalized.bootstrap_encryption_key_fingerprint = bootstrapEncryptionKeyFingerprint;
   return normalized;
+}
+
+function normalizeUpdaterHostBootstrapJob(value: unknown, fallbackUpdaterID: string): UpdaterHostBootstrapJob {
+  const job = recordValue(value);
+  const status = stringValue(job.status);
+  const normalizedHosts = Array.isArray(job.hosts)
+    ? job.hosts.map(normalizeUpdaterHostBootstrapHostResult).filter((host) => host.host_id)
+    : [];
+  const hosts = terminalBootstrapStatuses.has(normalize(status))
+    ? normalizedHosts.map((host) => (
+      terminalBootstrapHostStatuses.has(normalize(host.status))
+        ? host
+        : { ...host, status }
+    ))
+    : normalizedHosts;
+  const rawHostIDs = Array.isArray(job.host_ids) ? job.host_ids.map(stringValue) : hosts.map((host) => host.host_id);
+  const hostIDs = [...new Set(rawHostIDs.map((hostID) => hostID.trim()).filter(Boolean))].sort();
+  return {
+    id: stringValue(job.id || job.job_id),
+    idempotency_key: stringValue(job.idempotency_key),
+    updater_id: stringValue(job.updater_id) || fallbackUpdaterID,
+    expected_revision: nonNegativeIntegerValue(job.expected_revision, 0),
+    status,
+    host_ids: hostIDs,
+    hosts,
+    created_at: stringValue(job.created_at),
+    updated_at: stringValue(job.updated_at),
+    completed_at: stringValue(job.completed_at),
+  };
+}
+
+function normalizeUpdaterHostBootstrapHostResult(value: unknown): UpdaterHostBootstrapHostResult {
+  const host = recordValue(value);
+  return {
+    host_id: stringValue(host.host_id),
+    status: stringValue(host.status),
+    progress: optionalNumberValue(host.progress),
+    code: stringValue(host.code),
+    message: safeErrorDetail(stringValue(host.message)),
+    updated_at: stringValue(host.updated_at),
+    completed_at: stringValue(host.completed_at),
+  };
+}
+
+function sameUpdaterSettingsHost(left: UpdaterSettingsHost, right: UpdaterSettingsHost) {
+  return left.host_id.trim() === right.host_id.trim()
+    && left.name.trim() === right.name.trim()
+    && left.address.trim() === right.address.trim()
+    && Number(left.port) === Number(right.port)
+    && left.user.trim() === right.user.trim()
+    && left.arch.trim() === right.arch.trim()
+    && left.host_public_key.trim() === right.host_public_key.trim();
+}
+
+function sameStringSet(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  const normalizedLeft = [...left].sort();
+  const normalizedRight = [...right].sort();
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+function bootstrapResponseForRequest(
+  response: UpdaterHostBootstrapJobsResponse,
+  request: UpdaterHostBootstrapRequest,
+) {
+  const recovered = response.jobs.find((job) => updaterHostBootstrapJobMatchesRequest(job, request));
+  if (!recovered) throw new Error("invalid_updater_host_bootstrap_response");
+  return { jobs: [recovered] };
+}
+
+async function recoverUpdaterHostBootstrapJob(
+  request: UpdaterHostBootstrapRequestIdentity,
+  refreshJobs: () => Promise<UpdaterHostBootstrapJob[]>,
+) {
+  try {
+    const jobs = await refreshJobs();
+    return jobs.find((job) => updaterHostBootstrapJobMatchesRequest(job, request));
+  } catch {
+    return undefined;
+  }
+}
+
+function updaterHostBootstrapJobMatchesRequest(
+  job: UpdaterHostBootstrapJob,
+  request: UpdaterHostBootstrapRequestIdentity,
+) {
+  return job.id === request.job_id
+    && job.idempotency_key === request.idempotency_key
+    && job.expected_revision === request.expected_revision
+    && sameStringSet(job.host_ids, request.host_ids);
+}
+
+function ambiguousUpdaterHostBootstrapCreateError(error: unknown) {
+  if (!error || typeof error !== "object" || !("status" in error)) return true;
+  const status = Number((error as { status?: unknown }).status);
+  return !Number.isInteger(status) || status < 400 || status >= 500;
+}
+
+function sameUpdaterBootstrapTargetsForHost(
+  hostID: string,
+  savedTargets: UpdaterSettingsTarget[],
+  currentTargets: UpdaterSettingsTarget[],
+) {
+  const saved = updaterBootstrapTargetSignatures(hostID, savedTargets);
+  const current = updaterBootstrapTargetSignatures(hostID, currentTargets);
+  return saved.length === current.length && saved.every((value, index) => value === current[index]);
+}
+
+function updaterHostBootstrapProfileSupported(hostID: string, targets: UpdaterSettingsTarget[]) {
+  const selected = targets.filter((target) => target.host_id.trim() === hostID.trim());
+  return selected.length > 0 && selected.every((target) => (
+    target.deployment_mode.trim() === "systemd"
+    && standardBootstrapServiceTypes.has(target.service_type.trim())
+  ));
+}
+
+function updaterBootstrapTargetSignatures(hostID: string, targets: UpdaterSettingsTarget[]) {
+  return targets
+    .filter((target) => target.host_id.trim() === hostID.trim())
+    .map((target) => [
+      target.target_id.trim(),
+      target.host_id.trim(),
+      target.service_type.trim(),
+      target.deployment_mode.trim(),
+    ].join("\u0000"))
+    .sort();
 }
 
 function normalizeSystemUpdateHost(value: unknown): SystemUpdateHostStatus {

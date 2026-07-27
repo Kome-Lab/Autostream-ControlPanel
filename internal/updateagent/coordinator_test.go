@@ -142,6 +142,26 @@ type coordinatorTestDownloader struct {
 	downloads atomic.Int64
 }
 
+type coordinatorBootstrapLifecyclePanel struct {
+	claims chan struct{}
+}
+
+func (p *coordinatorBootstrapLifecyclePanel) ClaimBootstrap(context.Context, string, int64, string) (BootstrapJobClaim, bool, error) {
+	select {
+	case p.claims <- struct{}{}:
+	default:
+	}
+	return BootstrapJobClaim{}, false, nil
+}
+
+func (*coordinatorBootstrapLifecyclePanel) AcceptBootstrap(context.Context, string, string, string) error {
+	return errors.New("unexpected bootstrap accept")
+}
+
+func (*coordinatorBootstrapLifecyclePanel) ReportBootstrap(context.Context, string, BootstrapJobReport) error {
+	return errors.New("unexpected bootstrap report")
+}
+
 func (d *coordinatorTestDownloader) Download(_ context.Context, _, _, _ string, dest string) (DownloadedArtifact, error) {
 	d.downloads.Add(1)
 	return DownloadedArtifact{RootDir: filepath.Join(dest, "root"), SHA256: strings.Repeat("a", 64)}, nil
@@ -301,6 +321,93 @@ func TestCentralCoordinatorRunsDifferentHostsInParallel(t *testing.T) {
 	}
 }
 
+func TestCentralCoordinatorRunHostMaintenanceRejectsActiveJob(t *testing.T) {
+	c, _, _ := newCoordinatorFixture(t, "host-a")
+	active := coordinatorJob("host-a", "target-host-a", "job-active")
+	active.LeaseToken = ""
+	if err := c.workers["host-a"].journal.SetActive(&active); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err := c.RunHostMaintenance(t.Context(), "host-a", func(SSHHost, []Target) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, ErrHostMaintenanceActiveJob) {
+		t.Fatalf("maintenance with active job error = %v", err)
+	}
+	if called {
+		t.Fatal("maintenance callback ran while an update journal was active")
+	}
+}
+
+func TestCentralCoordinatorRunHostMaintenanceMarksRuntimeUpdating(t *testing.T) {
+	c, _, _ := newCoordinatorFixture(t, "host-a")
+	err := c.RunHostMaintenance(t.Context(), "host-a", func(host SSHHost, targets []Target) error {
+		if host.HostID != "host-a" || len(targets) != 1 || targets[0].HostID != host.HostID {
+			t.Fatalf("maintenance selection host=%+v targets=%+v", host, targets)
+		}
+		if got := c.updating.Load(); got != 1 {
+			t.Fatalf("updating during maintenance = %d", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.updating.Load(); got != 0 {
+		t.Fatalf("updating after maintenance = %d", got)
+	}
+}
+
+func TestCentralCoordinatorBootstrapLoopWaitsForActivationAndStopsWithRuntime(t *testing.T) {
+	c, _, _ := newCoordinatorFixture(t, "host-a")
+	c.Config.API.Port = 0
+	c.Config.PolicyRevision = 7
+	c.Config.PolicyStatus = PolicyStatusPending
+	c.Config.BootstrapEncryptionPublicKey = "public-bootstrap-key"
+	c.Config.BootstrapEncryptionKeyFingerprint = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	bootstrapPanel := &coordinatorBootstrapLifecyclePanel{claims: make(chan struct{}, 1)}
+	c.Bootstrap = &BootstrapController{Panel: bootstrapPanel}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := c.StartManaged(ctx)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	select {
+	case <-bootstrapPanel.claims:
+		cancel()
+		t.Fatal("bootstrap polling began before managed policy activation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	c.ActivatePolicy()
+	select {
+	case <-bootstrapPanel.claims:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("bootstrap polling did not begin after policy activation")
+	}
+	cancel()
+	if runErr := <-done; !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("runtime shutdown = %v", runErr)
+	}
+}
+
+func TestCentralCoordinatorBootstrapPollCadenceIsIndependentFromJobPolling(t *testing.T) {
+	cfg := Config{PollIntervalSeconds: 3600}
+	if got := cfg.PollInterval(); got != time.Hour {
+		t.Fatalf("ordinary poll interval = %s", got)
+	}
+	if bootstrapPollCadence <= 0 || bootstrapPollCadence > 30*time.Second {
+		t.Fatalf("bootstrap poll cadence = %s, want at most 30s", bootstrapPollCadence)
+	}
+	if bootstrapPollCadence == cfg.PollInterval() {
+		t.Fatalf("bootstrap cadence followed ordinary polling: %s", bootstrapPollCadence)
+	}
+}
+
 func TestCentralCoordinatorDrainBlocksClaimsAndDefersRecoveryCursor(t *testing.T) {
 	t.Run("draining blocks claims", func(t *testing.T) {
 		c, panel, _ := newCoordinatorFixture(t, "host-a")
@@ -404,6 +511,9 @@ func TestCentralCoordinatorStartManagedRefreshesHeartbeatAndProbeBeforeRecoveryC
 	c.Config.Targets = []Target{controlTarget}
 	delete(c.probeConfigSHA256, "host-control")
 	remote.probes["host-control"] = coordinatorProbe(c.Config, "host-control", "v1.2.2")
+	if remote.probes["host-control"].Targets[0].EndpointVerified {
+		t.Fatal("recovery fixture unexpectedly marked its stopped target endpoint healthy")
+	}
 	interrupted := UpdateJob{
 		ID: "job-stale-recovery", HostID: "host-control", TargetID: controlTarget.TargetID,
 		ServiceType: controlTarget.ServiceType, DeploymentMode: controlTarget.DeploymentMode,

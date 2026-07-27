@@ -3,7 +3,9 @@
 This archive contains the Control Panel and central `autostream-updater` Linux
 binaries, systemd examples, placeholder configuration, and matching web assets.
 The central updater is installed once. Managed hosts use the separate
-non-resident `autostream-update-host` bootstrap artifact.
+non-resident `autostream-update-host` bootstrap artifact. The System Updates
+page can install it remotely on supported standard systemd hosts; Docker,
+non-standard-port, and custom targets use the manual bootstrap procedure.
 
 ## Requirements
 
@@ -292,11 +294,16 @@ sudo systemctl status autostream-updater
 Open **Application Info > System Updates**, select the central updater, and
 configure:
 
-- the GitHub Release Token. The GitHub Release Token is required for every
-  managed update, whether the repository is public or private. It is write-only
-  in the Control Panel and is never shown after saving.
+- the GitHub Release Token. The current runtime is pinned to this public
+  Control Panel repository and still requires a repository-scoped token with
+  only `Contents (read)` and `Attestations (read)`. It is write-only in the
+  Control Panel and is never shown after saving. Changing the repository to
+  private requires a separate trust-root and provenance-policy implementation;
+  this release fails closed instead of treating that as supported.
 - the loopback API port and the poll and heartbeat intervals;
-- each host ID, name, address, SSH port, SSH user, and architecture;
+- each host ID, name, address, SSH port, SSH user, and architecture. Automatic
+  bootstrap requires the saved SSH user to be exactly
+  `autostream-update-host`;
 - the complete SSH server public key, verified through an independent channel;
 - the targets assigned to each host.
 
@@ -308,16 +315,35 @@ update job.
 
 Saving starts automatic pull and validation. No service restart is required.
 For every new host the updater generates a separate Ed25519 client key and
-reports only its public key to the System Updates page. Copy that reported
-public key into a file for that host's bootstrap administrator; never copy the
-private key.
+reports only its public key to the System Updates page. The private key remains
+on the central updater.
 
-Each remote host is installed from the separate
-`autostream-update-host_<version>_linux_<arch>.tar.gz` artifact. Follow its
-`README.bootstrap.md`, using the reported client public key as
-`--authorized-key`. The bootstrap installs the root-owned
-`/etc/autostream/update-host.json`, forced SSH command, and non-resident helper,
-not a daemon or token.
+For a standard systemd host, use **helper automatic setup** on the System
+Updates page. Enter a temporary non-root administrator SSH user and private key
+that can run the required installer with non-interactive `NOPASSWD` sudo.
+This temporary administrator is separate from the saved
+`autostream-update-host` user used for the restricted steady-state connection.
+The browser encrypts the credential directly to the central updater; the
+Control Panel does not retain the plaintext.
+
+Automatic setup supports only the fixed standard profiles: Control Panel on
+`8080`, Encoder / Recorder on `8081`, Observability on `8082`, Discord Bot on
+`8083`, and Worker on `8084`, with the documented
+`/opt/autostream/<service>/releases` and
+`/opt/autostream/<service>/current` paths. It downloads the verified
+`autostream-update-host_<version>_linux_<arch>.tar.gz` artifact, installs the
+root-owned `/etc/autostream/update-host.json`, forced SSH command, and
+non-resident helper, then verifies both `/health` and `/updater/version`.
+
+The managed host does not run another updater daemon or listener and has no
+helper-specific port, environment file, Node Runtime Token, or
+`/etc/autostream/updater.json`. That identity-only `updater.json` belongs only
+to the central updater host.
+
+For Docker, a non-standard port or path, or a custom target, follow the
+artifact's `README.bootstrap.md` manual procedure and use the reported client
+public key as `--authorized-key`. The same manual procedure remains available
+as a fallback for a standard systemd host.
 
 The settings view reports `applied`, `pending`, or `failed`. `applied` means the
 updater accepted the desired revision and is running with it; it does not mean
@@ -339,7 +365,8 @@ Control Panel and Observability targets still require a root-owned backup
 command on the host that owns the database. Docker targets still require that
 host's root Docker credential store when pulling private GHCR images. These are
 remote target prerequisites and are not credentials for the central updater.
-Configure and test them during the managed-host bootstrap.
+Automatic setup does not create or transmit these credentials. Prepare and test
+them on the managed host before starting automatic or manual bootstrap.
 
 The non-resident helper refuses an unverified rollback baseline. A legacy
 release without an immutable manifest remains manual-only. Publish and manually

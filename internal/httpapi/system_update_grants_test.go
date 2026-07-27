@@ -97,6 +97,62 @@ func TestSystemUpdateMutationGrantHTTPLifecycleAndSecretSafeAudit(t *testing.T) 
 	}
 }
 
+func TestSystemUpdateMutationGrantRejectsTokenRotatedAfterInitialAuthentication(t *testing.T) {
+	fixture := newMutationGrantHTTPFixture(
+		t,
+		[]string{"service.register", "updates.authorize"},
+	)
+	server, ok := fixture.handler.(*Server)
+	if !ok {
+		t.Fatalf("fixture handler type = %T", fixture.handler)
+	}
+	services := &serviceAuthenticationBarrierStore{
+		ServiceRegistryStore: fixture.auth,
+		authenticated:        make(chan struct{}),
+	}
+	server.services = services
+	server.systemUpdateOperationMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			server.systemUpdateOperationMu.Unlock()
+		}
+	}()
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/services/update-jobs/"+fixture.job.ID+"/mutation-grants",
+			bytes.NewReader(mustJSONForMutationGrantTest(t, fixture.body)),
+		)
+		request.Header.Set("Authorization", "Bearer "+fixture.token.RawToken)
+		result := httptest.NewRecorder()
+		server.ServeHTTP(result, request)
+		done <- result
+	}()
+	select {
+	case <-services.authenticated:
+	case <-time.After(3 * time.Second):
+		t.Fatal("mutation grant did not complete its initial service-token authentication")
+	}
+	if _, err := fixture.auth.RotateServiceToken(t.Context(), fixture.token.ID); err != nil {
+		t.Fatal(err)
+	}
+	server.systemUpdateOperationMu.Unlock()
+	locked = false
+
+	select {
+	case result := <-done:
+		if result.Code != http.StatusUnauthorized ||
+			!strings.Contains(result.Body.String(), `"code":"invalid_service_token"`) {
+			t.Fatalf("rotated-token mutation grant status=%d body=%s", result.Code, result.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("mutation grant did not finish after identity lock release")
+	}
+}
+
 func TestSystemUpdateMutationGrantHTTPRequiresScopeAndGrantBearer(t *testing.T) {
 	fixture := newMutationGrantHTTPFixture(t, []string{"service.register"})
 	res := issueMutationGrantForHTTPTest(t, fixture)

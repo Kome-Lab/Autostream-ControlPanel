@@ -33,7 +33,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return nil
 	}
 	if len(args) == 0 {
-		return errors.New("usage: validate-config, rpc, bootstrap-docker-target, or installer-systemd-paths")
+		return errors.New("usage: validate-config, rpc, bootstrap-docker-target, installer-systemd-paths, or installer-standard-systemd-config")
 	}
 	switch args[0] {
 	case "validate-config":
@@ -104,6 +104,23 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return writeInstallerSystemdPaths(*configPath, stdout, loadRemoteSystemdBootstrapPaths)
 
+	case "installer-standard-systemd-config":
+		// Receipt-less migration is deliberately narrower than ordinary helper
+		// validation: only an exact central standard-systemd profile may be
+		// adopted automatically by the verified installer.
+		flags := newFlagSet("installer-standard-systemd-config", stderr)
+		configPath := flags.String("config", defaultConfigPath, "root-owned legacy helper configuration")
+		if flags.Parse(args[1:]) != nil || flags.NArg() != 0 {
+			return errors.New("installer-standard-systemd-config requires only --config PATH")
+		}
+		if updateagent.RequireRemoteHelperRoot() != nil {
+			return errors.New("installer-standard-systemd-config requires root")
+		}
+		if err := updateagent.ValidateLegacyStandardSystemdHelperConfig(*configPath); err != nil {
+			return errors.New("legacy standard systemd configuration rejected")
+		}
+		return nil
+
 	case "worker":
 		// worker is an internal systemd transient-unit entrypoint. It is not
 		// accepted over SSH and all of its argv values are non-secret paths.
@@ -122,7 +139,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return nil
 	default:
-		return errors.New("usage: validate-config, rpc, bootstrap-docker-target, or installer-systemd-paths")
+		return errors.New("usage: validate-config, rpc, bootstrap-docker-target, installer-systemd-paths, or installer-standard-systemd-config")
 	}
 }
 

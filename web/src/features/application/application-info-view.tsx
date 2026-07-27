@@ -391,7 +391,7 @@ function SystemUpdatesCard({
         ) : isLoading ? (
           <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象を読み込み中です。</div>
         ) : targets.length === 0 ? (
-          <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象が未設定です。中央Updaterに対象ホストとサービスを登録してください。各ホストへのUpdater導入は不要です。</div>
+          <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象が未設定です。中央Updaterに対象ホストとサービスを登録してください。各ホストに常駐Updaterサービスは不要です。標準systemdホストの非常駐helperはSystem Updatesから自動セットアップできます。</div>
         ) : (
           <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
             {targets.map((target) => (

@@ -56,6 +56,7 @@ func (s *Server) getUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	updaterID = agent.ServiceID
 	policy, err := s.updaterPolicies.GetUpdaterPolicy(r.Context(), updaterID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "updater_policy_not_configured"})
@@ -110,6 +111,7 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	updaterID = agent.ServiceID
 	policy, err := normalizedUpdaterPolicyRequest(updaterID, body)
 	if err != nil {
 		code := "invalid_updater_policy"
@@ -122,6 +124,15 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 
 	s.systemUpdateOperationMu.Lock()
 	defer s.systemUpdateOperationMu.Unlock()
+	bootstrapActive, err := s.updateHostBootstrapJobs.HasActiveJob(updaterID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_updater_host_bootstrap_failed"})
+		return
+	}
+	if bootstrapActive {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_host_bootstrap_in_progress"})
+		return
+	}
 	saved, tokenStatus, err := s.updaterPolicies.SaveUpdaterPolicyAndReleaseToken(
 		r.Context(),
 		updaterID,

@@ -105,7 +105,7 @@ func handleRemoteHelperRequest(ctx context.Context, cfg HelperConfig, request Re
 		rt.platformArch = runtime.GOARCH
 	}
 	if request.Operation == "probe" {
-		return remoteProbeResponse(cfg, rt)
+		return remoteProbeResponse(ctx, cfg, rt)
 	}
 	plan := *request.Plan
 	target, failure := resolveRemoteTarget(cfg, plan, rt.platformOS, rt.platformArch)
@@ -161,16 +161,23 @@ func resolveRemoteTarget(cfg HelperConfig, plan RemotePlan, platformOS, platform
 	return target, ""
 }
 
-func remoteProbeResponse(cfg HelperConfig, rt remoteHelperRuntime) RemoteRPCResponse {
+func remoteProbeResponse(ctx context.Context, cfg HelperConfig, rt remoteHelperRuntime) RemoteRPCResponse {
 	digest, err := cfg.SHA256()
 	if err != nil {
 		return remoteFailure("state_invalid")
 	}
 	targets := make([]RemoteProbeTarget, 0, len(cfg.Targets))
 	for _, target := range cfg.Targets {
+		baseline := probeRemoteTargetVersion(target)
+		if !versionPattern.MatchString(baseline) {
+			return remoteFailure("target_unavailable")
+		}
+		current, err := readHealthyTargetVersionWithClient(ctx, target, rt.httpClient)
+		endpointVerified := err == nil && strings.TrimSpace(current) == baseline
 		targets = append(targets, RemoteProbeTarget{
 			TargetID: target.TargetID, ServiceType: target.ServiceType,
-			DeploymentMode: target.DeploymentMode, CurrentVersion: probeRemoteTargetVersion(target),
+			DeploymentMode: target.DeploymentMode, CurrentVersion: baseline,
+			EndpointVerified: endpointVerified,
 		})
 	}
 	probe := RemoteProbeResult{

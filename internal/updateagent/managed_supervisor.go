@@ -502,8 +502,11 @@ func managedRuntimeStatusConfig(base Config, appliedRevision, desiredRevision in
 }
 
 func materializePolicyErrorCode(err error) string {
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "ssh identit") {
-		return PolicyErrorSSHIdentity
+	if err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "ssh identit") || strings.Contains(message, "bootstrap envelope identity") {
+			return PolicyErrorSSHIdentity
+		}
 	}
 	return PolicyErrorInvalid
 }

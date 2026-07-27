@@ -201,6 +201,12 @@ func (p ManagedPolicy) Materialize(bootstrap Config) (Config, error) {
 		cfg.SSHClientPublicKeys[host.HostID] = clientPublicKey
 		cfg.SSHClientKeyFingerprints[host.HostID] = clientFingerprint
 	}
+	bootstrapIdentity, err := EnsureBootstrapEnvelopeIdentity(ManagedUpdaterStateDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("initialize bootstrap envelope identity: %w", err)
+	}
+	cfg.BootstrapEncryptionPublicKey = bootstrapIdentity.PublicKey
+	cfg.BootstrapEncryptionKeyFingerprint = bootstrapIdentity.Fingerprint
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate managed policy: %w", err)
 	}

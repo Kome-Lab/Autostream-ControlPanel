@@ -61,6 +61,12 @@ type Config struct {
 	PolicyErrorCode          string            `json:"-"`
 	SSHClientPublicKeys      map[string]string `json:"-"`
 	SSHClientKeyFingerprints map[string]string `json:"-"`
+	// BootstrapEncryptionPublicKey and its fingerprint are public runtime
+	// metadata for the updater-owned, non-exportable envelope identity. They
+	// are reported through heartbeat capabilities and are never persisted in
+	// updater.json or the managed-policy snapshot.
+	BootstrapEncryptionPublicKey      string `json:"-"`
+	BootstrapEncryptionKeyFingerprint string `json:"-"`
 }
 
 // UnmarshalJSON distinguishes an absent hosts field (legacy local mode) from

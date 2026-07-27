@@ -1570,13 +1570,24 @@ func restoreVersionEnv(path string, original []byte, mode os.FileMode, existed b
 }
 
 func readHealthyTargetVersion(ctx context.Context, target Target) (string, error) {
+	return readHealthyTargetVersionWithClient(ctx, target, nil)
+}
+
+func readHealthyTargetVersionWithClient(ctx context.Context, target Target, baseClient *http.Client) (string, error) {
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	client := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	if err := checkHealth(checkCtx, client, target.HealthURL); err != nil {
+	client := http.Client{}
+	if baseClient != nil {
+		client = *baseClient
+	}
+	if client.Timeout <= 0 || client.Timeout > 3*time.Second {
+		client.Timeout = 3 * time.Second
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if err := checkHealth(checkCtx, &client, target.HealthURL); err != nil {
 		return "", err
 	}
-	return fetchVersion(checkCtx, client, target.VersionURL)
+	return fetchVersion(checkCtx, &client, target.VersionURL)
 }
 
 func reconcileSystemd(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner) (ApplyResult, error) {

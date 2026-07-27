@@ -155,10 +155,12 @@ func TestClaimReleaseTokenIsMemoryOnlyAndRedacted(t *testing.T) {
 
 func TestCoordinatorPolicyStatusCapabilitiesAreSafe(t *testing.T) {
 	cfg := Config{
-		PolicyRevision:           4,
-		PolicyStatus:             PolicyStatusApplied,
-		SSHClientPublicKeys:      map[string]string{"edge-01": "ssh-ed25519 AAAATEST central-updater"},
-		SSHClientKeyFingerprints: map[string]string{"edge-01": "SHA256:client"},
+		PolicyRevision:                    4,
+		PolicyStatus:                      PolicyStatusApplied,
+		SSHClientPublicKeys:               map[string]string{"edge-01": "ssh-ed25519 AAAATEST central-updater"},
+		SSHClientKeyFingerprints:          map[string]string{"edge-01": "SHA256:client"},
+		BootstrapEncryptionPublicKey:      "BAc-public-key",
+		BootstrapEncryptionKeyFingerprint: "SHA256:bootstrap",
 	}
 	capabilities := coordinatorCapabilities(cfg, nil, nil)
 	if capabilities["policy_revision"] != int64(4) || capabilities["policy_status"] != PolicyStatusApplied {
@@ -169,6 +171,10 @@ func TestCoordinatorPolicyStatusCapabilitiesAreSafe(t *testing.T) {
 	}
 	if fmt.Sprint(capabilities["ssh_client_public_keys"]) == "" || fmt.Sprint(capabilities["ssh_client_key_fingerprints"]) == "" {
 		t.Fatalf("SSH client identity capabilities = %#v", capabilities)
+	}
+	if capabilities["bootstrap_encryption_public_key"] != "BAc-public-key" ||
+		capabilities["bootstrap_encryption_key_fingerprint"] != "SHA256:bootstrap" {
+		t.Fatalf("bootstrap envelope identity capabilities = %#v", capabilities)
 	}
 
 	cfg.PolicyStatus = PolicyStatusFailed

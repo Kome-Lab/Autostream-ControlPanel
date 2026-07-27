@@ -107,6 +107,14 @@ func validateRootOwnedFileAndParents(path string, fileInfo os.FileInfo, label st
 }
 
 func (c HelperConfig) Validate() error {
+	return c.validateForArchitecture(runtime.GOARCH)
+}
+
+// validateForArchitecture validates a complete helper policy for the
+// architecture on which it will run. The central updater uses this while
+// generating a policy for a remote host; LoadHelperConfig still calls
+// Validate and therefore binds the installed policy to the actual runtime.
+func (c HelperConfig) validateForArchitecture(expectedArch string) error {
 	if c.SchemaVersion != HelperConfigSchemaVersion {
 		return errors.New("unsupported helper config schema_version")
 	}
@@ -119,7 +127,7 @@ func (c HelperConfig) Validate() error {
 	if c.Arch != "amd64" && c.Arch != "arm64" {
 		return errors.New("helper arch must be amd64 or arm64")
 	}
-	if (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") && c.Arch != runtime.GOARCH {
+	if (expectedArch == "amd64" || expectedArch == "arm64") && c.Arch != expectedArch {
 		return fmt.Errorf("helper arch %q does not match runtime architecture", c.Arch)
 	}
 	if !filepath.IsAbs(c.StateDir) || filepath.Clean(c.StateDir) == string(filepath.Separator) {

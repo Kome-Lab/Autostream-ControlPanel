@@ -50,6 +50,12 @@ func (s *Server) serviceSystemUpdateMutationGrantIssue(w http.ResponseWriter, r 
 		return
 	}
 	jobID := strings.TrimSpace(r.PathValue("id"))
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	token, ok = s.reauthenticateService(w, r, token, "updates.authorize")
+	if !ok {
+		return
+	}
 	agent, err := s.systemUpdateAgentForToken(r.Context(), token, body.ServiceID)
 	if err != nil {
 		s.writeServiceAudit(r, token, "system_updates.mutation_grant.issue", "system_update", jobID, "failure", map[string]any{"reason": "update_agent_identity_invalid"})

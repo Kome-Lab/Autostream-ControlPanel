@@ -1,6 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { APIError, apiGet } from "@/lib/api/client";
-import { emptyUpdaterSettings, isSystemUpdateJobActive, normalizeSystemUpdatesResponse, normalizeUpdaterSettingsResponse } from "@/lib/system-updates";
+import {
+  activeUpdaterHostBootstrapStatus,
+  emptyUpdaterSettings,
+  isSystemUpdateJobActive,
+  normalizeSystemUpdatesResponse,
+  normalizeUpdaterHostBootstrapJobsResponse,
+  normalizeUpdaterSettingsResponse,
+} from "@/lib/system-updates";
 import type { AppSettings, AppVersion, AuditLog, CurrentUser, ManagedAppSettings, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 export function useCurrentUser() {
@@ -69,6 +76,21 @@ export function useUpdaterSettings(updaterID: string, enabled = true) {
       }
     },
     enabled: enabled && Boolean(updaterID),
+  });
+}
+
+export function useUpdaterHostBootstrapJobs(updaterID: string, enabled = true) {
+  return useQuery({
+    queryKey: ["system-updates", "updaters", updaterID, "bootstrap-jobs"],
+    queryFn: async () => normalizeUpdaterHostBootstrapJobsResponse(
+      await apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/bootstrap-jobs`),
+      updaterID,
+    ),
+    enabled: enabled && Boolean(updaterID),
+    retry: false,
+    refetchInterval: (query) => activeUpdaterHostBootstrapStatus(query.state.data?.jobs || []) ? 2_000 : 15_000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
 }
 

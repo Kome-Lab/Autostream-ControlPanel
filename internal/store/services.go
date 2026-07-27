@@ -189,6 +189,7 @@ type ServiceRegistryStore interface {
 	Heartbeat(ctx context.Context, token ServiceToken, heartbeat ServiceHeartbeat) (RegisteredService, error)
 	UpdateServiceRuntimeReport(ctx context.Context, report ServiceRuntimeReport) (RegisteredService, error)
 	SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error)
+	ValidateServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (bool, error)
 	ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error)
 	ConfigureServiceNode(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, report ServiceRuntimeReport, seal NodeTokenSealer) (ServiceToken, RegisteredService, error)
 	StageServiceNodeConfiguration(ctx context.Context, serviceID, rawConfigureToken string, now time.Time, seal NodeTokenSealer) (StagedServiceNodeConfiguration, error)
@@ -265,18 +266,19 @@ func (s MariaDBAuthStore) ListServiceTokens(ctx context.Context) ([]ServiceToken
 }
 
 func (s MariaDBAuthStore) RevokeServiceToken(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE service_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, time.Now().UTC(), id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	if err := revokeServiceTokenInTx(ctx, tx, id, now); err != nil {
 		return err
 	}
-	if affected == 0 {
-		return ErrNotFound
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET last_heartbeat_at = NULL, reported_capabilities = '{}', updated_at = ? WHERE token_id = ?`, now, id); err != nil {
+		return err
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s MariaDBAuthStore) RotateServiceToken(ctx context.Context, id string) (ServiceToken, error) {
@@ -323,7 +325,7 @@ func (s MariaDBAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, string(body), token.CreatedAt); err != nil {
 		return ServiceToken{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE token_id = ?`, token.ID, now, now, oldToken.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, last_heartbeat_at = NULL, reported_capabilities = '{}', staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE token_id = ?`, token.ID, now, now, oldToken.ID); err != nil {
 		return ServiceToken{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE service_tokens SET revoked_at = ? WHERE id = ?`, now, oldToken.ID); err != nil {
@@ -382,7 +384,7 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, scopesJSON, token.CreatedAt); err != nil {
 		return ServiceToken{}, RegisteredService{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, configure_token_hash = NULL, configure_token_expires_at = NULL, configure_token_used_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`, token.ID, ciphertext, nonce, now, now, service.ServiceID, oldToken.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, last_heartbeat_at = NULL, reported_capabilities = '{}', staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, configure_token_hash = NULL, configure_token_expires_at = NULL, configure_token_used_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`, token.ID, ciphertext, nonce, now, now, service.ServiceID, oldToken.ID)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, err
 	}
@@ -404,6 +406,8 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	service.ConfigureTokenExpiresAt = nil
 	service.ConfigureTokenUsedAt = nil
 	clearStagedNodeConfiguration(&service)
+	service.LastHeartbeatAt = nil
+	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	if err := tx.Commit(); err != nil {
@@ -621,7 +625,7 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		apiPort = heartbeat.API.Port
 		apiSSL = heartbeat.API.SSLEnabled
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = ?, last_heartbeat_at = ?, current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END, metrics = ?, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, capabilities = CASE WHEN service_type = 'update_agent' OR ? = '{}' THEN capabilities ELSE ? END, reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, host = CASE WHEN ? = '' THEN host ELSE ? END, port = CASE WHEN ? = 0 THEN port ELSE ? END, ssl_enabled = CASE WHEN ? = '' THEN ssl_enabled ELSE ? END, public_url = CASE WHEN ? = '' THEN public_url ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ? AND token_id = ?`, heartbeat.Status, now, heartbeat.CurrentStreamID, heartbeat.CurrentStreamID, string(metrics), heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Commit, heartbeat.Commit, heartbeat.BuildDate, heartbeat.BuildDate, string(capabilities), string(capabilities), string(capabilities), string(capabilities), heartbeat.Hostname, heartbeat.Hostname, heartbeat.OS, heartbeat.OS, heartbeat.Arch, heartbeat.Arch, apiHost, apiHost, apiPort, apiPort, apiHost, apiSSL, buildServiceURL(apiHost, apiPort, apiSSL), buildServiceURL(apiHost, apiPort, apiSSL), heartbeat.Version, heartbeat.Commit, heartbeat.BuildDate, string(capabilities), heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, now, now, heartbeat.ServiceID, token.ID)
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = ?, last_heartbeat_at = ?, current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END, metrics = ?, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, capabilities = CASE WHEN service_type = 'update_agent' OR ? = '{}' THEN capabilities ELSE ? END, reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, host = CASE WHEN ? = '' THEN host ELSE ? END, port = CASE WHEN ? = 0 THEN port ELSE ? END, ssl_enabled = CASE WHEN ? = '' THEN ssl_enabled ELSE ? END, public_url = CASE WHEN ? = '' THEN public_url ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ? AND token_id = ? AND EXISTS (SELECT 1 FROM service_tokens st WHERE st.id = ? AND st.revoked_at IS NULL)`, heartbeat.Status, now, heartbeat.CurrentStreamID, heartbeat.CurrentStreamID, string(metrics), heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Commit, heartbeat.Commit, heartbeat.BuildDate, heartbeat.BuildDate, string(capabilities), string(capabilities), string(capabilities), string(capabilities), heartbeat.Hostname, heartbeat.Hostname, heartbeat.OS, heartbeat.OS, heartbeat.Arch, heartbeat.Arch, apiHost, apiHost, apiPort, apiPort, apiHost, apiSSL, buildServiceURL(apiHost, apiPort, apiSSL), buildServiceURL(apiHost, apiPort, apiSSL), heartbeat.Version, heartbeat.Commit, heartbeat.BuildDate, string(capabilities), heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, now, now, heartbeat.ServiceID, token.ID, token.ID)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -695,7 +699,7 @@ func (s MariaDBAuthStore) UpdateServiceRuntimeReport(ctx context.Context, report
 
 func (s MariaDBAuthStore) SetServiceConfigureToken(ctx context.Context, serviceID, tokenHash string, expiresAt time.Time) (RegisteredService, error) {
 	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET configure_token_hash = ?, configure_token_expires_at = ?, configure_token_used_at = NULL, staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, updated_at = ? WHERE service_id = ?`, tokenHash, expiresAt, now, serviceID)
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET configure_token_hash = ?, configure_token_expires_at = ?, configure_token_used_at = NULL, staged_node_previous_token_id = NULL, staged_node_token_id = CASE WHEN staged_node_token_id IS NOT NULL AND staged_node_token_id <> token_id THEN staged_node_token_id ELSE NULL END, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, updated_at = ? WHERE service_id = ?`, tokenHash, expiresAt, now, serviceID)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -707,6 +711,29 @@ func (s MariaDBAuthStore) SetServiceConfigureToken(ctx context.Context, serviceI
 		return RegisteredService{}, ErrNotFound
 	}
 	return s.getService(ctx, serviceID)
+}
+
+func (s MariaDBAuthStore) ValidateServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (bool, error) {
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return false, ErrNotFound
+	}
+	var tokenHash string
+	var expiresAt sql.NullTime
+	var usedAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(configure_token_hash, ''), configure_token_expires_at, configure_token_used_at FROM services WHERE service_id = ?`, serviceID).Scan(&tokenHash, &expiresAt, &usedAt)
+	if err == sql.ErrNoRows {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	now = now.UTC()
+	return tokenHash != "" &&
+		expiresAt.Valid &&
+		!usedAt.Valid &&
+		now.Before(expiresAt.Time.UTC()) &&
+		security.VerifyTokenHash(rawToken, tokenHash), nil
 }
 
 func (s MariaDBAuthStore) ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error) {
@@ -792,7 +819,7 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, scopesJSON, token.CreatedAt); err != nil {
 		return ServiceToken{}, RegisteredService{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, configure_token_used_at = ?, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, configure_token_used_at = ?, last_heartbeat_at = NULL, reported_capabilities = '{}', node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`,
 		report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, token.ID, ciphertext, nonce, now, now, now, serviceID, oldToken.ID)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, err
@@ -813,6 +840,8 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	service.NodeTokenCiphertext = ciphertext
 	service.NodeTokenNonce = nonce
 	service.ConfigureTokenUsedAt = &now
+	service.LastHeartbeatAt = nil
+	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	if err := tx.Commit(); err != nil {
@@ -966,7 +995,7 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, string(scopesJSON), token.CreatedAt); err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = staged_node_token_ciphertext, node_token_nonce = staged_node_token_nonce, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ? AND staged_node_token_id = ?`, report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, token.ID, now, now, serviceID, oldToken.ID, token.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = staged_node_token_ciphertext, node_token_nonce = staged_node_token_nonce, last_heartbeat_at = NULL, reported_capabilities = '{}', node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ? AND staged_node_token_id = ?`, report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, token.ID, now, now, serviceID, oldToken.ID, token.ID)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
@@ -984,6 +1013,8 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	service.TokenID = token.ID
 	service.NodeTokenCiphertext = service.StagedNodeTokenCiphertext
 	service.NodeTokenNonce = service.StagedNodeTokenNonce
+	service.LastHeartbeatAt = nil
+	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	if err := tx.Commit(); err != nil {

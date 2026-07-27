@@ -1141,6 +1141,251 @@ type updateStartRaceDispatcher struct {
 	once             sync.Once
 }
 
+type serviceAuthenticationBarrierStore struct {
+	store.ServiceRegistryStore
+	once          sync.Once
+	authenticated chan struct{}
+}
+
+func (s *serviceAuthenticationBarrierStore) AuthenticateServiceToken(
+	ctx context.Context,
+	rawToken string,
+	requiredScope string,
+) (store.ServiceToken, error) {
+	token, err := s.ServiceRegistryStore.AuthenticateServiceToken(
+		ctx,
+		rawToken,
+		requiredScope,
+	)
+	if err == nil {
+		s.once.Do(func() { close(s.authenticated) })
+	}
+	return token, err
+}
+
+func TestSystemUpdateClaimRejectsTokenRotatedAfterInitialAuthentication(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	registerServiceInstance(t, auth, "worker-reauth-claim", "worker")
+	capabilities := centralUpdateCapabilitiesForTest(
+		"host-reauth-claim",
+		map[string]string{"worker-reauth-claim": "systemd"},
+	)
+	oldToken := registerSystemUpdateAgentForTest(
+		t,
+		auth,
+		"updater-reauth-claim",
+		capabilities,
+	)
+	services := &serviceAuthenticationBarrierStore{
+		ServiceRegistryStore: auth,
+		authenticated:        make(chan struct{}),
+	}
+	updates := store.NewMemorySystemUpdateStore()
+	server := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithServiceRegistryStore(services),
+		WithSystemUpdateStore(updates),
+	)
+
+	server.systemUpdateOperationMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			server.systemUpdateOperationMu.Unlock()
+		}
+	}()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/services/update-jobs/claim",
+			strings.NewReader(`{"service_id":"updater-reauth-claim","host_id":"host-reauth-claim"}`),
+		)
+		request.Header.Set("Authorization", "Bearer "+oldToken.RawToken)
+		result := httptest.NewRecorder()
+		server.ServeHTTP(result, request)
+		done <- result
+	}()
+	select {
+	case <-services.authenticated:
+	case <-time.After(3 * time.Second):
+		t.Fatal("claim did not complete its initial service-token authentication")
+	}
+
+	newToken, err := auth.RotateServiceToken(t.Context(), oldToken.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Heartbeat(t.Context(), newToken, store.ServiceHeartbeat{
+		ServiceID:    "updater-reauth-claim",
+		Status:       "online",
+		Version:      "v1.0.1",
+		Capabilities: capabilities,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := updates.CreateSystemUpdateJob(
+		t.Context(),
+		store.CreateSystemUpdateJobParams{
+			TargetID:          "worker-reauth-claim",
+			TargetServiceType: "worker",
+			AgentServiceID:    "updater-reauth-claim",
+			ExecutionHostID:   "host-reauth-claim",
+			DeploymentMode:    "systemd",
+			CurrentVersion:    "v1.0.0",
+			TargetVersion:     "v1.1.0",
+			Strategy:          store.SystemUpdateStrategyWhenIdle,
+			IdempotencyKey:    "reauth-claim",
+			RequestedByUserID: "admin-01",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.systemUpdateOperationMu.Unlock()
+	locked = false
+
+	select {
+	case result := <-done:
+		if result.Code != http.StatusUnauthorized ||
+			!strings.Contains(result.Body.String(), `"code":"invalid_service_token"`) {
+			t.Fatalf("rotated-token claim status=%d body=%s", result.Code, result.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("claim did not finish after identity lock release")
+	}
+	active, err := updates.GetActiveSystemUpdateJob(t.Context(), job.TargetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.Status != store.SystemUpdateStatusQueued || active.LeaseGeneration != 0 {
+		t.Fatalf("pre-rotation request claimed post-rotation job: %#v", active)
+	}
+}
+
+func TestSystemUpdateReportRejectsTokenRotatedAfterInitialAuthentication(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	capabilities := centralUpdateCapabilitiesForTest(
+		"host-reauth-report",
+		map[string]string{"worker-reauth-report": "systemd"},
+	)
+	oldToken := registerSystemUpdateAgentForTest(
+		t,
+		auth,
+		"updater-reauth-report",
+		capabilities,
+	)
+	updates := store.NewMemorySystemUpdateStore()
+	job, _, err := updates.CreateSystemUpdateJob(
+		t.Context(),
+		store.CreateSystemUpdateJobParams{
+			TargetID:          "worker-reauth-report",
+			TargetServiceType: "worker",
+			AgentServiceID:    "updater-reauth-report",
+			ExecutionHostID:   "host-reauth-report",
+			DeploymentMode:    "systemd",
+			CurrentVersion:    "v1.0.0",
+			TargetVersion:     "v1.1.0",
+			Strategy:          store.SystemUpdateStrategyWhenIdle,
+			IdempotencyKey:    "reauth-report",
+			RequestedByUserID: "admin-01",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, _, err := updates.ClaimSystemUpdateJob(
+		t.Context(),
+		"updater-reauth-report",
+		"host-reauth-report",
+		"",
+		map[string]string{"worker-reauth-report": "systemd"},
+		time.Now().UTC(),
+		systemUpdateClaimLeaseTTL,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := &serviceAuthenticationBarrierStore{
+		ServiceRegistryStore: auth,
+		authenticated:        make(chan struct{}),
+	}
+	server := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithServiceRegistryStore(services),
+		WithSystemUpdateStore(updates),
+	)
+	reportBody, err := json.Marshal(map[string]any{
+		"service_id":       "updater-reauth-report",
+		"lease_token":      claim.LeaseToken,
+		"lease_generation": claim.LeaseGeneration,
+		"sequence":         claim.ReportSequence,
+		"status":           store.SystemUpdateStatusSucceeded,
+		"progress":         100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.systemUpdateOperationMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			server.systemUpdateOperationMu.Unlock()
+		}
+	}()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/services/update-jobs/"+job.ID+"/report",
+			bytes.NewReader(reportBody),
+		)
+		request.Header.Set("Authorization", "Bearer "+oldToken.RawToken)
+		result := httptest.NewRecorder()
+		server.ServeHTTP(result, request)
+		done <- result
+	}()
+	select {
+	case <-services.authenticated:
+	case <-time.After(3 * time.Second):
+		t.Fatal("report did not complete its initial service-token authentication")
+	}
+	newToken, err := auth.RotateServiceToken(t.Context(), oldToken.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Heartbeat(t.Context(), newToken, store.ServiceHeartbeat{
+		ServiceID:    "updater-reauth-report",
+		Status:       "online",
+		Version:      "v1.0.1",
+		Capabilities: capabilities,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server.systemUpdateOperationMu.Unlock()
+	locked = false
+
+	select {
+	case result := <-done:
+		if result.Code != http.StatusUnauthorized ||
+			!strings.Contains(result.Body.String(), `"code":"invalid_service_token"`) {
+			t.Fatalf("rotated-token report status=%d body=%s", result.Code, result.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("report did not finish after identity lock release")
+	}
+	active, err := updates.GetActiveSystemUpdateJob(t.Context(), job.TargetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.Status != store.SystemUpdateStatusClaimed {
+		t.Fatalf("pre-rotation request reported post-rotation job: %#v", active)
+	}
+}
+
 func (f *updateStartRaceDispatcher) StartReadinessIssues(_ []store.RegisteredService, _ servicecall.StartRequest, _ time.Time) []servicecall.ReadinessIssue {
 	f.once.Do(func() { close(f.readinessEntered) })
 	<-f.releaseReadiness

@@ -54,12 +54,21 @@ func (s *MemoryAuthStore) RevokeServiceToken(ctx context.Context, id string) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	token, ok := s.serviceTokens[id]
-	if !ok {
+	if !ok || token.RevokedAt != nil {
 		return ErrNotFound
 	}
 	now := time.Now().UTC()
 	token.RevokedAt = &now
 	s.serviceTokens[id] = token
+	for serviceID, service := range s.services {
+		if service.TokenID != id {
+			continue
+		}
+		service.LastHeartbeatAt = nil
+		service.ReportedCapabilities = map[string]any{}
+		service.UpdatedAt = now
+		s.services[serviceID] = service
+	}
 	return nil
 }
 
@@ -94,6 +103,9 @@ func (s *MemoryAuthStore) RotateServiceToken(ctx context.Context, id string) (Se
 	for serviceID, service := range s.services {
 		if service.TokenID == id {
 			service.TokenID = token.ID
+			service.LastHeartbeatAt = nil
+			service.ReportedCapabilities = map[string]any{}
+			clearStagedNodeConfiguration(&service)
 			service.NodeTokenRotatedAt = &now
 			service.UpdatedAt = now
 			s.services[serviceID] = service
@@ -161,6 +173,8 @@ func (s *MemoryAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	service.ConfigureTokenExpiresAt = nil
 	service.ConfigureTokenUsedAt = nil
 	clearStagedNodeConfiguration(&service)
+	service.LastHeartbeatAt = nil
+	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	s.services[serviceID] = service
@@ -259,6 +273,20 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	svc.LastHeartbeatAt = existing.LastHeartbeatAt
 	svc.CurrentStreamID = existing.CurrentStreamID
 	svc.Metrics = existing.Metrics
+	svc.NodeTokenCiphertext = existing.NodeTokenCiphertext
+	svc.NodeTokenNonce = existing.NodeTokenNonce
+	svc.StagedNodePreviousTokenID = existing.StagedNodePreviousTokenID
+	svc.StagedNodeTokenID = existing.StagedNodeTokenID
+	svc.StagedNodeTokenHash = existing.StagedNodeTokenHash
+	svc.StagedNodeTokenScopes = append([]string(nil), existing.StagedNodeTokenScopes...)
+	svc.StagedNodeTokenCiphertext = existing.StagedNodeTokenCiphertext
+	svc.StagedNodeTokenNonce = existing.StagedNodeTokenNonce
+	svc.StagedNodeActivationTokenHash = existing.StagedNodeActivationTokenHash
+	svc.StagedNodeTokenAt = existing.StagedNodeTokenAt
+	svc.ConfigureTokenHash = existing.ConfigureTokenHash
+	svc.ConfigureTokenExpiresAt = existing.ConfigureTokenExpiresAt
+	svc.ConfigureTokenUsedAt = existing.ConfigureTokenUsedAt
+	svc.NodeTokenRotatedAt = existing.NodeTokenRotatedAt
 	if existing.Status == "assigned" || existing.Status == "restart_requested" {
 		svc.Status = existing.Status
 	}
@@ -284,6 +312,10 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		return RegisteredService{}, ErrNotFound
 	}
 	if svc.TokenID != token.ID {
+		return RegisteredService{}, ErrForbidden
+	}
+	activeToken, ok := s.serviceTokens[token.ID]
+	if !ok || activeToken.RevokedAt != nil {
 		return RegisteredService{}, ErrForbidden
 	}
 	if heartbeat.CurrentStreamID != "" && !s.isAssignedLocked(heartbeat.ServiceID, heartbeat.CurrentStreamID) {
@@ -444,10 +476,37 @@ func (s *MemoryAuthStore) SetServiceConfigureToken(ctx context.Context, serviceI
 	svc.ConfigureTokenExpiresAt = &expiresAt
 	svc.ConfigureTokenUsedAt = nil
 	svc.ConfigureTokenHash = tokenHash
+	pendingStagedTokenID := ""
+	if svc.StagedNodeTokenID != "" && svc.StagedNodeTokenID != svc.TokenID {
+		pendingStagedTokenID = svc.StagedNodeTokenID
+	}
 	clearStagedNodeConfiguration(&svc)
+	svc.StagedNodeTokenID = pendingStagedTokenID
 	svc.UpdatedAt = time.Now().UTC()
 	s.services[serviceID] = svc
 	return svc, nil
+}
+
+func (s *MemoryAuthStore) ValidateServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return false, ErrNotFound
+	}
+	now = now.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	svc, ok := s.services[serviceID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	return svc.ConfigureTokenHash != "" &&
+		svc.ConfigureTokenExpiresAt != nil &&
+		svc.ConfigureTokenUsedAt == nil &&
+		now.Before(svc.ConfigureTokenExpiresAt.UTC()) &&
+		security.VerifyTokenHash(rawToken, svc.ConfigureTokenHash), nil
 }
 
 func (s *MemoryAuthStore) ConsumeServiceConfigureToken(ctx context.Context, serviceID, rawToken string, now time.Time) (RegisteredService, error) {
@@ -533,6 +592,8 @@ func (s *MemoryAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	service.NodeTokenCiphertext = ciphertext
 	service.NodeTokenNonce = nonce
 	service.ConfigureTokenUsedAt = &now
+	service.LastHeartbeatAt = nil
+	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	s.services[serviceID] = service
@@ -665,6 +726,8 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	service.TokenID = token.ID
 	service.NodeTokenCiphertext = service.StagedNodeTokenCiphertext
 	service.NodeTokenNonce = service.StagedNodeTokenNonce
+	service.LastHeartbeatAt = nil
+	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	s.services[serviceID] = service

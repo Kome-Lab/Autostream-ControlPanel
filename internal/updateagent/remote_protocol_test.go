@@ -186,6 +186,10 @@ func TestRemoteRPCResponseRequiresOneStrictOutcome(t *testing.T) {
 
 func TestRemoteProbeRequiresCompleteBoundedPolicyIdentity(t *testing.T) {
 	probe := RemoteProbeResult{ProtocolVersion: 1, HelperVersion: "v1.0.0", HostID: "edge-01", OS: "linux", Arch: "amd64", ConfigSHA256: "sha256:" + strings.Repeat("a", 64), Targets: []RemoteProbeTarget{{TargetID: "worker-01", ServiceType: "worker", DeploymentMode: ModeSystemd}}}
+	if err := probe.Validate(); err == nil || !strings.Contains(err.Error(), "version") {
+		t.Fatalf("missing current version result = %v", err)
+	}
+	probe.Targets[0].CurrentVersion = "v1.0.0"
 	if err := probe.Validate(); err != nil {
 		t.Fatalf("valid probe: %v", err)
 	}

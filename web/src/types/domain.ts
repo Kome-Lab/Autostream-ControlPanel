@@ -247,6 +247,8 @@ export type SystemUpdateAgentStatus = {
   policy_error?: string;
   ssh_client_public_keys?: Record<string, string>;
   ssh_client_key_fingerprints?: Record<string, string>;
+  bootstrap_encryption_public_key?: string;
+  bootstrap_encryption_key_fingerprint?: string;
 };
 
 export type SystemUpdateHostStatus = {
@@ -357,6 +359,62 @@ export type UpdaterSettingsUpdate = Pick<
 > & {
   expected_revision: number;
   github_token?: string;
+};
+
+export type UpdaterHostBootstrapEnvelope = {
+  version: 1;
+  ephemeral_public_key: string;
+  nonce: string;
+  ciphertext: string;
+};
+
+export type UpdaterHostBootstrapStatus =
+  | "awaiting_credentials"
+  | "queued"
+  | "claimed"
+  | "connecting"
+  | "uploading"
+  | "verifying"
+  | "installing"
+  | "probing"
+  | "succeeded"
+  | "failed"
+  | "credential_expired";
+
+export type UpdaterHostBootstrapHostResult = {
+  host_id: string;
+  status: string;
+  progress?: number;
+  code?: string;
+  message?: string;
+  updated_at?: string;
+  completed_at?: string;
+};
+
+export type UpdaterHostBootstrapJob = {
+  id: string;
+  idempotency_key?: string;
+  updater_id: string;
+  expected_revision: number;
+  status: string;
+  host_ids: string[];
+  hosts: UpdaterHostBootstrapHostResult[];
+  created_at: string;
+  updated_at?: string;
+  completed_at?: string;
+};
+
+export type UpdaterHostBootstrapJobsResponse = {
+  jobs: UpdaterHostBootstrapJob[];
+};
+
+export type UpdaterHostBootstrapRequest = {
+  job_id: string;
+  idempotency_key: string;
+  expected_revision: number;
+  host_ids: string[];
+  recipient_key_fingerprint: string;
+  envelope: UpdaterHostBootstrapEnvelope;
 };
 
 export type NodeRegistrationResponse = {

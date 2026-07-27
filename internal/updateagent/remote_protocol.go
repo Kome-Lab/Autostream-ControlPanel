@@ -240,6 +240,9 @@ type RemoteProbeTarget struct {
 	ServiceType    string `json:"service_type"`
 	DeploymentMode string `json:"deployment_mode"`
 	CurrentVersion string `json:"current_version,omitempty"`
+	// EndpointVerified is advisory for ordinary coordinator probes. Bootstrap
+	// completion separately requires it for every installed target.
+	EndpointVerified bool `json:"endpoint_verified"`
 }
 
 type RemoteProbeResult struct {
@@ -276,8 +279,8 @@ func (p RemoteProbeResult) Validate() error {
 		if target.DeploymentMode != ModeSystemd && target.DeploymentMode != ModeDocker {
 			return errors.New("remote probe target mode is invalid")
 		}
-		if current := strings.TrimSpace(target.CurrentVersion); current != "" && !versionPattern.MatchString(current) {
-			return errors.New("remote probe target version is invalid")
+		if current := strings.TrimSpace(target.CurrentVersion); !versionPattern.MatchString(current) {
+			return errors.New("remote probe target current version baseline is invalid")
 		}
 	}
 	return nil

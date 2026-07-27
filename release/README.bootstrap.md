@@ -24,9 +24,15 @@ to the host over SSH only when it has an authorized update job.
   values are rejected before an RPC body is processed.
 - `/etc/autostream/update-host.json` is `root:root 0600`. It contains only host
   identity and fixed target policy. It contains no long-lived token.
-- Every managed update requires a job-scoped GitHub Release Token whether the
-  source repository is public or private. The helper receives it only over
-  bounded standard input during stage and never persists it.
+- The pinned `Kome-Lab/Autostream-ControlPanel` release repository must remain
+  public. Runtime verification requires Sigstore's public-good trust root and a
+  certificate asserting public source visibility; private Control Panel release
+  repositories are not supported. Every managed update still requires a
+  job-scoped GitHub Release Token. The helper receives it only over bounded
+  standard input during stage and never persists it. Scope a fine-grained token
+  to this repository with `Contents (read)` and `Attestations (read)`: the
+  central updater sends authenticated requests for both release artifacts and
+  the repository attestation API even though the repository is public.
 - No helper process is running while the host is idle. Probe runs in the bounded forced
   command. Stage, apply, and reconcile are handed to bounded transient systemd
   services so a download or authorized mutation can finish, or reach a
@@ -48,17 +54,39 @@ host. It is a one-time installation, not another service to operate.
   `.ssh/authorized_keys`.
 - `sudo`, `visudo`, `sshd`, `ssh-keygen`, `flock`, GNU coreutils, `getent`, and
   the standard `useradd`/`usermod`/`passwd` tools.
+- `/usr/bin/systemctl` with either `ssh.service` or `sshd.service` when using
+  the automatic `--install-sshd-policy` mode.
 - A root-controlled `/usr/bin/systemd-run` from systemd 236 or newer, with
   `--collect` and `--service-type=` support. This launches only transient update
   workers; it does not add a resident service to the host.
 - Authenticated GitHub CLI, `jq`, and `sha256sum` on the administrator machine
-  when downloading from the private release.
+  when downloading the release manually.
+- GitHub **Immutable releases** enabled for the Control Panel repository before
+  publishing a helper release. The release workflow checks the setting before
+  creating a draft, rechecks it immediately before publication, and then
+  requires the published Release API response to report `immutable: true`.
+- The publish workflow checks that setting before it creates a draft. GitHub's
+  settings endpoint requires repository `Administration (read)`, which is not
+  an available `GITHUB_TOKEN` workflow permission. Configure
+  `AUTOSTREAM_RELEASE_SETTINGS_TOKEN` as a repository secret scoped to this
+  repository with only that read permission; do not grant Administration write.
+  Prefer token minting from a dedicated repository-only GitHub App. A
+  short-expiry fine-grained token is the operational fallback until that App is
+  wired. The token is used only by the two settings checks.
 - `jq` on the managed host only when preparing a Docker bootstrap policy.
 - A numeric `/32` IPv4 or `/128` IPv6 source CIDR is recommended. Use a wider
   management CIDR only when the central updater address is not stable.
 
-Apply the SSH restriction before running the installer, adjusting only the
-surrounding configuration-file location for your distribution:
+The preferred automatic mode adds the fixed root-owned
+`/etc/ssh/sshd_config.d/90-autostream-update-host.conf`, validates the complete
+configuration with `sshd -t`, reloads only `ssh.service` or `sshd.service`, and
+then verifies the effective settings with `sshd -T`. The main sshd
+configuration must include `/etc/ssh/sshd_config.d/*.conf`; unsupported layouts
+fail closed and must use the manual mode below.
+
+For manual mode, apply this SSH restriction before running the installer,
+adjusting only the surrounding configuration-file location for your
+distribution:
 
 ```text
 Match User autostream-update-host
@@ -66,24 +94,25 @@ Match User autostream-update-host
     PubkeyAuthentication yes
     PasswordAuthentication no
     KbdInteractiveAuthentication no
+    ForceCommand none
     AuthorizedKeysCommand none
     AuthorizedKeysFile .ssh/authorized_keys
     TrustedUserCAKeys none
     AuthorizedPrincipalsFile none
     AuthorizedPrincipalsCommand none
+    AuthorizedPrincipalsCommandUser none
 ```
 
 Validate and reload sshd through an existing console session. Keep that session
 open until the restricted probe succeeds; a syntax or `Match` mistake can lock
 out remote access. The installer checks the effective settings with `sshd -T`
-and refuses a broader authentication path. It also requires the effective
-`AuthorizedPrincipalsCommandUser` value to be `none`; leave that command user
-unset when no principals command is configured.
+and refuses a broader authentication path. Omit `--install-sshd-policy` only
+when this equivalent policy is already managed outside the installer.
 
 ## Download and verify
 
-Do not run an installer fetched from an unverified URL. Download the private
-release with authenticated `gh`, verify the sidecars, and match the artifact to
+Do not run an installer fetched from an unverified URL. Download the release
+with authenticated `gh`, verify the sidecars, and match the artifact to
 the separate bootstrap manifest before extracting it:
 
 ```bash
@@ -100,6 +129,18 @@ gh release download "$VERSION" \
   --pattern update-host-bootstrap-manifest.json \
   --pattern update-host-bootstrap-manifest.json.sha256 \
   --dir "$ARTIFACT_DIR"
+
+gh release verify "$VERSION" \
+  --repo Kome-Lab/Autostream-ControlPanel
+for FILE in \
+  "$ASSET" \
+  "$ASSET.sha256" \
+  update-host-bootstrap-manifest.json \
+  update-host-bootstrap-manifest.json.sha256
+do
+  gh release verify-asset "$VERSION" "$ARTIFACT_DIR/$FILE" \
+    --repo Kome-Lab/Autostream-ControlPanel
+done
 
 (cd "$ARTIFACT_DIR" && sha256sum --check --strict "$ASSET.sha256")
 (cd "$ARTIFACT_DIR" && sha256sum --check --strict update-host-bootstrap-manifest.json.sha256)
@@ -129,8 +170,18 @@ The GitHub Release also contains a provenance attestation for
 `update-host-bootstrap-manifest.json`. Verify it during release promotion:
 
 ```bash
+SOURCE_COMMIT="$(
+  jq -er '.commit | select(test("^[0-9a-f]{40}$"))' \
+    "$ARTIFACT_DIR/update-host-bootstrap-manifest.json"
+)"
 gh attestation verify "$ARTIFACT_DIR/update-host-bootstrap-manifest.json" \
-  --repo Kome-Lab/Autostream-ControlPanel
+  --repo Kome-Lab/Autostream-ControlPanel \
+  --signer-workflow Kome-Lab/Autostream-ControlPanel/.github/workflows/release-host.yml \
+  --signer-digest "$SOURCE_COMMIT" \
+  --source-ref "refs/tags/$VERSION" \
+  --source-digest "$SOURCE_COMMIT" \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  --deny-self-hosted-runners
 ```
 
 ## Prepare the host policy
@@ -217,9 +268,9 @@ sudo jq -e \
 ```
 
 Create a short-lived, read-only GitHub Release Token. This baseline operation
-requires it whether the repository is public or private. Do not put it in the
-draft, an environment variable, a command argument, shell history, or root's
-Docker config. The helper accepts
+requires it even though the Control Panel release repository is public. Do not
+put it in the draft, an environment variable, a command argument, shell history,
+or root's Docker config. The helper accepts
 one printable-ASCII token of at most 16 KiB from standard input, strips only a
 final LF or CRLF, and never persists it. Run `sudo -v` before creating the pipe
 so sudo cannot consume the token as a password:
@@ -276,7 +327,61 @@ trap - EXIT
 Use `FINAL_CONFIG` as the installer's `--config` path. Do not manually invent a
 Compose digest: it approves an exact canonical model and is a security boundary.
 
-## Install once on the managed host
+## Install from System Updates
+
+For a saved standard systemd host, select the host on the Control Panel's
+**System Updates** page and provide a temporary SSH private key for a non-root
+administrator account that can run the required commands with non-interactive
+`NOPASSWD` sudo. The browser encrypts that credential directly to the central
+updater's bootstrap identity before submission. Only the encrypted envelope
+crosses the Control Panel; neither the Panel nor its database persists the
+plaintext credential or private key.
+
+The saved host's regular SSH `user` must remain exactly
+`autostream-update-host`; that is the dedicated account used by later
+forced-command update sessions. The temporary `administrator_user` entered for
+bootstrap is a separate account and is never saved as the host's regular user.
+
+The updater uses the credential only for the bootstrap job. The installed host
+helper is not a resident service; it runs only when invoked through the
+restricted updater SSH path. This automatic path currently supports standard
+systemd hosts with these fixed loopback ports:
+
+```text
+control_panel    8080
+encoder_recorder 8081
+observability    8082
+discord_bot      8083
+worker           8084
+```
+
+The bootstrap probe calls both `/health` and `/updater/version` on that fixed
+endpoint and requires the reported version to match the installed symlink or
+version environment baseline. A stopped service, a mismatched version, or a
+service using a non-standard port fails closed. Use the manual policy and
+installer procedure below for non-standard ports, Docker, and custom targets;
+it remains the supported fallback for standard systemd hosts as well.
+
+Before using a root bootstrap archive, the central updater requires the GitHub
+Release API to report an immutable release, matches every downloaded archive,
+sidecar, manifest, and manifest sidecar to its API-provided `sha256:` digest,
+peels the release tag through annotated tags to a commit, and requires that
+commit to equal the manifest's `commit`. A mutable release, a missing digest,
+or any mismatch fails before extraction or SSH. This prevents the manifest and
+all of its sidecars from being replaced together after publication.
+
+The runtime does not shell out to `gh`. It requests attestations by the
+manifest's SHA-256 digest, accepts a bundle only from GitHub's production
+attestation storage, and cryptographically verifies it against Sigstore's
+public-good TUF trust root. Verification requires the Fulcio certificate,
+signed-certificate timestamp, transparency-log proof, observer timestamp,
+artifact digest, exact repository and release-workflow identity, tag ref,
+source commit, `push` event, GitHub-hosted runner, and matching SLSA v1
+statement. A missing or mismatched attestation fails before extraction or SSH.
+Release promotion should additionally run the independent commands shown above:
+`gh attestation verify`, `gh release verify`, and `gh release verify-asset`.
+
+## Install or reconfigure on the managed host
 
 Obtain the host-specific Ed25519 client public key reported by the central
 updater on the Control Panel's **System Updates** page and save only that public
@@ -287,23 +392,66 @@ Then run the installer as root on the managed host:
 sudo "$RELEASE_DIR/install/install-autostream-update-host" \
   --config /path/to/final-update-host.json \
   --authorized-key /path/to/central-host-specific-key.pub \
-  --source-cidr 192.0.2.10/32
+  --source-cidr 192.0.2.10/32 \
+  --install-sshd-policy
 ```
 
-The installer validates the key, CIDR, effective sshd configuration, helper
-configuration, fixed systemd bootstrap paths, and sudoers file before enabling
-the forced key. Re-running it with the same config, key, and CIDR is safe. A
-different existing config or key fails closed so a normal reinstall cannot
-silently broaden host authority.
+With `--install-sshd-policy`, the installer stages the exact policy above as
+`root:root 0644`. An existing byte-identical policy is accepted; a symlink,
+unexpected mode or owner, or different content fails closed. The installer
+validates the complete sshd configuration, reloads one of the two fixed unit
+names, and verifies the effective dedicated-user policy before enabling the
+forced key. Without the flag, no sshd file or service is changed and the
+equivalent pre-existing effective policy remains mandatory.
 
-All four destination files are checked for type, owner, mode, and content
-conflicts before the first rename. During a reinstall the existing forced key is
-temporarily quiesced; staged files are committed with rollback copies, validated
-again, newly created systemd directories are tracked, and the forced key is
-restored last. A later failure removes only directories created by that installer
-run, in reverse order, and only while they remain empty. If rollback itself cannot complete,
-the installer keeps the SSH entry disabled where the filesystem permits and
-preserves same-directory hidden `.backup.<random>` files for console recovery.
+The installer also validates the key, CIDR, helper configuration, fixed systemd
+bootstrap paths, and sudoers file. Every successful install writes
+`/etc/autostream/update-host.install-state` as `root:root 0600`. Its fixed
+`schema_version=1` receipt records the SHA-256 digests of the installed
+`/etc/autostream/update-host.json` and forced `authorized_keys` file.
+
+That receipt is the authority for later reconfiguration. A later System Updates
+automatic bootstrap, or a manual rerun of this verified installer, may
+atomically replace the helper config and host-specific key or source CIDR only
+when the current config and `authorized_keys` bytes still match the recorded
+digests. A symlink, unexpected owner or mode, malformed receipt, unknown field,
+digest drift, or partial managed state fails closed before any destination is
+changed. Do not edit the config, forced key, or receipt by hand.
+
+A receipt-less legacy install is adopted only when both the config and
+`authorized_keys` exist. The newly verified helper first validates the config,
+then runs its root-only internal `installer-standard-systemd-config` gate. That
+gate reconstructs the expected policy through
+`BuildStandardSystemdHelperConfig` and requires a full exact round-trip match:
+every target must use one of the fixed standard systemd profiles, including its
+loopback port, unit, release/current paths, commands, state directory, and
+backup policy. Docker, mixed-deployment, custom, or otherwise non-standard
+legacy policies require manual root review instead of automatic adoption.
+Finally, the key file must be exactly one installer-generated
+`restrict,from="...",command="..." ssh-ed25519 ...` entry. A partial pair or a
+broader/custom key also requires manual root review.
+An existing sshd drop-in is never rewritten during reconfiguration: it must
+remain byte-identical and pass syntax, reload, and effective-policy checks.
+
+The five managed destinations, plus the sshd drop-in in automatic mode, are
+checked for type, owner, mode, and permitted content changes before the first
+rename. During reconfiguration the existing forced key is temporarily
+quiesced; the old config, receipt, and key are backed up; staged files are
+committed and validated; and the new receipt is committed before the new forced
+key is activated last. A later failure restores the prior config and receipt,
+restores or validates the prior sshd policy, and only then restores the prior
+forced key. It removes only directories created by that installer run, in
+reverse order, and only while they remain empty. If rollback itself cannot
+complete, the installer keeps the SSH entry disabled where the filesystem
+permits and preserves same-directory hidden `.backup.<random>` files for console
+recovery.
+When this run installed the sshd drop-in, a later failure removes it, validates
+the restored sshd configuration, and reloads the same fixed unit allowlist
+before any previous forced key is restored. Even when a byte-identical drop-in
+already existed, the effective restrictions are rechecked before restoring that
+key. A failed removal, syntax check, reload, or effective-policy verification is
+reported as `CONSOLE RECOVERY REQUIRED`; do not retry remotely until the sshd
+configuration and updater authorization are inspected from a console.
 If SSH isolation itself fails, it emits an emergency isolation/revocation
 message instead of claiming the host is safe. A failed first bootstrap can
 leave only the locked account and empty root-owned directories; it does not
@@ -314,7 +462,9 @@ The final files are:
 ```text
 /usr/local/libexec/autostream-update-host
 /etc/autostream/update-host.json
+/etc/autostream/update-host.install-state
 /etc/sudoers.d/autostream-update-host
+/etc/ssh/sshd_config.d/90-autostream-update-host.conf  # automatic mode only
 /var/lib/autostream-update-host/
 /var/lib/autostream-update-host-login/.ssh/authorized_keys
 /opt/autostream/<service>/
@@ -350,29 +500,44 @@ sudo -l -U autostream-update-host | grep -F SSH_ORIGINAL_COMMAND
 sudo stat -c '%U:%G:%a %n' \
   /usr/local/libexec/autostream-update-host \
   /etc/autostream/update-host.json \
+  /etc/autostream/update-host.install-state \
   /etc/sudoers.d/autostream-update-host \
   /var/lib/autostream-update-host-login/.ssh/authorized_keys
+if sudo test -e /etc/ssh/sshd_config.d/90-autostream-update-host.conf; then
+  sudo stat -c '%U:%G:%a %n' \
+    /etc/ssh/sshd_config.d/90-autostream-update-host.conf
+fi
 ```
 
-Expected modes are `root:root:755`, `root:root:600`, `root:root:440`, and
-`root:root:644`, respectively. While idle, there must be no
+Expected modes are `root:root:755`, `root:root:600`, `root:root:600`,
+`root:root:440`, and `root:root:644`, respectively. The automatic sshd policy is
+`root:root:644`.
+While idle, there must be no
 `autostream-update-host` process or listening port.
 
-## Removal and current rotation limitation
+## Removal, reconfiguration, and current rotation limitation
 
 Do not generate or replace the updater's private key by hand. This release does
 not expose a supported client-key rotation action in System Updates. If a client
 private key may be compromised, stop the central updater and remove that key's
 authorization from the managed host. Do not re-enable the host until a release
 with the supported rotation flow is installed. Changing only the source CIDR
-does not rotate the key; rerun the verified helper installer with the same
-reported public key after confirming that no update is active.
+does not rotate the key. For a standard systemd host, wait for any desired
+policy change to become applied with no update job active, then run **helper
+automatic setup** again from the intended central-updater network path. The
+remote bootstrap derives an exact `/32` or `/128` from that SSH connection, and
+the receipt-gated installer replaces the config and forced-key entry atomically
+while retaining the currently reported key unless the central updater reports a
+new one. For a manual profile, rerun the verified helper installer with the
+currently reported public key and intended `--source-cidr`.
 
 To remove a host, verify that no job is active, remove the host and its targets
 in System Updates, save, and wait for the policy to become applied. Only after
 the durable policy commit does the central updater prune that host's local
 private key. Then remove the forced key and sudoers rule on the managed host
-before the binary and config. Re-adding the same host ID generates a new client
-key; never restore the old authorization. Do not delete service releases,
-Docker version files, backups, or rollback checkpoints until their retention
-policy permits it.
+before the binary, config, and
+`/etc/autostream/update-host.install-state` receipt. Remove the optional sshd
+drop-in only through a console-controlled syntax-check and reload procedure.
+Re-adding the same host ID generates a new client key; never restore the old
+authorization. Do not delete service releases, Docker version files, backups,
+or rollback checkpoints until their retention policy permits it.

@@ -42,18 +42,20 @@ type systemUpdateTargetResponse struct {
 }
 
 type systemUpdateAgentResponse struct {
-	UpdaterID                string            `json:"updater_id"`
-	Name                     string            `json:"name"`
-	Status                   string            `json:"status"`
-	Online                   bool              `json:"online"`
-	Version                  string            `json:"version"`
-	LastHeartbeat            *time.Time        `json:"last_heartbeat_at,omitempty"`
-	DesiredRevision          int64             `json:"desired_revision,omitempty"`
-	AppliedRevision          int64             `json:"applied_revision,omitempty"`
-	PolicyStatus             string            `json:"policy_status,omitempty"`
-	PolicyErrorCode          string            `json:"policy_error_code,omitempty"`
-	SSHClientPublicKeys      map[string]string `json:"ssh_client_public_keys,omitempty"`
-	SSHClientKeyFingerprints map[string]string `json:"ssh_client_key_fingerprints,omitempty"`
+	UpdaterID                         string            `json:"updater_id"`
+	Name                              string            `json:"name"`
+	Status                            string            `json:"status"`
+	Online                            bool              `json:"online"`
+	Version                           string            `json:"version"`
+	LastHeartbeat                     *time.Time        `json:"last_heartbeat_at,omitempty"`
+	DesiredRevision                   int64             `json:"desired_revision,omitempty"`
+	AppliedRevision                   int64             `json:"applied_revision,omitempty"`
+	PolicyStatus                      string            `json:"policy_status,omitempty"`
+	PolicyErrorCode                   string            `json:"policy_error_code,omitempty"`
+	SSHClientPublicKeys               map[string]string `json:"ssh_client_public_keys,omitempty"`
+	SSHClientKeyFingerprints          map[string]string `json:"ssh_client_key_fingerprints,omitempty"`
+	BootstrapEncryptionPublicKey      string            `json:"bootstrap_encryption_public_key,omitempty"`
+	BootstrapEncryptionKeyFingerprint string            `json:"bootstrap_encryption_key_fingerprint,omitempty"`
 }
 
 type systemUpdateHostResponse struct {
@@ -248,6 +250,12 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	token, ok = s.reauthenticateService(w, r, token, "updates.claim")
+	if !ok {
+		return
+	}
 	agent, err := s.systemUpdateAgentForToken(r.Context(), token, body.ServiceID)
 	if err != nil {
 		writeSystemUpdateAgentError(w, err)
@@ -266,8 +274,6 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	s.systemUpdateOperationMu.Lock()
-	defer s.systemUpdateOperationMu.Unlock()
 	eligibleTargets, err := s.systemUpdateTargetsForAgentHostClaim(r.Context(), agent, hostID, activeJobID != "")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "resolve_system_update_targets_failed"})
@@ -370,6 +376,12 @@ func (s *Server) serviceSystemUpdateReport(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	token, ok = s.reauthenticateService(w, r, token, "updates.report")
+	if !ok {
+		return
+	}
 	agent, err := s.systemUpdateAgentForToken(r.Context(), token, body.ServiceID)
 	if err != nil {
 		writeSystemUpdateAgentError(w, err)
@@ -411,6 +423,12 @@ func (s *Server) serviceSystemUpdateReport(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) serviceSystemUpdateAuthorize(w http.ResponseWriter, r *http.Request) {
 	token, ok := s.authenticateService(w, r, "updates.authorize")
+	if !ok {
+		return
+	}
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	token, ok = s.reauthenticateService(w, r, token, "updates.authorize")
 	if !ok {
 		return
 	}
@@ -637,6 +655,7 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 			UpdaterID: agent.ServiceID, Name: systemUpdateDisplayName(agent.ServiceName, agent.ServiceID), Status: strings.TrimSpace(agent.Status),
 			Online: systemUpdateAgentAvailable(agent, now), Version: agentVersion, LastHeartbeat: agent.LastHeartbeatAt,
 		}
+		updater.BootstrapEncryptionPublicKey, updater.BootstrapEncryptionKeyFingerprint = updateHostBootstrapEncryptionIdentity(agent)
 		var managedPolicy *store.UpdaterPolicy
 		if policy, ok := policies[agent.ServiceID]; ok {
 			managedPolicy = &policy
@@ -1275,7 +1294,8 @@ func systemUpdateAgentAvailable(agent store.RegisteredService, now time.Time) bo
 	if agent.LastHeartbeatAt == nil {
 		return false
 	}
-	age := now.Sub(agent.LastHeartbeatAt.UTC())
+	heartbeatAt := agent.LastHeartbeatAt.UTC()
+	age := now.Sub(heartbeatAt)
 	return age >= 0 && age <= heartbeatOfflineAfter()
 }
 

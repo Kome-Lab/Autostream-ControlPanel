@@ -216,6 +216,11 @@ func coordinatorCapabilities(cfg Config, deployedVersions map[string]string, hos
 		}
 		capabilities["ssh_client_public_keys"] = cloneCapabilityStringMap(cfg.SSHClientPublicKeys)
 		capabilities["ssh_client_key_fingerprints"] = cloneCapabilityStringMap(cfg.SSHClientKeyFingerprints)
+		if strings.TrimSpace(cfg.BootstrapEncryptionPublicKey) != "" &&
+			strings.TrimSpace(cfg.BootstrapEncryptionKeyFingerprint) != "" {
+			capabilities["bootstrap_encryption_public_key"] = strings.TrimSpace(cfg.BootstrapEncryptionPublicKey)
+			capabilities["bootstrap_encryption_key_fingerprint"] = strings.TrimSpace(cfg.BootstrapEncryptionKeyFingerprint)
+		}
 	}
 	return capabilities
 }
@@ -339,7 +344,14 @@ func safePanelErrorCode(code string) string {
 	case "updater_policy_not_configured",
 		"updater_policy_revision_ahead",
 		"updater_policy_revision_invalid",
-		"invalid_updater_policy_request":
+		"invalid_updater_policy_request",
+		"bootstrap_job_not_found",
+		"bootstrap_job_conflict",
+		"bootstrap_job_expired",
+		"bootstrap_lease_invalid",
+		"bootstrap_policy_revision_mismatch",
+		"updater_release_token_not_configured",
+		"secure_transport_required":
 		return strings.TrimSpace(code)
 	default:
 		return ""

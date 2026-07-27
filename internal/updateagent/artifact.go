@@ -59,6 +59,8 @@ type ReleaseDownloader struct {
 	MaxExtractBytes  int64
 	MaxEntries       int
 	AllowHTTPForTest bool
+
+	bootstrapProvenanceVerifier bootstrapProvenanceVerifier
 }
 
 type githubRelease struct {

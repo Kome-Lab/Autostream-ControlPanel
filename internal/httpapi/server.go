@@ -80,6 +80,7 @@ type Server struct {
 	remediation             store.RemediationExecutionStore
 	systemUpdates           store.SystemUpdateStore
 	updaterPolicies         store.UpdaterPolicyAdminStore
+	updateHostBootstrapJobs *UpdateHostBootstrapBroker
 	systemUpdateOperationMu sync.Mutex
 	mfa                     store.MFAStore
 	emailChanges            store.EmailChangeStore
@@ -180,6 +181,10 @@ func WithSystemUpdateStore(systemUpdates store.SystemUpdateStore) ServerOption {
 
 func WithUpdaterPolicyStore(updaterPolicies store.UpdaterPolicyAdminStore) ServerOption {
 	return func(s *Server) { s.updaterPolicies = updaterPolicies }
+}
+
+func WithUpdateHostBootstrapBroker(broker *UpdateHostBootstrapBroker) ServerOption {
+	return func(s *Server) { s.updateHostBootstrapJobs = broker }
 }
 
 func WithMFAStore(mfa store.MFAStore) ServerOption {
@@ -298,6 +303,9 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	if s.updaterPolicies == nil {
 		s.updaterPolicies = store.NewMemoryUpdaterPolicyStore()
 	}
+	if s.updateHostBootstrapJobs == nil {
+		s.updateHostBootstrapJobs = NewUpdateHostBootstrapBroker()
+	}
 	if s.mfa == nil {
 		if mfa, ok := s.auth.(store.MFAStore); ok {
 			s.mfa = mfa
@@ -359,6 +367,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /services/notifications/email", s.serviceEmailNotification)
 	s.mux.HandleFunc("POST /services/remediation-actions/execute", s.serviceRemediationExecute)
 	s.mux.HandleFunc("POST /services/update-agent/policy", s.serviceUpdaterPolicy)
+	s.mux.HandleFunc("POST /services/update-agent/bootstrap-jobs/claim", s.serviceUpdateHostBootstrapClaim)
+	s.mux.HandleFunc("POST /services/update-agent/bootstrap-jobs/{id}/accept", s.serviceUpdateHostBootstrapAccept)
+	s.mux.HandleFunc("POST /services/update-agent/bootstrap-jobs/{id}/report", s.serviceUpdateHostBootstrapReport)
 	s.mux.HandleFunc("POST /services/update-jobs/claim", s.serviceSystemUpdateClaim)
 	s.mux.HandleFunc("POST /services/update-jobs/{id}/report", s.serviceSystemUpdateReport)
 	s.mux.HandleFunc("POST /services/update-jobs/{id}/authorize", s.serviceSystemUpdateAuthorize)
@@ -506,6 +517,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /system-updates/{id}/cancel", s.requirePermission("system_updates.execute", s.cancelSystemUpdate))
 	s.mux.HandleFunc("GET /system-updates/updaters/{id}/settings", s.requirePermission("system_updates.read", s.getUpdaterPolicy))
 	s.mux.HandleFunc("PUT /system-updates/updaters/{id}/settings", s.requirePermission("system_updates.execute", s.updateUpdaterPolicy))
+	s.mux.HandleFunc("GET /system-updates/updaters/{id}/bootstrap-jobs", s.requirePermission("system_updates.read", s.listUpdateHostBootstrapJobs))
+	s.mux.HandleFunc("POST /system-updates/updaters/{id}/bootstrap-jobs", s.requirePermission("system_updates.execute", s.createUpdateHostBootstrapJob))
 	s.mux.HandleFunc("GET /secrets/status", s.requirePermission("secrets.read_status", s.secretStatus))
 	s.mux.HandleFunc("PUT /secrets/{name}", s.requirePermission("secrets.update", s.updateSecret))
 	s.mux.HandleFunc("GET /observability/incidents", s.requirePermission("incidents.read", s.observabilityGet("/incidents")))
@@ -4883,6 +4896,22 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
 		return
 	}
+	if service.ServiceType == "update_agent" {
+		s.systemUpdateOperationMu.Lock()
+		defer s.systemUpdateOperationMu.Unlock()
+		service, err = s.services.GetService(r.Context(), service.ServiceID)
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+			return
+		}
+		if s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
+			return
+		}
+	}
 	token, expiresAt, err := s.issueNodeConfigureToken(r.Context(), service.ServiceID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_node_configure_token_failed"})
@@ -4912,10 +4941,27 @@ func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
 		return
 	}
+	if service.ServiceType == "update_agent" {
+		s.systemUpdateOperationMu.Lock()
+		defer s.systemUpdateOperationMu.Unlock()
+		service, err = s.services.GetService(r.Context(), service.ServiceID)
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+			return
+		}
+	}
 	if !s.requireNodeTokenScopePermissions(w, r, service) {
 		return
 	}
 	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
+		return
+	}
+	if service.ServiceType == "update_agent" &&
+		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
 		return
 	}
 	seal, err := nodeRuntimeTokenSealer()
@@ -5067,12 +5113,41 @@ func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
 		return
 	}
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	service, err = s.services.GetService(r.Context(), nodeID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	if service.ServiceType != "update_agent" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
+		return
+	}
+	now := time.Now().UTC()
+	validConfigureToken, err := s.services.ValidateServiceConfigureToken(r.Context(), service.ServiceID, configureToken, now)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "validate_configure_token_failed"})
+		return
+	}
+	if validConfigureToken &&
+		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
+		return
+	}
 	seal, err := nodeRuntimeTokenSealer()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
 		return
 	}
-	staged, err := s.services.StageServiceNodeConfiguration(r.Context(), nodeID, configureToken, time.Now().UTC(), seal)
+	staged, err := s.services.StageServiceNodeConfiguration(r.Context(), service.ServiceID, configureToken, now, seal)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "node_not_found"})
@@ -5139,8 +5214,27 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	_, updated, alreadyActivated, err := s.services.ActivateServiceNodeConfiguration(r.Context(), nodeID, configurationID, activationToken, time.Now().UTC(), store.ServiceRuntimeReport{
-		ServiceID: nodeID,
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	stagedService, inspectErr := s.services.GetService(r.Context(), nodeID)
+	if inspectErr != nil && !errors.Is(inspectErr, store.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
+	activationServiceID := nodeID
+	if inspectErr == nil {
+		activationServiceID = stagedService.ServiceID
+	}
+	if inspectErr == nil &&
+		stagedService.ServiceType == "update_agent" &&
+		stagedService.StagedNodeTokenID == configurationID &&
+		stagedService.StagedNodeActivationTokenHash != "" &&
+		security.VerifyTokenHash(activationToken, stagedService.StagedNodeActivationTokenHash) &&
+		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, stagedService.ServiceID) {
+		return
+	}
+	_, updated, alreadyActivated, err := s.services.ActivateServiceNodeConfiguration(r.Context(), activationServiceID, configurationID, activationToken, time.Now().UTC(), store.ServiceRuntimeReport{
+		ServiceID: activationServiceID,
 		Version:   body.Version,
 		Commit:    body.Commit,
 		BuildDate: body.BuildDate,
@@ -5244,7 +5338,11 @@ func (s *Server) nodeAgentReport(w http.ResponseWriter, r *http.Request) {
 	if body.Status == "" {
 		body.Status = "online"
 	}
-	service, err := s.services.Heartbeat(r.Context(), token, body)
+	service, err := s.persistServiceHeartbeat(r.Context(), token, serviceBearerToken(r), body)
+	if errors.Is(err, store.ErrUnauthorized) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_service_token"})
+		return
+	}
 	if errors.Is(err, store.ErrForbidden) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_assigned_to_token"})
 		return
@@ -5334,10 +5432,39 @@ func (s *Server) requireNodeTokenScopePermissions(w http.ResponseWriter, r *http
 
 func (s *Server) revokeServiceToken(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	tokens, err := s.services.ListServiceTokens(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_service_tokens_failed"})
+		return
+	}
+	var matchedToken *store.ServiceToken
+	for _, token := range tokens {
+		if token.ID != id {
+			continue
+		}
+		tokenCopy := token
+		matchedToken = &tokenCopy
+		break
+	}
+	if matchedToken == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	updaterToken := matchedToken.RevokedAt == nil && matchedToken.ServiceType == "update_agent"
+	if updaterToken {
+		s.systemUpdateOperationMu.Lock()
+		defer s.systemUpdateOperationMu.Unlock()
+	}
 	services, err := s.services.ListServices(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_services_failed"})
 		return
+	}
+	for _, service := range services {
+		if updaterToken && service.TokenID == id && service.ServiceType == "update_agent" &&
+			s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
+			return
+		}
 	}
 	for _, service := range services {
 		if service.TokenID == id && (service.NodeTokenCiphertext != "" || service.NodeTokenNonce != "") {
@@ -5395,11 +5522,21 @@ func (s *Server) rotateServiceToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
 			return
 		}
+		s.systemUpdateOperationMu.Lock()
+		defer s.systemUpdateOperationMu.Unlock()
 	}
 	services, err := s.services.ListServices(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_services_failed"})
 		return
+	}
+	for _, service := range services {
+		if existing.ServiceType == "update_agent" &&
+			service.TokenID == id &&
+			service.ServiceType == "update_agent" &&
+			s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
+			return
+		}
 	}
 	for _, service := range services {
 		if service.TokenID == id && (service.NodeTokenCiphertext != "" || service.NodeTokenNonce != "") {
@@ -5802,6 +5939,10 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 	s.systemUpdateOperationMu.Lock()
 	defer s.systemUpdateOperationMu.Unlock()
 	current := currentFromContext(r.Context())
+	if existing.ServiceType == "update_agent" &&
+		s.rejectUpdaterIdentityMutationDuringBootstrap(w, r, existing.ServiceID) {
+		return
+	}
 	activeUpdate, err := s.systemUpdates.HasActiveSystemUpdateReference(r.Context(), existing.ServiceID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_system_update_active_failed"})
@@ -5928,7 +6069,20 @@ func (s *Server) serviceRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	service, err := s.services.RegisterService(r.Context(), token, body)
+	var service store.RegisteredService
+	var err error
+	if token.ServiceType == "update_agent" {
+		s.systemUpdateOperationMu.Lock()
+		token, ok = s.authenticateService(w, r, "service.register")
+		if !ok {
+			s.systemUpdateOperationMu.Unlock()
+			return
+		}
+		service, err = s.services.RegisterService(r.Context(), token, body)
+		s.systemUpdateOperationMu.Unlock()
+	} else {
+		service, err = s.services.RegisterService(r.Context(), token, body)
+	}
 	if errors.Is(err, store.ErrForbidden) {
 		s.writeServiceAudit(r, token, "services.register", "service", body.ServiceID, "failure", map[string]any{"reason": "service_token_scope_mismatch", "requested_service_type": body.ServiceType})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_token_scope_mismatch"})
@@ -7073,7 +7227,12 @@ func (s *Server) serviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	service, err := s.services.Heartbeat(r.Context(), token, body)
+	service, err := s.persistServiceHeartbeat(r.Context(), token, serviceBearerToken(r), body)
+	if errors.Is(err, store.ErrUnauthorized) {
+		s.writeServiceAudit(r, token, "services.heartbeat", "service", body.ServiceID, "failure", map[string]any{"reason": "invalid_service_token", "current_stream_id": body.CurrentStreamID})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_service_token"})
+		return
+	}
 	if errors.Is(err, store.ErrForbidden) {
 		s.writeServiceAudit(r, token, "services.heartbeat", "service", body.ServiceID, "failure", map[string]any{"reason": "service_not_assigned_to_token", "current_stream_id": body.CurrentStreamID})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_assigned_to_token"})
@@ -7090,6 +7249,112 @@ func (s *Server) serviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, service)
+}
+
+func (s *Server) persistServiceHeartbeat(
+	ctx context.Context,
+	token store.ServiceToken,
+	rawToken string,
+	heartbeat store.ServiceHeartbeat,
+) (store.RegisteredService, error) {
+	if token.ServiceType != "update_agent" {
+		return s.services.Heartbeat(ctx, token, heartbeat)
+	}
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	reauthenticated, err := s.reauthenticateServiceToken(ctx, rawToken, token, "service.heartbeat")
+	if err != nil {
+		return store.RegisteredService{}, err
+	}
+	return s.services.Heartbeat(ctx, reauthenticated, heartbeat)
+}
+
+func serviceBearerToken(r *http.Request) string {
+	raw, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return strings.TrimSpace(raw)
+}
+
+func (s *Server) reauthenticateServiceToken(
+	ctx context.Context,
+	rawToken string,
+	previous store.ServiceToken,
+	requiredScope string,
+) (store.ServiceToken, error) {
+	token, err := s.services.AuthenticateServiceToken(ctx, rawToken, requiredScope)
+	if err != nil {
+		return store.ServiceToken{}, err
+	}
+	if token.ID != previous.ID {
+		return store.ServiceToken{}, store.ErrUnauthorized
+	}
+	return token, nil
+}
+
+func (s *Server) reauthenticateService(
+	w http.ResponseWriter,
+	r *http.Request,
+	previous store.ServiceToken,
+	requiredScope string,
+) (store.ServiceToken, bool) {
+	token, err := s.reauthenticateServiceToken(
+		r.Context(),
+		serviceBearerToken(r),
+		previous,
+		requiredScope,
+	)
+	if errors.Is(err, store.ErrForbidden) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "missing_service_scope"})
+		return store.ServiceToken{}, false
+	}
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_service_token"})
+		return store.ServiceToken{}, false
+	}
+	return token, true
+}
+
+func (s *Server) rejectUpdaterIdentityMutationDuringActiveWork(
+	w http.ResponseWriter,
+	r *http.Request,
+	updaterID string,
+) bool {
+	if s.rejectUpdaterIdentityMutationDuringBootstrap(w, r, updaterID) {
+		return true
+	}
+	active, err := s.systemUpdates.HasActiveSystemUpdateReference(
+		r.Context(),
+		strings.TrimSpace(updaterID),
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_system_update_active_failed"})
+		return true
+	}
+	if !active {
+		return false
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_active"})
+	return true
+}
+
+func (s *Server) rejectUpdaterIdentityMutationDuringBootstrap(
+	w http.ResponseWriter,
+	r *http.Request,
+	updaterID string,
+) bool {
+	updaterID = strings.TrimSpace(updaterID)
+	if !updateHostBootstrapIDPattern.MatchString(updaterID) {
+		return false
+	}
+	active, err := s.updateHostBootstrapJobs.HasActiveJob(updaterID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_updater_host_bootstrap_failed"})
+		return true
+	}
+	if !active {
+		return false
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_host_bootstrap_in_progress"})
+	return true
 }
 
 type serviceRemediationExecuteRequest struct {
@@ -13505,7 +13770,8 @@ func adminAuditEventNotificationAllowed(event store.AuditEvent) bool {
 	actorUsername := strings.ToLower(strings.TrimSpace(event.ActorUsername))
 	if strings.HasPrefix(actorUserID, "service:") || strings.HasPrefix(actorUsername, "service:") {
 		switch action {
-		case "system_updates.succeeded", "system_updates.rolled_back", "system_updates.failed":
+		case "system_updates.succeeded", "system_updates.rolled_back", "system_updates.failed",
+			"system_updates.bootstrap.succeeded", "system_updates.bootstrap.failed":
 			return true
 		default:
 			return false

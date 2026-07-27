@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-bootstrap-panel";
 import { useUpdaterSettings } from "@/features/queries";
 import { apiPut } from "@/lib/api/client";
 import { isUpdaterPolicyHostID, normalizeUpdaterSettingsResponse, systemUpdateErrorMessage, systemUpdatePolicyErrorMessage, systemUpdateUpdaterPolicyState } from "@/lib/system-updates";
@@ -58,18 +59,32 @@ const deploymentModes = [
 
 export function UpdaterSettingsPanel({ updater, canEdit, canManageSecrets }: UpdaterSettingsPanelProps) {
   const [open, setOpen] = useState(false);
+  const [bootstrapCloseBlocked, setBootstrapCloseBlocked] = useState(false);
   const settings = useUpdaterSettings(updater.updater_id, open);
   const policyState = systemUpdateUpdaterPolicyState(updater);
+  const setDialogOpen = (nextOpen: boolean) => {
+    if (!nextOpen && bootstrapCloseBlocked) return;
+    setOpen(nextOpen);
+  };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={setDialogOpen}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" aria-label={`${updater.name || updater.updater_id} の設定`}>
           <Settings2 className="size-4" />
           設定
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl">
+      <DialogContent
+        className="max-h-[92vh] overflow-y-auto sm:max-w-5xl"
+        showCloseButton={!bootstrapCloseBlocked}
+        onEscapeKeyDown={(event) => {
+          if (bootstrapCloseBlocked) event.preventDefault();
+        }}
+        onPointerDownOutside={(event) => {
+          if (bootstrapCloseBlocked) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{updater.name || updater.updater_id} の設定</DialogTitle>
           <DialogDescription>
@@ -102,6 +117,7 @@ export function UpdaterSettingsPanel({ updater, canEdit, canManageSecrets }: Upd
             settings={settings.data}
             canEdit={canEdit}
             canManageSecrets={canManageSecrets}
+            onBootstrapCloseBlockedChange={setBootstrapCloseBlocked}
           />
         ) : null}
       </DialogContent>
@@ -114,11 +130,13 @@ function UpdaterSettingsForm({
   settings,
   canEdit,
   canManageSecrets,
+  onBootstrapCloseBlockedChange,
 }: {
   updater: SystemUpdateAgentStatus;
   settings: UpdaterSettings;
   canEdit: boolean;
   canManageSecrets: boolean;
+  onBootstrapCloseBlockedChange: (blocked: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const formID = useId();
@@ -128,6 +146,7 @@ function UpdaterSettingsForm({
   const [deleteGitHubToken, setDeleteGitHubToken] = useState(false);
   const [feedback, setFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [copiedHostID, setCopiedHostID] = useState("");
+  const [bootstrapActive, setBootstrapActive] = useState(false);
 
   const hostOptions = useMemo(() => form.hosts.map((host) => ({
     value: host.host_id,
@@ -136,6 +155,12 @@ function UpdaterSettingsForm({
 
   const saveSettings = useMutation({
     mutationFn: async () => {
+      if (bootstrapActive) {
+        throw Object.assign(new Error("updater_host_bootstrap_in_progress"), {
+          code: "updater_host_bootstrap_in_progress",
+          status: 409,
+        });
+      }
       const payload = buildUpdaterSettingsPayload(baseRevision, form, canManageSecrets ? {
         githubToken,
         deleteGitHubToken,
@@ -293,8 +318,8 @@ function UpdaterSettingsForm({
           ) : (
             <div className="space-y-4">
               {form.hosts.map((host, index) => {
-                const clientPublicKey = host.ssh_client_public_key || updater.ssh_client_public_keys?.[host.host_id] || "";
-                const clientKeyFingerprint = host.ssh_client_key_fingerprint || updater.ssh_client_key_fingerprints?.[host.host_id] || "";
+                const clientPublicKey = updater.ssh_client_public_keys?.[host.host_id] || "";
+                const clientKeyFingerprint = updater.ssh_client_key_fingerprints?.[host.host_id] || "";
                 return (
                   <div key={index} className="space-y-3 rounded-md border p-4">
                     <div className="flex items-center justify-between gap-3">
@@ -326,7 +351,11 @@ function UpdaterSettingsForm({
                       <Field label="SSHポート" htmlFor={`${formID}-host-${index}-port`}>
                         <Input id={`${formID}-host-${index}-port`} type="number" min={1} max={65535} inputMode="numeric" value={host.port} onChange={(event) => updateHost(index, { port: Number(event.target.value) })} disabled={!canEdit} />
                       </Field>
-                      <Field label="SSHユーザー" htmlFor={`${formID}-host-${index}-user`}>
+                      <Field
+                        label="SSHユーザー"
+                        htmlFor={`${formID}-host-${index}-user`}
+                        hint="helper自動セットアップでは autostream-update-host 固定です。一時管理者ユーザーとは別です。"
+                      >
                         <Input id={`${formID}-host-${index}-user`} value={host.user} onChange={(event) => updateHost(index, { user: event.target.value })} disabled={!canEdit} placeholder="autostream-update-host" />
                       </Field>
                       <Field label="CPUアーキテクチャ" htmlFor={`${formID}-host-${index}-arch`}>
@@ -359,7 +388,7 @@ function UpdaterSettingsForm({
                     <div className="space-y-2 rounded-md bg-muted/40 p-3">
                       <div className="flex items-center gap-2 text-sm font-medium"><KeyRound className="size-4" />対象ホストへ登録するUpdater公開鍵</div>
                       <p className="text-xs text-muted-foreground">
-                        設定保存後にUpdaterが生成します。表示された鍵を、対象ホストの autostream-update-host ユーザーの authorized_keys に登録してください。
+                        設定保存後にUpdaterが生成し、helper自動セットアップ時に対象ホストへ登録します。通常は手動で登録する必要はありません。
                       </p>
                       {clientPublicKey ? (
                         <div className="flex items-start gap-2">
@@ -378,6 +407,22 @@ function UpdaterSettingsForm({
               })}
             </div>
           )}
+
+          {form.hosts.length > 0 || settings.hosts.length > 0 ? (
+            <UpdaterHostBootstrapPanel
+              key={canEdit ? "bootstrap-edit" : "bootstrap-readonly"}
+              updater={updater}
+              expectedRevision={baseRevision}
+              savedHosts={settings.hosts}
+              currentHosts={form.hosts}
+              savedTargets={settings.targets}
+              currentTargets={form.targets}
+              releaseTokenConfigured={settings.github_token_configured}
+              canEdit={canEdit}
+              onActiveChange={setBootstrapActive}
+              onCloseBlockedChange={onBootstrapCloseBlockedChange}
+            />
+          ) : null}
         </section>
 
         <section className="space-y-3" aria-labelledby={`${formID}-targets-heading`}>
@@ -447,7 +492,7 @@ function UpdaterSettingsForm({
         <section className="space-y-3" aria-labelledby={`${formID}-github-heading`}>
           <div>
             <h3 id={`${formID}-github-heading`} className="font-medium">GitHub Release Token</h3>
-            <p className="text-xs text-muted-foreground">Managed更新では公開・非公開Releaseのどちらでも必須です。値は保存後に再表示されず、更新jobの実行時だけUpdaterへ渡されます。</p>
+            <p className="text-xs text-muted-foreground">Managed更新では公開中のControl Panel repositoryにもTokenを必須としています。当該repositoryの Contents (read) と Attestations (read) だけを付与してください。値は保存後に再表示されず、更新jobの実行時だけUpdaterへ渡されます。private repositoryへ変更した場合、この公開repository用の証明検証では更新できません。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <Badge variant={settings.github_token_configured ? "default" : "outline"}>{settings.github_token_configured ? "設定済み" : "未設定"}</Badge>
@@ -498,11 +543,21 @@ function UpdaterSettingsForm({
             {feedback.message}
           </div>
         ) : null}
+        {bootstrapActive ? (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100" role="status">
+            ホストの自動セットアップ中はUpdater設定を保存できません。完了後に再試行してください。
+          </div>
+        ) : null}
       </div>
 
       <DialogFooter className="mt-6">
         {canEdit ? (
-          <Button type="button" onClick={() => saveSettings.mutate()} disabled={saveSettings.isPending}>
+          <Button
+            type="button"
+            onClick={() => saveSettings.mutate()}
+            disabled={saveSettings.isPending || bootstrapActive}
+            title={bootstrapActive ? "ホストの自動セットアップ完了後に保存できます。" : undefined}
+          >
             {saveSettings.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
             設定を保存
           </Button>

@@ -175,6 +175,67 @@ func TestRemoteCurrentVersionMustBeKnownAndMatchExactly(t *testing.T) {
 	}
 }
 
+func TestRemoteProbeRequiresHealthyEndpointMatchingManagedBaseline(t *testing.T) {
+	reportedVersion := "v1.0.0"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(http.StatusNoContent)
+		case "/updater/version":
+			_, _ = fmt.Fprintf(w, `{"version":%q}`, reportedVersion)
+		case "/redirect":
+			http.Redirect(w, r, "/health", http.StatusTemporaryRedirect)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := bootstrapHelperTestConfig(t)
+	cfg.Targets[0].HealthURL = server.URL + "/health"
+	cfg.Targets[0].VersionURL = server.URL + "/updater/version"
+	cfg.Targets[0].Docker.ComposeConfigSHA256 = strings.Repeat("c", 64)
+	versionFile := cfg.Targets[0].Docker.VersionEnvFile
+	if err := os.MkdirAll(filepath.Dir(versionFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(versionFile, []byte("AUTOSTREAM_DOCKER_VERSION=v1.0.0@sha256:"+strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := RemoteRPCRequest{Version: RemoteProtocolVersion, Operation: "probe"}
+	rt := remoteHelperRuntime{
+		httpClient:    server.Client(),
+		helperVersion: "v1.2.3",
+		platformOS:    "linux",
+		platformArch:  cfg.Arch,
+	}
+
+	response := handleRemoteHelperRequest(context.Background(), cfg, request, rt)
+	if response.Error != nil || response.Probe == nil || len(response.Probe.Targets) != 1 || response.Probe.Targets[0].CurrentVersion != "v1.0.0" || !response.Probe.Targets[0].EndpointVerified {
+		t.Fatalf("healthy exact probe response = %#v", response)
+	}
+
+	reportedVersion = "v1.0.1"
+	response = handleRemoteHelperRequest(context.Background(), cfg, request, rt)
+	if response.Error != nil || response.Probe == nil || response.Probe.Targets[0].CurrentVersion != "v1.0.0" || response.Probe.Targets[0].EndpointVerified {
+		t.Fatalf("mismatched endpoint version response = %#v", response)
+	}
+
+	reportedVersion = "v1.0.0"
+	cfg.Targets[0].VersionURL = server.URL + "/wrong-updater-version"
+	response = handleRemoteHelperRequest(context.Background(), cfg, request, rt)
+	if response.Error != nil || response.Probe == nil || response.Probe.Targets[0].EndpointVerified {
+		t.Fatalf("unavailable configured version endpoint response = %#v", response)
+	}
+
+	cfg.Targets[0].VersionURL = server.URL + "/updater/version"
+	cfg.Targets[0].HealthURL = server.URL + "/redirect"
+	response = handleRemoteHelperRequest(context.Background(), cfg, request, rt)
+	if response.Error != nil || response.Probe == nil || response.Probe.Targets[0].EndpointVerified {
+		t.Fatalf("redirected health endpoint response = %#v", response)
+	}
+}
+
 func TestRemoteSystemdStageAndApplyRejectStaleCurrentVersion(t *testing.T) {
 	cfg := validHelperTestConfig(t)
 	target := cfg.Targets[0]

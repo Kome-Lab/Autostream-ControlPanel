@@ -10,9 +10,12 @@ readonly REMOTE_GROUP="autostream-update-host"
 readonly REMOTE_HOME="/var/lib/autostream-update-host-login"
 readonly STATE_DIR="/var/lib/autostream-update-host"
 readonly CONFIG_DEST="/etc/autostream/update-host.json"
+readonly INSTALL_STATE_DEST="/etc/autostream/update-host.install-state"
 readonly BINARY_DEST="/usr/local/libexec/autostream-update-host"
 readonly SUDOERS_DEST="/etc/sudoers.d/autostream-update-host"
 readonly AUTHORIZED_KEYS_DEST="${REMOTE_HOME}/.ssh/authorized_keys"
+readonly SSHD_POLICY_DEST="/etc/ssh/sshd_config.d/90-autostream-update-host.conf"
+readonly -a SSHD_RELOAD_UNITS=("ssh.service" "sshd.service")
 readonly SUDO_ALLOWED_COMMAND="/usr/local/libexec/autostream-update-host rpc --config /etc/autostream/update-host.json"
 readonly FORCED_COMMAND="/usr/bin/sudo -n ${SUDO_ALLOWED_COMMAND}"
 
@@ -21,11 +24,13 @@ usage() {
 Usage: install-autostream-update-host \
   --config PATH \
   --authorized-key PATH \
-  --source-cidr CIDR
+  --source-cidr CIDR \
+  [--install-sshd-policy]
 
 Installs the non-resident AutoStream update host helper. The authorized key
 file must contain exactly one ssh-ed25519 public key. The source CIDR must be a
-numeric IPv4 or IPv6 CIDR for the central updater host.
+numeric IPv4 or IPv6 CIDR for the central updater host. The optional flag
+installs and reloads the fixed dedicated-user sshd policy transactionally.
 EOF
 }
 
@@ -94,9 +99,176 @@ preflight_destination() {
   return 0
 }
 
+sha256_file() {
+  local output digest
+  output=$(sha256sum -- "$1") || return 1
+  digest=${output%% *}
+  [[ ${digest} =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "${digest}"
+}
+
+numeric_cidr_is_valid() {
+  local cidr=$1
+  local address prefix octet
+  local -a ipv4_octets=()
+
+  [[ ${cidr} != *[[:space:]\"\',]* ]] || return 1
+  [[ ${cidr} =~ ^[0-9A-Fa-f:.]+/[0-9]{1,3}$ ]] || return 1
+  address=${cidr%/*}
+  prefix=${cidr##*/}
+  if [[ ${address} == *:* ]]; then
+    ((10#${prefix} <= 128)) || return 1
+  else
+    ((10#${prefix} <= 32)) || return 1
+    IFS=. read -r -a ipv4_octets <<<"${address}"
+    [[ ${#ipv4_octets[@]} -eq 4 ]] || return 1
+    for octet in "${ipv4_octets[@]}"; do
+      [[ ${octet} =~ ^[0-9]{1,3}$ ]] && ((10#${octet} <= 255)) || return 1
+    done
+  fi
+  getent ahosts "${address}" >/dev/null 2>&1
+}
+
+load_install_state() {
+  local path=$1
+  local -a state_lines=()
+  mapfile -t state_lines <"${path}" || die "could not read existing install state"
+  [[ ${#state_lines[@]} -eq 3 ]] || die "existing install state has invalid or unknown fields"
+  [[ ${state_lines[0]} == "schema_version=1" ]] || die "existing install state schema is unsupported"
+  [[ ${state_lines[1]} =~ ^config_sha256=([0-9a-f]{64})$ ]] || die "existing install state config digest is invalid"
+  recorded_config_sha256=${BASH_REMATCH[1]}
+  [[ ${state_lines[2]} =~ ^authorized_keys_sha256=([0-9a-f]{64})$ ]] || die "existing install state authorized_keys digest is invalid"
+  recorded_authorized_keys_sha256=${BASH_REMATCH[1]}
+}
+
+verify_recorded_managed_state() {
+  local current_config_sha256 current_authorized_keys_sha256
+  [[ ${config_existed} == true && ${authorized_keys_existed} == true ]] || \
+    die "recorded managed install is incomplete; config and authorized_keys must both exist"
+  load_install_state "${INSTALL_STATE_DEST}"
+  current_config_sha256=$(sha256_file "${CONFIG_DEST}") || die "could not hash existing managed config"
+  current_authorized_keys_sha256=$(sha256_file "${AUTHORIZED_KEYS_DEST}") || die "could not hash existing managed authorized_keys"
+  [[ ${recorded_config_sha256} == "${current_config_sha256}" ]] || \
+    die "existing config changed outside the installer; refusing automatic reconfiguration"
+  [[ ${recorded_authorized_keys_sha256} == "${current_authorized_keys_sha256}" ]] || \
+    die "existing authorized_keys changed outside the installer; refusing automatic reconfiguration"
+}
+
+validate_managed_authorized_keys() {
+  local path=$1
+  local line rest legacy_source_cidr key_blob
+  local expected_prefix='restrict,from="'
+  local expected_suffix='",command="'"${FORCED_COMMAND}"'" ssh-ed25519 '
+
+  [[ $(stat -c '%s' "${path}") -le 16384 ]] || return 1
+  [[ $(awk 'END { print NR }' "${path}") -eq 1 ]] || return 1
+  IFS= read -r line <"${path}" || return 1
+  [[ ${line} == "${expected_prefix}"* ]] || return 1
+  rest=${line#"${expected_prefix}"}
+  [[ ${rest} == *"${expected_suffix}"* ]] || return 1
+  legacy_source_cidr=${rest%%"${expected_suffix}"*}
+  key_blob=${rest#"${legacy_source_cidr}${expected_suffix}"}
+  [[ ${rest} == "${legacy_source_cidr}${expected_suffix}${key_blob}" ]] || return 1
+  numeric_cidr_is_valid "${legacy_source_cidr}" || return 1
+  [[ ${key_blob} =~ ^[A-Za-z0-9+/]+={0,3}$ ]] || return 1
+  ssh-keygen -l -f "${path}" >/dev/null 2>&1
+}
+
+validate_legacy_managed_install() {
+  if [[ ${config_existed} != "${authorized_keys_existed}" ]]; then
+    die "legacy managed install is incomplete; config and authorized_keys must either both exist or both be absent"
+  fi
+  [[ ${config_existed} == true ]] || return 0
+  "${binary_stage}" validate-config --config "${CONFIG_DEST}" || \
+    die "legacy config is not valid for the verified helper"
+  "${binary_stage}" installer-standard-systemd-config --config "${CONFIG_DEST}" || \
+    die "legacy config is not an exact central standard systemd profile"
+  validate_managed_authorized_keys "${AUTHORIZED_KEYS_DEST}" || \
+    die "legacy authorized_keys is not an exact installer-generated forced entry"
+}
+
+reload_sshd() {
+  local unit
+  sshd_reload_attempted=true
+  for unit in "${SSHD_RELOAD_UNITS[@]}"; do
+    if /usr/bin/systemctl reload "${unit}" >/dev/null 2>&1; then
+      sshd_reload_unit=${unit}
+      sshd_reload_succeeded=true
+      return 0
+    fi
+  done
+  return 1
+}
+
+reload_sshd_after_rollback() {
+  local unit
+  if [[ -n ${sshd_reload_unit} ]] && /usr/bin/systemctl reload "${sshd_reload_unit}" >/dev/null 2>&1; then
+    return 0
+  fi
+  for unit in "${SSHD_RELOAD_UNITS[@]}"; do
+    [[ ${unit} == "${sshd_reload_unit}" ]] && continue
+    if /usr/bin/systemctl reload "${unit}" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+restricted_sshd_policy_is_effective() {
+  local sshd_effective
+  sshd_effective=$(sshd -T -C "user=${REMOTE_USER},host=$(hostname),addr=${source_address}") || return 1
+  grep -Eq '^pubkeyauthentication yes$' <<<"${sshd_effective}" &&
+    grep -Eq '^authenticationmethods publickey$' <<<"${sshd_effective}" &&
+    grep -Eq '^passwordauthentication no$' <<<"${sshd_effective}" &&
+    grep -Eq '^kbdinteractiveauthentication no$' <<<"${sshd_effective}" &&
+    grep -Eq '^forcecommand none$' <<<"${sshd_effective}" &&
+    grep -Eq '^authorizedkeyscommand none$' <<<"${sshd_effective}" &&
+    grep -Eq '^authorizedkeysfile \.ssh/authorized_keys$' <<<"${sshd_effective}" &&
+    grep -Eq '^trustedusercakeys none$' <<<"${sshd_effective}" &&
+    grep -Eq '^authorizedprincipalsfile none$' <<<"${sshd_effective}" &&
+    grep -Eq '^authorizedprincipalscommand none$' <<<"${sshd_effective}" &&
+    grep -Eq '^authorizedprincipalscommanduser none$' <<<"${sshd_effective}"
+}
+
+require_restricted_sshd_policy() {
+  local sshd_effective
+  sshd_effective=$(sshd -T -C "user=${REMOTE_USER},host=$(hostname),addr=${source_address}") || die "could not validate effective sshd configuration"
+  grep -Eq '^pubkeyauthentication yes$' <<<"${sshd_effective}" || die "sshd does not allow public-key authentication for ${REMOTE_USER}"
+  grep -Eq '^authenticationmethods publickey$' <<<"${sshd_effective}" || die "sshd must require publickey-only authentication for ${REMOTE_USER}"
+  grep -Eq '^passwordauthentication no$' <<<"${sshd_effective}" || die "sshd password authentication must be disabled for ${REMOTE_USER}"
+  grep -Eq '^kbdinteractiveauthentication no$' <<<"${sshd_effective}" || die "sshd keyboard-interactive authentication must be disabled for ${REMOTE_USER}"
+  grep -Eq '^forcecommand none$' <<<"${sshd_effective}" || die "an sshd ForceCommand would override the authorized_keys command"
+  grep -Eq '^authorizedkeyscommand none$' <<<"${sshd_effective}" || die "sshd AuthorizedKeysCommand must be disabled for ${REMOTE_USER}"
+  grep -Eq '^authorizedkeysfile \.ssh/authorized_keys$' <<<"${sshd_effective}" || die "sshd must use only ${AUTHORIZED_KEYS_DEST} for ${REMOTE_USER}"
+  grep -Eq '^trustedusercakeys none$' <<<"${sshd_effective}" || die "sshd user certificate authorities must be disabled for ${REMOTE_USER}"
+  grep -Eq '^authorizedprincipalsfile none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsFile must be disabled for ${REMOTE_USER}"
+  grep -Eq '^authorizedprincipalscommand none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsCommand must be disabled for ${REMOTE_USER}"
+  grep -Eq '^authorizedprincipalscommanduser none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsCommandUser must be disabled for ${REMOTE_USER}"
+}
+
+rollback_sshd_policy() {
+  if [[ ${sshd_reload_attempted} == true && ${sshd_reload_succeeded} != true ]]; then
+    return 1
+  fi
+  if [[ ${sshd_policy_activated} == true ]]; then
+    rm -f -- "${SSHD_POLICY_DEST}" || return 1
+    sshd -t >/dev/null 2>&1 || return 1
+    reload_sshd_after_rollback || return 1
+    sshd_policy_activated=false
+  fi
+  if [[ ${authorized_keys_existed} == true ]]; then
+    restricted_sshd_policy_is_effective || return 1
+  fi
+  return 0
+}
+
 config_source=""
 authorized_key_source=""
 source_cidr=""
+install_sshd_policy=false
+sshd_reload_unit=""
+sshd_reload_attempted=false
+sshd_reload_succeeded=false
 
 while (($# > 0)); do
   case "$1" in
@@ -115,6 +287,10 @@ while (($# > 0)); do
       source_cidr=$2
       shift 2
       ;;
+    --install-sshd-policy)
+      install_sshd_policy=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -131,12 +307,27 @@ done
 [[ -n ${authorized_key_source} ]] || die "--authorized-key is required"
 [[ -n ${source_cidr} ]] || die "--source-cidr is required"
 
-for command in awk cat chmod chown cmp dirname flock getent grep hostname id install mktemp mv passwd readlink rm rmdir ssh-keygen sshd stat useradd usermod visudo; do
+for command in awk cat chmod chown cmp dirname flock getent grep hostname id install mktemp mv passwd readlink rm rmdir sha256sum ssh-keygen sshd stat useradd usermod visudo; do
   require_command "${command}"
 done
 [[ -x /usr/bin/sudo ]] || die "required command is unavailable at fixed path: /usr/bin/sudo"
 [[ -x /bin/sh ]] || die "required login shell is unavailable at fixed path: /bin/sh"
 [[ -x /usr/bin/systemd-run ]] || die "required command is unavailable at fixed path: /usr/bin/systemd-run"
+if [[ ${install_sshd_policy} == true ]]; then
+  [[ -x /usr/bin/systemctl ]] || die "required command is unavailable at fixed path: /usr/bin/systemctl"
+  systemctl_resolved=$(readlink -f -- /usr/bin/systemctl)
+  [[ -f ${systemctl_resolved} && ! -L ${systemctl_resolved} && -x ${systemctl_resolved} ]] || \
+    die "/usr/bin/systemctl must resolve to a regular executable"
+  [[ $(stat -c '%U:%G' "${systemctl_resolved}") == "root:root" ]] || \
+    die "/usr/bin/systemctl must resolve to a root-owned executable"
+  systemctl_mode=$(stat -c '%a' "${systemctl_resolved}")
+  (( (8#${systemctl_mode} & 0022) == 0 )) || die "/usr/bin/systemctl must not be writable by group or other"
+  systemctl_parent=$(dirname -- "${systemctl_resolved}")
+  while [[ ${systemctl_parent} != / ]]; do
+    ensure_root_directory "${systemctl_parent}" 0755
+    systemctl_parent=$(dirname -- "${systemctl_parent}")
+  done
+fi
 
 systemd_run_resolved=$(readlink -f -- /usr/bin/systemd-run)
 [[ -f ${systemd_run_resolved} && ! -L ${systemd_run_resolved} && -x ${systemd_run_resolved} ]] || \
@@ -175,21 +366,8 @@ readonly SUDOERS_SOURCE="${ARCHIVE_ROOT}/sudoers/autostream-update-host"
 config_source="$(readlink -f -- "${config_source}")"
 authorized_key_source="$(readlink -f -- "${authorized_key_source}")"
 
-[[ ${source_cidr} != *[[:space:]\"\',]* ]] || die "source CIDR contains an unsafe character"
-[[ ${source_cidr} =~ ^[0-9A-Fa-f:.]+/[0-9]{1,3}$ ]] || die "source CIDR must be numeric IPv4 or IPv6 CIDR"
+numeric_cidr_is_valid "${source_cidr}" || die "source CIDR must be a valid numeric IPv4 or IPv6 CIDR"
 source_address=${source_cidr%/*}
-source_prefix=${source_cidr##*/}
-if [[ ${source_address} == *:* ]]; then
-  ((10#${source_prefix} <= 128)) || die "IPv6 source CIDR prefix must be between 0 and 128"
-else
-  ((10#${source_prefix} <= 32)) || die "IPv4 source CIDR prefix must be between 0 and 32"
-  IFS=. read -r -a ipv4_octets <<<"${source_address}"
-  [[ ${#ipv4_octets[@]} -eq 4 ]] || die "IPv4 source CIDR address is invalid"
-  for octet in "${ipv4_octets[@]}"; do
-    [[ ${octet} =~ ^[0-9]{1,3}$ ]] && ((10#${octet} <= 255)) || die "IPv4 source CIDR address is invalid"
-  done
-fi
-getent ahosts "${source_address}" >/dev/null 2>&1 || die "source CIDR address is invalid"
 
 key_lines=$(awk 'END { print NR }' "${authorized_key_source}")
 [[ ${key_lines} -eq 1 ]] || die "authorized key file must contain exactly one line"
@@ -203,13 +381,18 @@ commit_started=false
 commit_succeeded=false
 binary_existed=false
 config_existed=false
+install_state_existed=false
 sudoers_existed=false
 authorized_keys_existed=false
 authorized_key_quiesced=false
+sshd_policy_activated=false
 binary_backup=""
 config_backup=""
+install_state_backup=""
 sudoers_backup=""
 authorized_keys_backup=""
+recorded_config_sha256=""
+recorded_authorized_keys_sha256=""
 
 restore_destination() {
   local destination=$1
@@ -228,6 +411,7 @@ cleanup() {
   local status=$?
   local path
   local rollback_failed=false
+  local sshd_policy_rollback_failed=false
   local ssh_isolated=true
   trap - EXIT
   trap '' HUP INT TERM
@@ -247,11 +431,19 @@ cleanup() {
     restore_destination "${SUDOERS_DEST}" "${sudoers_backup}" "${sudoers_existed}" || rollback_failed=true
     restore_destination "${BINARY_DEST}" "${binary_backup}" "${binary_existed}" || rollback_failed=true
     restore_destination "${CONFIG_DEST}" "${config_backup}" "${config_existed}" || rollback_failed=true
+    restore_destination "${INSTALL_STATE_DEST}" "${install_state_backup}" "${install_state_existed}" || rollback_failed=true
     for ((bootstrap_index=${#bootstrap_created_dirs[@]} - 1; bootstrap_index >= 0; bootstrap_index--)); do
       rmdir -- "${bootstrap_created_dirs[bootstrap_index]}" || rollback_failed=true
     done
+    if ! rollback_sshd_policy; then
+      rollback_failed=true
+      sshd_policy_rollback_failed=true
+    fi
     if [[ ${authorized_keys_existed} == true && ( ${authorized_key_quiesced} == true || -f ${authorized_keys_backup} ) && ${rollback_failed} == false ]]; then
       mv -f -- "${authorized_keys_backup}" "${AUTHORIZED_KEYS_DEST}" || rollback_failed=true
+    fi
+    if [[ ${sshd_policy_rollback_failed} == true ]]; then
+      printf '%s\n' 'install-autostream-update-host: CONSOLE RECOVERY REQUIRED: automatic sshd policy rollback, reload, or effective-policy verification failed; keep updater SSH disabled, inspect the fixed drop-in, and reload ssh.service or sshd.service from the console' >&2
     fi
     if [[ ${rollback_failed} == true ]]; then
       if [[ ${ssh_isolated} == true ]]; then
@@ -268,7 +460,7 @@ cleanup() {
     [[ -n ${path} ]] && rm -f -- "${path}"
   done
   if [[ ${rollback_failed} != true ]]; then
-    for path in "${binary_backup}" "${config_backup}" "${sudoers_backup}" "${authorized_keys_backup}"; do
+    for path in "${binary_backup}" "${config_backup}" "${install_state_backup}" "${sudoers_backup}" "${authorized_keys_backup}"; do
       [[ -n ${path} ]] && rm -f -- "${path}"
     done
   fi
@@ -306,12 +498,38 @@ ensure_root_directory /etc/sudoers.d 0755
 ensure_root_directory "${REMOTE_HOME}" 0755
 ensure_root_directory "${REMOTE_HOME}/.ssh" 0755
 ensure_root_directory "${STATE_DIR}" 0700 700
+if [[ ${install_sshd_policy} == true ]]; then
+  ensure_root_directory /etc/ssh 0755
+  ensure_root_directory /etc/ssh/sshd_config.d 0755
+fi
 
 binary_stage=$(mktemp /usr/local/libexec/.autostream-update-host.new.XXXXXX)
 config_stage=$(mktemp /etc/autostream/.update-host.json.new.XXXXXX)
+install_state_stage=$(mktemp /etc/autostream/.update-host.install-state.new.XXXXXX)
 sudoers_stage=$(mktemp /etc/sudoers.d/.autostream-update-host.new.XXXXXX)
 authorized_keys_stage=$(mktemp "${REMOTE_HOME}/.ssh/.authorized_keys.new.XXXXXX")
-cleanup_paths+=("${binary_stage}" "${config_stage}" "${sudoers_stage}" "${authorized_keys_stage}")
+cleanup_paths+=("${binary_stage}" "${config_stage}" "${install_state_stage}" "${sudoers_stage}" "${authorized_keys_stage}")
+sshd_policy_stage=""
+if [[ ${install_sshd_policy} == true ]]; then
+  sshd_policy_stage=$(mktemp /etc/ssh/sshd_config.d/.90-autostream-update-host.conf.new.XXXXXX)
+  cleanup_paths+=("${sshd_policy_stage}")
+  cat >"${sshd_policy_stage}" <<'EOF'
+Match User autostream-update-host
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    ForceCommand none
+    AuthorizedKeysCommand none
+    AuthorizedKeysFile .ssh/authorized_keys
+    TrustedUserCAKeys none
+    AuthorizedPrincipalsFile none
+    AuthorizedPrincipalsCommand none
+    AuthorizedPrincipalsCommandUser none
+EOF
+  chown root:root "${sshd_policy_stage}"
+  chmod 0644 "${sshd_policy_stage}"
+fi
 
 install -o root -g root -m 0755 "${BINARY_SOURCE}" "${binary_stage}"
 install -o root -g root -m 0600 "${config_source}" "${config_stage}"
@@ -320,6 +538,12 @@ printf 'restrict,from="%s",command="%s" %s %s\n' \
   "${source_cidr}" "${FORCED_COMMAND}" "${key_type}" "${key_blob}" >"${authorized_keys_stage}"
 chown root:root "${authorized_keys_stage}"
 chmod 0644 "${authorized_keys_stage}"
+desired_config_sha256=$(sha256_file "${config_stage}") || die "could not hash staged config"
+desired_authorized_keys_sha256=$(sha256_file "${authorized_keys_stage}") || die "could not hash staged authorized_keys"
+printf 'schema_version=1\nconfig_sha256=%s\nauthorized_keys_sha256=%s\n' \
+  "${desired_config_sha256}" "${desired_authorized_keys_sha256}" >"${install_state_stage}"
+chown root:root "${install_state_stage}"
+chmod 0600 "${install_state_stage}"
 
 "${binary_stage}" validate-config --config "${config_stage}"
 bootstrap_paths_stage=$(mktemp)
@@ -337,33 +561,40 @@ for bootstrap_path in "${systemd_bootstrap_paths[@]}"; do
 done
 visudo -cf "${sudoers_stage}" >/dev/null
 
-sshd_effective=$(sshd -T -C "user=${REMOTE_USER},host=$(hostname),addr=${source_address}") || die "could not validate effective sshd configuration"
-grep -Eq '^pubkeyauthentication yes$' <<<"${sshd_effective}" || die "sshd does not allow public-key authentication for ${REMOTE_USER}"
-grep -Eq '^authenticationmethods publickey$' <<<"${sshd_effective}" || die "sshd must require publickey-only authentication for ${REMOTE_USER}"
-grep -Eq '^passwordauthentication no$' <<<"${sshd_effective}" || die "sshd password authentication must be disabled for ${REMOTE_USER}"
-grep -Eq '^kbdinteractiveauthentication no$' <<<"${sshd_effective}" || die "sshd keyboard-interactive authentication must be disabled for ${REMOTE_USER}"
-grep -Eq '^forcecommand none$' <<<"${sshd_effective}" || die "an sshd ForceCommand would override the authorized_keys command"
-grep -Eq '^authorizedkeyscommand none$' <<<"${sshd_effective}" || die "sshd AuthorizedKeysCommand must be disabled for ${REMOTE_USER}"
-grep -Eq '^authorizedkeysfile \.ssh/authorized_keys$' <<<"${sshd_effective}" || die "sshd must use only ${AUTHORIZED_KEYS_DEST} for ${REMOTE_USER}"
-grep -Eq '^trustedusercakeys none$' <<<"${sshd_effective}" || die "sshd user certificate authorities must be disabled for ${REMOTE_USER}"
-grep -Eq '^authorizedprincipalsfile none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsFile must be disabled for ${REMOTE_USER}"
-grep -Eq '^authorizedprincipalscommand none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsCommand must be disabled for ${REMOTE_USER}"
-grep -Eq '^authorizedprincipalscommanduser none$' <<<"${sshd_effective}" || die "sshd AuthorizedPrincipalsCommandUser must be disabled for ${REMOTE_USER}"
-
 # Complete every existing-destination check before the first rename. Config and
-# key differences are local-policy conflicts and therefore fail closed. Binary
-# and sudoers differences are the verified release payload being installed;
-# their old bytes are backed up for rollback before either is replaced.
+# key changes are allowed only when the current bytes match the prior
+# installer receipt, or when a receipt-less legacy pair has the exact generated
+# shape. Binary and sudoers differences are verified release payloads.
+install_sshd_policy_file=false
+if [[ ${install_sshd_policy} == true ]]; then
+  install_sshd_policy_file=true
+  if preflight_destination "${SSHD_POLICY_DEST}" 644 'sshd policy'; then
+    cmp -s "${sshd_policy_stage}" "${SSHD_POLICY_DEST}" || die "existing sshd policy differs; review or remove it explicitly before rerunning"
+    install_sshd_policy_file=false
+  fi
+fi
+
 install_config=true
 if preflight_destination "${CONFIG_DEST}" 600 config; then
   config_existed=true
-  cmp -s "${config_stage}" "${CONFIG_DEST}" || die "existing config differs; review and update it separately before rerunning"
-  install_config=false
+  if cmp -s "${config_stage}" "${CONFIG_DEST}"; then
+    install_config=false
+  fi
 fi
 
 if preflight_destination "${AUTHORIZED_KEYS_DEST}" 644 authorized_keys; then
   authorized_keys_existed=true
-  cmp -s "${authorized_keys_stage}" "${AUTHORIZED_KEYS_DEST}" || die "existing authorized key or source CIDR differs; rotate it through an explicit maintenance procedure"
+fi
+
+install_state=true
+if preflight_destination "${INSTALL_STATE_DEST}" 600 'install state'; then
+  install_state_existed=true
+  if cmp -s "${install_state_stage}" "${INSTALL_STATE_DEST}"; then
+    install_state=false
+  fi
+  verify_recorded_managed_state
+else
+  validate_legacy_managed_install
 fi
 
 install_binary=true
@@ -387,6 +618,10 @@ if [[ ${config_existed} == true && ${install_config} == true ]]; then
   config_backup=$(mktemp /etc/autostream/.update-host.json.backup.XXXXXX)
   install -o root -g root -m 0600 "${CONFIG_DEST}" "${config_backup}"
 fi
+if [[ ${install_state_existed} == true && ${install_state} == true ]]; then
+  install_state_backup=$(mktemp /etc/autostream/.update-host.install-state.backup.XXXXXX)
+  install -o root -g root -m 0600 "${INSTALL_STATE_DEST}" "${install_state_backup}"
+fi
 if [[ ${binary_existed} == true && ${install_binary} == true ]]; then
   binary_backup=$(mktemp /usr/local/libexec/.autostream-update-host.backup.XXXXXX)
   install -o root -g root -m 0755 "${BINARY_DEST}" "${binary_backup}"
@@ -400,13 +635,35 @@ if [[ ${authorized_keys_existed} == true ]]; then
   rm -f -- "${authorized_keys_backup}"
 fi
 
+if [[ ${install_sshd_policy} != true ]]; then
+  require_restricted_sshd_policy
+fi
+
+if [[ ${install_sshd_policy} == true ]]; then
+  commit_started=true
+  # Quiesce an existing SSH entry point before changing the effective sshd
+  # policy. Cleanup restores it only after the policy rollback is verified.
+  if [[ ${authorized_keys_existed} == true ]]; then
+    mv -f -- "${AUTHORIZED_KEYS_DEST}" "${authorized_keys_backup}"
+    authorized_key_quiesced=true
+  fi
+  if [[ ${install_sshd_policy_file} == true ]]; then
+    sshd_policy_activated=true
+    mv -f -- "${sshd_policy_stage}" "${SSHD_POLICY_DEST}"
+  fi
+  [[ $(stat -c '%U:%G:%a' "${SSHD_POLICY_DEST}") == "root:root:644" ]] || die "installed sshd policy must be root:root 0644"
+  sshd -t
+  reload_sshd || die "could not reload ssh.service or sshd.service"
+  require_restricted_sshd_policy
+fi
+
 commit_started=true
 for bootstrap_path in "${systemd_bootstrap_paths[@]}"; do
   ensure_bootstrap_directory_tree "${bootstrap_path}"
 done
 # Quiesce an existing SSH entry point before replacing any privileged file.
 # The staged, identical forced key is activated only after all validations.
-if [[ ${authorized_keys_existed} == true ]]; then
+if [[ ${authorized_keys_existed} == true && ${authorized_key_quiesced} != true ]]; then
   mv -f -- "${AUTHORIZED_KEYS_DEST}" "${authorized_keys_backup}"
   authorized_key_quiesced=true
 fi
@@ -441,7 +698,19 @@ done
 [[ $(stat -c '%U:%G:%a' "${BINARY_DEST}") == "root:root:755" ]]
 [[ $(stat -c '%U:%G:%a' "${CONFIG_DEST}") == "root:root:600" ]]
 [[ $(stat -c '%U:%G:%a' "${SUDOERS_DEST}") == "root:root:440" ]]
+[[ $(stat -c '%U:%G:%a' "${install_state_stage}") == "root:root:600" ]]
 [[ $(stat -c '%U:%G:%a' "${authorized_keys_stage}") == "root:root:644" ]]
+
+# Commit the receipt only after the privileged payload has passed its effective
+# checks. The forced key remains last, so a failed receipt commit cannot open a
+# first-time SSH entry point and rollback can restore the prior receipt/key pair.
+if [[ ${install_state} == true ]]; then
+  mv -f -- "${install_state_stage}" "${INSTALL_STATE_DEST}"
+fi
+[[ $(stat -c '%U:%G:%a' "${INSTALL_STATE_DEST}") == "root:root:600" ]]
+load_install_state "${INSTALL_STATE_DEST}"
+[[ ${recorded_config_sha256} == "${desired_config_sha256}" ]] || die "installed receipt does not bind the desired config"
+[[ ${recorded_authorized_keys_sha256} == "${desired_authorized_keys_sha256}" ]] || die "installed receipt does not bind the desired authorized_keys"
 
 # Install the forced key last. Before this rename a first-time installation has
 # no SSH entry point, even if an earlier privileged validation fails.

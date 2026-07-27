@@ -67,13 +67,22 @@ func TestControlPanelInstallGuideUsesManagedUpdaterSettings(t *testing.T) {
 		"The generated file contains only the Control Panel connection identity",
 		"Do not edit it",
 		"**Application Info > System Updates**",
-		"The GitHub Release Token is required for every managed update, whether the repository is public or private.",
+		"The current runtime is pinned to this public Control Panel repository",
+		"Changing the repository to private requires a separate trust-root and provenance-policy implementation",
 		"It is write-only in the Control Panel and is never shown after saving.",
 		"delivers it only once to the updater that claims an authorized update job",
 		"complete SSH server public key, verified through an independent channel",
 		"Do not trust `ssh-keyscan` output by itself",
 		"Saving starts automatic pull and validation. No service restart is required.",
 		"generates a separate Ed25519 client key and reports only its public key",
+		"Automatic bootstrap requires the saved SSH user to be exactly `autostream-update-host`",
+		"For a standard systemd host, use **helper automatic setup**",
+		"This temporary administrator is separate from the saved `autostream-update-host` user",
+		"Control Panel on `8080`, Encoder / Recorder on `8081`, Observability on `8082`, Discord Bot on `8083`, and Worker on `8084`",
+		"The managed host does not run another updater daemon or listener",
+		"no helper-specific port, environment file, Node Runtime Token, or `/etc/autostream/updater.json`",
+		"That identity-only `updater.json` belongs only to the central updater host.",
+		"For Docker, a non-standard port or path, or a custom target",
 		"`applied` means the updater accepted the desired revision",
 		"defers applying the new revision until that job reaches a safe terminal state",
 	} {
@@ -92,6 +101,8 @@ func TestControlPanelInstallGuideUsesManagedUpdaterSettings(t *testing.T) {
 		`--config "/etc/autostream/updater.json"`,
 		"sudo install -d -o root -g root -m 0750 /etc/autostream",
 		"private-release GitHub Token",
+		"The GitHub Release Token is required for every managed update, whether the repository is public or private.",
+		"Copy that reported public key into a file for that host's bootstrap administrator",
 	} {
 		if strings.Contains(guide, obsolete) {
 			t.Fatalf("control panel install guide contains obsolete updater setup %q", obsolete)
@@ -137,10 +148,14 @@ func TestBootstrapGuideRequiresEndpointCapableBaseline(t *testing.T) {
 		"`/updater/version` path.",
 		"A pre-endpoint release must",
 		"not be used as the first managed release or rollback baseline.",
-		"Every managed update requires a job-scoped GitHub Release Token whether the",
-		"source repository is public or private.",
-		"The helper receives it only over",
-		"bounded standard input during stage and never persists it.",
+		"The pinned `Kome-Lab/Autostream-ControlPanel` release repository must remain",
+		"public.",
+		"private Control Panel release",
+		"repositories are not supported.",
+		"Every managed update still requires a",
+		"job-scoped GitHub Release Token.",
+		"The helper receives it only over bounded",
+		"standard input during stage and never persists it.",
 		"This release does",
 		"not expose a supported client-key rotation action in System Updates.",
 		"stop the central updater and remove that key's",
@@ -156,6 +171,42 @@ func TestBootstrapGuideRequiresEndpointCapableBaseline(t *testing.T) {
 	} {
 		if strings.Contains(guide, obsolete) {
 			t.Fatalf("bootstrap guide contains obsolete token guidance %q", obsolete)
+		}
+	}
+}
+
+func TestBootstrapGuideDocumentsReceiptGatedReconfiguration(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "release", "README.bootstrap.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"`/etc/autostream/update-host.install-state` as `root:root 0600`",
+		"`schema_version=1` receipt records the SHA-256 digests",
+		"only when the current config and `authorized_keys` bytes still match the recorded digests",
+		"malformed receipt, unknown field, digest drift, or partial managed state fails closed",
+		"A receipt-less legacy install is adopted only when both the config and `authorized_keys` exist",
+		"root-only internal `installer-standard-systemd-config` gate",
+		"`BuildStandardSystemdHelperConfig` and requires a full exact round-trip match",
+		"including its loopback port, unit, release/current paths, commands, state directory, and backup policy",
+		"Docker, mixed-deployment, custom, or otherwise non-standard legacy policies require manual root review",
+		"exactly one installer-generated `restrict,from=\"...\",command=\"...\" ssh-ed25519 ...` entry",
+		"the new receipt is committed before the new forced key is activated last",
+		"then run **helper automatic setup** again",
+		"remote bootstrap derives an exact `/32` or `/128` from that SSH connection",
+		"before the binary, config, and `/etc/autostream/update-host.install-state` receipt",
+	} {
+		if !strings.Contains(guide, want) {
+			t.Fatalf("bootstrap guide is missing managed reconfiguration marker %q", want)
+		}
+	}
+	for _, obsolete := range []string{
+		"A different existing config or key fails closed so a normal reinstall cannot silently broaden host authority.",
+		"rerun the verified helper installer with the same reported public key after confirming that no update is active.",
+	} {
+		if strings.Contains(guide, obsolete) {
+			t.Fatalf("bootstrap guide contains obsolete reconfiguration guidance %q", obsolete)
 		}
 	}
 }
