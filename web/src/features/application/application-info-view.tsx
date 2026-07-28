@@ -384,7 +384,7 @@ export function ApplicationInfoView() {
             <AlertDialogDescription>
               {confirmationIncludesControlPanel
                 ? `対象: ${confirmationTargets.map((target) => target.name || target.target_id).join("、")}。Control Panelは受付順の最後に配置し、再起動中は管理画面とAPI接続が一時的に切断されます。`
-                : `対象: ${confirmationTargets.map((target) => target.name || target.target_id).join("、")}。更新ジョブの受付後、中央Updaterが各対象ホストの接続状態を確認して適用します。`}
+                : `対象: ${confirmationTargets.map((target) => target.name || target.target_id).join("、")}。更新ジョブの受付後、対象の更新エージェントが接続状態を確認して適用します。`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -442,14 +442,14 @@ function SystemUpdatesCard({
 }) {
   return (
     <Card className="min-w-0">
-      <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
+      <CardHeader className="min-w-0 gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <CardTitle className="flex items-center gap-2"><Download className="size-5" />システム更新</CardTitle>
           <CardDescription className="mt-1">Control Panelで更新ジョブを作成し、各ホストのHost Agentがoutbound通信で受け取って安全に適用します。</CardDescription>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex min-w-0 flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={!canRead || isLoading}><RefreshCcw className="size-4" />再取得</Button>
-          <Button size="sm" onClick={onRequestBatch} disabled={!canExecute || availableCount === 0 || isCreating} title={!canExecute ? "system_updates.execute 権限が必要です。" : undefined}>
+          <Button className="h-auto max-w-full whitespace-normal text-left sm:h-8 sm:whitespace-nowrap" size="sm" onClick={onRequestBatch} disabled={!canExecute || availableCount === 0 || isCreating} title={!canExecute ? "system_updates.execute 権限が必要です。" : undefined}>
             {isCreating ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
             {batchProgress ? `${batchProgress.completed}/${batchProgress.total} 受付中` : `更新可能なものを順次受付（ホストごと並行）${availableCount ? ` (${availableCount})` : ""}`}
           </Button>
@@ -572,7 +572,7 @@ function UpdateAgentStatus({
       {updaters.length === 0 ? (
         <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Host Agentまたは互換Updaterが登録されていません。更新ジョブは開始できません。</p>
       ) : (
-        <div className="mt-3 grid gap-2 lg:grid-cols-2">
+        <div className="mt-3 grid gap-2 lg:grid-cols-2 [&>*:only-child]:col-span-full">
           {updaters.map((updater) => {
             const policy = systemUpdateUpdaterPolicyState(updater);
             return (
@@ -614,10 +614,10 @@ function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob,
         ? systemUpdateTargetBlockedReason("updater_offline")
         : !updaterPolicy?.ready
           ? updaterPolicy?.label === "反映失敗"
-            ? "中央Updaterの設定反映に失敗しています。設定画面でエラーを確認してください。"
+            ? "更新エージェントの設定反映に失敗しています。設定画面でエラーを確認してください。"
             : updaterPolicy?.label === "未設定"
-              ? "中央Updaterの設定が未設定です。設定を保存してください。"
-              : "中央Updaterが新しい設定を反映中です。反映済みになるまでお待ちください。"
+              ? "更新エージェントの設定が未設定です。設定を保存してください。"
+              : "更新エージェントが新しい設定を反映中です。反映済みになるまでお待ちください。"
         : connectivity.reachability === "unreachable"
           ? systemUpdateTargetBlockedReason("target_unreachable")
           : connectivity.reachability === "unknown"

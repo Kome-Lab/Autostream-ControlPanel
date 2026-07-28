@@ -1179,21 +1179,21 @@ export async function runSystemUpdatesSequentially<T>(
 export function systemUpdateTargetBlockedReason(reason?: string) {
   const code = normalize(reason);
   const messages: Record<string, string> = {
-    target_not_configured: "更新対象が中央Updaterに登録されていません。",
-    update_agent_unavailable: "中央Updaterが設定されていません。",
-    updater_not_configured: "中央Updaterが設定されていません。",
-    updater_missing: "中央Updaterが設定されていません。",
-    update_agent_offline: "中央Updaterがオフラインです。接続状態を確認してください。",
-    updater_offline: "中央Updaterがオフラインです。接続状態を確認してください。",
-    updater_unavailable: "中央Updaterに接続できません。",
-    target_unreachable: "中央Updaterから対象ホストへ接続できません。",
+    target_not_configured: "更新対象が更新エージェントに登録されていません。",
+    update_agent_unavailable: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    updater_not_configured: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    updater_missing: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    update_agent_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
+    updater_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
+    updater_unavailable: "更新エージェントに接続できません。",
+    target_unreachable: "更新エージェントから対象ホストへ接続できません。",
     target_reachability_unknown: "対象ホストへの接続状態をまだ確認できません。",
     updater_policy_pending: "保存したUpdater設定の反映を待っています。",
     updater_policy_failed: "保存したUpdater設定を反映できませんでした。Updater設定画面を確認してください。",
-    updater_policy_mismatch: "中央Updaterの設定反映が完了していません。",
+    updater_policy_mismatch: "更新エージェントの設定反映が完了していません。",
     updater_policy_target_type_mismatch: "更新対象のサービス種別がUpdater設定と一致していません。",
     updater_release_token_not_configured: "GitHub Release Tokenが未設定です。Updater設定画面で保存してください。",
-    updater_version_incompatible: "minimum_agent_versionを満たすように中央Updaterを更新してください。",
+    updater_version_incompatible: "minimum_agent_versionを満たすように更新エージェントを更新してください。",
     current_version_unknown: "現在のバージョンが未報告です。",
     latest_version_unknown: "最新バージョンを確認できません。",
     update_not_available: "適用できる更新はありません。",
@@ -1225,16 +1225,16 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     forbidden: "システム更新を実行する権限がありません。",
     target_not_found: "更新対象が見つかりません。一覧を再取得してください。",
     system_update_target_not_found: "更新対象が見つかりません。一覧を再取得してください。",
-    target_not_configured: "更新対象が中央Updaterに登録されていません。",
-    update_agent_unavailable: "中央Updaterが設定されていません。",
-    updater_not_configured: "中央Updaterが設定されていません。",
-    updater_missing: "中央Updaterが設定されていません。",
-    update_agent_offline: "中央Updaterがオフラインです。接続状態を確認してください。",
-    updater_offline: "中央Updaterがオフラインです。接続状態を確認してください。",
-    updater_unavailable: "中央Updaterに接続できません。",
-    target_unreachable: "中央Updaterから対象ホストへ接続できません。",
+    target_not_configured: "更新対象が更新エージェントに登録されていません。",
+    update_agent_unavailable: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    updater_not_configured: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    updater_missing: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    update_agent_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
+    updater_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
+    updater_unavailable: "更新エージェントに接続できません。",
+    target_unreachable: "更新エージェントから対象ホストへ接続できません。",
     target_reachability_unknown: "対象ホストへの接続状態をまだ確認できません。",
-    updater_version_incompatible: "minimum_agent_versionを満たすように中央Updaterを更新してください。",
+    updater_version_incompatible: "minimum_agent_versionを満たすように更新エージェントを更新してください。",
     update_not_available: "適用できる更新はありません。",
     no_update_available: "適用できる更新はありません。",
     already_up_to_date: "このサービスはすでに最新です。",
@@ -1302,11 +1302,11 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     updater_policy_revision_conflict: "Updater設定が別の操作で更新されました。設定画面を開き直してから再度保存してください。",
     updater_policy_pending: "保存したUpdater設定の反映を待っています。反映完了後にもう一度お試しください。",
     updater_policy_failed: "保存したUpdater設定を反映できませんでした。Updater設定画面の状態を確認してください。",
-    updater_policy_mismatch: "Control Panelと中央Updaterの設定が一致していません。設定の反映完了を待ってください。",
+    updater_policy_mismatch: "Control Panelと更新エージェントの設定が一致していません。設定の反映完了を待ってください。",
     updater_policy_target_type_mismatch: "更新対象のサービス種別がUpdater設定と一致していません。対象設定を確認してください。",
     updater_release_token_not_configured: "GitHub Release Tokenが未設定です。Updater設定画面で保存してください。",
     ssh_connectivity_failed: "対象ホストへSSH接続できません。接続先、SSHポート、ユーザー、公開鍵を確認してください。",
-    policy_snapshot_failed: "Updater設定の安全な保存に失敗しました。中央Updaterのログとデータディレクトリを確認してください。",
+    policy_snapshot_failed: "Updater設定の安全な保存に失敗しました。更新エージェントのログとデータディレクトリを確認してください。",
     update_updater_release_token_failed: "GitHub Release Tokenを安全に保存できませんでした。Control Panelの暗号化設定を確認してください。",
     save_updater_policy_failed: "Updater設定を保存できませんでした。Control Panelのログを確認してください。",
     invalid_strategy: "更新方法の指定が正しくありません。",
@@ -1336,7 +1336,7 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     cancel_system_update_failed: "更新ジョブをキャンセルできませんでした。Control Panelのログを確認してください。",
     list_system_update_targets_failed: "更新対象を取得できませんでした。Control Panelのログを確認してください。",
     list_system_update_jobs_failed: "更新履歴を取得できませんでした。Control Panelのログを確認してください。",
-    stale_report: "中央Updaterの状態報告が古いため、更新を開始できません。",
+    stale_report: "更新エージェントの状態報告が古いため、更新を開始できません。",
   };
   const detail = safeErrorDetail(record?.message, code);
   const withDetail = (summary: string) => detail ? `${summary} 詳細: ${detail}` : summary;
@@ -1344,7 +1344,7 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
   if (record?.status === 403) return withDetail(messages.permission_denied);
   if (record?.status === 404) return withDetail(messages.target_not_found);
   if (record?.status === 409) return withDetail(messages.conflict);
-  if (record?.status && record.status >= 500) return withDetail("更新サービスでエラーが発生しました。中央UpdaterとControl Panelのログを確認してください。");
+  if (record?.status && record.status >= 500) return withDetail("更新サービスでエラーが発生しました。更新エージェントとControl Panelのログを確認してください。");
   return withDetail(code ? `${fallback} (${code})` : fallback);
 }
 

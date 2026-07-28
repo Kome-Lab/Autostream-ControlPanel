@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -54,4 +55,21 @@ test("mobile navigation remounts can reuse the lifted section state", () => {
 
 test("a section keeps the same React key when its active route changes", () => {
   assert.equal(navigationSectionStateKey("monitoring"), "monitoring");
+});
+
+test("responsive admin surfaces do not depend on a bare hidden utility", () => {
+  const sources = [
+    readFileSync(new URL("../src/components/admin/admin-shell.tsx", import.meta.url), "utf8"),
+    readFileSync(new URL("../src/features/dashboard/dashboard-view.tsx", import.meta.url), "utf8"),
+  ];
+  const responsiveDisplay = /^(?:sm|md|lg|xl|2xl):(block|flex|grid|inline-flex)$/;
+  const conflictingClassLists = sources.flatMap((source) => [...source.matchAll(/"([^"\r\n]*)"/g)])
+    .map(([, value]) => value.trim().split(/\s+/))
+    .filter((tokens) => tokens.includes("hidden") && tokens.some((token) => responsiveDisplay.test(token)));
+
+  assert.deepEqual(
+    conflictingClassLists,
+    [],
+    "bare .hidden can be forced with !important by injected styles and must not gate desktop navigation",
+  );
 });

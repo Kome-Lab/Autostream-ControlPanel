@@ -141,7 +141,7 @@ export function DashboardView() {
             <CardContent className="p-0">
               {operationRows.length > 0 ? (
                 <div className="divide-y">
-                  <div className="hidden grid-cols-[7.25rem_minmax(0,1fr)_12rem_8rem_11rem_2rem] gap-3 bg-muted/45 px-4 py-2 text-xs font-medium text-muted-foreground lg:grid">
+                  <div className="grid grid-cols-[7.25rem_minmax(0,1fr)_12rem_8rem_11rem_2rem] gap-3 bg-muted/45 px-4 py-2 text-xs font-medium text-muted-foreground max-lg:hidden">
                     <span>状態</span>
                     <span>配信枠</span>
                     <span>開始条件</span>

@@ -273,7 +273,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[15.5rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-30 flex w-[15.5rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground max-lg:hidden">
         <div className="flex h-[4.5rem] shrink-0 items-center gap-3 border-b border-sidebar-border px-4">
           <div className="flex size-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shadow-sm">
             <RadioTower className="size-5" />
@@ -347,7 +347,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <div className="min-w-0">
               <div className="text-[0.7rem] font-semibold text-primary">{pageSection}</div>
               <div className="truncate text-lg font-semibold leading-tight">{pageTitle}</div>
-              <div className="hidden max-w-2xl truncate text-xs text-muted-foreground xl:block">{pageDescription}</div>
+              <div className="block max-w-2xl truncate text-xs text-muted-foreground max-xl:hidden">{pageDescription}</div>
             </div>
           </div>
 
@@ -356,7 +356,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               <Link
                 href="/admin/service-health/"
                 className={cn(
-                  "hidden h-9 items-center gap-2 rounded-md border bg-card px-3 text-xs font-medium shadow-xs transition-colors hover:bg-accent xl:flex",
+                  "flex h-9 items-center gap-2 rounded-md border bg-card px-3 text-xs font-medium shadow-xs transition-colors hover:bg-accent max-xl:hidden",
                   healthRows.length > 0 && !healthIsGood && "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200",
                 )}
               >
@@ -365,7 +365,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               </Link>
             ) : null}
             {canCreateStream ? (
-              <Button asChild size="sm" className="hidden md:inline-flex">
+              <Button asChild size="sm" className="max-md:hidden md:inline-flex">
                 <Link
                   href="/admin/streams/#create-stream"
                   onClick={(event) => {
@@ -381,7 +381,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               </Button>
             ) : null}
             <Select value={locale} onValueChange={(value) => setLocale(value as Locale)}>
-              <SelectTrigger className="hidden h-9 w-28 sm:flex" aria-label={t("language")}>
+              <SelectTrigger className="flex h-9 w-28 max-sm:hidden" aria-label={t("language")}>
                 <Languages className="size-4" />
                 <SelectValue />
               </SelectTrigger>
@@ -393,12 +393,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <Button variant="outline" size="icon-sm" onClick={toggleTheme} aria-label={t("theme")}>
               {dark ? <Moon /> : <Sun />}
             </Button>
-            <Separator orientation="vertical" className="hidden h-8 md:block" />
+            <Separator orientation="vertical" className="block h-8 max-md:hidden" />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="h-10 gap-2 px-1.5" aria-label="アカウントメニュー">
                   <AccountAvatar name={username} src={currentUser.data.user.avatar_url} className="size-8 border-0" sizes="32px" />
-                  <span className="hidden min-w-0 text-left xl:block">
+                  <span className="block min-w-0 text-left max-xl:hidden">
                     <span className="block max-w-28 truncate text-sm font-medium">{username}</span>
                     <span className="block text-xs text-muted-foreground">{t("currentUser")}</span>
                   </span>

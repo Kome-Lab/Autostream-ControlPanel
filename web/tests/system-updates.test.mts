@@ -1840,11 +1840,18 @@ test("system update UI manages updater policy in the panel and never instructs m
   const bootstrapSource = readFileSync(new URL("../src/features/application/updater-host-bootstrap-panel.tsx", import.meta.url), "utf8");
   const queriesSource = readFileSync(new URL("../src/features/queries.ts", import.meta.url), "utf8");
   const nodeSource = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+  const buttonSource = readFileSync(new URL("../src/components/ui/button.tsx", import.meta.url), "utf8");
 
   assert.match(applicationSource, /canManageUpdaterSecrets=\{hasPermission\(currentUser\.data, "secrets\.update"\)\}/);
   assert.doesNotMatch(applicationSource, /各ホストへのUpdater導入は不要/);
   assert.match(applicationSource, /Host Agentがoutbound通信で受け取って安全に適用/);
   assert.match(applicationSource, /SSH接続やUpdater用TCP受信ポートは使いません/);
+  assert.doesNotMatch(applicationSource, /中央Updater/);
+  assert.match(applicationSource, /lg:grid-cols-2 \[&>\*:only-child\]:col-span-full/);
+  assert.match(applicationSource, /CardHeader className="min-w-0 gap-3 sm:flex-row sm:items-start sm:justify-between"/);
+  assert.match(applicationSource, /className="h-auto max-w-full whitespace-normal text-left sm:h-8 sm:whitespace-nowrap"/);
+  assert.doesNotMatch(applicationSource, /disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100/);
+  assert.match(buttonSource, /default: "bg-primary text-primary-foreground hover:bg-primary\/90 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"/);
   assert.match(applicationSource, /canEdit=\{canExecute\}/);
   assert.match(applicationSource, /希望endpoint（未適用を含む）/);
   assert.match(applicationSource, /現在適用中のendpoint/);
@@ -2037,7 +2044,7 @@ test("central updater availability and target host reachability stay independent
 });
 
 test("update API codes are shown as actionable Japanese guidance", () => {
-  assert.equal(systemUpdateErrorMessage({ code: "updater_offline" }), "中央Updaterがオフラインです。接続状態を確認してください。");
+  assert.equal(systemUpdateErrorMessage({ code: "updater_offline" }), "更新エージェントがオフラインです。接続状態を確認してください。");
   assert.match(systemUpdateErrorMessage({ code: "checksum_mismatch" }), /検証に失敗/);
   assert.match(systemUpdateErrorMessage({ code: "release_version_invalid", status: 409, message: "manifest tag v1.bad" }), /公開された更新バージョン.*manifest tag v1\.bad/);
   assert.match(systemUpdateErrorMessage({ code: "download_failed", message: "GitHub returned 403 for asset X" }), /ダウンロード.*GitHub returned 403/);
@@ -2052,20 +2059,24 @@ test("update API codes are shown as actionable Japanese guidance", () => {
     "Updaterのbootstrap暗号鍵が変わりました。状態を再取得し、Fingerprintを確認してから再試行してください。",
   );
   assert.match(systemUpdateErrorMessage({ status: 403 }), /権限/);
-  assert.match(systemUpdateTargetBlockedReason("updater_not_configured"), /中央Updater.*設定されていません/);
-  assert.equal(systemUpdateTargetBlockedReason("updater_missing"), "中央Updaterが設定されていません。");
-  assert.equal(systemUpdateTargetBlockedReason("target_unreachable"), "中央Updaterから対象ホストへ接続できません。");
+  assert.match(systemUpdateTargetBlockedReason("updater_not_configured"), /更新エージェント.*設定されていません/);
+  assert.equal(systemUpdateTargetBlockedReason("updater_missing"), "更新エージェント（Host Agent / 互換Updater）が設定されていません。");
+  assert.equal(systemUpdateTargetBlockedReason("target_unreachable"), "更新エージェントから対象ホストへ接続できません。");
   assert.equal(systemUpdateTargetBlockedReason("target_reachability_unknown"), "対象ホストへの接続状態をまだ確認できません。");
   assert.match(systemUpdateTargetBlockedReason("updater_policy_pending"), /設定の反映を待っています/);
   assert.match(systemUpdateTargetBlockedReason("updater_policy_failed"), /反映できませんでした/);
   assert.match(systemUpdateTargetBlockedReason("updater_policy_mismatch"), /反映が完了していません/);
   assert.match(systemUpdateTargetBlockedReason("updater_policy_target_type_mismatch"), /サービス種別/);
   assert.match(systemUpdateTargetBlockedReason("updater_release_token_not_configured"), /GitHub Release Tokenが未設定/);
-  assert.equal(systemUpdateErrorMessage({ code: "target_unreachable" }), "中央Updaterから対象ホストへ接続できません。");
+  assert.equal(systemUpdateErrorMessage({ code: "target_unreachable" }), "更新エージェントから対象ホストへ接続できません。");
+  assert.equal(systemUpdateErrorMessage({ code: "updater_policy_mismatch" }), "Control Panelと更新エージェントの設定が一致していません。設定の反映完了を待ってください。");
+  assert.equal(systemUpdateErrorMessage({ code: "policy_snapshot_failed" }), "Updater設定の安全な保存に失敗しました。更新エージェントのログとデータディレクトリを確認してください。");
+  assert.equal(systemUpdateErrorMessage({ code: "stale_report" }), "更新エージェントの状態報告が古いため、更新を開始できません。");
+  assert.equal(systemUpdateErrorMessage({ status: 500 }), "更新サービスでエラーが発生しました。更新エージェントとControl Panelのログを確認してください。");
   assert.equal(systemUpdateTargetBlockedReason("release_manifest_missing"), "更新用リリース情報が公開されていないため、適用できません。");
   assert.equal(systemUpdateTargetBlockedReason("release_manifest_invalid"), "更新用リリース情報を検証できないため、適用できません。");
   assert.equal(systemUpdateTargetBlockedReason("manifest_unverified"), "最新バージョンは確認できましたが、更新用リリース情報を検証できないため自動適用できません。");
-  assert.equal(systemUpdateTargetBlockedReason("updater_version_incompatible"), "minimum_agent_versionを満たすように中央Updaterを更新してください。");
+  assert.equal(systemUpdateTargetBlockedReason("updater_version_incompatible"), "minimum_agent_versionを満たすように更新エージェントを更新してください。");
   assert.match(systemUpdatePolicyErrorMessage("policy_snapshot_failed"), /更新操作を停止して自動再試行/);
   assert.match(systemUpdatePolicyErrorMessage("ssh_connectivity_failed"), /SSH接続/);
 });
