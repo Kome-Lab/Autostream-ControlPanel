@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Activity, Download, GitCommit, History, LoaderCircle, RefreshCcw, ServerCog, ShieldAlert, XCircle } from "lucide-react";
 import { StatusBadge } from "@/components/admin/status-badge";
@@ -14,20 +14,26 @@ import {
   AlertDialogHeader,
   AlertDialogMedia,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAppSettings, useCurrentUser, useNodes, useServiceHealth, useSystemUpdates, useVersion } from "@/features/queries";
 import { UpdaterSettingsPanel } from "@/features/application/updater-settings-panel";
 import { apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
+  acquireSystemUpdateTargetRequestLock,
   compareSystemUpdateVersions,
+  isSystemUpdateEndpointRevisionConflict,
   isControlPanelUpdateTarget,
   isSystemUpdateJobActive,
   isSystemUpdateJobCancellable,
+  requestSystemUpdatePortReconfigureWithRecovery,
+  systemUpdateDockerPortReconfigureRequest,
   requestSystemUpdateWithRecovery,
   runSystemUpdatesSequentially,
   systemUpdateDeploymentLabel,
@@ -41,16 +47,25 @@ import {
   systemUpdateMayDisconnectPanel,
   systemUpdatePolicyErrorMessage,
   systemUpdateProgress,
+  systemUpdatePortReconfigureEligibility,
+  systemUpdatePortReconfigureRequest,
+  systemUpdatePortRequestMatchesJob,
+  systemUpdatePortReconfigureResultLabel,
   systemUpdateStrategyForTarget,
+  systemUpdateSoftwareOperationEligibility,
   systemUpdateTargetBlockedReason,
   systemUpdateUpdaterPolicyState,
+  SystemUpdateRequestAmbiguousError,
 } from "@/lib/system-updates";
+import type { SystemUpdateRequestState } from "@/lib/system-updates";
+import { nodeEndpointState } from "@/lib/node-registration";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
-import type { AppVersion, ServiceUpdateInfo, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, SystemUpdatesResponse, WorkerNode } from "@/types/domain";
+import type { AppVersion, ServiceUpdateInfo, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdatePortReconfigureCreateRequest, SystemUpdateTarget, SystemUpdatesResponse, WorkerNode } from "@/types/domain";
 
 type Confirmation = { kind: "target"; target: SystemUpdateTarget } | { kind: "batch"; targets: SystemUpdateTarget[] };
 type Feedback = { tone: "success" | "error"; message: string };
 type SystemUpdateOperation = { target: SystemUpdateTarget; idempotencyKey: string };
+type PortReconfigureOperation = { request: SystemUpdatePortReconfigureCreateRequest };
 
 export function ApplicationInfoView() {
   const currentUser = useCurrentUser();
@@ -70,6 +85,9 @@ export function ApplicationInfoView() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [batchProgress, setBatchProgress] = useState<{ completed: number; total: number } | null>(null);
   const [selfUpdateJobID, setSelfUpdateJobID] = useState("");
+  const [ambiguousPortRequest, setAmbiguousPortRequest] = useState<SystemUpdatePortReconfigureCreateRequest | null>(null);
+  const [portRequestTargetID, setPortRequestTargetID] = useState("");
+  const activePortRequestTargets = useRef(new Set<string>());
   const scheduledReloadJobID = useRef("");
   const scheduledReloadTimer = useRef<number | undefined>(undefined);
   const nodeRows = useMemo(() => mergeRegisteredNodeRows(registeredNodes.data || [], serviceHealth.data || []).sort(compareServiceRows), [registeredNodes.data, serviceHealth.data]);
@@ -81,6 +99,10 @@ export function ApplicationInfoView() {
   const hosts = useMemo(() => systemUpdates.data?.hosts || [], [systemUpdates.data?.hosts]);
   const jobs = useMemo(() => [...(systemUpdates.data?.jobs || [])].sort(compareUpdateJobs), [systemUpdates.data?.jobs]);
   const jobsByTarget = useMemo(() => latestJobsByTarget(jobs), [jobs]);
+  const recoveredAmbiguousPortJob = ambiguousPortRequest
+    ? jobs.find((job) => systemUpdatePortRequestMatchesJob(ambiguousPortRequest, job))
+    : undefined;
+  const unresolvedAmbiguousPortRequest = recoveredAmbiguousPortJob ? null : ambiguousPortRequest;
   const availableTargets = useMemo(
     () => orderBatchTargets(targets.filter((target) => updateCanStart(target, jobsByTarget.get(target.target_id), updaters, hosts))),
     [targets, jobsByTarget, updaters, hosts],
@@ -88,7 +110,10 @@ export function ApplicationInfoView() {
   const selfUpdateJob = jobs.find((job) => job.id === selfUpdateJobID);
   const reconnecting = Boolean(selfUpdateJobID) && (systemUpdates.isError || !selfUpdateJob || systemUpdateMayDisconnectPanel(selfUpdateJob.status));
   const terminalSelfUpdateFeedback = selfUpdateTerminalFeedback(selfUpdateJob);
-  const visibleFeedback = terminalSelfUpdateFeedback || feedback;
+  const recoveredPortFeedback: Feedback | null = recoveredAmbiguousPortJob
+    ? { tone: "success", message: `${recoveredAmbiguousPortJob.target_id}: 応答を確認できなかったポート変更ジョブを履歴から確認しました。` }
+    : null;
+  const visibleFeedback = terminalSelfUpdateFeedback || recoveredPortFeedback || feedback;
   const confirmationTargets = confirmation ? (confirmation.kind === "target" ? [confirmation.target] : confirmation.targets) : [];
   const confirmationIncludesControlPanel = confirmationTargets.some(isControlPanelUpdateTarget);
 
@@ -132,6 +157,24 @@ export function ApplicationInfoView() {
     onError: (error) => setFeedback({ tone: "error", message: systemUpdateErrorMessage(error, "更新ジョブをキャンセルできませんでした。") }),
   });
 
+  const createPortReconfigure = useMutation<SystemUpdateJob, Error, PortReconfigureOperation>({
+    mutationFn: async ({ request }) => requestSystemUpdatePortReconfigureWithRecovery(
+      request,
+      async (payload) => apiPost<unknown>("/system-updates", payload),
+      async () => (await systemUpdates.refetch()).data?.jobs || [],
+    ),
+    retry: false,
+    onSuccess: async (job) => {
+      setAmbiguousPortRequest(null);
+      mergeSystemUpdateJob(queryClient.getQueryData<SystemUpdatesResponse>(["system-updates"]), job, queryClient);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
+        queryClient.invalidateQueries({ queryKey: ["nodes"] }),
+        queryClient.invalidateQueries({ queryKey: ["service-health"] }),
+      ]);
+    },
+  });
+
   const executeTarget = async (target: SystemUpdateTarget) => {
     clearTerminalSelfUpdate();
     setFeedback(null);
@@ -167,6 +210,46 @@ export function ApplicationInfoView() {
     }
   };
 
+  const executePortReconfigure = async (request: SystemUpdatePortReconfigureCreateRequest) => {
+    const targetID = request.target_id.trim();
+    if (
+      activePortRequestTargets.current.size > 0
+      || !acquireSystemUpdateTargetRequestLock(activePortRequestTargets.current, targetID)
+    ) {
+      return;
+    }
+    setPortRequestTargetID(targetID);
+    setAmbiguousPortRequest(null);
+    setFeedback(null);
+    try {
+      await createPortReconfigure.mutateAsync({ request });
+      setFeedback({ tone: "success", message: `${request.target_id}: ポート変更ジョブを受け付けました。現在適用中のendpointが更新されるまでお待ちください。` });
+    } catch (error) {
+      if (error instanceof SystemUpdateRequestAmbiguousError) {
+        setAmbiguousPortRequest(error.request);
+        setFeedback({ tone: "error", message: "ポート変更要求の結果を確認できません。安全のため同じ対象への再送を停止し、更新履歴を自動確認します。" });
+        return;
+      }
+      if (isSystemUpdateEndpointRevisionConflict(error)) {
+        const refreshes: Promise<unknown>[] = [systemUpdates.refetch()];
+        if (canReadRegisteredNodes) refreshes.push(registeredNodes.refetch());
+        if (canReadServiceHealth) refreshes.push(serviceHealth.refetch());
+        const refreshed = (await Promise.allSettled(refreshes)).every((result) => result.status === "fulfilled");
+        setFeedback({
+          tone: "error",
+          message: refreshed
+            ? "Endpoint revisionが変わったため送信しませんでした。最新のNode状態を再取得しました。内容を確認してからやり直してください。"
+            : "Endpoint revisionが変わったため送信しませんでした。Node状態を再取得できなかったため、手動で再取得してからやり直してください。",
+        });
+        return;
+      }
+      setFeedback({ tone: "error", message: systemUpdateErrorMessage(error, "ポート変更ジョブを開始できませんでした。") });
+    } finally {
+      activePortRequestTargets.current.delete(targetID);
+      setPortRequestTargetID((current) => current === targetID ? "" : current);
+    }
+  };
+
   const requestTarget = (target: SystemUpdateTarget) => {
     if (isControlPanelUpdateTarget(target)) {
       setConfirmation({ kind: "target", target });
@@ -193,7 +276,7 @@ export function ApplicationInfoView() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-normal">アプリケーション情報</h1>
@@ -258,8 +341,8 @@ export function ApplicationInfoView() {
         onCancel={(job) => { clearTerminalSelfUpdate(); setFeedback(null); cancelUpdate.mutate(job); }}
       />
 
-      <div className="grid gap-4 2xl:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
-        <Card>
+      <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Activity className="size-5" />Control Panel</CardTitle>
             <CardDescription>管理画面とAPIサーバーのビルド情報です。</CardDescription>
@@ -282,6 +365,13 @@ export function ApplicationInfoView() {
           nodeRows={nodeRows}
           timezone={timezone}
           appVersion={appVersion.data}
+          targets={targets}
+          updaters={updaters}
+          jobsByTarget={jobsByTarget}
+          canExecuteSystemUpdates={canExecuteSystemUpdates}
+          portRequestTargetID={portRequestTargetID || undefined}
+          ambiguousPortTargetID={unresolvedAmbiguousPortRequest?.target_id}
+          onPortReconfigure={executePortReconfigure}
           onRefresh={() => { if (canReadRegisteredNodes) void registeredNodes.refetch(); if (canReadServiceHealth) void serviceHealth.refetch(); }}
         />
       </div>
@@ -351,11 +441,11 @@ function SystemUpdatesCard({
   onCancel: (job: SystemUpdateJob) => void;
 }) {
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <CardTitle className="flex items-center gap-2"><Download className="size-5" />システム更新</CardTitle>
-          <CardDescription className="mt-1">Control Panelから中央Updaterへ更新を依頼し、登録済みホストへ安全に適用します。</CardDescription>
+          <CardDescription className="mt-1">Control Panelで更新ジョブを作成し、各ホストのHost Agentがoutbound通信で受け取って安全に適用します。</CardDescription>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={!canRead || isLoading}><RefreshCcw className="size-4" />再取得</Button>
@@ -368,15 +458,16 @@ function SystemUpdatesCard({
       </CardHeader>
       <CardContent className="space-y-5">
         <div className="rounded-md border border-blue-200 bg-blue-50/70 p-3 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
-          Docker配備では、Docker Bundleのバージョンと各サービスのバージョンは別に管理されます。表示が異なっていても異常ではなく、中央Updaterが対象サービスとBundle設定を照合して更新します。
-          中央Updaterの稼働状態と、そこから各対象ホストへの接続状態は別々に表示されます。
+          Docker配備では、Docker Bundleのバージョンと各サービスのバージョンは別に管理されます。表示が異なっていても異常ではなく、対象ホストのHost AgentがBundle設定を照合して更新します。
+          pull_v2ではHost AgentからControl Panelへ接続するため、Control Panelから各ホストへのSSH接続やUpdater用TCP受信ポートは使いません。
         </div>
 
         {canRead && !isError && !isLoading ? (
-          <CentralUpdaterStatus
+          <UpdateAgentStatus
             updaters={updaters}
+            jobs={jobs}
             timezone={timezone}
-            canEdit={canExecute && canManageUpdaterSecrets}
+            canEdit={canExecute}
             canManageSecrets={canManageUpdaterSecrets}
           />
         ) : null}
@@ -385,13 +476,13 @@ function SystemUpdatesCard({
           <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象と履歴を確認するには「system_updates.read」権限が必要です。</div>
         ) : isError ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
-            <span>{systemUpdateErrorMessage(error, "更新対象を取得できませんでした。Control Panelと中央Updaterの接続状態を確認してください。")}</span>
+            <span>{systemUpdateErrorMessage(error, "更新対象を取得できませんでした。Control Panelと各Host AgentのHeartbeatを確認してください。")}</span>
             <Button variant="outline" size="sm" onClick={onRefresh}>再試行</Button>
           </div>
         ) : isLoading ? (
           <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象を読み込み中です。</div>
         ) : targets.length === 0 ? (
-          <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象が未設定です。中央Updaterに対象ホストとサービスを登録してください。各ホストに常駐Updaterサービスは不要です。標準systemdホストの非常駐helperはSystem Updatesから自動セットアップできます。</div>
+          <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">更新対象が未設定です。各ホストのHost Agentと対象サービスを登録してください。pull_v2ではSSH設定やUpdater用TCP受信ポートは不要です。</div>
         ) : (
           <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
             {targets.map((target) => (
@@ -417,7 +508,7 @@ function SystemUpdatesCard({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>対象</TableHead><TableHead>バージョン</TableHead><TableHead>状態</TableHead><TableHead>進捗</TableHead><TableHead>メッセージ</TableHead><TableHead>依頼者 / 日時</TableHead><TableHead className="text-right">操作</TableHead>
+                    <TableHead>対象 / 操作</TableHead><TableHead>バージョン / ポート</TableHead><TableHead>状態</TableHead><TableHead>進捗</TableHead><TableHead>メッセージ</TableHead><TableHead>依頼者 / 日時</TableHead><TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -427,8 +518,8 @@ function SystemUpdatesCard({
                     const [jobMessageSummary, ...jobMessageDetails] = jobMessage.split("\n");
                     return (
                       <TableRow key={job.id}>
-                        <TableCell><div className="font-medium">{targetDisplayName(job, targets)}</div><div className="text-xs text-muted-foreground">{systemUpdateDeploymentLabel(job.deployment_mode)}</div></TableCell>
-                        <TableCell className="whitespace-nowrap text-xs"><span>{job.current_version || "-"}</span><span className="px-1 text-muted-foreground">→</span><span>{job.target_version || "-"}</span></TableCell>
+                        <TableCell><div className="font-medium">{targetDisplayName(job, targets)}</div><div className="text-xs text-muted-foreground">{systemUpdateJobOperationLabel(job)} · {systemUpdateDeploymentLabel(job.deployment_mode)}</div></TableCell>
+                        <TableCell className="whitespace-nowrap text-xs">{systemUpdateJobChangeSummary(job)}</TableCell>
                         <TableCell><Badge variant={systemUpdateJobTone(job.status)}>{systemUpdateJobDisplayStatus(job)}</Badge></TableCell>
                         <TableCell className="min-w-32"><div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${targetDisplayName(job, targets)} の更新進捗`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${progress}%` }} /></div><div className="mt-1 text-right text-xs text-muted-foreground">{progress}%</div></TableCell>
                         <TableCell className="max-w-72 text-xs">
@@ -456,13 +547,15 @@ function SystemUpdatesCard({
   );
 }
 
-function CentralUpdaterStatus({
+function UpdateAgentStatus({
   updaters,
+  jobs,
   timezone,
   canEdit,
   canManageSecrets,
 }: {
   updaters: SystemUpdateAgentStatus[];
+  jobs: SystemUpdateJob[];
   timezone?: string;
   canEdit: boolean;
   canManageSecrets: boolean;
@@ -471,13 +564,13 @@ function CentralUpdaterStatus({
     <div className="rounded-lg border bg-muted/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-medium">中央Updater</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">Control Panelから更新ジョブを受け取り、各対象ホストへ接続します。</div>
+          <div className="text-sm font-medium">Host Agent / 互換Updater</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">pull_v2 Host Agentは各ホストからControl Panelへoutbound接続して更新ジョブを受け取ります。</div>
         </div>
         {updaters.length === 0 ? <Badge variant="secondary">未登録</Badge> : null}
       </div>
       {updaters.length === 0 ? (
-        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">中央Updaterが登録されていません。更新ジョブは開始できません。</p>
+        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Host Agentまたは互換Updaterが登録されていません。更新ジョブは開始できません。</p>
       ) : (
         <div className="mt-3 grid gap-2 lg:grid-cols-2">
           {updaters.map((updater) => {
@@ -492,7 +585,7 @@ function CentralUpdaterStatus({
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={policy.tone}>{policy.label}</Badge>
-                  <UpdaterSettingsPanel updater={updater} canEdit={canEdit} canManageSecrets={canManageSecrets} />
+                  <UpdaterSettingsPanel updater={updater} jobs={jobs} canEdit={canEdit} canManageSecrets={canManageSecrets} />
                 </div>
               </div>
             );
@@ -507,12 +600,14 @@ function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob,
   const strategy = systemUpdateStrategyForTarget(target);
   const connectivity = systemUpdateConnectivity(target, updaters, hosts);
   const updaterPolicy = connectivity.updater ? systemUpdateUpdaterPolicyState(connectivity.updater) : null;
+  const operationEligibility = systemUpdateSoftwareOperationEligibility(target);
   const canStart = updateCanStart(target, activeJob, updaters, hosts);
   const hostName = connectivity.host?.name || target.host_id || "ホスト未設定";
   const reachabilityLabel = systemUpdateHostReachabilityLabel(connectivity.reachability);
   const reachabilityMessage = systemUpdateHostReachabilityMessage(connectivity.host?.reachability_code);
-  const blocked = target.blocked_reason
-    ? systemUpdateTargetBlockedReason(target.blocked_reason)
+  const blockedReason = !operationEligibility.ready ? operationEligibility.reason : target.blocked_reason;
+  const blocked = blockedReason
+    ? systemUpdateTargetBlockedReason(blockedReason)
     : !connectivity.updater
       ? systemUpdateTargetBlockedReason("updater_not_configured")
       : !connectivity.agentOnline
@@ -560,16 +655,111 @@ function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob,
   );
 }
 
-function RegisteredServicesCard({ canViewNodeInfo, nodesError, nodesLoading, nodeRows, timezone, appVersion, onRefresh }: { canViewNodeInfo: boolean; nodesError: boolean; nodesLoading: boolean; nodeRows: WorkerNode[]; timezone?: string; appVersion?: AppVersion; onRefresh: () => void }) {
+function RegisteredServicesCard({
+  canViewNodeInfo,
+  nodesError,
+  nodesLoading,
+  nodeRows,
+  timezone,
+  appVersion,
+  targets,
+  updaters,
+  jobsByTarget,
+  canExecuteSystemUpdates,
+  portRequestTargetID,
+  ambiguousPortTargetID,
+  onPortReconfigure,
+  onRefresh,
+}: {
+  canViewNodeInfo: boolean;
+  nodesError: boolean;
+  nodesLoading: boolean;
+  nodeRows: WorkerNode[];
+  timezone?: string;
+  appVersion?: AppVersion;
+  targets: SystemUpdateTarget[];
+  updaters: SystemUpdateAgentStatus[];
+  jobsByTarget: Map<string, SystemUpdateJob>;
+  canExecuteSystemUpdates: boolean;
+  portRequestTargetID?: string;
+  ambiguousPortTargetID?: string;
+  onPortReconfigure: (request: SystemUpdatePortReconfigureCreateRequest) => Promise<void>;
+  onRefresh: () => void;
+}) {
+  const nodeOperation = (node: WorkerNode) => {
+    const nodeID = nodeIdentity(node);
+    const target = targets.find((candidate) => candidate.target_id === nodeID);
+    const updater = target?.updater_id
+      ? updaters.find((candidate) => candidate.updater_id === target.updater_id)
+      : undefined;
+    const requestState: SystemUpdateRequestState = portRequestTargetID === nodeID
+      ? "pending"
+      : ambiguousPortTargetID === nodeID
+        ? "ambiguous"
+        : "idle";
+    return {
+      target,
+      updater,
+      latestJob: target ? jobsByTarget.get(target.target_id) : undefined,
+      requestState,
+    };
+  };
   return (
-    <Card>
-      <CardHeader><CardTitle className="flex items-center gap-2"><ServerCog className="size-5" />登録済みサービス</CardTitle><CardDescription>Worker、Encoder/Recorder、Discord Bot、Observabilityの報告バージョンです。</CardDescription></CardHeader>
+    <Card className="min-w-0">
+      <CardHeader><CardTitle className="flex items-center gap-2"><ServerCog className="size-5" />登録済みサービス</CardTitle><CardDescription>報告バージョンと、希望・適用・Node報告のendpointを区別して表示します。</CardDescription></CardHeader>
       <CardContent>
         {!canViewNodeInfo ? <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeの情報を確認する権限がありません。管理者にNode情報の閲覧権限を依頼してください。</div>
           : nodesError ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>登録済みNodeの情報を取得できませんでした。通信状態とControl Panelのログを確認してください。</span><Button variant="outline" size="sm" onClick={onRefresh}>再試行</Button></div>
             : nodesLoading ? <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">読み込み中</div>
               : nodeRows.length === 0 ? <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeがありません。Node登録ページで作成したNodeがある場合は、ページを更新してください。</div>
-                : <><div className="grid gap-3 md:hidden">{nodeRows.map((node) => <ServiceInfoPanel key={node.service_id || node.id} node={node} timezone={timezone} updateInfo={serviceUpdateForNode(node, appVersion)} />)}</div><div className="hidden overflow-x-auto rounded-md border md:block"><Table><TableHeader><TableRow><TableHead>サービス</TableHead><TableHead>種別</TableHead><TableHead>バージョン</TableHead><TableHead>コミット</TableHead><TableHead>ビルド日時</TableHead><TableHead>状態</TableHead><TableHead>更新確認</TableHead></TableRow></TableHeader><TableBody>{nodeRows.map((node) => <TableRow key={node.service_id || node.id}><TableCell><div className="font-medium">{node.service_name || node.service_id || "-"}</div></TableCell><TableCell>{serviceTypeLabel(node.service_type)}</TableCell><TableCell>{node.reported_version || node.version || "未報告"}</TableCell><TableCell><span className="inline-flex items-center gap-1 font-mono text-xs"><GitCommit className="size-3.5 text-muted-foreground" />{shortCommit(node.reported_commit)}</span></TableCell><TableCell>{formatOptionalDate(node.reported_build_date, timezone)}</TableCell><TableCell><StatusBadge status={node.health_status || node.status || "-"} /></TableCell><TableCell><UpdateStatusBadge state={nodeUpdateState(node, serviceUpdateForNode(node, appVersion))} /></TableCell></TableRow>)}</TableBody></Table></div><p className="mt-3 text-xs text-muted-foreground">Nodeごとに、対応するサービスの最新リリースと報告バージョンを比較しています。</p></>}
+                : <>
+                    <div className="overflow-x-auto rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>サービス</TableHead><TableHead>種別 / バージョン</TableHead><TableHead>状態</TableHead><TableHead className="min-w-80">Endpoint / ポート変更</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {nodeRows.map((node) => {
+                            const operation = nodeOperation(node);
+                            return (
+                              <TableRow key={node.service_id || node.id}>
+                                <TableCell>
+                                  <div className="font-medium">{node.service_name || node.service_id || "-"}</div>
+                                  <div className="mt-1 font-mono text-xs text-muted-foreground">{node.service_id || node.id}</div>
+                                </TableCell>
+                                <TableCell>
+                                  <div>{serviceTypeLabel(node.service_type)}</div>
+                                  <div className="mt-1">{node.reported_version || node.version || "未報告"}</div>
+                                  <div className="mt-1 inline-flex items-center gap-1 font-mono text-xs text-muted-foreground"><GitCommit className="size-3.5" />{shortCommit(node.reported_commit)}</div>
+                                  <div className="mt-1 text-xs text-muted-foreground">{formatOptionalDate(node.reported_build_date, timezone)}</div>
+                                </TableCell>
+                                <TableCell className="space-y-2">
+                                  <StatusBadge status={node.health_status || node.status || "-"} />
+                                  <div><UpdateStatusBadge state={nodeUpdateState(node, serviceUpdateForNode(node, appVersion))} /></div>
+                                </TableCell>
+                                <TableCell>
+                                  <ServiceEndpointSummary node={node} />
+                                  <PortReconfigureControl
+                                    key={portControlKey(node, operation.target)}
+                                    node={node}
+                                    target={operation.target}
+                                    updater={operation.updater}
+                                    latestJob={operation.latestJob}
+                                    requestState={operation.requestState}
+                                    canExecute={canExecuteSystemUpdates}
+                                    onRequest={onPortReconfigure}
+                                  />
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <p className="mt-3 text-xs text-muted-foreground">「現在適用中」が実際の接続先です。「希望」は未適用の値を含み、Node報告と異なる場合があります。</p>
+                  </>}
       </CardContent>
     </Card>
   );
@@ -592,30 +782,448 @@ function InfoItem({ label, value, monospace = false }: { label: string; value: R
   return <div className="rounded-md border bg-muted/20 px-3 py-2"><div className="text-xs text-muted-foreground">{label}</div><div className={monospace ? "font-mono text-sm" : "text-sm"}>{value}</div></div>;
 }
 
-function ServiceInfoPanel({ node, timezone, updateInfo }: { node: WorkerNode; timezone?: string; updateInfo?: ServiceUpdateInfo }) {
-  return <div className="rounded-md border bg-muted/20 p-3 text-sm"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate font-medium">{node.service_name || node.service_id || "-"}</div><div className="text-xs text-muted-foreground">{serviceTypeLabel(node.service_type)}</div></div><StatusBadge status={node.health_status || node.status || "-"} /></div><div className="mt-3 grid gap-2"><ServiceInfoLine label="バージョン" value={node.reported_version || node.version || "未報告"} /><ServiceInfoLine label="コミット" value={shortCommit(node.reported_commit)} monospace /><ServiceInfoLine label="ビルド日時" value={formatOptionalDate(node.reported_build_date, timezone)} /><ServiceInfoLine label="更新確認" value={<UpdateStatusBadge state={nodeUpdateState(node, updateInfo)} />} /></div></div>;
+function ServiceEndpointSummary({ node }: { node: WorkerNode }) {
+  const state = nodeEndpointState(node);
+  if (state.kind === "pull_v2") {
+    return (
+      <div className="space-y-1 text-xs">
+        <div className="font-medium">Host Agent（受信ポートなし）</div>
+        <div className="text-muted-foreground">実行ホスト: {state.executionHostID || "未割り当て"} · Ownership epoch: {state.ownershipEpoch ?? 0}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5 text-xs" aria-label={`${node.service_name || node.service_id || node.id} のendpoint状態`}>
+      <EndpointStateLine label="希望endpoint（未適用を含む）" value={state.desired.url || "未設定"} />
+      <EndpointStateLine label="現在適用中のendpoint" value={state.applied.url || "未報告"} effective />
+      <EndpointStateLine label="Node報告endpoint" value={state.reported.url || "未報告"} />
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Badge variant={state.status.tone}>{state.status.label}</Badge>
+        <span className="text-muted-foreground">Endpoint revision: {state.revision ?? "未報告"}</span>
+      </div>
+      <p className="text-muted-foreground">{state.status.detail}</p>
+    </div>
+  );
 }
 
-function ServiceInfoLine({ label, value, monospace = false }: { label: string; value: ReactNode; monospace?: boolean }) {
-  return <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-2"><span className="text-muted-foreground">{label}</span><span className={monospace ? "truncate font-mono text-xs" : "truncate"}>{value}</span></div>;
+function EndpointStateLine({ label, value, effective = false }: { label: string; value: string; effective?: boolean }) {
+  return (
+    <div>
+      <div className="text-muted-foreground">{label}</div>
+      <div className={effective ? "break-all font-medium text-foreground" : "break-all text-muted-foreground"}>{value}</div>
+    </div>
+  );
+}
+
+function PortReconfigureControl({
+  node,
+  target,
+  updater,
+  latestJob,
+  requestState,
+  canExecute,
+  onRequest,
+}: {
+  node: WorkerNode;
+  target?: SystemUpdateTarget;
+  updater?: SystemUpdateAgentStatus;
+  latestJob?: SystemUpdateJob;
+  requestState: "idle" | "pending" | "ambiguous";
+  canExecute: boolean;
+  onRequest: (request: SystemUpdatePortReconfigureCreateRequest) => Promise<void>;
+}) {
+  const inputID = useId();
+  const reasonID = `${inputID}-reason`;
+  const advertisedInputID = `${inputID}-advertised`;
+  const publishedInputID = `${inputID}-published`;
+  const containerInputID = `${inputID}-container`;
+  const [newPort, setNewPort] = useState(String(node.applied_endpoint?.port || ""));
+  const [newAdvertisedPort, setNewAdvertisedPort] = useState(String(target?.port_mapping?.advertised_port || node.applied_endpoint?.port || ""));
+  const [newPublishedPort, setNewPublishedPort] = useState(String(target?.port_mapping?.published_port || ""));
+  const [newContainerPort, setNewContainerPort] = useState(String(target?.port_mapping?.container_port || ""));
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [locallySubmitting, setLocallySubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const eligibility = systemUpdatePortReconfigureEligibility({ target, updater, node, latestJob, requestState });
+  const hiddenReasons = new Set([
+    "unsupported_target",
+    "unsupported_transport",
+  ]);
+  if (
+    hiddenReasons.has(eligibility.reason)
+    || (eligibility.reason === "port_contract_unavailable" && (!target || !updater))
+  ) return null;
+
+  const dockerMode = eligibility.deploymentMode === "docker";
+  const parsedPort = Number(newPort);
+  const parsedAdvertisedPort = Number(newAdvertisedPort);
+  const parsedPublishedPort = Number(newPublishedPort);
+  const parsedContainerPort = Number(newContainerPort);
+  const validPort = validPortInput(newPort, 1024);
+  const validAdvertisedPort = validPortInput(newAdvertisedPort, 1);
+  const validPublishedPort = validPortInput(newPublishedPort, 1024);
+  const validContainerPort = validPortInput(newContainerPort, 1024);
+  const validDockerPorts = validAdvertisedPort && validPublishedPort && validContainerPort;
+  const unchanged = dockerMode
+    ? validDockerPorts
+      && parsedAdvertisedPort === eligibility.dockerMapping?.advertised_port
+      && parsedPublishedPort === eligibility.dockerMapping?.published_port
+      && parsedContainerPort === eligibility.dockerMapping?.container_port
+    : validPort && parsedPort === eligibility.currentPort;
+  const reason = !canExecute
+    ? "permission_denied"
+    : !eligibility.ready
+      ? eligibility.reason
+      : dockerMode && !advancedOpen
+        ? "advanced_mode_required"
+      : dockerMode && !validAdvertisedPort
+        ? "invalid_advertised_port"
+      : dockerMode && !validPublishedPort
+        ? "invalid_published_port"
+      : dockerMode && !validContainerPort
+        ? "invalid_container_port"
+      : !dockerMode && !validPort
+        ? "invalid_service_port"
+        : unchanged
+          ? "port_unchanged"
+          : "";
+  const submitting = requestState === "pending" || locallySubmitting;
+  const ready = canExecute
+    && eligibility.ready
+    && (dockerMode ? advancedOpen && validDockerPorts : validPort)
+    && !unchanged
+    && !submitting;
+  const reasonMessage = portReconfigureReasonMessage(reason);
+  const operationResult = latestJob?.operation === "port_reconfigure"
+    ? systemUpdatePortReconfigureResultLabel(latestJob.port_reconfigure?.result)
+    : "";
+
+  const confirm = async () => {
+    if (
+      !ready
+      || submittingRef.current
+      || !target
+      || eligibility.currentPort === undefined
+      || eligibility.endpointRevision === undefined
+    ) return;
+    const idempotencyKey = newIdempotencyKey(`port-${target.target_id}`);
+    const request = dockerMode && eligibility.dockerMapping
+      ? systemUpdateDockerPortReconfigureRequest({
+          targetID: target.target_id,
+          currentMapping: eligibility.dockerMapping,
+          newAdvertisedPort: parsedAdvertisedPort,
+          newPublishedPort: parsedPublishedPort,
+          newContainerPort: parsedContainerPort,
+          expectedEndpointRevision: eligibility.endpointRevision,
+          idempotencyKey,
+        })
+      : systemUpdatePortReconfigureRequest({
+          targetID: target.target_id,
+          currentPort: eligibility.currentPort,
+          newPort: parsedPort,
+          expectedEndpointRevision: eligibility.endpointRevision,
+          idempotencyKey,
+        });
+    submittingRef.current = true;
+    setLocallySubmitting(true);
+    setConfirmationOpen(false);
+    try {
+      await onRequest(request);
+    } finally {
+      submittingRef.current = false;
+      setLocallySubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 space-y-2 rounded-md border bg-background/70 p-3">
+      <div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-medium">サービスのポート変更</div>
+          {dockerMode ? <Badge variant={dockerPortMappingTone(target?.port_mapping?.state)}>{dockerPortMappingLabel(target?.port_mapping?.state)}</Badge> : null}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          現在適用中: {eligibility.currentPort ?? "未報告"} · endpoint revision {eligibility.endpointRevision ?? "未報告"}
+        </p>
+      </div>
+      {dockerMode ? (
+        <div className="space-y-2 rounded-md border border-blue-200 bg-blue-50/50 p-2 text-xs text-blue-950 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-100">
+          <div className="grid gap-1 sm:grid-cols-3">
+            <PortMappingValue label="広告endpoint" value={formatPort(eligibility.dockerMapping?.advertised_port)} />
+            <PortMappingValue label="localhost公開" value={`${eligibility.dockerMapping?.published_host_ip || "127.0.0.1"}:${formatPort(eligibility.dockerMapping?.published_port)}`} />
+            <PortMappingValue label="container待受" value={formatPort(eligibility.dockerMapping?.container_port)} />
+          </div>
+          <p>
+            Docker published portは127.0.0.1固定です。公開originやreverse proxy設定は自動変更しません。広告endpointを別のportにする場合は、既存proxyの転送先を別途確認してください。
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-expanded={advancedOpen}
+            aria-controls={`${inputID}-advanced`}
+            onClick={() => setAdvancedOpen((open) => !open)}
+            disabled={!canExecute || !eligibility.ready || submitting}
+          >
+            {advancedOpen ? "詳細設定を閉じる" : "Docker詳細設定を開く"}
+          </Button>
+        </div>
+      ) : null}
+      <div id={`${inputID}-advanced`} className={dockerMode && !advancedOpen ? "hidden" : "space-y-2"}>
+        <div className={dockerMode ? "grid gap-2 sm:grid-cols-3" : "flex flex-wrap items-end gap-2"}>
+          {dockerMode ? (
+            <>
+              <PortInput
+                id={advertisedInputID}
+                label="公開endpointポート"
+                help="Control Panelと他サービスへ広告する到達先"
+                value={newAdvertisedPort}
+                onChange={setNewAdvertisedPort}
+                valid={validAdvertisedPort}
+                minimum={1}
+                describedBy={reasonID}
+                disabled={!canExecute || !eligibility.ready || submitting}
+              />
+              <PortInput
+                id={publishedInputID}
+                label="localhost publishedポート"
+                help="Hostの127.0.0.1でDockerが公開するport"
+                value={newPublishedPort}
+                onChange={setNewPublishedPort}
+                valid={validPublishedPort}
+                minimum={1024}
+                describedBy={reasonID}
+                disabled={!canExecute || !eligibility.ready || submitting}
+              />
+              <PortInput
+                id={containerInputID}
+                label="container待受ポート"
+                help="Nodeプロセスがcontainer内でlistenするport"
+                value={newContainerPort}
+                onChange={setNewContainerPort}
+                valid={validContainerPort}
+                minimum={1024}
+                describedBy={reasonID}
+                disabled={!canExecute || !eligibility.ready || submitting}
+              />
+            </>
+          ) : (
+            <div className="min-w-36 flex-1 space-y-1">
+              <label className="text-xs font-medium" htmlFor={inputID}>新しいサービスポート</label>
+              <Input
+                id={inputID}
+                type="number"
+                inputMode="numeric"
+                min={1024}
+                max={65535}
+                step={1}
+                value={newPort}
+                onChange={(event) => setNewPort(event.target.value)}
+                aria-invalid={!validPort}
+                aria-describedby={reasonID}
+                disabled={!canExecute || !eligibility.ready || submitting}
+              />
+            </div>
+          )}
+        </div>
+        <AlertDialog open={confirmationOpen} onOpenChange={setConfirmationOpen}>
+          <AlertDialogTrigger asChild>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!ready}
+              aria-busy={submitting}
+              title={reasonMessage || undefined}
+            >
+              {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
+              ポート変更
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogMedia className="bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"><ShieldAlert /></AlertDialogMedia>
+              <AlertDialogTitle>{target?.name || target?.target_id} のポートを変更しますか？</AlertDialogTitle>
+              <AlertDialogDescription>
+                {dockerMode
+                  ? `広告 ${eligibility.dockerMapping?.advertised_port} → ${parsedAdvertisedPort}、localhost published ${eligibility.dockerMapping?.published_port} → ${parsedPublishedPort}、container待受 ${eligibility.dockerMapping?.container_port} → ${parsedContainerPort} に変更します。reverse proxy設定は変更しません。`
+                  : `現在適用中の ${eligibility.currentPort} から ${parsedPort} へ変更します。`}
+                失敗時は以前のポートへロールバックし、結果を更新履歴とendpoint状態に表示します。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>キャンセル</AlertDialogCancel>
+              <AlertDialogAction onClick={() => void confirm()} disabled={submitting}>ポート変更を開始</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+      <div id={reasonID} className={reason === "request_ambiguous" || reason === "recovery_required" ? "text-xs text-destructive" : "text-xs text-muted-foreground"} role="status" aria-live="polite">
+        {reasonMessage || "変更前に現在のendpoint revisionを固定して送信します。"}
+      </div>
+      {operationResult ? <div className="text-xs font-medium">直近のポート変更結果: {operationResult}</div> : null}
+    </div>
+  );
+}
+
+function PortInput({
+  id,
+  label,
+  help,
+  value,
+  onChange,
+  valid,
+  minimum,
+  describedBy,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  help: string;
+  value: string;
+  onChange: (value: string) => void;
+  valid: boolean;
+  minimum: number;
+  describedBy: string;
+  disabled: boolean;
+}) {
+  const helpID = `${id}-help`;
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-medium" htmlFor={id}>{label}</label>
+      <Input
+        id={id}
+        type="number"
+        inputMode="numeric"
+        min={minimum}
+        max={65535}
+        step={1}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-invalid={!valid}
+        aria-describedby={`${helpID} ${describedBy}`}
+        disabled={disabled}
+      />
+      <p id={helpID} className="text-[11px] leading-4 text-muted-foreground">{help}</p>
+    </div>
+  );
+}
+
+function PortMappingValue({ label, value }: { label: string; value: string }) {
+  return <div><span className="text-muted-foreground">{label}: </span><span className="font-mono">{value}</span></div>;
+}
+
+function validPortInput(value: string, minimum: number) {
+  const parsed = Number(value);
+  return /^[0-9]+$/.test(value.trim()) && Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= 65535;
+}
+
+function formatPort(port?: number) {
+  return Number.isSafeInteger(port) && Number(port) > 0 ? String(port) : "未報告";
+}
+
+function dockerPortMappingLabel(state?: string) {
+  if (state === "applied") return "mapping反映済み";
+  if (state === "drifted") return "mapping差分あり";
+  return "mapping未確認";
+}
+
+function dockerPortMappingTone(state?: string): "default" | "secondary" | "destructive" | "outline" {
+  if (state === "applied") return "default";
+  if (state === "drifted") return "destructive";
+  return "secondary";
+}
+
+function portReconfigureReasonMessage(reason: string) {
+  const messages: Record<string, string> = {
+    permission_denied: "ポート変更には system_updates.execute 権限が必要です。",
+    invalid_service_port: "1024〜65535の整数を入力してください。",
+    invalid_advertised_port: "公開endpointには1〜65535の整数を入力してください。1024未満は既存reverse proxyの公開portとしてのみ使用してください。",
+    invalid_published_port: "localhost publishedポートには1024〜65535の整数を入力してください。",
+    invalid_container_port: "container待受ポートには1024〜65535の整数を入力してください。",
+    port_unchanged: "現在適用中のポートとは異なる値を入力してください。",
+    advanced_mode_required: "Dockerの3つのポートを区別して確認するため、詳細設定を開いてください。",
+    unsupported_deployment: "この配備方式のポート変更は利用できません。",
+    docker_mapping_drifted: "Docker mappingに差分があります。安全な現在値を確認できるまでポート変更を開始できません。",
+    docker_mapping_unavailable: "Host Agentから検証済みDocker mappingが報告されていません。Agent・Executor・Compose設定を更新して再取得してください。",
+    request_pending: "ポート変更要求を送信中です。",
+    request_ambiguous: "前回要求の結果が不明です。履歴で確認できるまで再送しません。",
+    target_busy: "サービスが使用中のためポートを変更できません。",
+    active_job: "このサービスでは別の更新ジョブが進行中です。",
+    recovery_required: "以前の更新結果を復旧・確認中です。",
+    endpoint_recovery: "Endpointをロールバック中です。",
+    endpoint_not_applied: "Endpointが反映済みになるまで変更できません。",
+    updater_not_ready: "Host Agentまたは設定が反映済みになるまで変更できません。",
+    operation_eligibility_unavailable: "Control Panelからポート変更の適格性が報告されていません。APIとHost Agentを更新してから再取得してください。",
+    updater_missing: "このサービスを管理するHost Agentが割り当てられていません。",
+    updater_offline: "Host Agentがオフラインです。Heartbeatを確認してください。",
+    target_unreachable: "Host Agentが対象ホストの到達状態を確認できません。",
+    target_reachability_unknown: "Host Agentによる対象ホストの到達確認を待っています。",
+    updater_policy_pending: "Host Agentが保存済み設定を反映するまで待っています。",
+    updater_policy_failed: "Host Agentが保存済み設定を反映できませんでした。設定画面のエラーを確認してください。",
+    updater_policy_mismatch: "Host Agentの設定revisionが一致していません。反映完了を待ってください。",
+    updater_policy_target_type_mismatch: "サービス種別がHost Agentの対象設定と一致していません。",
+    system_update_target_busy: "サービスが配信処理で使用中のため、ポートを変更できません。",
+    system_update_port_reconfigure_not_ready: "このサービスは現在ポートを変更できません。EndpointとHost Agentの状態を確認してください。",
+    service_port_reserved: "同じホストで指定したポートが既に使用または予約されています。",
+    system_update_endpoint_revision_conflict: "Endpoint revisionが変わりました。Node情報を再取得してください。",
+  };
+  return messages[reason] || (reason ? systemUpdateTargetBlockedReason(reason) : "");
 }
 
 function compareServiceRows(a: WorkerNode, b: WorkerNode) { const type = serviceTypeLabel(a.service_type).localeCompare(serviceTypeLabel(b.service_type), "ja"); return type !== 0 ? type : (a.service_name || a.service_id || "").localeCompare(b.service_name || b.service_id || "", "ja"); }
+function portControlKey(node: WorkerNode, target?: SystemUpdateTarget) {
+  const mapping = target?.port_mapping;
+  return [
+    nodeIdentity(node),
+    node.endpoint_revision || 0,
+    node.applied_endpoint?.port || 0,
+    mapping?.state || "",
+    mapping?.advertised_port || 0,
+    mapping?.published_port || 0,
+    mapping?.container_port || 0,
+    mapping?.config_revision || 0,
+  ].join(":");
+}
 function compareUpdateJobs(a: SystemUpdateJob, b: SystemUpdateJob) { return Date.parse(b.created_at || b.updated_at || "") - Date.parse(a.created_at || a.updated_at || ""); }
 function latestJobsByTarget(jobs: SystemUpdateJob[]) { const result = new Map<string, SystemUpdateJob>(); for (const job of jobs) if (!result.has(job.target_id)) result.set(job.target_id, job); return result; }
-function updateCanStart(target: SystemUpdateTarget, latestJob: SystemUpdateJob | undefined, updaters: SystemUpdateAgentStatus[], hosts: SystemUpdateHostStatus[]) { const eligibleForStrategy = target.eligible || (systemUpdateStrategyForTarget(target) === "when_idle" && target.blocked_reason === "stream_active"); return target.update_available && eligibleForStrategy && systemUpdateConnectivity(target, updaters, hosts).ready && !(latestJob && isSystemUpdateJobActive(latestJob.status)); }
+function updateCanStart(target: SystemUpdateTarget, latestJob: SystemUpdateJob | undefined, updaters: SystemUpdateAgentStatus[], hosts: SystemUpdateHostStatus[]) {
+  const operationEligibility = systemUpdateSoftwareOperationEligibility(target);
+  const eligibleForStrategy = target.eligible || (systemUpdateStrategyForTarget(target) === "when_idle" && target.blocked_reason === "stream_active");
+  return operationEligibility.ready
+    && target.update_available
+    && eligibleForStrategy
+    && systemUpdateConnectivity(target, updaters, hosts).ready
+    && !(latestJob && isSystemUpdateJobActive(latestJob.status));
+}
 function orderBatchTargets(targets: SystemUpdateTarget[]) { return [...targets].sort((a, b) => Number(isControlPanelUpdateTarget(a)) - Number(isControlPanelUpdateTarget(b))); }
 function targetDisplayName(job: SystemUpdateJob, targets: SystemUpdateTarget[]) { return targets.find((target) => target.target_id === job.target_id)?.name || job.target_id; }
 function systemUpdateJobMessage(job: SystemUpdateJob) {
   const fallback = systemUpdateJobStatusLabel(job.status);
   const summary = job.code ? systemUpdateErrorMessage({ code: job.code }, fallback) : fallback;
   const detail = String(job.message || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
-  const lines = [summary];
+  const result = job.operation === "port_reconfigure" ? systemUpdatePortReconfigureResultLabel(job.port_reconfigure?.result) : "";
+  const lines = [result ? `${summary} · ${result}` : summary];
   if (job.code) lines.push(`code: ${job.code}`);
   if (detail && detail !== summary && detail !== fallback && detail !== job.code) lines.push(detail);
   return lines.join("\n");
 }
-function systemUpdateJobDisplayStatus(job: SystemUpdateJob) { return job.status === "queued" && job.strategy === "when_idle" ? "配信終了待ち" : systemUpdateJobStatusLabel(job.status); }
+function systemUpdateJobDisplayStatus(job: SystemUpdateJob) {
+  const status = job.status === "queued" && job.strategy === "when_idle" ? "配信終了待ち" : systemUpdateJobStatusLabel(job.status);
+  const result = job.operation === "port_reconfigure" ? systemUpdatePortReconfigureResultLabel(job.port_reconfigure?.result) : "";
+  return result ? `${status} · ${result}` : status;
+}
+function systemUpdateJobOperationLabel(job: SystemUpdateJob) { return job.operation === "port_reconfigure" ? "ポート変更" : "ソフトウェア更新"; }
+function systemUpdateJobChangeSummary(job: SystemUpdateJob) {
+  if (job.operation === "port_reconfigure") {
+    const docker = job.port_reconfigure?.docker;
+    if (docker) {
+      return `広告 ${job.port_reconfigure?.old_port ?? "-"} → ${job.port_reconfigure?.new_port ?? "-"} / published ${docker.old_published_port} → ${docker.new_published_port} / container ${docker.old_container_port} → ${docker.new_container_port}`;
+    }
+    return `port ${job.port_reconfigure?.old_port ?? "-"} → ${job.port_reconfigure?.new_port ?? "-"}`;
+  }
+  return `${job.current_version || "-"} → ${job.target_version || "-"}`;
+}
 function systemUpdateSucceeded(status?: string) { return ["succeeded", "success", "completed"].includes(String(status || "").toLowerCase()); }
 function selfUpdateTerminalFeedback(job?: SystemUpdateJob): Feedback | null { if (!job || isSystemUpdateJobActive(job.status)) return null; if (systemUpdateSucceeded(job.status)) return { tone: "success", message: "Control Panelの更新が完了しました。新しい管理画面へ再読み込みします。" }; if (["failed", "rolled_back", "cancelled", "canceled"].includes(String(job.status || "").toLowerCase())) return { tone: "error", message: `Control Panelの更新は完了しませんでした。${systemUpdateJobMessage(job)}` }; return null; }
 function newIdempotencyKey(targetID: string) { const random = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2); const safeTargetID = targetID.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 48); return `web-${safeTargetID}-${random}`; }

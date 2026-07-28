@@ -569,6 +569,60 @@ func TestPreparedUpdaterConfigUsesProductionServiceGroup(t *testing.T) {
 	}
 }
 
+func TestPreparedUpdaterConfigSupportsDedicatedHostAgentGroup(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned Host Agent identity policy")
+	}
+	const hostAgentGroup = "autostream-host-agent"
+	group, err := user.LookupGroup(hostAgentGroup)
+	if err != nil {
+		t.Skipf("Host Agent service group is unavailable: %v", err)
+	}
+	wantGID, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "host-agent.json")
+	prepared, err := PrepareManagedIdentityConfig(path, hostAgentGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Abort()
+	identity := UpdaterConfigureIdentity{
+		PanelURL:      "https://panel.example.com",
+		NodeID:        "host-agent-a",
+		RuntimeToken:  "runtime-token",
+		ServiceName:   "Host Agent A",
+		ServiceType:   ServiceTypeUpdateAgent,
+		TransportMode: "pull_v2",
+	}
+	if err := prepared.Commit(identity); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updaterConfigHasInstallOwner(info, wantGID) || info.Mode().Perm() != 0o640 {
+		t.Fatalf("Host Agent identity owner/mode = %#v %o", info.Sys(), info.Mode().Perm())
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil || len(fields) != 4 {
+		t.Fatalf("Host Agent managed identity = %s, %v", payload, err)
+	}
+	if _, exists := fields["transport_mode"]; exists {
+		t.Fatalf("server-owned transport persisted in Host Agent identity: %s", payload)
+	}
+}
+
 func TestPreparedUpdaterConfigRejectsDestinationReplacementCreationAndDeletion(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root-owned updater config policy")

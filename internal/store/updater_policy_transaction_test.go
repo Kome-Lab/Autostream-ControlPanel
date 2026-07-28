@@ -6,10 +6,12 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMariaDBUpdaterPolicyAdminStoreUsesOneTransaction(t *testing.T) {
@@ -75,6 +77,37 @@ func TestMariaDBUpdaterPolicyAdminStoreUsesOneTransaction(t *testing.T) {
 	})
 }
 
+func TestMariaDBSavePullUpdaterPolicyRollsBackPolicyWhenOwnershipWriteFails(t *testing.T) {
+	state := &updaterPolicyAtomicDBState{failOwnershipWrite: true}
+	db := openUpdaterPolicyAtomicTestDB(t, state)
+	policies := NewMariaDBUpdaterPolicyAdminStore(db, "unused-for-pull")
+	updates := NewMariaDBSystemUpdateStore(db)
+
+	_, err := policies.SavePullUpdaterPolicy(
+		t.Context(),
+		updates,
+		"host-agent-a",
+		0,
+		1,
+		validPullUpdaterPolicyForOwnership(),
+	)
+	if err == nil {
+		t.Fatal("forced ownership write failure was accepted")
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.begins != 1 || state.commits != 0 || state.rollbacks != 1 ||
+		state.policyCommitted || state.ownershipCommitted {
+		t.Fatalf("failed pull transaction state = %#v", state)
+	}
+	if !state.policyExecInTransaction || !state.ownershipExecInTransaction {
+		t.Fatalf("pull writes did not share one transaction: %#v", state)
+	}
+	if state.tokenExecInTransaction || state.tokenCiphertextCommitted != "" {
+		t.Fatalf("pull save accessed release-token persistence: %#v", state)
+	}
+}
+
 var updaterPolicyAtomicDriverSequence atomic.Uint64
 
 func openUpdaterPolicyAtomicTestDB(t *testing.T, state *updaterPolicyAtomicDBState) *sql.DB {
@@ -90,15 +123,18 @@ func openUpdaterPolicyAtomicTestDB(t *testing.T, state *updaterPolicyAtomicDBSta
 }
 
 type updaterPolicyAtomicDBState struct {
-	mu                       sync.Mutex
-	failTokenWrite           bool
-	begins                   int
-	commits                  int
-	rollbacks                int
-	policyExecInTransaction  bool
-	tokenExecInTransaction   bool
-	policyCommitted          bool
-	tokenCiphertextCommitted string
+	mu                         sync.Mutex
+	failTokenWrite             bool
+	failOwnershipWrite         bool
+	begins                     int
+	commits                    int
+	rollbacks                  int
+	policyExecInTransaction    bool
+	tokenExecInTransaction     bool
+	ownershipExecInTransaction bool
+	policyCommitted            bool
+	ownershipCommitted         bool
+	tokenCiphertextCommitted   string
 }
 
 type updaterPolicyAtomicDriver struct {
@@ -113,6 +149,7 @@ type updaterPolicyAtomicConn struct {
 	state            *updaterPolicyAtomicDBState
 	inTransaction    bool
 	stagedPolicy     bool
+	stagedOwnership  bool
 	stagedCiphertext string
 }
 
@@ -137,6 +174,7 @@ func (c *updaterPolicyAtomicConn) BeginTx(ctx context.Context, _ driver.TxOption
 	c.state.begins++
 	c.inTransaction = true
 	c.stagedPolicy = false
+	c.stagedOwnership = false
 	c.stagedCiphertext = ""
 	return &updaterPolicyAtomicTx{conn: c}, nil
 }
@@ -166,9 +204,84 @@ func (c *updaterPolicyAtomicConn) ExecContext(ctx context.Context, query string,
 		}
 		c.stagedCiphertext = ciphertext
 		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "UPDATE system_update_execution_hosts"):
+		c.state.ownershipExecInTransaction = c.inTransaction
+		if c.state.failOwnershipWrite {
+			return nil, errors.New("forced execution-host ownership write failure")
+		}
+		c.stagedOwnership = true
+		return driver.RowsAffected(1), nil
 	default:
 		return nil, fmt.Errorf("unexpected SQL: %s", query)
 	}
+}
+
+func (c *updaterPolicyAtomicConn) QueryContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch {
+	case strings.Contains(query, "FROM system_update_execution_hosts"):
+		now := time.Now().UTC()
+		return &updaterPolicyAtomicRows{
+			columns: []string{
+				"execution_host_id",
+				"transport_mode",
+				"agent_service_id",
+				"legacy_agent_service_id",
+				"ownership_epoch",
+				"policy_revision",
+				"created_at",
+				"updated_at",
+			},
+			values: [][]driver.Value{{
+				"host-a",
+				SystemUpdateTransportPullV2,
+				"host-agent-a",
+				"central-updater",
+				int64(1),
+				int64(0),
+				now,
+				now,
+			}},
+		}, nil
+	case strings.Contains(query, "FROM system_update_jobs"):
+		return &updaterPolicyAtomicRows{columns: []string{"id"}}, nil
+	case strings.Contains(query, "FROM system_update_runtime_token_rotations"):
+		return &updaterPolicyAtomicRows{columns: []string{"id"}}, nil
+	case strings.Contains(query, "FROM update_agent_policies"):
+		return &updaterPolicyAtomicRows{columns: []string{
+			"revision",
+			"projection_revision",
+			"local_executor_policy_revision",
+			"policy_json",
+			"updated_at",
+		}}, nil
+	default:
+		return nil, fmt.Errorf("unexpected SQL query: %s", query)
+	}
+}
+
+type updaterPolicyAtomicRows struct {
+	columns []string
+	values  [][]driver.Value
+}
+
+func (r *updaterPolicyAtomicRows) Columns() []string {
+	return r.columns
+}
+
+func (r *updaterPolicyAtomicRows) Close() error {
+	return nil
+}
+
+func (r *updaterPolicyAtomicRows) Next(dest []driver.Value) error {
+	if len(r.values) == 0 {
+		return io.EOF
+	}
+	copy(dest, r.values[0])
+	r.values = r.values[1:]
+	return nil
 }
 
 type updaterPolicyAtomicTx struct {
@@ -180,6 +293,7 @@ func (tx *updaterPolicyAtomicTx) Commit() error {
 	defer tx.conn.state.mu.Unlock()
 	tx.conn.state.commits++
 	tx.conn.state.policyCommitted = tx.conn.stagedPolicy
+	tx.conn.state.ownershipCommitted = tx.conn.stagedOwnership
 	tx.conn.state.tokenCiphertextCommitted = tx.conn.stagedCiphertext
 	tx.conn.inTransaction = false
 	return nil
@@ -190,6 +304,7 @@ func (tx *updaterPolicyAtomicTx) Rollback() error {
 	defer tx.conn.state.mu.Unlock()
 	tx.conn.state.rollbacks++
 	tx.conn.stagedPolicy = false
+	tx.conn.stagedOwnership = false
 	tx.conn.stagedCiphertext = ""
 	tx.conn.inTransaction = false
 	return nil

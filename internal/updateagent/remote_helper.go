@@ -17,12 +17,18 @@ import (
 )
 
 type remoteHelperRuntime struct {
-	runner        CommandRunner
-	httpClient    *http.Client
-	helperVersion string
-	platformOS    string
-	platformArch  string
-	consumeGrant  func(context.Context, string, string, string, MutationGrantBinding, *http.Client) error
+	runner                      CommandRunner
+	httpClient                  *http.Client
+	helperVersion               string
+	platformOS                  string
+	platformArch                string
+	ownershipEpoch              int64
+	policyRevision              int64
+	transportMode               string
+	publicArtifactsOnly         bool
+	localStateDir               string
+	consumeGrant                func(context.Context, string, string, string, MutationGrantBinding, *http.Client) error
+	dockerPortCrashPointForTest func(string) error
 }
 
 func defaultRemoteHelperRuntime() remoteHelperRuntime {
@@ -367,7 +373,10 @@ func prepareRemoteStage(ctx context.Context, cfg HelperConfig, target Target, pl
 			_ = os.RemoveAll(partial)
 		}
 	}()
-	downloader := ReleaseDownloader{Client: rt.httpClient, Token: releaseToken.Reveal()}
+	downloader := ReleaseDownloader{
+		Client: rt.httpClient, Token: releaseToken.Reveal(),
+		TrustedPublicOnly: rt.publicArtifactsOnly,
+	}
 	var stage remoteStage
 	switch target.DeploymentMode {
 	case ModeSystemd:
@@ -511,8 +520,8 @@ func validateRemoteStage(cfg HelperConfig, target Target, plan RemotePlan, stage
 
 func preflightRemoteSystemdStage(ctx context.Context, target Target, plan RemotePlan, artifactRoot string, stage *remoteStage, runner CommandRunner) error {
 	systemd := target.Systemd
-	resolved, err := filepath.EvalSymlinks(artifactRoot)
-	if err != nil || !filepath.IsAbs(resolved) {
+	resolved, err := resolveRemoteArtifactRoot(artifactRoot)
+	if err != nil {
 		return errors.New("staged systemd artifact path is invalid")
 	}
 	if err := VerifyInnerChecksums(resolved); err != nil {
@@ -566,6 +575,26 @@ func preflightRemoteSystemdStage(ctx context.Context, target Target, plan Remote
 	stage.PreviousDigest = normalizeDigest(previousDigest)
 	stage.PreviousVersion = previousVersion
 	return nil
+}
+
+func resolveRemoteArtifactRoot(artifactRoot string) (string, error) {
+	if runtime.GOOS == "windows" {
+		// The privileged helper is Linux-only. Windows executes these pure
+		// planning tests under ACLs where EvalSymlinks can fail even for a
+		// non-link temp directory, so retain the structural non-link check
+		// without weakening the Linux runtime boundary.
+		resolved, err := filepath.Abs(filepath.Clean(artifactRoot))
+		info, statErr := os.Lstat(resolved)
+		if err != nil || statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("artifact root is unavailable")
+		}
+		return resolved, nil
+	}
+	resolved, err := filepath.EvalSymlinks(artifactRoot)
+	if err != nil || !filepath.IsAbs(resolved) {
+		return "", errors.New("artifact root is unavailable")
+	}
+	return resolved, nil
 }
 
 func applyRemoteStagedSystemd(ctx context.Context, target Target, plan ApplyPlan, stage remoteStage, runner CommandRunner, mutationGate func(context.Context) error) (ApplyResult, error) {
@@ -817,8 +846,10 @@ func remoteMutationRequest(ctx context.Context, cfg HelperConfig, target Target,
 		}
 		binding := MutationGrantBinding{
 			LeaseGeneration: plan.LeaseGeneration, HostID: plan.HostID, TargetID: plan.TargetID,
-			TargetVersion: plan.TargetVersion, DeploymentMode: plan.DeploymentMode,
+			TransportMode: rt.transportMode,
+			ServiceType:   plan.ServiceType, TargetVersion: plan.TargetVersion, DeploymentMode: plan.DeploymentMode,
 			Operation: operation, PlanSHA256: plan.PlanSHA256, SessionID: plan.SessionID,
+			OwnershipEpoch: rt.ownershipEpoch, PolicyRevision: rt.policyRevision,
 		}
 		consumeCtx, cancel := context.WithTimeout(gateCtx, remaining)
 		defer cancel()

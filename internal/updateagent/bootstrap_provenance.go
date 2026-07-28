@@ -28,6 +28,7 @@ const (
 	updateHostBootstrapRepositoryID      = int64(1277646977)
 	updateHostBootstrapRepositoryOwnerID = "94940953"
 	updateHostBootstrapWorkflowPath      = ".github/workflows/release-host.yml"
+	hostAgentManifestName                = "host-agent-manifest.json"
 	updateHostBootstrapSLSAPredicateType = "https://slsa.dev/provenance/v1"
 	updateHostBootstrapBuildType         = "https://actions.github.io/buildtypes/workflow/v1"
 	updateHostBootstrapActionsIssuer     = "https://token.actions.githubusercontent.com"
@@ -57,6 +58,8 @@ type bootstrapProvenanceVerifier interface {
 }
 
 type sigstoreBootstrapProvenanceVerifier struct{}
+
+type sigstoreHostAgentProvenanceVerifier struct{}
 
 type updateHostBootstrapAttestationList struct {
 	Attestations []updateHostBootstrapAttestation `json:"attestations"`
@@ -128,6 +131,41 @@ func (sigstoreBootstrapProvenanceVerifier) Verify(
 	manifestDigest string,
 	tagCommit string,
 ) error {
+	return verifyTrustedReleaseManifestProvenance(
+		ctx,
+		downloader,
+		updateHostBootstrapManifestName,
+		version,
+		manifestDigest,
+		tagCommit,
+	)
+}
+
+func (sigstoreHostAgentProvenanceVerifier) Verify(
+	ctx context.Context,
+	downloader ReleaseDownloader,
+	version string,
+	manifestDigest string,
+	tagCommit string,
+) error {
+	return verifyTrustedReleaseManifestProvenance(
+		ctx,
+		downloader,
+		hostAgentManifestName,
+		version,
+		manifestDigest,
+		tagCommit,
+	)
+}
+
+func verifyTrustedReleaseManifestProvenance(
+	ctx context.Context,
+	downloader ReleaseDownloader,
+	manifestName string,
+	version string,
+	manifestDigest string,
+	tagCommit string,
+) error {
 	var cancel context.CancelFunc
 	var err error
 	ctx, cancel, err = newUpdateHostBootstrapProvenanceContext(ctx)
@@ -136,7 +174,9 @@ func (sigstoreBootstrapProvenanceVerifier) Verify(
 	}
 	defer cancel()
 
-	if !versionPattern.MatchString(version) ||
+	if (manifestName != updateHostBootstrapManifestName &&
+		manifestName != hostAgentManifestName) ||
+		!versionPattern.MatchString(version) ||
 		!updateHostBootstrapCommitPattern.MatchString(tagCommit) ||
 		len(manifestDigest) != 64 ||
 		manifestDigest != strings.ToLower(manifestDigest) {
@@ -204,9 +244,10 @@ func (sigstoreBootstrapProvenanceVerifier) Verify(
 		if err != nil {
 			continue
 		}
-		if err := validateUpdateHostBootstrapProvenanceResult(
+		if err := validateTrustedReleaseManifestProvenanceResult(
 			result,
 			identity,
+			manifestName,
 			version,
 			manifestDigest,
 			tagCommit,
@@ -619,6 +660,24 @@ func validateUpdateHostBootstrapProvenanceResult(
 	manifestDigest string,
 	tagCommit string,
 ) error {
+	return validateTrustedReleaseManifestProvenanceResult(
+		result,
+		identity,
+		updateHostBootstrapManifestName,
+		version,
+		manifestDigest,
+		tagCommit,
+	)
+}
+
+func validateTrustedReleaseManifestProvenanceResult(
+	result *verify.VerificationResult,
+	identity verify.CertificateIdentity,
+	manifestName string,
+	version string,
+	manifestDigest string,
+	tagCommit string,
+) error {
 	if result == nil ||
 		result.Statement == nil ||
 		result.Signature == nil ||
@@ -644,7 +703,7 @@ func validateUpdateHostBootstrapProvenanceResult(
 	if statement.Type != "https://in-toto.io/Statement/v1" ||
 		statement.PredicateType != updateHostBootstrapSLSAPredicateType ||
 		len(statement.Subject) != 1 ||
-		statement.Subject[0].Name != updateHostBootstrapManifestName ||
+		statement.Subject[0].Name != manifestName ||
 		statement.Subject[0].Digest["sha256"] != manifestDigest ||
 		statement.Predicate.BuildDefinition.BuildType != updateHostBootstrapBuildType ||
 		statement.Predicate.BuildDefinition.ExternalParameters.Workflow.Ref != expectedRef ||

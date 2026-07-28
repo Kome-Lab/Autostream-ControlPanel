@@ -11675,9 +11675,270 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	}
 }
 
+func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "secrets.update", "system_updates.execute"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"update_agent","node_id":"host-agent-a","name":"Host Agent A","transport_mode":"pull_v2","execution_host_id":"host-a"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create endpointless pull agent status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	var body struct {
+		Node              store.RegisteredService `json:"node"`
+		RuntimeToken      string                  `json:"runtime_token"`
+		ConfigureToken    string                  `json:"configure_token"`
+		ConfigureCommand  string                  `json:"configure_command"`
+		ConfigurationPath string                  `json:"configuration_path"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Node.TransportMode != "pull_v2" || body.Node.ExecutionHostID != "host-a" || body.Node.OwnershipEpoch != 0 {
+		t.Fatalf("unexpected pull agent binding: %#v", body.Node)
+	}
+	if body.Node.Host != "" || body.Node.Port != 0 || body.Node.PublicURL != "" || body.Node.AppliedEndpoint != nil {
+		t.Fatalf("pull agent unexpectedly has an inbound endpoint: %#v", body.Node)
+	}
+	wantConfigureCommand := "sudo /usr/local/bin/autostream-host-agent configure --panel-url 'http://example.com' --node 'host-agent-a' --config '/etc/autostream-host-agent/identity.json'"
+	if body.ConfigureCommand != wantConfigureCommand ||
+		body.ConfigurationPath != "/etc/autostream-host-agent/identity.json" {
+		t.Fatalf("pull agent configure metadata = %#v", body)
+	}
+	for _, forbidden := range []string{`"host":`, `"port":`, `"public_url":`} {
+		if strings.Contains(res.Body.String(), forbidden) {
+			t.Fatalf("endpointless pull agent response contains %s: %s", forbidden, res.Body.String())
+		}
+	}
+
+	for name, payload := range map[string]string{
+		"execution host value":  `{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","execution_host_id":"host-a","version":"v2.0.0"}`,
+		"execution host empty":  `{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","execution_host_id":"","version":"v2.0.0"}`,
+		"execution host null":   `{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","execution_host_id":null,"version":"v2.0.0"}`,
+		"ownership epoch value": `{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","ownership_epoch":1,"version":"v2.0.0"}`,
+		"ownership epoch zero":  `{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","ownership_epoch":0,"version":"v2.0.0"}`,
+		"ownership epoch null":  `{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","ownership_epoch":null,"version":"v2.0.0"}`,
+	} {
+		registerReq := httptest.NewRequest(http.MethodPost, "/services/register", bytes.NewBufferString(payload))
+		registerReq.Header.Set("Authorization", "Bearer "+body.RuntimeToken)
+		registerRes := httptest.NewRecorder()
+		handler.ServeHTTP(registerRes, registerReq)
+		if registerRes.Code != http.StatusBadRequest ||
+			!strings.Contains(registerRes.Body.String(), `"code":"invalid_service_registration"`) {
+			t.Fatalf("runtime pull %s self-claim status = %d body = %s", name, registerRes.Code, registerRes.Body.String())
+		}
+	}
+	pending, err := auth.GetService(t.Context(), "host-agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status != "pending" ||
+		pending.ExecutionHostID != "host-a" ||
+		pending.OwnershipEpoch != 0 {
+		t.Fatalf("runtime binding self-claim mutated precreated service: %#v", pending)
+	}
+
+	registerReq := httptest.NewRequest(http.MethodPost, "/services/register", bytes.NewBufferString(`{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","version":"v2.0.0","capabilities":{"agent_protocol_version":2,"observe_only":true}}`))
+	registerReq.Header.Set("Authorization", "Bearer "+body.RuntimeToken)
+	registerRes := httptest.NewRecorder()
+	handler.ServeHTTP(registerRes, registerReq)
+	if registerRes.Code != http.StatusAccepted {
+		t.Fatalf("register endpointless pull agent status = %d body = %s", registerRes.Code, registerRes.Body.String())
+	}
+	var registered store.RegisteredService
+	if err := json.NewDecoder(registerRes.Body).Decode(&registered); err != nil {
+		t.Fatal(err)
+	}
+	if registered.TransportMode != "pull_v2" || registered.ExecutionHostID != "host-a" || registered.OwnershipEpoch != 0 {
+		t.Fatalf("server-owned pull binding was not restored: %#v", registered)
+	}
+	if registered.Host != "" || registered.Port != 0 || registered.PublicURL != "" {
+		t.Fatalf("endpointless registration gained an inbound endpoint: %#v", registered)
+	}
+
+	configurationReq := httptest.NewRequest(http.MethodGet, "/nodes/host-agent-a/configuration", nil)
+	configurationReq.AddCookie(cookie)
+	configurationRes := httptest.NewRecorder()
+	handler.ServeHTTP(configurationRes, configurationReq)
+	if configurationRes.Code != http.StatusOK {
+		t.Fatalf("get pull agent configuration status = %d body = %s", configurationRes.Code, configurationRes.Body.String())
+	}
+	var configurationBody map[string]json.RawMessage
+	if err := json.Unmarshal(configurationRes.Body.Bytes(), &configurationBody); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := configurationBody["node_api_url"]; exists {
+		t.Fatalf("pull agent configuration exposed an inbound API URL: %s", configurationRes.Body.String())
+	}
+	var configurationPath string
+	if err := json.Unmarshal(configurationBody["configuration_path"], &configurationPath); err != nil {
+		t.Fatal(err)
+	}
+	if configurationPath != "/etc/autostream-host-agent/identity.json" {
+		t.Fatalf("pull agent configuration path = %q", configurationPath)
+	}
+
+	regenerateReq := httptest.NewRequest(http.MethodPost, "/nodes/host-agent-a/configure-token", nil)
+	regenerateReq.AddCookie(cookie)
+	regenerateReq.Header.Set("X-CSRF-Token", csrf)
+	regenerateRes := httptest.NewRecorder()
+	handler.ServeHTTP(regenerateRes, regenerateReq)
+	if regenerateRes.Code != http.StatusCreated {
+		t.Fatalf("regenerate pull configure token status = %d body = %s", regenerateRes.Code, regenerateRes.Body.String())
+	}
+	var regenerated struct {
+		ConfigureToken    string `json:"configure_token"`
+		ConfigureCommand  string `json:"configure_command"`
+		ConfigurationPath string `json:"configuration_path"`
+	}
+	if err := json.NewDecoder(regenerateRes.Body).Decode(&regenerated); err != nil {
+		t.Fatal(err)
+	}
+	if regenerated.ConfigureToken == "" ||
+		regenerated.ConfigureCommand != wantConfigureCommand ||
+		regenerated.ConfigurationPath != "/etc/autostream-host-agent/identity.json" {
+		t.Fatalf("regenerated pull configure metadata = %#v", regenerated)
+	}
+
+	stageReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/node-agent/configure/stage",
+		strings.NewReader(`{"nodeId":"host-agent-a","configureToken":"`+regenerated.ConfigureToken+`"}`),
+	)
+	stageRes := httptest.NewRecorder()
+	handler.ServeHTTP(stageRes, stageReq)
+	if stageRes.Code != http.StatusConflict ||
+		!strings.Contains(stageRes.Body.String(), `"code":"host_agent_configure_protocol_required"`) {
+		t.Fatalf(
+			"legacy pull configure did not fail closed: status=%d body=%s",
+			stageRes.Code,
+			stageRes.Body.String(),
+		)
+	}
+	unconsumed, err := auth.GetService(t.Context(), "host-agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unconsumed.ConfigureTokenUsedAt != nil || unconsumed.StagedNodeTokenID != "" {
+		t.Fatalf("protocol rejection consumed or staged credentials: %#v", unconsumed)
+	}
+
+	beforeRotation, err := auth.GetService(t.Context(), "host-agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRotationTokens, err := auth.ListServiceTokens(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotateReq := httptest.NewRequest(http.MethodPost, "/nodes/host-agent-a/rotate-token", nil)
+	rotateReq.AddCookie(cookie)
+	rotateReq.Header.Set("X-CSRF-Token", csrf)
+	rotateRes := httptest.NewRecorder()
+	handler.ServeHTTP(rotateRes, rotateReq)
+	if rotateRes.Code != http.StatusConflict ||
+		!strings.Contains(rotateRes.Body.String(), `"code":"staged_runtime_token_rotation_required"`) {
+		t.Fatalf("rotate pull runtime token status = %d body = %s", rotateRes.Code, rotateRes.Body.String())
+	}
+	afterRotation, err := auth.GetService(t.Context(), "host-agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRotationTokens, err := auth.ListServiceTokens(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRotation.TokenID != beforeRotation.TokenID ||
+		afterRotation.StagedNodeTokenID != beforeRotation.StagedNodeTokenID ||
+		afterRotation.NodeTokenRotatedAt == nil ||
+		beforeRotation.NodeTokenRotatedAt == nil ||
+		!afterRotation.NodeTokenRotatedAt.Equal(*beforeRotation.NodeTokenRotatedAt) {
+		t.Fatalf("rejected pull runtime rotation mutated service:\nbefore=%#v\nafter=%#v", beforeRotation, afterRotation)
+	}
+	if len(afterRotationTokens) != len(beforeRotationTokens) {
+		t.Fatalf("rejected pull runtime rotation changed token count: before=%d after=%d", len(beforeRotationTokens), len(afterRotationTokens))
+	}
+
+	editReq := httptest.NewRequest(http.MethodPut, "/nodes/host-agent-a", bytes.NewBufferString(`{"service_name":"Host Agent A Updated","description":"Portless agent"}`))
+	editReq.AddCookie(cookie)
+	editReq.Header.Set("X-CSRF-Token", csrf)
+	editRes := httptest.NewRecorder()
+	handler.ServeHTTP(editRes, editReq)
+	if editRes.Code != http.StatusOK {
+		t.Fatalf("edit endpointless pull agent status = %d body = %s", editRes.Code, editRes.Body.String())
+	}
+	if strings.Contains(editRes.Body.String(), `"host":`) || strings.Contains(editRes.Body.String(), `"port":`) {
+		t.Fatalf("editing endpointless pull agent added an endpoint: %s", editRes.Body.String())
+	}
+}
+
+func TestCreateNodeRegistrationTokenRejectsEndpointOnPullAgent(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "secrets.update", "system_updates.execute"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"update_agent","node_id":"host-agent-a","name":"Host Agent A","transport_mode":"pull_v2","execution_host_id":"host-a","host":"127.0.0.1","port":8090}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_node_endpoint") {
+		t.Fatalf("pull agent with endpoint status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestCreateNodeRegistrationTokenRejectsPullBindingSelfClaim(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "secrets.update", "system_updates.execute"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	for name, payload := range map[string]string{
+		"missing execution host": `{"node_type":"update_agent","node_id":"host-agent-missing-host","name":"Host Agent","transport_mode":"pull_v2"}`,
+		"ownership epoch":        `{"node_type":"update_agent","node_id":"host-agent-owned","name":"Host Agent","transport_mode":"pull_v2","execution_host_id":"host-a","ownership_epoch":7}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(payload))
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest ||
+				!strings.Contains(res.Body.String(), `"code":"invalid_node_registration"`) {
+				t.Fatalf("pull binding self-claim status = %d body = %s", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
 func TestNodeConfigureCommandUsesPOSIXShellQuoting(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.com/it's/$(touch pwn)")
-	command := nodeConfigureCommand(nil, "update_agent", "updater'$(touch pwn)`id`", "ast_cfg_secret'$(touch token)", "/etc/autostream/updater'config.json")
+	command := nodeConfigureCommand(
+		nil,
+		store.RegisteredService{
+			ServiceID:     "updater'$(touch pwn)`id`",
+			ServiceType:   "update_agent",
+			TransportMode: store.SystemUpdateTransportSSHV1,
+		},
+		"ast_cfg_secret'$(touch token)",
+		"/etc/autostream/updater'config.json",
+	)
 	for _, quoted := range []string{
 		posixShellQuote("https://panel.example.com/it's/$(touch pwn)"),
 		posixShellQuote("updater'$(touch pwn)`id`"),
@@ -12485,6 +12746,34 @@ func TestServiceRegisterRejectsWrongServiceType(t *testing.T) {
 	}
 	if failureAudit == nil || failureAudit.ResourceID != "discord-01" || failureAudit.Metadata["reason"] != "service_token_scope_mismatch" || failureAudit.ActorUsername != "worker" {
 		t.Fatalf("service register failure audit missing: %#v", auth.AuditEvents())
+	}
+}
+
+func TestServiceRegisterPreservesReservedBindingValidationForNonUpdateAgents(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+	token := createBoundServiceTokenForTest(t, handler, cookie, csrf, "worker", "worker-reserved-binding", []string{"service.register"})
+
+	for name, field := range map[string]string{
+		"execution host":  `"execution_host_id":"attacker-host"`,
+		"ownership epoch": `"ownership_epoch":7`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := `{"service_id":"worker-reserved-binding","service_type":"worker","service_name":"Worker","public_url":"https://worker.example.com","version":"0.1.0","capabilities":{},` + field + `}`
+			registerReq := httptest.NewRequest(http.MethodPost, "/services/register", bytes.NewBufferString(payload))
+			registerReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+			registerRes := httptest.NewRecorder()
+			handler.ServeHTTP(registerRes, registerReq)
+
+			if registerRes.Code != http.StatusBadRequest ||
+				!strings.Contains(registerRes.Body.String(), `"code":"invalid_service_registration"`) {
+				t.Fatalf("reserved binding field status = %d body = %s", registerRes.Code, registerRes.Body.String())
+			}
+		})
 	}
 }
 
@@ -13721,12 +14010,15 @@ func TestVersionEndpointShowsBuildInfoAndUpdate(t *testing.T) {
 	}
 }
 
-func TestUpdaterVersionEndpointIsUnauthenticatedAndMinimal(t *testing.T) {
-	previousVersion := version.Version
-	version.Version = "v1.7.1"
+func TestUpdaterVersionEndpointIsUnauthenticatedAndBoundedIdentity(t *testing.T) {
+	previousVersion, previousCommit, previousBuildDate := version.Version, version.Commit, version.BuildDate
+	version.Version, version.Commit, version.BuildDate = "v1.7.1", "forbidden-commit", "forbidden-build-date"
 	t.Setenv("SERVICE_VERSION", "from-environment")
+	t.Setenv("SERVICE_ID", "control-panel-primary")
+	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "7")
+	t.Setenv("AUTOSTREAM_SECRET", "must-not-be-exposed")
 	t.Cleanup(func() {
-		version.Version = previousVersion
+		version.Version, version.Commit, version.BuildDate = previousVersion, previousCommit, previousBuildDate
 	})
 
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(store.NewMemoryAuthStore()))
@@ -13744,8 +14036,22 @@ func TestUpdaterVersionEndpointIsUnauthenticatedAndMinimal(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode updater version response: %v", err)
 	}
-	if len(payload) != 1 || payload["version"] != "v1.7.1" {
+	if len(payload) != 4 ||
+		payload["version"] != "v1.7.1" ||
+		payload["service_id"] != "control-panel-primary" ||
+		payload["service_type"] != "control_panel" ||
+		payload["config_revision"] != float64(7) {
 		t.Fatalf("unexpected updater version response: %#v", payload)
+	}
+	for _, forbidden := range []string{
+		"from-environment",
+		"must-not-be-exposed",
+		version.Commit,
+		version.BuildDate,
+	} {
+		if forbidden != "" && strings.Contains(res.Body.String(), forbidden) {
+			t.Fatalf("updater version response exposed forbidden value %q: %s", forbidden, res.Body.String())
+		}
 	}
 
 	protectedReq := httptest.NewRequest(http.MethodGet, "/version", nil)
@@ -13753,6 +14059,62 @@ func TestUpdaterVersionEndpointIsUnauthenticatedAndMinimal(t *testing.T) {
 	handler.ServeHTTP(protectedRes, protectedReq)
 	if protectedRes.Code != http.StatusUnauthorized {
 		t.Fatalf("authenticated application version status = %d body = %s", protectedRes.Code, protectedRes.Body.String())
+	}
+}
+
+func TestUpdaterVersionEndpointDefaultsIdentityAndRejectsInvalidConfigRevision(t *testing.T) {
+	previousVersion := version.Version
+	version.Version = "v1.7.1"
+	t.Cleanup(func() {
+		version.Version = previousVersion
+	})
+
+	t.Run("defaults", func(t *testing.T) {
+		t.Setenv("SERVICE_ID", "")
+		t.Setenv("AUTOSTREAM_CONFIG_REVISION", "")
+		handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(store.NewMemoryAuthStore()))
+		req := httptest.NewRequest(http.MethodGet, "/updater/version", nil)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+
+		if res.Code != http.StatusOK {
+			t.Fatalf("updater version status = %d body = %s", res.Code, res.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode updater version response: %v", err)
+		}
+		if len(payload) != 4 ||
+			payload["service_id"] != "control-panel" ||
+			payload["service_type"] != "control_panel" ||
+			payload["config_revision"] != float64(1) {
+			t.Fatalf("unexpected default updater identity: %#v", payload)
+		}
+	})
+
+	for _, revision := range []string{"0", "-1", "+1", "01", "1.5", " 2 ", "9223372036854775808"} {
+		t.Run("invalid_"+strings.NewReplacer("-", "minus", "+", "plus", ".", "_", " ", "_").Replace(revision), func(t *testing.T) {
+			t.Setenv("SERVICE_ID", "control-panel")
+			t.Setenv("AUTOSTREAM_CONFIG_REVISION", revision)
+			handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(store.NewMemoryAuthStore()))
+			req := httptest.NewRequest(http.MethodGet, "/updater/version", nil)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+
+			if res.Code != http.StatusInternalServerError {
+				t.Fatalf("invalid config revision %q status = %d body = %s", revision, res.Code, res.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode invalid config revision response: %v", err)
+			}
+			if len(payload) != 1 || payload["code"] != "invalid_service_config_revision" {
+				t.Fatalf("invalid config revision response exposed unbounded details: %#v", payload)
+			}
+			if strings.Contains(res.Body.String(), revision) {
+				t.Fatalf("invalid config revision response echoed configuration value %q: %s", revision, res.Body.String())
+			}
+		})
 	}
 }
 

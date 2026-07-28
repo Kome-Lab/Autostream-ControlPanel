@@ -108,6 +108,63 @@ func TestMemoryUpdaterPolicyStoreListsByUpdaterID(t *testing.T) {
 	}
 }
 
+func TestNormalizeUpdaterPolicyCanonicalizesTargetServiceID(t *testing.T) {
+	t.Parallel()
+
+	legacy := validUpdaterPolicy()
+	normalizedLegacy, err := normalizeUpdaterPolicy("updater-01", legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalizedLegacy.Targets[0].ServiceID != normalizedLegacy.Targets[0].TargetID {
+		t.Fatalf("legacy target service_id = %q, want target_id %q", normalizedLegacy.Targets[0].ServiceID, normalizedLegacy.Targets[0].TargetID)
+	}
+
+	explicit := validUpdaterPolicy()
+	explicit.Targets[0].ServiceID = " worker-service-a "
+	normalizedExplicit, err := normalizeUpdaterPolicy("updater-01", explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalizedExplicit.Targets[0].ServiceID != "worker-service-a" {
+		t.Fatalf("explicit target service_id = %q, want worker-service-a", normalizedExplicit.Targets[0].ServiceID)
+	}
+}
+
+func TestDecodeUpdaterPolicyDefaultsMissingTargetServiceID(t *testing.T) {
+	t.Parallel()
+
+	body, err := json.Marshal(validUpdaterPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(body, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	targets, ok := legacy["targets"].([]any)
+	if !ok || len(targets) != 1 {
+		t.Fatalf("legacy targets = %#v", legacy["targets"])
+	}
+	target, ok := targets[0].(map[string]any)
+	if !ok {
+		t.Fatalf("legacy target = %#v", targets[0])
+	}
+	delete(target, "service_id")
+	body, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decoded, err := decodeUpdaterPolicy("updater-01", 1, body, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Targets[0].ServiceID != decoded.Targets[0].TargetID {
+		t.Fatalf("decoded legacy target service_id = %q, want target_id %q", decoded.Targets[0].ServiceID, decoded.Targets[0].TargetID)
+	}
+}
+
 func TestMemoryUpdaterPolicyStoreAllowsOnlyOneSavePerRevision(t *testing.T) {
 	t.Parallel()
 
@@ -188,6 +245,7 @@ func TestNormalizeUpdaterPolicyRejectsUnsafeOrIncompleteInput(t *testing.T) {
 			p.Hosts[0].HostPublicKey = strings.Replace(testUpdaterHostPublicKey, " ", "  ", 1)
 		}},
 		{name: "unknown target host", edit: func(p *UpdaterPolicy) { p.Targets[0].HostID = "host-b" }},
+		{name: "invalid target service ID", edit: func(p *UpdaterPolicy) { p.Targets[0].ServiceID = "../worker" }},
 		{name: "unreferenced host", edit: func(p *UpdaterPolicy) {
 			host := p.Hosts[0]
 			host.HostID = "host-b"
@@ -254,7 +312,7 @@ func TestUpdaterPolicyJSONContainsOnlyDeclarativePublicFields(t *testing.T) {
 	text := string(body)
 	for _, required := range []string{
 		`"updater_id"`, `"revision"`, `"api"`, `"bind_host"`, `"poll_interval_seconds"`,
-		`"heartbeat_interval_seconds"`, `"hosts"`, `"host_public_key"`, `"targets"`, `"deployment_mode"`, `"updated_at"`,
+		`"heartbeat_interval_seconds"`, `"hosts"`, `"host_public_key"`, `"targets"`, `"service_id"`, `"deployment_mode"`, `"updated_at"`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("policy JSON %s does not contain %s", text, required)

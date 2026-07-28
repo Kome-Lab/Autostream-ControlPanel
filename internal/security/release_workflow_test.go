@@ -31,6 +31,28 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		}
 		position += relative + len(marker)
 	}
+	for _, marker := range []string{
+		`recovery_protocol_version: 2,`,
+		`(.recovery_protocol_version == 2) and`,
+	} {
+		if !strings.Contains(workflow, marker) {
+			t.Fatalf(
+				"release workflow is missing current self-update recovery protocol marker %q",
+				marker,
+			)
+		}
+	}
+	for _, stale := range []string{
+		`recovery_protocol_version: 1,`,
+		`(.recovery_protocol_version == 1) and`,
+	} {
+		if strings.Contains(workflow, stale) {
+			t.Fatalf(
+				"release workflow still emits or accepts legacy recovery protocol marker %q",
+				stale,
+			)
+		}
+	}
 
 	orderedContract := []string{
 		"group: host-release-publish-${{ needs.release-host.outputs.version }}",
@@ -39,24 +61,39 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		"(.enabled == true)",
 		"- name: Validate immutable release namespace and local asset set",
 		"workflow_dispatch may not overwrite or reuse it",
+		`host-release-body.md`,
+		"AutoStream Host Bridge ${RELEASE_VERSION}",
+		`host-release-body.sha256`,
 		"- name: Create unpublished staging release",
+		`-f body="$(< "${release_body_path}")"`,
 		"-F draft=true",
 		"- name: Upload all assets to staging release",
 		"https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}/assets?name=${name}",
 		"- name: Verify staging release assets",
+		`jq -j '.body'`,
+		`cmp -s "${release_body_path}" "${draft_body_path}"`,
+		"Draft release notes digest differs from the deterministic body",
 		".digest | type == \"string\" and test(\"^sha256:[0-9a-f]{64}$\")",
 		"- name: Attest release manifest",
 		"- name: Attest update host bootstrap manifest",
 		"- name: Publish verified release atomically",
 		"moved during staging; refusing to publish mismatched assets",
-		"gh api --method DELETE \"repos/${GITHUB_REPOSITORY}/git/refs/tags/${DRAFT_TAG}\"",
 		"Cannot re-confirm immutable releases immediately before publication",
+		`final_draft_json="${RUNNER_TEMP}/host-release-final-draft.json"`,
+		"appeared immediately before publication; refusing to overwrite it",
+		"does not resolve to workflow commit ${GITHUB_SHA} immediately before publish",
 		"-F draft=false",
 		"(.immutable == true)",
+		`(.body | type == "string" and length > 0)`,
+		`(.body | test("^Unpublished .* staging"; "i") | not)`,
 		"(.state == \"uploaded\")",
-		"- name: Delete unpublished staging release",
+		`cmp -s "${release_body_path}" "${published_body_path}"`,
+		"Published release notes digest differs from the deterministic body",
+		"Published tag ${RELEASE_VERSION} does not resolve to workflow commit ${GITHUB_SHA}",
+		"gh api --method DELETE \"repos/${GITHUB_REPOSITORY}/git/refs/tags/${DRAFT_TAG}\"",
+		"- name: Preserve failed release state for manual recovery",
 		"if: ${{ always() && steps.create-draft.outputs.release_id != '' }}",
-		"gh api --method DELETE \"repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}\"",
+		"all refs for manual recovery; no release or ref was deleted",
 	}
 	position = 0
 	for _, marker := range orderedContract {
@@ -66,12 +103,28 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		}
 		position += relative + len(marker)
 	}
+	publishPosition := strings.Index(workflow, `gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}"`)
+	publishedTagPosition := strings.LastIndex(workflow, "Published tag ${RELEASE_VERSION} does not resolve to workflow commit ${GITHUB_SHA}")
+	stagingTagDeletePosition := strings.Index(workflow, `gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${DRAFT_TAG}"`)
+	cleanupPosition := strings.Index(workflow, "- name: Preserve failed release state for manual recovery")
+	if !(publishPosition >= 0 &&
+		publishedTagPosition > publishPosition &&
+		stagingTagDeletePosition > publishedTagPosition &&
+		cleanupPosition > stagingTagDeletePosition) {
+		t.Fatal("workflow-owned staging tag may be deleted only after successful published release and final-tag verification")
+	}
+	if strings.Count(workflow, `gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${DRAFT_TAG}"`) != 1 {
+		t.Fatal("workflow-owned staging tag must have exactly one success-only deletion")
+	}
 
 	for _, forbidden := range []string{
 		"autostream-updater.json.example",
 		"softprops/action-gh-release",
 		"overwrite_files:",
 		"--clobber",
+		"Unpublished AutoStream host release staging",
+		`gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}"`,
+		`gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_VERSION}"`,
 	} {
 		if strings.Contains(workflow, forbidden) {
 			t.Fatalf("release workflow contains unsafe direct-publication marker %q", forbidden)
@@ -79,6 +132,47 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join("..", "..", "release", "autostream-updater.json.example")); !os.IsNotExist(err) {
 		t.Fatalf("obsolete updater policy sample must not be shipped; stat error = %v", err)
+	}
+}
+
+func TestCIAndHostReleaseRunEveryMariaDBContractWithoutSkips(t *testing.T) {
+	for _, workflowName := range []string{"ci.yml", "release-host.yml"} {
+		t.Run(workflowName, func(t *testing.T) {
+			workflowPath := filepath.Join(
+				"..",
+				"..",
+				".github",
+				"workflows",
+				workflowName,
+			)
+			payload, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow := string(payload)
+			for _, marker := range []string{
+				`go test ./internal/store -list '^TestMariaDB'`,
+				`if [[ "${#mariadb_tests[@]}" -eq 0 ]]; then`,
+				`-run '^TestMariaDB'`,
+				`startswith("TestMariaDB")`,
+				`for test_name in "${mariadb_tests[@]}"; do`,
+				`.Test == $test_name`,
+				`((.Test // "") == "")`,
+			} {
+				if !strings.Contains(workflow, marker) {
+					t.Fatalf(
+						"MariaDB release gate is missing %q",
+						marker,
+					)
+				}
+			}
+			if strings.Contains(
+				workflow,
+				`-run '^TestMariaDBUpdateAgentRegistrationSmoke$'`,
+			) {
+				t.Fatal("MariaDB release gate regressed to a single smoke test")
+			}
+		})
 	}
 }
 
@@ -90,7 +184,7 @@ func TestHostReleaseCleanupRequiresPostPublicationVerification(t *testing.T) {
 	}
 	workflow := string(payload)
 
-	cleanupMarker := "- name: Delete unpublished staging release"
+	cleanupMarker := "- name: Preserve failed release state for manual recovery"
 	cleanupPosition := strings.Index(workflow, cleanupMarker)
 	if cleanupPosition < 0 {
 		t.Fatalf("release workflow is missing cleanup step %q", cleanupMarker)
@@ -120,6 +214,9 @@ func TestHostReleaseCleanupRequiresPostPublicationVerification(t *testing.T) {
 			t.Fatalf("release cleanup is missing ordered post-publication state marker %q", marker)
 		}
 		position += relative + len(marker)
+	}
+	if strings.Contains(cleanupStep, `--method DELETE "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_RELEASE_ID}"`) {
+		t.Fatal("release cleanup must preserve drafts because GitHub has no conditional release DELETE")
 	}
 }
 

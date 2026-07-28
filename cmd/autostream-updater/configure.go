@@ -127,6 +127,9 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 		// a newly issued token before another attempt.
 		return fmt.Errorf("updater configuration stage failed; existing updater remains active; issue a new Configure Token before retrying: %v", err)
 	}
+	if err := validateCentralUpdaterStagedConfiguration(staged); err != nil {
+		return fmt.Errorf("updater configuration stage rejected; existing updater remains active; issue a new Configure Token before retrying: %w", err)
+	}
 	if err := ctx.Err(); err != nil {
 		// Stage succeeded and consumed the one-time token, but cancellation won
 		// before any local mutation. Keep the old active identity on disk and do
@@ -153,5 +156,13 @@ func runUpdaterConfigure(ctx context.Context, args []string, dependencies update
 		return postCommitError("activation", errors.New("Control Panel returned an unexpected activation result"))
 	}
 	fmt.Fprintf(dependencies.Output, "Updater identity generated and activated in %s. Control Panel settings will apply automatically; the autostream-updater service may now be started.\n", *configPath)
+	return nil
+}
+
+func validateCentralUpdaterStagedConfiguration(staged updateagent.UpdaterStagedConfiguration) error {
+	mode := strings.TrimSpace(staged.Config.TransportMode)
+	if mode != "" && mode != "ssh_v1" {
+		return errors.New("Control Panel did not bind the staged identity to the central ssh_v1 updater")
+	}
 	return nil
 }

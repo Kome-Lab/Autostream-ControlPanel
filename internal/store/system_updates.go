@@ -37,45 +37,52 @@ const (
 var systemUpdateJobVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$`)
 
 var (
-	ErrInvalidSystemUpdate               = errors.New("invalid system update")
-	ErrSystemUpdateTargetActive          = errors.New("system update target already has an active job")
-	ErrSystemUpdateLeaseInvalid          = errors.New("system update lease is invalid or expired")
-	ErrSystemUpdateSequenceStale         = errors.New("system update report sequence is stale")
-	ErrSystemUpdateTransition            = errors.New("invalid system update status transition")
-	ErrSystemUpdateNotCancellable        = errors.New("system update job is not cancellable")
-	ErrSystemUpdateTakeoverForbidden     = errors.New("system update takeover requires explicit administrator reassignment")
-	ErrSystemUpdateActiveUnavailable     = errors.New("active system update target is no longer authorized for this updater")
-	ErrSystemUpdateAuthorizationState    = errors.New("system update is not in a mutation-authorizable state")
-	ErrSystemUpdateAuthorizationMismatch = errors.New("system update authorization request does not match the job")
+	ErrInvalidSystemUpdate                 = errors.New("invalid system update")
+	ErrSystemUpdateTargetActive            = errors.New("system update target already has an active job")
+	ErrSystemUpdateLeaseInvalid            = errors.New("system update lease is invalid or expired")
+	ErrSystemUpdateSequenceStale           = errors.New("system update report sequence is stale")
+	ErrSystemUpdateTransition              = errors.New("invalid system update status transition")
+	ErrSystemUpdateNotCancellable          = errors.New("system update job is not cancellable")
+	ErrSystemUpdateTakeoverForbidden       = errors.New("system update takeover requires explicit administrator reassignment")
+	ErrSystemUpdateActiveUnavailable       = errors.New("active system update target is no longer authorized for this updater")
+	ErrSystemUpdateAuthorizationState      = errors.New("system update is not in a mutation-authorizable state")
+	ErrSystemUpdateAuthorizationMismatch   = errors.New("system update authorization request does not match the job")
+	ErrSystemUpdateOwnershipConflict       = errors.New("system update execution host ownership conflicts with the job snapshot")
+	ErrSystemUpdatePortCoordinatorRequired = errors.New("port reconfiguration requires the transactional coordinator")
 )
 
 type SystemUpdateJob struct {
-	ID                  string     `json:"id"`
-	TargetID            string     `json:"target_id"`
-	TargetServiceType   string     `json:"target_type"`
-	DeploymentMode      string     `json:"deployment_mode"`
-	CurrentVersion      string     `json:"current_version"`
-	TargetVersion       string     `json:"target_version"`
-	Strategy            string     `json:"strategy"`
-	Status              string     `json:"status"`
-	IdempotencyKey      string     `json:"idempotency_key"`
-	RequestedByUserID   string     `json:"-"`
-	RequestedByUsername string     `json:"requested_by,omitempty"`
-	AgentServiceID      string     `json:"updater_id,omitempty"`
-	ExecutionHostID     string     `json:"host_id"`
-	LeaseGeneration     int64      `json:"lease_generation"`
-	LeaseExpiresAt      *time.Time `json:"lease_expires_at,omitempty"`
-	Sequence            int64      `json:"sequence"`
-	Progress            int        `json:"progress"`
-	Code                string     `json:"code,omitempty"`
-	Message             string     `json:"message,omitempty"`
-	ArtifactDigest      string     `json:"artifact_digest,omitempty"`
-	PreviousDigest      string     `json:"previous_digest,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
-	ClaimedAt           *time.Time `json:"claimed_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
-	CancelledAt         *time.Time `json:"canceled_at,omitempty"`
+	ID                  string                           `json:"id"`
+	TargetID            string                           `json:"target_id"`
+	TargetServiceType   string                           `json:"target_type"`
+	Operation           string                           `json:"operation"`
+	PortReconfigure     *SystemUpdatePortReconfiguration `json:"port_reconfigure,omitempty"`
+	DeploymentMode      string                           `json:"deployment_mode"`
+	CurrentVersion      string                           `json:"current_version"`
+	TargetVersion       string                           `json:"target_version"`
+	Strategy            string                           `json:"strategy"`
+	Status              string                           `json:"status"`
+	IdempotencyKey      string                           `json:"idempotency_key"`
+	RequestedByUserID   string                           `json:"-"`
+	RequestedByUsername string                           `json:"requested_by,omitempty"`
+	AgentServiceID      string                           `json:"updater_id,omitempty"`
+	ExecutionHostID     string                           `json:"host_id"`
+	TransportMode       string                           `json:"transport_mode"`
+	OwnershipEpoch      int64                            `json:"ownership_epoch"`
+	PolicyRevision      int64                            `json:"policy_revision"`
+	LeaseGeneration     int64                            `json:"lease_generation"`
+	LeaseExpiresAt      *time.Time                       `json:"lease_expires_at,omitempty"`
+	Sequence            int64                            `json:"sequence"`
+	Progress            int                              `json:"progress"`
+	Code                string                           `json:"code,omitempty"`
+	Message             string                           `json:"message,omitempty"`
+	ArtifactDigest      string                           `json:"artifact_digest,omitempty"`
+	PreviousDigest      string                           `json:"previous_digest,omitempty"`
+	CreatedAt           time.Time                        `json:"created_at"`
+	UpdatedAt           time.Time                        `json:"updated_at"`
+	ClaimedAt           *time.Time                       `json:"claimed_at,omitempty"`
+	CompletedAt         *time.Time                       `json:"completed_at,omitempty"`
+	CancelledAt         *time.Time                       `json:"canceled_at,omitempty"`
 
 	leaseTokenHash string
 }
@@ -83,6 +90,8 @@ type SystemUpdateJob struct {
 type CreateSystemUpdateJobParams struct {
 	TargetID            string
 	TargetServiceType   string
+	Operation           string
+	PortReconfigure     *SystemUpdatePortReconfiguration
 	AgentServiceID      string
 	ExecutionHostID     string
 	DeploymentMode      string
@@ -106,6 +115,7 @@ type SystemUpdateClaim struct {
 
 type SystemUpdateReport struct {
 	AgentServiceID  string
+	ExecutionHostID string
 	LeaseToken      string
 	LeaseGeneration int64
 	Sequence        int64
@@ -115,6 +125,7 @@ type SystemUpdateReport struct {
 	Message         string
 	ArtifactDigest  string
 	PreviousDigest  string
+	PortReconfigure *SystemUpdatePortReconfiguration
 }
 
 type SystemUpdateAuthorization struct {
@@ -138,6 +149,19 @@ type SystemUpdateStore interface {
 	ReportSystemUpdateJob(ctx context.Context, id string, report SystemUpdateReport, now time.Time, leaseTTL time.Duration) (job SystemUpdateJob, applied bool, err error)
 	AuthorizeSystemUpdateMutation(ctx context.Context, id string, authorization SystemUpdateAuthorization, now time.Time) error
 	HasActiveSystemUpdateReference(ctx context.Context, serviceID string) (bool, error)
+}
+
+type SystemUpdateIdentityMutationFenceStore interface {
+	HasSystemUpdateIdentityMutationFence(
+		ctx context.Context,
+		services ServiceRegistryStore,
+		serviceID string,
+	) (bool, error)
+	IsSystemUpdateEmergencyIdentityRecovery(
+		ctx context.Context,
+		services ServiceRegistryStore,
+		serviceID string,
+	) (bool, error)
 }
 
 func (s *MariaDBSystemUpdateStore) GetSystemUpdateJobByIdempotency(ctx context.Context, requestedByUserID, idempotencyKey string) (SystemUpdateJob, error) {
@@ -206,33 +230,82 @@ func (s *MariaDBSystemUpdateStore) CreateSystemUpdateJob(ctx context.Context, pa
 	if err := validateSystemUpdateCreate(params); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	if params.Operation != SystemUpdateOperationSoftwareUpdate {
+		return SystemUpdateJob{}, false, ErrSystemUpdatePortCoordinatorRequired
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	defer tx.Rollback()
+	ownership, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, params.ExecutionHostID)
+	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	if err := authorizeSystemUpdateExecutionHostAgent(ownership, params.AgentServiceID); err != nil {
+		return SystemUpdateJob{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	existing, err := scanSystemUpdateJob(tx.QueryRowContext(
+		ctx,
+		systemUpdateSelect+` WHERE requested_by_user_id = ? AND idempotency_key = ? FOR UPDATE`,
+		params.RequestedByUserID,
+		params.IdempotencyKey,
+	))
+	if err == nil {
+		if sameSystemUpdateRequest(existing, params) {
+			if err := tx.Commit(); err != nil {
+				return SystemUpdateJob{}, false, err
+			}
+			return existing, false, nil
+		}
+		return SystemUpdateJob{}, false, ErrAlreadyExists
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return SystemUpdateJob{}, false, err
+	}
+	var activeRotationID string
+	err = tx.QueryRowContext(ctx, `SELECT id
+FROM system_update_runtime_token_rotations
+WHERE active_execution_host_id = ?
+LIMIT 1
+FOR UPDATE`, params.ExecutionHostID).Scan(&activeRotationID)
+	if err == nil {
+		return SystemUpdateJob{}, false, ErrSystemUpdateRuntimeTokenRotationBusy
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return SystemUpdateJob{}, false, err
+	}
 	now := time.Now().UTC()
 	job := SystemUpdateJob{
-		ID: newUUID(), TargetID: params.TargetID, TargetServiceType: params.TargetServiceType,
+		ID: newUUID(), TargetID: params.TargetID, TargetServiceType: params.TargetServiceType, Operation: params.Operation,
 		AgentServiceID: params.AgentServiceID, ExecutionHostID: params.ExecutionHostID,
+		TransportMode: ownership.TransportMode, OwnershipEpoch: ownership.OwnershipEpoch, PolicyRevision: ownership.PolicyRevision,
 		DeploymentMode: params.DeploymentMode, CurrentVersion: params.CurrentVersion, TargetVersion: params.TargetVersion,
 		Strategy: params.Strategy, Status: SystemUpdateStatusQueued, IdempotencyKey: params.IdempotencyKey,
 		RequestedByUserID: params.RequestedByUserID, RequestedByUsername: params.RequestedByUsername,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO system_update_jobs
-	(id, target_id, target_service_type, agent_service_id, execution_host_id, deployment_mode, current_version, target_version, strategy, status, idempotency_key, requested_by_user_id, requested_by_username, sequence, progress, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
-		job.ID, job.TargetID, job.TargetServiceType, job.AgentServiceID, job.ExecutionHostID, job.DeploymentMode, job.CurrentVersion, job.TargetVersion,
+	_, err = tx.ExecContext(ctx, `INSERT INTO system_update_jobs
+	(id, target_id, target_service_type, operation, agent_service_id, execution_host_id, transport_mode, ownership_epoch, policy_revision, deployment_mode, current_version, target_version, strategy, status, idempotency_key, requested_by_user_id, requested_by_username, sequence, progress, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+		job.ID, job.TargetID, job.TargetServiceType, job.Operation, job.AgentServiceID, job.ExecutionHostID, job.TransportMode, job.OwnershipEpoch, job.PolicyRevision, job.DeploymentMode, job.CurrentVersion, job.TargetVersion,
 		job.Strategy, job.Status, job.IdempotencyKey, job.RequestedByUserID, job.RequestedByUsername, now, now)
 	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return SystemUpdateJob{}, false, err
+		}
 		return job, true, nil
 	}
 	if !isDuplicateKeyError(err) {
 		return SystemUpdateJob{}, false, err
 	}
-	if existing, getErr := s.getSystemUpdateByIdempotency(ctx, params.RequestedByUserID, params.IdempotencyKey); getErr == nil {
+	if existing, getErr := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE requested_by_user_id = ? AND idempotency_key = ?`, params.RequestedByUserID, params.IdempotencyKey)); getErr == nil {
 		if sameSystemUpdateRequest(existing, params) {
 			return existing, false, nil
 		}
 		return SystemUpdateJob{}, false, ErrAlreadyExists
 	}
-	if _, getErr := s.getActiveSystemUpdateForTarget(ctx, params.TargetID); getErr == nil {
+	if _, getErr := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE active_target_id = ?`, params.TargetID)); getErr == nil {
 		return SystemUpdateJob{}, false, ErrSystemUpdateTargetActive
 	}
 	return SystemUpdateJob{}, false, err
@@ -259,6 +332,11 @@ func (s *MariaDBSystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id
 		return SystemUpdateJob{}, ErrSystemUpdateNotCancellable
 	}
 	now := time.Now().UTC()
+	if job.Operation == SystemUpdateOperationPortReconfigure {
+		if err := rollbackMariaDBQueuedSystemdPortJob(ctx, tx, job, now); err != nil {
+			return SystemUpdateJob{}, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE system_update_jobs SET status = ?, code = ?, message = ?, cancelled_at = ?, completed_at = ?, updated_at = ? WHERE id = ?`, SystemUpdateStatusCancelled, "canceled_by_user", "Update canceled before it was claimed.", now, now, now, id); err != nil {
 		return SystemUpdateJob{}, err
 	}
@@ -288,6 +366,13 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, age
 		return SystemUpdateClaim{}, false, err
 	}
 	defer tx.Rollback()
+	ownership, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, executionHostID)
+	if err != nil {
+		return SystemUpdateClaim{}, false, err
+	}
+	if err := authorizeSystemUpdateExecutionHostAgent(ownership, agentServiceID); err != nil {
+		return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
+	}
 
 	var job SystemUpdateJob
 	if activeJobID != "" {
@@ -330,6 +415,9 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, age
 		return SystemUpdateClaim{}, false, ErrNotFound
 	}
 	if err != nil {
+		return SystemUpdateClaim{}, false, err
+	}
+	if err := authorizeSystemUpdateJobOwnership(job, ownership, agentServiceID, executionHostID); err != nil {
 		return SystemUpdateClaim{}, false, err
 	}
 	leaseToken, err := newSystemUpdateLeaseToken()
@@ -375,16 +463,34 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 		return SystemUpdateJob{}, false, ErrInvalidSystemUpdate
 	}
 	now = now.UTC()
+	executionHostID, err := s.systemUpdateJobExecutionHost(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SystemUpdateJob{}, false, ErrNotFound
+	}
+	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
 	defer tx.Rollback()
+	ownership, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, executionHostID)
+	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
 	job, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ? FOR UPDATE`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SystemUpdateJob{}, false, ErrNotFound
 	}
 	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	report, err = canonicalizeSystemUpdatePortReport(job, report)
+	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	if err := authorizeSystemUpdateJobOwnership(job, ownership, report.AgentServiceID, authenticatedSystemUpdateExecutionHost(job, report.ExecutionHostID)); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
 	if isTerminalSystemUpdateStatus(job.Status) {
@@ -423,6 +529,13 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 	if terminal {
 		leaseExpires = nil
 		completedAt = now
+		if job.Operation == SystemUpdateOperationPortReconfigure {
+			if err := applyMariaDBSystemdPortTerminalState(
+				ctx, tx, job, report.PortReconfigure.Result, now,
+			); err != nil {
+				return SystemUpdateJob{}, false, err
+			}
+		}
 	} else {
 		leaseExpires = now.Add(leaseTTL)
 	}
@@ -443,6 +556,9 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 	job.PreviousDigest = report.PreviousDigest
 	job.UpdatedAt = now
 	if terminal {
+		if job.Operation == SystemUpdateOperationPortReconfigure {
+			job.PortReconfigure.Result = report.PortReconfigure.Result
+		}
 		job.LeaseExpiresAt = nil
 		job.CompletedAt = &now
 	} else {
@@ -458,11 +574,30 @@ func (s *MariaDBSystemUpdateStore) AuthorizeSystemUpdateMutation(ctx context.Con
 	if id == "" || validateSystemUpdateAuthorization(authorization) != nil {
 		return ErrInvalidSystemUpdate
 	}
-	job, err := scanSystemUpdateJob(s.db.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ?`, id))
+	executionHostID, err := s.systemUpdateJobExecutionHost(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ownership, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, executionHostID)
+	if err != nil {
+		return err
+	}
+	job, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ? FOR UPDATE`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := authorizeSystemUpdateJobOwnership(job, ownership, authorization.AgentServiceID, job.ExecutionHostID); err != nil {
 		return err
 	}
 	return authorizeSystemUpdateMutation(job, authorization, now.UTC())
@@ -481,7 +616,103 @@ func (s *MariaDBSystemUpdateStore) HasActiveSystemUpdateReference(ctx context.Co
 	return active, err
 }
 
-const systemUpdateSelect = `SELECT id, target_id, target_service_type, deployment_mode, current_version, target_version, strategy, status, idempotency_key, requested_by_user_id, requested_by_username, COALESCE(agent_service_id, ''), execution_host_id, lease_generation, COALESCE(lease_token_hash, ''), lease_expires_at, sequence, progress, COALESCE(code, ''), COALESCE(message, ''), COALESCE(artifact_digest, ''), COALESCE(previous_digest, ''), created_at, updated_at, claimed_at, completed_at, cancelled_at FROM system_update_jobs`
+func (s *MariaDBSystemUpdateStore) HasSystemUpdateIdentityMutationFence(
+	ctx context.Context,
+	services ServiceRegistryStore,
+	serviceID string,
+) (bool, error) {
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return false, ErrInvalidSystemUpdate
+	}
+	registryDB, ok := mariaDBFromServiceRegistryStore(services)
+	if !ok || registryDB != s.db {
+		return false, ErrSystemUpdateRuntimeTokenRotationStoreMismatch
+	}
+	var blocked bool
+	err := s.db.QueryRowContext(ctx, `SELECT (
+  EXISTS(
+    SELECT 1
+    FROM system_update_runtime_token_rotations rotation
+    JOIN services service ON service.service_id = rotation.service_id
+    WHERE rotation.service_id = ?
+      AND (
+        rotation.active_execution_host_id IS NOT NULL
+        OR (
+          rotation.status = 'activated'
+          AND service.token_id = rotation.staged_token_id
+          AND (
+            service.node_token_rotated_at IS NULL
+            OR service.last_heartbeat_at IS NULL
+            OR service.last_heartbeat_at <= service.node_token_rotated_at
+          )
+        )
+      )
+  )
+  OR EXISTS(
+    SELECT 1
+    FROM system_update_host_self_updates self_update
+    WHERE self_update.agent_service_id = ?
+      AND self_update.active_execution_host_id IS NOT NULL
+  )
+)`, serviceID, serviceID).Scan(&blocked)
+	return blocked, err
+}
+
+func (s *MariaDBSystemUpdateStore) IsSystemUpdateEmergencyIdentityRecovery(
+	ctx context.Context,
+	services ServiceRegistryStore,
+	serviceID string,
+) (bool, error) {
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return false, ErrInvalidSystemUpdate
+	}
+	registryDB, ok := mariaDBFromServiceRegistryStore(services)
+	if !ok || registryDB != s.db {
+		return false, ErrSystemUpdateRuntimeTokenRotationStoreMismatch
+	}
+	var recovery bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1
+  FROM system_update_runtime_token_rotations rotation
+  JOIN services service ON service.service_id = rotation.service_id
+  JOIN service_tokens current_token ON current_token.id = service.token_id
+  WHERE rotation.service_id = ?
+    AND rotation.status = 'canceled'
+    AND rotation.emergency_revoked_token_id IS NOT NULL
+    AND rotation.emergency_revoked_at IS NOT NULL
+    AND service.token_id IN (rotation.previous_token_id, rotation.staged_token_id)
+    AND service.status = 'offline'
+    AND service.last_heartbeat_at IS NULL
+    AND COALESCE(JSON_LENGTH(service.reported_capabilities), 0) = 0
+    AND service.node_token_ciphertext IS NULL
+    AND service.node_token_nonce IS NULL
+    AND current_token.revoked_at IS NOT NULL
+)`, serviceID).Scan(&recovery)
+	return recovery, err
+}
+
+const systemUpdateSelect = `SELECT id, target_id, target_service_type, operation,
+network_namespace, protocol, old_port, new_port,
+expected_endpoint_revision, target_endpoint_revision,
+expected_config_revision, target_config_revision,
+expected_config_sha256, expected_source_policy_revision, target_config_sha256,
+ expected_updater_policy_revision, expected_executor_policy_revision,
+ expected_executor_policy_sha256, port_plan_sha256,
+ docker_published_host_ip, docker_old_published_port, docker_new_published_port,
+ docker_old_container_port, docker_new_container_port,
+ docker_old_health_port, docker_new_health_port,
+ docker_approved_compose_config_sha256, docker_approved_compose_revision,
+ docker_expected_version_env_sha256, docker_expected_container_id,
+ docker_expected_image_id, docker_expected_repository_digest,
+ deployment_mode, current_version, target_version, strategy, status, idempotency_key,
+requested_by_user_id, requested_by_username, COALESCE(agent_service_id, ''),
+execution_host_id, transport_mode, ownership_epoch, policy_revision,
+lease_generation, COALESCE(lease_token_hash, ''), lease_expires_at, sequence, progress,
+COALESCE(code, ''), COALESCE(message, ''), COALESCE(artifact_digest, ''),
+COALESCE(previous_digest, ''), created_at, updated_at, claimed_at, completed_at,
+cancelled_at FROM system_update_jobs`
 
 type systemUpdateScanner interface {
 	Scan(dest ...any) error
@@ -490,9 +721,87 @@ type systemUpdateScanner interface {
 func scanSystemUpdateJob(row systemUpdateScanner) (SystemUpdateJob, error) {
 	var job SystemUpdateJob
 	var leaseExpiresAt, claimedAt, completedAt, cancelledAt sql.NullTime
-	err := row.Scan(&job.ID, &job.TargetID, &job.TargetServiceType, &job.DeploymentMode, &job.CurrentVersion, &job.TargetVersion, &job.Strategy, &job.Status, &job.IdempotencyKey, &job.RequestedByUserID, &job.RequestedByUsername, &job.AgentServiceID, &job.ExecutionHostID, &job.LeaseGeneration, &job.leaseTokenHash, &leaseExpiresAt, &job.Sequence, &job.Progress, &job.Code, &job.Message, &job.ArtifactDigest, &job.PreviousDigest, &job.CreatedAt, &job.UpdatedAt, &claimedAt, &completedAt, &cancelledAt)
+	var (
+		networkNamespace, protocol, expectedConfigSHA256, targetConfigSHA256 sql.NullString
+		expectedExecutorPolicySHA256, portPlanSHA256                         sql.NullString
+		dockerPublishedHostIP, dockerApprovedComposeSHA256                   sql.NullString
+		dockerExpectedVersionEnvSHA256, dockerExpectedContainerID            sql.NullString
+		dockerExpectedImageID, dockerExpectedRepositoryDigest                sql.NullString
+		oldPort, newPort                                                     sql.NullInt64
+		dockerOldPublishedPort, dockerNewPublishedPort                       sql.NullInt64
+		dockerOldContainerPort, dockerNewContainerPort                       sql.NullInt64
+		dockerOldHealthPort, dockerNewHealthPort                             sql.NullInt64
+		dockerApprovedComposeRevision                                        sql.NullInt64
+		expectedEndpointRevision, targetEndpointRevision                     sql.NullInt64
+		expectedConfigRevision, targetConfigRevision                         sql.NullInt64
+		expectedSourcePolicyRevision, expectedUpdaterPolicyRevision          sql.NullInt64
+		expectedExecutorPolicyRevision                                       sql.NullInt64
+	)
+	err := row.Scan(
+		&job.ID, &job.TargetID, &job.TargetServiceType, &job.Operation,
+		&networkNamespace, &protocol, &oldPort, &newPort,
+		&expectedEndpointRevision, &targetEndpointRevision,
+		&expectedConfigRevision, &targetConfigRevision,
+		&expectedConfigSHA256, &expectedSourcePolicyRevision, &targetConfigSHA256,
+		&expectedUpdaterPolicyRevision, &expectedExecutorPolicyRevision,
+		&expectedExecutorPolicySHA256, &portPlanSHA256,
+		&dockerPublishedHostIP, &dockerOldPublishedPort, &dockerNewPublishedPort,
+		&dockerOldContainerPort, &dockerNewContainerPort,
+		&dockerOldHealthPort, &dockerNewHealthPort,
+		&dockerApprovedComposeSHA256, &dockerApprovedComposeRevision,
+		&dockerExpectedVersionEnvSHA256, &dockerExpectedContainerID,
+		&dockerExpectedImageID, &dockerExpectedRepositoryDigest,
+		&job.DeploymentMode, &job.CurrentVersion, &job.TargetVersion,
+		&job.Strategy, &job.Status, &job.IdempotencyKey,
+		&job.RequestedByUserID, &job.RequestedByUsername, &job.AgentServiceID,
+		&job.ExecutionHostID, &job.TransportMode, &job.OwnershipEpoch,
+		&job.PolicyRevision, &job.LeaseGeneration, &job.leaseTokenHash,
+		&leaseExpiresAt, &job.Sequence, &job.Progress, &job.Code, &job.Message,
+		&job.ArtifactDigest, &job.PreviousDigest, &job.CreatedAt, &job.UpdatedAt,
+		&claimedAt, &completedAt, &cancelledAt,
+	)
 	if err != nil {
 		return SystemUpdateJob{}, err
+	}
+	if job.Operation == "" {
+		job.Operation = SystemUpdateOperationSoftwareUpdate
+	}
+	if job.Operation == SystemUpdateOperationPortReconfigure {
+		job.PortReconfigure = &SystemUpdatePortReconfiguration{
+			NetworkNamespace:               networkNamespace.String,
+			Protocol:                       SystemUpdatePortProtocol(protocol.String),
+			OldPort:                        int(oldPort.Int64),
+			NewPort:                        int(newPort.Int64),
+			ExpectedEndpointRevision:       expectedEndpointRevision.Int64,
+			TargetEndpointRevision:         targetEndpointRevision.Int64,
+			ExpectedConfigRevision:         expectedConfigRevision.Int64,
+			TargetConfigRevision:           targetConfigRevision.Int64,
+			ExpectedConfigSHA256:           expectedConfigSHA256.String,
+			TargetConfigSHA256:             targetConfigSHA256.String,
+			ExpectedSourcePolicyRevision:   expectedSourcePolicyRevision.Int64,
+			ExpectedUpdaterPolicyRevision:  expectedUpdaterPolicyRevision.Int64,
+			ExpectedExecutorPolicyRevision: expectedExecutorPolicyRevision.Int64,
+			ExpectedExecutorPolicySHA256:   expectedExecutorPolicySHA256.String,
+			PortPlanSHA256:                 portPlanSHA256.String,
+			Result:                         systemUpdatePortResultFromPersistedJob(job.Status, job.Code),
+		}
+		if job.DeploymentMode == "docker" {
+			job.PortReconfigure.Docker = &SystemUpdateDockerPortReconfiguration{
+				PublishedHostIP:             dockerPublishedHostIP.String,
+				OldPublishedPort:            int(dockerOldPublishedPort.Int64),
+				NewPublishedPort:            int(dockerNewPublishedPort.Int64),
+				OldContainerPort:            int(dockerOldContainerPort.Int64),
+				NewContainerPort:            int(dockerNewContainerPort.Int64),
+				OldHealthPort:               int(dockerOldHealthPort.Int64),
+				NewHealthPort:               int(dockerNewHealthPort.Int64),
+				ApprovedComposeConfigSHA256: dockerApprovedComposeSHA256.String,
+				ApprovedComposeRevision:     dockerApprovedComposeRevision.Int64,
+				ExpectedVersionEnvSHA256:    dockerExpectedVersionEnvSHA256.String,
+				ExpectedContainerID:         dockerExpectedContainerID.String,
+				ExpectedImageID:             dockerExpectedImageID.String,
+				ExpectedRepositoryDigest:    dockerExpectedRepositoryDigest.String,
+			}
+		}
 	}
 	if leaseExpiresAt.Valid {
 		job.LeaseExpiresAt = &leaseExpiresAt.Time
@@ -507,6 +816,12 @@ func scanSystemUpdateJob(row systemUpdateScanner) (SystemUpdateJob, error) {
 		job.CancelledAt = &cancelledAt.Time
 	}
 	return job, nil
+}
+
+func (s *MariaDBSystemUpdateStore) systemUpdateJobExecutionHost(ctx context.Context, id string) (string, error) {
+	var executionHostID string
+	err := s.db.QueryRowContext(ctx, `SELECT execution_host_id FROM system_update_jobs WHERE id = ?`, id).Scan(&executionHostID)
+	return executionHostID, err
 }
 
 func (s *MariaDBSystemUpdateStore) getSystemUpdateByIdempotency(ctx context.Context, userID, key string) (SystemUpdateJob, error) {
@@ -581,6 +896,11 @@ func newSystemUpdateLeaseToken() (string, error) {
 func normalizeSystemUpdateCreate(params CreateSystemUpdateJobParams) CreateSystemUpdateJobParams {
 	params.TargetID = strings.TrimSpace(params.TargetID)
 	params.TargetServiceType = strings.TrimSpace(params.TargetServiceType)
+	params.Operation = strings.ToLower(strings.TrimSpace(params.Operation))
+	if params.Operation == "" {
+		params.Operation = SystemUpdateOperationSoftwareUpdate
+	}
+	params.PortReconfigure = normalizeSystemUpdatePortReconfiguration(params.PortReconfigure)
 	params.AgentServiceID = strings.TrimSpace(params.AgentServiceID)
 	params.ExecutionHostID = normalizeSystemUpdateExecutionHostID(params.AgentServiceID, params.ExecutionHostID)
 	params.DeploymentMode = strings.ToLower(strings.TrimSpace(params.DeploymentMode))
@@ -629,6 +949,66 @@ func authorizeSystemUpdateMutation(job SystemUpdateJob, authorization SystemUpda
 	return nil
 }
 
+func authorizeSystemUpdateJobOwnership(job SystemUpdateJob, ownership SystemUpdateExecutionHost, agentServiceID, executionHostID string) error {
+	agentServiceID = strings.TrimSpace(agentServiceID)
+	executionHostID = strings.TrimSpace(executionHostID)
+	transportMode := normalizedSystemUpdateTransportMode(job.TransportMode)
+	if ownership.ExecutionHostID != executionHostID ||
+		job.ExecutionHostID != executionHostID ||
+		transportMode != ownership.TransportMode ||
+		job.OwnershipEpoch != ownership.OwnershipEpoch ||
+		job.PolicyRevision != ownership.PolicyRevision {
+		return ErrSystemUpdateOwnershipConflict
+	}
+	if ownership.OwnershipEpoch > 0 &&
+		(ownership.AgentServiceID != agentServiceID || job.AgentServiceID != agentServiceID) {
+		return ErrSystemUpdateOwnershipConflict
+	}
+	if transportMode == SystemUpdateTransportPullV2 &&
+		(job.OwnershipEpoch < 1 || job.PolicyRevision < 1) {
+		return ErrSystemUpdateOwnershipConflict
+	}
+	return nil
+}
+
+func authorizeSystemUpdateExecutionHostAgent(ownership SystemUpdateExecutionHost, agentServiceID string) error {
+	agentServiceID = strings.TrimSpace(agentServiceID)
+	switch normalizedSystemUpdateTransportMode(ownership.TransportMode) {
+	case SystemUpdateTransportPullV2:
+		if ownership.OwnershipEpoch < 1 ||
+			ownership.PolicyRevision < 1 ||
+			ownership.AgentServiceID != agentServiceID {
+			return ErrSystemUpdateOwnershipConflict
+		}
+	case SystemUpdateTransportSSHV1:
+		if ownership.OwnershipEpoch > 0 && ownership.AgentServiceID != agentServiceID {
+			return ErrSystemUpdateOwnershipConflict
+		}
+	default:
+		return ErrSystemUpdateOwnershipConflict
+	}
+	return nil
+}
+
+func authenticatedSystemUpdateExecutionHost(job SystemUpdateJob, executionHostID string) string {
+	executionHostID = strings.TrimSpace(executionHostID)
+	if executionHostID != "" {
+		return executionHostID
+	}
+	if normalizedSystemUpdateTransportMode(job.TransportMode) == SystemUpdateTransportSSHV1 {
+		return job.ExecutionHostID
+	}
+	return ""
+}
+
+func normalizedSystemUpdateTransportMode(transportMode string) string {
+	transportMode = strings.ToLower(strings.TrimSpace(transportMode))
+	if transportMode == "" {
+		return SystemUpdateTransportSSHV1
+	}
+	return transportMode
+}
+
 func validateSystemUpdateCreate(params CreateSystemUpdateJobParams) error {
 	if params.TargetID == "" || len(params.TargetID) > 191 || params.TargetServiceType == "" || len(params.TargetServiceType) > 64 || params.AgentServiceID == "" || len(params.AgentServiceID) > 191 || !validSystemUpdateExecutionHostID(params.ExecutionHostID) || params.CurrentVersion == "" || len(params.CurrentVersion) > 128 || params.TargetVersion == "" || len(params.TargetVersion) > 128 || params.RequestedByUserID == "" || len(params.RequestedByUserID) > 64 || params.IdempotencyKey == "" || len(params.IdempotencyKey) > 128 {
 		return ErrInvalidSystemUpdate
@@ -643,6 +1023,21 @@ func validateSystemUpdateCreate(params CreateSystemUpdateJobParams) error {
 		return ErrInvalidSystemUpdate
 	}
 	if containsControl(params.TargetID) || containsControl(params.IdempotencyKey) {
+		return ErrInvalidSystemUpdate
+	}
+	switch params.Operation {
+	case SystemUpdateOperationSoftwareUpdate:
+		if params.PortReconfigure != nil {
+			return ErrInvalidSystemUpdate
+		}
+	case SystemUpdateOperationPortReconfigure:
+		if validateSystemUpdatePortReconfigurationPlanForDeployment(
+			params.PortReconfigure,
+			strings.ToLower(strings.TrimSpace(params.DeploymentMode)),
+		) != nil {
+			return ErrInvalidSystemUpdate
+		}
+	default:
 		return ErrInvalidSystemUpdate
 	}
 	return nil
@@ -666,17 +1061,25 @@ func validSystemUpdateDeploymentMode(mode string) bool {
 
 func normalizeSystemUpdateReport(report SystemUpdateReport) SystemUpdateReport {
 	report.AgentServiceID = strings.TrimSpace(report.AgentServiceID)
+	report.ExecutionHostID = strings.TrimSpace(report.ExecutionHostID)
 	report.LeaseToken = strings.TrimSpace(report.LeaseToken)
 	report.Status = strings.ToLower(strings.TrimSpace(report.Status))
 	report.Code = strings.TrimSpace(report.Code)
 	report.Message = sanitizeSystemUpdateMessage(report.Message)
 	report.ArtifactDigest = strings.TrimSpace(report.ArtifactDigest)
 	report.PreviousDigest = strings.TrimSpace(report.PreviousDigest)
+	report.PortReconfigure = normalizeSystemUpdatePortReconfiguration(report.PortReconfigure)
 	return report
 }
 
 func validateSystemUpdateReport(report SystemUpdateReport) error {
 	if report.AgentServiceID == "" || report.LeaseToken == "" || report.LeaseGeneration <= 0 || report.Sequence <= 0 || report.Progress < 0 || report.Progress > 100 || !validSystemUpdateCode(report.Code) || len(report.Message) > 500 || !validSystemUpdateDigest(report.ArtifactDigest) || !validSystemUpdateDigest(report.PreviousDigest) || !isReportableSystemUpdateStatus(report.Status) {
+		return ErrInvalidSystemUpdate
+	}
+	if report.ExecutionHostID != "" && !validSystemUpdateExecutionHostID(report.ExecutionHostID) {
+		return ErrInvalidSystemUpdate
+	}
+	if report.PortReconfigure != nil && validateSystemUpdatePortReconfigurationResult(report.PortReconfigure) != nil {
 		return ErrInvalidSystemUpdate
 	}
 	return nil
@@ -721,11 +1124,18 @@ func normalizedEligibleTargets(input map[string]string) map[string]string {
 }
 
 func sameSystemUpdateRequest(job SystemUpdateJob, params CreateSystemUpdateJobParams) bool {
-	return job.TargetID == params.TargetID && job.Strategy == params.Strategy
+	if job.TargetID != params.TargetID || job.Strategy != params.Strategy || job.Operation != params.Operation {
+		return false
+	}
+	if job.Operation == SystemUpdateOperationPortReconfigure {
+		return sameSystemUpdatePortReconfigurationIntent(job.PortReconfigure, params.PortReconfigure)
+	}
+	return true
 }
 
 func sameSystemUpdateReport(job SystemUpdateJob, report SystemUpdateReport) bool {
-	return job.Status == report.Status && job.Progress == report.Progress && job.Code == report.Code && job.Message == report.Message && job.ArtifactDigest == report.ArtifactDigest && job.PreviousDigest == report.PreviousDigest
+	return job.Status == report.Status && job.Progress == report.Progress && job.Code == report.Code && job.Message == report.Message && job.ArtifactDigest == report.ArtifactDigest && job.PreviousDigest == report.PreviousDigest &&
+		sameSystemUpdatePortReconfigurationResult(job.PortReconfigure, report.PortReconfigure)
 }
 
 func allowedSystemUpdateTransition(current, next string) bool {

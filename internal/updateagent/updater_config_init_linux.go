@@ -20,7 +20,7 @@ import (
 // Existing operator-owned configuration is never opened or changed here;
 // PrepareUpdaterConfig validates it in the next configure phase.
 func InitializeUpdaterConfig(path, examplePath string) (bool, error) {
-	installGID, err := updaterConfigInstallGID()
+	installGID, err := updaterConfigInstallGID(updaterConfigInstallGroup)
 	if err != nil {
 		return false, err
 	}

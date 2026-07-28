@@ -52,22 +52,45 @@ type DownloadedArtifact struct {
 }
 
 type ReleaseDownloader struct {
-	Client           *http.Client
-	APIBase          string
-	Token            string
-	MaxArtifactBytes int64
-	MaxExtractBytes  int64
-	MaxEntries       int
-	AllowHTTPForTest bool
+	Client  *http.Client
+	APIBase string
+	Token   string
+	// TrustedPublicOnly enables the credential-free pull_v2 release policy.
+	// It permits only the built-in Kome-Lab repositories on GitHub's production
+	// API and requires immutable release/tag provenance before any artifact is
+	// staged by the root local executor.
+	TrustedPublicOnly bool
+	MaxArtifactBytes  int64
+	MaxExtractBytes   int64
+	MaxEntries        int
+	AllowHTTPForTest  bool
 
 	bootstrapProvenanceVerifier bootstrapProvenanceVerifier
+	hostAgentProvenanceVerifier bootstrapProvenanceVerifier
 }
 
 type githubRelease struct {
-	Assets []struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
-	} `json:"assets"`
+	TagName    string               `json:"tag_name"`
+	Draft      bool                 `json:"draft"`
+	Prerelease bool                 `json:"prerelease"`
+	Immutable  bool                 `json:"immutable"`
+	Assets     []githubReleaseAsset `json:"assets"`
+}
+
+type githubReleaseAsset struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	Digest string `json:"digest"`
+	State  string `json:"state"`
+}
+
+type resolvedReleaseAssets struct {
+	Archive          githubReleaseAsset
+	ArchiveChecksum  githubReleaseAsset
+	Manifest         githubReleaseAsset
+	ManifestChecksum githubReleaseAsset
+	TagCommit        string
 }
 
 type HostReleaseManifest struct {
@@ -111,24 +134,24 @@ func (d ReleaseDownloader) Download(ctx context.Context, serviceType, version, a
 		return DownloadedArtifact{}, fmt.Errorf("create artifact directory: %w", err)
 	}
 	assetName := fmt.Sprintf("%s_%s_linux_%s.tar.gz", spec.Prefix, version, arch)
-	archiveURL, checksumURL, manifestURL, manifestChecksumURL, err := d.resolveAssets(ctx, spec, version, assetName)
+	assets, err := d.resolveAssets(ctx, spec, version, assetName)
 	if err != nil {
 		return DownloadedArtifact{}, err
 	}
 	manifestPath := filepath.Join(destDir, "release-manifest.json")
-	manifestDigest, err := d.downloadFile(ctx, manifestURL, manifestPath, 4<<20)
+	manifestDigest, err := d.downloadResolvedReleaseAsset(ctx, assets.Manifest, manifestPath, 4<<20)
 	if err != nil {
 		return DownloadedArtifact{}, fmt.Errorf("download host release manifest: %w", err)
 	}
 	manifestChecksumPath := manifestPath + ".sha256"
-	if _, err := d.downloadFile(ctx, manifestChecksumURL, manifestChecksumPath, 64<<10); err != nil {
+	if _, err := d.downloadResolvedReleaseAsset(ctx, assets.ManifestChecksum, manifestChecksumPath, 64<<10); err != nil {
 		return DownloadedArtifact{}, fmt.Errorf("download host release manifest checksum: %w", err)
 	}
 	expectedManifestDigest, err := readSHA256File(manifestChecksumPath, "release-manifest.json")
 	if err != nil || !strings.EqualFold(expectedManifestDigest, manifestDigest) {
 		return DownloadedArtifact{}, errors.New("host release manifest SHA256 sidecar does not match")
 	}
-	manifestArtifact, err := validateHostReleaseManifest(manifestPath, serviceType, spec, version, arch, assetName)
+	manifestArtifact, err := validateHostReleaseManifest(manifestPath, serviceType, spec, version, arch, assetName, assets.TagCommit)
 	if err != nil {
 		return DownloadedArtifact{}, err
 	}
@@ -137,12 +160,12 @@ func (d ReleaseDownloader) Download(ctx context.Context, serviceType, version, a
 	if maxArtifact <= 0 {
 		maxArtifact = defaultMaxArtifactBytes
 	}
-	digest, err := d.downloadFile(ctx, archiveURL, archivePath, maxArtifact)
+	digest, err := d.downloadResolvedReleaseAsset(ctx, assets.Archive, archivePath, maxArtifact)
 	if err != nil {
 		return DownloadedArtifact{}, fmt.Errorf("download release artifact: %w", err)
 	}
 	checksumPath := archivePath + ".sha256"
-	if _, err := d.downloadFile(ctx, checksumURL, checksumPath, 1<<20); err != nil {
+	if _, err := d.downloadResolvedReleaseAsset(ctx, assets.ArchiveChecksum, checksumPath, 1<<20); err != nil {
 		return DownloadedArtifact{}, fmt.Errorf("download release checksum: %w", err)
 	}
 	expected, err := readSHA256File(checksumPath, assetName)
@@ -175,36 +198,97 @@ func (d ReleaseDownloader) Download(ctx context.Context, serviceType, version, a
 	return DownloadedArtifact{ArchivePath: archivePath, RootDir: root, SHA256: digest, AssetName: assetName}, nil
 }
 
-func (d ReleaseDownloader) resolveAssets(ctx context.Context, spec RepoSpec, version, assetName string) (string, string, string, string, error) {
+func (d ReleaseDownloader) resolveAssets(ctx context.Context, spec RepoSpec, version, assetName string) (resolvedReleaseAssets, error) {
 	base := strings.TrimRight(d.APIBase, "/")
 	if base == "" {
 		base = "https://api.github.com"
 	}
+	if err := d.validateTrustedPublicRepository(base, spec); err != nil {
+		return resolvedReleaseAssets{}, err
+	}
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", base, url.PathEscape(spec.Owner), url.PathEscape(spec.Repo), url.PathEscape(version))
 	var release githubRelease
 	if err := d.getJSON(ctx, endpoint, &release); err != nil {
-		return "", "", "", "", fmt.Errorf("resolve GitHub release: %w", err)
+		return resolvedReleaseAssets{}, fmt.Errorf("resolve GitHub release: %w", err)
 	}
-	assets := map[string]string{}
-	for _, asset := range release.Assets {
-		assets[asset.Name] = asset.URL
-	}
-	archiveURL, archiveOK := assets[assetName]
-	checksumURL, checksumOK := assets[assetName+".sha256"]
-	manifestURL, manifestOK := assets["release-manifest.json"]
-	manifestChecksumURL, manifestChecksumOK := assets["release-manifest.json.sha256"]
-	if !archiveOK || !checksumOK || !manifestOK || !manifestChecksumOK {
-		return "", "", "", "", fmt.Errorf("release is missing %s, its checksum, or the host manifest checksums", assetName)
-	}
-	for _, raw := range []string{archiveURL, checksumURL, manifestURL, manifestChecksumURL} {
-		if err := d.validateAssetURL(raw, base); err != nil {
-			return "", "", "", "", err
+	if d.TrustedPublicOnly {
+		if err := validateTrustedPublicReleaseMetadata(release, version); err != nil {
+			return resolvedReleaseAssets{}, err
 		}
 	}
-	return archiveURL, checksumURL, manifestURL, manifestChecksumURL, nil
+	assets, err := uniqueReleaseAssets(release)
+	if err != nil {
+		return resolvedReleaseAssets{}, err
+	}
+	for _, asset := range release.Assets {
+		if d.TrustedPublicOnly {
+			if asset.ID <= 0 || asset.State != "uploaded" ||
+				!updateHostBootstrapAssetDigestPattern.MatchString(asset.Digest) ||
+				d.validateTrustedPublicAssetURL(asset.URL, base, spec, asset.ID) != nil {
+				return resolvedReleaseAssets{}, fmt.Errorf("release asset %q has invalid immutable metadata", asset.Name)
+			}
+		}
+	}
+	archive, archiveOK := assets[assetName]
+	checksum, checksumOK := assets[assetName+".sha256"]
+	manifest, manifestOK := assets["release-manifest.json"]
+	manifestChecksum, manifestChecksumOK := assets["release-manifest.json.sha256"]
+	if !archiveOK || !checksumOK || !manifestOK || !manifestChecksumOK {
+		return resolvedReleaseAssets{}, fmt.Errorf("release is missing %s, its checksum, or the host manifest checksums", assetName)
+	}
+	for _, asset := range []githubReleaseAsset{archive, checksum, manifest, manifestChecksum} {
+		if err := d.validateAssetURL(asset.URL, base); err != nil {
+			return resolvedReleaseAssets{}, err
+		}
+	}
+	tagCommit := ""
+	if d.TrustedPublicOnly {
+		var err error
+		tagCommit, err = d.resolveTrustedReleaseTagCommit(ctx, base, spec, version)
+		if err != nil {
+			return resolvedReleaseAssets{}, err
+		}
+	}
+	return resolvedReleaseAssets{
+		Archive:          archive,
+		ArchiveChecksum:  checksum,
+		Manifest:         manifest,
+		ManifestChecksum: manifestChecksum,
+		TagCommit:        tagCommit,
+	}, nil
 }
 
-func validateHostReleaseManifest(path, serviceType string, spec RepoSpec, releaseVersion, arch, assetName string) (HostReleaseArtifact, error) {
+func validateTrustedPublicReleaseMetadata(release githubRelease, version string) error {
+	if release.TagName != version || release.Draft || release.Prerelease || !release.Immutable {
+		return errors.New("public release is not an immutable stable release for the requested tag")
+	}
+	return nil
+}
+
+func uniqueReleaseAssetURLs(release githubRelease) (map[string]string, error) {
+	resolved, err := uniqueReleaseAssets(release)
+	if err != nil {
+		return nil, err
+	}
+	assets := make(map[string]string, len(resolved))
+	for name, asset := range resolved {
+		assets[name] = asset.URL
+	}
+	return assets, nil
+}
+
+func uniqueReleaseAssets(release githubRelease) (map[string]githubReleaseAsset, error) {
+	assets := make(map[string]githubReleaseAsset, len(release.Assets))
+	for _, asset := range release.Assets {
+		if _, exists := assets[asset.Name]; exists {
+			return nil, fmt.Errorf("release contains duplicate asset %q", asset.Name)
+		}
+		assets[asset.Name] = asset
+	}
+	return assets, nil
+}
+
+func validateHostReleaseManifest(path, serviceType string, spec RepoSpec, releaseVersion, arch, assetName, tagCommit string) (HostReleaseArtifact, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return HostReleaseArtifact{}, err
@@ -229,6 +313,9 @@ func validateHostReleaseManifest(path, serviceType string, spec RepoSpec, releas
 	expectedService := dockerManifestService(serviceType)
 	if component.Service != expectedService || component.SourceVersion != releaseVersion || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(strings.ToLower(component.Commit)) || !component.RollbackCompatible {
 		return HostReleaseArtifact{}, errors.New("host release component identity or rollback policy is invalid")
+	}
+	if tagCommit != "" && component.Commit != tagCommit {
+		return HostReleaseArtifact{}, errors.New("host release component commit does not match the immutable release tag")
 	}
 	expectedSchema := "none"
 	if serviceType == "control_panel" || serviceType == "observability" {
@@ -301,6 +388,99 @@ func (d ReleaseDownloader) validateAssetURL(raw, apiBase string) error {
 	return nil
 }
 
+func (d ReleaseDownloader) validateTrustedPublicRepository(base string, spec RepoSpec) error {
+	if !d.TrustedPublicOnly {
+		return nil
+	}
+	if strings.TrimSpace(d.Token) != "" {
+		return errors.New("credentialed release access is unavailable in public pull mode")
+	}
+	parsed, err := url.Parse(base)
+	if err != nil ||
+		parsed.Scheme != "https" ||
+		!strings.EqualFold(parsed.Host, "api.github.com") ||
+		parsed.EscapedPath() != "" ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" ||
+		parsed.User != nil {
+		return errors.New("public pull mode requires GitHub's production API origin")
+	}
+	trusted := false
+	for _, candidate := range repositoryByServiceType {
+		if candidate == spec {
+			trusted = true
+			break
+		}
+	}
+	if spec == (RepoSpec{Owner: "Kome-Lab", Repo: "Autostream-Docker", Prefix: "autostream-docker"}) {
+		trusted = true
+	}
+	if !trusted {
+		return errors.New("public pull mode does not permit a custom release repository")
+	}
+	return nil
+}
+
+func (d ReleaseDownloader) validateTrustedPublicAssetURL(raw, base string, spec RepoSpec, assetID int64) error {
+	if err := d.validateAssetURL(raw, base); err != nil {
+		return err
+	}
+	assetURL, assetErr := url.Parse(raw)
+	baseURL, baseErr := url.Parse(base)
+	if assetErr != nil || baseErr != nil || assetID <= 0 {
+		return errors.New("GitHub returned an invalid release asset API URL")
+	}
+	expectedPath := strings.TrimRight(baseURL.EscapedPath(), "/") + fmt.Sprintf(
+		"/repos/%s/%s/releases/assets/%d",
+		url.PathEscape(spec.Owner), url.PathEscape(spec.Repo), assetID,
+	)
+	if assetURL.EscapedPath() != expectedPath ||
+		assetURL.RawQuery != "" ||
+		assetURL.Fragment != "" ||
+		assetURL.User != nil {
+		return errors.New("release asset does not use its canonical GitHub asset API URL")
+	}
+	return nil
+}
+
+func (d ReleaseDownloader) resolveTrustedReleaseTagCommit(ctx context.Context, base string, spec RepoSpec, version string) (string, error) {
+	endpoint := fmt.Sprintf(
+		"%s/repos/%s/%s/git/ref/tags/%s",
+		base, url.PathEscape(spec.Owner), url.PathEscape(spec.Repo), url.PathEscape(version),
+	)
+	var ref updateHostBootstrapGitRef
+	if err := d.getJSON(ctx, endpoint, &ref); err != nil {
+		return "", fmt.Errorf("resolve immutable release tag: %w", err)
+	}
+	object := ref.Object
+	seenTags := make(map[string]struct{}, 8)
+	for depth := 0; object.Type == "tag"; depth++ {
+		if depth >= 8 {
+			return "", errors.New("immutable release tag exceeds the dereference limit")
+		}
+		if !updateHostBootstrapCommitPattern.MatchString(object.SHA) {
+			return "", errors.New("immutable release tag object is invalid")
+		}
+		if _, seen := seenTags[object.SHA]; seen {
+			return "", errors.New("immutable release tag contains a cycle")
+		}
+		seenTags[object.SHA] = struct{}{}
+		tagEndpoint := fmt.Sprintf(
+			"%s/repos/%s/%s/git/tags/%s",
+			base, url.PathEscape(spec.Owner), url.PathEscape(spec.Repo), url.PathEscape(object.SHA),
+		)
+		var tag updateHostBootstrapGitTag
+		if err := d.getJSON(ctx, tagEndpoint, &tag); err != nil {
+			return "", fmt.Errorf("dereference immutable release tag: %w", err)
+		}
+		object = tag.Object
+	}
+	if object.Type != "commit" || !updateHostBootstrapCommitPattern.MatchString(object.SHA) {
+		return "", errors.New("immutable release tag does not resolve to a valid commit")
+	}
+	return object.SHA, nil
+}
+
 func (d ReleaseDownloader) httpClient() *http.Client {
 	base := d.Client
 	if base == nil {
@@ -318,6 +498,9 @@ func (d ReleaseDownloader) httpClient() *http.Client {
 		if req.URL.Scheme != "https" && !d.AllowHTTPForTest {
 			return errors.New("release download redirect must use HTTPS")
 		}
+		if d.TrustedPublicOnly && !trustedGitHubReleaseRedirectHost(req.URL.Hostname()) {
+			return errors.New("public release download redirected outside trusted GitHub storage")
+		}
 		if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
 			req.Header.Del("Authorization")
 		}
@@ -329,7 +512,19 @@ func (d ReleaseDownloader) httpClient() *http.Client {
 	return &clone
 }
 
+func trustedGitHubReleaseRedirectHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "api.github.com", "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com":
+		return true
+	default:
+		return false
+	}
+}
+
 func (d ReleaseDownloader) newRequest(ctx context.Context, raw string) (*http.Request, error) {
+	if d.TrustedPublicOnly && strings.TrimSpace(d.Token) != "" {
+		return nil, errors.New("public pull mode does not accept a release credential")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return nil, err
@@ -407,6 +602,18 @@ func (d ReleaseDownloader) downloadFile(ctx context.Context, raw, dest string, m
 	}
 	remove = false
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (d ReleaseDownloader) downloadResolvedReleaseAsset(ctx context.Context, asset githubReleaseAsset, dest string, max int64) (string, error) {
+	digest, err := d.downloadFile(ctx, asset.URL, dest, max)
+	if err != nil {
+		return "", err
+	}
+	if d.TrustedPublicOnly && asset.Digest != "sha256:"+strings.ToLower(digest) {
+		_ = os.Remove(dest)
+		return "", fmt.Errorf("release asset %q does not match the GitHub API digest", asset.Name)
+	}
+	return digest, nil
 }
 
 func readSHA256File(path, expectedName string) (string, error) {

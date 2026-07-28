@@ -126,6 +126,123 @@ func TestUpdateServiceMetadataPreservesRuntimeState(t *testing.T) {
 	}
 }
 
+func TestHeartbeatReportsEndpointWithoutChangingAppliedEndpoint(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(ctx, "worker", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{
+		ServiceID:   "worker-endpoint",
+		ServiceType: "worker",
+		ServiceName: "Worker Endpoint",
+		Host:        "worker.example.com",
+		Port:        8084,
+		SSLEnabled:  true,
+		PublicURL:   "https://worker.example.com:8084",
+	}); err != nil {
+		t.Fatalf("precreate service: %v", err)
+	}
+
+	service, err := auth.Heartbeat(ctx, token, ServiceHeartbeat{
+		ServiceID: "worker-endpoint",
+		Status:    "online",
+		API: &NodeAgentAPI{
+			Host:       "127.0.0.1",
+			Port:       19084,
+			SSLEnabled: false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if service.Host != "worker.example.com" || service.Port != 8084 || !service.SSLEnabled || service.PublicURL != "https://worker.example.com:8084" {
+		t.Fatalf("heartbeat changed the applied endpoint: %#v", service)
+	}
+	if service.AppliedEndpoint == nil || service.AppliedEndpoint.Host != "worker.example.com" || service.AppliedEndpoint.Port != 8084 {
+		t.Fatalf("applied endpoint was not retained: %#v", service.AppliedEndpoint)
+	}
+	if service.DesiredEndpoint == nil || service.DesiredEndpoint.Host != "worker.example.com" || service.DesiredEndpoint.Port != 8084 {
+		t.Fatalf("desired endpoint was not retained: %#v", service.DesiredEndpoint)
+	}
+	if service.ReportedEndpoint == nil || service.ReportedEndpoint.Host != "127.0.0.1" || service.ReportedEndpoint.Port != 19084 || service.ReportedEndpoint.PublicURL != "http://127.0.0.1:19084" {
+		t.Fatalf("reported endpoint was not recorded: %#v", service.ReportedEndpoint)
+	}
+}
+
+func TestPullUpdateAgentRegistrationIsEndpointlessAndHostBound(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	precreated, err := auth.PrecreateService(ctx, token, ServiceRegistration{
+		ServiceID:       "host-agent-a",
+		ServiceType:     "update_agent",
+		ServiceName:     "Host Agent A",
+		TransportMode:   "pull_v2",
+		ExecutionHostID: "host-a",
+		OwnershipEpoch:  7,
+	})
+	if err != nil {
+		t.Fatalf("precreate endpointless pull agent: %v", err)
+	}
+	if precreated.PublicURL != "" || precreated.AppliedEndpoint != nil {
+		t.Fatalf("endpointless pull agent unexpectedly has an endpoint: %#v", precreated)
+	}
+
+	registered, err := auth.RegisterService(ctx, token, ServiceRegistration{
+		ServiceID:   "host-agent-a",
+		ServiceType: "update_agent",
+		ServiceName: "Host Agent A",
+		Version:     "v2.0.0",
+	})
+	if err != nil {
+		t.Fatalf("register endpointless pull agent: %v", err)
+	}
+	if registered.TransportMode != "pull_v2" || registered.ExecutionHostID != "host-a" || registered.OwnershipEpoch != 7 {
+		t.Fatalf("agent-controlled registration changed host ownership: %#v", registered)
+	}
+	if registered.PublicURL != "" || registered.AppliedEndpoint != nil {
+		t.Fatalf("endpointless pull agent unexpectedly has an endpoint after registration: %#v", registered)
+	}
+}
+
+func TestEndpointlessRegistrationRemainsInvalidOutsidePullUpdateAgent(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name          string
+		serviceType   string
+		transport     string
+		executionHost string
+	}{
+		{name: "worker", serviceType: "worker"},
+		{name: "legacy updater", serviceType: "update_agent", transport: "ssh_v1"},
+		{name: "pull updater without host binding", serviceType: "update_agent", transport: "pull_v2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := NewMemoryAuthStore()
+			token, err := auth.CreateServiceToken(ctx, tc.serviceType, []string{"service.register"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = auth.PrecreateService(ctx, token, ServiceRegistration{
+				ServiceID:       "endpointless-invalid",
+				ServiceType:     tc.serviceType,
+				ServiceName:     "Endpointless Invalid",
+				TransportMode:   tc.transport,
+				ExecutionHostID: tc.executionHost,
+				OwnershipEpoch:  1,
+			})
+			if !errors.Is(err, ErrInvalidServiceRegistration) {
+				t.Fatalf("endpointless registration err = %v, want %v", err, ErrInvalidServiceRegistration)
+			}
+		})
+	}
+}
+
 func TestHeartbeatWithoutCurrentStreamPreservesAssignment(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()
@@ -200,6 +317,71 @@ func TestRotateServiceNodeTokenSealerFailureDoesNotMutate(t *testing.T) {
 	}
 	if !reflect.DeepEqual(afterTokens, beforeTokens) {
 		t.Fatalf("tokens mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeTokens, afterTokens)
+	}
+}
+
+func TestRotateServiceNodeTokenRejectsImmediatePullV2RotationWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{
+		"service.register",
+		"service.heartbeat",
+		"service.config.read",
+		"updates.claim",
+		"updates.report",
+		"updates.authorize",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{
+		ServiceID:       "host-agent-rotation-guard",
+		ServiceType:     "update_agent",
+		ServiceName:     "Guarded Host Agent",
+		TransportMode:   SystemUpdateTransportPullV2,
+		ExecutionHostID: "host-rotation-guard",
+		OwnershipEpoch:  1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.SetServiceNodeTokenSecret(ctx, "host-agent-rotation-guard", "old-ciphertext", "old-nonce"); err != nil {
+		t.Fatal(err)
+	}
+	beforeService, err := auth.GetService(ctx, "host-agent-rotation-guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeTokens, err := auth.ListServiceTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sealCalled := false
+	if _, _, err := auth.RotateServiceNodeToken(ctx, beforeService.ServiceID, oldToken.ID, func(string) (string, string, error) {
+		sealCalled = true
+		return "new-ciphertext", "new-nonce", nil
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("immediate pull_v2 rotation error = %v, want ErrConflict", err)
+	}
+	if sealCalled {
+		t.Fatal("immediate pull_v2 rotation generated and sealed a replacement token")
+	}
+	afterService, err := auth.GetService(ctx, "host-agent-rotation-guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterTokens, err := auth.ListServiceTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterService, beforeService) {
+		t.Fatalf("rejected pull_v2 rotation mutated service:\nbefore=%#v\nafter=%#v", beforeService, afterService)
+	}
+	if !reflect.DeepEqual(afterTokens, beforeTokens) {
+		t.Fatalf("rejected pull_v2 rotation mutated tokens:\nbefore=%#v\nafter=%#v", beforeTokens, afterTokens)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); err != nil {
+		t.Fatalf("rejected pull_v2 rotation invalidated the existing token: %v", err)
 	}
 }
 
@@ -838,5 +1020,176 @@ func TestRegeneratingConfigureTokenRetainsPendingTombstoneAndInvalidatesOldStage
 	}
 	if replacement.Token.ID == staged.Token.ID || replacement.Service.StagedNodeTokenID != replacement.Token.ID {
 		t.Fatalf("replacement stage did not bind a fresh pending identity: %#v", replacement)
+	}
+}
+
+func TestEmergencyRevokedNodeConfigurationAnchorRequiresScrubbedPullV2(t *testing.T) {
+	now := time.Date(2026, time.July, 28, 17, 0, 0, 0, time.UTC)
+	baseService := RegisteredService{
+		ServiceID:            "emergency-anchor",
+		ServiceType:          "update_agent",
+		TransportMode:        SystemUpdateTransportPullV2,
+		TokenID:              "revoked-token",
+		Status:               "offline",
+		ReportedCapabilities: map[string]any{},
+	}
+	baseToken := ServiceToken{
+		ID:          "revoked-token",
+		ServiceType: "update_agent",
+		RevokedAt:   &now,
+	}
+	tests := []struct {
+		name string
+		edit func(*RegisteredService, *ServiceToken)
+	}{
+		{
+			name: "wrong service type",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.ServiceType = "worker"
+			},
+		},
+		{
+			name: "wrong transport",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.TransportMode = SystemUpdateTransportSSHV1
+			},
+		},
+		{
+			name: "different current token",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.TokenID = "different-token"
+			},
+		},
+		{
+			name: "service online",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.Status = "online"
+			},
+		},
+		{
+			name: "heartbeat retained",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.LastHeartbeatAt = &now
+			},
+		},
+		{
+			name: "active ciphertext retained",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.NodeTokenCiphertext = "ciphertext"
+			},
+		},
+		{
+			name: "active nonce retained",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.NodeTokenNonce = "nonce"
+			},
+		},
+		{
+			name: "reported capabilities retained",
+			edit: func(service *RegisteredService, _ *ServiceToken) {
+				service.ReportedCapabilities = map[string]any{"host_agent": true}
+			},
+		},
+		{
+			name: "wrong token type",
+			edit: func(_ *RegisteredService, token *ServiceToken) {
+				token.ServiceType = "worker"
+			},
+		},
+		{
+			name: "token not revoked",
+			edit: func(_ *RegisteredService, token *ServiceToken) {
+				token.RevokedAt = nil
+			},
+		},
+	}
+	if !isEmergencyRevokedNodeConfigurationAnchor(baseService, baseToken) {
+		t.Fatal("valid emergency recovery anchor was rejected")
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := baseService
+			token := baseToken
+			test.edit(&service, &token)
+			if isEmergencyRevokedNodeConfigurationAnchor(service, token) {
+				t.Fatal("unsafe emergency recovery anchor was accepted")
+			}
+		})
+	}
+}
+
+func TestEmergencyConfigureStageAcceptsOnlyDistinctSecretFreeTombstone(t *testing.T) {
+	now := time.Date(2026, time.July, 28, 17, 30, 0, 0, time.UTC)
+	base := RegisteredService{TokenID: "active-token"}
+	tombstone := base
+	tombstone.StagedNodeTokenID = "abandoned-token"
+	if !hasStagedServiceNodeConfiguration(tombstone) ||
+		!hasOnlyStagedNodeConfigurationTombstone(tombstone) {
+		t.Fatal("distinct secret-free tombstone was rejected")
+	}
+	tests := []struct {
+		name string
+		edit func(*RegisteredService)
+	}{
+		{
+			name: "same as active token id",
+			edit: func(service *RegisteredService) {
+				service.StagedNodeTokenID = service.TokenID
+			},
+		},
+		{
+			name: "previous token id",
+			edit: func(service *RegisteredService) {
+				service.StagedNodePreviousTokenID = "previous-token"
+			},
+		},
+		{
+			name: "token hash",
+			edit: func(service *RegisteredService) {
+				service.StagedNodeTokenHash = "hash"
+			},
+		},
+		{
+			name: "token scopes",
+			edit: func(service *RegisteredService) {
+				service.StagedNodeTokenScopes = []string{"updates.claim"}
+			},
+		},
+		{
+			name: "token ciphertext",
+			edit: func(service *RegisteredService) {
+				service.StagedNodeTokenCiphertext = "ciphertext"
+			},
+		},
+		{
+			name: "token nonce",
+			edit: func(service *RegisteredService) {
+				service.StagedNodeTokenNonce = "nonce"
+			},
+		},
+		{
+			name: "activation hash",
+			edit: func(service *RegisteredService) {
+				service.StagedNodeActivationTokenHash = "activation-hash"
+			},
+		},
+		{
+			name: "stage timestamp",
+			edit: func(service *RegisteredService) {
+				service.StagedNodeTokenAt = &now
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := tombstone
+			test.edit(&service)
+			if !hasStagedServiceNodeConfiguration(service) {
+				t.Fatal("staged residue was not detected")
+			}
+			if hasOnlyStagedNodeConfigurationTombstone(service) {
+				t.Fatal("unsafe staged residue was accepted as a tombstone")
+			}
+		})
 	}
 }

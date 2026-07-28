@@ -15,7 +15,10 @@ import (
 	"github.com/example/autostream-control-panel/internal/security"
 )
 
-var serviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var (
+	serviceIDPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	executionHostIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$`)
+)
 
 type ServiceToken struct {
 	ID          string     `json:"id"`
@@ -28,74 +31,99 @@ type ServiceToken struct {
 	TokenHash string `json:"-"`
 }
 
+// ServiceEndpoint describes the Control Panel-visible API endpoint of a
+// registered service. The legacy Host/Port/SSLEnabled/PublicURL fields remain
+// the applied endpoint during the bridge period.
+type ServiceEndpoint struct {
+	Host       string `json:"host,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	SSLEnabled bool   `json:"ssl_enabled"`
+	PublicURL  string `json:"public_url,omitempty"`
+}
+
 type RegisteredService struct {
-	ServiceID                     string         `json:"service_id"`
-	ServiceType                   string         `json:"service_type"`
-	ServiceName                   string         `json:"service_name"`
-	Description                   string         `json:"description,omitempty"`
-	Host                          string         `json:"host,omitempty"`
-	Port                          int            `json:"port,omitempty"`
-	SSLEnabled                    bool           `json:"ssl_enabled"`
-	PublicURL                     string         `json:"public_url"`
-	Version                       string         `json:"version"`
-	ReportedVersion               string         `json:"reported_version,omitempty"`
-	ReportedCommit                string         `json:"reported_commit,omitempty"`
-	ReportedBuildDate             string         `json:"reported_build_date,omitempty"`
-	Status                        string         `json:"status"`
-	AssignmentRole                string         `json:"assignment_role,omitempty"`
-	LastHeartbeatAt               *time.Time     `json:"last_heartbeat_at,omitempty"`
-	LastReportedAt                *time.Time     `json:"last_reported_at,omitempty"`
-	CurrentStreamID               string         `json:"current_stream_id,omitempty"`
-	Capabilities                  map[string]any `json:"capabilities"`
-	ReportedCapabilities          map[string]any `json:"reported_capabilities,omitempty"`
-	Metrics                       map[string]any `json:"metrics,omitempty"`
-	TokenID                       string         `json:"-"`
-	NodeTokenCiphertext           string         `json:"-"`
-	NodeTokenNonce                string         `json:"-"`
-	StagedNodePreviousTokenID     string         `json:"-"`
-	StagedNodeTokenID             string         `json:"-"`
-	StagedNodeTokenHash           string         `json:"-"`
-	StagedNodeTokenScopes         []string       `json:"-"`
-	StagedNodeTokenCiphertext     string         `json:"-"`
-	StagedNodeTokenNonce          string         `json:"-"`
-	StagedNodeActivationTokenHash string         `json:"-"`
-	StagedNodeTokenAt             *time.Time     `json:"-"`
-	ReportedHostname              string         `json:"reported_hostname,omitempty"`
-	ReportedOS                    string         `json:"reported_os,omitempty"`
-	ReportedArch                  string         `json:"reported_arch,omitempty"`
-	ConfigureTokenHash            string         `json:"-"`
-	ConfigureTokenExpiresAt       *time.Time     `json:"configure_token_expires_at,omitempty"`
-	ConfigureTokenUsedAt          *time.Time     `json:"configure_token_used_at,omitempty"`
-	NodeTokenRotatedAt            *time.Time     `json:"node_token_rotated_at,omitempty"`
-	CreatedAt                     time.Time      `json:"created_at"`
-	UpdatedAt                     time.Time      `json:"updated_at"`
+	ServiceID                     string           `json:"service_id"`
+	ServiceType                   string           `json:"service_type"`
+	ServiceName                   string           `json:"service_name"`
+	Description                   string           `json:"description,omitempty"`
+	TransportMode                 string           `json:"transport_mode,omitempty"`
+	ExecutionHostID               string           `json:"execution_host_id,omitempty"`
+	OwnershipEpoch                int64            `json:"ownership_epoch,omitempty"`
+	Host                          string           `json:"host,omitempty"`
+	Port                          int              `json:"port,omitempty"`
+	SSLEnabled                    bool             `json:"ssl_enabled"`
+	PublicURL                     string           `json:"public_url,omitempty"`
+	DesiredEndpoint               *ServiceEndpoint `json:"desired_endpoint,omitempty"`
+	AppliedEndpoint               *ServiceEndpoint `json:"applied_endpoint,omitempty"`
+	ReportedEndpoint              *ServiceEndpoint `json:"reported_endpoint,omitempty"`
+	EndpointRevision              int64            `json:"endpoint_revision,omitempty"`
+	EndpointStatus                string           `json:"endpoint_status,omitempty"`
+	AppliedConfigRevision         int64            `json:"applied_config_revision,omitempty"`
+	AppliedConfigSHA256           string           `json:"applied_config_sha256,omitempty"`
+	Version                       string           `json:"version"`
+	ReportedVersion               string           `json:"reported_version,omitempty"`
+	ReportedCommit                string           `json:"reported_commit,omitempty"`
+	ReportedBuildDate             string           `json:"reported_build_date,omitempty"`
+	Status                        string           `json:"status"`
+	AssignmentRole                string           `json:"assignment_role,omitempty"`
+	LastHeartbeatAt               *time.Time       `json:"last_heartbeat_at,omitempty"`
+	LastReportedAt                *time.Time       `json:"last_reported_at,omitempty"`
+	CurrentStreamID               string           `json:"current_stream_id,omitempty"`
+	Capabilities                  map[string]any   `json:"capabilities"`
+	ReportedCapabilities          map[string]any   `json:"reported_capabilities,omitempty"`
+	Metrics                       map[string]any   `json:"metrics,omitempty"`
+	TokenID                       string           `json:"-"`
+	NodeTokenCiphertext           string           `json:"-"`
+	NodeTokenNonce                string           `json:"-"`
+	StagedNodePreviousTokenID     string           `json:"-"`
+	StagedNodeTokenID             string           `json:"-"`
+	StagedNodeTokenHash           string           `json:"-"`
+	StagedNodeTokenScopes         []string         `json:"-"`
+	StagedNodeTokenCiphertext     string           `json:"-"`
+	StagedNodeTokenNonce          string           `json:"-"`
+	StagedNodeActivationTokenHash string           `json:"-"`
+	StagedNodeTokenAt             *time.Time       `json:"-"`
+	ReportedHostname              string           `json:"reported_hostname,omitempty"`
+	ReportedOS                    string           `json:"reported_os,omitempty"`
+	ReportedArch                  string           `json:"reported_arch,omitempty"`
+	ConfigureTokenHash            string           `json:"-"`
+	ConfigureTokenExpiresAt       *time.Time       `json:"configure_token_expires_at,omitempty"`
+	ConfigureTokenUsedAt          *time.Time       `json:"configure_token_used_at,omitempty"`
+	NodeTokenRotatedAt            *time.Time       `json:"node_token_rotated_at,omitempty"`
+	CreatedAt                     time.Time        `json:"created_at"`
+	UpdatedAt                     time.Time        `json:"updated_at"`
 }
 
 type ServiceRegistration struct {
-	ServiceID    string         `json:"service_id"`
-	ServiceType  string         `json:"service_type"`
-	ServiceName  string         `json:"service_name"`
-	Description  string         `json:"description,omitempty"`
-	Host         string         `json:"host,omitempty"`
-	Port         int            `json:"port,omitempty"`
-	SSLEnabled   bool           `json:"ssl_enabled"`
-	PublicURL    string         `json:"public_url"`
-	Version      string         `json:"version"`
-	Commit       string         `json:"commit,omitempty"`
-	BuildDate    string         `json:"build_date,omitempty"`
-	Capabilities map[string]any `json:"capabilities"`
-	Hostname     string         `json:"hostname,omitempty"`
-	OS           string         `json:"os,omitempty"`
-	Arch         string         `json:"arch,omitempty"`
+	ServiceID       string         `json:"service_id"`
+	ServiceType     string         `json:"service_type"`
+	ServiceName     string         `json:"service_name"`
+	Description     string         `json:"description,omitempty"`
+	TransportMode   string         `json:"transport_mode,omitempty"`
+	ExecutionHostID string         `json:"execution_host_id,omitempty"`
+	OwnershipEpoch  int64          `json:"ownership_epoch,omitempty"`
+	Host            string         `json:"host,omitempty"`
+	Port            int            `json:"port,omitempty"`
+	SSLEnabled      bool           `json:"ssl_enabled"`
+	PublicURL       string         `json:"public_url,omitempty"`
+	Version         string         `json:"version"`
+	Commit          string         `json:"commit,omitempty"`
+	BuildDate       string         `json:"build_date,omitempty"`
+	Capabilities    map[string]any `json:"capabilities"`
+	Hostname        string         `json:"hostname,omitempty"`
+	OS              string         `json:"os,omitempty"`
+	Arch            string         `json:"arch,omitempty"`
 }
 
 type ServiceMetadataUpdate struct {
-	ServiceName string
-	Description string
-	Host        string
-	Port        int
-	SSLEnabled  bool
-	PublicURL   string
+	ServiceName      string
+	Description      string
+	Host             string
+	Port             int
+	SSLEnabled       bool
+	PublicURL        string
+	Endpointless     bool
+	PreserveEndpoint bool
 }
 
 type ServiceHeartbeat struct {
@@ -161,6 +189,36 @@ type NodeAgentAPI struct {
 	Port       int    `json:"port"`
 	SSLEnabled bool   `json:"sslEnabled"`
 }
+
+const serviceSelectColumns = `SELECT service_id, service_type, service_name, COALESCE(description, ''),
+COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url,
+COALESCE(transport_mode, ''), COALESCE(execution_host_id, ''), COALESCE(ownership_epoch, 0),
+COALESCE(desired_host, host, ''), COALESCE(desired_port, port, 0), COALESCE(desired_ssl_enabled, ssl_enabled, 0), COALESCE(desired_public_url, public_url, ''),
+COALESCE(reported_api_host, ''), COALESCE(reported_api_port, 0), COALESCE(reported_api_ssl_enabled, 0), COALESCE(reported_api_public_url, ''),
+COALESCE(endpoint_revision, 1), COALESCE(endpoint_status, 'applied'),
+COALESCE(applied_config_revision, 1), COALESCE(applied_config_sha256, ''),
+version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''),
+status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id,
+COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''),
+COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''),
+COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at,
+COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''),
+configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at`
+
+const serviceSelectColumnsAliased = `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''),
+COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url,
+COALESCE(s.transport_mode, ''), COALESCE(s.execution_host_id, ''), COALESCE(s.ownership_epoch, 0),
+COALESCE(s.desired_host, s.host, ''), COALESCE(s.desired_port, s.port, 0), COALESCE(s.desired_ssl_enabled, s.ssl_enabled, 0), COALESCE(s.desired_public_url, s.public_url, ''),
+COALESCE(s.reported_api_host, ''), COALESCE(s.reported_api_port, 0), COALESCE(s.reported_api_ssl_enabled, 0), COALESCE(s.reported_api_public_url, ''),
+COALESCE(s.endpoint_revision, 1), COALESCE(s.endpoint_status, 'applied'),
+COALESCE(s.applied_config_revision, 1), COALESCE(s.applied_config_sha256, ''),
+s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''),
+s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id,
+COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.staged_node_previous_token_id, ''), COALESCE(s.staged_node_token_id, ''),
+COALESCE(s.staged_node_token_hash, ''), COALESCE(s.staged_node_token_scopes, '[]'), COALESCE(s.staged_node_token_ciphertext, ''),
+COALESCE(s.staged_node_token_nonce, ''), COALESCE(s.staged_node_activation_token_hash, ''), s.staged_node_token_at,
+COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''),
+s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at`
 
 type StreamServiceAssignment struct {
 	StreamID       string    `json:"stream_id"`
@@ -352,7 +410,7 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
 	if err == sql.ErrNoRows {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
@@ -361,6 +419,9 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	}
 	if service.TokenID != expectedTokenID {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if requiresStagedNodeTokenRotation(service) {
+		return ServiceToken{}, RegisteredService{}, ErrConflict
 	}
 
 	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, expectedTokenID)
@@ -416,6 +477,35 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	return token, service, nil
 }
 
+func requiresStagedNodeTokenRotation(service RegisteredService) bool {
+	return service.ServiceType == "update_agent" &&
+		service.TransportMode == SystemUpdateTransportPullV2
+}
+
+func isEmergencyRevokedNodeConfigurationAnchor(service RegisteredService, token ServiceToken) bool {
+	return requiresStagedNodeTokenRotation(service) &&
+		service.TokenID == token.ID &&
+		service.Status == "offline" &&
+		service.LastHeartbeatAt == nil &&
+		service.NodeTokenCiphertext == "" &&
+		service.NodeTokenNonce == "" &&
+		len(service.ReportedCapabilities) == 0 &&
+		token.ServiceType == "update_agent" &&
+		token.RevokedAt != nil
+}
+
+func hasOnlyStagedNodeConfigurationTombstone(service RegisteredService) bool {
+	return service.StagedNodePreviousTokenID == "" &&
+		service.StagedNodeTokenID != "" &&
+		service.StagedNodeTokenID != service.TokenID &&
+		service.StagedNodeTokenHash == "" &&
+		len(service.StagedNodeTokenScopes) == 0 &&
+		service.StagedNodeTokenCiphertext == "" &&
+		service.StagedNodeTokenNonce == "" &&
+		service.StagedNodeActivationTokenHash == "" &&
+		service.StagedNodeTokenAt == nil
+}
+
 func selectActiveServiceTokenForUpdate(ctx context.Context, tx *sql.Tx, id string) (ServiceToken, error) {
 	var token ServiceToken
 	var scopesJSON string
@@ -429,6 +519,30 @@ func selectActiveServiceTokenForUpdate(ctx context.Context, tx *sql.Tx, id strin
 	}
 	if err := json.Unmarshal([]byte(scopesJSON), &token.Scopes); err != nil {
 		return ServiceToken{}, err
+	}
+	return token, nil
+}
+
+func selectServiceTokenForNodeConfiguration(
+	ctx context.Context,
+	tx *sql.Tx,
+	id string,
+) (ServiceToken, error) {
+	var token ServiceToken
+	var scopesJSON string
+	var revoked sql.NullTime
+	err := tx.QueryRowContext(ctx, `SELECT id, service_type, scopes, revoked_at, created_at FROM service_tokens WHERE id = ? FOR UPDATE`, id).Scan(&token.ID, &token.ServiceType, &scopesJSON, &revoked, &token.CreatedAt)
+	if err == sql.ErrNoRows {
+		return ServiceToken{}, ErrNotFound
+	}
+	if err != nil {
+		return ServiceToken{}, err
+	}
+	if err := json.Unmarshal([]byte(scopesJSON), &token.Scopes); err != nil {
+		return ServiceToken{}, err
+	}
+	if revoked.Valid {
+		token.RevokedAt = cloneTimePtr(&revoked.Time)
 	}
 	return token, nil
 }
@@ -525,8 +639,28 @@ func (s MariaDBAuthStore) PrecreateService(ctx context.Context, token ServiceTok
 	if err != nil {
 		return RegisteredService{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO services (service_id, service_type, service_name, description, host, port, ssl_enabled, public_url, version, reported_version, status, capabilities, reported_capabilities, metrics, token_id, node_token_rotated_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'pending', ?, ?, ?, ?, ?, ?, ?)`, registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description, registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL, registration.Version, string(capabilities), string(capabilities), "{}", token.ID, token.CreatedAt, now, now)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO services (
+service_id, service_type, service_name, description,
+transport_mode, execution_host_id, ownership_epoch,
+host, port, ssl_enabled, public_url,
+desired_host, desired_port, desired_ssl_enabled, desired_public_url,
+version, reported_version, status, capabilities, reported_capabilities, metrics,
+token_id, node_token_rotated_at, created_at, updated_at
+) VALUES (
+?, ?, ?, ?,
+?, ?, ?,
+?, ?, ?, ?,
+?, ?, ?, ?,
+?, '', 'pending', ?, ?, ?,
+?, ?, ?, ?
+)`,
+		registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description,
+		registration.TransportMode, registration.ExecutionHostID, registration.OwnershipEpoch,
+		registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL,
+		registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL,
+		registration.Version, string(capabilities), string(capabilities), "{}",
+		token.ID, token.CreatedAt, now, now,
+	)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
 			return RegisteredService{}, ErrAlreadyExists
@@ -548,21 +682,21 @@ func (s MariaDBAuthStore) RegisterService(ctx context.Context, token ServiceToke
 		return RegisteredService{}, ErrForbidden
 	}
 	registration = normalizeServiceRegistration(registration)
-	if err := validateServiceRegistration(registration); err != nil {
-		return RegisteredService{}, err
-	}
-	now := time.Now().UTC()
-	capabilities, err := json.Marshal(sanitizeServiceCapabilities(registration.Capabilities))
-	if err != nil {
-		return RegisteredService{}, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RegisteredService{}, err
 	}
 	defer tx.Rollback()
-	var existingTokenID, existingType, existingStatus string
-	err = tx.QueryRowContext(ctx, `SELECT token_id, service_type, status FROM services WHERE service_id = ? FOR UPDATE`, registration.ServiceID).Scan(&existingTokenID, &existingType, &existingStatus)
+	var existingTokenID, existingType, existingStatus, existingTransportMode, existingExecutionHostID string
+	var existingOwnershipEpoch int64
+	err = tx.QueryRowContext(ctx, `SELECT token_id, service_type, status, COALESCE(transport_mode, ''), COALESCE(execution_host_id, ''), ownership_epoch FROM services WHERE service_id = ? FOR UPDATE`, registration.ServiceID).Scan(
+		&existingTokenID,
+		&existingType,
+		&existingStatus,
+		&existingTransportMode,
+		&existingExecutionHostID,
+		&existingOwnershipEpoch,
+	)
 	if err == sql.ErrNoRows {
 		return RegisteredService{}, ErrForbidden
 	}
@@ -572,10 +706,78 @@ func (s MariaDBAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	if existingType != registration.ServiceType || existingTokenID != token.ID {
 		return RegisteredService{}, ErrForbidden
 	}
+	registration = bindPrecreatedUpdateAgentRegistration(
+		registration,
+		existingTransportMode,
+		existingExecutionHostID,
+		existingOwnershipEpoch,
+	)
+	if err := validateServiceRegistration(registration); err != nil {
+		return RegisteredService{}, err
+	}
+	now := time.Now().UTC()
+	capabilities, err := json.Marshal(sanitizeServiceCapabilities(registration.Capabilities))
+	if err != nil {
+		return RegisteredService{}, err
+	}
 	preserveConfiguredCapabilities := existingType == "update_agent" && existingStatus != "pending"
-	_, err = tx.ExecContext(ctx, `INSERT INTO services (service_id, service_type, service_name, description, host, port, ssl_enabled, public_url, version, reported_version, reported_commit, reported_build_date, status, capabilities, reported_capabilities, reported_hostname, reported_os, reported_arch, last_reported_at, metrics, token_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE service_type = VALUES(service_type), service_name = VALUES(service_name), description = VALUES(description), host = VALUES(host), port = VALUES(port), ssl_enabled = VALUES(ssl_enabled), public_url = VALUES(public_url), version = VALUES(version), reported_version = VALUES(reported_version), reported_commit = VALUES(reported_commit), reported_build_date = VALUES(reported_build_date), status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, capabilities = CASE WHEN ? THEN capabilities ELSE VALUES(capabilities) END, reported_capabilities = VALUES(reported_capabilities), reported_hostname = VALUES(reported_hostname), reported_os = VALUES(reported_os), reported_arch = VALUES(reported_arch), last_reported_at = VALUES(last_reported_at), token_id = VALUES(token_id), updated_at = VALUES(updated_at)`, registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description, registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL, registration.Version, registration.Version, registration.Commit, registration.BuildDate, string(capabilities), string(capabilities), registration.Hostname, registration.OS, registration.Arch, now, "{}", token.ID, now, now, preserveConfiguredCapabilities)
+	_, err = tx.ExecContext(ctx, `INSERT INTO services (
+service_id, service_type, service_name, description,
+transport_mode, execution_host_id, ownership_epoch,
+host, port, ssl_enabled, public_url,
+desired_host, desired_port, desired_ssl_enabled, desired_public_url,
+reported_api_host, reported_api_port, reported_api_ssl_enabled, reported_api_public_url,
+version, reported_version, reported_commit, reported_build_date, status,
+capabilities, reported_capabilities, reported_hostname, reported_os, reported_arch, last_reported_at,
+metrics, token_id, created_at, updated_at
+) VALUES (
+?, ?, ?, ?,
+?, ?, ?,
+?, ?, ?, ?,
+?, ?, ?, ?,
+?, ?, ?, ?,
+?, ?, ?, ?, 'registered',
+?, ?, ?, ?, ?, ?,
+?, ?, ?, ?
+)
+ON DUPLICATE KEY UPDATE
+service_type = VALUES(service_type),
+service_name = VALUES(service_name),
+description = VALUES(description),
+host = CASE WHEN status = 'pending' THEN VALUES(host) ELSE host END,
+port = CASE WHEN status = 'pending' THEN VALUES(port) ELSE port END,
+ssl_enabled = CASE WHEN status = 'pending' THEN VALUES(ssl_enabled) ELSE ssl_enabled END,
+public_url = CASE WHEN status = 'pending' THEN VALUES(public_url) ELSE public_url END,
+desired_host = CASE WHEN status = 'pending' THEN VALUES(desired_host) ELSE desired_host END,
+desired_port = CASE WHEN status = 'pending' THEN VALUES(desired_port) ELSE desired_port END,
+desired_ssl_enabled = CASE WHEN status = 'pending' THEN VALUES(desired_ssl_enabled) ELSE desired_ssl_enabled END,
+desired_public_url = CASE WHEN status = 'pending' THEN VALUES(desired_public_url) ELSE desired_public_url END,
+reported_api_host = VALUES(reported_api_host),
+reported_api_port = VALUES(reported_api_port),
+reported_api_ssl_enabled = VALUES(reported_api_ssl_enabled),
+reported_api_public_url = VALUES(reported_api_public_url),
+version = VALUES(version),
+reported_version = VALUES(reported_version),
+reported_commit = VALUES(reported_commit),
+reported_build_date = VALUES(reported_build_date),
+status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END,
+capabilities = CASE WHEN ? THEN capabilities ELSE VALUES(capabilities) END,
+reported_capabilities = VALUES(reported_capabilities),
+reported_hostname = VALUES(reported_hostname),
+reported_os = VALUES(reported_os),
+reported_arch = VALUES(reported_arch),
+last_reported_at = VALUES(last_reported_at),
+token_id = VALUES(token_id),
+updated_at = VALUES(updated_at)`,
+		registration.ServiceID, registration.ServiceType, registration.ServiceName, registration.Description,
+		registration.TransportMode, registration.ExecutionHostID, registration.OwnershipEpoch,
+		registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL,
+		registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL,
+		registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL,
+		registration.Version, registration.Version, registration.Commit, registration.BuildDate,
+		string(capabilities), string(capabilities), registration.Hostname, registration.OS, registration.Arch, now,
+		"{}", token.ID, now, now, preserveConfiguredCapabilities,
+	)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -625,7 +827,55 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		apiPort = heartbeat.API.Port
 		apiSSL = heartbeat.API.SSLEnabled
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET status = ?, last_heartbeat_at = ?, current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END, metrics = ?, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, capabilities = CASE WHEN service_type = 'update_agent' OR ? = '{}' THEN capabilities ELSE ? END, reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, host = CASE WHEN ? = '' THEN host ELSE ? END, port = CASE WHEN ? = 0 THEN port ELSE ? END, ssl_enabled = CASE WHEN ? = '' THEN ssl_enabled ELSE ? END, public_url = CASE WHEN ? = '' THEN public_url ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, updated_at = ? WHERE service_id = ? AND token_id = ? AND EXISTS (SELECT 1 FROM service_tokens st WHERE st.id = ? AND st.revoked_at IS NULL)`, heartbeat.Status, now, heartbeat.CurrentStreamID, heartbeat.CurrentStreamID, string(metrics), heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Version, heartbeat.Commit, heartbeat.Commit, heartbeat.BuildDate, heartbeat.BuildDate, string(capabilities), string(capabilities), string(capabilities), string(capabilities), heartbeat.Hostname, heartbeat.Hostname, heartbeat.OS, heartbeat.OS, heartbeat.Arch, heartbeat.Arch, apiHost, apiHost, apiPort, apiPort, apiHost, apiSSL, buildServiceURL(apiHost, apiPort, apiSSL), buildServiceURL(apiHost, apiPort, apiSSL), heartbeat.Version, heartbeat.Commit, heartbeat.BuildDate, string(capabilities), heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, now, now, heartbeat.ServiceID, token.ID, token.ID)
+	if apiPort < 1 || apiPort > 65535 {
+		apiHost = ""
+		apiPort = 0
+		apiSSL = false
+	}
+	apiPublicURL := buildServiceURL(apiHost, apiPort, apiSSL)
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET
+status = ?,
+last_heartbeat_at = ?,
+current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END,
+metrics = ?,
+version = CASE WHEN ? = '' THEN version ELSE ? END,
+reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END,
+reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END,
+reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END,
+capabilities = CASE WHEN service_type = 'update_agent' OR ? = '{}' THEN capabilities ELSE ? END,
+reported_capabilities = CASE WHEN ? = '{}' THEN reported_capabilities ELSE ? END,
+reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END,
+reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END,
+reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END,
+reported_api_host = CASE WHEN ? = '' THEN reported_api_host ELSE ? END,
+reported_api_port = CASE WHEN ? = '' THEN reported_api_port ELSE ? END,
+reported_api_ssl_enabled = CASE WHEN ? = '' THEN reported_api_ssl_enabled ELSE ? END,
+reported_api_public_url = CASE WHEN ? = '' THEN reported_api_public_url ELSE ? END,
+last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '{}' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END,
+updated_at = ?
+WHERE service_id = ?
+  AND token_id = ?
+  AND EXISTS (SELECT 1 FROM service_tokens st WHERE st.id = ? AND st.revoked_at IS NULL)`,
+		heartbeat.Status, now,
+		heartbeat.CurrentStreamID, heartbeat.CurrentStreamID,
+		string(metrics),
+		heartbeat.Version, heartbeat.Version,
+		heartbeat.Version, heartbeat.Version,
+		heartbeat.Commit, heartbeat.Commit,
+		heartbeat.BuildDate, heartbeat.BuildDate,
+		string(capabilities), string(capabilities),
+		string(capabilities), string(capabilities),
+		heartbeat.Hostname, heartbeat.Hostname,
+		heartbeat.OS, heartbeat.OS,
+		heartbeat.Arch, heartbeat.Arch,
+		apiHost, apiHost,
+		apiHost, apiPort,
+		apiHost, apiSSL,
+		apiHost, apiPublicURL,
+		heartbeat.Version, heartbeat.Commit, heartbeat.BuildDate, string(capabilities),
+		heartbeat.Hostname, heartbeat.OS, heartbeat.Arch, apiHost, now,
+		now, heartbeat.ServiceID, token.ID, token.ID,
+	)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -782,7 +1032,7 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
 	if err == sql.ErrNoRows {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
@@ -865,7 +1115,7 @@ func (s MariaDBAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
 	if err == sql.ErrNoRows {
 		return StagedServiceNodeConfiguration{}, ErrNotFound
 	}
@@ -882,9 +1132,15 @@ func (s MariaDBAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 	if configureTokenHash == "" || service.ConfigureTokenExpiresAt == nil || service.ConfigureTokenUsedAt != nil || !now.Before(*service.ConfigureTokenExpiresAt) || !security.VerifyTokenHash(rawConfigureToken, configureTokenHash) {
 		return StagedServiceNodeConfiguration{}, ErrUnauthorized
 	}
-	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
+	oldToken, err := selectServiceTokenForNodeConfiguration(ctx, tx, service.TokenID)
 	if err != nil {
 		return StagedServiceNodeConfiguration{}, err
+	}
+	if oldToken.RevokedAt != nil &&
+		(!isEmergencyRevokedNodeConfigurationAnchor(service, oldToken) ||
+			(hasStagedServiceNodeConfiguration(service) &&
+				!hasOnlyStagedNodeConfigurationTombstone(service))) {
+		return StagedServiceNodeConfiguration{}, ErrNotFound
 	}
 	if oldToken.ServiceType != "update_agent" {
 		return StagedServiceNodeConfiguration{}, ErrForbidden
@@ -947,7 +1203,7 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
 	defer tx.Rollback()
-	service, err := scanService(tx.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
+	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
 	if err == sql.ErrNoRows {
 		return ServiceToken{}, RegisteredService{}, false, ErrNotFound
 	}
@@ -974,8 +1230,11 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	if service.ConfigureTokenExpiresAt == nil || !now.Before(*service.ConfigureTokenExpiresAt) || service.StagedNodeTokenAt == nil || service.TokenID != service.StagedNodePreviousTokenID {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
-	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
-	if err != nil || oldToken.ServiceType != "update_agent" {
+	oldToken, err := selectServiceTokenForNodeConfiguration(ctx, tx, service.TokenID)
+	if err != nil ||
+		oldToken.ServiceType != "update_agent" ||
+		(oldToken.RevokedAt != nil &&
+			!isEmergencyRevokedNodeConfigurationAnchor(service, oldToken)) {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
 	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
@@ -1006,8 +1265,10 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	if affected != 1 {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
-	if err := revokeServiceTokenIfUnreferencedInTx(ctx, tx, oldToken.ID, now); err != nil {
-		return ServiceToken{}, RegisteredService{}, false, err
+	if oldToken.RevokedAt == nil {
+		if err := revokeServiceTokenIfUnreferencedInTx(ctx, tx, oldToken.ID, now); err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
 	}
 	service = applyServiceRuntimeReport(service, report, now)
 	service.TokenID = token.ID
@@ -1040,7 +1301,7 @@ func (s MariaDBAuthStore) SetServiceNodeTokenSecret(ctx context.Context, service
 }
 
 func (s MariaDBAuthStore) ListServices(ctx context.Context) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.staged_node_previous_token_id, ''), COALESCE(s.staged_node_token_id, ''), COALESCE(s.staged_node_token_hash, ''), COALESCE(s.staged_node_token_scopes, '[]'), COALESCE(s.staged_node_token_ciphertext, ''), COALESCE(s.staged_node_token_nonce, ''), COALESCE(s.staged_node_activation_token_hash, ''), s.staged_node_token_at, COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
+	rows, err := s.db.QueryContext(ctx, serviceSelectColumnsAliased+`, COALESCE(a.assignment_role, '')
 FROM services s
 LEFT JOIN stream_service_assignments a ON a.service_id = s.service_id AND a.stream_id = s.current_stream_id
 ORDER BY s.service_type, s.service_name`)
@@ -1060,7 +1321,7 @@ ORDER BY s.service_type, s.service_name`)
 }
 
 func (s MariaDBAuthStore) ListWorkers(ctx context.Context) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.staged_node_previous_token_id, ''), COALESCE(s.staged_node_token_id, ''), COALESCE(s.staged_node_token_hash, ''), COALESCE(s.staged_node_token_scopes, '[]'), COALESCE(s.staged_node_token_ciphertext, ''), COALESCE(s.staged_node_token_nonce, ''), COALESCE(s.staged_node_activation_token_hash, ''), s.staged_node_token_at, COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, COALESCE(a.assignment_role, '')
+	rows, err := s.db.QueryContext(ctx, serviceSelectColumnsAliased+`, COALESCE(a.assignment_role, '')
 FROM services s
 LEFT JOIN stream_service_assignments a ON a.service_id = s.service_id AND a.stream_id = s.current_stream_id
 WHERE s.service_type = 'worker'
@@ -1093,7 +1354,63 @@ func (s MariaDBAuthStore) UpdateServiceMetadata(ctx context.Context, serviceID s
 		return RegisteredService{}, err
 	}
 	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET service_name = ?, description = ?, host = ?, port = ?, ssl_enabled = ?, public_url = ?, updated_at = ? WHERE service_id = ?`, update.ServiceName, update.Description, update.Host, update.Port, update.SSLEnabled, update.PublicURL, now, serviceID)
+	if update.PreserveEndpoint {
+		result, err := s.db.ExecContext(ctx, `UPDATE services SET service_name = ?, description = ?, updated_at = ? WHERE service_id = ?`,
+			update.ServiceName, update.Description, now, serviceID)
+		if err != nil {
+			return RegisteredService{}, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return RegisteredService{}, err
+		}
+		if affected == 0 {
+			return RegisteredService{}, ErrNotFound
+		}
+		return s.getService(ctx, serviceID)
+	}
+	if update.Endpointless {
+		existing, err := s.getService(ctx, serviceID)
+		if err != nil {
+			return RegisteredService{}, err
+		}
+		if existing.ServiceType != "update_agent" || existing.TransportMode != "pull_v2" {
+			return RegisteredService{}, ErrInvalidServiceRegistration
+		}
+		result, err := s.db.ExecContext(ctx, `UPDATE services SET service_name = ?, description = ?, updated_at = ? WHERE service_id = ? AND service_type = 'update_agent' AND transport_mode = 'pull_v2'`,
+			update.ServiceName, update.Description, now, serviceID)
+		if err != nil {
+			return RegisteredService{}, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return RegisteredService{}, err
+		}
+		if affected == 0 {
+			return RegisteredService{}, ErrNotFound
+		}
+		return s.getService(ctx, serviceID)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE services SET
+service_name = ?,
+description = ?,
+host = ?,
+port = ?,
+ssl_enabled = ?,
+public_url = ?,
+desired_host = ?,
+desired_port = ?,
+desired_ssl_enabled = ?,
+desired_public_url = ?,
+endpoint_revision = endpoint_revision + 1,
+endpoint_status = 'applied',
+updated_at = ?
+WHERE service_id = ?`,
+		update.ServiceName, update.Description,
+		update.Host, update.Port, update.SSLEnabled, update.PublicURL,
+		update.Host, update.Port, update.SSLEnabled, update.PublicURL,
+		now, serviceID,
+	)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -1237,7 +1554,7 @@ func (s MariaDBAuthStore) UnassignServiceFromStream(ctx context.Context, service
 }
 
 func (s MariaDBAuthStore) ListStreamAssignments(ctx context.Context, streamID string) ([]RegisteredService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.service_id, s.service_type, s.service_name, COALESCE(s.description, ''), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_url, s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''), s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id, COALESCE(s.node_token_ciphertext, ''), COALESCE(s.node_token_nonce, ''), COALESCE(s.staged_node_previous_token_id, ''), COALESCE(s.staged_node_token_id, ''), COALESCE(s.staged_node_token_hash, ''), COALESCE(s.staged_node_token_scopes, '[]'), COALESCE(s.staged_node_token_ciphertext, ''), COALESCE(s.staged_node_token_nonce, ''), COALESCE(s.staged_node_activation_token_hash, ''), s.staged_node_token_at, COALESCE(s.reported_hostname, ''), COALESCE(s.reported_os, ''), COALESCE(s.reported_arch, ''), s.configure_token_expires_at, s.configure_token_used_at, s.node_token_rotated_at, s.created_at, s.updated_at, a.assignment_role
+	rows, err := s.db.QueryContext(ctx, serviceSelectColumnsAliased+`, a.assignment_role
 FROM stream_service_assignments a
 JOIN services s ON s.service_id = a.service_id
 WHERE a.stream_id = ?
@@ -1381,7 +1698,7 @@ func sanitizeServiceEventValue(value any) any {
 }
 
 func (s MariaDBAuthStore) getService(ctx context.Context, id string) (RegisteredService, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT service_id, service_type, service_name, COALESCE(description, ''), COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url, version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''), status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id, COALESCE(node_token_ciphertext, ''), COALESCE(node_token_nonce, ''), COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, ''), COALESCE(staged_node_token_hash, ''), COALESCE(staged_node_token_scopes, '[]'), COALESCE(staged_node_token_ciphertext, ''), COALESCE(staged_node_token_nonce, ''), COALESCE(staged_node_activation_token_hash, ''), staged_node_token_at, COALESCE(reported_hostname, ''), COALESCE(reported_os, ''), COALESCE(reported_arch, ''), configure_token_expires_at, configure_token_used_at, node_token_rotated_at, created_at, updated_at FROM services WHERE service_id = ?`, id)
+	row := s.db.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ?`, id)
 	service, err := scanService(row)
 	if err == sql.ErrNoRows {
 		return RegisteredService{}, ErrNotFound
@@ -1412,6 +1729,8 @@ type serviceScanner interface {
 
 func scanService(row serviceScanner) (RegisteredService, error) {
 	var service RegisteredService
+	var desiredEndpoint ServiceEndpoint
+	var reportedEndpoint ServiceEndpoint
 	var lastHeartbeat sql.NullTime
 	var lastReported sql.NullTime
 	var currentStream sql.NullString
@@ -1423,7 +1742,21 @@ func scanService(row serviceScanner) (RegisteredService, error) {
 	var configureExpires sql.NullTime
 	var configureUsed sql.NullTime
 	var nodeTokenRotated sql.NullTime
-	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.StagedNodePreviousTokenID, &service.StagedNodeTokenID, &service.StagedNodeTokenHash, &stagedTokenScopes, &service.StagedNodeTokenCiphertext, &service.StagedNodeTokenNonce, &service.StagedNodeActivationTokenHash, &stagedTokenAt, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt)
+	err := row.Scan(
+		&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description,
+		&service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL,
+		&service.TransportMode, &service.ExecutionHostID, &service.OwnershipEpoch,
+		&desiredEndpoint.Host, &desiredEndpoint.Port, &desiredEndpoint.SSLEnabled, &desiredEndpoint.PublicURL,
+		&reportedEndpoint.Host, &reportedEndpoint.Port, &reportedEndpoint.SSLEnabled, &reportedEndpoint.PublicURL,
+		&service.EndpointRevision, &service.EndpointStatus,
+		&service.AppliedConfigRevision, &service.AppliedConfigSHA256,
+		&service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate,
+		&service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID,
+		&service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.StagedNodePreviousTokenID, &service.StagedNodeTokenID,
+		&service.StagedNodeTokenHash, &stagedTokenScopes, &service.StagedNodeTokenCiphertext, &service.StagedNodeTokenNonce,
+		&service.StagedNodeActivationTokenHash, &stagedTokenAt, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch,
+		&configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt,
+	)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -1467,6 +1800,10 @@ func scanService(row serviceScanner) (RegisteredService, error) {
 	if service.Host == "" || service.Port == 0 {
 		fillServiceEndpointFromURL(&service)
 	}
+	service.AppliedEndpoint = serviceEndpoint(service.Host, service.Port, service.SSLEnabled, service.PublicURL)
+	service.DesiredEndpoint = serviceEndpoint(desiredEndpoint.Host, desiredEndpoint.Port, desiredEndpoint.SSLEnabled, desiredEndpoint.PublicURL)
+	service.ReportedEndpoint = serviceEndpoint(reportedEndpoint.Host, reportedEndpoint.Port, reportedEndpoint.SSLEnabled, reportedEndpoint.PublicURL)
+	hydrateServiceEndpointState(&service)
 	return service, nil
 }
 
@@ -1480,6 +1817,8 @@ func scanAssignedService(row serviceScanner) (RegisteredService, error) {
 
 func scanServiceWithExtraRole(row serviceScanner) (RegisteredService, error) {
 	var service RegisteredService
+	var desiredEndpoint ServiceEndpoint
+	var reportedEndpoint ServiceEndpoint
 	var lastHeartbeat sql.NullTime
 	var lastReported sql.NullTime
 	var currentStream sql.NullString
@@ -1491,7 +1830,21 @@ func scanServiceWithExtraRole(row serviceScanner) (RegisteredService, error) {
 	var configureExpires sql.NullTime
 	var configureUsed sql.NullTime
 	var nodeTokenRotated sql.NullTime
-	err := row.Scan(&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description, &service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL, &service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate, &service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID, &service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.StagedNodePreviousTokenID, &service.StagedNodeTokenID, &service.StagedNodeTokenHash, &stagedTokenScopes, &service.StagedNodeTokenCiphertext, &service.StagedNodeTokenNonce, &service.StagedNodeActivationTokenHash, &stagedTokenAt, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch, &configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt, &service.AssignmentRole)
+	err := row.Scan(
+		&service.ServiceID, &service.ServiceType, &service.ServiceName, &service.Description,
+		&service.Host, &service.Port, &service.SSLEnabled, &service.PublicURL,
+		&service.TransportMode, &service.ExecutionHostID, &service.OwnershipEpoch,
+		&desiredEndpoint.Host, &desiredEndpoint.Port, &desiredEndpoint.SSLEnabled, &desiredEndpoint.PublicURL,
+		&reportedEndpoint.Host, &reportedEndpoint.Port, &reportedEndpoint.SSLEnabled, &reportedEndpoint.PublicURL,
+		&service.EndpointRevision, &service.EndpointStatus,
+		&service.AppliedConfigRevision, &service.AppliedConfigSHA256,
+		&service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate,
+		&service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID,
+		&service.NodeTokenCiphertext, &service.NodeTokenNonce, &service.StagedNodePreviousTokenID, &service.StagedNodeTokenID,
+		&service.StagedNodeTokenHash, &stagedTokenScopes, &service.StagedNodeTokenCiphertext, &service.StagedNodeTokenNonce,
+		&service.StagedNodeActivationTokenHash, &stagedTokenAt, &service.ReportedHostname, &service.ReportedOS, &service.ReportedArch,
+		&configureExpires, &configureUsed, &nodeTokenRotated, &service.CreatedAt, &service.UpdatedAt, &service.AssignmentRole,
+	)
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -1535,6 +1888,10 @@ func scanServiceWithExtraRole(row serviceScanner) (RegisteredService, error) {
 	if service.Host == "" || service.Port == 0 {
 		fillServiceEndpointFromURL(&service)
 	}
+	service.AppliedEndpoint = serviceEndpoint(service.Host, service.Port, service.SSLEnabled, service.PublicURL)
+	service.DesiredEndpoint = serviceEndpoint(desiredEndpoint.Host, desiredEndpoint.Port, desiredEndpoint.SSLEnabled, desiredEndpoint.PublicURL)
+	service.ReportedEndpoint = serviceEndpoint(reportedEndpoint.Host, reportedEndpoint.Port, reportedEndpoint.SSLEnabled, reportedEndpoint.PublicURL)
+	hydrateServiceEndpointState(&service)
 	return service, nil
 }
 
@@ -1634,11 +1991,36 @@ func serviceCapabilitySecretKey(key string) bool {
 
 func validateServiceRegistration(registration ServiceRegistration) error {
 	registration = normalizeServiceRegistration(registration)
-	if !serviceIDPattern.MatchString(registration.ServiceID) || strings.EqualFold(registration.ServiceID, "control-panel") || strings.TrimSpace(registration.ServiceName) == "" || strings.TrimSpace(registration.PublicURL) == "" {
+	if !serviceIDPattern.MatchString(registration.ServiceID) || strings.EqualFold(registration.ServiceID, "control-panel") || strings.TrimSpace(registration.ServiceName) == "" {
 		return ErrInvalidServiceRegistration
 	}
 	if err := validateServiceType(registration.ServiceType); err != nil {
 		return err
+	}
+	if registration.ServiceType == "update_agent" {
+		switch registration.TransportMode {
+		case "pull_v2":
+			if !executionHostIDPattern.MatchString(registration.ExecutionHostID) ||
+				registration.OwnershipEpoch < 0 ||
+				registration.Host != "" ||
+				registration.Port != 0 ||
+				registration.SSLEnabled ||
+				registration.PublicURL != "" {
+				return ErrInvalidServiceRegistration
+			}
+			return nil
+		case "ssh_v1":
+			if registration.ExecutionHostID != "" || registration.OwnershipEpoch != 0 {
+				return ErrInvalidServiceRegistration
+			}
+		default:
+			return ErrInvalidServiceRegistration
+		}
+	} else if registration.TransportMode != "" || registration.ExecutionHostID != "" || registration.OwnershipEpoch != 0 {
+		return ErrInvalidServiceRegistration
+	}
+	if strings.TrimSpace(registration.PublicURL) == "" || registration.Port < 1 || registration.Port > 65535 {
+		return ErrInvalidServiceRegistration
 	}
 	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(registration.PublicURL); err != nil {
 		return ErrInvalidServiceRegistration
@@ -1648,7 +2030,22 @@ func validateServiceRegistration(registration ServiceRegistration) error {
 
 func validateServiceMetadataUpdate(update ServiceMetadataUpdate) error {
 	update = normalizeServiceMetadataUpdate(update)
-	if strings.TrimSpace(update.ServiceName) == "" || strings.TrimSpace(update.PublicURL) == "" {
+	if strings.TrimSpace(update.ServiceName) == "" {
+		return ErrInvalidServiceRegistration
+	}
+	if update.PreserveEndpoint {
+		if update.Endpointless {
+			return ErrInvalidServiceRegistration
+		}
+		return nil
+	}
+	if update.Endpointless {
+		if update.Host != "" || update.Port != 0 || update.SSLEnabled || update.PublicURL != "" {
+			return ErrInvalidServiceRegistration
+		}
+		return nil
+	}
+	if strings.TrimSpace(update.PublicURL) == "" || update.Port < 1 || update.Port > 65535 {
 		return ErrInvalidServiceRegistration
 	}
 	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(update.PublicURL); err != nil {
@@ -1662,6 +2059,8 @@ func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegis
 	registration.ServiceType = strings.TrimSpace(registration.ServiceType)
 	registration.ServiceName = strings.TrimSpace(registration.ServiceName)
 	registration.Description = strings.TrimSpace(registration.Description)
+	registration.TransportMode = strings.ToLower(strings.TrimSpace(registration.TransportMode))
+	registration.ExecutionHostID = strings.TrimSpace(registration.ExecutionHostID)
 	registration.Host = strings.TrimSpace(registration.Host)
 	registration.PublicURL = strings.TrimSpace(registration.PublicURL)
 	registration.Version = strings.TrimSpace(registration.Version)
@@ -1670,6 +2069,12 @@ func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegis
 	registration.Hostname = strings.TrimSpace(registration.Hostname)
 	registration.OS = strings.TrimSpace(registration.OS)
 	registration.Arch = strings.TrimSpace(registration.Arch)
+	if registration.ServiceType == "update_agent" && registration.TransportMode == "" {
+		registration.TransportMode = "ssh_v1"
+	}
+	if registration.ServiceType == "update_agent" && registration.TransportMode == "pull_v2" {
+		return registration
+	}
 	if registration.Host == "" || registration.Port == 0 {
 		host, port, sslEnabled := endpointFromServiceURL(registration.PublicURL)
 		if registration.Host == "" {
@@ -1684,6 +2089,79 @@ func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegis
 		registration.PublicURL = buildServiceURL(registration.Host, registration.Port, registration.SSLEnabled)
 	}
 	return registration
+}
+
+func bindPrecreatedUpdateAgentRegistration(
+	registration ServiceRegistration,
+	transportMode string,
+	executionHostID string,
+	ownershipEpoch int64,
+) ServiceRegistration {
+	if registration.ServiceType != "update_agent" {
+		return registration
+	}
+	registration.TransportMode = strings.ToLower(strings.TrimSpace(transportMode))
+	registration.ExecutionHostID = strings.TrimSpace(executionHostID)
+	registration.OwnershipEpoch = ownershipEpoch
+	return registration
+}
+
+func serviceEndpoint(host string, port int, sslEnabled bool, publicURL string) *ServiceEndpoint {
+	host = strings.TrimSpace(host)
+	publicURL = strings.TrimSpace(publicURL)
+	if host == "" || port == 0 {
+		urlHost, urlPort, urlSSL := endpointFromServiceURL(publicURL)
+		if host == "" {
+			host = urlHost
+		}
+		if port == 0 {
+			port = urlPort
+		}
+		if urlHost != "" {
+			sslEnabled = urlSSL
+		}
+	}
+	if publicURL == "" {
+		publicURL = buildServiceURL(host, port, sslEnabled)
+	}
+	if host == "" || port < 1 || port > 65535 || publicURL == "" {
+		return nil
+	}
+	return &ServiceEndpoint{
+		Host:       host,
+		Port:       port,
+		SSLEnabled: sslEnabled,
+		PublicURL:  publicURL,
+	}
+}
+
+func copyServiceEndpoint(endpoint *ServiceEndpoint) *ServiceEndpoint {
+	if endpoint == nil {
+		return nil
+	}
+	copy := *endpoint
+	return &copy
+}
+
+func hydrateServiceEndpointState(service *RegisteredService) {
+	if service == nil {
+		return
+	}
+	if service.AppliedEndpoint == nil {
+		service.AppliedEndpoint = serviceEndpoint(service.Host, service.Port, service.SSLEnabled, service.PublicURL)
+	}
+	if service.DesiredEndpoint == nil {
+		service.DesiredEndpoint = copyServiceEndpoint(service.AppliedEndpoint)
+	}
+	if service.EndpointRevision == 0 {
+		service.EndpointRevision = 1
+	}
+	if service.EndpointStatus == "" {
+		service.EndpointStatus = "applied"
+	}
+	if service.AppliedConfigRevision == 0 {
+		service.AppliedConfigRevision = 1
+	}
 }
 
 func normalizeServiceMetadataUpdate(update ServiceMetadataUpdate) ServiceMetadataUpdate {

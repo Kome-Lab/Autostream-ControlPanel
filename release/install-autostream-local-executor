@@ -1,0 +1,428 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly AGENT_USER="autostream-host-agent"
+readonly AGENT_GROUP="autostream-host-agent"
+readonly CONFIG_DIR="/etc/autostream-local-executor"
+readonly POLICY_DEST="${CONFIG_DIR}/policy.json"
+readonly BINARY_DEST="/usr/local/libexec/autostream-local-executor"
+readonly SERVICE_DEST="/etc/systemd/system/autostream-local-executor.service"
+readonly SOCKET_DEST="/etc/systemd/system/autostream-local-executor.socket"
+readonly TMPFILES_DEST="/etc/tmpfiles.d/autostream-local-executor.conf"
+readonly SERVICE_NAME="autostream-local-executor.service"
+readonly SOCKET_NAME="autostream-local-executor.socket"
+readonly SOCKET_DIR="/run/autostream-local-executor"
+readonly STATE_DIR="/var/lib/autostream-local-executor"
+readonly DOCKER_CONFIG_DIR="${CONFIG_DIR}/docker"
+readonly DOCKER_CONFIG_FILE="${DOCKER_CONFIG_DIR}/config.json"
+readonly EXECUTOR_DATA_DIR="/opt/autostream/local-executor"
+readonly PORT_CONFIG_DIR="${EXECUTOR_DATA_DIR}/ports"
+readonly DOCKER_VERSION_DIR="${EXECUTOR_DATA_DIR}/docker"
+readonly DOCKER_PORT_CONFIG_DIR="${DOCKER_VERSION_DIR}/ports"
+readonly HOST_RUNTIME_ROOT="/opt/autostream/host-agent"
+readonly HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"
+
+usage() {
+  printf '%s\n' "Usage: install-autostream-local-executor --policy PATH"
+}
+
+die() {
+  printf 'install-autostream-local-executor: %s\n' "$*" >&2
+  exit 1
+}
+
+validate_root_parent_chain() {
+  local label=${2:-policy source}
+  local current
+  local parent
+  local mode
+  current=$(dirname -- "$1")
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || die "${label} parents must be non-symlink directories"
+    [[ $(stat -c '%U:%G' -- "${current}") == "root:root" ]] || \
+      die "${label} parents must be owned by root:root"
+    mode=$(stat -c '%a' -- "${current}")
+    (( (8#${mode} & 0022) == 0 )) || \
+      die "${label} parents must not be writable by group or other"
+    parent=$(dirname -- "${current}")
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+policy_source=
+case "${1:-}" in
+  --policy)
+    [[ $# -eq 2 ]] || {
+      usage >&2
+      exit 1
+    }
+    policy_source=$2
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
+
+for command in awk dirname find getent id install mktemp mv pwd readlink rm rmdir sha256sum stat systemctl systemd-tmpfiles; do
+  command -v "${command}" >/dev/null 2>&1 || die "required command ${command} is unavailable"
+done
+
+[[ ${EUID} -eq 0 ]] || die "must run as root"
+[[ ${policy_source} == /* ]] || die "--policy must be an absolute path"
+[[ -f ${policy_source} && ! -L ${policy_source} ]] || die "policy source must be a regular non-symlink file"
+validate_root_parent_chain "${policy_source}"
+[[ $(stat -c '%U:%G:%a' -- "${policy_source}") == "root:root:600" ]] || \
+  die "policy source must be root:root 0600"
+
+getent passwd "${AGENT_USER}" >/dev/null 2>&1 || \
+  die "${AGENT_USER} must be installed before the local executor"
+getent group "${AGENT_GROUP}" >/dev/null 2>&1 || \
+  die "${AGENT_GROUP} must be installed before the local executor"
+readonly agent_uid=$(id -u "${AGENT_USER}")
+readonly agent_gid=$(getent group "${AGENT_GROUP}" | awk -F: 'NR == 1 { print $3 }')
+[[ ${agent_uid} =~ ^[0-9]+$ && ${agent_uid} -ne 0 ]] || die "Host Agent UID is invalid"
+[[ ${agent_gid} =~ ^[0-9]+$ && ${agent_gid} -ne 0 ]] || die "Host Agent GID is invalid"
+[[ $(id -g "${AGENT_USER}") == "${agent_gid}" ]] || die "Host Agent primary group is invalid"
+
+readonly RELEASE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+readonly BINARY_SOURCE="${RELEASE_ROOT}/bin/autostream-local-executor"
+readonly SERVICE_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.service"
+readonly SOCKET_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.socket"
+readonly TMPFILES_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.tmpfiles"
+
+for source in "${BINARY_SOURCE}" "${SERVICE_SOURCE}" "${SOCKET_SOURCE}" "${TMPFILES_SOURCE}"; do
+  [[ -f ${source} && ! -L ${source} ]] || die "release asset ${source} is missing or unsafe"
+  [[ $(stat -c '%U:%G' -- "${source}") == "root:root" ]] || \
+    die "release asset ${source} must be owned by root:root"
+  source_mode=$(stat -c '%a' -- "${source}")
+  (( (8#${source_mode} & 0022) == 0 )) || \
+    die "release asset ${source} must not be writable by group or other"
+  validate_root_parent_chain "${source}" "release source"
+done
+
+copy_verified_release_file() {
+  local source=$1
+  local destination=$2
+  local owner=$3
+  local group=$4
+  local mode=$5
+  local label=$6
+  local source_identity
+  local source_sha256
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source is missing or unsafe"
+  source_identity=$(stat -c '%d:%i:%s:%Y:%f' -- "${source}")
+  source_sha256=$(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }')
+  install -o "${owner}" -g "${group}" -m "${mode}" "${source}" "${destination}"
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source changed while it was copied"
+  [[ $(stat -c '%d:%i:%s:%Y:%f' -- "${source}") == "${source_identity}" ]] || \
+    die "${label} release source identity changed while it was copied"
+  [[ $(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "${label} release source content changed while it was copied"
+  [[ $(sha256sum -- "${destination}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged ${label} does not match the verified release source"
+}
+
+verify_existing() {
+  local path=$1
+  local expected=$2
+  local label=$3
+  [[ ! -e ${path} && ! -L ${path} ]] && return 0
+  [[ -f ${path} && ! -L ${path} ]] || die "${label} destination is not a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "${expected}" ]] || \
+    die "${label} destination owner or mode drifted"
+}
+
+validate_managed_runtime_binary() {
+  local current_target
+  local resolved
+  local expected_resolved
+  local release_sha256
+  local active_sha256
+  [[ -L ${BINARY_DEST} ]] || return 1
+  validate_root_parent_chain "${BINARY_DEST}" "binary destination"
+  [[ $(stat -c '%U:%G' -- "${BINARY_DEST}") == "root:root" ]] || \
+    die "managed A/B binary link must be owned by root:root"
+  [[ $(readlink -- "${BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" ]] || \
+    die "binary destination symlink is outside the fixed Host Agent A/B runtime"
+  [[ -L ${HOST_RUNTIME_CURRENT} ]] || \
+    die "managed A/B binary is missing the fixed current symlink"
+  [[ $(stat -c '%U:%G' -- "${HOST_RUNTIME_CURRENT}") == "root:root" ]] || \
+    die "managed A/B current symlink must be owned by root:root"
+  current_target=$(readlink -- "${HOST_RUNTIME_CURRENT}")
+  [[ ${current_target} == "slots/a" || ${current_target} == "slots/b" ]] || \
+    die "managed A/B current symlink points outside the fixed slots"
+  expected_resolved="${HOST_RUNTIME_ROOT}/${current_target}/bin/autostream-local-executor"
+  resolved=$(readlink -f -- "${BINARY_DEST}") || \
+    die "managed A/B binary link could not be resolved"
+  [[ ${resolved} == "${expected_resolved}" ]] || \
+    die "managed A/B binary resolved outside the active fixed slot"
+  [[ -f ${resolved} && ! -L ${resolved} ]] || \
+    die "managed A/B binary must resolve to a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${resolved}") == "root:root:755" ]] || \
+    die "managed A/B binary owner or mode drifted"
+  validate_root_parent_chain "${resolved}" "managed A/B binary"
+  release_sha256=$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')
+  active_sha256=$(sha256sum -- "${resolved}" | awk 'NR == 1 { print $1 }')
+  [[ ${active_sha256} == "${release_sha256}" ]] || \
+    die "managed A/B binary does not match this verified Host Agent release"
+}
+
+binary_managed_link=false
+verify_existing "${POLICY_DEST}" "root:root:600" "policy"
+if [[ -L ${BINARY_DEST} ]]; then
+  validate_managed_runtime_binary
+  binary_managed_link=true
+else
+  verify_existing "${BINARY_DEST}" "root:root:755" "binary"
+fi
+verify_existing "${SERVICE_DEST}" "root:root:644" "service unit"
+verify_existing "${SOCKET_DEST}" "root:root:644" "socket unit"
+verify_existing "${TMPFILES_DEST}" "root:root:644" "tmpfiles policy"
+
+ensure_root_directory() {
+  local path=$1
+  local create_mode=$2
+  local mode
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -d ${path} && ! -L ${path} ]] || die "${path} must be a non-symlink directory"
+    [[ $(stat -c '%U:%G' -- "${path}") == "root:root" ]] || die "${path} must be owned by root:root"
+    mode=$(stat -c '%a' -- "${path}")
+    (( (8#${mode} & 0022) == 0 )) || die "${path} must not be writable by group or other"
+    return
+  fi
+  install -d -o root -g root -m "${create_mode}" "${path}"
+}
+
+config_dir_existed=false
+[[ -e ${CONFIG_DIR} || -L ${CONFIG_DIR} ]] && config_dir_existed=true
+ensure_root_directory "${CONFIG_DIR}" 0700
+[[ $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == "root:root:700" ]] || \
+  die "${CONFIG_DIR} must be root:root 0700"
+ensure_root_directory /usr/local/libexec 0755
+ensure_root_directory /etc/systemd/system 0755
+ensure_root_directory /etc/tmpfiles.d 0755
+release_root_existed=false
+if [[ -e /opt/autostream || -L /opt/autostream ]]; then
+  release_root_existed=true
+fi
+ensure_root_directory /opt/autostream 0755
+executor_data_dir_existed=false
+port_config_dir_existed=false
+docker_version_dir_existed=false
+docker_port_config_dir_existed=false
+docker_config_dir_existed=false
+[[ -e ${EXECUTOR_DATA_DIR} || -L ${EXECUTOR_DATA_DIR} ]] && executor_data_dir_existed=true
+[[ -e ${PORT_CONFIG_DIR} || -L ${PORT_CONFIG_DIR} ]] && port_config_dir_existed=true
+[[ -e ${DOCKER_VERSION_DIR} || -L ${DOCKER_VERSION_DIR} ]] && docker_version_dir_existed=true
+[[ -e ${DOCKER_PORT_CONFIG_DIR} || -L ${DOCKER_PORT_CONFIG_DIR} ]] && docker_port_config_dir_existed=true
+[[ -e ${DOCKER_CONFIG_DIR} || -L ${DOCKER_CONFIG_DIR} ]] && docker_config_dir_existed=true
+ensure_root_directory "${EXECUTOR_DATA_DIR}" 0700
+ensure_root_directory "${PORT_CONFIG_DIR}" 0700
+ensure_root_directory "${DOCKER_VERSION_DIR}" 0700
+ensure_root_directory "${DOCKER_PORT_CONFIG_DIR}" 0700
+ensure_root_directory "${DOCKER_CONFIG_DIR}" 0700
+for private_dir in "${EXECUTOR_DATA_DIR}" "${PORT_CONFIG_DIR}" "${DOCKER_VERSION_DIR}" "${DOCKER_PORT_CONFIG_DIR}" "${DOCKER_CONFIG_DIR}"; do
+  [[ $(stat -c '%U:%G:%a' -- "${private_dir}") == "root:root:700" ]] || \
+    die "${private_dir} must be root:root 0700"
+done
+unexpected_docker_config=$(find "${DOCKER_CONFIG_DIR}" -mindepth 1 -maxdepth 1 ! -name config.json -print -quit)
+[[ -z ${unexpected_docker_config} ]] || \
+  die "${DOCKER_CONFIG_DIR} must contain only config.json"
+if [[ -e ${DOCKER_CONFIG_FILE} || -L ${DOCKER_CONFIG_FILE} ]]; then
+  [[ -f ${DOCKER_CONFIG_FILE} && ! -L ${DOCKER_CONFIG_FILE} ]] || \
+    die "${DOCKER_CONFIG_FILE} must be a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${DOCKER_CONFIG_FILE}") == "root:root:600" ]] || \
+    die "${DOCKER_CONFIG_FILE} must be root:root 0600"
+fi
+
+socket_dir_existed=false
+if [[ -e ${SOCKET_DIR} || -L ${SOCKET_DIR} ]]; then
+  [[ -d ${SOCKET_DIR} && ! -L ${SOCKET_DIR} ]] || die "socket path must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${SOCKET_DIR}") == "root:${AGENT_GROUP}:750" ]] || \
+    die "socket directory must be root:${AGENT_GROUP} 0750"
+  socket_dir_existed=true
+fi
+state_dir_existed=false
+if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
+  [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || die "state path must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "root:root:700" ]] || \
+    die "state directory must be root:root 0700"
+  state_dir_existed=true
+fi
+
+policy_stage=$(mktemp "${CONFIG_DIR}/.policy.json.new.XXXXXX")
+binary_stage=$(mktemp /usr/local/libexec/.autostream-local-executor.new.XXXXXX)
+service_stage=$(mktemp /etc/systemd/system/.autostream-local-executor.service.new.XXXXXX)
+socket_stage=$(mktemp /etc/systemd/system/.autostream-local-executor.socket.new.XXXXXX)
+tmpfiles_stage=$(mktemp /etc/tmpfiles.d/.autostream-local-executor.conf.new.XXXXXX)
+policy_backup=
+binary_backup=
+service_backup=
+socket_backup=
+tmpfiles_backup=
+commit_started=false
+installation_complete=false
+was_socket_enabled=false
+was_socket_active=false
+was_service_active=false
+
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  rm -f -- "${policy_stage}" "${binary_stage}" "${service_stage}" "${socket_stage}" "${tmpfiles_stage}"
+  if [[ ${installation_complete} == false && ${commit_started} == true ]]; then
+    systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    systemctl disable --now "${SOCKET_NAME}" >/dev/null 2>&1 || true
+    restore_file "${policy_backup}" "${POLICY_DEST}"
+    if [[ ${binary_managed_link} == false ]]; then
+      restore_file "${binary_backup}" "${BINARY_DEST}"
+    fi
+    restore_file "${service_backup}" "${SERVICE_DEST}"
+    restore_file "${socket_backup}" "${SOCKET_DEST}"
+    restore_file "${tmpfiles_backup}" "${TMPFILES_DEST}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemd-tmpfiles --create "${TMPFILES_DEST}" >/dev/null 2>&1 || true
+    remove_fresh_empty_directory "${SOCKET_DIR}" "${socket_dir_existed}" "root:${AGENT_GROUP}:750"
+    remove_fresh_empty_directory "${STATE_DIR}" "${state_dir_existed}" "root:root:700"
+    if [[ ${was_socket_enabled} == true ]]; then
+      systemctl enable "${SOCKET_NAME}" >/dev/null 2>&1 || true
+    fi
+    if [[ ${was_socket_active} == true ]]; then
+      systemctl start "${SOCKET_NAME}" >/dev/null 2>&1 || true
+    fi
+    if [[ ${was_service_active} == true ]]; then
+      systemctl start "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [[ ${installation_complete} == false ]]; then
+    remove_fresh_empty_directory "${DOCKER_CONFIG_DIR}" "${docker_config_dir_existed}" "root:root:700"
+    remove_fresh_empty_directory "${CONFIG_DIR}" "${config_dir_existed}" "root:root:700"
+    remove_fresh_empty_directory "${DOCKER_PORT_CONFIG_DIR}" "${docker_port_config_dir_existed}" "root:root:700"
+    remove_fresh_empty_directory "${DOCKER_VERSION_DIR}" "${docker_version_dir_existed}" "root:root:700"
+    remove_fresh_empty_directory "${PORT_CONFIG_DIR}" "${port_config_dir_existed}" "root:root:700"
+    remove_fresh_empty_directory "${EXECUTOR_DATA_DIR}" "${executor_data_dir_existed}" "root:root:700"
+    remove_fresh_empty_directory /opt/autostream "${release_root_existed}" "root:root:755"
+  fi
+  rm -f -- "${policy_backup}" "${binary_backup}" "${service_backup}" "${socket_backup}" "${tmpfiles_backup}"
+  exit "${status}"
+}
+
+remove_fresh_empty_directory() {
+  local path=$1
+  local existed=$2
+  local expected=$3
+  if [[ ${existed} == false && -d ${path} && ! -L ${path} ]] &&
+    [[ $(stat -c '%U:%G:%a' -- "${path}") == "${expected}" ]]; then
+    rmdir -- "${path}" >/dev/null 2>&1 || true
+  fi
+}
+
+restore_file() {
+  local backup=$1
+  local destination=$2
+  if [[ -n ${backup} && -e ${backup} ]]; then
+    mv -fT -- "${backup}" "${destination}"
+  else
+    rm -f -- "${destination}"
+  fi
+}
+
+backup_file() {
+  local source=$1
+  local directory=$2
+  local template=$3
+  if [[ ! -e ${source} ]]; then
+    return 0
+  fi
+  local backup
+  backup=$(mktemp "${directory}/${template}.XXXXXX")
+  rm -f -- "${backup}"
+  mv -T -- "${source}" "${backup}"
+  printf '%s' "${backup}"
+}
+
+trap cleanup EXIT INT TERM
+
+policy_source_identity=$(stat -c '%d:%i:%s:%Y:%f' -- "${policy_source}")
+policy_source_sha256=$(sha256sum -- "${policy_source}" | awk 'NR == 1 { print $1 }')
+install -o root -g root -m 0600 "${policy_source}" "${policy_stage}"
+[[ $(stat -c '%d:%i:%s:%Y:%f' -- "${policy_source}") == "${policy_source_identity}" ]] || \
+  die "policy source changed while it was copied"
+[[ $(sha256sum -- "${policy_source}" | awk 'NR == 1 { print $1 }') == "${policy_source_sha256}" ]] || \
+  die "policy source content changed while it was copied"
+[[ $(sha256sum -- "${policy_stage}" | awk 'NR == 1 { print $1 }') == "${policy_source_sha256}" ]] || \
+  die "staged policy does not match the verified source"
+copy_verified_release_file "${BINARY_SOURCE}" "${binary_stage}" root root 0755 "binary"
+copy_verified_release_file "${SERVICE_SOURCE}" "${service_stage}" root root 0644 "service unit"
+copy_verified_release_file "${SOCKET_SOURCE}" "${socket_stage}" root root 0644 "socket unit"
+copy_verified_release_file "${TMPFILES_SOURCE}" "${tmpfiles_stage}" root root 0644 "tmpfiles policy"
+
+"${binary_stage}" --version >/dev/null
+policy_validation=$("${binary_stage}" validate-policy --policy "${policy_stage}")
+policy_uid=$(awk -F': ' '$1 == "agent_uid" { print $2 }' <<<"${policy_validation}")
+policy_gid=$(awk -F': ' '$1 == "agent_gid" { print $2 }' <<<"${policy_validation}")
+[[ ${policy_uid} == "${agent_uid}" ]] || die "policy agent_uid does not match ${AGENT_USER}"
+[[ ${policy_gid} == "${agent_gid}" ]] || die "policy agent_gid does not match ${AGENT_GROUP}"
+if [[ ${binary_managed_link} == true ]]; then
+  validate_managed_runtime_binary
+fi
+
+systemctl is-enabled --quiet "${SOCKET_NAME}" && was_socket_enabled=true || true
+systemctl is-active --quiet "${SOCKET_NAME}" && was_socket_active=true || true
+systemctl is-active --quiet "${SERVICE_NAME}" && was_service_active=true || true
+
+commit_started=true
+systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+systemctl disable --now "${SOCKET_NAME}" >/dev/null 2>&1 || true
+
+policy_backup=$(backup_file "${POLICY_DEST}" "${CONFIG_DIR}" .policy.json.backup)
+if [[ ${binary_managed_link} == false ]]; then
+  binary_backup=$(backup_file "${BINARY_DEST}" /usr/local/libexec .autostream-local-executor.backup)
+fi
+service_backup=$(backup_file "${SERVICE_DEST}" /etc/systemd/system .autostream-local-executor.service.backup)
+socket_backup=$(backup_file "${SOCKET_DEST}" /etc/systemd/system .autostream-local-executor.socket.backup)
+tmpfiles_backup=$(backup_file "${TMPFILES_DEST}" /etc/tmpfiles.d .autostream-local-executor.conf.backup)
+
+mv -T -- "${policy_stage}" "${POLICY_DEST}"
+if [[ ${binary_managed_link} == false ]]; then
+  mv -T -- "${binary_stage}" "${BINARY_DEST}"
+else
+  rm -f -- "${binary_stage}"
+fi
+mv -T -- "${service_stage}" "${SERVICE_DEST}"
+mv -T -- "${socket_stage}" "${SOCKET_DEST}"
+mv -T -- "${tmpfiles_stage}" "${TMPFILES_DEST}"
+
+systemctl daemon-reload
+systemd-tmpfiles --create "${TMPFILES_DEST}"
+[[ -d ${SOCKET_DIR} && ! -L ${SOCKET_DIR} ]] || die "tmpfiles did not create the socket directory"
+[[ $(stat -c '%U:%G:%a' -- "${SOCKET_DIR}") == "root:${AGENT_GROUP}:750" ]] || \
+  die "socket directory owner or mode is invalid"
+systemctl enable --now autostream-local-executor.socket
+systemctl start "${SERVICE_NAME}"
+systemctl is-active --quiet autostream-local-executor.socket
+systemctl is-active --quiet autostream-local-executor.service
+[[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || die "systemd did not create the executor state directory"
+[[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "root:root:700" ]] || \
+  die "executor state directory owner or mode is invalid"
+if [[ ${binary_managed_link} == true ]]; then
+  validate_managed_runtime_binary
+else
+  [[ -f ${BINARY_DEST} && ! -L ${BINARY_DEST} &&
+    $(stat -c '%U:%G:%a' -- "${BINARY_DEST}") == "root:root:755" ]] || \
+    die "installed binary destination failed verification"
+fi
+
+installation_complete=true
+printf '%s\n' "AutoStream local executor installed with protocol v1 probe compatibility and protocol v2 bounded mutation."
+printf '%s\n' "${policy_validation}"

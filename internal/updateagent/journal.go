@@ -15,10 +15,12 @@ type PendingReport struct {
 }
 
 type journalData struct {
-	ActiveJob        *UpdateJob        `json:"active_job,omitempty"`
-	NextSeq          uint64            `json:"next_sequence"`
-	Pending          []PendingReport   `json:"pending_reports,omitempty"`
-	DeployedVersions map[string]string `json:"deployed_versions,omitempty"`
+	ActiveJob        *UpdateJob                  `json:"active_job,omitempty"`
+	ActivePlan       *RemotePlan                 `json:"active_plan,omitempty"`
+	ActivePortPlan   *SystemdPortReconfigurePlan `json:"active_port_plan,omitempty"`
+	NextSeq          uint64                      `json:"next_sequence"`
+	Pending          []PendingReport             `json:"pending_reports,omitempty"`
+	DeployedVersions map[string]string           `json:"deployed_versions,omitempty"`
 }
 
 type Journal struct {
@@ -53,6 +55,23 @@ func OpenJournal(stateDir string) (*Journal, error) {
 	}
 	if j.data.DeployedVersions == nil {
 		j.data.DeployedVersions = map[string]string{}
+	}
+	if j.data.ActiveJob != nil && j.data.ActiveJob.validateOperationUnion() != nil {
+		return nil, errors.New("update journal active job operation is invalid")
+	}
+	if j.data.ActivePlan != nil || j.data.ActivePortPlan != nil {
+		if j.data.ActiveJob == nil ||
+			(j.data.ActivePlan != nil && j.data.ActivePortPlan != nil) ||
+			(j.data.ActivePlan != nil &&
+				(j.data.ActiveJob.EffectiveOperation() != updateJobOperationSoftwareUpdate ||
+					j.data.ActivePlan.JobID != j.data.ActiveJob.ID ||
+					j.data.ActivePlan.Validate() != nil)) ||
+			(j.data.ActivePortPlan != nil &&
+				(j.data.ActiveJob.EffectiveOperation() != updateJobOperationPortReconfigure ||
+					j.data.ActivePortPlan.JobID != j.data.ActiveJob.ID ||
+					j.data.ActivePortPlan.Validate() != nil)) {
+			return nil, errors.New("update journal active plan binding is invalid")
+		}
 	}
 	// Older journals may contain raw lease tokens. Discard them and immediately
 	// rewrite the protected journal without credentials; a fresh process must
@@ -105,9 +124,23 @@ func (j *Journal) DeployedVersions() map[string]string {
 func (j *Journal) SetActive(job *UpdateJob) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if job == nil || job.validateOperationUnion() != nil {
+		return errors.New("active update job operation is invalid")
+	}
 	copy := *job
+	if job.PortReconfigure != nil {
+		portCopy := *job.PortReconfigure
+		portCopy.Docker = cloneDockerPortMutationGrantBinding(job.PortReconfigure.Docker)
+		copy.PortReconfigure = &portCopy
+	}
 	copy.LeaseToken = ""
 	copy.ReleaseToken = ""
+	if j.data.ActiveJob == nil ||
+		j.data.ActiveJob.ID != copy.ID ||
+		j.data.ActiveJob.EffectiveOperation() != copy.EffectiveOperation() {
+		j.data.ActivePlan = nil
+		j.data.ActivePortPlan = nil
+	}
 	j.data.ActiveJob = &copy
 	j.data.NextSeq = job.ReportSequence
 	if j.data.NextSeq == 0 {
@@ -119,6 +152,56 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 	return j.saveLocked()
 }
 
+func (j *Journal) SetActivePlan(plan RemotePlan) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.data.ActiveJob == nil ||
+		j.data.ActiveJob.EffectiveOperation() != updateJobOperationSoftwareUpdate ||
+		j.data.ActiveJob.ID != plan.JobID ||
+		plan.Validate() != nil {
+		return errors.New("active update plan does not match the journal job")
+	}
+	copy := plan
+	j.data.ActivePlan = &copy
+	return j.saveLocked()
+}
+
+func (j *Journal) SetActivePortPlan(plan SystemdPortReconfigurePlan) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.data.ActiveJob == nil ||
+		j.data.ActiveJob.EffectiveOperation() != updateJobOperationPortReconfigure ||
+		j.data.ActiveJob.ID != plan.JobID ||
+		plan.Validate() != nil {
+		return errors.New("active port reconfiguration plan does not match the journal job")
+	}
+	copy := plan
+	copy.Docker = cloneDockerPortMutationGrantBinding(plan.Docker)
+	j.data.ActivePortPlan = &copy
+	return j.saveLocked()
+}
+
+func (j *Journal) ActivePlan() *RemotePlan {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.data.ActivePlan == nil {
+		return nil
+	}
+	copy := *j.data.ActivePlan
+	return &copy
+}
+
+func (j *Journal) ActivePortPlan() *SystemdPortReconfigurePlan {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.data.ActivePortPlan == nil {
+		return nil
+	}
+	copy := *j.data.ActivePortPlan
+	copy.Docker = cloneDockerPortMutationGrantBinding(j.data.ActivePortPlan.Docker)
+	return &copy
+}
+
 func (j *Journal) Active() *UpdateJob {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -126,13 +209,43 @@ func (j *Journal) Active() *UpdateJob {
 		return nil
 	}
 	copy := *j.data.ActiveJob
+	if j.data.ActiveJob.PortReconfigure != nil {
+		portCopy := *j.data.ActiveJob.PortReconfigure
+		portCopy.Docker = cloneDockerPortMutationGrantBinding(j.data.ActiveJob.PortReconfigure.Docker)
+		copy.PortReconfigure = &portCopy
+	}
 	return &copy
 }
 
 func (j *Journal) Queue(jobID, serviceID, leaseToken string, leaseGeneration uint64, status, code, message string, progress int, artifact, previous string) (JobReport, error) {
+	return j.queue(jobID, serviceID, leaseToken, leaseGeneration, status, code, message, progress, artifact, previous, nil)
+}
+
+func (j *Journal) QueuePort(
+	jobID, serviceID, leaseToken string,
+	leaseGeneration uint64,
+	status, code, message string,
+	progress int,
+	result *SystemdPortReconfigureResult,
+) (JobReport, error) {
+	return j.queue(jobID, serviceID, leaseToken, leaseGeneration, status, code, message, progress, "", "", result)
+}
+
+func (j *Journal) queue(
+	jobID, serviceID, leaseToken string,
+	leaseGeneration uint64,
+	status, code, message string,
+	progress int,
+	artifact, previous string,
+	portResult *SystemdPortReconfigureResult,
+) (JobReport, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	report := JobReport{ServiceID: serviceID, LeaseToken: leaseToken, LeaseGeneration: leaseGeneration, Sequence: j.data.NextSeq, Status: status, Progress: progress, Code: code, Message: message, ArtifactDigest: artifact, PreviousDigest: previous}
+	var resultCopy *PortReconfigurationJobReport
+	if portResult != nil {
+		resultCopy = &PortReconfigurationJobReport{Result: portResult.Result}
+	}
+	report := JobReport{ServiceID: serviceID, LeaseToken: leaseToken, LeaseGeneration: leaseGeneration, Sequence: j.data.NextSeq, Status: status, Progress: progress, Code: code, Message: message, ArtifactDigest: artifact, PreviousDigest: previous, PortReconfigure: resultCopy}
 	j.data.NextSeq++
 	stored := report
 	stored.LeaseToken = ""
@@ -178,6 +291,8 @@ func (j *Journal) Ack(jobID string, sequence uint64) error {
 	j.data.Pending = append([]PendingReport(nil), j.data.Pending[1:]...)
 	if (acked.Report.Status == "succeeded" || acked.Report.Status == "rolled_back" || acked.Report.Status == "failed") && j.data.ActiveJob != nil && j.data.ActiveJob.ID == jobID {
 		j.data.ActiveJob = nil
+		j.data.ActivePlan = nil
+		j.data.ActivePortPlan = nil
 	}
 	return j.saveLocked()
 }
@@ -190,6 +305,8 @@ func (j *Journal) ClearActive() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.data.ActiveJob = nil
+	j.data.ActivePlan = nil
+	j.data.ActivePortPlan = nil
 	return j.saveLocked()
 }
 

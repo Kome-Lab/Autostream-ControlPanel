@@ -164,14 +164,36 @@ func (d ReleaseDownloader) ResolveDockerReleaseForArch(ctx context.Context, bund
 }
 
 func (d ReleaseDownloader) releaseAssets(ctx context.Context, base string, spec RepoSpec, version string) (map[string]string, error) {
+	if err := d.validateTrustedPublicRepository(base, spec); err != nil {
+		return nil, err
+	}
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", base, spec.Owner, spec.Repo, version)
 	var release githubRelease
 	if err := d.getJSON(ctx, endpoint, &release); err != nil {
 		return nil, err
 	}
-	assets := make(map[string]string, len(release.Assets))
+	if d.TrustedPublicOnly {
+		if err := validateTrustedPublicReleaseMetadata(release, version); err != nil {
+			return nil, err
+		}
+	}
+	assets, err := uniqueReleaseAssetURLs(release)
+	if err != nil {
+		return nil, err
+	}
 	for _, asset := range release.Assets {
-		assets[asset.Name] = asset.URL
+		if d.TrustedPublicOnly {
+			if asset.ID <= 0 || asset.State != "uploaded" ||
+				!updateHostBootstrapAssetDigestPattern.MatchString(asset.Digest) ||
+				d.validateTrustedPublicAssetURL(asset.URL, base, spec, asset.ID) != nil {
+				return nil, fmt.Errorf("Docker release asset %q has invalid immutable metadata", asset.Name)
+			}
+		}
+	}
+	if d.TrustedPublicOnly {
+		if _, err := d.resolveTrustedReleaseTagCommit(ctx, base, spec, version); err != nil {
+			return nil, err
+		}
 	}
 	return assets, nil
 }

@@ -73,7 +73,7 @@ func TestBootstrapDockerTargetFailsClosedWhenRootGHCRPullFails(t *testing.T) {
 	if readErr != nil || string(got) != string(original) {
 		t.Fatalf("failed registry probe altered version env: %q err=%v", got, readErr)
 	}
-	if len(runner.calls) != 1 || !strings.Contains(strings.Join(runner.calls[0].env, " "), "DOCKER_CONFIG=/root/.docker") {
+	if len(runner.calls) != 1 || !strings.Contains(strings.Join(runner.calls[0].env, " "), "DOCKER_CONFIG=/etc/autostream-local-executor/docker") {
 		t.Fatalf("registry probe did not use fixed root credentials: %+v", runner.calls)
 	}
 }

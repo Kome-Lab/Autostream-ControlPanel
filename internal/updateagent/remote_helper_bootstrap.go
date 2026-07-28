@@ -128,7 +128,7 @@ func BootstrapRemoteDockerTarget(ctx context.Context, cfg HelperConfig, targetID
 
 	downloader := ReleaseDownloader{Token: token.Reveal()}
 	digest, err := bootstrapDockerTarget(ctx, secureTarget, runner, func(ctx context.Context, target Target) (ResolvedDockerRelease, error) {
-		trustedDir, err := os.MkdirTemp(target.Docker.ProjectDir, ".update-host-bootstrap-")
+		trustedDir, err := makeDockerTempDir(target, ".update-host-bootstrap-")
 		if err != nil {
 			return ResolvedDockerRelease{}, err
 		}

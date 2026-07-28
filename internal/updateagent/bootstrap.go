@@ -40,7 +40,7 @@ func BootstrapDockerTarget(ctx context.Context, cfg Config, targetID string, run
 
 	downloader := ReleaseDownloader{Token: cfg.GitHubToken}
 	return bootstrapDockerTarget(ctx, secureTarget, runner, func(ctx context.Context, target Target) (ResolvedDockerRelease, error) {
-		trustedDir, err := os.MkdirTemp(target.Docker.ProjectDir, ".updater-bootstrap-manifest-")
+		trustedDir, err := makeDockerTempDir(target, ".updater-bootstrap-manifest-")
 		if err != nil {
 			return ResolvedDockerRelease{}, err
 		}

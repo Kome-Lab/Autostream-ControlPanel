@@ -251,3 +251,36 @@ func TestUpdateAgentStagedTokenMigrationStoresNoRawSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceEndpointStateMigrationSeparatesDesiredAppliedAndReported(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/044_service_endpoint_state.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, required := range []string{
+		"transport_mode VARCHAR(16)",
+		"execution_host_id VARCHAR(191)",
+		"ownership_epoch BIGINT",
+		"desired_host VARCHAR(255)",
+		"desired_port INT",
+		"desired_ssl_enabled BOOLEAN",
+		"desired_public_url TEXT",
+		"reported_api_host VARCHAR(255)",
+		"reported_api_port INT",
+		"reported_api_ssl_enabled BOOLEAN",
+		"reported_api_public_url TEXT",
+		"endpoint_revision BIGINT",
+		"endpoint_status VARCHAR(32)",
+		"SET desired_host = host",
+		"SET transport_mode = 'ssh_v1'",
+		"uq_services_execution_host",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("service endpoint state migration is missing %q:\n%s", required, text)
+		}
+	}
+	if strings.Contains(strings.ToLower(text), "runtime_token") {
+		t.Fatalf("service endpoint state migration must not persist runtime tokens:\n%s", text)
+	}
+}

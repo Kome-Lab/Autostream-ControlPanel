@@ -1,0 +1,324 @@
+# AutoStream local executor
+
+The local executor is the root-owned, bounded half of the SSH-free Host Agent
+architecture. It opens no TCP listener. The non-root Host Agent reaches it
+through `/run/autostream-local-executor/executor.sock`. Protocol v1 remains
+compatible for fixed target probes; protocol v2 adds fixed software
+`stage`/`apply`/`reconcile`, systemd
+`port_reconfigure`/`port_reconfigure_reconcile`, and host-runtime self-update
+operations.
+
+IPC never accepts a generic command, unit, path, endpoint, repository, image,
+or URL. The root-owned policy resolves all privileged target values. A v2
+request carries only the immutable release plan, ownership epoch, policy
+revision, and (for state-changing apply/reconcile operations) a short-lived
+one-time mutation grant.
+
+Use only the same Host Agent archive whose outer SHA-256, manifest, and
+provenance attestation were verified as described in `README.md`, and extract
+it under a root-owned non-writable parent chain. The installer additionally
+binds every binary/unit source by inode identity and SHA-256 during its
+transaction.
+
+## Prerequisite
+
+Install the Host Agent with `install-autostream-host-agent --prepare` first.
+That one command creates the dedicated `autostream-host-agent` user and group,
+prepares this same-release executor binary and units, and creates the fixed
+root-owned policy and sidecar directories without starting either service or
+writing an identity/policy. It does enable the fixed root A/B recovery timers;
+the Agent, Executor, and socket remain inactive/disabled. Run the Control Panel generated
+`autostream-host-agent configure` command next. Configure writes the exact
+server-generated policy and missing canonical systemd sidecars before
+activating the staged four-field identity.
+
+## Prepare the policy
+
+For the recommended first installation, do not copy or edit the example.
+`autostream-host-agent configure` installs the canonical policy directly at:
+
+```console
+/etc/autostream-local-executor/policy.json
+```
+
+The Control Panel derives it from the active `pull_v2` policy, server-owned
+execution host, and each target's applied endpoint/config state. Configure
+looks up the real Agent account:
+
+```console
+id -u autostream-host-agent
+getent group autostream-host-agent
+```
+
+and binds its non-root UID/GID into the stage/activation commitment. The
+client cannot choose a host ID, target path, unit, command, policy digest, or
+revision. Ports must be in `1024..65535`. Systemd unit, executable, release
+root, current link, binary path, smoke user, and required paths are fixed by
+`service_type`; changing them is rejected. Database-owning targets and Docker
+authority fail closed during automatic configuration. Auto Configure generates
+only the systemd root policy and sidecars; it never derives Docker authority
+from Node registration values. A Docker target is eligible only when a
+root-owned fixed target policy and an approved frozen Compose baseline already
+provide every required field.
+
+The subsequent installer keeps the executor prepared by the Host Agent as the
+fixed `/usr/local/libexec/autostream-local-executor` A/B symlink. It accepts
+that symlink only when `current` selects `slots/a` or `slots/b`, the resolved
+parent chain is root-owned and not group/other-writable, the target is
+`root:root 0755`, and its SHA-256 equals the binary from this same verified
+archive. It rejects every other symlink and any cross-release or unsafe chain.
+An older standalone regular-file installation remains a supported upgrade
+input.
+
+Systemd sidecars are created only at these fixed paths:
+
+```text
+/opt/autostream/local-executor/ports/worker.env
+/opt/autostream/local-executor/ports/encoder-recorder.env
+/opt/autostream/local-executor/ports/discord-bot.env
+/opt/autostream/local-executor/ports/observability.env
+```
+
+Each is an exact two-line file: the service-specific bind variable followed by
+`AUTOSTREAM_CONFIG_REVISION`. The directory is `root:root 0700`; files are
+`root:root 0600`. Configure creates a missing canonical sidecar, preserves an
+identical one, and refuses to overwrite any differing file. A later failure
+rolls back newly installed sidecars/policy when the outcome is known; an
+uncertain identity commit is left as a consistent pair and reported for
+operator recovery.
+
+The example policy remains a schema reference and an expert recovery aid. Do
+not hand-edit the live policy to bypass the server projection. Without a
+server-pinned matching `local_executor_policy_sha256`, target observations and
+mutation remain unavailable and fail closed. With a matching active policy and
+positive server-owned ownership epoch, the Host Agent can claim jobs and ask
+this executor to stage/apply/reconcile them without SSH.
+
+For a systemd port job the executor accepts only Worker, Encoder Recorder,
+Discord Bot, and Observability fixed adapters. It checkpoints the old exact
+sidecar, atomically stages the new two-line sidecar, restarts only the fixed
+unit, and verifies listener ownership, service identity, health, version,
+config revision, and sidecar SHA-256. A failed verification restores and
+re-verifies the old sidecar/port. An uncertain result is reconciled from the
+durable ledger without reapplying. `rollback_failed` is a terminal local
+quarantine with no applied overlay; the Control Panel keeps both reservations
+until explicit recovery proves an exact effective state.
+
+Docker software update uses the fixed Compose authority described below.
+Worker, Encoder Recorder, Discord Bot, and Observability also support a
+dedicated Docker `port_reconfigure`/reconcile transaction. It separately binds
+the advertised port (`1..65535`), localhost published port (`1024..65535`),
+and container listen port (`1024..65535`). The published host is always
+`127.0.0.1`. The executor changes only the fixed per-service port environment
+and Compose service, then verifies the container/image/repository identity,
+Compose revision/digest, environment digest, and health. Failure or an unknown
+response is rolled back/reconciled from the durable ledger without replaying
+the mutation.
+
+The Docker port operation is unavailable when policy/baseline/current mapping
+is missing, stale, busy, drifting, or recovering. It never rewrites Nginx,
+Caddy, or another reverse proxy; update and verify that origin separately.
+
+Host-runtime self-update uses a dedicated directive and grant, fixed A/B slots,
+and a root recovery supervisor. It is not production-ready merely because the
+protocol source exists; require a published immutable Host Release plus real
+systemd restart/reboot/heartbeat/probe/rollback canaries before enabling it.
+The recovery supervisor does not accept `systemctl restart` alone as proof: it
+requires the socket and service active, an unchanged positive `MainPID`, an
+exact healthy-slot `/proc/<pid>/exe`, and matching version and
+mutation/recovery protocol across a bounded stability interval before it
+restarts the Host Agent and clears `rolling_back`.
+
+Self-update grant recovery uses only the root-owned hash, immutable binding,
+and consumed receipt; it never persists the raw grant. A reboot with stable
+old runtime plus prepared/consumed stage state fails that exact generation
+closed and removes the orphan ledger. A consumed stage receipt that exactly
+matches already-durable staged state is marked applied without repeating the
+download or slot mutation. Prepared/consumed reconcile leftovers are burned or
+marked applied only when their immutable generation/runtime binding agrees
+with durable state; another mutation needs another Control Panel grant.
+
+After a Control Panel Runtime Token `emergency-revoke`, both credential slots
+are invalid. Stop the Host Agent, issue a new Configure Token for the same
+`pull_v2` Node, and run the generated `autostream-host-agent configure` command
+before crossing the root-only recovery boundary:
+
+```console
+sudo systemctl stop autostream-host-agent.service
+
+sudo /usr/local/libexec/autostream-local-executor \
+  recover-runtime-credential \
+  --rotation-id "<ROTATION_ID>" \
+  --confirm-emergency-revoked
+
+sudo systemctl restart autostream-host-agent.service
+```
+
+It accepts no path or token argument and validates the root ledger, policy
+digest, fixed host/policy/protocol fences, replacement identity, and applicable
+staged TTL before recording `manual_recovered` and cleaning the exact staged
+identity. The policy digest and all source/projection/executor revisions must be
+unchanged by Configure.
+
+`claim_prepared`, `cancel_ready`, `activated`, and `expired` recover
+immediately. `stage_bound` is immediate only when the fixed staged identity is
+absent. An exact staged file discovered in `claim_prepared` compatibility state
+or `stage_bound` is first promoted to `staged`; `staged`, `local_staged`, and
+`proof_ready` recover only after the staged TTL. `claim_prepared` has no staged
+token hash until a staged credential is bound, so only the previous token hash
+is available there; afterward both revoked slot hashes are enforced. A missing
+or new server directive does not authorize the executor to discard a bound
+ledger. After restart, the replacement-token poll finalizes the exact terminal
+rotation and removes the remaining root ledger before another rotation starts.
+
+The executor consumes the one-time grant only at the root mutation boundary.
+Release assets are fetched anonymously from the fixed Kome-Lab GitHub
+repositories, with canonical origins, redirect rejection, immutable release
+identity, manifest/checksum, and asset digest verification. No GitHub token or
+Runtime Token is stored in this policy.
+
+Docker-mode targets use only the dedicated root-owned credential file
+`/etc/autostream-local-executor/docker/config.json`; the executor never reads
+`/root/.docker` or another service secret under `/etc/autostream`. Runtime
+Token bytes are not present in policy or grants. The dedicated credential-stage
+operation is the narrow request exception: its private fixed Unix-socket wire
+message carries the raw token to the root boundary without logging or durable
+request storage. Rotation/recovery may read or atomically replace only the
+fixed canonical/staged identity paths under `/etc/autostream-host-agent`; no
+request can select another path, and generic operations cannot carry a token.
+Prepare the Docker credential before activating a Docker target:
+
+```console
+sudo install -d -o root -g root -m 0700 \
+  /etc/autostream-local-executor/docker
+sudo env HOME=/ DOCKER_CONFIG=/etc/autostream-local-executor/docker \
+  docker login ghcr.io
+sudo chown root:root \
+  /etc/autostream-local-executor/docker/config.json
+sudo chmod 0600 \
+  /etc/autostream-local-executor/docker/config.json
+```
+
+The installer rejects any other entry in that credential directory. Docker
+version pins are fixed files directly under
+`/opt/autostream/local-executor/docker`; Docker port environments are under its
+fixed `ports/<service>.env` subdirectory. Systemd port sidecars alone use the
+separate `/opt/autostream/local-executor/ports/<service>.env` path. The
+credential directory and every executor runtime directory/subdirectory are
+`root:root 0700`; generated environment files are `root:root 0600`.
+
+Docker authority is not supplied by the Host Agent request. The executor
+accepts only `/usr/bin/docker`, project `autostream`, project directory
+`/opt/autostream`, Compose file `/opt/autostream/compose.yml`, and the
+read-only base environment `/opt/autostream/.env`. Each service has one fixed
+Compose service, GHCR repository, and private version overlay:
+
+| service type | Compose service | image repository | version overlay |
+| --- | --- | --- | --- |
+| `control_panel` | `control-panel` | `ghcr.io/kome-lab/autostream-docker/control-panel` | `docker/control-panel.env` |
+| `encoder_recorder` | `encoder-recorder` | `ghcr.io/kome-lab/autostream-docker/encoder-recorder` | `docker/encoder-recorder.env` |
+| `observability` | `observability` | `ghcr.io/kome-lab/autostream-docker/observability` | `docker/observability.env` |
+| `discord_bot` | `discord-bot` | `ghcr.io/kome-lab/autostream-docker/discord-bot` | `docker/discord-bot.env` |
+| `worker` | `worker` | `ghcr.io/kome-lab/autostream-docker/worker` | `docker/worker.env` |
+
+Overlay paths in the table are relative to
+`/opt/autostream/local-executor`. They are created with mode `0600`.
+Docker port overlays are separate fixed files under
+`/opt/autostream/local-executor/docker/ports/<service>.env`; they contain only
+the service port mapping and configuration revision selected by the approved
+plan.
+Durable Docker checkpoints stay under
+`/var/lib/autostream-local-executor`; the Compose project directory remains
+read-only to the executor.
+
+The systemd sandbox makes `/etc/autostream` inaccessible, so the executor
+cannot read another service secret. Its read-only policy and Docker credential
+live under the separate `/etc/autostream-local-executor` directory. The unit
+grants `/etc/autostream-host-agent` only for the dedicated fixed-path Runtime
+Token rotation/recovery implementation described above; generic target
+mutation cannot access a caller-selected identity or token. Writable release
+paths are listed per supported service; the unit never grants write access to
+`/opt/autostream` as a whole.
+
+## Install
+
+From the extracted Host Agent release, activate the policy generated by
+configure:
+
+```console
+sudo ./install/install-autostream-local-executor \
+  --policy /etc/autostream-local-executor/policy.json
+```
+
+The installer:
+
+- requires a regular `root:root 0600` policy source;
+- validates it with the packaged binary before replacing any live file;
+- requires its numeric Agent UID/GID to match the installed Host Agent;
+- installs the policy as
+  `/etc/autostream-local-executor/policy.json` (`root:root 0600`);
+- installs the binary under `/usr/local/libexec`;
+- creates a `root:autostream-host-agent 0750` runtime directory;
+- creates `/var/lib/autostream-local-executor` as `root:root 0700` for the
+  durable stage/apply/reconcile ledger;
+- creates dedicated `root:root 0700` port and Docker-version directories under
+  `/opt/autostream/local-executor` and the read-only Docker credential
+  directory under `/etc/autostream-local-executor/docker`;
+- enables the `root:autostream-host-agent 0660` systemd Unix socket and starts
+  the root service. The service may make outbound HTTPS connections but
+  `SocketBindDeny=any` prevents it from opening an inbound network listener.
+
+Verify the installed boundary:
+
+```console
+sudo /usr/local/libexec/autostream-local-executor validate-policy \
+  --policy /etc/autostream-local-executor/policy.json
+sudo systemctl status autostream-local-executor.socket
+sudo systemctl status autostream-local-executor.service
+sudo stat -c '%U:%G:%a %n' \
+  /etc/autostream-local-executor/policy.json \
+  /var/lib/autostream-local-executor \
+  /run/autostream-local-executor \
+  /run/autostream-local-executor/executor.sock
+```
+
+Record the printed `policy_sha256` in the server-owned Host Agent policy. Never
+copy it from an unvalidated working file.
+
+## Uninstall
+
+Before uninstalling, stop new jobs and self-updates, wait for recovery to
+finish, and revoke/disable the Host Agent Runtime Token and Node in the Control
+Panel. Purging local files does not revoke a server-side credential.
+
+The default path preserves both the root policy and durable executor state:
+
+```console
+sudo ./install/uninstall-autostream-local-executor
+```
+
+To remove the policy and state too:
+
+```console
+sudo ./install/uninstall-autostream-local-executor --purge
+```
+
+`--purge` is intentionally the first local removal command. Before touching
+the durable Executor ledger it stops/disables the Host Agent, both fixed A/B
+recovery timers, and both recovery service instances, then verifies that none
+remains active or enabled. A freeze failure
+leaves state untouched. Any later failure leaves these producers frozen so a
+timer tick cannot recreate state; fix the reported condition and rerun
+`--purge`.
+
+The Host Agent account and its token-bearing identity are owned by the Host
+Agent package and are never removed by this uninstaller.
+Docker credentials, service port sidecars, and Docker version pins are target
+configuration and are preserved by both uninstall modes.
+
+Purge this Local Executor boundary before purging the Host Agent. This
+uninstaller does not remove the Host Agent identity or Docker credential.
+Identity deletion, mandatory unlink, and the SSD/copy-on-write/snapshot
+physical-erasure caveat belong to the Host Agent purge procedure. Legacy
+`ssh_v1` updater/helper/SSH/8090 assets are outside this package and remain
+until the separate Bridge-removal release.

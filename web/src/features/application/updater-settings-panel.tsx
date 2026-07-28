@@ -20,10 +20,28 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-bootstrap-panel";
 import { useUpdaterSettings } from "@/features/queries";
-import { apiPut } from "@/lib/api/client";
-import { isUpdaterPolicyHostID, normalizeUpdaterSettingsResponse, systemUpdateErrorMessage, systemUpdatePolicyErrorMessage, systemUpdateUpdaterPolicyState } from "@/lib/system-updates";
+import { apiPost, apiPut } from "@/lib/api/client";
+import {
+  isUpdaterPolicyHostID,
+  normalizePullUpdaterOwnershipActivationResponse,
+  normalizePullUpdaterOwnershipDeactivationResponse,
+  normalizeUpdaterSettingsResponse,
+  pullUpdaterOwnershipActivationEligibility,
+  pullUpdaterOwnershipActivationRequest,
+  pullUpdaterOwnershipDeactivationEligibility,
+  pullUpdaterOwnershipDeactivationRequest,
+  pullOwnershipMutationFenceAdvanced,
+  systemUpdateErrorMessage,
+  systemUpdatePolicyErrorMessage,
+  systemUpdateUpdaterPolicyState,
+} from "@/lib/system-updates";
 import type {
+  PullUpdaterOwnershipActivationRequest,
+  PullUpdaterOwnershipActivationResponse,
+  PullUpdaterOwnershipDeactivationRequest,
+  PullUpdaterOwnershipDeactivationResponse,
   SystemUpdateAgentStatus,
+  SystemUpdateJob,
   UpdaterSettings,
   UpdaterSettingsHost,
   UpdaterSettingsTarget,
@@ -32,6 +50,7 @@ import type {
 
 type UpdaterSettingsPanelProps = {
   updater: SystemUpdateAgentStatus;
+  jobs: SystemUpdateJob[];
   canEdit: boolean;
   canManageSecrets: boolean;
 };
@@ -40,8 +59,14 @@ type UpdaterSettingsFormState = {
   apiPort: string;
   pollInterval: string;
   heartbeatInterval: string;
+  localExecutorPolicySHA256: string;
   hosts: UpdaterSettingsHost[];
   targets: UpdaterSettingsTarget[];
+};
+
+type PullOwnershipDeactivationAttempt = {
+  request: PullUpdaterOwnershipDeactivationRequest;
+  legacyAgentServiceID: string;
 };
 
 const serviceTypes = [
@@ -57,14 +82,211 @@ const deploymentModes = [
   { value: "docker", label: "Docker" },
 ] as const;
 
-export function UpdaterSettingsPanel({ updater, canEdit, canManageSecrets }: UpdaterSettingsPanelProps) {
+export function UpdaterSettingsPanel({ updater, jobs, canEdit, canManageSecrets }: UpdaterSettingsPanelProps) {
   const [open, setOpen] = useState(false);
   const [bootstrapCloseBlocked, setBootstrapCloseBlocked] = useState(false);
+  const [ambiguousOwnershipRequest, setAmbiguousOwnershipRequest] = useState<PullUpdaterOwnershipActivationRequest | null>(null);
+  const [ambiguousDeactivationAttempt, setAmbiguousDeactivationAttempt] = useState<PullOwnershipDeactivationAttempt | null>(null);
+  const [ownershipFeedback, setOwnershipFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const queryClient = useQueryClient();
   const settings = useUpdaterSettings(updater.updater_id, open);
+  const settingsData = useMemo(() => {
+    if (!settings.data || updater.transport_mode !== "pull_v2") {
+      return settings.data;
+    }
+    return {
+      ...settings.data,
+      transport_mode: "pull_v2" as const,
+      execution_host_id: updater.execution_host_id || "",
+    };
+  }, [settings.data, updater.execution_host_id, updater.transport_mode]);
   const policyState = systemUpdateUpdaterPolicyState(updater);
+  const observedOwnership = settingsData?.execution_host_ownership;
+  const ownershipTransitionObserved = Boolean(
+    ambiguousOwnershipRequest
+    && updater.transport_mode === "pull_v2"
+    && settingsData?.execution_host_id === ambiguousOwnershipRequest.expected_execution_host_id
+    && observedOwnership?.transport_mode === "pull_v2"
+    && observedOwnership.agent_service_id === updater.updater_id
+    && observedOwnership.ownership_epoch > ambiguousOwnershipRequest.expected_ownership_epoch
+    && observedOwnership.policy_revision === ambiguousOwnershipRequest.expected_source_policy_revision
+    && Number(updater.ownership_epoch) === observedOwnership.ownership_epoch,
+  );
+  const deactivationTransitionObserved = Boolean(
+    ambiguousDeactivationAttempt
+    && settingsData?.execution_host_id === ambiguousDeactivationAttempt.request.expected_execution_host_id
+    && observedOwnership?.transport_mode === "ssh_v1"
+    && observedOwnership.agent_service_id === ambiguousDeactivationAttempt.legacyAgentServiceID
+    && observedOwnership.legacy_agent_service_id === ambiguousDeactivationAttempt.legacyAgentServiceID
+    && observedOwnership.ownership_epoch > ambiguousDeactivationAttempt.request.expected_ownership_epoch
+    && Number(updater.ownership_epoch) === 0,
+  );
+  const ownershipAttemptFenceAdvanced = Boolean(
+    ambiguousOwnershipRequest
+    && settingsData
+    && pullOwnershipMutationFenceAdvanced(ambiguousOwnershipRequest, settingsData),
+  );
+  const deactivationAttemptFenceAdvanced = Boolean(
+    ambiguousDeactivationAttempt
+    && settingsData
+    && pullOwnershipMutationFenceAdvanced(
+      ambiguousDeactivationAttempt.request,
+      settingsData,
+    ),
+  );
+  const resolvedOwnershipTransitionObserved = ownershipTransitionObserved || deactivationTransitionObserved;
+  const activateOwnership = useMutation<
+    PullUpdaterOwnershipActivationResponse,
+    Error,
+    PullUpdaterOwnershipActivationRequest
+  >({
+    mutationFn: async (request) => {
+      const response = normalizePullUpdaterOwnershipActivationResponse(await apiPost<unknown>(
+        `/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/pull-ownership/activate`,
+        request,
+      ));
+      if (
+        response.updater_id !== updater.updater_id
+        || response.execution_host_id !== request.expected_execution_host_id
+        || response.agent_service_id !== updater.updater_id
+        || response.ownership_epoch <= request.expected_ownership_epoch
+        || response.source_policy_revision !== request.expected_source_policy_revision
+        || response.projection_revision !== request.expected_projection_revision
+        || response.local_executor_policy_revision !== request.expected_local_executor_policy_revision
+        || response.local_executor_policy_sha256 !== request.expected_local_executor_policy_sha256
+      ) {
+        throw new Error("invalid_pull_ownership_activation_response");
+      }
+      return response;
+    },
+    retry: false,
+    onSuccess: async (response) => {
+      setAmbiguousOwnershipRequest(null);
+      setAmbiguousDeactivationAttempt(null);
+      setOwnershipFeedback({ tone: "success", message: `実行権限をHost Agentへ切り替えました。Ownership epoch: ${response.ownership_epoch}` });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
+        queryClient.invalidateQueries({ queryKey: ["system-updates", "updaters", updater.updater_id, "settings"] }),
+      ]);
+    },
+    onError: (error, request) => {
+      if (pullOwnershipMutationErrorIsAmbiguous(error)) {
+        setAmbiguousOwnershipRequest(request);
+        setOwnershipFeedback({ tone: "error", message: "切替結果を確認できません。安全のため再送せず、Updater状態を再取得してください。" });
+        return;
+      }
+      setOwnershipFeedback({ tone: "error", message: systemUpdateErrorMessage(error, "実行権限を切り替えられませんでした。最新状態を再取得して確認してください。") });
+    },
+  });
+  const deactivateOwnership = useMutation<
+    PullUpdaterOwnershipDeactivationResponse,
+    Error,
+    PullOwnershipDeactivationAttempt
+  >({
+    mutationFn: async (attempt) => {
+      const response = normalizePullUpdaterOwnershipDeactivationResponse(await apiPost<unknown>(
+        `/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/pull-ownership/deactivate`,
+        attempt.request,
+      ));
+      if (
+        response.updater_id !== updater.updater_id
+        || response.execution_host_id !== attempt.request.expected_execution_host_id
+        || response.agent_service_id !== attempt.legacyAgentServiceID
+        || response.ownership_epoch <= attempt.request.expected_ownership_epoch
+        || response.agent_ownership_epoch !== 0
+        || response.source_policy_revision !== attempt.request.expected_source_policy_revision
+        || response.projection_revision !== attempt.request.expected_projection_revision
+        || response.local_executor_policy_revision !== attempt.request.expected_local_executor_policy_revision
+        || response.local_executor_policy_sha256 !== attempt.request.expected_local_executor_policy_sha256
+      ) {
+        throw new Error("invalid_pull_ownership_deactivation_response");
+      }
+      return response;
+    },
+    retry: false,
+    onSuccess: async (response) => {
+      setAmbiguousDeactivationAttempt(null);
+      setAmbiguousOwnershipRequest(null);
+      setOwnershipFeedback({
+        tone: "success",
+        message: `Bridge rollbackでSSH Updaterへ戻しました。Ownership epoch: ${response.ownership_epoch} / Host Agent epoch: ${response.agent_ownership_epoch}`,
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
+        queryClient.invalidateQueries({ queryKey: ["system-updates", "updaters", updater.updater_id, "settings"] }),
+      ]);
+    },
+    onError: (error, attempt) => {
+      if (pullOwnershipMutationErrorIsAmbiguous(error)) {
+        setAmbiguousDeactivationAttempt(attempt);
+        setOwnershipFeedback({
+          tone: "error",
+          message: "Bridge rollback結果を確認できません。安全のため再送せず、Updater状態を再取得してください。",
+        });
+        return;
+      }
+      setOwnershipFeedback({
+        tone: "error",
+        message: systemUpdateErrorMessage(error, "Bridge rollbackを実行できませんでした。最新状態とSSH更新経路を確認してください。"),
+      });
+    },
+  });
+  const ownershipRequestState = activateOwnership.isPending
+    ? "pending"
+    : ambiguousOwnershipRequest && !ownershipAttemptFenceAdvanced
+      ? "ambiguous"
+      : "idle";
+  const ownershipEligibility = settingsData
+    ? pullUpdaterOwnershipActivationEligibility({
+        updater,
+        settings: settingsData,
+        jobs,
+        requestState: ownershipRequestState,
+      })
+    : { ready: false, reason: "pull_ownership_contract_unavailable" };
+  const deactivationRequestState = deactivateOwnership.isPending
+    ? "pending"
+    : ambiguousDeactivationAttempt && !deactivationAttemptFenceAdvanced
+      ? "ambiguous"
+      : "idle";
+  const deactivationEligibility = settingsData
+    ? pullUpdaterOwnershipDeactivationEligibility({
+        updater,
+        settings: settingsData,
+        jobs,
+        requestState: deactivationRequestState,
+      })
+    : { ready: false, reason: "pull_rollback_contract_unavailable" };
+  const rollbackLegacyAgentServiceID = String(observedOwnership?.legacy_agent_service_id || "").trim();
+  const activePullOwner = Boolean(
+    settingsData
+    && updater.transport_mode === "pull_v2"
+    && settingsData.transport_mode === "pull_v2"
+    && updater.execution_host_id === settingsData.execution_host_id
+    && observedOwnership?.transport_mode === "pull_v2"
+    && observedOwnership.agent_service_id === updater.updater_id
+    && rollbackLegacyAgentServiceID
+    && Number.isSafeInteger(observedOwnership.ownership_epoch)
+    && observedOwnership.ownership_epoch > 0
+    && Number(updater.ownership_epoch) === observedOwnership.ownership_epoch,
+  );
+  const ownershipMutationPending = activateOwnership.isPending || deactivateOwnership.isPending;
   const setDialogOpen = (nextOpen: boolean) => {
-    if (!nextOpen && bootstrapCloseBlocked) return;
+    if (!nextOpen && (bootstrapCloseBlocked || ownershipMutationPending)) return;
     setOpen(nextOpen);
+  };
+  const requestOwnershipActivation = () => {
+    if (!settingsData || !ownershipEligibility.ready || !canEdit) return;
+    setOwnershipFeedback(null);
+    activateOwnership.mutate(pullUpdaterOwnershipActivationRequest(updater, settingsData));
+  };
+  const requestOwnershipDeactivation = () => {
+    if (!settingsData || !deactivationEligibility.ready || !activePullOwner || !canEdit) return;
+    setOwnershipFeedback(null);
+    deactivateOwnership.mutate({
+      request: pullUpdaterOwnershipDeactivationRequest(updater, settingsData),
+      legacyAgentServiceID: rollbackLegacyAgentServiceID,
+    });
   };
 
   return (
@@ -77,29 +299,135 @@ export function UpdaterSettingsPanel({ updater, canEdit, canManageSecrets }: Upd
       </DialogTrigger>
       <DialogContent
         className="max-h-[92vh] overflow-y-auto sm:max-w-5xl"
-        showCloseButton={!bootstrapCloseBlocked}
+        showCloseButton={!bootstrapCloseBlocked && !ownershipMutationPending}
         onEscapeKeyDown={(event) => {
-          if (bootstrapCloseBlocked) event.preventDefault();
+          if (bootstrapCloseBlocked || ownershipMutationPending) event.preventDefault();
         }}
         onPointerDownOutside={(event) => {
-          if (bootstrapCloseBlocked) event.preventDefault();
+          if (bootstrapCloseBlocked || ownershipMutationPending) event.preventDefault();
         }}
       >
         <DialogHeader>
           <DialogTitle>{updater.name || updater.updater_id} の設定</DialogTitle>
           <DialogDescription>
-            中央Updaterが管理するホストとサービスをControl Panel上で設定します。保存後はUpdaterが設定を取得し、自動で反映します。
+            {updater.transport_mode === "pull_v2"
+              ? "このホストで管理するサービスをControl Panel上で設定します。Host Agentが外向き接続で設定を取得します。"
+              : "中央Updaterが管理するホストとサービスをControl Panel上で設定します。保存後はUpdaterが設定を取得し、自動で反映します。"}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-3 text-xs">
           <Badge variant={policyState.tone}>{policyState.label}</Badge>
-          <span>設定Revision: {updater.desired_revision ?? settings.data?.revision ?? 0}</span>
+          <span>設定Revision: {updater.desired_revision ?? settingsData?.revision ?? 0}</span>
           <span>反映済みRevision: {updater.applied_revision ?? 0}</span>
           {updater.policy_error_code || updater.policy_error ? (
             <span className="break-words text-destructive">反映情報: {systemUpdatePolicyErrorMessage(updater.policy_error_code || updater.policy_error)}</span>
           ) : null}
         </div>
+
+        {settingsData?.transport_mode === "pull_v2" ? (
+          <section className="space-y-3 rounded-md border border-blue-200 bg-blue-50/40 p-4 dark:border-blue-900 dark:bg-blue-950/20" aria-labelledby={`${updater.updater_id}-ownership-heading`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 id={`${updater.updater_id}-ownership-heading`} className="font-medium">更新実行権限の切替</h3>
+                <p className="mt-1 text-xs text-muted-foreground">Bridge期間中はSSH UpdaterとHost Agentの実行権限をCASで切り替えます。同じホストで同時に更新を実行することはありません。</p>
+              </div>
+              <Badge variant={Number(updater.ownership_epoch) > 0 ? "default" : "secondary"}>
+                {Number(updater.ownership_epoch) > 0 ? `Host Agent active · epoch ${updater.ownership_epoch}` : "Observer only"}
+              </Badge>
+            </div>
+            <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+              <OwnershipStateItem label="実行ホスト" value={settingsData.execution_host_id || "未報告"} />
+              <OwnershipStateItem
+                label="現在のOwner"
+                value={settingsData.execution_host_ownership
+                  ? `${settingsData.execution_host_ownership.transport_mode} / ${settingsData.execution_host_ownership.agent_service_id || "legacy"}`
+                  : "未報告"}
+              />
+              <OwnershipStateItem label="現在のOwnership epoch" value={settingsData.execution_host_ownership?.ownership_epoch ?? "未報告"} />
+              <OwnershipStateItem
+                label={activePullOwner ? "Bridge rollback" : "Observer readiness"}
+                value={activePullOwner
+                  ? (deactivationEligibility.ready ? `SSHへ復元可能 (${rollbackLegacyAgentServiceID})` : ownershipEligibilityMessage(deactivationEligibility.reason))
+                  : (ownershipEligibility.ready ? "切替可能" : ownershipEligibilityMessage(ownershipEligibility.reason))}
+              />
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Source / projection / executor revision: {settingsData.revision} / {settingsData.projection_revision ?? "未報告"} / {settingsData.local_executor_policy_revision ?? "未報告"}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Observer: {settingsData.pull_activation?.status || "未報告"} · heartbeat {settingsData.pull_activation?.last_heartbeat_at || "未報告"} ·
+              observe-only {settingsData.pull_activation?.observe_only === true ? "yes" : "no"} · executor {settingsData.pull_activation?.update_executor === true ? "ready" : "not ready"}
+            </div>
+            {ownershipFeedback || resolvedOwnershipTransitionObserved ? (
+              <div
+                className={(ownershipFeedback?.tone === "error" && !resolvedOwnershipTransitionObserved)
+                  ? "rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+                  : "rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-100"}
+                role={ownershipFeedback?.tone === "error" && !resolvedOwnershipTransitionObserved ? "alert" : "status"}
+              >
+                {deactivationTransitionObserved
+                  ? "Bridge rollback結果を最新状態で確認しました。SSH Updaterが更新実行権限を所有し、Host Agentはobserver epoch 0です。"
+                  : ownershipTransitionObserved
+                    ? "切替結果を最新状態で確認しました。Host Agentが更新実行権限を所有しています。"
+                    : ownershipFeedback?.message}
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              {!activePullOwner ? (
+                <DangerConfirm
+                  title={`${updater.name || updater.updater_id} へ更新実行権限を切り替えますか`}
+                  description={`実行ホスト ${settingsData.execution_host_id || "未報告"} のSSH更新経路を停止し、検証済みのHost Agentへ切り替えます。active job、recovery、revision、Local Executor policyが直前に再検証され、不一致なら変更されません。`}
+                  onConfirm={requestOwnershipActivation}
+                  actionLabel="Host Agentへ切り替え"
+                >
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!canEdit || !ownershipEligibility.ready || ownershipMutationPending}
+                    aria-busy={activateOwnership.isPending}
+                    title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(ownershipEligibility.reason) || undefined}
+                  >
+                    {activateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                    Host Agentへ切り替え
+                  </Button>
+                </DangerConfirm>
+              ) : null}
+              {activePullOwner ? (
+                <DangerConfirm
+                  title={`緊急Bridge rollbackで ${rollbackLegacyAgentServiceID} へ戻しますか`}
+                  description={`Bridge期間限定の緊急操作です。実行ホスト ${settingsData.execution_host_id || "未報告"} の保存済みSSH Updater、token、policy、active job、recovery、self-update、runtime-token rotationをサーバーが同一transactionで再検証します。応答が不明な場合は再送しません。`}
+                  onConfirm={requestOwnershipDeactivation}
+                  actionLabel="SSH Updaterへ戻す"
+                >
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    disabled={!canEdit || !deactivationEligibility.ready || ownershipMutationPending}
+                    aria-busy={deactivateOwnership.isPending}
+                    title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(deactivationEligibility.reason) || undefined}
+                  >
+                    {deactivateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                    緊急Bridge rollback
+                  </Button>
+                </DangerConfirm>
+              ) : null}
+              {ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    void settings.refetch();
+                    void queryClient.invalidateQueries({ queryKey: ["system-updates"] });
+                  }}
+                >
+                  状態だけ再取得
+                </Button>
+              ) : null}
+            </div>
+            {!canEdit ? <p className="text-xs text-muted-foreground">切替には system_updates.execute 権限が必要です。</p> : null}
+          </section>
+        ) : null}
 
         {settings.isLoading ? (
           <div className="flex items-center gap-2 rounded-md border border-dashed p-6 text-sm text-muted-foreground" role="status">
@@ -110,14 +438,15 @@ export function UpdaterSettingsPanel({ updater, canEdit, canManageSecrets }: Upd
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
             {systemUpdateErrorMessage(settings.error, "Updater設定を取得できませんでした。")}
           </div>
-        ) : settings.data ? (
+        ) : settingsData ? (
           <UpdaterSettingsForm
-            key={settings.data.updater_id}
+            key={`${settingsData.updater_id}:${settingsData.transport_mode}`}
             updater={updater}
-            settings={settings.data}
-            canEdit={canEdit}
-            canManageSecrets={canManageSecrets}
-            onBootstrapCloseBlockedChange={setBootstrapCloseBlocked}
+            settings={settingsData}
+             canEdit={canEdit}
+             canManageSecrets={canManageSecrets}
+             ownershipOperationBlocked={ownershipMutationPending || ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous"}
+             onBootstrapCloseBlockedChange={setBootstrapCloseBlocked}
           />
         ) : null}
       </DialogContent>
@@ -130,12 +459,14 @@ function UpdaterSettingsForm({
   settings,
   canEdit,
   canManageSecrets,
+  ownershipOperationBlocked,
   onBootstrapCloseBlockedChange,
 }: {
   updater: SystemUpdateAgentStatus;
   settings: UpdaterSettings;
   canEdit: boolean;
   canManageSecrets: boolean;
+  ownershipOperationBlocked: boolean;
   onBootstrapCloseBlockedChange: (blocked: boolean) => void;
 }) {
   const queryClient = useQueryClient();
@@ -147,21 +478,25 @@ function UpdaterSettingsForm({
   const [feedback, setFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [copiedHostID, setCopiedHostID] = useState("");
   const [bootstrapActive, setBootstrapActive] = useState(false);
+  const pullMode = settings.transport_mode === "pull_v2";
+  const executionHostID = settings.execution_host_id || "";
 
-  const hostOptions = useMemo(() => form.hosts.map((host) => ({
-    value: host.host_id,
-    label: host.name || host.host_id || "ID未入力",
-  })), [form.hosts]);
+  const hostOptions = useMemo(() => pullMode
+    ? (executionHostID ? [{ value: executionHostID, label: executionHostID }] : [])
+    : form.hosts.map((host) => ({
+      value: host.host_id,
+      label: host.name || host.host_id || "ID未入力",
+    })), [executionHostID, form.hosts, pullMode]);
 
   const saveSettings = useMutation({
     mutationFn: async () => {
-      if (bootstrapActive) {
+      if (bootstrapActive || ownershipOperationBlocked) {
         throw Object.assign(new Error("updater_host_bootstrap_in_progress"), {
           code: "updater_host_bootstrap_in_progress",
           status: 409,
         });
       }
-      const payload = buildUpdaterSettingsPayload(baseRevision, form, canManageSecrets ? {
+      const payload = buildUpdaterSettingsPayload(baseRevision, form, settings, !pullMode && canManageSecrets ? {
         githubToken,
         deleteGitHubToken,
       } : undefined);
@@ -232,7 +567,7 @@ function UpdaterSettingsForm({
       <div className="space-y-6">
         {!canEdit ? (
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
-            設定の変更には system_updates.execute と secrets.update の両方の権限が必要です。現在は内容の確認だけできます。
+            設定の変更には system_updates.execute 権限が必要です。現在は内容の確認だけできます。
           </div>
         ) : (
           <div className="rounded-md border border-blue-300 bg-blue-50 p-3 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/35 dark:text-blue-100">
@@ -242,25 +577,40 @@ function UpdaterSettingsForm({
 
         <section className="space-y-3" aria-labelledby={`${formID}-runtime-heading`}>
           <div>
-            <h3 id={`${formID}-runtime-heading`} className="font-medium">Updaterの動作</h3>
-            <p className="text-xs text-muted-foreground">APIは中央ホスト内だけで待ち受けます。通常は初期値のままで使用できます。</p>
+            <h3 id={`${formID}-runtime-heading`} className="font-medium">{pullMode ? "Host Agentの動作" : "Updaterの動作"}</h3>
+            <p className="text-xs text-muted-foreground">
+              {pullMode
+                ? "Host AgentからControl Panelへoutbound HTTPSで接続します。SSH、受信API、8090ポートは使用しません。"
+                : "APIは中央ホスト内だけで待ち受けます。通常は初期値のままで使用できます。"}
+            </p>
           </div>
+          {pullMode ? (
+            <div className="flex flex-wrap gap-2 rounded-md border bg-muted/30 p-3 text-xs">
+              <Badge variant="secondary">pull_v2</Badge>
+              <span>実行ホスト: {executionHostID || "未割り当て"}</span>
+              <span>受信ポート: なし</span>
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="API接続先" htmlFor={`${formID}-api-host`} hint="安全のためループバック固定">
-              <Input id={`${formID}-api-host`} value="127.0.0.1" readOnly disabled />
-            </Field>
-            <Field label="APIポート" htmlFor={`${formID}-api-port`} hint="初期値 8090">
-              <Input
-                id={`${formID}-api-port`}
-                type="number"
-                min={1}
-                max={65535}
-                inputMode="numeric"
-                value={form.apiPort}
-                onChange={(event) => setForm((current) => ({ ...current, apiPort: event.target.value }))}
-                disabled={!canEdit}
-              />
-            </Field>
+            {!pullMode ? (
+              <>
+                <Field label="API接続先" htmlFor={`${formID}-api-host`} hint="安全のためループバック固定">
+                  <Input id={`${formID}-api-host`} value="127.0.0.1" readOnly disabled />
+                </Field>
+                <Field label="APIポート" htmlFor={`${formID}-api-port`} hint="初期値 8090">
+                  <Input
+                    id={`${formID}-api-port`}
+                    type="number"
+                    min={1}
+                    max={65535}
+                    inputMode="numeric"
+                    value={form.apiPort}
+                    onChange={(event) => setForm((current) => ({ ...current, apiPort: event.target.value }))}
+                    disabled={!canEdit}
+                  />
+                </Field>
+              </>
+            ) : null}
             <Field label="更新確認間隔（秒）" htmlFor={`${formID}-poll-interval`}>
               <Input
                 id={`${formID}-poll-interval`}
@@ -289,10 +639,27 @@ function UpdaterSettingsForm({
                 disabled={!canEdit}
               />
             </Field>
+            {pullMode ? (
+              <Field
+                label="Local Executor policy SHA-256"
+                htmlFor={`${formID}-executor-policy-sha256`}
+                hint="root所有policyを固定するdigestです。未設定時はobserve結果を信頼せず不明として扱います。"
+              >
+                <Input
+                  id={`${formID}-executor-policy-sha256`}
+                  value={form.localExecutorPolicySHA256}
+                  onChange={(event) => setForm((current) => ({ ...current, localExecutorPolicySHA256: event.target.value }))}
+                  disabled={!canEdit}
+                  placeholder="sha256:..."
+                  spellCheck={false}
+                  className="font-mono text-xs"
+                />
+              </Field>
+            ) : null}
           </div>
         </section>
 
-        <section className="space-y-3" aria-labelledby={`${formID}-hosts-heading`}>
+        {!pullMode ? <section className="space-y-3" aria-labelledby={`${formID}-hosts-heading`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 id={`${formID}-hosts-heading`} className="font-medium">管理対象ホスト</h3>
@@ -423,21 +790,25 @@ function UpdaterSettingsForm({
               onCloseBlockedChange={onBootstrapCloseBlockedChange}
             />
           ) : null}
-        </section>
+        </section> : null}
 
         <section className="space-y-3" aria-labelledby={`${formID}-targets-heading`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 id={`${formID}-targets-heading`} className="font-medium">更新するサービス</h3>
-              <p className="text-xs text-muted-foreground">どのホスト上の、どのAutoStreamサービスを更新するか指定します。</p>
+              <p className="text-xs text-muted-foreground">
+                {pullMode
+                  ? `実行ホスト ${executionHostID || "未割り当て"} 上で管理するAutoStreamサービスを指定します。ホスト割り当てはControl Panelが管理します。`
+                  : "どのホスト上の、どのAutoStreamサービスを更新するか指定します。"}
+              </p>
             </div>
             {canEdit ? (
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={form.hosts.length === 0}
-                onClick={() => setForm((current) => ({ ...current, targets: [...current.targets, newTarget(current.targets.length, current.hosts[0]?.host_id || "")] }))}
+                disabled={hostOptions.length === 0}
+                onClick={() => setForm((current) => ({ ...current, targets: [...current.targets, newTarget(current.targets.length, hostOptions[0]?.value || "")] }))}
               >
                 <Plus className="size-4" />
                 サービスを追加
@@ -451,11 +822,17 @@ function UpdaterSettingsForm({
             <div className="space-y-3">
               {form.targets.map((target, index) => (
                 <div key={index} className="grid gap-3 rounded-md border p-4 sm:grid-cols-2 lg:grid-cols-[1.2fr_1fr_1fr_1fr_auto] lg:items-end">
-                  <Field label="対象ID" htmlFor={`${formID}-target-${index}-id`}>
-                    <Input id={`${formID}-target-${index}-id`} value={target.target_id} onChange={(event) => updateTarget(index, { target_id: event.target.value })} disabled={!canEdit} placeholder="worker-main" />
+                  <Field label="NodeサービスID" htmlFor={`${formID}-target-${index}-id`}>
+                    <Input
+                      id={`${formID}-target-${index}-id`}
+                      value={target.service_id || target.target_id}
+                      onChange={(event) => updateTarget(index, { target_id: event.target.value, service_id: event.target.value })}
+                      disabled={!canEdit}
+                      placeholder="worker-main"
+                    />
                   </Field>
-                  <Field label="ホスト" htmlFor={`${formID}-target-${index}-host`}>
-                    <Select value={target.host_id} onValueChange={(value) => updateTarget(index, { host_id: value })} disabled={!canEdit || hostOptions.length === 0}>
+                  <Field label={pullMode ? "実行ホスト（サーバー管理）" : "ホスト"} htmlFor={`${formID}-target-${index}-host`}>
+                    <Select value={target.host_id || executionHostID} onValueChange={(value) => updateTarget(index, { host_id: value })} disabled={pullMode || !canEdit || hostOptions.length === 0}>
                       <SelectTrigger id={`${formID}-target-${index}-host`}><SelectValue placeholder="ホストを選択" /></SelectTrigger>
                       <SelectContent>
                         {hostOptions.map((host) => <SelectItem key={host.value} value={host.value}>{host.label}</SelectItem>)}
@@ -489,7 +866,7 @@ function UpdaterSettingsForm({
           )}
         </section>
 
-        <section className="space-y-3" aria-labelledby={`${formID}-github-heading`}>
+        {!pullMode ? <section className="space-y-3" aria-labelledby={`${formID}-github-heading`}>
           <div>
             <h3 id={`${formID}-github-heading`} className="font-medium">GitHub Release Token</h3>
             <p className="text-xs text-muted-foreground">Managed更新では公開中のControl Panel repositoryにもTokenを必須としています。当該repositoryの Contents (read) と Attestations (read) だけを付与してください。値は保存後に再表示されず、更新jobの実行時だけUpdaterへ渡されます。private repositoryへ変更した場合、この公開repository用の証明検証では更新できません。</p>
@@ -531,7 +908,11 @@ function UpdaterSettingsForm({
           ) : (
             <p className="text-xs text-muted-foreground">Tokenの登録・変更には system_updates.execute と secrets.update の両方の権限が必要です。</p>
           )}
-        </section>
+        </section> : (
+          <div className="rounded-md border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+            pull_v2では長期GitHub Release TokenをHost Agentへ配布しません。更新artifactはジョブに限定した短期資格情報またはControl Panel経由で取得します。
+          </div>
+        )}
 
         {feedback ? (
           <div
@@ -555,8 +936,12 @@ function UpdaterSettingsForm({
           <Button
             type="button"
             onClick={() => saveSettings.mutate()}
-            disabled={saveSettings.isPending || bootstrapActive}
-            title={bootstrapActive ? "ホストの自動セットアップ完了後に保存できます。" : undefined}
+            disabled={saveSettings.isPending || bootstrapActive || ownershipOperationBlocked}
+            title={bootstrapActive
+              ? "ホストの自動セットアップ完了後に保存できます。"
+              : ownershipOperationBlocked
+                ? "更新実行権限の切替状態を確認してから保存できます。"
+                : undefined}
           >
             {saveSettings.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
             設定を保存
@@ -565,6 +950,31 @@ function UpdaterSettingsForm({
       </DialogFooter>
     </>
   );
+}
+
+function OwnershipStateItem({ label, value }: { label: string; value: ReactNode }) {
+  return <div className="rounded-md border bg-background/70 px-3 py-2"><div className="text-muted-foreground">{label}</div><div className="mt-0.5 break-all font-medium">{value}</div></div>;
+}
+
+function ownershipEligibilityMessage(reason: string) {
+  const messages: Record<string, string> = {
+    unsupported_transport: "pull_v2ではありません",
+    pull_ownership_contract_unavailable: "切替用revisionまたは現在Ownerが未報告です",
+    pull_rollback_contract_unavailable: "保存済みSSH ownerまたは現在のpull owner fenceが未報告です",
+    request_pending: "切替要求を送信中です",
+    request_ambiguous: "切替結果を確認中です",
+    observer_offline: "Host Agentがオフラインです",
+    recovery_required: "Host Agentがrecovery中です",
+    active_job: "対象ホストで更新ジョブが進行中です",
+    observer_not_ready: "ObserverまたはLocal Executorの準備が完了していません",
+  };
+  return messages[reason] || "";
+}
+
+function pullOwnershipMutationErrorIsAmbiguous(error: unknown) {
+  if (!error || typeof error !== "object" || !("status" in error)) return true;
+  const status = Number((error as { status?: unknown }).status);
+  return !Number.isInteger(status) || status < 400 || status >= 500;
 }
 
 function Field({ label, htmlFor, hint, children }: { label: string; htmlFor: string; hint?: string; children: ReactNode }) {
@@ -582,6 +992,7 @@ function settingsToForm(settings: UpdaterSettings): UpdaterSettingsFormState {
     apiPort: String(settings.api.port || 8090),
     pollInterval: String(settings.poll_interval_seconds || 15),
     heartbeatInterval: String(settings.heartbeat_interval_seconds || 30),
+    localExecutorPolicySHA256: settings.local_executor_policy_sha256 || "",
     hosts: settings.hosts.map((host) => ({ ...host })),
     targets: settings.targets.map((target) => ({ ...target })),
   };
@@ -590,18 +1001,45 @@ function settingsToForm(settings: UpdaterSettings): UpdaterSettingsFormState {
 function buildUpdaterSettingsPayload(
   expectedRevision: number,
   form: UpdaterSettingsFormState,
+  settings: UpdaterSettings,
   secretUpdate?: { githubToken: string; deleteGitHubToken: boolean },
 ): UpdaterSettingsUpdate {
-  const apiPort = requiredPort(form.apiPort, "APIポート");
   const pollInterval = requiredInterval(form.pollInterval, "更新確認間隔");
   const heartbeatInterval = requiredHeartbeatInterval(form.heartbeatInterval);
+  const pullMode = settings.transport_mode === "pull_v2";
+  const executionHostID = String(settings.execution_host_id || "").trim();
+  if (pullMode && !executionHostID) throw new Error("Host Agentの実行ホスト割り当てがありません。Nodeを再登録してください。");
+  if (form.targets.length === 0) throw new Error("更新するサービスを1件以上追加してください。");
+  if (form.targets.length > 1024) throw new Error("更新するサービスは1024件まで登録できます。");
+
+  if (pullMode) {
+    const hostIDs = new Set([executionHostID]);
+    const targets = form.targets.map((target, index) => normalizeTargetForSave(
+      { ...target, host_id: executionHostID },
+      index,
+      hostIDs,
+    ));
+    if (new Set(targets.map((target) => target.target_id)).size !== targets.length) throw new Error("更新対象IDが重複しています。");
+    if (new Set(targets.map((target) => target.service_id)).size !== targets.length) throw new Error("NodeサービスIDが重複しています。");
+    const digest = form.localExecutorPolicySHA256.trim().toLowerCase();
+    if (digest && !/^sha256:[0-9a-f]{64}$/.test(digest)) {
+      throw new Error("Local Executor policy SHA-256は sha256: に続く64桁の16進数で入力してください。");
+    }
+    return {
+      expected_revision: expectedRevision,
+      poll_interval_seconds: pollInterval,
+      heartbeat_interval_seconds: heartbeatInterval,
+      targets,
+      local_executor_policy_sha256: digest,
+    };
+  }
+
+  const apiPort = requiredPort(form.apiPort, "APIポート");
   if (form.hosts.length === 0) throw new Error("管理対象ホストを1件以上追加してください。");
   if (form.hosts.length > 128) throw new Error("管理対象ホストは128件まで登録できます。");
   const hosts = form.hosts.map((host, index) => normalizeHostForSave(host, index));
   const hostIDs = new Set(hosts.map((host) => host.host_id));
   if (hostIDs.size !== hosts.length) throw new Error("ホストIDが重複しています。");
-  if (form.targets.length === 0) throw new Error("更新するサービスを1件以上追加してください。");
-  if (form.targets.length > 1024) throw new Error("更新するサービスは1024件まで登録できます。");
   const targets = form.targets.map((target, index) => normalizeTargetForSave(target, index, hostIDs));
   if (new Set(targets.map((target) => target.target_id)).size !== targets.length) throw new Error("対象IDが重複しています。");
   const referencedHostIDs = new Set(targets.map((target) => target.host_id));
@@ -661,8 +1099,11 @@ function normalizeTargetForSave(target: UpdaterSettingsTarget, index: number, ho
   if (!hostIDs.has(hostID)) throw new Error(`${prefix}で選択したホストが見つかりません。`);
   const targetID = requiredText(target.target_id, `${prefix}の対象ID`);
   if (!validPolicyIdentifier(targetID)) throw new Error(`${prefix}の対象IDは英数字で始まり、英数字・.・_・:・-のみで入力してください。`);
+  const serviceID = requiredText(target.service_id || targetID, `${prefix}のNodeサービスID`);
+  if (!validPolicyIdentifier(serviceID)) throw new Error(`${prefix}のNodeサービスIDは英数字で始まり、英数字・.・_・:・-のみで入力してください。`);
   return {
     target_id: targetID,
+    service_id: serviceID,
     host_id: hostID,
     service_type: requiredText(target.service_type, `${prefix}のサービス種別`),
     deployment_mode: requiredText(target.deployment_mode, `${prefix}の配備方式`),
@@ -714,6 +1155,7 @@ function newHost(index: number): UpdaterSettingsHost {
 function newTarget(index: number, hostID: string): UpdaterSettingsTarget {
   return {
     target_id: `target-${index + 1}`,
+    service_id: `target-${index + 1}`,
     host_id: hostID,
     service_type: "worker",
     deployment_mode: "systemd",

@@ -89,7 +89,7 @@ func sanitizedCommandEnv(extra []string) []string {
 }
 
 func dockerCommandEnv() []string {
-	return []string{"HOME=/root", "DOCKER_CONFIG=/root/.docker"}
+	return []string{"HOME=/", "DOCKER_CONFIG=" + localExecutorDockerConfigDir}
 }
 
 type limitedBuffer struct{ bytes.Buffer }
@@ -260,7 +260,7 @@ func RunHelperReconcile(ctx context.Context, configPath, planPath string, runner
 		return reconcileSystemd(ctx, target, plan, runner)
 	}
 	if checkpoint != nil {
-		trustedDir, err := os.MkdirTemp(target.Docker.ProjectDir, ".updater-reconcile-")
+		trustedDir, err := makeDockerTempDir(target, ".updater-reconcile-")
 		if err != nil {
 			return ApplyResult{}, err
 		}
@@ -317,7 +317,7 @@ func prepareTrustedSystemdArtifact(ctx context.Context, cfg Config, target Targe
 }
 
 func prepareTrustedDockerManifest(ctx context.Context, cfg Config, target Target, plan ApplyPlan, downloader ReleaseDownloader) (ApplyPlan, func(), error) {
-	trustedDir, err := os.MkdirTemp(target.Docker.ProjectDir, ".updater-manifest-")
+	trustedDir, err := makeDockerTempDir(target, ".updater-manifest-")
 	if err != nil {
 		return ApplyPlan{}, func() {}, err
 	}
@@ -966,6 +966,7 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 	previousVersion, previousID := baseline.SourceVersion, baseline.ImageID
 	previousRepoDigest, previousBundle, previousManifest := baseline.RepositoryDigest, baseline.BundleVersion, baseline.ManifestDigest
 	overridePath := filepath.Join(plan.StageDir, "compose-override.json")
+	frozenPath := filepath.Join(plan.StageDir, "compose-frozen.json")
 	digestRef := d.ImageRepo + "@" + plan.ExpectedPlatformDigest
 	if err := writeDockerOverride(overridePath, d.Service, digestRef); err != nil {
 		return ApplyResult{}, err
@@ -980,7 +981,6 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 		if !digestPattern.MatchString(expectedStagedImageID) {
 			return ApplyResult{}, errors.New("staged Docker image binding is missing")
 		}
-		frozenPath := filepath.Join(plan.StageDir, "compose-frozen.json")
 		newID, err = verifyTrustedStagedDockerInputsWithOwnerCheck(ctx, runner, d, frozenPath, digestRef, plan.ExpectedPlatformDigest, trustedOwner)
 		if err != nil {
 			return ApplyResult{}, err
@@ -1009,6 +1009,9 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 				return ApplyResult{}, errors.New("staged Docker inputs changed while consuming the mutation grant")
 			}
 		}
+		if err := preflightTrustedDockerComposePorts(ctx, runner, d, frozenPath, baseline.ContainerID); err != nil {
+			return ApplyResult{}, err
+		}
 	} else if mutationGate != nil {
 		return ApplyResult{}, errors.New("a mutation gate requires a pre-staged Docker image")
 	}
@@ -1036,8 +1039,10 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 		if err := verifyComposeModel(ctx, runner, d, composeArgs(d, "")); err != nil {
 			return ApplyResult{}, err
 		}
-		frozenPath := filepath.Join(plan.StageDir, "compose-frozen.json")
 		if err := verifyComposeConfig(ctx, runner, d, base, digestRef, frozenPath); err != nil {
+			return ApplyResult{}, err
+		}
+		if err := preflightTrustedDockerComposePorts(ctx, runner, d, frozenPath, baseline.ContainerID); err != nil {
 			return ApplyResult{}, err
 		}
 		base = composeFrozenArgs(d, frozenPath)
@@ -1148,7 +1153,15 @@ func verifyTrustedStagedDockerInputsWithOwnerCheck(ctx context.Context, runner C
 }
 
 func composeArgs(d *DockerTarget, overridePath string) []string {
-	args := []string{"compose", "--env-file", d.VersionEnvFile, "--project-directory", d.ProjectDir, "-p", d.ComposeProject}
+	args := []string{"compose"}
+	if d.BaseEnvFile != "" {
+		args = append(args, "--env-file", d.BaseEnvFile)
+	}
+	args = append(args, "--env-file", d.VersionEnvFile)
+	if d.PortEnvFile != "" {
+		args = append(args, "--env-file", d.PortEnvFile)
+	}
+	args = append(args, "--project-directory", d.ProjectDir, "-p", d.ComposeProject)
 	for _, file := range d.ComposeFiles {
 		args = append(args, "-f", file)
 	}
@@ -1159,7 +1172,15 @@ func composeArgs(d *DockerTarget, overridePath string) []string {
 }
 
 func composeFrozenArgs(d *DockerTarget, frozenPath string) []string {
-	return []string{"compose", "--env-file", d.VersionEnvFile, "--project-directory", d.ProjectDir, "-p", d.ComposeProject, "-f", frozenPath}
+	args := []string{"compose"}
+	if d.BaseEnvFile != "" {
+		args = append(args, "--env-file", d.BaseEnvFile)
+	}
+	args = append(args, "--env-file", d.VersionEnvFile)
+	if d.PortEnvFile != "" {
+		args = append(args, "--env-file", d.PortEnvFile)
+	}
+	return append(args, "--project-directory", d.ProjectDir, "-p", d.ComposeProject, "-f", frozenPath)
 }
 
 func writeDockerOverride(path, service, image string) error {
@@ -1313,6 +1334,9 @@ func validateComposeModelSecurity(raw []byte, d *DockerTarget) error {
 	if !ok {
 		return errors.New("compose model has no managed service")
 	}
+	if _, err := validateDockerComposePortMappings(raw, d); err != nil {
+		return err
+	}
 	managedImage, _ := managed["image"].(string)
 	if !strings.EqualFold(dockerImageBase(managedImage), d.ImageRepo) && !digestPattern.MatchString(strings.ToLower(managedImage)) {
 		return errors.New("managed compose service image repository differs from fixed image_repo")
@@ -1450,7 +1474,7 @@ func managedContainerID(ctx context.Context, runner CommandRunner, d *DockerTarg
 func readVersionEnv(path string) ([]byte, os.FileMode, bool, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, 0o644, false, nil
+		return nil, 0o600, false, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 {
 		return nil, 0, false, errors.New("version_env_file must be a small regular file")
@@ -1802,7 +1826,7 @@ func checkpointEnv(checkpoint *updateCheckpoint) []byte {
 
 func checkpointMode(checkpoint *updateCheckpoint) os.FileMode {
 	if checkpoint == nil || checkpoint.VersionEnvMode == 0 {
-		return 0o644
+		return 0o600
 	}
 	return checkpoint.VersionEnvMode
 }

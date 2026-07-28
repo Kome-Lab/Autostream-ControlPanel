@@ -7,8 +7,35 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+func TestJobReportPortReconfigureExposesOnlyPublicResult(t *testing.T) {
+	payload, err := json.Marshal(JobReport{
+		ServiceID:       "host-agent-a",
+		LeaseToken:      "lease-token",
+		Sequence:        3,
+		LeaseGeneration: 2,
+		Status:          "succeeded",
+		Progress:        100,
+		PortReconfigure: &PortReconfigurationJobReport{Result: systemdPortResultApplied},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &report); err != nil {
+		t.Fatal(err)
+	}
+	var port map[string]json.RawMessage
+	if err := json.Unmarshal(report["port_reconfigure"], &port); err != nil {
+		t.Fatal(err)
+	}
+	if len(port) != 1 || string(port["result"]) != `"applied"` {
+		t.Fatalf("public port result leaked local reconciliation state: %s", payload)
+	}
+}
 
 func TestPanelAuthorizeBindsLeaseAndTarget(t *testing.T) {
 	var got map[string]any
@@ -101,6 +128,40 @@ func TestPanelErrorAllowsMutationGrantConsumptionContractCode(t *testing.T) {
 	var httpErr *PanelHTTPError
 	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusBadRequest || httpErr.Code != code {
 		t.Fatalf("panel error = %#v", err)
+	}
+}
+
+func TestConsumeMutationGrantNeverFollowsRedirect(t *testing.T) {
+	var redirectedCalls atomic.Int32
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedCalls.Add(1)
+		if authorization := r.Header.Get("Authorization"); authorization != "" {
+			t.Errorf("mutation grant reached redirect target: %q", authorization)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer redirectTarget.Close()
+
+	redirectSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", redirectTarget.URL+"/credential-capture")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirectSource.Close()
+
+	err := ConsumeMutationGrant(
+		context.Background(),
+		redirectSource.URL,
+		"job-one",
+		"one-time-mutation-grant",
+		MutationGrantBinding{},
+		redirectSource.Client(),
+	)
+	var panelError *PanelHTTPError
+	if !errors.As(err, &panelError) || panelError.Status != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect response error = %v", err)
+	}
+	if redirectedCalls.Load() != 0 {
+		t.Fatalf("mutation grant followed %d redirects", redirectedCalls.Load())
 	}
 }
 

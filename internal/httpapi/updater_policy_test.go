@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/updateagent"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -57,7 +58,7 @@ func TestUpdaterPolicyAdminNormalizesHostKeyCommentAndKeepsReleaseTokenWriteOnly
 			"user": "autostream-update-host", "arch": "amd64", "host_public_key": hostKey,
 		}},
 		"targets": []map[string]any{{
-			"target_id": "worker-01", "host_id": "host-01", "service_type": "worker", "deployment_mode": "systemd",
+			"target_id": "worker-01", "service_id": "worker-service-01", "host_id": "host-01", "service_type": "worker", "deployment_mode": "systemd",
 		}},
 		"github_token": releaseToken,
 	}
@@ -84,6 +85,9 @@ func TestUpdaterPolicyAdminNormalizesHostKeyCommentAndKeepsReleaseTokenWriteOnly
 			HostPublicKey            string `json:"host_public_key"`
 			HostPublicKeyFingerprint string `json:"host_public_key_fingerprint"`
 		} `json:"hosts"`
+		Targets []struct {
+			ServiceID string `json:"service_id"`
+		} `json:"targets"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&saved); err != nil {
 		t.Fatal(err)
@@ -96,6 +100,9 @@ func TestUpdaterPolicyAdminNormalizesHostKeyCommentAndKeepsReleaseTokenWriteOnly
 	}
 	if saved.Hosts[0].HostPublicKeyFingerprint != hostFingerprint {
 		t.Fatalf("host fingerprint = %q; want %q", saved.Hosts[0].HostPublicKeyFingerprint, hostFingerprint)
+	}
+	if len(saved.Targets) != 1 || saved.Targets[0].ServiceID != "worker-service-01" {
+		t.Fatalf("saved target service binding = %#v", saved.Targets)
 	}
 	if strings.Contains(saved.Hosts[0].HostPublicKey, "central host") || !strings.HasPrefix(saved.Hosts[0].HostPublicKey, ssh.KeyAlgoED25519+" ") {
 		t.Fatalf("host public key was not normalized to commentless canonical form: %q", saved.Hosts[0].HostPublicKey)
@@ -457,7 +464,7 @@ func TestUpdaterPolicyValidationFailureDoesNotMutatePolicyOrReleaseToken(t *test
 	}
 }
 
-func TestUpdaterPolicySaveRequiresSecretPermissionBeforeMutation(t *testing.T) {
+func TestUpdaterPolicySaveRequiresSecretPermissionOnlyWhenTokenChanges(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(
 		store.User{ID: "update-operator", Username: "update-operator"},
@@ -496,16 +503,18 @@ func TestUpdaterPolicySaveRequiresSecretPermissionBeforeMutation(t *testing.T) {
 	)
 	cookie, csrf := loginForTest(t, handler, "update-operator", "correct horse battery")
 	attackerHostKey, _ := ed25519AuthorizedKeyForTest(t, "")
+	currentRevision := originalPolicy.Revision
 	for _, test := range []struct {
 		name         string
 		includeToken bool
+		wantStatus   int
 	}{
-		{name: "retains existing release token"},
-		{name: "replaces release token", includeToken: true},
+		{name: "retains existing release token", wantStatus: http.StatusOK},
+		{name: "replaces release token", includeToken: true, wantStatus: http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requestBody := map[string]any{
-				"expected_revision":          originalPolicy.Revision,
+				"expected_revision":          currentRevision,
 				"api":                        map[string]any{"bind_host": "127.0.0.1", "host": "127.0.0.1", "port": 8090, "ssl_enabled": false},
 				"poll_interval_seconds":      15,
 				"heartbeat_interval_seconds": 30,
@@ -529,18 +538,27 @@ func TestUpdaterPolicySaveRequiresSecretPermissionBeforeMutation(t *testing.T) {
 			req.Header.Set("X-CSRF-Token", csrf)
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, req)
-			if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "permission_denied") {
+			if res.Code != test.wantStatus {
 				t.Fatalf("updater policy permission status = %d body = %s", res.Code, res.Body.String())
+			}
+			if test.wantStatus == http.StatusForbidden && !strings.Contains(res.Body.String(), "permission_denied") {
+				t.Fatalf("updater policy permission denial body = %s", res.Body.String())
 			}
 			storedPolicy, err := policies.GetUpdaterPolicy(t.Context(), "updater-01")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if storedPolicy.Revision != originalPolicy.Revision ||
+			if test.wantStatus == http.StatusOK {
+				if storedPolicy.Revision != currentRevision+1 ||
+					len(storedPolicy.Hosts) != 1 ||
+					storedPolicy.Hosts[0].Address != "attacker.example.com" {
+					t.Fatalf("token-preserving policy update failed: before=%#v after=%#v", originalPolicy, storedPolicy)
+				}
+				currentRevision = storedPolicy.Revision
+			} else if storedPolicy.Revision != currentRevision ||
 				len(storedPolicy.Hosts) != 1 ||
-				storedPolicy.Hosts[0].Address != originalPolicy.Hosts[0].Address ||
-				storedPolicy.Hosts[0].HostPublicKey != originalPolicy.Hosts[0].HostPublicKey {
-				t.Fatalf("permission denial mutated policy: before=%#v after=%#v", originalPolicy, storedPolicy)
+				storedPolicy.Hosts[0].Address != "attacker.example.com" {
+				t.Fatalf("permission denial mutated policy: revision=%d after=%#v", currentRevision, storedPolicy)
 			}
 			storedToken, err := policies.GetUpdaterReleaseTokenValue(t.Context())
 			if err != nil || storedToken != originalToken {
@@ -574,7 +592,10 @@ func TestUpdaterPolicySaveRequiresSecretPermissionBeforeMutation(t *testing.T) {
 		t.Fatalf("updater policy without system_updates.execute status = %d body = %s", secretOnlyResult.Code, secretOnlyResult.Body.String())
 	}
 	storedPolicy, err := policies.GetUpdaterPolicy(t.Context(), "updater-01")
-	if err != nil || storedPolicy.Revision != originalPolicy.Revision {
+	if err != nil ||
+		storedPolicy.Revision != currentRevision ||
+		len(storedPolicy.Hosts) != 1 ||
+		storedPolicy.Hosts[0].Address != "attacker.example.com" {
 		t.Fatalf("system_updates.execute denial mutated policy: %#v, %v", storedPolicy, err)
 	}
 	storedToken, err := policies.GetUpdaterReleaseTokenValue(t.Context())
@@ -673,14 +694,13 @@ func TestUpdateAgentPullsPolicyByAssignedRuntimeTokenWithoutReleaseToken(t *test
 	if strings.Contains(res.Body.String(), "do-not-return-this-token") || strings.Contains(res.Body.String(), "github_token") {
 		t.Fatalf("pull updater policy leaked release token material: %s", res.Body.String())
 	}
-	var pulled struct {
-		UpdaterID string `json:"updater_id"`
-		Revision  int64  `json:"revision"`
-		Hosts     []struct {
-			HostPublicKeyFingerprint string `json:"host_public_key_fingerprint"`
-		} `json:"hosts"`
+	if strings.Contains(res.Body.String(), `"service_id"`) {
+		t.Fatalf("legacy managed policy response added target service_id: %s", res.Body.String())
 	}
-	if err := json.NewDecoder(res.Body).Decode(&pulled); err != nil {
+	decoder := json.NewDecoder(res.Body)
+	decoder.DisallowUnknownFields()
+	var pulled updateagent.ManagedPolicy
+	if err := decoder.Decode(&pulled); err != nil {
 		t.Fatal(err)
 	}
 	if pulled.UpdaterID != "updater-01" || pulled.Revision != policy.Revision || len(pulled.Hosts) != 1 || pulled.Hosts[0].HostPublicKeyFingerprint != hostFingerprint {
@@ -1174,6 +1194,7 @@ func TestManagedUpdaterTopologyRequiresAppliedRevisionAndReleaseToken(t *testing
 	policy := updaterPolicyForHTTPTest(hostKey)
 	policy.UpdaterID = "updater-01"
 	policy.Revision = 2
+	policy.ProjectionRevision = 2
 	agent := store.RegisteredService{
 		ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater", Status: "online",
 		Version: "v1.0.0", ReportedVersion: "v1.0.0", LastHeartbeatAt: &now,

@@ -37,6 +37,10 @@ func checkpointPath(target Target) string {
 	if target.DeploymentMode == ModeSystemd {
 		return filepath.Join(target.Systemd.ReleaseRoot, ".autostream-updater-"+shortID(target.Systemd.Unit)+".checkpoint.json")
 	}
+	if matchesLocalExecutorDockerProfile(target.ServiceType, target.Docker) {
+		key := target.TargetID + "\x00" + target.Docker.Service
+		return filepath.Join(LocalExecutorMutationStateDir, ".autostream-updater-"+shortID(key)+".checkpoint.json")
+	}
 	return filepath.Join(target.Docker.ProjectDir, ".autostream-updater-"+shortID(filepath.Clean(target.Docker.ProjectDir)+"\x00"+target.Docker.ComposeProject)+".checkpoint.json")
 }
 

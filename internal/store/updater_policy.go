@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	UpdaterGitHubReleaseTokenSecretName = "updater_github_release_token"
-	maxUpdaterReleaseTokenBytes         = 4096
+	UpdaterGitHubReleaseTokenSecretName  = "updater_github_release_token"
+	maxUpdaterReleaseTokenBytes          = 4096
+	pullUpdaterActivationHeartbeatMaxAge = 180 * time.Second
 )
 
 var (
@@ -35,14 +36,19 @@ var (
 )
 
 type UpdaterPolicy struct {
-	UpdaterID                string                `json:"updater_id"`
-	Revision                 int64                 `json:"revision"`
-	API                      UpdaterPolicyAPI      `json:"api"`
-	PollIntervalSeconds      int                   `json:"poll_interval_seconds"`
-	HeartbeatIntervalSeconds int                   `json:"heartbeat_interval_seconds"`
-	Hosts                    []UpdaterPolicyHost   `json:"hosts"`
-	Targets                  []UpdaterPolicyTarget `json:"targets"`
-	UpdatedAt                time.Time             `json:"updated_at"`
+	UpdaterID                   string                `json:"updater_id"`
+	Revision                    int64                 `json:"revision"`
+	ProjectionRevision          int64                 `json:"projection_revision,omitempty"`
+	LocalExecutorPolicyRevision int64                 `json:"local_executor_policy_revision,omitempty"`
+	TransportMode               string                `json:"transport_mode"`
+	ExecutionHostID             string                `json:"execution_host_id,omitempty"`
+	LocalExecutorPolicySHA256   string                `json:"local_executor_policy_sha256,omitempty"`
+	API                         UpdaterPolicyAPI      `json:"api"`
+	PollIntervalSeconds         int                   `json:"poll_interval_seconds"`
+	HeartbeatIntervalSeconds    int                   `json:"heartbeat_interval_seconds"`
+	Hosts                       []UpdaterPolicyHost   `json:"hosts"`
+	Targets                     []UpdaterPolicyTarget `json:"targets"`
+	UpdatedAt                   time.Time             `json:"updated_at"`
 }
 
 type UpdaterPolicyAPI struct {
@@ -66,6 +72,7 @@ type UpdaterPolicyHost struct {
 
 type UpdaterPolicyTarget struct {
 	TargetID       string `json:"target_id"`
+	ServiceID      string `json:"service_id"`
 	HostID         string `json:"host_id"`
 	ServiceType    string `json:"service_type"`
 	DeploymentMode string `json:"deployment_mode"`
@@ -80,8 +87,52 @@ type UpdaterPolicyStore interface {
 type UpdaterPolicyAdminStore interface {
 	UpdaterPolicyStore
 	SaveUpdaterPolicyAndReleaseToken(ctx context.Context, serviceID string, expectedRevision int64, input UpdaterPolicy, releaseToken *string) (UpdaterPolicy, SecretStatus, error)
+	SavePullUpdaterPolicy(ctx context.Context, executionHosts SystemUpdateExecutionHostStore, serviceID string, expectedRevision, expectedOwnershipEpoch int64, input UpdaterPolicy) (UpdaterPolicy, error)
+	BindPullUpdaterConfigurePolicy(ctx context.Context, params BindPullUpdaterConfigurePolicyParams) (UpdaterPolicy, error)
+	ActivatePullUpdaterOwnership(ctx context.Context, services ServiceRegistryStore, executionHosts SystemUpdateExecutionHostStore, params ActivatePullUpdaterOwnershipParams) (ActivatePullUpdaterOwnershipResult, error)
+	DeactivatePullUpdaterOwnership(ctx context.Context, services ServiceRegistryStore, executionHosts SystemUpdateExecutionHostStore, params DeactivatePullUpdaterOwnershipParams) (DeactivatePullUpdaterOwnershipResult, error)
 	GetUpdaterReleaseTokenStatus(ctx context.Context) (SecretStatus, error)
 	GetUpdaterReleaseTokenValue(ctx context.Context) (string, error)
+}
+
+type BindPullUpdaterConfigurePolicyParams struct {
+	ServiceID                           string
+	ExpectedSourcePolicyRevision        int64
+	ExpectedProjectionRevision          int64
+	ExpectedLocalExecutorPolicyRevision int64
+	LocalExecutorPolicySHA256           string
+}
+
+type ActivatePullUpdaterOwnershipParams struct {
+	ServiceID                           string
+	ExecutionHostID                     string
+	ExpectedExecutionHostOwnershipEpoch int64
+	ExpectedSourcePolicyRevision        int64
+	ExpectedProjectionRevision          int64
+	ExpectedLocalExecutorPolicyRevision int64
+	ExpectedLocalExecutorPolicySHA256   string
+}
+
+type ActivatePullUpdaterOwnershipResult struct {
+	Service   RegisteredService
+	Ownership SystemUpdateExecutionHost
+	Policy    UpdaterPolicy
+}
+
+type DeactivatePullUpdaterOwnershipParams struct {
+	ServiceID                           string
+	ExecutionHostID                     string
+	ExpectedExecutionHostOwnershipEpoch int64
+	ExpectedSourcePolicyRevision        int64
+	ExpectedProjectionRevision          int64
+	ExpectedLocalExecutorPolicyRevision int64
+	ExpectedLocalExecutorPolicySHA256   string
+}
+
+type DeactivatePullUpdaterOwnershipResult struct {
+	Service   RegisteredService
+	Ownership SystemUpdateExecutionHost
+	Policy    UpdaterPolicy
 }
 
 type MemoryUpdaterPolicyStore struct {
@@ -141,6 +192,9 @@ func (s *MemoryUpdaterPolicyStore) SaveUpdaterPolicy(ctx context.Context, servic
 	if err != nil {
 		return UpdaterPolicy{}, err
 	}
+	if normalized.TransportMode == SystemUpdateTransportPullV2 {
+		return UpdaterPolicy{}, ErrInvalidSettings
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,6 +207,8 @@ func (s *MemoryUpdaterPolicyStore) SaveUpdaterPolicy(ctx context.Context, servic
 		now = current.UpdatedAt.Add(time.Nanosecond)
 	}
 	normalized.Revision = expectedRevision + 1
+	normalized.ProjectionRevision = normalized.Revision
+	normalized.LocalExecutorPolicyRevision = 0
 	normalized.UpdatedAt = now
 	s.policies[normalized.UpdaterID] = cloneUpdaterPolicy(normalized)
 	return cloneUpdaterPolicy(normalized), nil
@@ -175,6 +231,9 @@ func (s *MemoryUpdaterPolicyStore) SaveUpdaterPolicyAndReleaseToken(
 	if err != nil {
 		return UpdaterPolicy{}, SecretStatus{}, err
 	}
+	if normalized.TransportMode == SystemUpdateTransportPullV2 {
+		return UpdaterPolicy{}, SecretStatus{}, ErrInvalidSettings
+	}
 	normalizedToken, err := normalizeUpdaterReleaseToken(releaseToken)
 	if err != nil {
 		return UpdaterPolicy{}, SecretStatus{}, err
@@ -194,6 +253,8 @@ func (s *MemoryUpdaterPolicyStore) SaveUpdaterPolicyAndReleaseToken(
 		now = current.UpdatedAt.Add(time.Nanosecond)
 	}
 	normalized.Revision = expectedRevision + 1
+	normalized.ProjectionRevision = normalized.Revision
+	normalized.LocalExecutorPolicyRevision = 0
 	normalized.UpdatedAt = now
 
 	tokenStatus := s.releaseTokenStatus
@@ -219,6 +280,434 @@ func (s *MemoryUpdaterPolicyStore) SaveUpdaterPolicyAndReleaseToken(
 	}
 	s.policies[normalized.UpdaterID] = cloneUpdaterPolicy(normalized)
 	return cloneUpdaterPolicy(normalized), tokenStatus, nil
+}
+
+func (s *MemoryUpdaterPolicyStore) SavePullUpdaterPolicy(
+	ctx context.Context,
+	executionHosts SystemUpdateExecutionHostStore,
+	serviceID string,
+	expectedRevision, expectedOwnershipEpoch int64,
+	input UpdaterPolicy,
+) (UpdaterPolicy, error) {
+	if err := ctx.Err(); err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if expectedRevision < 0 || expectedRevision == math.MaxInt64 {
+		return UpdaterPolicy{}, ErrConflict
+	}
+	if expectedOwnershipEpoch < 0 {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
+	}
+	normalized, err := normalizeUpdaterPolicy(serviceID, input)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if normalized.TransportMode != SystemUpdateTransportPullV2 {
+		return UpdaterPolicy{}, ErrInvalidSettings
+	}
+	updates, ok := executionHosts.(*MemorySystemUpdateStore)
+	if !ok || updates == nil {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updates.mu.Lock()
+	defer updates.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return UpdaterPolicy{}, err
+	}
+
+	currentPolicy, exists := s.policies[normalized.UpdaterID]
+	if (!exists && expectedRevision != 0) || (exists && currentPolicy.Revision != expectedRevision) {
+		return UpdaterPolicy{}, ErrConflict
+	}
+	ownership, ownershipExists := updates.executionHosts[normalized.ExecutionHostID]
+	if !ownershipExists {
+		ownership = syntheticSystemUpdateExecutionHost(normalized.ExecutionHostID)
+	}
+	if ownership.OwnershipEpoch != expectedOwnershipEpoch {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
+	}
+	activePullOwner := ownership.TransportMode == SystemUpdateTransportPullV2
+	switch ownership.TransportMode {
+	case SystemUpdateTransportSSHV1:
+		// A pull agent may observe an SSH-owned host without taking ownership.
+		// Its policy revision is independent until an explicit ownership switch.
+	case SystemUpdateTransportPullV2:
+		if ownership.AgentServiceID != normalized.UpdaterID {
+			return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+		}
+		if ownership.OwnershipEpoch <= 0 {
+			return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
+		}
+		currentProjectionRevision := currentPolicy.ProjectionRevision
+		if currentProjectionRevision < 1 {
+			currentProjectionRevision = currentPolicy.Revision
+		}
+		if ownership.PolicyRevision != currentProjectionRevision {
+			return UpdaterPolicy{}, ErrConflict
+		}
+		for _, job := range updates.jobs {
+			if job.ExecutionHostID == normalized.ExecutionHostID && !isTerminalSystemUpdateStatus(job.Status) {
+				return UpdaterPolicy{}, ErrSystemUpdateExecutionHostBusy
+			}
+		}
+		if _, found := activeMemorySystemUpdateRuntimeTokenRotationForHostLocked(
+			updates, normalized.ExecutionHostID,
+		); found {
+			return UpdaterPolicy{}, ErrSystemUpdateRuntimeTokenRotationBusy
+		}
+	default:
+		return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+	}
+
+	now := time.Now().UTC()
+	if exists && !now.After(currentPolicy.UpdatedAt) {
+		now = currentPolicy.UpdatedAt.Add(time.Nanosecond)
+	}
+	normalized.Revision = expectedRevision + 1
+	normalized.ProjectionRevision = normalized.Revision
+	normalized.LocalExecutorPolicyRevision = normalized.Revision
+	normalized.UpdatedAt = now
+
+	s.policies[normalized.UpdaterID] = cloneUpdaterPolicy(normalized)
+	if activePullOwner {
+		ownership.PolicyRevision = normalized.ProjectionRevision
+		ownership.UpdatedAt = now
+		updates.executionHosts[normalized.ExecutionHostID] = ownership
+	}
+	return cloneUpdaterPolicy(normalized), nil
+}
+
+func (s *MemoryUpdaterPolicyStore) BindPullUpdaterConfigurePolicy(
+	ctx context.Context,
+	params BindPullUpdaterConfigurePolicyParams,
+) (UpdaterPolicy, error) {
+	params, err := normalizeBindPullUpdaterConfigurePolicyParams(params)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return UpdaterPolicy{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.policies[params.ServiceID]
+	if !exists {
+		return UpdaterPolicy{}, ErrNotFound
+	}
+	if current.TransportMode != SystemUpdateTransportPullV2 ||
+		current.Revision != params.ExpectedSourcePolicyRevision ||
+		current.ProjectionRevision != params.ExpectedProjectionRevision ||
+		current.LocalExecutorPolicyRevision != params.ExpectedLocalExecutorPolicyRevision {
+		return UpdaterPolicy{}, ErrConflict
+	}
+	if current.LocalExecutorPolicySHA256 == params.LocalExecutorPolicySHA256 {
+		return cloneUpdaterPolicy(current), nil
+	}
+	now := time.Now().UTC()
+	if !now.After(current.UpdatedAt) {
+		now = current.UpdatedAt.Add(time.Nanosecond)
+	}
+	current.LocalExecutorPolicySHA256 = params.LocalExecutorPolicySHA256
+	current.UpdatedAt = now
+	s.policies[params.ServiceID] = cloneUpdaterPolicy(current)
+	return cloneUpdaterPolicy(current), nil
+}
+
+func (s *MemoryUpdaterPolicyStore) ActivatePullUpdaterOwnership(
+	ctx context.Context,
+	services ServiceRegistryStore,
+	executionHosts SystemUpdateExecutionHostStore,
+	params ActivatePullUpdaterOwnershipParams,
+) (ActivatePullUpdaterOwnershipResult, error) {
+	params, err := normalizeActivatePullUpdaterOwnershipParams(params)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	registry, ok := services.(*MemoryAuthStore)
+	if !ok || registry == nil {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+	updates, ok := executionHosts.(*MemorySystemUpdateStore)
+	if !ok || updates == nil {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updates.mu.Lock()
+	defer updates.mu.Unlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+
+	service, exists := registry.services[params.ServiceID]
+	if !exists ||
+		service.ServiceType != "update_agent" ||
+		service.TransportMode != SystemUpdateTransportPullV2 ||
+		service.ExecutionHostID != params.ExecutionHostID ||
+		service.OwnershipEpoch != 0 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	token, exists := registry.serviceTokens[service.TokenID]
+	if !exists || token.ServiceType != "update_agent" || token.RevokedAt != nil {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	policy, exists := s.policies[params.ServiceID]
+	if !exists ||
+		policy.Revision != params.ExpectedSourcePolicyRevision ||
+		policy.ProjectionRevision != params.ExpectedProjectionRevision ||
+		policy.LocalExecutorPolicyRevision != params.ExpectedLocalExecutorPolicyRevision ||
+		policy.TransportMode != SystemUpdateTransportPullV2 ||
+		policy.ExecutionHostID != params.ExecutionHostID ||
+		policy.LocalExecutorPolicySHA256 != params.ExpectedLocalExecutorPolicySHA256 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
+	targetServices := make(map[string]RegisteredService, len(policy.Targets))
+	for _, target := range policy.Targets {
+		targetService, exists := registry.services[target.ServiceID]
+		if !exists {
+			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+		}
+		targetServices[target.ServiceID] = targetService
+	}
+	if !registeredPullObserverReadyForActivation(service, policy, targetServices, time.Now().UTC()) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
+	}
+	baselineReservations, err := pullActivationBaselineReservations(
+		policy,
+		targetServices,
+		service,
+	)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	for _, reservation := range baselineReservations {
+		key := servicePortKey(reservation)
+		if existing, exists := updates.portReservations[key]; exists &&
+			!sameServicePortReservationOwner(existing, reservation) {
+			return ActivatePullUpdaterOwnershipResult{}, ErrServicePortReserved
+		}
+	}
+	currentOwnership, ownershipExists := updates.executionHosts[params.ExecutionHostID]
+	if !ownershipExists {
+		currentOwnership = syntheticSystemUpdateExecutionHost(params.ExecutionHostID)
+	}
+	if currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	if normalizedSystemUpdateTransportMode(currentOwnership.TransportMode) != SystemUpdateTransportSSHV1 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	for _, job := range updates.jobs {
+		if job.ExecutionHostID == params.ExecutionHostID && !isTerminalSystemUpdateStatus(job.Status) {
+			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
+		}
+	}
+
+	now := time.Now().UTC()
+	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
+		currentOwnership,
+		SystemUpdateTransportPullV2,
+		params.ServiceID,
+	)
+	if legacyAgentServiceID == "" && !ownershipExists {
+		legacyAgentServiceID = uniqueActiveMemoryLegacyUpdaterForHostLocked(
+			s,
+			registry,
+			params.ExecutionHostID,
+			policy,
+		)
+	}
+	nextOwnership := SystemUpdateExecutionHost{
+		ExecutionHostID:      params.ExecutionHostID,
+		TransportMode:        SystemUpdateTransportPullV2,
+		AgentServiceID:       params.ServiceID,
+		LegacyAgentServiceID: legacyAgentServiceID,
+		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:       policy.ProjectionRevision,
+		CreatedAt:            currentOwnership.CreatedAt,
+		UpdatedAt:            now,
+	}
+	if nextOwnership.CreatedAt.IsZero() {
+		nextOwnership.CreatedAt = now
+	}
+	service.OwnershipEpoch = nextOwnership.OwnershipEpoch
+	service.UpdatedAt = now
+	updates.executionHosts[params.ExecutionHostID] = nextOwnership
+	registry.services[params.ServiceID] = service
+	reportedConfigDigests := updaterPolicyCapabilityStringMap(
+		service.ReportedCapabilities["reported_config_sha256"],
+	)
+	for serviceID, targetService := range targetServices {
+		if targetService.AppliedConfigSHA256 != "" {
+			continue
+		}
+		targetService.AppliedConfigSHA256 = reportedConfigDigests[serviceID]
+		targetService.UpdatedAt = now
+		registry.services[serviceID] = targetService
+	}
+	if updates.portReservations == nil {
+		updates.portReservations = map[servicePortReservationKey]ServicePortReservation{}
+	}
+	for _, reservation := range baselineReservations {
+		key := servicePortKey(reservation)
+		if _, exists := updates.portReservations[key]; exists {
+			continue
+		}
+		reservation.CreatedAt = now
+		reservation.UpdatedAt = now
+		updates.portReservations[key] = reservation
+	}
+	return ActivatePullUpdaterOwnershipResult{
+		Service:   service,
+		Ownership: nextOwnership,
+		Policy:    cloneUpdaterPolicy(policy),
+	}, nil
+}
+
+func (s *MemoryUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
+	ctx context.Context,
+	services ServiceRegistryStore,
+	executionHosts SystemUpdateExecutionHostStore,
+	params DeactivatePullUpdaterOwnershipParams,
+) (DeactivatePullUpdaterOwnershipResult, error) {
+	params, err := normalizeDeactivatePullUpdaterOwnershipParams(params)
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	registry, ok := services.(*MemoryAuthStore)
+	if !ok || registry == nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+	updates, ok := executionHosts.(*MemorySystemUpdateStore)
+	if !ok || updates == nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updates.mu.Lock()
+	defer updates.mu.Unlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+
+	currentOwnership, exists := updates.executionHosts[params.ExecutionHostID]
+	if !exists ||
+		currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	if currentOwnership.TransportMode != SystemUpdateTransportPullV2 ||
+		currentOwnership.AgentServiceID != params.ServiceID ||
+		currentOwnership.OwnershipEpoch <= 0 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	legacyAgentServiceID := strings.TrimSpace(currentOwnership.LegacyAgentServiceID)
+	if !updaterPolicyIdentifierPattern.MatchString(legacyAgentServiceID) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	service, exists := registry.services[params.ServiceID]
+	if !exists ||
+		service.ServiceType != "update_agent" ||
+		service.TransportMode != SystemUpdateTransportPullV2 ||
+		service.ExecutionHostID != params.ExecutionHostID ||
+		service.OwnershipEpoch != currentOwnership.OwnershipEpoch {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	token, exists := registry.serviceTokens[service.TokenID]
+	if !exists || token.ServiceType != "update_agent" || token.RevokedAt != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	recoveryPending, recoveryStateKnown := service.ReportedCapabilities["recovery_pending"].(bool)
+	if !recoveryStateKnown || recoveryPending {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
+	}
+	policy, exists := s.policies[params.ServiceID]
+	if !exists ||
+		policy.Revision != params.ExpectedSourcePolicyRevision ||
+		policy.ProjectionRevision != params.ExpectedProjectionRevision ||
+		policy.LocalExecutorPolicyRevision != params.ExpectedLocalExecutorPolicyRevision ||
+		policy.TransportMode != SystemUpdateTransportPullV2 ||
+		policy.ExecutionHostID != params.ExecutionHostID ||
+		policy.LocalExecutorPolicySHA256 != params.ExpectedLocalExecutorPolicySHA256 ||
+		currentOwnership.PolicyRevision != policy.ProjectionRevision {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
+	legacyService, exists := registry.services[legacyAgentServiceID]
+	if !exists ||
+		legacyService.ServiceType != "update_agent" ||
+		normalizedSystemUpdateTransportMode(legacyService.TransportMode) != SystemUpdateTransportSSHV1 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	legacyToken, exists := registry.serviceTokens[legacyService.TokenID]
+	if !exists ||
+		legacyToken.ServiceType != "update_agent" ||
+		legacyToken.RevokedAt != nil ||
+		validateRequiredUpdateAgentScopes(
+			legacyToken.ServiceType,
+			legacyToken.Scopes,
+		) != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	legacyPolicy, exists := s.policies[legacyAgentServiceID]
+	if !exists ||
+		legacyPolicy.TransportMode != SystemUpdateTransportSSHV1 ||
+		!legacyUpdaterPolicyCoversPullPolicy(
+			legacyPolicy,
+			policy,
+			params.ExecutionHostID,
+		) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	for _, job := range updates.jobs {
+		if job.ExecutionHostID == params.ExecutionHostID &&
+			!isTerminalSystemUpdateStatus(job.Status) {
+			return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
+		}
+	}
+	if _, found := activeMemorySystemUpdateHostSelfUpdateForHostLocked(
+		updates, params.ExecutionHostID,
+	); found {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateHostSelfUpdateBusy
+	}
+	if _, found := activeMemorySystemUpdateRuntimeTokenRotationForHostLocked(
+		updates, params.ExecutionHostID,
+	); found {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateRuntimeTokenRotationBusy
+	}
+	now := time.Now().UTC()
+	if unsettledMemorySystemUpdateMutationGrantForHostLocked(
+		updates, params.ExecutionHostID, now,
+	) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
+	}
+
+	nextOwnership := SystemUpdateExecutionHost{
+		ExecutionHostID:      params.ExecutionHostID,
+		TransportMode:        SystemUpdateTransportSSHV1,
+		AgentServiceID:       legacyAgentServiceID,
+		LegacyAgentServiceID: legacyAgentServiceID,
+		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:       legacyPolicy.ProjectionRevision,
+		CreatedAt:            currentOwnership.CreatedAt,
+		UpdatedAt:            now,
+	}
+	service.OwnershipEpoch = 0
+	service.UpdatedAt = now
+	updates.executionHosts[params.ExecutionHostID] = nextOwnership
+	registry.services[params.ServiceID] = service
+	return DeactivatePullUpdaterOwnershipResult{
+		Service:   service,
+		Ownership: nextOwnership,
+		Policy:    cloneUpdaterPolicy(policy),
+	}, nil
 }
 
 func (s *MemoryUpdaterPolicyStore) GetUpdaterReleaseTokenStatus(ctx context.Context) (SecretStatus, error) {
@@ -263,22 +752,42 @@ func (s MariaDBUpdaterPolicyStore) GetUpdaterPolicy(ctx context.Context, service
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
 	var (
-		revision  int64
-		body      []byte
-		updatedAt time.Time
+		revision                    int64
+		projectionRevision          int64
+		localExecutorPolicyRevision int64
+		body                        []byte
+		updatedAt                   time.Time
 	)
-	err := s.db.QueryRowContext(ctx, `SELECT revision, policy_json, updated_at FROM update_agent_policies WHERE service_id = ?`, serviceID).Scan(&revision, &body, &updatedAt)
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
+FROM update_agent_policies
+WHERE service_id = ?`,
+		serviceID,
+	).Scan(&revision, &projectionRevision, &localExecutorPolicyRevision, &body, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return UpdaterPolicy{}, ErrNotFound
 	}
 	if err != nil {
 		return UpdaterPolicy{}, err
 	}
-	return decodeUpdaterPolicy(serviceID, revision, body, updatedAt)
+	return decodeUpdaterPolicyRevisions(
+		serviceID,
+		revision,
+		projectionRevision,
+		localExecutorPolicyRevision,
+		body,
+		updatedAt,
+	)
 }
 
 func (s MariaDBUpdaterPolicyStore) ListUpdaterPolicies(ctx context.Context) ([]UpdaterPolicy, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT service_id, revision, policy_json, updated_at FROM update_agent_policies ORDER BY service_id`)
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT service_id, revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
+FROM update_agent_policies
+ORDER BY service_id`,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -287,15 +796,31 @@ func (s MariaDBUpdaterPolicyStore) ListUpdaterPolicies(ctx context.Context) ([]U
 	policies := []UpdaterPolicy{}
 	for rows.Next() {
 		var (
-			serviceID string
-			revision  int64
-			body      []byte
-			updatedAt time.Time
+			serviceID                   string
+			revision                    int64
+			projectionRevision          int64
+			localExecutorPolicyRevision int64
+			body                        []byte
+			updatedAt                   time.Time
 		)
-		if err := rows.Scan(&serviceID, &revision, &body, &updatedAt); err != nil {
+		if err := rows.Scan(
+			&serviceID,
+			&revision,
+			&projectionRevision,
+			&localExecutorPolicyRevision,
+			&body,
+			&updatedAt,
+		); err != nil {
 			return nil, err
 		}
-		policy, err := decodeUpdaterPolicy(serviceID, revision, body, updatedAt)
+		policy, err := decodeUpdaterPolicyRevisions(
+			serviceID,
+			revision,
+			projectionRevision,
+			localExecutorPolicyRevision,
+			body,
+			updatedAt,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -315,6 +840,9 @@ func (s MariaDBUpdaterPolicyStore) SaveUpdaterPolicy(ctx context.Context, servic
 	if err != nil {
 		return UpdaterPolicy{}, err
 	}
+	if normalized.TransportMode == SystemUpdateTransportPullV2 {
+		return UpdaterPolicy{}, ErrInvalidSettings
+	}
 	if err := saveUpdaterPolicyCAS(ctx, s.db, expectedRevision, normalized, body); err != nil {
 		return UpdaterPolicy{}, err
 	}
@@ -331,6 +859,9 @@ func (s MariaDBUpdaterPolicyStore) SaveUpdaterPolicyAndReleaseToken(
 	normalized, body, err := prepareUpdaterPolicySave(serviceID, expectedRevision, input)
 	if err != nil {
 		return UpdaterPolicy{}, SecretStatus{}, err
+	}
+	if normalized.TransportMode == SystemUpdateTransportPullV2 {
+		return UpdaterPolicy{}, SecretStatus{}, ErrInvalidSettings
 	}
 	normalizedToken, err := normalizeUpdaterReleaseToken(releaseToken)
 	if err != nil {
@@ -401,6 +932,1037 @@ func (s MariaDBUpdaterPolicyStore) SaveUpdaterPolicyAndReleaseToken(
 	return normalized, tokenStatus, nil
 }
 
+func (s MariaDBUpdaterPolicyStore) SavePullUpdaterPolicy(
+	ctx context.Context,
+	executionHosts SystemUpdateExecutionHostStore,
+	serviceID string,
+	expectedRevision, expectedOwnershipEpoch int64,
+	input UpdaterPolicy,
+) (UpdaterPolicy, error) {
+	if expectedOwnershipEpoch < 0 {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
+	}
+	normalized, body, err := prepareUpdaterPolicySave(serviceID, expectedRevision, input)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if normalized.TransportMode != SystemUpdateTransportPullV2 {
+		return UpdaterPolicy{}, ErrInvalidSettings
+	}
+	updates, ok := executionHosts.(*MariaDBSystemUpdateStore)
+	if !ok || updates == nil || updates.db == nil || updates.db != s.db {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	defer tx.Rollback()
+
+	ownership, err := scanSystemUpdateExecutionHost(tx.QueryRowContext(
+		ctx,
+		systemUpdateExecutionHostSelect+` WHERE execution_host_id = ? FOR UPDATE`,
+		normalized.ExecutionHostID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		ownership = syntheticSystemUpdateExecutionHost(normalized.ExecutionHostID)
+		err = nil
+	}
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if ownership.OwnershipEpoch != expectedOwnershipEpoch {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
+	}
+	activePullOwner := ownership.TransportMode == SystemUpdateTransportPullV2
+	switch ownership.TransportMode {
+	case SystemUpdateTransportSSHV1:
+		// Observer policy: preserve the SSH ownership row and its revision.
+	case SystemUpdateTransportPullV2:
+		if ownership.ExecutionHostID != normalized.ExecutionHostID ||
+			ownership.AgentServiceID != normalized.UpdaterID {
+			return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+		}
+		if ownership.OwnershipEpoch <= 0 {
+			return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
+		}
+		var activeJobID string
+		err = tx.QueryRowContext(ctx, `SELECT id
+FROM system_update_jobs
+WHERE execution_host_id = ?
+  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+ORDER BY created_at ASC
+LIMIT 1
+FOR UPDATE`, normalized.ExecutionHostID).Scan(&activeJobID)
+		if err == nil {
+			return UpdaterPolicy{}, ErrSystemUpdateExecutionHostBusy
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return UpdaterPolicy{}, err
+		}
+		var activeRotationID string
+		err = tx.QueryRowContext(ctx, `SELECT id
+FROM system_update_runtime_token_rotations
+WHERE active_execution_host_id = ?
+LIMIT 1
+FOR UPDATE`, normalized.ExecutionHostID).Scan(&activeRotationID)
+		if err == nil {
+			return UpdaterPolicy{}, ErrSystemUpdateRuntimeTokenRotationBusy
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return UpdaterPolicy{}, err
+		}
+	default:
+		return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+	}
+
+	var (
+		currentPolicyRevision                    int64
+		currentPolicyProjectionRevision          int64
+		currentPolicyLocalExecutorPolicyRevision int64
+		currentPolicyBody                        []byte
+		currentPolicyUpdatedAt                   time.Time
+	)
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
+FROM update_agent_policies
+WHERE service_id = ?
+FOR UPDATE`,
+		normalized.UpdaterID,
+	).Scan(
+		&currentPolicyRevision,
+		&currentPolicyProjectionRevision,
+		&currentPolicyLocalExecutorPolicyRevision,
+		&currentPolicyBody,
+		&currentPolicyUpdatedAt,
+	)
+	currentPolicyExists := err == nil
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if (!currentPolicyExists && expectedRevision != 0) ||
+		(currentPolicyExists && currentPolicyRevision != expectedRevision) {
+		return UpdaterPolicy{}, ErrConflict
+	}
+	if currentPolicyExists {
+		currentPolicy, decodeErr := decodeUpdaterPolicyRevisions(
+			normalized.UpdaterID,
+			currentPolicyRevision,
+			currentPolicyProjectionRevision,
+			currentPolicyLocalExecutorPolicyRevision,
+			currentPolicyBody,
+			currentPolicyUpdatedAt,
+		)
+		if decodeErr != nil {
+			return UpdaterPolicy{}, decodeErr
+		}
+		if activePullOwner && ownership.PolicyRevision != currentPolicy.ProjectionRevision {
+			return UpdaterPolicy{}, ErrConflict
+		}
+	} else if activePullOwner && ownership.PolicyRevision != 0 {
+		return UpdaterPolicy{}, ErrConflict
+	}
+
+	if err := saveUpdaterPolicyCAS(ctx, tx, expectedRevision, normalized, body); err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if !activePullOwner {
+		if err := tx.Commit(); err != nil {
+			return UpdaterPolicy{}, err
+		}
+		return normalized, nil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE system_update_execution_hosts
+SET policy_revision = ?, updated_at = ?
+WHERE execution_host_id = ?
+  AND transport_mode = ?
+  AND agent_service_id = ?
+  AND ownership_epoch = ?
+  AND policy_revision = ?`,
+		normalized.ProjectionRevision,
+		normalized.UpdatedAt,
+		normalized.ExecutionHostID,
+		SystemUpdateTransportPullV2,
+		normalized.UpdaterID,
+		ownership.OwnershipEpoch,
+		ownership.PolicyRevision,
+	)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if affected != 1 {
+		return UpdaterPolicy{}, ErrConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return UpdaterPolicy{}, err
+	}
+	return normalized, nil
+}
+
+func (s MariaDBUpdaterPolicyStore) BindPullUpdaterConfigurePolicy(
+	ctx context.Context,
+	params BindPullUpdaterConfigurePolicyParams,
+) (UpdaterPolicy, error) {
+	params, err := normalizeBindPullUpdaterConfigurePolicyParams(params)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	defer tx.Rollback()
+	var (
+		revision                    int64
+		projectionRevision          int64
+		localExecutorPolicyRevision int64
+		body                        []byte
+		updatedAt                   time.Time
+	)
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
+FROM update_agent_policies
+WHERE service_id = ?
+FOR UPDATE`,
+		params.ServiceID,
+	).Scan(
+		&revision,
+		&projectionRevision,
+		&localExecutorPolicyRevision,
+		&body,
+		&updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UpdaterPolicy{}, ErrNotFound
+	}
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	current, err := decodeUpdaterPolicyRevisions(
+		params.ServiceID,
+		revision,
+		projectionRevision,
+		localExecutorPolicyRevision,
+		body,
+		updatedAt,
+	)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if current.TransportMode != SystemUpdateTransportPullV2 ||
+		current.Revision != params.ExpectedSourcePolicyRevision ||
+		current.ProjectionRevision != params.ExpectedProjectionRevision ||
+		current.LocalExecutorPolicyRevision != params.ExpectedLocalExecutorPolicyRevision {
+		return UpdaterPolicy{}, ErrConflict
+	}
+	if current.LocalExecutorPolicySHA256 == params.LocalExecutorPolicySHA256 {
+		if err := tx.Commit(); err != nil {
+			return UpdaterPolicy{}, err
+		}
+		return current, nil
+	}
+	now := time.Now().UTC()
+	if !now.After(current.UpdatedAt) {
+		now = current.UpdatedAt.Add(time.Nanosecond)
+	}
+	current.LocalExecutorPolicySHA256 = params.LocalExecutorPolicySHA256
+	current.UpdatedAt = now
+	body, err = json.Marshal(current)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE update_agent_policies
+SET policy_json = ?, updated_at = ?
+WHERE service_id = ?
+  AND revision = ?
+  AND projection_revision = ?
+  AND local_executor_policy_revision = ?`,
+		body,
+		now,
+		params.ServiceID,
+		params.ExpectedSourcePolicyRevision,
+		params.ExpectedProjectionRevision,
+		params.ExpectedLocalExecutorPolicyRevision,
+	)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if affected != 1 {
+		return UpdaterPolicy{}, ErrConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return UpdaterPolicy{}, err
+	}
+	return current, nil
+}
+
+func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
+	ctx context.Context,
+	services ServiceRegistryStore,
+	executionHosts SystemUpdateExecutionHostStore,
+	params ActivatePullUpdaterOwnershipParams,
+) (ActivatePullUpdaterOwnershipResult, error) {
+	params, err := normalizeActivatePullUpdaterOwnershipParams(params)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	auth, ok := mariaDBAuthStoreForUpdaterPolicy(services)
+	if !ok || auth.db == nil || auth.db != s.db {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+	updates, ok := executionHosts.(*MariaDBSystemUpdateStore)
+	if !ok || updates == nil || updates.db == nil || updates.db != s.db {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	defer tx.Rollback()
+
+	currentOwnership, err := scanSystemUpdateExecutionHost(tx.QueryRowContext(
+		ctx,
+		systemUpdateExecutionHostSelect+` WHERE execution_host_id = ? FOR UPDATE`,
+		params.ExecutionHostID,
+	))
+	ownershipMissing := errors.Is(err, sql.ErrNoRows)
+	if ownershipMissing {
+		currentOwnership = syntheticSystemUpdateExecutionHost(params.ExecutionHostID)
+		err = nil
+	}
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	if normalizedSystemUpdateTransportMode(currentOwnership.TransportMode) != SystemUpdateTransportSSHV1 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+
+	service, err := scanService(tx.QueryRowContext(
+		ctx,
+		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
+		params.ServiceID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if service.ServiceType != "update_agent" ||
+		service.TransportMode != SystemUpdateTransportPullV2 ||
+		service.ExecutionHostID != params.ExecutionHostID ||
+		service.OwnershipEpoch != 0 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	token, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
+	if errors.Is(err, ErrNotFound) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if token.ServiceType != "update_agent" {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+
+	var activeJobID string
+	err = tx.QueryRowContext(ctx, `SELECT id
+FROM system_update_jobs
+WHERE execution_host_id = ?
+  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+ORDER BY created_at ASC
+LIMIT 1
+FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
+	if err == nil {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+
+	var (
+		policyRevision                    int64
+		policyProjectionRevision          int64
+		policyLocalExecutorPolicyRevision int64
+		policyBody                        []byte
+		policyUpdatedAt                   time.Time
+	)
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
+FROM update_agent_policies
+WHERE service_id = ?
+FOR UPDATE`,
+		params.ServiceID,
+	).Scan(
+		&policyRevision,
+		&policyProjectionRevision,
+		&policyLocalExecutorPolicyRevision,
+		&policyBody,
+		&policyUpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	policy, err := decodeUpdaterPolicyRevisions(
+		params.ServiceID,
+		policyRevision,
+		policyProjectionRevision,
+		policyLocalExecutorPolicyRevision,
+		policyBody,
+		policyUpdatedAt,
+	)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if policy.Revision != params.ExpectedSourcePolicyRevision ||
+		policy.ProjectionRevision != params.ExpectedProjectionRevision ||
+		policy.LocalExecutorPolicyRevision != params.ExpectedLocalExecutorPolicyRevision ||
+		policy.TransportMode != SystemUpdateTransportPullV2 ||
+		policy.ExecutionHostID != params.ExecutionHostID ||
+		policy.LocalExecutorPolicySHA256 != params.ExpectedLocalExecutorPolicySHA256 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
+	targetIDs := make([]string, 0, len(policy.Targets))
+	for _, target := range policy.Targets {
+		targetIDs = append(targetIDs, target.ServiceID)
+	}
+	sort.Strings(targetIDs)
+	targetServices := make(map[string]RegisteredService, len(targetIDs))
+	for _, targetID := range targetIDs {
+		targetService, targetErr := scanService(tx.QueryRowContext(
+			ctx,
+			serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
+			targetID,
+		))
+		if errors.Is(targetErr, sql.ErrNoRows) {
+			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+		}
+		if targetErr != nil {
+			return ActivatePullUpdaterOwnershipResult{}, targetErr
+		}
+		targetServices[targetID] = targetService
+	}
+	if !registeredPullObserverReadyForActivation(service, policy, targetServices, time.Now().UTC()) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
+	}
+	baselineReservations, err := pullActivationBaselineReservations(
+		policy,
+		targetServices,
+		service,
+	)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	missingBaselineReservations := make([]ServicePortReservation, 0, len(baselineReservations))
+	for _, reservation := range baselineReservations {
+		existing, reservationErr := scanServicePortReservation(tx.QueryRowContext(
+			ctx,
+			servicePortReservationSelect+`
+WHERE execution_host_id = ?
+  AND network_namespace = ?
+  AND protocol = ?
+  AND port = ?
+FOR UPDATE`,
+			reservation.ExecutionHostID,
+			reservation.NetworkNamespace,
+			reservation.Protocol,
+			reservation.Port,
+		))
+		if errors.Is(reservationErr, sql.ErrNoRows) {
+			missingBaselineReservations = append(missingBaselineReservations, reservation)
+			continue
+		}
+		if reservationErr != nil {
+			return ActivatePullUpdaterOwnershipResult{}, reservationErr
+		}
+		if !sameServicePortReservationOwner(existing, reservation) {
+			return ActivatePullUpdaterOwnershipResult{}, ErrServicePortReserved
+		}
+	}
+
+	now := time.Now().UTC()
+	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
+		currentOwnership,
+		SystemUpdateTransportPullV2,
+		params.ServiceID,
+	)
+	if legacyAgentServiceID == "" && ownershipMissing {
+		legacyAgentServiceID, err = uniqueActiveMariaDBLegacyUpdaterForHost(
+			ctx,
+			tx,
+			params.ExecutionHostID,
+			policy,
+		)
+		if err != nil {
+			return ActivatePullUpdaterOwnershipResult{}, err
+		}
+	}
+	nextOwnership := SystemUpdateExecutionHost{
+		ExecutionHostID:      params.ExecutionHostID,
+		TransportMode:        SystemUpdateTransportPullV2,
+		AgentServiceID:       params.ServiceID,
+		LegacyAgentServiceID: legacyAgentServiceID,
+		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:       policy.ProjectionRevision,
+		CreatedAt:            currentOwnership.CreatedAt,
+		UpdatedAt:            now,
+	}
+	if ownershipMissing {
+		nextOwnership.CreatedAt = now
+		_, err = tx.ExecContext(ctx, `INSERT INTO system_update_execution_hosts
+(execution_host_id, transport_mode, agent_service_id, legacy_agent_service_id, ownership_epoch, policy_revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			nextOwnership.ExecutionHostID,
+			nextOwnership.TransportMode,
+			nextOwnership.AgentServiceID,
+			nullString(nextOwnership.LegacyAgentServiceID),
+			nextOwnership.OwnershipEpoch,
+			nextOwnership.PolicyRevision,
+			nextOwnership.CreatedAt,
+			nextOwnership.UpdatedAt,
+		)
+		if isDuplicateKeyError(err) {
+			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+		}
+	} else {
+		var result sql.Result
+		result, err = tx.ExecContext(ctx, `UPDATE system_update_execution_hosts
+SET transport_mode = ?, agent_service_id = ?, legacy_agent_service_id = ?, ownership_epoch = ?, policy_revision = ?, updated_at = ?
+WHERE execution_host_id = ?
+  AND transport_mode = ?
+  AND ownership_epoch = ?`,
+			nextOwnership.TransportMode,
+			nextOwnership.AgentServiceID,
+			nullString(nextOwnership.LegacyAgentServiceID),
+			nextOwnership.OwnershipEpoch,
+			nextOwnership.PolicyRevision,
+			nextOwnership.UpdatedAt,
+			nextOwnership.ExecutionHostID,
+			SystemUpdateTransportSSHV1,
+			params.ExpectedExecutionHostOwnershipEpoch,
+		)
+		if err == nil {
+			var affected int64
+			affected, err = result.RowsAffected()
+			if err == nil && affected != 1 {
+				return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+			}
+		}
+	}
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+
+	result, err := tx.ExecContext(ctx, `UPDATE services
+SET ownership_epoch = ?, updated_at = ?
+WHERE service_id = ?
+  AND service_type = 'update_agent'
+  AND transport_mode = ?
+  AND execution_host_id = ?
+  AND ownership_epoch = 0`,
+		nextOwnership.OwnershipEpoch,
+		now,
+		params.ServiceID,
+		SystemUpdateTransportPullV2,
+		params.ExecutionHostID,
+	)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if affected != 1 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	service.OwnershipEpoch = nextOwnership.OwnershipEpoch
+	service.UpdatedAt = now
+	reportedConfigDigests := updaterPolicyCapabilityStringMap(
+		service.ReportedCapabilities["reported_config_sha256"],
+	)
+	for serviceID, targetService := range targetServices {
+		if targetService.AppliedConfigSHA256 != "" {
+			continue
+		}
+		result, err = tx.ExecContext(ctx, `UPDATE services
+SET applied_config_sha256 = ?, updated_at = ?
+WHERE service_id = ?
+  AND applied_config_revision = ?
+  AND applied_config_sha256 IS NULL`,
+			reportedConfigDigests[serviceID],
+			now,
+			serviceID,
+			targetService.AppliedConfigRevision,
+		)
+		if err != nil {
+			return ActivatePullUpdaterOwnershipResult{}, err
+		}
+		affected, err = result.RowsAffected()
+		if err != nil {
+			return ActivatePullUpdaterOwnershipResult{}, err
+		}
+		if affected != 1 {
+			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+		}
+	}
+	for _, reservation := range missingBaselineReservations {
+		_, err = tx.ExecContext(ctx, `INSERT INTO service_port_reservations
+(execution_host_id, network_namespace, protocol, port, service_id, service_role, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			reservation.ExecutionHostID,
+			reservation.NetworkNamespace,
+			reservation.Protocol,
+			reservation.Port,
+			reservation.ServiceID,
+			reservation.ServiceRole,
+			now,
+			now,
+		)
+		if isDuplicateKeyError(err) {
+			return ActivatePullUpdaterOwnershipResult{}, ErrServicePortReserved
+		}
+		if err != nil {
+			return ActivatePullUpdaterOwnershipResult{}, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	return ActivatePullUpdaterOwnershipResult{
+		Service:   service,
+		Ownership: nextOwnership,
+		Policy:    policy,
+	}, nil
+}
+
+func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
+	ctx context.Context,
+	services ServiceRegistryStore,
+	executionHosts SystemUpdateExecutionHostStore,
+	params DeactivatePullUpdaterOwnershipParams,
+) (DeactivatePullUpdaterOwnershipResult, error) {
+	params, err := normalizeDeactivatePullUpdaterOwnershipParams(params)
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	auth, ok := mariaDBAuthStoreForUpdaterPolicy(services)
+	if !ok || auth.db == nil || auth.db != s.db {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+	updates, ok := executionHosts.(*MariaDBSystemUpdateStore)
+	if !ok || updates == nil || updates.db == nil || updates.db != s.db {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	defer tx.Rollback()
+
+	currentOwnership, err := scanSystemUpdateExecutionHost(tx.QueryRowContext(
+		ctx,
+		systemUpdateExecutionHostSelect+` WHERE execution_host_id = ? FOR UPDATE`,
+		params.ExecutionHostID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	if currentOwnership.TransportMode != SystemUpdateTransportPullV2 ||
+		currentOwnership.AgentServiceID != params.ServiceID ||
+		currentOwnership.OwnershipEpoch <= 0 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	legacyAgentServiceID := strings.TrimSpace(currentOwnership.LegacyAgentServiceID)
+	if !updaterPolicyIdentifierPattern.MatchString(legacyAgentServiceID) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+
+	service, err := scanService(tx.QueryRowContext(
+		ctx,
+		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
+		params.ServiceID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if service.ServiceType != "update_agent" ||
+		service.TransportMode != SystemUpdateTransportPullV2 ||
+		service.ExecutionHostID != params.ExecutionHostID ||
+		service.OwnershipEpoch != currentOwnership.OwnershipEpoch {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	token, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
+	if errors.Is(err, ErrNotFound) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if token.ServiceType != "update_agent" {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	recoveryPending, recoveryStateKnown := service.ReportedCapabilities["recovery_pending"].(bool)
+	if !recoveryStateKnown || recoveryPending {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
+	}
+
+	var activeID string
+	err = tx.QueryRowContext(ctx, `SELECT id
+FROM system_update_jobs
+WHERE execution_host_id = ?
+  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+ORDER BY created_at ASC
+LIMIT 1
+FOR UPDATE`, params.ExecutionHostID).Scan(&activeID)
+	if err == nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT id
+FROM system_update_host_self_updates
+WHERE active_execution_host_id = ?
+LIMIT 1
+FOR UPDATE`, params.ExecutionHostID).Scan(&activeID)
+	if err == nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateHostSelfUpdateBusy
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT id
+FROM system_update_runtime_token_rotations
+WHERE active_execution_host_id = ?
+LIMIT 1
+FOR UPDATE`, params.ExecutionHostID).Scan(&activeID)
+	if err == nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateRuntimeTokenRotationBusy
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	now := time.Now().UTC()
+	err = tx.QueryRowContext(ctx, `SELECT grant_row.id
+FROM system_update_mutation_grants AS grant_row
+INNER JOIN system_update_jobs AS job_row ON job_row.id = grant_row.job_id
+WHERE job_row.execution_host_id = ?
+  AND grant_row.expires_at > ?
+ORDER BY grant_row.created_at ASC
+LIMIT 1
+FOR UPDATE`, params.ExecutionHostID, now).Scan(&activeID)
+	if err == nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+
+	policy, err := mariaDBUpdaterPolicyForUpdate(ctx, tx, params.ServiceID)
+	if errors.Is(err, ErrNotFound) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if policy.Revision != params.ExpectedSourcePolicyRevision ||
+		policy.ProjectionRevision != params.ExpectedProjectionRevision ||
+		policy.LocalExecutorPolicyRevision != params.ExpectedLocalExecutorPolicyRevision ||
+		policy.TransportMode != SystemUpdateTransportPullV2 ||
+		policy.ExecutionHostID != params.ExecutionHostID ||
+		policy.LocalExecutorPolicySHA256 != params.ExpectedLocalExecutorPolicySHA256 ||
+		currentOwnership.PolicyRevision != policy.ProjectionRevision {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
+
+	legacyService, err := scanService(tx.QueryRowContext(
+		ctx,
+		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
+		legacyAgentServiceID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if legacyService.ServiceType != "update_agent" ||
+		normalizedSystemUpdateTransportMode(legacyService.TransportMode) != SystemUpdateTransportSSHV1 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	legacyToken, err := selectActiveServiceTokenForUpdate(
+		ctx,
+		tx,
+		legacyService.TokenID,
+	)
+	if errors.Is(err, ErrNotFound) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if legacyToken.ServiceType != "update_agent" ||
+		validateRequiredUpdateAgentScopes(
+			legacyToken.ServiceType,
+			legacyToken.Scopes,
+		) != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	legacyPolicy, err := mariaDBUpdaterPolicyForUpdate(
+		ctx,
+		tx,
+		legacyAgentServiceID,
+	)
+	if errors.Is(err, ErrNotFound) ||
+		(err == nil && !legacyUpdaterPolicyCoversPullPolicy(
+			legacyPolicy,
+			policy,
+			params.ExecutionHostID,
+		)) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+
+	nextOwnership := SystemUpdateExecutionHost{
+		ExecutionHostID:      params.ExecutionHostID,
+		TransportMode:        SystemUpdateTransportSSHV1,
+		AgentServiceID:       legacyAgentServiceID,
+		LegacyAgentServiceID: legacyAgentServiceID,
+		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:       legacyPolicy.ProjectionRevision,
+		CreatedAt:            currentOwnership.CreatedAt,
+		UpdatedAt:            now,
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE system_update_execution_hosts
+SET transport_mode = ?,
+    agent_service_id = ?,
+    legacy_agent_service_id = ?,
+    ownership_epoch = ?,
+    policy_revision = ?,
+    updated_at = ?
+WHERE execution_host_id = ?
+  AND transport_mode = ?
+  AND agent_service_id = ?
+  AND legacy_agent_service_id = ?
+  AND ownership_epoch = ?`,
+		nextOwnership.TransportMode,
+		nextOwnership.AgentServiceID,
+		nextOwnership.LegacyAgentServiceID,
+		nextOwnership.OwnershipEpoch,
+		nextOwnership.PolicyRevision,
+		nextOwnership.UpdatedAt,
+		nextOwnership.ExecutionHostID,
+		SystemUpdateTransportPullV2,
+		params.ServiceID,
+		legacyAgentServiceID,
+		params.ExpectedExecutionHostOwnershipEpoch,
+	)
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if affected != 1 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE services
+SET ownership_epoch = 0, updated_at = ?
+WHERE service_id = ?
+  AND service_type = 'update_agent'
+  AND transport_mode = ?
+  AND execution_host_id = ?
+  AND ownership_epoch = ?`,
+		now,
+		params.ServiceID,
+		SystemUpdateTransportPullV2,
+		params.ExecutionHostID,
+		params.ExpectedExecutionHostOwnershipEpoch,
+	)
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	affected, err = result.RowsAffected()
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if affected != 1 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	service.OwnershipEpoch = 0
+	service.UpdatedAt = now
+	if err := tx.Commit(); err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	return DeactivatePullUpdaterOwnershipResult{
+		Service:   service,
+		Ownership: nextOwnership,
+		Policy:    policy,
+	}, nil
+}
+
+func mariaDBUpdaterPolicyForUpdate(
+	ctx context.Context,
+	tx *sql.Tx,
+	serviceID string,
+) (UpdaterPolicy, error) {
+	var (
+		revision                    int64
+		projectionRevision          int64
+		localExecutorPolicyRevision int64
+		body                        []byte
+		updatedAt                   time.Time
+	)
+	err := tx.QueryRowContext(
+		ctx,
+		`SELECT revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
+FROM update_agent_policies
+WHERE service_id = ?
+FOR UPDATE`,
+		serviceID,
+	).Scan(
+		&revision,
+		&projectionRevision,
+		&localExecutorPolicyRevision,
+		&body,
+		&updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UpdaterPolicy{}, ErrNotFound
+	}
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	return decodeUpdaterPolicyRevisions(
+		serviceID,
+		revision,
+		projectionRevision,
+		localExecutorPolicyRevision,
+		body,
+		updatedAt,
+	)
+}
+
+func uniqueActiveMariaDBLegacyUpdaterForHost(
+	ctx context.Context,
+	tx *sql.Tx,
+	executionHostID string,
+	pullPolicy UpdaterPolicy,
+) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT policy.service_id,
+       token.scopes,
+       policy.revision,
+       policy.projection_revision,
+       policy.local_executor_policy_revision,
+       policy.policy_json,
+       policy.updated_at
+FROM update_agent_policies AS policy
+INNER JOIN services AS service ON service.service_id = policy.service_id
+INNER JOIN service_tokens AS token ON token.id = service.token_id
+WHERE service.service_type = 'update_agent'
+  AND service.transport_mode = ?
+  AND token.service_type = 'update_agent'
+  AND token.revoked_at IS NULL
+ORDER BY policy.service_id
+FOR UPDATE`, SystemUpdateTransportSSHV1)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	candidates := make([]string, 0, 2)
+	for rows.Next() {
+		var (
+			serviceID                   string
+			tokenScopesJSON             string
+			revision                    int64
+			projectionRevision          int64
+			localExecutorPolicyRevision int64
+			body                        []byte
+			updatedAt                   time.Time
+		)
+		if err := rows.Scan(
+			&serviceID,
+			&tokenScopesJSON,
+			&revision,
+			&projectionRevision,
+			&localExecutorPolicyRevision,
+			&body,
+			&updatedAt,
+		); err != nil {
+			return "", err
+		}
+		policy, err := decodeUpdaterPolicyRevisions(
+			serviceID,
+			revision,
+			projectionRevision,
+			localExecutorPolicyRevision,
+			body,
+			updatedAt,
+		)
+		if err != nil {
+			return "", err
+		}
+		var tokenScopes []string
+		if err := json.Unmarshal([]byte(tokenScopesJSON), &tokenScopes); err != nil {
+			return "", err
+		}
+		if validateRequiredUpdateAgentScopes("update_agent", tokenScopes) == nil &&
+			legacyUpdaterPolicyCoversPullPolicy(
+				policy,
+				pullPolicy,
+				executionHostID,
+			) {
+			candidates = append(candidates, serviceID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(candidates) != 1 {
+		return "", nil
+	}
+	return candidates[0], nil
+}
+
 func (s MariaDBUpdaterPolicyStore) GetUpdaterReleaseTokenStatus(ctx context.Context) (SecretStatus, error) {
 	_, status, err := readUpdaterReleaseToken(ctx, s.db, s.keyMaterial)
 	if errors.Is(err, ErrNotFound) {
@@ -431,6 +1993,12 @@ func prepareUpdaterPolicySave(serviceID string, expectedRevision int64, input Up
 		return UpdaterPolicy{}, nil, err
 	}
 	normalized.Revision = expectedRevision + 1
+	normalized.ProjectionRevision = normalized.Revision
+	if normalized.TransportMode == SystemUpdateTransportPullV2 {
+		normalized.LocalExecutorPolicyRevision = normalized.Revision
+	} else {
+		normalized.LocalExecutorPolicyRevision = 0
+	}
 	normalized.UpdatedAt = time.Now().UTC()
 	body, err := json.Marshal(normalized)
 	if err != nil {
@@ -439,13 +2007,437 @@ func prepareUpdaterPolicySave(serviceID string, expectedRevision int64, input Up
 	return normalized, body, nil
 }
 
+func normalizeActivatePullUpdaterOwnershipParams(params ActivatePullUpdaterOwnershipParams) (ActivatePullUpdaterOwnershipParams, error) {
+	params.ServiceID = strings.TrimSpace(params.ServiceID)
+	params.ExecutionHostID = strings.TrimSpace(params.ExecutionHostID)
+	params.ExpectedLocalExecutorPolicySHA256 = strings.ToLower(strings.TrimSpace(params.ExpectedLocalExecutorPolicySHA256))
+	if !updaterPolicyIdentifierPattern.MatchString(params.ServiceID) ||
+		!executionHostIDPattern.MatchString(params.ExecutionHostID) ||
+		params.ExpectedExecutionHostOwnershipEpoch < 0 ||
+		params.ExpectedExecutionHostOwnershipEpoch == math.MaxInt64 ||
+		params.ExpectedSourcePolicyRevision < 1 ||
+		params.ExpectedProjectionRevision < 1 ||
+		params.ExpectedLocalExecutorPolicyRevision < 1 ||
+		!validSystemUpdateDigest(params.ExpectedLocalExecutorPolicySHA256) {
+		return ActivatePullUpdaterOwnershipParams{}, ErrInvalidSettings
+	}
+	return params, nil
+}
+
+func normalizeDeactivatePullUpdaterOwnershipParams(
+	params DeactivatePullUpdaterOwnershipParams,
+) (DeactivatePullUpdaterOwnershipParams, error) {
+	params.ServiceID = strings.TrimSpace(params.ServiceID)
+	params.ExecutionHostID = strings.TrimSpace(params.ExecutionHostID)
+	params.ExpectedLocalExecutorPolicySHA256 = strings.ToLower(
+		strings.TrimSpace(params.ExpectedLocalExecutorPolicySHA256),
+	)
+	if !updaterPolicyIdentifierPattern.MatchString(params.ServiceID) ||
+		!executionHostIDPattern.MatchString(params.ExecutionHostID) ||
+		params.ExpectedExecutionHostOwnershipEpoch < 1 ||
+		params.ExpectedExecutionHostOwnershipEpoch == math.MaxInt64 ||
+		params.ExpectedSourcePolicyRevision < 1 ||
+		params.ExpectedProjectionRevision < 1 ||
+		params.ExpectedLocalExecutorPolicyRevision < 1 ||
+		!validSystemUpdateDigest(params.ExpectedLocalExecutorPolicySHA256) {
+		return DeactivatePullUpdaterOwnershipParams{}, ErrInvalidSettings
+	}
+	return params, nil
+}
+
+func updaterPolicyMapsExecutionHost(policy UpdaterPolicy, executionHostID string) bool {
+	if policy.TransportMode != SystemUpdateTransportSSHV1 {
+		return false
+	}
+	hostFound := false
+	for _, host := range policy.Hosts {
+		if host.HostID == executionHostID {
+			hostFound = true
+			break
+		}
+	}
+	if !hostFound {
+		return false
+	}
+	for _, target := range policy.Targets {
+		if target.HostID == executionHostID {
+			return true
+		}
+	}
+	return false
+}
+
+func legacyUpdaterPolicyCoversPullPolicy(
+	legacyPolicy UpdaterPolicy,
+	pullPolicy UpdaterPolicy,
+	executionHostID string,
+) bool {
+	if !updaterPolicyMapsExecutionHost(legacyPolicy, executionHostID) ||
+		pullPolicy.TransportMode != SystemUpdateTransportPullV2 ||
+		pullPolicy.ExecutionHostID != executionHostID ||
+		len(pullPolicy.Targets) == 0 {
+		return false
+	}
+	for _, pullTarget := range pullPolicy.Targets {
+		covered := false
+		for _, legacyTarget := range legacyPolicy.Targets {
+			if legacyTarget.HostID == executionHostID &&
+				legacyTarget.TargetID == pullTarget.TargetID &&
+				legacyTarget.ServiceID == pullTarget.ServiceID &&
+				legacyTarget.ServiceType == pullTarget.ServiceType &&
+				legacyTarget.DeploymentMode == pullTarget.DeploymentMode {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+func uniqueActiveMemoryLegacyUpdaterForHostLocked(
+	policies *MemoryUpdaterPolicyStore,
+	registry *MemoryAuthStore,
+	executionHostID string,
+	pullPolicy UpdaterPolicy,
+) string {
+	candidate := ""
+	for serviceID, policy := range policies.policies {
+		if !legacyUpdaterPolicyCoversPullPolicy(
+			policy,
+			pullPolicy,
+			executionHostID,
+		) {
+			continue
+		}
+		service, exists := registry.services[serviceID]
+		if !exists ||
+			service.ServiceType != "update_agent" ||
+			normalizedSystemUpdateTransportMode(service.TransportMode) != SystemUpdateTransportSSHV1 {
+			continue
+		}
+		token, exists := registry.serviceTokens[service.TokenID]
+		if !exists ||
+			token.ServiceType != "update_agent" ||
+			token.RevokedAt != nil ||
+			validateRequiredUpdateAgentScopes(
+				token.ServiceType,
+				token.Scopes,
+			) != nil {
+			continue
+		}
+		if candidate != "" {
+			return ""
+		}
+		candidate = serviceID
+	}
+	return candidate
+}
+
+func unsettledMemorySystemUpdateMutationGrantForHostLocked(
+	updates *MemorySystemUpdateStore,
+	executionHostID string,
+	now time.Time,
+) bool {
+	for _, grant := range updates.mutationGrants {
+		if !grant.ExpiresAt.After(now) {
+			continue
+		}
+		job, exists := updates.jobs[grant.JobID]
+		if exists && job.ExecutionHostID == executionHostID {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeBindPullUpdaterConfigurePolicyParams(
+	params BindPullUpdaterConfigurePolicyParams,
+) (BindPullUpdaterConfigurePolicyParams, error) {
+	params.ServiceID = strings.TrimSpace(params.ServiceID)
+	params.LocalExecutorPolicySHA256 = strings.ToLower(
+		strings.TrimSpace(params.LocalExecutorPolicySHA256),
+	)
+	if !updaterPolicyIdentifierPattern.MatchString(params.ServiceID) ||
+		params.ExpectedSourcePolicyRevision < 1 ||
+		params.ExpectedProjectionRevision < 1 ||
+		params.ExpectedLocalExecutorPolicyRevision < 1 ||
+		!validSystemUpdateDigest(params.LocalExecutorPolicySHA256) {
+		return BindPullUpdaterConfigurePolicyParams{}, ErrInvalidSettings
+	}
+	return params, nil
+}
+
+func registeredPullObserverReadyForActivation(
+	service RegisteredService,
+	policy UpdaterPolicy,
+	servicesByID map[string]RegisteredService,
+	now time.Time,
+) bool {
+	if !strings.EqualFold(strings.TrimSpace(service.Status), "online") ||
+		service.LastHeartbeatAt == nil ||
+		service.LastHeartbeatAt.IsZero() {
+		return false
+	}
+	heartbeatAge := now.Sub(service.LastHeartbeatAt.UTC())
+	if heartbeatAge < 0 || heartbeatAge > pullUpdaterActivationHeartbeatMaxAge {
+		return false
+	}
+	capabilities := service.ReportedCapabilities
+	reportedEpoch, epochOK := updaterPolicyCapabilityInt64(capabilities["ownership_epoch"])
+	reportedPolicyRevision, revisionOK := updaterPolicyCapabilityInt64(capabilities["policy_revision"])
+	recoveryPending, recoveryPendingOK := capabilities["recovery_pending"].(bool)
+	if !updaterPolicyCapabilityBool(capabilities["host_agent"]) ||
+		!updaterPolicyCapabilityBool(capabilities["observe_only"]) ||
+		!updaterPolicyCapabilityBool(capabilities["update_executor"]) ||
+		updaterPolicyCapabilityBool(capabilities["mutation_enabled"]) ||
+		!recoveryPendingOK ||
+		recoveryPending ||
+		updaterPolicyCapabilityString(capabilities["transport_mode"]) != SystemUpdateTransportPullV2 ||
+		updaterPolicyCapabilityString(capabilities["agent_protocol_version"]) != "2" ||
+		updaterPolicyCapabilityString(capabilities["execution_host_id"]) != service.ExecutionHostID ||
+		!epochOK ||
+		reportedEpoch != 0 ||
+		!revisionOK ||
+		reportedPolicyRevision != policy.ProjectionRevision ||
+		!strings.EqualFold(updaterPolicyCapabilityString(capabilities["policy_status"]), "applied") {
+		return false
+	}
+
+	availability := updaterPolicyCapabilityStringMap(capabilities["target_availability"])
+	availabilityCodes := updaterPolicyCapabilityStringMap(capabilities["target_availability_codes"])
+	reportedPorts := updaterPolicyCapabilityInt64Map(capabilities["reported_ports"])
+	reportedServiceTypes := updaterPolicyCapabilityStringMap(capabilities["reported_service_types"])
+	reportedDeploymentModes := updaterPolicyCapabilityStringMap(capabilities["reported_deployment_modes"])
+	reportedPolicyRevisions := updaterPolicyCapabilityInt64Map(capabilities["reported_executor_policy_revisions"])
+	reportedPolicyDigests := updaterPolicyCapabilityStringMap(capabilities["reported_executor_policy_sha256"])
+	reportedConfigRevisions := updaterPolicyCapabilityInt64Map(capabilities["reported_config_revisions"])
+	reportedConfigDigests := updaterPolicyCapabilityStringMap(capabilities["reported_config_sha256"])
+	reportedPortDrift := updaterPolicyCapabilityBoolMap(capabilities["port_drift"])
+	for _, target := range policy.Targets {
+		targetService, exists := servicesByID[target.ServiceID]
+		if !exists || targetService.ServiceType != target.ServiceType || targetService.AppliedEndpoint == nil {
+			return false
+		}
+		expectedConfigRevision := targetService.AppliedConfigRevision
+		if expectedConfigRevision < 1 {
+			return false
+		}
+		portDrift, portDriftReported := reportedPortDrift[target.ServiceID]
+		reportedConfigDigest := reportedConfigDigests[target.ServiceID]
+		if availability[target.ServiceID] != "available" ||
+			availabilityCodes[target.ServiceID] != "executor_verified" ||
+			reportedServiceTypes[target.ServiceID] != target.ServiceType ||
+			strings.ToLower(reportedDeploymentModes[target.ServiceID]) != target.DeploymentMode ||
+			reportedPolicyRevisions[target.ServiceID] != policy.LocalExecutorPolicyRevision ||
+			reportedPolicyDigests[target.ServiceID] != policy.LocalExecutorPolicySHA256 ||
+			reportedConfigRevisions[target.ServiceID] != expectedConfigRevision ||
+			!validSystemUpdateDigest(reportedConfigDigest) ||
+			(targetService.AppliedConfigSHA256 != "" &&
+				reportedConfigDigest != targetService.AppliedConfigSHA256) ||
+			reportedPorts[target.ServiceID] != int64(targetService.AppliedEndpoint.Port) ||
+			!portDriftReported ||
+			portDrift {
+			return false
+		}
+		if target.DeploymentMode == "docker" {
+			if _, complete := systemUpdateDockerPortBaselineFromAgent(
+				service,
+				policy,
+				targetService,
+			); !complete {
+				return false
+			}
+		}
+	}
+	return len(policy.Targets) > 0
+}
+
+// PullUpdaterObserverReadyForActivation reports whether the latest registered
+// observer heartbeat exactly matches the server-owned pull policy projection.
+// It intentionally excludes execution-host ownership and active-job checks,
+// which are fenced again inside ActivatePullUpdaterOwnership.
+func PullUpdaterObserverReadyForActivation(
+	service RegisteredService,
+	policy UpdaterPolicy,
+	servicesByID map[string]RegisteredService,
+	now time.Time,
+) bool {
+	return registeredPullObserverReadyForActivation(service, policy, servicesByID, now)
+}
+
+func pullActivationBaselineReservations(
+	policy UpdaterPolicy,
+	servicesByID map[string]RegisteredService,
+	observer RegisteredService,
+) ([]ServicePortReservation, error) {
+	reservations := make([]ServicePortReservation, 0, len(policy.Targets))
+	seen := make(map[servicePortReservationKey]ServicePortReservation, len(policy.Targets))
+	for _, target := range policy.Targets {
+		service, exists := servicesByID[target.ServiceID]
+		if !exists || service.AppliedEndpoint == nil {
+			return nil, ErrSystemUpdateAgentNotReady
+		}
+		port := service.AppliedEndpoint.Port
+		switch target.DeploymentMode {
+		case "systemd":
+			// The advertised endpoint is also the host listener for systemd.
+		case "docker":
+			baseline, complete := systemUpdateDockerPortBaselineFromAgent(
+				observer,
+				policy,
+				service,
+			)
+			if !complete {
+				return nil, ErrSystemUpdateAgentNotReady
+			}
+			port = baseline.PublishedPort
+		default:
+			return nil, ErrSystemUpdateAgentNotReady
+		}
+		if port < 1024 || port > 65535 {
+			return nil, ErrSystemUpdateAgentNotReady
+		}
+		reservation := ServicePortReservation{
+			ExecutionHostID:  policy.ExecutionHostID,
+			NetworkNamespace: "host",
+			Protocol:         "tcp",
+			Port:             port,
+			ServiceID:        target.ServiceID,
+			ServiceRole:      "api",
+		}
+		key := servicePortKey(reservation)
+		if existing, duplicate := seen[key]; duplicate {
+			if !sameServicePortReservationOwner(existing, reservation) {
+				return nil, ErrServicePortReserved
+			}
+			continue
+		}
+		seen[key] = reservation
+		reservations = append(reservations, reservation)
+	}
+	sortServicePortReservations(reservations)
+	return reservations, nil
+}
+
+func updaterPolicyCapabilityBool(value any) bool {
+	parsed, _ := value.(bool)
+	return parsed
+}
+
+func updaterPolicyCapabilityString(value any) string {
+	parsed, _ := value.(string)
+	return strings.TrimSpace(parsed)
+}
+
+func updaterPolicyCapabilityInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		if typed >= 0 {
+			return int64(typed), true
+		}
+	case int64:
+		if typed >= 0 {
+			return typed, true
+		}
+	case float64:
+		integer := int64(typed)
+		if typed >= 0 && float64(integer) == typed {
+			return integer, true
+		}
+	case json.Number:
+		integer, err := typed.Int64()
+		if err == nil && integer >= 0 {
+			return integer, true
+		}
+	}
+	return 0, false
+}
+
+func updaterPolicyCapabilityStringMap(value any) map[string]string {
+	result := map[string]string{}
+	switch typed := value.(type) {
+	case map[string]string:
+		for key, item := range typed {
+			result[strings.TrimSpace(key)] = strings.TrimSpace(item)
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if parsed, ok := item.(string); ok {
+				result[strings.TrimSpace(key)] = strings.TrimSpace(parsed)
+			}
+		}
+	}
+	return result
+}
+
+func updaterPolicyCapabilityInt64Map(value any) map[string]int64 {
+	result := map[string]int64{}
+	switch typed := value.(type) {
+	case map[string]int:
+		for key, item := range typed {
+			if item >= 0 {
+				result[strings.TrimSpace(key)] = int64(item)
+			}
+		}
+	case map[string]int64:
+		for key, item := range typed {
+			if item >= 0 {
+				result[strings.TrimSpace(key)] = item
+			}
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if parsed, ok := updaterPolicyCapabilityInt64(item); ok {
+				result[strings.TrimSpace(key)] = parsed
+			}
+		}
+	}
+	return result
+}
+
+func updaterPolicyCapabilityBoolMap(value any) map[string]bool {
+	result := map[string]bool{}
+	switch typed := value.(type) {
+	case map[string]bool:
+		for key, item := range typed {
+			result[strings.TrimSpace(key)] = item
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if parsed, ok := item.(bool); ok {
+				result[strings.TrimSpace(key)] = parsed
+			}
+		}
+	}
+	return result
+}
+
+func mariaDBAuthStoreForUpdaterPolicy(services ServiceRegistryStore) (MariaDBAuthStore, bool) {
+	switch typed := services.(type) {
+	case MariaDBAuthStore:
+		return typed, true
+	case *MariaDBAuthStore:
+		if typed != nil {
+			return *typed, true
+		}
+	}
+	return MariaDBAuthStore{}, false
+}
+
 func saveUpdaterPolicyCAS(ctx context.Context, execer updaterPolicyExecer, expectedRevision int64, policy UpdaterPolicy, body []byte) error {
 	if expectedRevision == 0 {
 		_, err := execer.ExecContext(
 			ctx,
-			`INSERT INTO update_agent_policies (service_id, revision, policy_json, updated_at) VALUES (?, ?, ?, ?)`,
+			`INSERT INTO update_agent_policies
+(service_id, revision, projection_revision, local_executor_policy_revision, policy_json, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
 			policy.UpdaterID,
 			policy.Revision,
+			policy.ProjectionRevision,
+			policy.LocalExecutorPolicyRevision,
 			body,
 			policy.UpdatedAt,
 		)
@@ -460,8 +2452,12 @@ func saveUpdaterPolicyCAS(ctx context.Context, execer updaterPolicyExecer, expec
 	}
 	result, err := execer.ExecContext(
 		ctx,
-		`UPDATE update_agent_policies SET revision = ?, policy_json = ?, updated_at = ? WHERE service_id = ? AND revision = ?`,
+		`UPDATE update_agent_policies
+SET revision = ?, projection_revision = ?, local_executor_policy_revision = ?, policy_json = ?, updated_at = ?
+WHERE service_id = ? AND revision = ?`,
 		policy.Revision,
+		policy.ProjectionRevision,
+		policy.LocalExecutorPolicyRevision,
 		body,
 		policy.UpdatedAt,
 		policy.UpdaterID,
@@ -542,6 +2538,31 @@ func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
 	input.UpdaterID = serviceID
+	input.TransportMode = strings.ToLower(strings.TrimSpace(input.TransportMode))
+	if input.TransportMode == "" {
+		input.TransportMode = SystemUpdateTransportSSHV1
+	}
+	input.ExecutionHostID = strings.TrimSpace(input.ExecutionHostID)
+	input.LocalExecutorPolicySHA256 = strings.ToLower(strings.TrimSpace(input.LocalExecutorPolicySHA256))
+
+	if input.PollIntervalSeconds == 0 {
+		input.PollIntervalSeconds = 15
+	}
+	if input.HeartbeatIntervalSeconds == 0 {
+		input.HeartbeatIntervalSeconds = 30
+	}
+	if input.PollIntervalSeconds < 5 || input.PollIntervalSeconds > 3600 ||
+		input.HeartbeatIntervalSeconds < 5 || input.HeartbeatIntervalSeconds > 60 {
+		return UpdaterPolicy{}, ErrInvalidSettings
+	}
+	if input.TransportMode == SystemUpdateTransportPullV2 {
+		return normalizePullUpdaterPolicy(input)
+	}
+	if input.TransportMode != SystemUpdateTransportSSHV1 ||
+		input.ExecutionHostID != "" ||
+		input.LocalExecutorPolicySHA256 != "" {
+		return UpdaterPolicy{}, ErrInvalidSettings
+	}
 
 	input.API.BindHost = strings.Trim(strings.TrimSpace(input.API.BindHost), "[]")
 	input.API.Host = strings.Trim(strings.TrimSpace(input.API.Host), "[]")
@@ -571,16 +2592,6 @@ func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 		input.API.TLSKeyFile = ""
 	}
 
-	if input.PollIntervalSeconds == 0 {
-		input.PollIntervalSeconds = 15
-	}
-	if input.HeartbeatIntervalSeconds == 0 {
-		input.HeartbeatIntervalSeconds = 30
-	}
-	if input.PollIntervalSeconds < 5 || input.PollIntervalSeconds > 3600 ||
-		input.HeartbeatIntervalSeconds < 5 || input.HeartbeatIntervalSeconds > 60 {
-		return UpdaterPolicy{}, ErrInvalidSettings
-	}
 	if len(input.Hosts) == 0 || len(input.Hosts) > 128 || len(input.Targets) == 0 || len(input.Targets) > 1024 {
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
@@ -612,10 +2623,15 @@ func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 	for i := range input.Targets {
 		target := &input.Targets[i]
 		target.TargetID = strings.TrimSpace(target.TargetID)
+		target.ServiceID = strings.TrimSpace(target.ServiceID)
+		if target.ServiceID == "" {
+			target.ServiceID = target.TargetID
+		}
 		target.HostID = strings.TrimSpace(target.HostID)
 		target.ServiceType = strings.TrimSpace(target.ServiceType)
 		target.DeploymentMode = strings.TrimSpace(target.DeploymentMode)
 		if !updaterPolicyIdentifierPattern.MatchString(target.TargetID) || targets[target.TargetID] ||
+			!updaterPolicyIdentifierPattern.MatchString(target.ServiceID) ||
 			!updaterPolicyHostIDPattern.MatchString(target.HostID) || !hosts[target.HostID] ||
 			!validUpdaterPolicyServiceType(target.ServiceType) ||
 			(target.DeploymentMode != "systemd" && target.DeploymentMode != "docker") {
@@ -631,6 +2647,58 @@ func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 	}
 
 	input.Revision = 0
+	input.ProjectionRevision = 0
+	input.LocalExecutorPolicyRevision = 0
+	input.UpdatedAt = time.Time{}
+	return cloneUpdaterPolicy(input), nil
+}
+
+func normalizePullUpdaterPolicy(input UpdaterPolicy) (UpdaterPolicy, error) {
+	if !executionHostIDPattern.MatchString(input.ExecutionHostID) ||
+		!validSystemUpdateDigest(input.LocalExecutorPolicySHA256) ||
+		input.API != (UpdaterPolicyAPI{}) ||
+		len(input.Hosts) != 0 ||
+		len(input.Targets) == 0 ||
+		len(input.Targets) > 1024 {
+		return UpdaterPolicy{}, ErrInvalidSettings
+	}
+
+	targets := make(map[string]bool, len(input.Targets))
+	serviceIDs := make(map[string]bool, len(input.Targets))
+	for index := range input.Targets {
+		target := &input.Targets[index]
+		target.TargetID = strings.TrimSpace(target.TargetID)
+		target.ServiceID = strings.TrimSpace(target.ServiceID)
+		if target.ServiceID == "" {
+			return UpdaterPolicy{}, ErrInvalidSettings
+		}
+		if target.TargetID == "" {
+			target.TargetID = target.ServiceID
+		}
+		target.HostID = strings.TrimSpace(target.HostID)
+		if target.HostID == "" {
+			target.HostID = input.ExecutionHostID
+		}
+		target.ServiceType = strings.TrimSpace(target.ServiceType)
+		target.DeploymentMode = strings.TrimSpace(target.DeploymentMode)
+		if !updaterPolicyIdentifierPattern.MatchString(target.TargetID) ||
+			targets[target.TargetID] ||
+			!updaterPolicyIdentifierPattern.MatchString(target.ServiceID) ||
+			serviceIDs[target.ServiceID] ||
+			target.HostID != input.ExecutionHostID ||
+			!validUpdaterPolicyServiceType(target.ServiceType) ||
+			(target.DeploymentMode != "systemd" && target.DeploymentMode != "docker") {
+			return UpdaterPolicy{}, ErrInvalidSettings
+		}
+		targets[target.TargetID] = true
+		serviceIDs[target.ServiceID] = true
+	}
+
+	input.API = UpdaterPolicyAPI{}
+	input.Hosts = nil
+	input.Revision = 0
+	input.ProjectionRevision = 0
+	input.LocalExecutorPolicyRevision = 0
 	input.UpdatedAt = time.Time{}
 	return cloneUpdaterPolicy(input), nil
 }
@@ -642,6 +2710,17 @@ func NormalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 }
 
 func decodeUpdaterPolicy(serviceID string, revision int64, body []byte, updatedAt time.Time) (UpdaterPolicy, error) {
+	return decodeUpdaterPolicyRevisions(serviceID, revision, revision, 0, body, updatedAt)
+}
+
+func decodeUpdaterPolicyRevisions(
+	serviceID string,
+	revision int64,
+	projectionRevision int64,
+	localExecutorPolicyRevision int64,
+	body []byte,
+	updatedAt time.Time,
+) (UpdaterPolicy, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var policy UpdaterPolicy
@@ -656,10 +2735,14 @@ func decodeUpdaterPolicy(serviceID string, revision int64, body []byte, updatedA
 	if err != nil {
 		return UpdaterPolicy{}, err
 	}
-	if revision < 1 {
+	if revision < 1 ||
+		projectionRevision < 1 ||
+		localExecutorPolicyRevision < 0 {
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
 	normalized.Revision = revision
+	normalized.ProjectionRevision = projectionRevision
+	normalized.LocalExecutorPolicyRevision = localExecutorPolicyRevision
 	normalized.UpdatedAt = updatedAt.UTC()
 	return normalized, nil
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/updateagent"
 	"github.com/example/autostream-control-panel/internal/version"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
 )
@@ -80,6 +81,7 @@ type Server struct {
 	remediation             store.RemediationExecutionStore
 	systemUpdates           store.SystemUpdateStore
 	updaterPolicies         store.UpdaterPolicyAdminStore
+	hostSelfUpdateReleases  HostSelfUpdateReleaseResolver
 	updateHostBootstrapJobs *UpdateHostBootstrapBroker
 	systemUpdateOperationMu sync.Mutex
 	mfa                     store.MFAStore
@@ -181,6 +183,12 @@ func WithSystemUpdateStore(systemUpdates store.SystemUpdateStore) ServerOption {
 
 func WithUpdaterPolicyStore(updaterPolicies store.UpdaterPolicyAdminStore) ServerOption {
 	return func(s *Server) { s.updaterPolicies = updaterPolicies }
+}
+
+func WithHostSelfUpdateReleaseResolver(
+	resolver HostSelfUpdateReleaseResolver,
+) ServerOption {
+	return func(s *Server) { s.hostSelfUpdateReleases = resolver }
 }
 
 func WithUpdateHostBootstrapBroker(broker *UpdateHostBootstrapBroker) ServerOption {
@@ -303,6 +311,9 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	if s.updaterPolicies == nil {
 		s.updaterPolicies = store.NewMemoryUpdaterPolicyStore()
 	}
+	if s.hostSelfUpdateReleases == nil {
+		s.hostSelfUpdateReleases = productionHostSelfUpdateReleaseResolver{}
+	}
 	if s.updateHostBootstrapJobs == nil {
 		s.updateHostBootstrapJobs = NewUpdateHostBootstrapBroker()
 	}
@@ -367,6 +378,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /services/notifications/email", s.serviceEmailNotification)
 	s.mux.HandleFunc("POST /services/remediation-actions/execute", s.serviceRemediationExecute)
 	s.mux.HandleFunc("POST /services/update-agent/policy", s.serviceUpdaterPolicy)
+	s.mux.HandleFunc("POST /services/host-agent/policy", s.serviceHostAgentPolicy)
+	s.mux.HandleFunc("POST /services/host-agent/runtime-token-rotations/{rotation_id}/credential/claim", s.claimRuntimeTokenRotationCredential)
+	s.mux.HandleFunc("POST /services/host-agent/runtime-token-rotations/{rotation_id}/local-staged", s.acknowledgeRuntimeTokenRotationLocalStage)
+	s.mux.HandleFunc("POST /services/host-agent/runtime-token-rotations/{rotation_id}/heartbeat-proof", s.proveRuntimeTokenRotationHeartbeat)
+	s.mux.HandleFunc("POST /services/host-agent/runtime-token-rotations/{rotation_id}/activate", s.activateRuntimeTokenRotation)
+	s.mux.HandleFunc("POST /services/host-agent/self-updates/{id}/grants", s.issueHostSelfUpdateGrant)
+	s.mux.HandleFunc("POST /services/host-agent/self-update-grants/consume", s.consumeHostSelfUpdateGrant)
+	s.mux.HandleFunc("POST /services/host-agent/runtime-token-rotations/{rotation_id}/cancel-ack", s.acknowledgeRuntimeTokenRotationCancel)
 	s.mux.HandleFunc("POST /services/update-agent/bootstrap-jobs/claim", s.serviceUpdateHostBootstrapClaim)
 	s.mux.HandleFunc("POST /services/update-agent/bootstrap-jobs/{id}/accept", s.serviceUpdateHostBootstrapAccept)
 	s.mux.HandleFunc("POST /services/update-agent/bootstrap-jobs/{id}/report", s.serviceUpdateHostBootstrapReport)
@@ -515,8 +534,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /system-updates", s.requirePermission("system_updates.read", s.listSystemUpdates))
 	s.mux.HandleFunc("POST /system-updates", s.requirePermission("system_updates.execute", s.createSystemUpdate))
 	s.mux.HandleFunc("POST /system-updates/{id}/cancel", s.requirePermission("system_updates.execute", s.cancelSystemUpdate))
+	s.mux.HandleFunc("GET /system-updates/host-self-updates", s.requirePermission("system_updates.read", s.listHostSelfUpdates))
+	s.mux.HandleFunc("POST /system-updates/hosts/{host_id}/self-updates", s.requirePermission("system_updates.execute", s.createHostSelfUpdate))
+	s.mux.HandleFunc("POST /system-updates/host-self-updates/{id}/retry", s.requirePermission("system_updates.execute", s.retryHostSelfUpdate))
+	s.mux.HandleFunc("POST /system-updates/host-self-updates/{id}/cancel", s.requirePermission("system_updates.execute", s.cancelHostSelfUpdate))
 	s.mux.HandleFunc("GET /system-updates/updaters/{id}/settings", s.requirePermission("system_updates.read", s.getUpdaterPolicy))
 	s.mux.HandleFunc("PUT /system-updates/updaters/{id}/settings", s.requirePermission("system_updates.execute", s.updateUpdaterPolicy))
+	s.mux.HandleFunc("POST /system-updates/updaters/{id}/pull-ownership/activate", s.requirePermission("system_updates.execute", s.activatePullUpdaterOwnership))
+	s.mux.HandleFunc("POST /system-updates/updaters/{id}/pull-ownership/deactivate", s.requirePermission("system_updates.execute", s.deactivatePullUpdaterOwnership))
+	s.mux.HandleFunc("GET /system-updates/updaters/{id}/runtime-token-rotations/active", s.requirePermission("system_updates.read", s.getActiveRuntimeTokenRotation))
+	s.mux.HandleFunc("POST /system-updates/updaters/{id}/runtime-token-rotations", s.requirePermission("system_updates.execute", s.stageRuntimeTokenRotation))
+	s.mux.HandleFunc("POST /system-updates/updaters/{id}/runtime-token-rotations/{rotation_id}/cancel", s.requirePermission("system_updates.execute", s.cancelRuntimeTokenRotation))
+	s.mux.HandleFunc("POST /system-updates/updaters/{id}/runtime-token-rotations/{rotation_id}/emergency-revoke", s.requirePermission("system_updates.execute", s.emergencyRevokeRuntimeTokenRotation))
 	s.mux.HandleFunc("GET /system-updates/updaters/{id}/bootstrap-jobs", s.requirePermission("system_updates.read", s.listUpdateHostBootstrapJobs))
 	s.mux.HandleFunc("POST /system-updates/updaters/{id}/bootstrap-jobs", s.requirePermission("system_updates.execute", s.createUpdateHostBootstrapJob))
 	s.mux.HandleFunc("GET /secrets/status", s.requirePermission("secrets.read_status", s.secretStatus))
@@ -630,7 +659,44 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) updaterVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"version": version.Current()})
+	configRevision, err := controlPanelConfigRevision()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "invalid_service_config_revision"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":         version.Current(),
+		"service_id":      controlPanelServiceID(),
+		"service_type":    "control_panel",
+		"config_revision": configRevision,
+	})
+}
+
+func controlPanelServiceID() string {
+	if serviceID := strings.TrimSpace(os.Getenv("SERVICE_ID")); serviceID != "" {
+		return serviceID
+	}
+	return "control-panel"
+}
+
+func controlPanelConfigRevision() (int64, error) {
+	raw := os.Getenv("AUTOSTREAM_CONFIG_REVISION")
+	if raw == "" {
+		return 1, nil
+	}
+	if raw[0] < '1' || raw[0] > '9' {
+		return 0, errors.New("config revision must be a positive decimal integer")
+	}
+	for index := 1; index < len(raw); index++ {
+		if raw[index] < '0' || raw[index] > '9' {
+			return 0, errors.New("config revision must be a positive decimal integer")
+		}
+	}
+	revision, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, errors.New("config revision must fit in int64")
+	}
+	return revision, nil
 }
 
 func (s *Server) rootRedirect(w http.ResponseWriter, r *http.Request) {
@@ -4281,13 +4347,16 @@ func (s *Server) listServiceTokens(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ServiceType  string         `json:"service_type"`
-		Scopes       []string       `json:"scopes"`
-		ServiceID    string         `json:"service_id,omitempty"`
-		ServiceName  string         `json:"service_name,omitempty"`
-		PublicURL    string         `json:"public_url,omitempty"`
-		Version      string         `json:"version,omitempty"`
-		Capabilities map[string]any `json:"capabilities,omitempty"`
+		ServiceType     string         `json:"service_type"`
+		Scopes          []string       `json:"scopes"`
+		ServiceID       string         `json:"service_id,omitempty"`
+		ServiceName     string         `json:"service_name,omitempty"`
+		TransportMode   string         `json:"transport_mode,omitempty"`
+		ExecutionHostID string         `json:"execution_host_id,omitempty"`
+		OwnershipEpoch  int64          `json:"ownership_epoch,omitempty"`
+		PublicURL       string         `json:"public_url,omitempty"`
+		Version         string         `json:"version,omitempty"`
+		Capabilities    map[string]any `json:"capabilities,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
@@ -4301,6 +4370,14 @@ func (s *Server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 	if body.ServiceID != "" && !stringSliceContains(body.Scopes, "service.register") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "service_register_scope_required"})
 		return
+	}
+	if body.ServiceID != "" &&
+		strings.TrimSpace(body.ServiceType) == "update_agent" &&
+		strings.EqualFold(strings.TrimSpace(body.TransportMode), store.SystemUpdateTransportPullV2) {
+		if body.OwnershipEpoch != 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_registration"})
+			return
+		}
 	}
 	if !validUpdateAgentServiceTokenScopes(body.ServiceType, body.Scopes) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_scope"})
@@ -4330,8 +4407,15 @@ func (s *Server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 	var precreatedService *store.RegisteredService
 	if body.ServiceID != "" {
 		service, err := s.services.PrecreateService(r.Context(), token, store.ServiceRegistration{
-			ServiceID: body.ServiceID, ServiceType: body.ServiceType, ServiceName: body.ServiceName,
-			PublicURL: body.PublicURL, Version: body.Version, Capabilities: body.Capabilities,
+			ServiceID:       body.ServiceID,
+			ServiceType:     body.ServiceType,
+			ServiceName:     body.ServiceName,
+			TransportMode:   body.TransportMode,
+			ExecutionHostID: body.ExecutionHostID,
+			OwnershipEpoch:  body.OwnershipEpoch,
+			PublicURL:       body.PublicURL,
+			Version:         body.Version,
+			Capabilities:    body.Capabilities,
 		})
 		if err != nil {
 			_ = s.services.RevokeServiceToken(r.Context(), token.ID)
@@ -4379,6 +4463,9 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		Capabilities        map[string]any `json:"capabilities,omitempty"`
 		AllowRuntimeSecrets bool           `json:"allow_runtime_secrets"`
 		AllowRemediation    bool           `json:"allow_remediation"`
+		TransportMode       string         `json:"transport_mode"`
+		ExecutionHostID     string         `json:"execution_host_id"`
+		OwnershipEpoch      int64          `json:"ownership_epoch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
@@ -4399,30 +4486,49 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 	host := strings.TrimSpace(body.Host)
 	port := body.Port
 	sslEnabled := body.SSLEnabled
-	if host == "" || port == 0 {
-		parsedHost, parsedPort, parsedSSL := nodeEndpointFromURL(strings.TrimSpace(body.PublicURL))
-		if host == "" {
-			host = parsedHost
-		}
-		if port == 0 {
-			port = parsedPort
-		}
-		if parsedHost != "" {
-			sslEnabled = parsedSSL
+	transportMode := strings.ToLower(strings.TrimSpace(body.TransportMode))
+	executionHostID := strings.TrimSpace(body.ExecutionHostID)
+	isEndpointlessPullAgent := serviceType == "update_agent" &&
+		transportMode == store.SystemUpdateTransportPullV2
+	ownershipEpoch := body.OwnershipEpoch
+	if isEndpointlessPullAgent {
+		if executionHostID == "" || body.OwnershipEpoch != 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_registration"})
+			return
 		}
 	}
-	publicURL := buildNodeAgentURL(host, port, sslEnabled)
-	if publicURL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
-		return
-	}
-	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(publicURL); err != nil {
-		code := "invalid_node_endpoint"
-		if errors.Is(err, netpolicy.ErrBlockedServiceURL) {
-			code = "node_endpoint_blocked"
+	publicURL := ""
+	if isEndpointlessPullAgent {
+		if host != "" || port != 0 || sslEnabled || strings.TrimSpace(body.PublicURL) != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
+			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
-		return
+	} else {
+		if host == "" || port == 0 {
+			parsedHost, parsedPort, parsedSSL := nodeEndpointFromURL(strings.TrimSpace(body.PublicURL))
+			if host == "" {
+				host = parsedHost
+			}
+			if port == 0 {
+				port = parsedPort
+			}
+			if parsedHost != "" {
+				sslEnabled = parsedSSL
+			}
+		}
+		publicURL = buildNodeAgentURL(host, port, sslEnabled)
+		if publicURL == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
+			return
+		}
+		if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(publicURL); err != nil {
+			code := "invalid_node_endpoint"
+			if errors.Is(err, netpolicy.ErrBlockedServiceURL) {
+				code = "node_endpoint_blocked"
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
+			return
+		}
 	}
 	if !requireNodeStreamIngestSigningKey(w, serviceType) {
 		return
@@ -4452,16 +4558,19 @@ func (s *Server) createNodeRegistrationToken(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	service, err := s.services.PrecreateService(r.Context(), token, store.ServiceRegistration{
-		ServiceID:    serviceID,
-		ServiceType:  serviceType,
-		ServiceName:  serviceName,
-		Description:  strings.TrimSpace(body.Description),
-		Host:         host,
-		Port:         port,
-		SSLEnabled:   sslEnabled,
-		PublicURL:    publicURL,
-		Version:      "",
-		Capabilities: map[string]any{},
+		ServiceID:       serviceID,
+		ServiceType:     serviceType,
+		ServiceName:     serviceName,
+		Description:     strings.TrimSpace(body.Description),
+		TransportMode:   transportMode,
+		ExecutionHostID: executionHostID,
+		OwnershipEpoch:  ownershipEpoch,
+		Host:            host,
+		Port:            port,
+		SSLEnabled:      sslEnabled,
+		PublicURL:       publicURL,
+		Version:         "",
+		Capabilities:    map[string]any{},
 	})
 	if err != nil {
 		_ = s.services.RevokeServiceToken(r.Context(), token.ID)
@@ -4611,23 +4720,23 @@ func nodeConfigureTokenTTL() time.Duration {
 	return ttl
 }
 
-func nodeConfigureCommand(r *http.Request, serviceType, nodeID, rawToken, configPath string) string {
+func nodeConfigureCommand(r *http.Request, service store.RegisteredService, rawToken, configPath string) string {
 	panelURL := panelBaseURL(r)
 	if panelURL == "" {
 		panelURL = "https://control.example.com"
 	}
 	if configPath == "" {
-		configPath = nodeDefaultConfigPath(serviceType)
+		configPath = nodeDefaultConfigPath(service)
 	}
-	configureBinary := nodeConfigureBinary(serviceType)
-	if serviceType == "update_agent" {
+	configureBinary := nodeConfigureBinary(service)
+	if service.ServiceType == "update_agent" {
 		return `sudo ` + configureBinary + ` configure --panel-url ` + posixShellQuote(panelURL) +
-			" --node " + posixShellQuote(nodeID) +
+			" --node " + posixShellQuote(service.ServiceID) +
 			" --config " + posixShellQuote(configPath)
 	}
 	return `sudo ` + configureBinary + ` configure --panel-url ` + posixShellQuote(panelURL) +
 		" --token " + posixShellQuote(rawToken) +
-		" --node " + posixShellQuote(nodeID) +
+		" --node " + posixShellQuote(service.ServiceID) +
 		" --config " + posixShellQuote(configPath)
 }
 
@@ -4635,8 +4744,11 @@ func posixShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func nodeConfigureBinary(serviceType string) string {
-	switch serviceType {
+func nodeConfigureBinary(service store.RegisteredService) string {
+	if isPullV2HostAgent(service) {
+		return "/usr/local/bin/autostream-host-agent"
+	}
+	switch service.ServiceType {
 	case "encoder_recorder":
 		return "autostream-encoder-recorder"
 	case "discord_bot":
@@ -4650,11 +4762,19 @@ func nodeConfigureBinary(serviceType string) string {
 	}
 }
 
-func nodeDefaultConfigPath(serviceType string) string {
-	if strings.TrimSpace(serviceType) == "update_agent" {
+func nodeDefaultConfigPath(service store.RegisteredService) string {
+	if isPullV2HostAgent(service) {
+		return "/etc/autostream-host-agent/identity.json"
+	}
+	if strings.TrimSpace(service.ServiceType) == "update_agent" {
 		return "/etc/autostream/updater.json"
 	}
-	return "/etc/autostream-" + nodeServiceDirectoryName(serviceType) + "/config.yml"
+	return "/etc/autostream-" + nodeServiceDirectoryName(service.ServiceType) + "/config.yml"
+}
+
+func isPullV2HostAgent(service store.RegisteredService) bool {
+	return service.ServiceType == "update_agent" &&
+		service.TransportMode == store.SystemUpdateTransportPullV2
 }
 
 func nodeAgentDataDir(serviceType string) string {
@@ -4755,15 +4875,15 @@ func nodeConfigurationYAML(r *http.Request, service store.RegisteredService, tok
 
 func addNodeConfigurationMetadata(response map[string]any, r *http.Request, service store.RegisteredService, tokenID, rawToken, configureToken string) {
 	if service.ServiceType == "update_agent" {
-		response["configuration_path"] = "/etc/autostream/updater.json"
+		response["configuration_path"] = nodeDefaultConfigPath(service)
 		if configureToken != "" {
-			response["configure_command"] = nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, "")
+			response["configure_command"] = nodeConfigureCommand(r, service, configureToken, "")
 		}
 		return
 	}
 	response["configuration_yaml"] = nodeConfigurationYAML(r, service, tokenID, rawToken)
 	if configureToken != "" {
-		response["configure_command"] = nodeConfigureCommand(r, service.ServiceType, service.ServiceID, configureToken, "")
+		response["configure_command"] = nodeConfigureCommand(r, service, configureToken, "")
 	}
 }
 
@@ -4863,9 +4983,9 @@ func (s *Server) nodeConfiguration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
 		return
 	}
-	response := map[string]any{
-		"node":         service,
-		"node_api_url": buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled),
+	response := map[string]any{"node": service}
+	if !isPullV2HostAgent(service) {
+		response["node_api_url"] = buildNodeAgentURL(service.Host, service.Port, service.SSLEnabled)
 	}
 	addNodeConfigurationMetadata(response, r, service, service.TokenID, "", "")
 	writeJSON(w, http.StatusOK, response)
@@ -4884,9 +5004,6 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
-		return
-	}
-	if !s.requireNodeTokenScopePermissions(w, r, service) {
 		return
 	}
 	if !requireNodeStreamIngestSigningKey(w, service.ServiceType) {
@@ -4908,9 +5025,14 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
 			return
 		}
+		if !s.requireNodeConfigureTokenScopePermissions(w, r, service) {
+			return
+		}
 		if s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
 			return
 		}
+	} else if !s.requireNodeConfigureTokenScopePermissions(w, r, service) {
+		return
 	}
 	token, expiresAt, err := s.issueNodeConfigureToken(r.Context(), service.ServiceID)
 	if err != nil {
@@ -4918,12 +5040,16 @@ func (s *Server) regenerateNodeConfigureToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "nodes.configure_token.rotate", ResourceType: "node", ResourceID: service.ServiceID, Result: "success"})
-	writeOneTimeSecretJSON(w, http.StatusCreated, map[string]any{
+	response := map[string]any{
 		"node":                       service,
 		"configure_token":            token,
 		"configure_token_expires_at": expiresAt,
-		"configure_command":          nodeConfigureCommand(r, service.ServiceType, service.ServiceID, token, ""),
-	})
+		"configure_command":          nodeConfigureCommand(r, service, token, ""),
+	}
+	if service.ServiceType == "update_agent" {
+		response["configuration_path"] = nodeDefaultConfigPath(service)
+	}
+	writeOneTimeSecretJSON(w, http.StatusCreated, response)
 }
 
 func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) {
@@ -4964,6 +5090,10 @@ func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) 
 		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
 		return
 	}
+	if isPullV2HostAgent(service) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "staged_runtime_token_rotation_required"})
+		return
+	}
 	seal, err := nodeRuntimeTokenSealer()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
@@ -4972,6 +5102,10 @@ func (s *Server) rotateNodeRuntimeToken(w http.ResponseWriter, r *http.Request) 
 	token, updated, err := s.services.RotateServiceNodeToken(r.Context(), service.ServiceID, service.TokenID, seal)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "staged_runtime_token_rotation_required"})
 		return
 	}
 	if err != nil {
@@ -5080,8 +5214,11 @@ func (s *Server) nodeAgentConfigure(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		NodeID         string `json:"nodeId"`
-		ConfigureToken string `json:"configureToken"`
+		NodeID          string `json:"nodeId"`
+		ConfigureToken  string `json:"configureToken"`
+		ProtocolVersion int    `json:"protocolVersion"`
+		AgentUID        uint32 `json:"agentUid"`
+		AgentGID        uint32 `json:"agentGid"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, maxControlRequestBytes+1))
 	decoder.DisallowUnknownFields()
@@ -5142,6 +5279,32 @@ func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request)
 		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
 		return
 	}
+	var configurePolicy *updateagent.ConfigurePolicyProjection
+	if validConfigureToken && isPullV2HostAgent(service) {
+		if body.ProtocolVersion != updateagent.HostAgentConfigureProtocolVersion ||
+			body.AgentUID == 0 ||
+			body.AgentGID == 0 {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "host_agent_configure_protocol_required"})
+			return
+		}
+		projection, projectionErr := s.hostAgentConfigurePolicyProjection(
+			r.Context(),
+			r,
+			service,
+			body.AgentUID,
+			body.AgentGID,
+		)
+		if projectionErr != nil {
+			writeHostAgentConfigurePolicyError(w, projectionErr)
+			return
+		}
+		configurePolicy = &projection
+	}
+	configureBindingKey, err := nodeRuntimeTokenEncryptionKey()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
+		return
+	}
 	seal, err := nodeRuntimeTokenSealer()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "store_node_runtime_token_failed"})
@@ -5176,25 +5339,47 @@ func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request)
 			"configuration_id": staged.Token.ID,
 		},
 	})
-	writeOneTimeSecretJSON(w, http.StatusOK, map[string]any{
-		"configuration_id":      staged.Token.ID,
+	externalConfigurationID := staged.Token.ID
+	if configurePolicy != nil {
+		externalConfigurationID = hostAgentConfigureBoundConfigurationID(
+			staged.Token.ID,
+			body.AgentUID,
+			body.AgentGID,
+			*configurePolicy,
+			configureBindingKey,
+		)
+	}
+	response := map[string]any{
+		"configuration_id":      externalConfigurationID,
 		"activation_token":      staged.ActivationToken,
 		"activation_expires_at": staged.ActivationExpiresAt,
 		"config":                updaterNodeConfigurationResponse(r, staged.Service, staged.Token.RawToken),
-	})
+	}
+	if configurePolicy != nil {
+		response["configure_protocol_version"] = updateagent.HostAgentConfigureProtocolVersion
+		response["local_executor_policy"] = configurePolicy
+	}
+	writeOneTimeSecretJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		NodeID          string `json:"nodeId"`
-		ConfigurationID string `json:"configurationId"`
-		ActivationToken string `json:"activationToken"`
-		Version         string `json:"version"`
-		Commit          string `json:"commit"`
-		BuildDate       string `json:"build_date"`
-		Hostname        string `json:"hostname"`
-		OS              string `json:"os"`
-		Arch            string `json:"arch"`
+		NodeID                      string `json:"nodeId"`
+		ConfigurationID             string `json:"configurationId"`
+		ActivationToken             string `json:"activationToken"`
+		Version                     string `json:"version"`
+		Commit                      string `json:"commit"`
+		BuildDate                   string `json:"build_date"`
+		Hostname                    string `json:"hostname"`
+		OS                          string `json:"os"`
+		Arch                        string `json:"arch"`
+		ConfigureProtocolVersion    int    `json:"configureProtocolVersion"`
+		AgentUID                    uint32 `json:"agentUid"`
+		AgentGID                    uint32 `json:"agentGid"`
+		LocalExecutorPolicySHA256   string `json:"localExecutorPolicySha256"`
+		SourcePolicyRevision        int64  `json:"sourcePolicyRevision"`
+		ProjectionRevision          int64  `json:"projectionRevision"`
+		LocalExecutorPolicyRevision int64  `json:"localExecutorPolicyRevision"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, maxControlRequestBytes+1))
 	decoder.DisallowUnknownFields()
@@ -5227,13 +5412,81 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 	}
 	if inspectErr == nil &&
 		stagedService.ServiceType == "update_agent" &&
-		stagedService.StagedNodeTokenID == configurationID &&
 		stagedService.StagedNodeActivationTokenHash != "" &&
 		security.VerifyTokenHash(activationToken, stagedService.StagedNodeActivationTokenHash) &&
+		(isPullV2HostAgent(stagedService) ||
+			stagedService.StagedNodeTokenID == configurationID) &&
 		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, stagedService.ServiceID) {
 		return
 	}
-	_, updated, alreadyActivated, err := s.services.ActivateServiceNodeConfiguration(r.Context(), activationServiceID, configurationID, activationToken, time.Now().UTC(), store.ServiceRuntimeReport{
+	var configurePolicy *updateagent.ConfigurePolicyProjection
+	activationConfigurationID := configurationID
+	if inspectErr == nil &&
+		isPullV2HostAgent(stagedService) &&
+		stagedService.StagedNodeTokenID != "" &&
+		stagedService.StagedNodeActivationTokenHash != "" &&
+		security.VerifyTokenHash(activationToken, stagedService.StagedNodeActivationTokenHash) {
+		if body.ConfigureProtocolVersion != updateagent.HostAgentConfigureProtocolVersion ||
+			body.AgentUID == 0 ||
+			body.AgentGID == 0 {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "host_agent_configure_protocol_required"})
+			return
+		}
+		projection, projectionErr := s.hostAgentConfigurePolicyProjection(
+			r.Context(),
+			r,
+			stagedService,
+			body.AgentUID,
+			body.AgentGID,
+		)
+		if projectionErr != nil {
+			writeHostAgentConfigurePolicyError(w, projectionErr)
+			return
+		}
+		configureBindingKey, keyErr := nodeRuntimeTokenEncryptionKey()
+		if keyErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "host_agent_configure_binding_unavailable"})
+			return
+		}
+		if !hostAgentConfigureConfigurationIDMatches(
+			configurationID,
+			stagedService.StagedNodeTokenID,
+			body.AgentUID,
+			body.AgentGID,
+			projection,
+			configureBindingKey,
+		) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "local_executor_policy_binding_mismatch"})
+			return
+		}
+		if body.LocalExecutorPolicySHA256 != projection.SHA256 ||
+			body.SourcePolicyRevision != projection.SourcePolicyRevision ||
+			body.ProjectionRevision != projection.ProjectionRevision ||
+			body.LocalExecutorPolicyRevision != projection.PolicyRevision {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "local_executor_policy_binding_mismatch"})
+			return
+		}
+		if _, bindErr := s.updaterPolicies.BindPullUpdaterConfigurePolicy(
+			r.Context(),
+			store.BindPullUpdaterConfigurePolicyParams{
+				ServiceID:                           stagedService.ServiceID,
+				ExpectedSourcePolicyRevision:        projection.SourcePolicyRevision,
+				ExpectedProjectionRevision:          projection.ProjectionRevision,
+				ExpectedLocalExecutorPolicyRevision: projection.PolicyRevision,
+				LocalExecutorPolicySHA256:           projection.SHA256,
+			},
+		); bindErr != nil {
+			if errors.Is(bindErr, store.ErrConflict) {
+				writeJSON(w, http.StatusConflict, map[string]string{"code": "local_executor_policy_binding_mismatch"})
+			} else {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "bind_local_executor_policy_failed"})
+			}
+			return
+		}
+		configurePolicy = &projection
+		activationConfigurationID = stagedService.StagedNodeTokenID
+	}
+	_, updated, alreadyActivated, err := s.services.ActivateServiceNodeConfiguration(r.Context(), activationServiceID, activationConfigurationID, activationToken, time.Now().UTC(), store.ServiceRuntimeReport{
 		ServiceID: activationServiceID,
 		Version:   body.Version,
 		Commit:    body.Commit,
@@ -5281,7 +5534,15 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 		})
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"state": state, "configuration_id": configurationID})
+	response := map[string]any{"state": state, "configuration_id": configurationID}
+	if configurePolicy != nil {
+		response["configure_protocol_version"] = updateagent.HostAgentConfigureProtocolVersion
+		response["local_executor_policy_sha256"] = configurePolicy.SHA256
+		response["source_policy_revision"] = configurePolicy.SourcePolicyRevision
+		response["projection_revision"] = configurePolicy.ProjectionRevision
+		response["local_executor_policy_revision"] = configurePolicy.PolicyRevision
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func updaterNodeConfigurationResponse(r *http.Request, service store.RegisteredService, rawToken string) map[string]any {
@@ -5289,18 +5550,30 @@ func updaterNodeConfigurationResponse(r *http.Request, service store.RegisteredS
 	if panelURL == "" {
 		panelURL = "https://control.example.com"
 	}
-	return map[string]any{
+	apiHost := service.Host
+	apiPort := service.Port
+	apiSSLEnabled := service.SSLEnabled
+	if isPullV2HostAgent(service) {
+		apiHost = ""
+		apiPort = 0
+		apiSSLEnabled = false
+	}
+	response := map[string]any{
 		"panel_url":     panelURL,
 		"node_id":       service.ServiceID,
 		"runtime_token": rawToken,
 		"service_name":  service.ServiceName,
 		"service_type":  service.ServiceType,
 		"api": map[string]any{
-			"host":        service.Host,
-			"port":        service.Port,
-			"ssl_enabled": service.SSLEnabled,
+			"host":        apiHost,
+			"port":        apiPort,
+			"ssl_enabled": apiSSLEnabled,
 		},
 	}
+	if isPullV2HostAgent(service) {
+		response["transport_mode"] = store.SystemUpdateTransportPullV2
+	}
+	return response
 }
 
 func nodeAgentConfigResponse(r *http.Request, service store.RegisteredService, tokenID, rawToken string) map[string]any {
@@ -5411,23 +5684,82 @@ func (s *Server) requireNodeTokenScopePermissions(w http.ResponseWriter, r *http
 		if token.ID != service.TokenID || token.RevokedAt != nil {
 			continue
 		}
-		if token.ServiceType != service.ServiceType ||
-			!validUpdateAgentServiceTokenScopes(service.ServiceType, token.Scopes) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_scope"})
-			return false
-		}
-		if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, token.Scopes); err != nil {
-			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
-			return false
-		}
-		if err := validateNodeConfigurationSecretPermissions(currentFromContext(r.Context()).Permissions, service.ServiceType); err != nil {
-			writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
-			return false
-		}
-		return true
+		return validateNodeTokenScopePermissions(w, r, service, token)
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
 	return false
+}
+
+func (s *Server) requireNodeConfigureTokenScopePermissions(
+	w http.ResponseWriter,
+	r *http.Request,
+	service store.RegisteredService,
+) bool {
+	tokens, err := s.services.ListServiceTokens(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_service_tokens_failed"})
+		return false
+	}
+	for _, token := range tokens {
+		if token.ID == service.TokenID && token.RevokedAt == nil {
+			return validateNodeTokenScopePermissions(w, r, service, token)
+		}
+	}
+	identityFenceStore, ok := s.systemUpdates.(store.SystemUpdateIdentityMutationFenceStore)
+	if !ok {
+		writeJSON(
+			w,
+			http.StatusServiceUnavailable,
+			map[string]string{"code": "system_update_identity_fence_unavailable"},
+		)
+		return false
+	}
+	recovery, err := identityFenceStore.IsSystemUpdateEmergencyIdentityRecovery(
+		r.Context(),
+		s.services,
+		service.ServiceID,
+	)
+	if err != nil {
+		writeJSON(
+			w,
+			http.StatusInternalServerError,
+			map[string]string{"code": "check_system_update_emergency_recovery_failed"},
+		)
+		return false
+	}
+	if !recovery {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
+		return false
+	}
+	for _, token := range tokens {
+		if token.ID == service.TokenID {
+			return validateNodeTokenScopePermissions(w, r, service, token)
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
+	return false
+}
+
+func validateNodeTokenScopePermissions(
+	w http.ResponseWriter,
+	r *http.Request,
+	service store.RegisteredService,
+	token store.ServiceToken,
+) bool {
+	if token.ServiceType != service.ServiceType ||
+		!validUpdateAgentServiceTokenScopes(service.ServiceType, token.Scopes) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_scope"})
+		return false
+	}
+	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, token.Scopes); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+		return false
+	}
+	if err := validateNodeConfigurationSecretPermissions(currentFromContext(r.Context()).Permissions, service.ServiceType); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+		return false
+	}
+	return true
 }
 
 func (s *Server) revokeServiceToken(w http.ResponseWriter, r *http.Request) {
@@ -5672,6 +6004,17 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	s.systemUpdateOperationMu.Lock()
+	defer s.systemUpdateOperationMu.Unlock()
+	existing, err = s.services.GetService(r.Context(), existing.ServiceID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_node_failed"})
+		return
+	}
 	serviceName := existing.ServiceName
 	if body.ServiceName != nil {
 		serviceName = strings.TrimSpace(*body.ServiceName)
@@ -5683,44 +6026,73 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 	if body.Description != nil {
 		description = strings.TrimSpace(*body.Description)
 	}
-	host := existing.Host
-	port := existing.Port
-	sslEnabled := existing.SSLEnabled
-	if body.PublicURL != nil && strings.TrimSpace(*body.PublicURL) != "" {
-		parsedHost, parsedPort, parsedSSL := nodeEndpointFromURL(*body.PublicURL)
-		host = parsedHost
-		port = parsedPort
-		sslEnabled = parsedSSL
-	}
-	if body.Host != nil {
-		host = strings.TrimSpace(*body.Host)
-	}
-	if body.Port != nil {
-		port = *body.Port
-	}
-	if body.SSLEnabled != nil {
-		sslEnabled = *body.SSLEnabled
-	}
-	publicURL := buildNodeAgentURL(host, port, sslEnabled)
-	if publicURL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
-		return
-	}
-	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(publicURL); err != nil {
-		code := "invalid_node_endpoint"
-		if errors.Is(err, netpolicy.ErrBlockedServiceURL) {
-			code = "node_endpoint_blocked"
+	endpointless := existing.ServiceType == "update_agent" && existing.TransportMode == "pull_v2"
+	endpointFieldsProvided := body.Host != nil ||
+		body.Port != nil ||
+		body.SSLEnabled != nil ||
+		body.PublicURL != nil
+	endpointFieldsExactNoOp := endpointFieldsProvided &&
+		(body.Host == nil || strings.TrimSpace(*body.Host) == existing.Host) &&
+		(body.Port == nil || *body.Port == existing.Port) &&
+		(body.SSLEnabled == nil || *body.SSLEnabled == existing.SSLEnabled) &&
+		(body.PublicURL == nil || strings.TrimSpace(*body.PublicURL) == existing.PublicURL)
+	host, port, sslEnabled, publicURL := existing.Host, existing.Port, existing.SSLEnabled, existing.PublicURL
+	preserveEndpoint := false
+	if endpointless {
+		if endpointFieldsProvided {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
+			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
-		return
+		host, port, sslEnabled, publicURL = "", 0, false, ""
+	} else if !endpointFieldsProvided || endpointFieldsExactNoOp {
+		preserveEndpoint = true
+	} else {
+		if body.PublicURL != nil && strings.TrimSpace(*body.PublicURL) != "" {
+			parsedHost, parsedPort, parsedSSL := nodeEndpointFromURL(*body.PublicURL)
+			host = parsedHost
+			port = parsedPort
+			sslEnabled = parsedSSL
+		}
+		if body.Host != nil {
+			host = strings.TrimSpace(*body.Host)
+		}
+		if body.Port != nil {
+			port = *body.Port
+		}
+		if body.SSLEnabled != nil {
+			sslEnabled = *body.SSLEnabled
+		}
+		publicURL = buildNodeAgentURL(host, port, sslEnabled)
+		if publicURL == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_node_endpoint"})
+			return
+		}
+		if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL(publicURL); err != nil {
+			code := "invalid_node_endpoint"
+			if errors.Is(err, netpolicy.ErrBlockedServiceURL) {
+				code = "node_endpoint_blocked"
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
+			return
+		}
+		preserveEndpoint = sameNodeEndpoint(existing, host, port, sslEnabled, publicURL)
+		if !preserveEndpoint {
+			managed, ownershipErr := s.activePullManagedSystemdTarget(r.Context(), existing)
+			if ownershipErr != nil || managed {
+				writeJSON(w, http.StatusConflict, map[string]string{"code": "node_endpoint_managed_by_updater"})
+				return
+			}
+		}
 	}
 	updated, err := s.services.UpdateServiceMetadata(r.Context(), existing.ServiceID, store.ServiceMetadataUpdate{
-		ServiceName: serviceName,
-		Description: description,
-		Host:        host,
-		Port:        port,
-		SSLEnabled:  sslEnabled,
-		PublicURL:   publicURL,
+		ServiceName:      serviceName,
+		Description:      description,
+		Host:             host,
+		Port:             port,
+		SSLEnabled:       sslEnabled,
+		PublicURL:        publicURL,
+		Endpointless:     endpointless,
+		PreserveEndpoint: preserveEndpoint,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
@@ -5939,19 +6311,25 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 	s.systemUpdateOperationMu.Lock()
 	defer s.systemUpdateOperationMu.Unlock()
 	current := currentFromContext(r.Context())
-	if existing.ServiceType == "update_agent" &&
-		s.rejectUpdaterIdentityMutationDuringBootstrap(w, r, existing.ServiceID) {
-		return
-	}
-	activeUpdate, err := s.systemUpdates.HasActiveSystemUpdateReference(r.Context(), existing.ServiceID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_system_update_active_failed"})
-		return
-	}
-	if activeUpdate {
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.delete", ResourceType: "service", ResourceID: existing.ServiceID, Result: "failure", Metadata: map[string]any{"reason": "system_update_active", "service_type": existing.ServiceType}})
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_active"})
-		return
+	if existing.ServiceType == "update_agent" {
+		if s.rejectUpdaterIdentityMutationDuringActiveWork(
+			w, r, existing.ServiceID,
+		) {
+			return
+		}
+	} else {
+		activeUpdate, activeErr := s.systemUpdates.HasActiveSystemUpdateReference(
+			r.Context(), existing.ServiceID,
+		)
+		if activeErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_system_update_active_failed"})
+			return
+		}
+		if activeUpdate {
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.delete", ResourceType: "service", ResourceID: existing.ServiceID, Result: "failure", Metadata: map[string]any{"reason": "system_update_active", "service_type": existing.ServiceType}})
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_active"})
+			return
+		}
 	}
 	if err := s.services.DeleteService(r.Context(), existing.ServiceID); errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "service_not_found"})
@@ -6063,11 +6441,39 @@ func (s *Server) serviceRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var body store.ServiceRegistration
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	var request struct {
+		store.ServiceRegistration
+		ExecutionHostID json.RawMessage `json:"execution_host_id"`
+		OwnershipEpoch  json.RawMessage `json:"ownership_epoch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		s.writeServiceAudit(r, token, "services.register", "service", "", "failure", map[string]any{"reason": "bad_request"})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
+	}
+	body := request.ServiceRegistration
+	if token.ServiceType == "update_agent" &&
+		(len(request.ExecutionHostID) != 0 || len(request.OwnershipEpoch) != 0) {
+		s.writeServiceAudit(r, token, "services.register", "service", body.ServiceID, "failure", map[string]any{
+			"reason":                 "server_owned_update_agent_binding",
+			"requested_service_type": body.ServiceType,
+		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_registration"})
+		return
+	}
+	if len(request.ExecutionHostID) != 0 {
+		if err := json.Unmarshal(request.ExecutionHostID, &body.ExecutionHostID); err != nil {
+			s.writeServiceAudit(r, token, "services.register", "service", body.ServiceID, "failure", map[string]any{"reason": "bad_request"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+	}
+	if len(request.OwnershipEpoch) != 0 {
+		if err := json.Unmarshal(request.OwnershipEpoch, &body.OwnershipEpoch); err != nil {
+			s.writeServiceAudit(r, token, "services.register", "service", body.ServiceID, "failure", map[string]any{"reason": "bad_request"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
 	}
 	var service store.RegisteredService
 	var err error
@@ -7319,6 +7725,32 @@ func (s *Server) rejectUpdaterIdentityMutationDuringActiveWork(
 	updaterID string,
 ) bool {
 	if s.rejectUpdaterIdentityMutationDuringBootstrap(w, r, updaterID) {
+		return true
+	}
+	identityFenceStore, ok := s.systemUpdates.(store.SystemUpdateIdentityMutationFenceStore)
+	if !ok {
+		writeJSON(
+			w,
+			http.StatusServiceUnavailable,
+			map[string]string{"code": "system_update_identity_fence_unavailable"},
+		)
+		return true
+	}
+	blocked, err := identityFenceStore.HasSystemUpdateIdentityMutationFence(
+		r.Context(),
+		s.services,
+		strings.TrimSpace(updaterID),
+	)
+	if err != nil {
+		writeJSON(
+			w,
+			http.StatusInternalServerError,
+			map[string]string{"code": "check_system_update_identity_fence_failed"},
+		)
+		return true
+	}
+	if blocked {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_active"})
 		return true
 	}
 	active, err := s.systemUpdates.HasActiveSystemUpdateReference(

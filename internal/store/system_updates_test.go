@@ -232,6 +232,102 @@ func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testi
 	}
 }
 
+func TestMemorySystemUpdateIdentityMutationFenceCoversRotationAndSelfUpdateLifecycle(t *testing.T) {
+	updates := NewMemorySystemUpdateStore()
+	registry := NewMemoryAuthStore()
+	now := time.Now().UTC()
+	before := now.Add(-time.Second)
+	registry.services["host-agent-a"] = RegisteredService{
+		ServiceID:          "host-agent-a",
+		ServiceType:        "update_agent",
+		TokenID:            "token-staged",
+		NodeTokenRotatedAt: cloneTimePtr(&now),
+		LastHeartbeatAt:    cloneTimePtr(&before),
+	}
+	rotation := SystemUpdateRuntimeTokenRotation{
+		ID:            "rotation-a",
+		ServiceID:     "host-agent-a",
+		StagedTokenID: "token-staged",
+	}
+	for _, status := range []string{
+		SystemUpdateRuntimeTokenRotationStaged,
+		SystemUpdateRuntimeTokenRotationLocalStaged,
+		SystemUpdateRuntimeTokenRotationHeartbeatProved,
+		SystemUpdateRuntimeTokenRotationCancelRequested,
+	} {
+		rotation.Status = status
+		updates.runtimeTokenRotations[rotation.ID] = rotation
+		blocked, err := updates.HasSystemUpdateIdentityMutationFence(
+			t.Context(), registry, rotation.ServiceID,
+		)
+		if err != nil || !blocked {
+			t.Fatalf("rotation status %s fence = %v, %v", status, blocked, err)
+		}
+	}
+
+	rotation.Status = SystemUpdateRuntimeTokenRotationActivated
+	updates.runtimeTokenRotations[rotation.ID] = rotation
+	blocked, err := updates.HasSystemUpdateIdentityMutationFence(
+		t.Context(), registry, rotation.ServiceID,
+	)
+	if err != nil || !blocked {
+		t.Fatalf("pre-heartbeat activated fence = %v, %v", blocked, err)
+	}
+	service := registry.services[rotation.ServiceID]
+	fresh := now.Add(time.Second)
+	service.LastHeartbeatAt = cloneTimePtr(&fresh)
+	registry.services[service.ServiceID] = service
+	blocked, err = updates.HasSystemUpdateIdentityMutationFence(
+		t.Context(), registry, rotation.ServiceID,
+	)
+	if err != nil || blocked {
+		t.Fatalf("fresh-token heartbeat fence = %v, %v", blocked, err)
+	}
+
+	service.LastHeartbeatAt = nil
+	registry.services[service.ServiceID] = service
+	rotation.Status = SystemUpdateRuntimeTokenRotationCanceled
+	rotation.EmergencyRevokedTokenID = rotation.StagedTokenID
+	updates.runtimeTokenRotations[rotation.ID] = rotation
+	blocked, err = updates.HasSystemUpdateIdentityMutationFence(
+		t.Context(), registry, rotation.ServiceID,
+	)
+	if err != nil || blocked {
+		t.Fatalf("emergency terminal fence = %v, %v", blocked, err)
+	}
+
+	delete(updates.runtimeTokenRotations, rotation.ID)
+	selfUpdate := SystemUpdateHostSelfUpdate{
+		ID:             "self-update-a",
+		AgentServiceID: rotation.ServiceID,
+	}
+	for _, status := range []string{
+		SystemUpdateHostSelfUpdateQueued,
+		SystemUpdateHostSelfUpdateStaging,
+		SystemUpdateHostSelfUpdateActivating,
+		SystemUpdateHostSelfUpdateVerifying,
+		SystemUpdateHostSelfUpdateRollingBack,
+		SystemUpdateHostSelfUpdateCancelRequested,
+	} {
+		selfUpdate.Status = status
+		updates.hostSelfUpdates[selfUpdate.ID] = selfUpdate
+		blocked, err = updates.HasSystemUpdateIdentityMutationFence(
+			t.Context(), registry, rotation.ServiceID,
+		)
+		if err != nil || !blocked {
+			t.Fatalf("self-update status %s fence = %v, %v", status, blocked, err)
+		}
+	}
+	selfUpdate.Status = SystemUpdateHostSelfUpdateCanceled
+	updates.hostSelfUpdates[selfUpdate.ID] = selfUpdate
+	blocked, err = updates.HasSystemUpdateIdentityMutationFence(
+		t.Context(), registry, rotation.ServiceID,
+	)
+	if err != nil || blocked {
+		t.Fatalf("terminal self-update fence = %v, %v", blocked, err)
+	}
+}
+
 func TestMemorySystemUpdateMutationAuthorizationBindsExplicitExecutionHost(t *testing.T) {
 	updates := NewMemorySystemUpdateStore()
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{

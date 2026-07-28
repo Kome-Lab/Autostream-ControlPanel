@@ -8,6 +8,8 @@ import (
 	"runtime"
 )
 
+const localExecutorDockerConfigDir = "/etc/autostream-local-executor/docker"
+
 func securePrivilegedTarget(target Target) (Target, error) {
 	if runtime.GOOS == "windows" {
 		return target, nil
@@ -56,6 +58,11 @@ func securePrivilegedTarget(target Target) (Target, error) {
 				return Target{}, fmt.Errorf("privileged Docker path %q: %w", path, err)
 			}
 		}
+		if target.Docker.BaseEnvFile != "" {
+			if err := validateSecureRootPath(target.Docker.BaseEnvFile, false); err != nil {
+				return Target{}, fmt.Errorf("base_env_file: %w", err)
+			}
+		}
 		if err := validateOptionalSecureRootFile(target.Docker.VersionEnvFile); err != nil {
 			return Target{}, fmt.Errorf("version_env_file: %w", err)
 		}
@@ -67,24 +74,24 @@ func securePrivilegedTarget(target Target) (Target, error) {
 }
 
 func validateRootDockerCredentials() error {
-	const dockerConfigDir = "/root/.docker"
-	info, err := os.Lstat(dockerConfigDir)
+	info, err := os.Lstat(localExecutorDockerConfigDir)
 	if errors.Is(err, os.ErrNotExist) {
-		return errors.New("/root/.docker/config.json is required for deterministic GHCR authentication")
+		return errors.New("/etc/autostream-local-executor/docker/config.json is required for deterministic GHCR authentication")
 	}
-	if err != nil || !info.IsDir() {
-		return errors.New("/root/.docker must be a directory when present")
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		return errors.New("/etc/autostream-local-executor/docker must be a root-owned 0700 non-symlink directory")
 	}
-	if err := validateSecureRootPath(dockerConfigDir, true); err != nil {
+	if err := validateSecureRootPath(localExecutorDockerConfigDir, true); err != nil {
 		return err
 	}
-	configPath := filepath.Join(dockerConfigDir, "config.json")
+	configPath := filepath.Join(localExecutorDockerConfigDir, "config.json")
 	configInfo, err := os.Lstat(configPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return errors.New("/root/.docker/config.json is required for deterministic GHCR authentication")
+		return errors.New("/etc/autostream-local-executor/docker/config.json is required for deterministic GHCR authentication")
 	}
-	if err != nil || !configInfo.Mode().IsRegular() || configInfo.Mode().Perm()&0o077 != 0 {
-		return errors.New("/root/.docker/config.json must be a root-only regular file")
+	if err != nil || configInfo.Mode()&os.ModeSymlink != 0 ||
+		!configInfo.Mode().IsRegular() || configInfo.Mode().Perm() != 0o600 {
+		return errors.New("/etc/autostream-local-executor/docker/config.json must be a root-owned 0600 regular non-symlink file")
 	}
 	return validateSecureRootPath(configPath, false)
 }

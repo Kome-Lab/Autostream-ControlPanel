@@ -28,34 +28,89 @@ type UpdaterRuntimeReport struct {
 
 // UpdaterConfigureIdentity models the staged Control Panel response. Commit
 // whitelists only panel_url, node_id, runtime_token, and service_name;
-// service_type and API are response assertions and are never merged into the
-// root-owned local policy.
+// service_type, transport_mode, and API are response assertions and are never
+// merged into the root-owned local policy.
 type UpdaterConfigureIdentity struct {
-	PanelURL     string    `json:"panel_url"`
-	NodeID       string    `json:"node_id"`
-	RuntimeToken string    `json:"runtime_token"`
-	ServiceName  string    `json:"service_name"`
-	ServiceType  string    `json:"service_type"`
-	API          APIConfig `json:"api"`
+	PanelURL      string    `json:"panel_url"`
+	NodeID        string    `json:"node_id"`
+	RuntimeToken  string    `json:"runtime_token"`
+	ServiceName   string    `json:"service_name"`
+	ServiceType   string    `json:"service_type"`
+	TransportMode string    `json:"transport_mode,omitempty"`
+	API           APIConfig `json:"api"`
 }
 
 type UpdaterStagedConfiguration struct {
-	Config              UpdaterConfigureIdentity `json:"config"`
-	ConfigurationID     string                   `json:"configuration_id"`
-	ActivationToken     string                   `json:"activation_token"`
-	ActivationExpiresAt time.Time                `json:"activation_expires_at"`
+	Config              UpdaterConfigureIdentity   `json:"config"`
+	ConfigurationID     string                     `json:"configuration_id"`
+	ActivationToken     string                     `json:"activation_token"`
+	ActivationExpiresAt time.Time                  `json:"activation_expires_at"`
+	ConfigureProtocol   int                        `json:"configure_protocol_version,omitempty"`
+	LocalExecutorPolicy *ConfigurePolicyProjection `json:"local_executor_policy,omitempty"`
 }
 
 type UpdaterActivationResult struct {
-	State           string `json:"state"`
-	ConfigurationID string `json:"configuration_id"`
+	State                       string `json:"state"`
+	ConfigurationID             string `json:"configuration_id"`
+	ConfigureProtocol           int    `json:"configure_protocol_version,omitempty"`
+	LocalExecutorPolicySHA256   string `json:"local_executor_policy_sha256,omitempty"`
+	SourcePolicyRevision        int64  `json:"source_policy_revision,omitempty"`
+	ProjectionRevision          int64  `json:"projection_revision,omitempty"`
+	LocalExecutorPolicyRevision int64  `json:"local_executor_policy_revision,omitempty"`
 }
 
 type updaterConfigureAPIError struct {
 	Code string `json:"code"`
 }
 
+type HostAgentConfigurePeerIdentity struct {
+	UID uint32
+	GID uint32
+}
+
 func StageUpdaterConfiguration(ctx context.Context, client *http.Client, panelURL, nodeID, configureToken string, timeout time.Duration) (UpdaterStagedConfiguration, error) {
+	return stageUpdaterConfiguration(
+		ctx,
+		client,
+		panelURL,
+		nodeID,
+		configureToken,
+		HostAgentConfigurePeerIdentity{},
+		false,
+		timeout,
+	)
+}
+
+func StageHostAgentConfiguration(
+	ctx context.Context,
+	client *http.Client,
+	panelURL, nodeID, configureToken string,
+	peer HostAgentConfigurePeerIdentity,
+	timeout time.Duration,
+) (UpdaterStagedConfiguration, error) {
+	if peer.UID == 0 || peer.GID == 0 {
+		return UpdaterStagedConfiguration{}, errors.New("Host Agent configure peer identity must be non-root")
+	}
+	return stageUpdaterConfiguration(
+		ctx,
+		client,
+		panelURL,
+		nodeID,
+		configureToken,
+		peer,
+		true,
+		timeout,
+	)
+}
+
+func stageUpdaterConfiguration(
+	ctx context.Context,
+	client *http.Client,
+	panelURL, nodeID, configureToken string,
+	peer HostAgentConfigurePeerIdentity,
+	hostAgent bool,
+	timeout time.Duration,
+) (UpdaterStagedConfiguration, error) {
 	panelURL = strings.TrimRight(strings.TrimSpace(panelURL), "/")
 	nodeID = strings.TrimSpace(nodeID)
 	configureToken = strings.TrimSpace(configureToken)
@@ -71,10 +126,22 @@ func StageUpdaterConfiguration(ctx context.Context, client *http.Client, panelUR
 	if timeout <= 0 {
 		return UpdaterStagedConfiguration{}, errors.New("configure timeout must be positive")
 	}
-	payload, err := json.Marshal(map[string]string{
-		"nodeId":         nodeID,
-		"configureToken": configureToken,
-	})
+	requestBody := struct {
+		NodeID          string `json:"nodeId"`
+		ConfigureToken  string `json:"configureToken"`
+		ProtocolVersion int    `json:"protocolVersion,omitempty"`
+		AgentUID        uint32 `json:"agentUid,omitempty"`
+		AgentGID        uint32 `json:"agentGid,omitempty"`
+	}{
+		NodeID:         nodeID,
+		ConfigureToken: configureToken,
+	}
+	if hostAgent {
+		requestBody.ProtocolVersion = HostAgentConfigureProtocolVersion
+		requestBody.AgentUID = peer.UID
+		requestBody.AgentGID = peer.GID
+	}
+	payload, err := json.Marshal(requestBody)
 	if err != nil {
 		return UpdaterStagedConfiguration{}, errors.New("encode updater stage request")
 	}
@@ -110,6 +177,15 @@ func StageUpdaterConfiguration(ctx context.Context, client *http.Client, panelUR
 	if err := validateUpdaterStagedConfiguration(staged, panelURL, nodeID, configureToken); err != nil {
 		return UpdaterStagedConfiguration{}, err
 	}
+	if hostAgent {
+		policy, err := configuredLocalExecutorPolicy(staged)
+		if err != nil {
+			return UpdaterStagedConfiguration{}, err
+		}
+		if policy.AgentUID != peer.UID || policy.AgentGID != peer.GID {
+			return UpdaterStagedConfiguration{}, errors.New("staged Local Executor policy peer identity does not match the local service account")
+		}
+	}
 	return staged, nil
 }
 
@@ -121,17 +197,48 @@ func ActivateUpdaterConfiguration(ctx context.Context, client *http.Client, pane
 	if err := validateUpdaterStagedConfiguration(staged, panelURL, staged.Config.NodeID, ""); err != nil {
 		return UpdaterActivationResult{}, err
 	}
-	payload, err := json.Marshal(map[string]string{
-		"nodeId":          strings.TrimSpace(staged.Config.NodeID),
-		"configurationId": strings.TrimSpace(staged.ConfigurationID),
-		"activationToken": strings.TrimSpace(staged.ActivationToken),
-		"version":         strings.TrimSpace(report.Version),
-		"commit":          strings.TrimSpace(report.Commit),
-		"build_date":      strings.TrimSpace(report.BuildDate),
-		"hostname":        strings.TrimSpace(report.Hostname),
-		"os":              strings.TrimSpace(report.OS),
-		"arch":            strings.TrimSpace(report.Arch),
-	})
+	requestBody := struct {
+		NodeID                      string `json:"nodeId"`
+		ConfigurationID             string `json:"configurationId"`
+		ActivationToken             string `json:"activationToken"`
+		Version                     string `json:"version"`
+		Commit                      string `json:"commit"`
+		BuildDate                   string `json:"build_date"`
+		Hostname                    string `json:"hostname"`
+		OS                          string `json:"os"`
+		Arch                        string `json:"arch"`
+		ConfigureProtocolVersion    int    `json:"configureProtocolVersion,omitempty"`
+		AgentUID                    uint32 `json:"agentUid,omitempty"`
+		AgentGID                    uint32 `json:"agentGid,omitempty"`
+		LocalExecutorPolicySHA256   string `json:"localExecutorPolicySha256,omitempty"`
+		SourcePolicyRevision        int64  `json:"sourcePolicyRevision,omitempty"`
+		ProjectionRevision          int64  `json:"projectionRevision,omitempty"`
+		LocalExecutorPolicyRevision int64  `json:"localExecutorPolicyRevision,omitempty"`
+	}{
+		NodeID:          strings.TrimSpace(staged.Config.NodeID),
+		ConfigurationID: strings.TrimSpace(staged.ConfigurationID),
+		ActivationToken: strings.TrimSpace(staged.ActivationToken),
+		Version:         strings.TrimSpace(report.Version),
+		Commit:          strings.TrimSpace(report.Commit),
+		BuildDate:       strings.TrimSpace(report.BuildDate),
+		Hostname:        strings.TrimSpace(report.Hostname),
+		OS:              strings.TrimSpace(report.OS),
+		Arch:            strings.TrimSpace(report.Arch),
+	}
+	if staged.Config.TransportMode == "pull_v2" {
+		policy, err := configuredLocalExecutorPolicy(staged)
+		if err != nil {
+			return UpdaterActivationResult{}, err
+		}
+		requestBody.ConfigureProtocolVersion = HostAgentConfigureProtocolVersion
+		requestBody.AgentUID = policy.AgentUID
+		requestBody.AgentGID = policy.AgentGID
+		requestBody.LocalExecutorPolicySHA256 = staged.LocalExecutorPolicy.SHA256
+		requestBody.SourcePolicyRevision = staged.LocalExecutorPolicy.SourcePolicyRevision
+		requestBody.ProjectionRevision = staged.LocalExecutorPolicy.ProjectionRevision
+		requestBody.LocalExecutorPolicyRevision = staged.LocalExecutorPolicy.PolicyRevision
+	}
+	payload, err := json.Marshal(requestBody)
 	if err != nil {
 		return UpdaterActivationResult{}, errors.New("encode updater activation request")
 	}
@@ -196,6 +303,14 @@ func ActivateUpdaterConfiguration(ctx context.Context, client *http.Client, pane
 		if result.ConfigurationID != staged.ConfigurationID || (result.State != "activated" && result.State != "already_activated") {
 			return UpdaterActivationResult{}, errors.New("control panel activation response does not match the staged configuration")
 		}
+		if staged.Config.TransportMode == "pull_v2" &&
+			(result.ConfigureProtocol != HostAgentConfigureProtocolVersion ||
+				result.LocalExecutorPolicySHA256 != staged.LocalExecutorPolicy.SHA256 ||
+				result.SourcePolicyRevision != staged.LocalExecutorPolicy.SourcePolicyRevision ||
+				result.ProjectionRevision != staged.LocalExecutorPolicy.ProjectionRevision ||
+				result.LocalExecutorPolicyRevision != staged.LocalExecutorPolicy.PolicyRevision) {
+			return UpdaterActivationResult{}, errors.New("control panel activation response does not bind the installed Local Executor policy")
+		}
 		return result, nil
 	}
 	if lastErr != nil {
@@ -238,7 +353,36 @@ func validateUpdaterStagedConfiguration(staged UpdaterStagedConfiguration, panel
 	if activationToken == "" || len(activationToken) > 4096 || activationToken == strings.TrimSpace(configureToken) || activationToken == strings.TrimSpace(staged.Config.RuntimeToken) || staged.ActivationExpiresAt.IsZero() {
 		return errors.New("staged activation credential is invalid")
 	}
+	if staged.Config.TransportMode == "pull_v2" {
+		if _, err := configuredLocalExecutorPolicy(staged); err != nil {
+			return err
+		}
+	} else if staged.ConfigureProtocol != 0 || staged.LocalExecutorPolicy != nil {
+		return errors.New("legacy updater stage unexpectedly contains a Local Executor policy")
+	}
 	return nil
+}
+
+func configuredLocalExecutorPolicy(staged UpdaterStagedConfiguration) (LocalExecutorPolicy, error) {
+	if staged.ConfigureProtocol != HostAgentConfigureProtocolVersion ||
+		staged.LocalExecutorPolicy == nil {
+		return LocalExecutorPolicy{}, errors.New("pull_v2 configure response is missing the required Local Executor policy protocol")
+	}
+	projection := staged.LocalExecutorPolicy
+	if err := ValidateConfigurePolicyActivation(
+		projection.Policy,
+		projection.SHA256,
+		projection.SourcePolicyRevision,
+		projection.ProjectionRevision,
+		projection.PolicyRevision,
+	); err != nil {
+		return LocalExecutorPolicy{}, err
+	}
+	var policy LocalExecutorPolicy
+	if err := json.Unmarshal(projection.Policy, &policy); err != nil {
+		return LocalExecutorPolicy{}, errors.New("decode staged Local Executor policy")
+	}
+	return policy, nil
 }
 
 func ValidateInstalledUpdaterIdentity(path string, identity UpdaterConfigureIdentity) error {
@@ -273,6 +417,7 @@ func validateUpdaterConfigureIdentity(identity UpdaterConfigureIdentity, expecte
 	identity.RuntimeToken = strings.TrimSpace(identity.RuntimeToken)
 	identity.ServiceName = strings.TrimSpace(identity.ServiceName)
 	identity.ServiceType = strings.TrimSpace(identity.ServiceType)
+	identity.TransportMode = strings.TrimSpace(identity.TransportMode)
 	if err := validatePanelURL(identity.PanelURL); err != nil {
 		return errors.New("configured panel URL is invalid")
 	}
@@ -281,6 +426,9 @@ func validateUpdaterConfigureIdentity(identity UpdaterConfigureIdentity, expecte
 	}
 	if identity.ServiceType != "update_agent" {
 		return errors.New("configured node type does not match update_agent")
+	}
+	if identity.TransportMode != "" && identity.TransportMode != "ssh_v1" && identity.TransportMode != "pull_v2" {
+		return errors.New("configured updater transport mode is invalid")
 	}
 	if identity.RuntimeToken == "" || len(identity.RuntimeToken) > 4096 || identity.RuntimeToken == strings.TrimSpace(configureToken) {
 		return errors.New("configured runtime token is invalid")

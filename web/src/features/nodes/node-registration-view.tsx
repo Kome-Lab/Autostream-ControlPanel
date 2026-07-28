@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Activity, AlertCircle, Check, Copy, FileCode2, KeyRound, Link, LockKeyhole, Pencil, RotateCw, Server, Trash2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,6 +22,13 @@ import { useAppSettings, useCurrentUser, useNodes } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { canIssueNodeConfiguration, canRegenerateNodeConfigureToken, canRotateNodeRuntimeToken } from "@/lib/node-configuration";
+import {
+  buildNodeRegistrationRequest,
+  nodeEndpointState,
+  nodeRegistrationDraftValid,
+  type NodeEndpointSnapshot,
+  type UpdaterTransportMode,
+} from "@/lib/node-registration";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 
 const nodeTypes = [
@@ -28,7 +36,7 @@ const nodeTypes = [
   { value: "encoder_recorder", label: "Encoder / Recorder Node Agent", defaultPort: 8081, runtimeSecretsRequired: true, description: "映像のエンコードと録画を担当するNode Agent" },
   { value: "discord_bot", label: "Discord Bot Node Agent", defaultPort: 8083, runtimeSecretsRequired: false, description: "Discordの音声取得と配信操作を担当するNode Agent" },
   { value: "observability", label: "Observability Node Agent", defaultPort: 8082, runtimeSecretsRequired: false, description: "メトリクス、インシデント、通知を担当するNode Agent" },
-  { value: "update_agent", label: "AutoStream Updater", defaultPort: 8090, runtimeSecretsRequired: false, description: "各管理対象ホストのサービス更新、検証、ロールバックを中央から担当するUpdater" },
+  { value: "update_agent", label: "AutoStream Updater / Host Agent", defaultPort: 8090, runtimeSecretsRequired: false, description: "ホスト単位の更新状態をControl Panelへ外向き接続で報告するHost Agent" },
 ];
 
 type NodeConfigurationResponse = {
@@ -73,6 +81,8 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   const [host, setHost] = useState("worker-tokyo-01.example.jp");
   const [port, setPort] = useState(String(selectedType.defaultPort));
   const [sslEnabled, setSslEnabled] = useState(true);
+  const [updaterTransportMode, setUpdaterTransportMode] = useState<UpdaterTransportMode>("pull_v2");
+  const [executionHostID, setExecutionHostID] = useState("host-tokyo-01");
   const [description, setDescription] = useState("番組配信と録画を担当する東京本社のNode Agent");
   const [allowRuntimeSecrets, setAllowRuntimeSecrets] = useState(false);
   const [allowRemediation, setAllowRemediation] = useState(false);
@@ -96,13 +106,30 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
     requiresManagedSecret: createRequiresSecretUpdate,
     canExecuteSystemUpdates,
   });
+  const isPullHostAgent = nodeType === "update_agent" && updaterTransportMode === "pull_v2";
+  const registrationDraft = {
+    nodeType,
+    nodeID,
+    name,
+    description,
+    host,
+    port,
+    sslEnabled,
+    allowRuntimeSecrets: runtimeSecretsRequired || allowRuntimeSecrets,
+    allowRemediation,
+    transportMode: updaterTransportMode,
+    executionHostID,
+  };
+  const createFormValid = nodeRegistrationDraftValid(registrationDraft);
   const nodeApiUrl = useMemo(() => {
+    if (isPullHostAgent) return "";
     const scheme = sslEnabled ? "https" : "http";
     const normalizedHost = host.trim();
     const normalizedPort = Number.parseInt(port, 10);
     if (!normalizedHost || !Number.isFinite(normalizedPort) || normalizedPort <= 0) return "";
     return `${scheme}://${normalizedHost}:${normalizedPort}`;
-  }, [host, port, sslEnabled]);
+  }, [host, isPullHostAgent, port, sslEnabled]);
+  const configurationIsPullHostAgent = Boolean(configuration?.node && isPullNode(configuration.node));
   const updaterConfigureCommandAvailable = configuration?.node?.service_type === "update_agent" && Boolean(configuration.configure_command?.trim());
   const updaterConfigureTokenRequired = configuration?.node?.service_type === "update_agent" && !updaterConfigureCommandAvailable;
 
@@ -116,17 +143,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 
   const createToken = useMutation({
     mutationFn: () =>
-      apiPost<NodeRegistrationResponse>("/nodes/registration-tokens", {
-        node_type: nodeType,
-        node_id: nodeID,
-        name,
-        description,
-        host,
-        port: Number.parseInt(port, 10),
-        ssl_enabled: sslEnabled,
-        allow_runtime_secrets: runtimeSecretsRequired || allowRuntimeSecrets,
-        allow_remediation: allowRemediation,
-      }),
+      apiPost<NodeRegistrationResponse>("/nodes/registration-tokens", buildNodeRegistrationRequest(registrationDraft)),
     onSuccess: async (data) => {
       setConfiguration(data);
       setCreateOpen(false);
@@ -152,13 +169,17 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
     },
   });
   const updateNode = useMutation({
-    mutationFn: ({ nodeID, values }: { nodeID: string; values: NodeEditForm }) =>
+    mutationFn: ({ nodeID, values, endpointless }: { nodeID: string; values: NodeEditForm; endpointless: boolean }) =>
       apiPut<WorkerNode>(`/nodes/${encodeURIComponent(nodeID)}`, {
         service_name: values.service_name,
         description: values.description,
-        host: values.host,
-        port: Number.parseInt(values.port, 10),
-        ssl_enabled: values.ssl_enabled,
+        ...(endpointless
+          ? {}
+          : {
+              host: values.host,
+              port: Number.parseInt(values.port, 10),
+              ssl_enabled: values.ssl_enabled,
+            }),
       }),
     onSuccess: async (node) => {
       setEditingNode(null);
@@ -201,11 +222,19 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 
   const submitEditNode = () => {
     if (!editingNode) return;
-    updateNode.mutate({ nodeID: nodeIdentity(editingNode), values: editForm });
+    updateNode.mutate({
+      nodeID: nodeIdentity(editingNode),
+      values: editForm,
+      endpointless: isPullNode(editingNode),
+    });
   };
 
   const editPortNumber = Number.parseInt(editForm.port, 10);
-  const editFormValid = editForm.service_name.trim() !== "" && editForm.host.trim() !== "" && Number.isFinite(editPortNumber) && editPortNumber > 0 && editPortNumber <= 65535;
+  const editingPullHostAgent = Boolean(editingNode && isPullNode(editingNode));
+  const editFormValid = editForm.service_name.trim() !== "" && (
+    editingPullHostAgent ||
+    (editForm.host.trim() !== "" && Number.isFinite(editPortNumber) && editPortNumber >= 1024 && editPortNumber <= 65535)
+  );
   const showRegistration = mode !== "registered";
   const showRegistered = mode !== "registration";
 
@@ -234,21 +263,15 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
     },
     {
       id: "endpoint",
-      header: "接続先",
-      cell: ({ row }) => {
-        const node = row.original;
-        const endpoint = nodeEndpoint(node);
-        return (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">{endpoint ? "設定済み" : "未設定"}</span>
-            {endpoint ? (
-              <Button variant="outline" size="icon-sm" aria-label="Node Agent API URLをコピー" onClick={() => copyValue(`endpoint-${nodeIdentity(node)}`, endpoint)}>
-                {copied === `endpoint-${nodeIdentity(node)}` ? <Check className="size-4" /> : <Link className="size-4" />}
-              </Button>
-            ) : null}
-          </div>
-        );
-      },
+      header: "Endpoint",
+      cell: ({ row }) => (
+        <NodeEndpointStateView
+          node={row.original}
+          compact
+          copied={copied}
+          onCopy={copyValue}
+        />
+      ),
     },
     {
       accessorKey: "status",
@@ -331,7 +354,16 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
               </Button>
             </RoleGuard>
             <RoleGuard allowed={canManageNodeTokens} message={runtimeTokenPermissionMessage}>
-              <DangerConfirm title={`${node.service_name} のRuntime Tokenを再生成しますか`} description={node.service_type === "update_agent" ? "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示されたコマンドをUpdaterホストで実行してください。" : "既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。"} onConfirm={() => rotateRuntimeToken.mutate(nodeID)} actionLabel="再生成">
+              <DangerConfirm
+                title={`${node.service_name} のRuntime Tokenを再生成しますか`}
+                description={node.service_type === "update_agent"
+                  ? isPullNode(node)
+                    ? "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示された手順をこのHost Agentを稼働させる対象ホストで実行してください。"
+                    : "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示されたコマンドを中央Updaterを稼働させるホストで実行してください。"
+                  : "既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。"}
+                onConfirm={() => rotateRuntimeToken.mutate(nodeID)}
+                actionLabel="再生成"
+              >
                 <Button variant="outline" size="icon-sm" aria-label="Runtime Tokenを再生成" {...guardedButtonProps(canManageNodeTokens)} disabled={!canManageNodeTokens || rotateRuntimeToken.isPending}>
                   <RotateCw />
                 </Button>
@@ -394,24 +426,59 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             <label className="text-sm font-medium">{t("name")}</label>
             <Input value={name} onChange={(event) => setName(event.target.value)} />
           </div>
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
-            <div className="grid gap-2">
-              <label className="text-sm font-medium">Host / FQDN / IP</label>
-              <Input value={host} onChange={(event) => setHost(event.target.value)} />
+          {nodeType === "update_agent" ? (
+            <div className="grid gap-4 rounded-md border bg-muted/30 p-3">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">更新方式</label>
+                <Select value={updaterTransportMode} onValueChange={(value) => setUpdaterTransportMode(value as UpdaterTransportMode)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="pull_v2">Host Pull Agent（推奨・SSH不要）</SelectItem>
+                    <SelectItem value="ssh_v1">中央Updater（移行用・SSH）</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {isPullHostAgent ? (
+                <div className="grid gap-2">
+                  <label className="text-sm font-medium">Execution Host ID</label>
+                  <Input value={executionHostID} onChange={(event) => setExecutionHostID(event.target.value)} />
+                  <p className="text-xs text-muted-foreground">
+                    物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-amber-700">旧SSH経路とのBridge期間だけ使用します。移行完了後に廃止予定です。</p>
+              )}
             </div>
-            <div className="grid gap-2">
-              <label className="text-sm font-medium">Port</label>
-              <Input inputMode="numeric" value={port} onChange={(event) => setPort(event.target.value)} />
+          ) : null}
+          {!isPullHostAgent ? (
+            <>
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
+                <div className="grid gap-2">
+                  <label className="text-sm font-medium">Host / FQDN / IP</label>
+                  <Input value={host} onChange={(event) => setHost(event.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <label className="text-sm font-medium">Port</label>
+                  <Input type="number" inputMode="numeric" min={1024} max={65535} value={port} onChange={(event) => setPort(event.target.value)} />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox checked={sslEnabled} onCheckedChange={(value) => setSslEnabled(value === true)} />
+                SSLを有効化してHTTPSを使用
+              </label>
+              <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                <div className="font-medium">Node Agent API URL</div>
+                <div className="mt-1 break-all text-muted-foreground">{nodeApiUrl || "Hostと1024〜65535のPortを入力してください"}</div>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-md border border-blue-500/30 bg-blue-500/10 p-3 text-sm text-muted-foreground">
+              受信listenerは作成しません。登録・Heartbeat・Policy取得はControl Panelの既存HTTPS APIを使用します。
             </div>
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={sslEnabled} onCheckedChange={(value) => setSslEnabled(value === true)} />
-            SSLを有効化してHTTPSを使用
-          </label>
-          <div className="rounded-md border bg-muted/40 p-3 text-sm">
-            <div className="font-medium">Node Agent API URL</div>
-            <div className="mt-1 break-all text-muted-foreground">{nodeApiUrl || "HostとPortを入力してください"}</div>
-          </div>
+          )}
           <div className="grid gap-2">
             <label className="text-sm font-medium">説明</label>
             <Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} />
@@ -428,7 +495,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             <Checkbox checked={allowRemediation} onCheckedChange={(value) => setAllowRemediation(value === true)} />
             {t("remediation")}
           </label>
-          <Button className="w-full" disabled={!canCreateNode || createToken.isPending} onClick={() => createToken.mutate()}>
+          <Button className="w-full" disabled={!canCreateNode || !createFormValid || createToken.isPending} onClick={() => createToken.mutate()}>
             <KeyRound className="size-4" />
             {createToken.isPending ? "Node設定を発行中..." : "Nodeを作成して設定を発行"}
           </Button>
@@ -470,7 +537,16 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                 </div>
                 {configuration.configure_token_expires_at ? <div className="text-xs text-muted-foreground">Configure Token期限: {formatNodeDateTime(configuration.configure_token_expires_at, timezone)}</div> : null}
               </div>
-              {configuration.node_api_url ? <SecretBlock label="Node Agent API URL" value={configuration.node_api_url} copied={copied === "api-url"} onCopy={() => copyValue("api-url", configuration.node_api_url)} /> : null}
+              {configuration.node ? (
+                <NodeEndpointStateView
+                  node={configuration.node}
+                  copied={copied}
+                  onCopy={copyValue}
+                />
+              ) : null}
+              {!configurationIsPullHostAgent && configuration.node_api_url ? (
+                <SecretBlock label="Applied Node Agent API URL（後方互換）" value={configuration.node_api_url} copied={copied === "api-url"} onCopy={() => copyValue("api-url", configuration.node_api_url)} />
+              ) : null}
               {configuration.configure_token || configuration.token ? (
                 <SecretBlock
                   label="Configure Token"
@@ -489,11 +565,13 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
               ) : null}
               {updaterConfigureCommandAvailable ? (
                 <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-4 text-sm">
-                  <div className="font-medium">Updaterの自動設定</div>
+                  <div className="font-medium">{configurationIsPullHostAgent ? "Host Agentの初期設定" : "中央Updaterの自動設定"}</div>
                   <p className="text-muted-foreground">
-                    表示されたコマンドを中央Updaterホストで1回実行すると、Panel接続情報を安全に初期設定します。ホスト、更新対象、GitHub Release Tokenは「アプリケーション情報」の中央Updater設定から登録でき、保存後はUpdaterが自動で反映します。ローカル設定ファイルを手作業で編集する必要はありません。
+                    {configurationIsPullHostAgent
+                      ? "表示された手順を、このHost Agentを稼働させる対象ホストで1回実行すると、Control Panelへの外向き接続を初期設定します。受信API endpointや専用portは作成しません。"
+                      : "表示されたコマンドを、中央Updaterを稼働させるホストで1回実行すると、Panel接続情報を安全に初期設定します。ホスト、更新対象、GitHub Release Tokenは「アプリケーション情報」の中央Updater設定から登録でき、保存後はUpdaterが自動で反映します。ローカル設定ファイルを手作業で編集する必要はありません。"}
                     コマンド自体にConfigure Tokenは含まれず、実行時にTTYまたは標準入力から読み取ります。
-                    設定処理が失敗または結果不確定の場合は、Updaterを再起動しないでください。Configurationで新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行してください。
+                    設定処理が失敗または結果不確定の場合は、対象サービスを再起動しないでください。Configurationで新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行してください。
                   </p>
                 </div>
               ) : null}
@@ -501,7 +579,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                 <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-4 text-sm">
                   <div className="font-medium">Configure Tokenを再生成してください</div>
                   <p className="text-muted-foreground">
-                    Configure Tokenと実行コマンドは再表示されません。一覧の鍵ボタンから新しいTokenを発行すると、この画面にUpdaterの自動設定コマンドが一度だけ表示されます。
+                    Configure Tokenと実行手順は再表示されません。一覧の鍵ボタンから新しいTokenを発行すると、この画面に対象サービスの初期設定手順が一度だけ表示されます。
                   </p>
                 </div>
               ) : null}
@@ -557,7 +635,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
               <RotateCw className="size-4" />
-              UpdaterのPanel接続情報を更新する場合はConfigure Tokenを再生成し、表示されたコマンドを中央Updaterホストで実行します。
+              Updater / Host AgentのPanel接続情報を更新する場合はConfigure Tokenを再生成し、表示された手順を対象サービスを稼働させるホストで実行します。
             </div>
           </div>
         </CardContent>
@@ -615,24 +693,32 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
               <label className="text-sm font-medium">{t("name")}</label>
               <Input value={editForm.service_name} onChange={(event) => setEditForm((current) => ({ ...current, service_name: event.target.value }))} />
             </div>
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Host / FQDN / IP</label>
-                <Input value={editForm.host} onChange={(event) => setEditForm((current) => ({ ...current, host: event.target.value }))} />
+            {!editingPullHostAgent ? (
+              <>
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
+                  <div className="grid gap-2">
+                    <label className="text-sm font-medium">Host / FQDN / IP</label>
+                    <Input value={editForm.host} onChange={(event) => setEditForm((current) => ({ ...current, host: event.target.value }))} />
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-sm font-medium">Port</label>
+                    <Input type="number" inputMode="numeric" min={1024} max={65535} value={editForm.port} onChange={(event) => setEditForm((current) => ({ ...current, port: event.target.value }))} />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox checked={editForm.ssl_enabled} onCheckedChange={(value) => setEditForm((current) => ({ ...current, ssl_enabled: value === true }))} />
+                  SSLを有効化してHTTPSを使用
+                </label>
+                <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                  <div className="font-medium">Node Agent API URL</div>
+                  <div className="mt-1 break-all text-muted-foreground">{editNodeApiURL(editForm) || "Hostと1024〜65535のPortを入力してください"}</div>
+                </div>
+              </>
+            ) : (
+              <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+                Host Pull Agentは受信endpointを持ちません。Execution Host IDとtransport ownershipは別の移行操作で管理されます。
               </div>
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Port</label>
-                <Input inputMode="numeric" value={editForm.port} onChange={(event) => setEditForm((current) => ({ ...current, port: event.target.value }))} />
-              </div>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox checked={editForm.ssl_enabled} onCheckedChange={(value) => setEditForm((current) => ({ ...current, ssl_enabled: value === true }))} />
-              SSLを有効化してHTTPSを使用
-            </label>
-            <div className="rounded-md border bg-muted/40 p-3 text-sm">
-              <div className="font-medium">Node Agent API URL</div>
-              <div className="mt-1 break-all text-muted-foreground">{editNodeApiURL(editForm) || "HostとPortを入力してください"}</div>
-            </div>
+            )}
             <div className="grid gap-2">
               <label className="text-sm font-medium">説明</label>
               <Textarea value={editForm.description} onChange={(event) => setEditForm((current) => ({ ...current, description: event.target.value }))} rows={3} />
@@ -653,6 +739,108 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   );
 }
 
+function NodeEndpointStateView({
+  node,
+  compact = false,
+  copied,
+  onCopy,
+}: {
+  node: WorkerNode;
+  compact?: boolean;
+  copied: string;
+  onCopy: (key: string, value?: string) => Promise<void>;
+}) {
+  const state = nodeEndpointState(node);
+  if (state.kind === "pull_v2") {
+    return (
+      <div
+        className={compact
+          ? "grid min-w-56 gap-1 text-xs"
+          : "grid min-w-0 gap-2 rounded-md border bg-muted/40 p-3 text-sm"}
+        role="group"
+        aria-label="Host Pull Agent transport情報"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary">transport_mode: {state.transportMode}</Badge>
+          <span className="font-medium">受信ポートなし（Outbound HTTPS）</span>
+        </div>
+        <div className="break-all text-muted-foreground">
+          execution_host_id: {state.executionHostID || "未報告"}
+        </div>
+        <div className="text-muted-foreground">
+          ownership_epoch: {state.ownershipEpoch ?? "未報告"}
+        </div>
+      </div>
+    );
+  }
+
+  const copyKey = `endpoint-${nodeIdentity(node)}-applied`;
+  return (
+    <div
+      className={compact
+        ? "grid min-w-64 max-w-96 gap-1.5 text-xs"
+        : "grid min-w-0 gap-2 rounded-md border bg-muted/40 p-3 text-sm"}
+      role="group"
+      aria-label="Node endpoint migration状態"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge
+          variant={state.status.tone}
+          title={state.status.detail}
+          aria-label={`Endpoint状態: ${state.status.label}。${state.status.detail}`}
+        >
+          {state.status.label}
+        </Badge>
+        <span className="text-muted-foreground">
+          Revision {state.revision ?? "未報告"}
+        </span>
+      </div>
+      {!compact ? <div className="text-xs text-muted-foreground">{state.status.detail}</div> : null}
+      <NodeEndpointSnapshotRow label="希望値" snapshot={state.desired} />
+      <NodeEndpointSnapshotRow
+        label={state.applied.source === "legacy" ? "反映済み (legacy)" : "反映済み"}
+        snapshot={state.applied}
+        copied={copied === copyKey}
+        onCopy={state.applied.url ? () => onCopy(copyKey, state.applied.url) : undefined}
+      />
+      <NodeEndpointSnapshotRow label="Node報告" snapshot={state.reported} />
+    </div>
+  );
+}
+
+function NodeEndpointSnapshotRow({
+  label,
+  snapshot,
+  copied = false,
+  onCopy,
+}: {
+  label: string;
+  snapshot: NodeEndpointSnapshot;
+  copied?: boolean;
+  onCopy?: () => Promise<void>;
+}) {
+  return (
+    <div className="grid min-w-0 gap-0.5 sm:grid-cols-[7rem_minmax(0,1fr)_auto] sm:items-start sm:gap-2">
+      <span className="font-medium">{label}</span>
+      <span className={snapshot.url ? "break-all" : "text-muted-foreground"}>
+        {snapshot.url || "未報告"}
+      </span>
+      {onCopy ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          className="justify-self-start"
+          aria-label={`${label} endpointをコピー`}
+          onClick={() => void onCopy()}
+        >
+          {copied ? <Check className="size-4" /> : <Link className="size-4" />}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function nodeTypeLabel(type?: string) {
   return nodeTypes.find((item) => item.value === type)?.label || type || "-";
 }
@@ -663,6 +851,10 @@ function nodeIdentity(node: WorkerNode) {
 
 function nodeDisplayName(node: WorkerNode) {
   return node.service_name || "未設定のNode名";
+}
+
+function isPullNode(node: WorkerNode) {
+  return node.service_type === "update_agent" && node.transport_mode === "pull_v2";
 }
 
 function nodeEditDefaults(node: WorkerNode): NodeEditForm {
@@ -696,13 +888,6 @@ function editNodeApiURL(form: NodeEditForm) {
   const port = Number.parseInt(form.port, 10);
   if (!host || !Number.isFinite(port) || port <= 0) return "";
   return `${form.ssl_enabled ? "https" : "http"}://${host}:${port}`;
-}
-
-function nodeEndpoint(node: WorkerNode) {
-  if (node.host && node.port) {
-    return `${node.ssl_enabled ? "https" : "http"}://${node.host}:${node.port}`;
-  }
-  return node.public_url || "-";
 }
 
 function formatHeartbeat(node: WorkerNode, timezone?: string) {

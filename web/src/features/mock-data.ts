@@ -155,6 +155,26 @@ export const mockWorkers: WorkerNode[] = [
     port: 8443,
     ssl_enabled: true,
     public_url: "https://worker-main.example.jp",
+    desired_endpoint: {
+      host: "worker-main.example.jp",
+      port: 18084,
+      ssl_enabled: true,
+      public_url: "https://worker-main.example.jp:18084",
+    },
+    applied_endpoint: {
+      host: "worker-main.example.jp",
+      port: 8443,
+      ssl_enabled: true,
+      public_url: "https://worker-main.example.jp:8443",
+    },
+    reported_endpoint: {
+      host: "worker-main.example.jp",
+      port: 8443,
+      ssl_enabled: true,
+      public_url: "https://worker-main.example.jp:8443",
+    },
+    endpoint_revision: 2,
+    endpoint_status: "pending",
     version: "1.2.0",
     reported_version: "1.2.0",
     reported_commit: "8f71c21a4b2d",
@@ -180,6 +200,26 @@ export const mockWorkers: WorkerNode[] = [
     port: 8443,
     ssl_enabled: true,
     public_url: "https://encoder-main.example.jp",
+    desired_endpoint: {
+      host: "encoder-main.example.jp",
+      port: 8443,
+      ssl_enabled: true,
+      public_url: "https://encoder-main.example.jp:8443",
+    },
+    applied_endpoint: {
+      host: "encoder-main.example.jp",
+      port: 8443,
+      ssl_enabled: true,
+      public_url: "https://encoder-main.example.jp:8443",
+    },
+    reported_endpoint: {
+      host: "encoder-main.example.jp",
+      port: 9443,
+      ssl_enabled: true,
+      public_url: "https://encoder-main.example.jp:9443",
+    },
+    endpoint_revision: 3,
+    endpoint_status: "drift",
     version: "1.2.0",
     reported_version: "1.2.0",
     reported_commit: "41df9e2b701a",
@@ -266,6 +306,65 @@ export const mockWorkers: WorkerNode[] = [
     capabilities: { audio_capture: true, audio_stream_forward: true },
     reported_capabilities: { audio_capture: true, audio_stream_forward: true },
     metrics: { audio_forward_active: 1 },
+  },
+  {
+    id: "host-agent-main",
+    service_id: "host-agent-main",
+    service_type: "update_agent",
+    service_name: "本社 Host Agent",
+    description: "本社ホストの更新状態を外向き接続で報告",
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    ownership_epoch: 3,
+    status: "online",
+    health_status: "healthy",
+    version: "1.8.0",
+    reported_version: "1.8.0",
+    reported_os: "linux",
+    reported_arch: "amd64",
+    last_heartbeat_at: "2026-07-02T09:00:00+09:00",
+    heartbeat_age_sec: 4,
+    reported_capabilities: { host_pull_v2: true },
+  },
+  {
+    id: "observability-main",
+    service_id: "observability-main",
+    service_type: "observability",
+    service_name: "監視サービス",
+    status: "online",
+    health_status: "healthy",
+    host: "monitor.example.jp",
+    port: 443,
+    ssl_enabled: true,
+    public_url: "https://monitor.example.jp",
+    desired_endpoint: {
+      host: "monitor.example.jp",
+      port: 443,
+      ssl_enabled: true,
+      public_url: "https://monitor.example.jp",
+    },
+    applied_endpoint: {
+      host: "monitor.example.jp",
+      port: 443,
+      ssl_enabled: true,
+      public_url: "https://monitor.example.jp",
+    },
+    reported_endpoint: {
+      host: "127.0.0.1",
+      port: 18090,
+      ssl_enabled: false,
+      public_url: "http://127.0.0.1:18090",
+    },
+    endpoint_revision: 7,
+    endpoint_status: "applied",
+    version: "1.1.3",
+    reported_version: "1.1.3",
+    reported_commit: "814b61b049f2",
+    reported_build_date: "2026-07-02T07:50:00+09:00",
+    reported_os: "linux",
+    reported_arch: "amd64",
+    last_heartbeat_at: baseTime,
+    heartbeat_age_sec: 4,
   },
 ];
 
@@ -427,11 +526,28 @@ export const mockSystemUpdateUpdaters: SystemUpdateAgentStatus[] = [
     bootstrap_encryption_public_key: "BJyOxKf1A_sVcFK8CDwtgHrwjGdJdiTQiOf3kidPHjnIZpzvhyczkLsUDFqEPWVnhkWGe5YbpjlafiIdMO7s_iU",
     bootstrap_encryption_key_fingerprint: "SHA256:zAub8CwOeAN1WI8elABGIcIi2gdIyoxvFPxQ7HcqRlo",
   },
+  {
+    updater_id: "host-agent-observability",
+    name: "監視ホスト Host Agent",
+    status: "online",
+    online: true,
+    version: "v2.0.0",
+    transport_mode: "pull_v2",
+    execution_host_id: "host-observability",
+    ownership_epoch: 2,
+    last_heartbeat_at: baseTime,
+    desired_revision: 4,
+    applied_revision: 4,
+    policy_status: "applied",
+  },
 ];
 
 let mockUpdaterSettings: UpdaterSettings = {
   updater_id: "updater-central",
   revision: 1,
+  transport_mode: "ssh_v1",
+  execution_host_id: "",
+  local_executor_policy_sha256: "",
   api: { bind_host: "127.0.0.1", host: "127.0.0.1", port: 8090, ssl_enabled: false, tls_cert_file: "", tls_key_file: "" },
   poll_interval_seconds: 15,
   heartbeat_interval_seconds: 30,
@@ -458,8 +574,8 @@ let mockUpdaterSettings: UpdaterSettings = {
     },
   ],
   targets: [
-    { target_id: "control-panel", host_id: "host-control", service_type: "control_panel", deployment_mode: "systemd" },
-    { target_id: "worker-main", host_id: "host-main", service_type: "worker", deployment_mode: "systemd" },
+    { target_id: "control-panel", service_id: "control-panel", host_id: "host-control", service_type: "control_panel", deployment_mode: "systemd" },
+    { target_id: "worker-main", service_id: "worker-main", host_id: "host-main", service_type: "worker", deployment_mode: "systemd" },
   ],
   github_token_configured: true,
   github_token_fingerprint: "sha256:mock-token",
@@ -471,7 +587,7 @@ export const mockSystemUpdateHosts: SystemUpdateHostStatus[] = [
   { host_id: "host-main", name: "本社メインホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
   { host_id: "host-city", name: "庁舎スタンバイホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
   { host_id: "host-field", name: "現場持出ホスト", updater_id: "updater-central", reachability: "unreachable", reachability_checked_at: baseTime, reachability_code: "ssh_timeout" },
-  { host_id: "host-observability", name: "監視ホスト", updater_id: "updater-central", reachability: "unknown" },
+  { host_id: "host-observability", name: "監視ホスト", updater_id: "host-agent-observability", reachability: "reachable", reachability_checked_at: baseTime },
 ];
 
 export const mockSystemUpdateTargets: SystemUpdateTarget[] = [
@@ -480,7 +596,31 @@ export const mockSystemUpdateTargets: SystemUpdateTarget[] = [
   { target_id: "worker-standby", target_type: "worker", name: "庁舎スタンバイWorker", host_id: "host-city", current_version: "v1.1.8", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, eligible: true },
   { target_id: "encoder-main", target_type: "encoder_recorder", name: "本社エンコーダー", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.0", update_available: false, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, current_stream_id: "stream-cable-morning", eligible: false, blocked_reason: "update_not_available" },
   { target_id: "encoder-field", target_type: "encoder_recorder", name: "現場持出エンコーダー", host_id: "host-field", current_version: "v1.1.4", latest_version: "v1.2.0", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, current_stream_id: "stream-fm-special", eligible: false, blocked_reason: "target_unreachable" },
-  { target_id: "observability-main", target_type: "observability", name: "Observability", host_id: "host-observability", current_version: "v1.1.3", latest_version: "v1.1.5", update_available: true, deployment_mode: "docker_compose", updater_id: "updater-central", updater_online: true, eligible: false, blocked_reason: "target_reachability_unknown" },
+  {
+    target_id: "observability-main",
+    target_type: "observability",
+    name: "Observability",
+    host_id: "host-observability",
+    current_version: "v1.1.3",
+    latest_version: "v1.1.5",
+    update_available: true,
+    deployment_mode: "docker",
+    updater_id: "host-agent-observability",
+    updater_online: true,
+    eligible: true,
+    eligible_operations: ["software_update", "port_reconfigure"],
+    port_mapping: {
+      mode: "docker",
+      advertised_port: 443,
+      published_host_ip: "127.0.0.1",
+      published_port: 18090,
+      container_port: 8080,
+      health_port: 18090,
+      config_revision: 5,
+      state: "applied",
+      reported_at: baseTime,
+    },
+  },
 ];
 
 export const mockSystemUpdateJobs: SystemUpdateJob[] = [
@@ -644,6 +784,12 @@ export function mockGet(path: string): unknown {
   if (nodeConfiguration) {
     const nodeID = decodeURIComponent(nodeConfiguration[1]);
     const node = mockWorkers.find((item) => (item.service_id || item.id) === nodeID) || mockWorkers[0];
+    if (isMockPullHostAgent(node)) {
+      return {
+        node: mockEndpointlessPullHostAgent(node),
+        ...mockUpdaterConfigurationMetadata(),
+      };
+    }
     const host = node.host || "worker-main.example.jp";
     const port = node.port || 8443;
     const sslEnabled = node.ssl_enabled ?? true;
@@ -738,21 +884,69 @@ export function mockPost(path: string, body?: unknown): unknown {
     return { jobs: [structuredClone(job)] };
   }
   if (normalizedPath === "/system-updates") {
-    const request = body as Partial<{ target_id: string; strategy: string }>;
+    const request = body as Partial<{
+      operation: "software_update" | "port_reconfigure";
+      target_id: string;
+      strategy: string;
+      idempotency_key: string;
+      expected_endpoint_revision: number;
+      new_port: number;
+      new_advertised_port: number;
+      new_published_port: number;
+      new_container_port: number;
+    }>;
     const target = mockSystemUpdateTargets.find((item) => item.target_id === request.target_id);
     if (!target) throw new Error("target_not_found");
     const now = new Date().toISOString();
+    const dockerPortRequest = request.operation === "port_reconfigure" && target.deployment_mode === "docker";
+    const systemdPortRequest = request.operation === "port_reconfigure" && target.deployment_mode === "systemd";
+    const currentMapping = target.port_mapping;
     const job: SystemUpdateJob = {
       id: `update-demo-${Date.now()}`,
+      idempotency_key: request.idempotency_key,
       target_id: target.target_id,
       target_type: target.target_type,
       current_version: target.current_version,
       target_version: target.latest_version,
       deployment_mode: target.deployment_mode,
+      operation: request.operation || "software_update",
+      port_reconfigure: dockerPortRequest && currentMapping
+        ? {
+            old_port: currentMapping.advertised_port,
+            new_port: request.new_advertised_port,
+            expected_endpoint_revision: request.expected_endpoint_revision,
+            target_endpoint_revision: Number(request.expected_endpoint_revision || 0) + 1,
+            docker: {
+              published_host_ip: String(currentMapping.published_host_ip || ""),
+              old_published_port: Number(currentMapping.published_port),
+              new_published_port: Number(request.new_published_port),
+              old_container_port: Number(currentMapping.container_port),
+              new_container_port: Number(request.new_container_port),
+              old_health_port: Number(currentMapping.health_port),
+              new_health_port: Number(request.new_published_port),
+              approved_compose_config_sha256: "a".repeat(64),
+              approved_compose_revision: Number(currentMapping.config_revision),
+              expected_version_env_sha256: `sha256:${"b".repeat(64)}`,
+              expected_container_id: "c".repeat(64),
+              expected_image_id: `sha256:${"d".repeat(64)}`,
+              expected_repository_digest: `sha256:${"e".repeat(64)}`,
+            },
+          }
+          : systemdPortRequest
+          ? {
+              old_port: Number(mockWorkers.find((node) => node.service_id === target.target_id)?.applied_endpoint?.port || 0),
+              new_port: request.new_port,
+              expected_endpoint_revision: request.expected_endpoint_revision,
+            }
+          : undefined,
       strategy: request.strategy === "when_idle" ? "when_idle" : "maintenance",
       status: "queued",
       progress: 0,
-      message: request.strategy === "when_idle" ? "配信終了後に更新を開始します。" : "Updaterの実行待ちです。",
+      message: request.operation === "port_reconfigure"
+        ? "Host Agentがポート変更を受け取るまで待機しています。"
+        : request.strategy === "when_idle"
+          ? "配信終了後に更新を開始します。"
+          : "Updaterの実行待ちです。",
       requested_by: mockCurrentUser.user.username,
       created_at: now,
       updated_at: now,
@@ -1007,6 +1201,8 @@ export function mockPost(path: string, body?: unknown): unknown {
       host: string;
       port: number;
       ssl_enabled: boolean;
+      transport_mode: "ssh_v1" | "pull_v2";
+      execution_host_id: string;
     }>;
     const nodeID = request.node_id || `${request.node_type || "worker"}-new`;
     const configureToken = "ast_cfg_demo_9d2b4b5fd4e3c0a7";
@@ -1015,6 +1211,7 @@ export function mockPost(path: string, body?: unknown): unknown {
     const port = request.port || 8081;
     const sslEnabled = request.ssl_enabled ?? true;
     const scheme = sslEnabled ? "https" : "http";
+    const pullHostAgent = request.node_type === "update_agent" && request.transport_mode === "pull_v2";
     const response: NodeRegistrationResponse = {
       id: "token-demo-node-registration",
       service_type: request.node_type || "worker",
@@ -1027,7 +1224,9 @@ export function mockPost(path: string, body?: unknown): unknown {
       runtime_token: runtimeToken,
       created_at: baseTime,
       configure_command: mockConfigureCommand(request.node_type || "worker", nodeID, configureToken),
-      configuration_yaml: `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${nodeID}"\n  name: "${request.name || "新規Node"}"\n  type: "${request.node_type || "worker"}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "runtime-token-demo"\n  token: "${runtimeToken}"${mockStreamIngestConfigYAML(request.node_type || "worker")}\n`,
+      configuration_yaml: pullHostAgent
+        ? `{"panel_url":"https://control.example.jp","node_id":"${nodeID}","runtime_token":"${runtimeToken}","service_name":"${request.name || "Host Agent"}"}`
+        : `panel:\n  url: "https://control.example.jp"\n\nnode:\n  id: "${nodeID}"\n  name: "${request.name || "新規Node"}"\n  type: "${request.node_type || "worker"}"\n\napi:\n  host: "${host}"\n  port: ${port}\n  ssl_enabled: ${sslEnabled}\n\nauth:\n  token_id: "runtime-token-demo"\n  token: "${runtimeToken}"${mockStreamIngestConfigYAML(request.node_type || "worker")}\n`,
       node: {
         id: nodeID,
         service_id: nodeID,
@@ -1036,10 +1235,18 @@ export function mockPost(path: string, body?: unknown): unknown {
         status: "pending",
         health_status: "pending",
         description: request.description || "",
-        host,
-        port,
-        ssl_enabled: sslEnabled,
-        public_url: `${scheme}://${host}:${port}`,
+        ...(pullHostAgent
+          ? {
+              transport_mode: "pull_v2" as const,
+              execution_host_id: request.execution_host_id,
+              ownership_epoch: 1,
+            }
+          : {
+              host,
+              port,
+              ssl_enabled: sslEnabled,
+              public_url: `${scheme}://${host}:${port}`,
+            }),
         reported_version: "",
         reported_capabilities: {},
       },
@@ -1067,7 +1274,7 @@ export function mockPost(path: string, body?: unknown): unknown {
     node.configure_token_expires_at = baseTime;
     node.configure_token_used_at = undefined;
     return {
-      node,
+      node: mockEndpointlessPullHostAgent(node),
       configure_token: configureToken,
       configure_token_expires_at: baseTime,
       configure_command: mockConfigureCommand(node.service_type, node.service_id || node.id, configureToken),
@@ -1086,7 +1293,7 @@ export function mockPost(path: string, body?: unknown): unknown {
     node.node_token_rotated_at = baseTime;
     if (node.service_type === "update_agent") {
       return {
-        node,
+        node: mockEndpointlessPullHostAgent(node),
         runtime_token_id: runtimeTokenID,
         runtime_token: runtimeToken,
         ...mockUpdaterConfigurationMetadata(),
@@ -1146,6 +1353,25 @@ function mockUpdaterConfigurationMetadata() {
   };
 }
 
+function isMockPullHostAgent(node: WorkerNode) {
+  return node.service_type === "update_agent" && node.transport_mode === "pull_v2";
+}
+
+function mockEndpointlessPullHostAgent(node: WorkerNode) {
+  if (!isMockPullHostAgent(node)) return node;
+  const endpointless = { ...node };
+  delete endpointless.host;
+  delete endpointless.port;
+  delete endpointless.ssl_enabled;
+  delete endpointless.public_url;
+  delete endpointless.desired_endpoint;
+  delete endpointless.applied_endpoint;
+  delete endpointless.reported_endpoint;
+  delete endpointless.endpoint_revision;
+  delete endpointless.endpoint_status;
+  return endpointless;
+}
+
 function mockStreamIngestConfigYAML(serviceType: string) {
   if (serviceType !== "worker" && serviceType !== "encoder_recorder") return "";
   return `\n\nstream_ingest:\n  signing_key: "<stream-ingest-signing-key>"`;
@@ -1165,10 +1391,13 @@ export function mockPut(path: string, body?: unknown): unknown {
     mockUpdaterSettings = {
       updater_id: updaterID,
       revision: nextRevision,
-      api: { ...request.api },
+      transport_mode: mockUpdaterSettings.transport_mode,
+      execution_host_id: mockUpdaterSettings.execution_host_id,
+      local_executor_policy_sha256: request.local_executor_policy_sha256 ?? mockUpdaterSettings.local_executor_policy_sha256,
+      api: request.api ? { ...request.api } : { ...mockUpdaterSettings.api },
       poll_interval_seconds: request.poll_interval_seconds,
       heartbeat_interval_seconds: request.heartbeat_interval_seconds,
-      hosts: request.hosts.map((host) => ({ ...host })),
+      hosts: request.hosts?.map((host) => ({ ...host })) ?? [],
       targets: request.targets.map((target) => ({ ...target })),
       github_token_configured: tokenProvided ? Boolean(token) : mockUpdaterSettings.github_token_configured,
       github_token_fingerprint: tokenProvided
@@ -1243,18 +1472,22 @@ export function mockPut(path: string, body?: unknown): unknown {
     const index = mockWorkers.findIndex((node) => (node.service_id || node.id) === nodeID);
     if (index < 0) throw new Error("not_found");
     const existing = mockWorkers[index];
-    const host = request.host || existing.host || "worker-main.example.jp";
-    const port = request.port || existing.port || 8443;
-    const sslEnabled = request.ssl_enabled ?? existing.ssl_enabled ?? true;
-    const next: WorkerNode = {
+    const common = {
       ...existing,
       service_name: request.service_name || request.name || existing.service_name,
       description: request.description ?? existing.description,
-      host,
-      port,
-      ssl_enabled: sslEnabled,
-      public_url: `${sslEnabled ? "https" : "http"}://${host}:${port}`,
     };
+    const next: WorkerNode = isMockPullHostAgent(existing)
+      ? mockEndpointlessPullHostAgent(common)
+      : {
+          ...common,
+          host: request.host || existing.host || "worker-main.example.jp",
+          port: request.port || existing.port || 8443,
+          ssl_enabled: request.ssl_enabled ?? existing.ssl_enabled ?? true,
+        };
+    if (!isMockPullHostAgent(next)) {
+      next.public_url = `${next.ssl_enabled ? "https" : "http"}://${next.host}:${next.port}`;
+    }
     mockWorkers[index] = next;
     return next;
   }

@@ -313,11 +313,15 @@ func TestRemoteSystemdSmokeUsesArtifactRelativeBinaryUnderRootOnlyState(t *testi
 	runner := &remoteSmokeCaptureRunner{}
 	stage := remoteStage{}
 	plan := validRemotePlan()
-	if err := preflightRemoteSystemdStage(context.Background(), cfg.Targets[0], plan, artifactRoot, &stage, runner); err == nil {
+	if resolved, resolveErr := resolveRemoteArtifactRoot(artifactRoot); resolveErr != nil || !filepath.IsAbs(resolved) {
+		t.Fatalf("test artifact path cannot be resolved: resolved=%q err=%v", resolved, resolveErr)
+	}
+	preflightErr := preflightRemoteSystemdStage(context.Background(), cfg.Targets[0], plan, artifactRoot, &stage, runner)
+	if preflightErr == nil {
 		t.Fatal("unbootstrapped systemd target unexpectedly completed preflight")
 	}
 	if len(runner.calls) == 0 {
-		t.Fatal("systemd artifact smoke command was not attempted")
+		t.Fatalf("systemd artifact smoke command was not attempted: %v", preflightErr)
 	}
 	call := runner.calls[0]
 	gotBinary := call.args[len(call.args)-2]

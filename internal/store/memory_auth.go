@@ -13,6 +13,7 @@ import (
 
 type MemoryAuthStore struct {
 	mu            sync.Mutex
+	heartbeatNow  func() time.Time
 	users         map[string]User
 	byUsername    map[string]string
 	roles         map[string]Role
@@ -34,10 +35,27 @@ type MemoryAuthStore struct {
 	auditEvents   []AuditEvent
 }
 
-func NewMemoryAuthStore() *MemoryAuthStore {
-	return &MemoryAuthStore{
-		users: map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, failedLogins: map[string]int{}, avatars: map[string]UserAvatar{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, emailChanges: map[string]EmailChangeChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
+type MemoryAuthStoreOption func(*MemoryAuthStore)
+
+func WithMemoryServiceHeartbeatClock(now func() time.Time) MemoryAuthStoreOption {
+	return func(store *MemoryAuthStore) {
+		if now != nil {
+			store.heartbeatNow = now
+		}
 	}
+}
+
+func NewMemoryAuthStore(options ...MemoryAuthStoreOption) *MemoryAuthStore {
+	store := &MemoryAuthStore{
+		heartbeatNow: time.Now,
+		users:        map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, failedLogins: map[string]int{}, avatars: map[string]UserAvatar{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, emailChanges: map[string]EmailChangeChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
+	}
+	for _, option := range options {
+		if option != nil {
+			option(store)
+		}
+	}
+	return store
 }
 
 func (s *MemoryAuthStore) CountUsers(ctx context.Context) (int, error) {

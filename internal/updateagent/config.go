@@ -159,17 +159,21 @@ type SystemdTarget struct {
 }
 
 type DockerTarget struct {
-	DockerPath          string   `json:"docker_path"`
-	ComposeProject      string   `json:"compose_project"`
-	ProjectDir          string   `json:"project_dir"`
-	ComposeFiles        []string `json:"compose_files"`
-	Service             string   `json:"service"`
-	ImageRepo           string   `json:"image_repo"`
-	ImageVariable       string   `json:"image_variable"`
-	VersionEnvFile      string   `json:"version_env_file"`
-	ComposeConfigSHA256 string   `json:"compose_config_sha256"`
-	CurrentVersion      string   `json:"current_version,omitempty"`
-	Channel             string   `json:"channel,omitempty"`
+	DockerPath              string   `json:"docker_path"`
+	ComposeProject          string   `json:"compose_project"`
+	ProjectDir              string   `json:"project_dir"`
+	ComposeFiles            []string `json:"compose_files"`
+	Service                 string   `json:"service"`
+	ImageRepo               string   `json:"image_repo"`
+	ImageVariable           string   `json:"image_variable"`
+	BaseEnvFile             string   `json:"base_env_file,omitempty"`
+	VersionEnvFile          string   `json:"version_env_file"`
+	PortEnvFile             string   `json:"port_env_file,omitempty"`
+	ComposeConfigSHA256     string   `json:"compose_config_sha256"`
+	PortComposePolicySHA256 string   `json:"port_compose_policy_sha256,omitempty"`
+	PortComposeRevision     int64    `json:"port_compose_revision,omitempty"`
+	CurrentVersion          string   `json:"current_version,omitempty"`
+	Channel                 string   `json:"channel,omitempty"`
 }
 
 func LoadConfig(path string, requireRootOwned bool) (Config, error) {
@@ -608,17 +612,17 @@ func (t Target) ValidateCentralIdentity() error {
 }
 
 func (t SystemdTarget) Validate() error {
-	if !filepath.IsAbs(t.SystemctlPath) {
+	if !deploymentAbsolutePath(t.SystemctlPath) {
 		return errors.New("systemctl_path must be absolute")
 	}
-	if !filepath.IsAbs(t.RunuserPath) || !regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`).MatchString(t.SmokeUser) || t.SmokeUser == "root" {
+	if !deploymentAbsolutePath(t.RunuserPath) || !regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`).MatchString(t.SmokeUser) || t.SmokeUser == "root" {
 		return errors.New("runuser_path and smoke_user are required for unprivileged binary verification")
 	}
 	if !unitPattern.MatchString(t.Unit) {
 		return errors.New("unit must be a fixed .service name")
 	}
 	for name, value := range map[string]string{"release_root": t.ReleaseRoot, "current_link": t.CurrentLink} {
-		if !filepath.IsAbs(value) || filepath.Clean(value) == string(filepath.Separator) {
+		if !deploymentAbsolutePath(value) || filepath.Clean(value) == string(filepath.Separator) {
 			return fmt.Errorf("%s must be a non-root absolute path", name)
 		}
 	}
@@ -635,17 +639,17 @@ func (t SystemdTarget) Validate() error {
 }
 
 func (t DockerTarget) Validate() error {
-	if !filepath.IsAbs(t.DockerPath) {
+	if !deploymentAbsolutePath(t.DockerPath) {
 		return errors.New("docker_path must be absolute")
 	}
 	if !identifierPattern.MatchString(t.ComposeProject) || !identifierPattern.MatchString(t.Service) {
 		return errors.New("compose_project and service must be fixed identifiers")
 	}
-	if !filepath.IsAbs(t.ProjectDir) || len(t.ComposeFiles) == 0 {
+	if !deploymentAbsolutePath(t.ProjectDir) || len(t.ComposeFiles) == 0 {
 		return errors.New("project_dir and compose_files must be absolute")
 	}
 	for _, file := range t.ComposeFiles {
-		if !filepath.IsAbs(file) {
+		if !deploymentAbsolutePath(file) {
 			return errors.New("compose_files entries must be absolute")
 		}
 	}
@@ -658,8 +662,35 @@ func (t DockerTarget) Validate() error {
 	if t.ImageVariable != "AUTOSTREAM_DOCKER_VERSION" {
 		return errors.New("image_variable must be AUTOSTREAM_DOCKER_VERSION")
 	}
-	if !filepath.IsAbs(t.VersionEnvFile) || filepath.Clean(t.VersionEnvFile) == string(filepath.Separator) {
+	if t.BaseEnvFile != "" &&
+		(!deploymentAbsolutePath(t.BaseEnvFile) || filepath.Clean(t.BaseEnvFile) == string(filepath.Separator)) {
+		return errors.New("base_env_file must be an empty or non-root absolute path")
+	}
+	if !deploymentAbsolutePath(t.VersionEnvFile) || filepath.Clean(t.VersionEnvFile) == string(filepath.Separator) {
 		return errors.New("version_env_file must be a non-root absolute path")
+	}
+	portFields := 0
+	if t.PortEnvFile != "" {
+		portFields++
+	}
+	if t.PortComposePolicySHA256 != "" {
+		portFields++
+	}
+	if t.PortComposeRevision != 0 {
+		portFields++
+	}
+	if portFields != 0 {
+		if portFields != 3 ||
+			!deploymentAbsolutePath(t.PortEnvFile) ||
+			filepath.Clean(t.PortEnvFile) == string(filepath.Separator) ||
+			len(t.PortComposePolicySHA256) != 64 ||
+			strings.ToLower(t.PortComposePolicySHA256) != t.PortComposePolicySHA256 ||
+			t.PortComposeRevision < 1 {
+			return errors.New("Docker port authority must be complete and canonical")
+		}
+		if _, err := hex.DecodeString(t.PortComposePolicySHA256); err != nil {
+			return errors.New("Docker port authority digest is invalid")
+		}
 	}
 	if t.Channel != "" && t.Channel != "docker" {
 		return errors.New("docker channel must be docker")

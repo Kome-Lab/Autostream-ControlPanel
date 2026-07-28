@@ -11,6 +11,38 @@ import (
 
 const updaterConfigInstallGroup = "autostream-updater"
 
+type preparedRenameOutcome uint8
+
+const (
+	preparedRenameNotInstalled preparedRenameOutcome = iota
+	preparedRenameInstalled
+	preparedRenameUncertain
+)
+
+// inspectPreparedRenameOutcome distinguishes a failed-before-rename result from
+// a rename that took effect (or can no longer be proven either way). Callers
+// must preserve the staged configuration whenever the outcome is uncertain.
+func inspectPreparedRenameOutcome(
+	tempPath, destinationPath string,
+	tempInfo os.FileInfo,
+) preparedRenameOutcome {
+	if destinationInfo, err := os.Lstat(destinationPath); err == nil &&
+		tempInfo != nil &&
+		destinationInfo.Mode()&os.ModeSymlink == 0 &&
+		destinationInfo.Mode().IsRegular() &&
+		os.SameFile(destinationInfo, tempInfo) {
+		return preparedRenameInstalled
+	}
+	if currentTempInfo, err := os.Lstat(tempPath); err == nil &&
+		tempInfo != nil &&
+		currentTempInfo.Mode()&os.ModeSymlink == 0 &&
+		currentTempInfo.Mode().IsRegular() &&
+		os.SameFile(currentTempInfo, tempInfo) {
+		return preparedRenameNotInstalled
+	}
+	return preparedRenameUncertain
+}
+
 // PreparedUpdaterConfig reserves and validates every local resource needed to
 // update updater.json before a one-time Configure Token is consumed.
 type PreparedUpdaterConfig struct {
@@ -25,6 +57,7 @@ type PreparedUpdaterConfig struct {
 	existed      bool
 	template     updaterConfigTemplate
 	installGID   int
+	renamePath   func(string, string) error
 	committed    bool
 }
 
@@ -32,7 +65,15 @@ type PreparedUpdaterConfig struct {
 // the final root:autostream-updater 0640 temporary file before any network
 // request can consume the one-time Configure Token.
 func PrepareUpdaterConfig(path string) (*PreparedUpdaterConfig, error) {
-	installGID, err := updaterConfigInstallGID()
+	return PrepareManagedIdentityConfig(path, updaterConfigInstallGroup)
+}
+
+// PrepareManagedIdentityConfig reserves an atomic root-owned 0640 identity
+// file for a dedicated service group. It is shared by the legacy central
+// updater and the portless Host Agent; both persist the same four-field
+// identity and keep policy, endpoints, and transport fencing server-owned.
+func PrepareManagedIdentityConfig(path, installGroup string) (*PreparedUpdaterConfig, error) {
+	installGID, err := updaterConfigInstallGID(installGroup)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +114,7 @@ func prepareUpdaterConfig(path string, installGID int) (*PreparedUpdaterConfig, 
 	prepared := &PreparedUpdaterConfig{
 		path: path, parent: parent, tempPath: temp.Name(), temp: temp,
 		existing: existing, existingFile: existingFile, existingInfo: existingInfo, existed: existed,
-		template: template, installGID: installGID,
+		template: template, installGID: installGID, renamePath: os.Rename,
 	}
 	prepared.tempInfo, err = temp.Stat()
 	if err != nil {
@@ -162,11 +203,33 @@ func (p *PreparedUpdaterConfig) Commit(identity UpdaterConfigureIdentity) error 
 	if err := p.verifyDestination(); err != nil {
 		return err
 	}
-	if err := os.Rename(p.tempPath, p.path); err != nil {
-		return errors.New("install configured updater identity")
+	if p.renamePath == nil {
+		return errors.New("updater config update is not prepared")
+	}
+	if err := p.renamePath(p.tempPath, p.path); err != nil {
+		switch inspectPreparedRenameOutcome(p.tempPath, p.path, p.tempInfo) {
+		case preparedRenameNotInstalled:
+			return fmt.Errorf("install configured updater identity: %w", err)
+		case preparedRenameInstalled:
+			return p.finishCommittedInstall(fmt.Errorf(
+				"configured updater identity was installed but rename reported an error: %w",
+				err,
+			))
+		default:
+			return p.finishCommittedInstall(fmt.Errorf(
+				"configured updater identity install result is uncertain; inspect %s and %s before retrying: %w",
+				p.path,
+				p.tempPath,
+				err,
+			))
+		}
 	}
 	// The final pathname is now authoritative even if the durability fence
 	// fails. Abort must never remove a successfully renamed configuration.
+	return p.finishCommittedInstall(nil)
+}
+
+func (p *PreparedUpdaterConfig) finishCommittedInstall(finalErr error) error {
 	p.committed = true
 	tempCloseErr := p.temp.Close()
 	existingCloseErr := error(nil)
@@ -176,13 +239,20 @@ func (p *PreparedUpdaterConfig) Commit(identity UpdaterConfigureIdentity) error 
 	}
 	if tempCloseErr != nil || existingCloseErr != nil {
 		p.temp = nil
-		return errors.New("configured updater identity installed but close failed")
+		finalErr = errors.Join(
+			finalErr,
+			errors.New("configured updater identity installed but close failed"),
+		)
+	} else {
+		p.temp = nil
 	}
-	p.temp = nil
 	if err := syncDirectory(p.parent); err != nil {
-		return errors.New("configured updater identity installed but directory sync failed")
+		finalErr = errors.Join(
+			finalErr,
+			errors.New("configured updater identity installed but directory sync failed"),
+		)
 	}
-	return nil
+	return finalErr
 }
 
 // Abort best-effort wipes and unlinks the reserved temporary file. It is safe

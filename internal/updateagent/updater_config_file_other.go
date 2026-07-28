@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func updaterConfigInstallGID() (int, error) {
+func updaterConfigInstallGID(string) (int, error) {
 	return 0, errors.New("updater configure is supported only on Linux and requires root")
 }
 

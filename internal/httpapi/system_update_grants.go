@@ -12,13 +12,19 @@ import (
 )
 
 type systemUpdateMutationGrantBindingBody struct {
-	HostID         string `json:"host_id"`
-	TargetID       string `json:"target_id"`
-	TargetVersion  string `json:"target_version"`
-	DeploymentMode string `json:"deployment_mode"`
-	Operation      string `json:"operation"`
-	PlanSHA256     string `json:"plan_sha256"`
-	SessionID      string `json:"session_id"`
+	HostID            string                                 `json:"host_id"`
+	TransportMode     string                                 `json:"transport_mode,omitempty"`
+	OwnershipEpoch    int64                                  `json:"ownership_epoch,omitempty"`
+	PolicyRevision    int64                                  `json:"policy_revision,omitempty"`
+	TargetID          string                                 `json:"target_id"`
+	TargetServiceType string                                 `json:"service_type,omitempty"`
+	TargetVersion     string                                 `json:"target_version"`
+	DeploymentMode    string                                 `json:"deployment_mode"`
+	JobOperation      string                                 `json:"job_operation,omitempty"`
+	Operation         string                                 `json:"operation"`
+	PlanSHA256        string                                 `json:"plan_sha256"`
+	SessionID         string                                 `json:"session_id"`
+	PortReconfigure   *store.SystemUpdatePortReconfiguration `json:"port_reconfigure,omitempty"`
 }
 
 type systemUpdateMutationGrantConsumeBody struct {
@@ -28,9 +34,13 @@ type systemUpdateMutationGrantConsumeBody struct {
 
 func (body systemUpdateMutationGrantBindingBody) storeBinding() store.SystemUpdateMutationGrantBinding {
 	return store.SystemUpdateMutationGrantBinding{
-		HostID: body.HostID, TargetID: body.TargetID, TargetVersion: body.TargetVersion,
-		DeploymentMode: body.DeploymentMode, Operation: body.Operation,
+		HostID: body.HostID, TransportMode: body.TransportMode,
+		OwnershipEpoch: body.OwnershipEpoch, PolicyRevision: body.PolicyRevision,
+		TargetID: body.TargetID, TargetServiceType: body.TargetServiceType,
+		TargetVersion: body.TargetVersion, DeploymentMode: body.DeploymentMode,
+		JobOperation: body.JobOperation, Operation: body.Operation,
 		PlanSHA256: body.PlanSHA256, SessionID: body.SessionID,
+		PortReconfigure: body.PortReconfigure,
 	}
 }
 
@@ -62,6 +72,15 @@ func (s *Server) serviceSystemUpdateMutationGrantIssue(w http.ResponseWriter, r 
 		writeSystemUpdateAgentError(w, err)
 		return
 	}
+	if err := s.validatePullSystemUpdateAgentOwnership(r.Context(), agent); err != nil {
+		s.writeServiceAudit(r, token, "system_updates.mutation_grant.issue", "system_update", jobID, "failure", map[string]any{"reason": "system_update_ownership_conflict"})
+		if errors.Is(err, store.ErrSystemUpdateOwnershipConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_ownership_conflict"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "resolve_system_update_ownership_failed"})
+		return
+	}
 	grantStore, ok := s.systemUpdates.(store.SystemUpdateMutationGrantStore)
 	if !ok {
 		s.writeServiceAudit(r, token, "system_updates.mutation_grant.issue", "system_update", jobID, "failure", map[string]any{"reason": "grant_store_unavailable"})
@@ -70,7 +89,8 @@ func (s *Server) serviceSystemUpdateMutationGrantIssue(w http.ResponseWriter, r 
 	}
 	binding := body.systemUpdateMutationGrantBindingBody.storeBinding()
 	issued, err := grantStore.IssueSystemUpdateMutationGrant(r.Context(), jobID, store.IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: agent.ServiceID, LeaseToken: body.LeaseToken, LeaseGeneration: body.LeaseGeneration, Binding: binding,
+		AgentServiceID: agent.ServiceID, ExecutionHostID: pullSystemUpdateExecutionHost(agent),
+		LeaseToken: body.LeaseToken, LeaseGeneration: body.LeaseGeneration, Binding: binding,
 	}, time.Now().UTC(), store.SystemUpdateMutationGrantMaxTTL)
 	metadata := systemUpdateMutationGrantAuditMetadata(binding)
 	metadata["agent_service_id"] = agent.ServiceID
@@ -88,6 +108,8 @@ func (s *Server) serviceSystemUpdateMutationGrantIssue(w http.ResponseWriter, r 
 			status, code, reason = http.StatusConflict, "system_update_mutation_grant_binding_mismatch", "authorization_mismatch"
 		case errors.Is(err, store.ErrSystemUpdateMutationGrantConflict):
 			status, code, reason = http.StatusConflict, "system_update_mutation_grant_conflict", "grant_conflict"
+		case errors.Is(err, store.ErrSystemUpdateOwnershipConflict):
+			status, code, reason = http.StatusConflict, "system_update_ownership_conflict", "ownership_conflict"
 		case errors.Is(err, store.ErrInvalidSystemUpdate):
 			status, code, reason = http.StatusBadRequest, "invalid_system_update_mutation_grant", "invalid_request"
 		}
@@ -135,6 +157,8 @@ func (s *Server) serviceSystemUpdateMutationGrantConsume(w http.ResponseWriter, 
 			status, code, reason = http.StatusBadRequest, "invalid_system_update_mutation_grant_consumption", "invalid_request"
 		case errors.Is(err, store.ErrSystemUpdateMutationGrantConflict), errors.Is(err, store.ErrNotFound):
 			status, code, reason = http.StatusConflict, "system_update_mutation_grant_conflict", "grant_conflict"
+		case errors.Is(err, store.ErrSystemUpdateOwnershipConflict):
+			status, code, reason = http.StatusConflict, "system_update_ownership_conflict", "ownership_conflict"
 		}
 		metadata["reason"] = reason
 		s.writeSystemUpdateMutationGrantConsumeAudit(r, jobID, "failure", metadata)
@@ -150,7 +174,12 @@ func (s *Server) serviceSystemUpdateMutationGrantConsume(w http.ResponseWriter, 
 }
 
 func decodeSingleSystemUpdateGrantJSON(r *http.Request, out any) bool {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 64*1024))
+	const maxSystemUpdateGrantRequestBytes = 64 * 1024
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxSystemUpdateGrantRequestBytes+1))
+	if err != nil || len(payload) > maxSystemUpdateGrantRequestBytes {
+		return false
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(payload)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
 		return false
@@ -171,12 +200,39 @@ func systemUpdateMutationGrantBearer(r *http.Request) (string, bool) {
 }
 
 func systemUpdateMutationGrantAuditMetadata(binding store.SystemUpdateMutationGrantBinding) map[string]any {
-	return map[string]any{
+	jobOperation := strings.ToLower(strings.TrimSpace(binding.JobOperation))
+	if jobOperation == "" {
+		jobOperation = store.SystemUpdateOperationSoftwareUpdate
+	}
+	metadata := map[string]any{
 		"host_id": strings.TrimSpace(binding.HostID), "target_id": strings.TrimSpace(binding.TargetID),
+		"transport_mode":  strings.ToLower(strings.TrimSpace(binding.TransportMode)),
+		"ownership_epoch": binding.OwnershipEpoch, "policy_revision": binding.PolicyRevision,
+		"service_type":   strings.ToLower(strings.TrimSpace(binding.TargetServiceType)),
 		"target_version": strings.TrimSpace(binding.TargetVersion), "deployment_mode": strings.ToLower(strings.TrimSpace(binding.DeploymentMode)),
-		"operation": strings.ToLower(strings.TrimSpace(binding.Operation)), "plan_sha256": strings.TrimSpace(binding.PlanSHA256),
+		"job_operation": jobOperation,
+		"operation":     strings.ToLower(strings.TrimSpace(binding.Operation)), "plan_sha256": strings.TrimSpace(binding.PlanSHA256),
 		"session_id": strings.TrimSpace(binding.SessionID),
 	}
+	if port := binding.PortReconfigure; port != nil {
+		metadata["port_reconfigure"] = map[string]any{
+			"network_namespace": strings.ToLower(strings.TrimSpace(port.NetworkNamespace)),
+			"protocol":          strings.ToLower(strings.TrimSpace(string(port.Protocol))),
+			"old_port":          port.OldPort, "new_port": port.NewPort,
+			"expected_endpoint_revision":        port.ExpectedEndpointRevision,
+			"target_endpoint_revision":          port.TargetEndpointRevision,
+			"expected_config_revision":          port.ExpectedConfigRevision,
+			"target_config_revision":            port.TargetConfigRevision,
+			"expected_config_sha256":            strings.TrimSpace(port.ExpectedConfigSHA256),
+			"target_config_sha256":              strings.TrimSpace(port.TargetConfigSHA256),
+			"expected_source_policy_revision":   port.ExpectedSourcePolicyRevision,
+			"expected_updater_policy_revision":  port.ExpectedUpdaterPolicyRevision,
+			"expected_executor_policy_revision": port.ExpectedExecutorPolicyRevision,
+			"expected_executor_policy_sha256":   strings.TrimSpace(port.ExpectedExecutorPolicySHA256),
+			"port_plan_sha256":                  strings.TrimSpace(port.PortPlanSHA256),
+		}
+	}
+	return metadata
 }
 
 func (s *Server) writeSystemUpdateMutationGrantConsumeAudit(r *http.Request, jobID, result string, metadata map[string]any) {

@@ -133,6 +133,9 @@ func (s *MemoryAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	if !ok || service.TokenID != expectedTokenID {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
+	if requiresStagedNodeTokenRotation(service) {
+		return ServiceToken{}, RegisteredService{}, ErrConflict
+	}
 	oldToken, ok := s.serviceTokens[expectedTokenID]
 	if !ok || oldToken.RevokedAt != nil {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
@@ -216,10 +219,12 @@ func (s *MemoryAuthStore) PrecreateService(ctx context.Context, token ServiceTok
 	now := time.Now().UTC()
 	svc := RegisteredService{
 		ServiceID: registration.ServiceID, ServiceType: registration.ServiceType, ServiceName: registration.ServiceName,
-		Description: registration.Description, Host: registration.Host, Port: registration.Port, SSLEnabled: registration.SSLEnabled,
+		Description: registration.Description, TransportMode: registration.TransportMode, ExecutionHostID: registration.ExecutionHostID, OwnershipEpoch: registration.OwnershipEpoch,
+		Host: registration.Host, Port: registration.Port, SSLEnabled: registration.SSLEnabled,
 		PublicURL: registration.PublicURL, Version: registration.Version, ReportedVersion: "", Status: "pending",
 		Capabilities: sanitizeServiceCapabilities(registration.Capabilities), ReportedCapabilities: sanitizeServiceCapabilities(registration.Capabilities), Metrics: map[string]any{}, TokenID: token.ID, NodeTokenRotatedAt: &token.CreatedAt, CreatedAt: now, UpdatedAt: now,
 	}
+	hydrateServiceEndpointState(&svc)
 	if svc.Capabilities == nil {
 		svc.Capabilities = map[string]any{}
 	}
@@ -240,6 +245,21 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 		return RegisteredService{}, ErrForbidden
 	}
 	registration = normalizeServiceRegistration(registration)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.services[registration.ServiceID]
+	if !ok {
+		return RegisteredService{}, ErrForbidden
+	}
+	if existing.ServiceType != registration.ServiceType || existing.TokenID != token.ID {
+		return RegisteredService{}, ErrForbidden
+	}
+	registration = bindPrecreatedUpdateAgentRegistration(
+		registration,
+		existing.TransportMode,
+		existing.ExecutionHostID,
+		existing.OwnershipEpoch,
+	)
 	if err := validateServiceRegistration(registration); err != nil {
 		return RegisteredService{}, err
 	}
@@ -247,27 +267,39 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 	capabilities := sanitizeServiceCapabilities(registration.Capabilities)
 	svc := RegisteredService{
 		ServiceID: registration.ServiceID, ServiceType: registration.ServiceType, ServiceName: registration.ServiceName,
-		Description: registration.Description, Host: registration.Host, Port: registration.Port, SSLEnabled: registration.SSLEnabled,
+		Description: registration.Description, TransportMode: registration.TransportMode, ExecutionHostID: registration.ExecutionHostID, OwnershipEpoch: registration.OwnershipEpoch,
+		Host: registration.Host, Port: registration.Port, SSLEnabled: registration.SSLEnabled,
 		PublicURL: registration.PublicURL, Version: registration.Version, ReportedVersion: registration.Version, ReportedCommit: registration.Commit, ReportedBuildDate: registration.BuildDate, Status: "registered",
 		Capabilities: capabilities, ReportedCapabilities: capabilities, TokenID: token.ID,
 		ReportedHostname: registration.Hostname, ReportedOS: registration.OS, ReportedArch: registration.Arch, LastReportedAt: &now,
 		CreatedAt: now, UpdatedAt: now,
 	}
+	hydrateServiceEndpointState(&svc)
 	if svc.Capabilities == nil {
 		svc.Capabilities = map[string]any{}
 	}
-	s.mu.Lock()
-	existing, ok := s.services[svc.ServiceID]
-	if !ok {
-		s.mu.Unlock()
-		return RegisteredService{}, ErrForbidden
-	}
-	if existing.ServiceType != svc.ServiceType || existing.TokenID != token.ID {
-		s.mu.Unlock()
-		return RegisteredService{}, ErrForbidden
-	}
 	if existing.ServiceType == "update_agent" && existing.Status != "pending" {
 		svc.Capabilities = existing.Capabilities
+	}
+	if existing.Status != "pending" {
+		svc.Host = existing.Host
+		svc.Port = existing.Port
+		svc.SSLEnabled = existing.SSLEnabled
+		svc.PublicURL = existing.PublicURL
+		svc.DesiredEndpoint = copyServiceEndpoint(existing.DesiredEndpoint)
+		svc.AppliedEndpoint = copyServiceEndpoint(existing.AppliedEndpoint)
+		svc.EndpointRevision = existing.EndpointRevision
+		svc.EndpointStatus = existing.EndpointStatus
+		svc.ReportedEndpoint = serviceEndpoint(registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL)
+	}
+	if existing.AppliedConfigRevision > 0 {
+		svc.AppliedConfigRevision = existing.AppliedConfigRevision
+		svc.AppliedConfigSHA256 = existing.AppliedConfigSHA256
+	}
+	if existing.ServiceType == "update_agent" {
+		svc.TransportMode = existing.TransportMode
+		svc.ExecutionHostID = existing.ExecutionHostID
+		svc.OwnershipEpoch = existing.OwnershipEpoch
 	}
 	svc.CreatedAt = existing.CreatedAt
 	svc.LastHeartbeatAt = existing.LastHeartbeatAt
@@ -291,7 +323,6 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 		svc.Status = existing.Status
 	}
 	s.services[svc.ServiceID] = svc
-	s.mu.Unlock()
 	return svc, nil
 }
 
@@ -321,7 +352,7 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	if heartbeat.CurrentStreamID != "" && !s.isAssignedLocked(heartbeat.ServiceID, heartbeat.CurrentStreamID) {
 		return RegisteredService{}, ErrForbidden
 	}
-	now := time.Now().UTC()
+	now := s.heartbeatNow().UTC()
 	svc.Status = heartbeat.Status
 	svc.LastHeartbeatAt = &now
 	heartbeatCommit := truncateServiceReportedValue(strings.TrimSpace(heartbeat.Commit), 80)
@@ -358,11 +389,8 @@ func (s *MemoryAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	}
 	if heartbeat.API != nil {
 		apiHost := strings.TrimSpace(heartbeat.API.Host)
-		if apiHost != "" {
-			svc.Host = apiHost
-			svc.Port = heartbeat.API.Port
-			svc.SSLEnabled = heartbeat.API.SSLEnabled
-			svc.PublicURL = buildServiceURL(svc.Host, svc.Port, svc.SSLEnabled)
+		if apiHost != "" && heartbeat.API.Port >= 1 && heartbeat.API.Port <= 65535 {
+			svc.ReportedEndpoint = serviceEndpoint(apiHost, heartbeat.API.Port, heartbeat.API.SSLEnabled, "")
 		}
 	}
 	if heartbeat.Version != "" || heartbeatCommit != "" || heartbeatBuildDate != "" || len(heartbeat.Capabilities) > 0 || heartbeat.Hostname != "" || heartbeat.OS != "" || heartbeat.Arch != "" || heartbeat.API != nil {
@@ -626,7 +654,13 @@ func (s *MemoryAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 		return StagedServiceNodeConfiguration{}, ErrUnauthorized
 	}
 	oldToken, ok := s.serviceTokens[service.TokenID]
-	if !ok || oldToken.RevokedAt != nil {
+	if !ok {
+		return StagedServiceNodeConfiguration{}, ErrNotFound
+	}
+	if oldToken.RevokedAt != nil &&
+		(!isEmergencyRevokedNodeConfigurationAnchor(service, oldToken) ||
+			(hasStagedServiceNodeConfiguration(service) &&
+				!hasOnlyStagedNodeConfigurationTombstone(service))) {
 		return StagedServiceNodeConfiguration{}, ErrNotFound
 	}
 	if oldToken.ServiceType != "update_agent" {
@@ -705,7 +739,10 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
 	oldToken, ok := s.serviceTokens[service.TokenID]
-	if !ok || oldToken.RevokedAt != nil || oldToken.ServiceType != "update_agent" {
+	if !ok ||
+		oldToken.ServiceType != "update_agent" ||
+		(oldToken.RevokedAt != nil &&
+			!isEmergencyRevokedNodeConfigurationAnchor(service, oldToken)) {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
 	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
@@ -738,7 +775,7 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 			break
 		}
 	}
-	if !oldTokenStillReferenced {
+	if !oldTokenStillReferenced && oldToken.RevokedAt == nil {
 		oldToken.RevokedAt = &now
 		s.serviceTokens[oldToken.ID] = oldToken
 	}
@@ -827,12 +864,21 @@ func (s *MemoryAuthStore) UpdateServiceMetadata(ctx context.Context, serviceID s
 	if !ok {
 		return RegisteredService{}, ErrNotFound
 	}
+	if update.Endpointless && (svc.ServiceType != "update_agent" || svc.TransportMode != "pull_v2") {
+		return RegisteredService{}, ErrInvalidServiceRegistration
+	}
 	svc.ServiceName = update.ServiceName
 	svc.Description = update.Description
-	svc.Host = update.Host
-	svc.Port = update.Port
-	svc.SSLEnabled = update.SSLEnabled
-	svc.PublicURL = update.PublicURL
+	if !update.Endpointless && !update.PreserveEndpoint {
+		svc.Host = update.Host
+		svc.Port = update.Port
+		svc.SSLEnabled = update.SSLEnabled
+		svc.PublicURL = update.PublicURL
+		svc.AppliedEndpoint = serviceEndpoint(update.Host, update.Port, update.SSLEnabled, update.PublicURL)
+		svc.DesiredEndpoint = copyServiceEndpoint(svc.AppliedEndpoint)
+		svc.EndpointRevision++
+		svc.EndpointStatus = "applied"
+	}
 	svc.UpdatedAt = time.Now().UTC()
 	s.services[serviceID] = svc
 	return svc, nil

@@ -112,7 +112,7 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 			continue
 		}
 		joinedEnv := strings.Join(call.env, "\n")
-		if !strings.Contains(joinedEnv, "HOME=/root") || !strings.Contains(joinedEnv, "DOCKER_CONFIG=/root/.docker") {
+		if !strings.Contains(joinedEnv, "HOME=/") || !strings.Contains(joinedEnv, "DOCKER_CONFIG=/etc/autostream-local-executor/docker") {
 			t.Fatalf("Docker command inherited a non-root credential environment: %+v", call.env)
 		}
 	}
@@ -125,7 +125,7 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 func TestDockerCommandEnvironmentIsFixed(t *testing.T) {
 	env := sanitizedCommandEnv(dockerCommandEnv())
 	joined := strings.Join(env, "\n")
-	if !strings.Contains(joined, "HOME=/root") || !strings.Contains(joined, "DOCKER_CONFIG=/root/.docker") {
+	if !strings.Contains(joined, "HOME=/") || !strings.Contains(joined, "DOCKER_CONFIG=/etc/autostream-local-executor/docker") {
 		t.Fatalf("fixed Docker environment missing: %v", env)
 	}
 }

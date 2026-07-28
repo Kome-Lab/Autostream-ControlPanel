@@ -1316,7 +1316,7 @@ func (w *centralHostWorker) stageRemote(ctx context.Context, job UpdateJob, plan
 func (w *centralHostWorker) invokeMutation(ctx context.Context, job UpdateJob, remotePlan RemotePlan, operation, keepaliveStatus string, progress int) (ApplyResult, error) {
 	binding := MutationGrantBinding{
 		LeaseGeneration: job.LeaseGeneration, HostID: w.host.HostID, TargetID: job.TargetID,
-		TargetVersion: job.EffectiveVersion(), DeploymentMode: job.DeploymentMode,
+		ServiceType: job.EffectiveType(), TargetVersion: job.EffectiveVersion(), DeploymentMode: job.DeploymentMode,
 		Operation: operation, PlanSHA256: remotePlan.PlanSHA256, SessionID: remotePlan.SessionID,
 	}
 	grant, err := w.coordinator.Panel.IssueMutationGrant(ctx, job.ID, MutationGrantRequest{ServiceID: w.coordinator.Config.NodeID, LeaseToken: job.LeaseToken, MutationGrantBinding: binding})

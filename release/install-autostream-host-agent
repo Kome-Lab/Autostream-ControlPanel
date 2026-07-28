@@ -1,0 +1,1119 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly AGENT_USER="autostream-host-agent"
+readonly AGENT_GROUP="autostream-host-agent"
+readonly CONFIG_DIR="/etc/autostream-host-agent"
+readonly CONFIG_DEST="${CONFIG_DIR}/identity.json"
+readonly LEGACY_CONFIG_DEST="/etc/autostream/host-agent.json"
+readonly BINARY_DEST="/usr/local/bin/autostream-host-agent"
+readonly UNIT_DEST="/etc/systemd/system/autostream-host-agent.service"
+readonly STATE_DIR="/var/lib/autostream-host-agent"
+readonly UNIT_NAME="autostream-host-agent.service"
+readonly LOCAL_EXECUTOR_CONFIG_DIR="/etc/autostream-local-executor"
+readonly LOCAL_EXECUTOR_POLICY_DEST="${LOCAL_EXECUTOR_CONFIG_DIR}/policy.json"
+readonly LOCAL_EXECUTOR_DATA_DIR="/opt/autostream/local-executor"
+readonly LOCAL_EXECUTOR_PORT_CONFIG_DIR="${LOCAL_EXECUTOR_DATA_DIR}/ports"
+readonly LOCAL_EXECUTOR_BINARY_DEST="/usr/local/libexec/autostream-local-executor"
+readonly LOCAL_EXECUTOR_SERVICE_DEST="/etc/systemd/system/autostream-local-executor.service"
+readonly LOCAL_EXECUTOR_SOCKET_DEST="/etc/systemd/system/autostream-local-executor.socket"
+readonly LOCAL_EXECUTOR_TMPFILES_DEST="/etc/tmpfiles.d/autostream-local-executor.conf"
+readonly SELF_UPDATE_RECOVERY_SERVICE_DEST="/etc/systemd/system/autostream-host-self-update-recovery@.service"
+readonly SELF_UPDATE_RECOVERY_TIMER_DEST="/etc/systemd/system/autostream-host-self-update-recovery@.timer"
+readonly LOCAL_EXECUTOR_SERVICE_NAME="autostream-local-executor.service"
+readonly LOCAL_EXECUTOR_SOCKET_NAME="autostream-local-executor.socket"
+readonly SELF_UPDATE_RECOVERY_TIMER_A="autostream-host-self-update-recovery@a.timer"
+readonly SELF_UPDATE_RECOVERY_TIMER_B="autostream-host-self-update-recovery@b.timer"
+readonly SELF_UPDATE_RECOVERY_SERVICE_A="autostream-host-self-update-recovery@a.service"
+readonly SELF_UPDATE_RECOVERY_SERVICE_B="autostream-host-self-update-recovery@b.service"
+readonly HOST_RUNTIME_ROOT="/opt/autostream/host-agent"
+readonly HOST_RUNTIME_SLOTS="${HOST_RUNTIME_ROOT}/slots"
+readonly HOST_RUNTIME_INITIAL_SLOT="${HOST_RUNTIME_SLOTS}/a"
+readonly HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"
+readonly HOST_RUNTIME_AGENT="${HOST_RUNTIME_INITIAL_SLOT}/bin/autostream-host-agent"
+readonly HOST_RUNTIME_EXECUTOR="${HOST_RUNTIME_INITIAL_SLOT}/bin/autostream-local-executor"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  install-autostream-host-agent --prepare
+  install-autostream-host-agent --config PATH
+
+--prepare installs the service account, Host Agent, and the same-release local
+executor binary and units. It also prepares the root:root 0700 policy and port
+configuration directories, but does not create either identity/policy, enable
+the runtime units, or start either runtime service. It enables only the
+root-owned A/B recovery timers. Complete the generated Control Panel configure
+command before explicitly enabling the Host Agent and executor socket.
+
+--config preserves the legacy one-step installation. PATH must be a regular
+JSON file containing exactly panel_url, node_id, runtime_token, and
+service_name. The token is copied from that file and is never accepted through
+an argument or environment variable.
+EOF
+}
+
+die() {
+  printf 'install-autostream-host-agent: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ ${EUID} -eq 0 ]] || die "must run as root"
+
+install_mode=""
+config_source=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prepare)
+      [[ -z ${install_mode} ]] || die "--prepare and --config are mutually exclusive"
+      install_mode="prepare"
+      shift
+      ;;
+    --config)
+      [[ $# -ge 2 && -n $2 ]] || die "--config requires a path"
+      [[ -z ${install_mode} ]] || die "--prepare and --config are mutually exclusive"
+      install_mode="configured"
+      config_source=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+[[ -n ${install_mode} ]] || {
+  usage
+  die "--prepare or --config PATH is required"
+}
+for command in awk dd dirname getent groupadd id install ln mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl test tr useradd; do
+  command -v "${command}" >/dev/null 2>&1 || die "required command is unavailable: ${command}"
+done
+if [[ ${install_mode} == "configured" ]]; then
+  [[ ${config_source} = /* ]] || die "--config must be an absolute path"
+fi
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly RELEASE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+readonly BINARY_SOURCE="${RELEASE_ROOT}/bin/autostream-host-agent"
+readonly UNIT_SOURCE="${RELEASE_ROOT}/systemd/autostream-host-agent.service"
+readonly LOCAL_EXECUTOR_POLICY_TEMPLATE="${RELEASE_ROOT}/autostream-local-executor-policy.json.example"
+readonly LOCAL_EXECUTOR_BINARY_SOURCE="${RELEASE_ROOT}/bin/autostream-local-executor"
+readonly LOCAL_EXECUTOR_SERVICE_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.service"
+readonly LOCAL_EXECUTOR_SOCKET_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.socket"
+readonly LOCAL_EXECUTOR_TMPFILES_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.tmpfiles"
+readonly SELF_UPDATE_RECOVERY_SERVICE_SOURCE="${RELEASE_ROOT}/systemd/autostream-host-self-update-recovery@.service"
+readonly SELF_UPDATE_RECOVERY_TIMER_SOURCE="${RELEASE_ROOT}/systemd/autostream-host-self-update-recovery@.timer"
+
+[[ -f ${BINARY_SOURCE} && ! -L ${BINARY_SOURCE} ]] || die "verified host agent binary is missing"
+[[ -f ${UNIT_SOURCE} && ! -L ${UNIT_SOURCE} ]] || die "packaged systemd unit is missing"
+if [[ ${install_mode} == "prepare" ]]; then
+  for source in \
+    "${LOCAL_EXECUTOR_POLICY_TEMPLATE}" \
+    "${LOCAL_EXECUTOR_BINARY_SOURCE}" \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+    "${LOCAL_EXECUTOR_SOCKET_SOURCE}" \
+    "${LOCAL_EXECUTOR_TMPFILES_SOURCE}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_SOURCE}"; do
+    [[ -f ${source} && ! -L ${source} ]] || \
+      die "same-release local executor preparation asset is missing or unsafe: ${source}"
+  done
+fi
+
+validate_root_parent_chain() {
+  local path=$1
+  local label=$2
+  local current
+  local parent
+  local mode
+  current=$(dirname -- "${path}")
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || die "${label} parents must be non-symlink directories"
+    [[ $(stat -c '%U:%G' -- "${current}") == "root:root" ]] || \
+      die "${label} parents must be owned by root:root"
+    mode=$(stat -c '%a' -- "${current}")
+    (( (8#${mode} & 0022) == 0 )) || \
+      die "${label} parents must not be writable by group or other"
+    parent=$(dirname -- "${current}")
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+validate_root_owned_release_source() {
+  local source=$1
+  local mode
+  [[ -f ${source} && ! -L ${source} ]] || die "release asset ${source} is missing or unsafe"
+  [[ $(stat -c '%U:%G' -- "${source}") == "root:root" ]] || \
+    die "release asset ${source} must be owned by root:root"
+  mode=$(stat -c '%a' -- "${source}")
+  (( (8#${mode} & 0022) == 0 )) || \
+    die "release asset ${source} must not be writable by group or other"
+  validate_root_parent_chain "${source}" "release source"
+}
+
+validate_root_owned_config_source() {
+  local source=$1
+  [[ -f ${source} && ! -L ${source} ]] || \
+    die "config source must be a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${source}") == "root:root:600" ]] || \
+    die "config source must be root:root 0600"
+  [[ $(stat -c %s -- "${source}") -gt 0 && $(stat -c %s -- "${source}") -le 1048576 ]] || \
+    die "config source must be between 1 byte and 1 MiB"
+  validate_root_parent_chain "${source}" "config source"
+}
+
+validate_root_owned_release_source "${BINARY_SOURCE}"
+validate_root_owned_release_source "${UNIT_SOURCE}"
+if [[ ${install_mode} == "prepare" ]]; then
+  validate_root_owned_release_source "${LOCAL_EXECUTOR_POLICY_TEMPLATE}"
+  validate_root_owned_release_source "${LOCAL_EXECUTOR_BINARY_SOURCE}"
+  validate_root_owned_release_source "${LOCAL_EXECUTOR_SERVICE_SOURCE}"
+  validate_root_owned_release_source "${LOCAL_EXECUTOR_SOCKET_SOURCE}"
+  validate_root_owned_release_source "${LOCAL_EXECUTOR_TMPFILES_SOURCE}"
+  validate_root_owned_release_source "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}"
+  validate_root_owned_release_source "${SELF_UPDATE_RECOVERY_TIMER_SOURCE}"
+fi
+if [[ ${install_mode} == "configured" ]]; then
+  validate_root_owned_config_source "${config_source}"
+fi
+
+copy_verified_release_file() {
+  local source=$1
+  local destination=$2
+  local owner=$3
+  local group=$4
+  local mode=$5
+  local label=$6
+  local source_identity
+  local source_sha256
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source is missing or unsafe"
+  source_identity=$(stat -c '%d:%i:%s:%Y:%f' -- "${source}")
+  source_sha256=$(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }')
+  install -o "${owner}" -g "${group}" -m "${mode}" "${source}" "${destination}"
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source changed while it was copied"
+  [[ $(stat -c '%d:%i:%s:%Y:%f' -- "${source}") == "${source_identity}" ]] || \
+    die "${label} release source identity changed while it was copied"
+  [[ $(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "${label} release source content changed while it was copied"
+  [[ $(sha256sum -- "${destination}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged ${label} does not match the verified release source"
+}
+
+copy_verified_config_file() {
+  local source=$1
+  local destination=$2
+  local source_identity
+  local source_sha256
+  validate_root_owned_config_source "${source}"
+  source_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${source}")
+  source_sha256=$(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }')
+  install -o root -g "${AGENT_GROUP}" -m 0640 "${source}" "${destination}"
+  validate_root_owned_config_source "${source}"
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${source}") == "${source_identity}" ]] || \
+    die "config source identity changed while it was copied"
+  [[ $(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "config source content changed while it was copied"
+  [[ $(sha256sum -- "${destination}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged identity does not match the verified config source"
+}
+
+if [[ ${install_mode} == "prepare" ]]; then
+  [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+    ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "--prepare refuses an existing identity; use --config PATH for a configured installation"
+  [[ ! -e ${LOCAL_EXECUTOR_POLICY_DEST} && ! -L ${LOCAL_EXECUTOR_POLICY_DEST} ]] || \
+    die "--prepare refuses an existing local executor policy; use the local executor installer for upgrades"
+  if systemctl is-active --quiet "${UNIT_NAME}"; then
+    die "--prepare requires the Host Agent service to be inactive"
+  fi
+  if systemctl is-enabled --quiet "${UNIT_NAME}"; then
+    die "--prepare requires the Host Agent service to be disabled"
+  fi
+  if systemctl is-active --quiet "${LOCAL_EXECUTOR_SERVICE_NAME}" ||
+    systemctl is-active --quiet "${LOCAL_EXECUTOR_SOCKET_NAME}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_SERVICE_A}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_SERVICE_B}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_TIMER_A}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_TIMER_B}"; then
+    die "--prepare requires the local executor and self-update recovery timers to be inactive"
+  fi
+  if systemctl is-enabled --quiet "${LOCAL_EXECUTOR_SERVICE_NAME}" ||
+    systemctl is-enabled --quiet "${LOCAL_EXECUTOR_SOCKET_NAME}" ||
+    systemctl is-enabled --quiet "${SELF_UPDATE_RECOVERY_TIMER_A}" ||
+    systemctl is-enabled --quiet "${SELF_UPDATE_RECOVERY_TIMER_B}"; then
+    die "--prepare requires the local executor and self-update recovery timers to be disabled"
+  fi
+  [[ ! -e ${HOST_RUNTIME_ROOT} && ! -L ${HOST_RUNTIME_ROOT} ]] || \
+    die "--prepare refuses an existing Host Agent A/B runtime root"
+fi
+
+if ! getent group "${AGENT_GROUP}" >/dev/null; then
+  groupadd --system "${AGENT_GROUP}"
+fi
+if ! id "${AGENT_USER}" >/dev/null 2>&1; then
+  useradd \
+    --system \
+    --gid "${AGENT_GROUP}" \
+    --home-dir "${STATE_DIR}" \
+    --shell /usr/sbin/nologin \
+    "${AGENT_USER}"
+fi
+[[ $(id -u "${AGENT_USER}") -ne 0 ]] || die "agent user must not be root"
+[[ $(id -gn "${AGENT_USER}") == "${AGENT_GROUP}" ]] || die "agent user must use the dedicated primary group"
+mapfile -t supplementary_groups < <(id -Gn "${AGENT_USER}" | tr ' ' '\n' | LC_ALL=C sort -u)
+[[ ${#supplementary_groups[@]} -eq 1 && ${supplementary_groups[0]} == "${AGENT_GROUP}" ]] || \
+  die "agent user must not belong to supplementary groups"
+IFS=: read -r _ _ agent_gid agent_group_members < <(getent group "${AGENT_GROUP}")
+[[ ${agent_gid} =~ ^[0-9]+$ ]] || die "agent group has an invalid gid"
+if [[ -n ${agent_group_members} ]]; then
+  IFS=, read -r -a explicit_group_members <<<"${agent_group_members}"
+  for member in "${explicit_group_members[@]}"; do
+    [[ ${member} == "${AGENT_USER}" ]] || die "agent group must not grant identity access to another user"
+  done
+fi
+while IFS=: read -r account_name _ _ account_gid _ _ _; do
+  if [[ ${account_gid} == "${agent_gid}" && ${account_name} != "${AGENT_USER}" ]]; then
+    die "agent group must not be the primary group of another user"
+  fi
+done < <(getent passwd)
+IFS=: read -r _ _ _ _ _ agent_home agent_shell < <(getent passwd "${AGENT_USER}")
+[[ ${agent_home} == "${STATE_DIR}" ]] || die "agent user must use ${STATE_DIR} as its home"
+[[ ${agent_shell} == "/usr/sbin/nologin" ]] || die "agent user must use /usr/sbin/nologin"
+
+ensure_root_directory() {
+  local path=$1
+  local create_mode=$2
+  local mode
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -d ${path} && ! -L ${path} ]] || die "${path} must be a non-symlink directory"
+    [[ $(stat -c '%U:%G' -- "${path}") == "root:root" ]] || die "${path} must be owned by root:root"
+    mode=$(stat -c '%a' -- "${path}")
+    (( (8#${mode} & 0022) == 0 )) || die "${path} must not be writable by group or other"
+    return
+  fi
+  install -d -o root -g root -m "${create_mode}" "${path}"
+}
+
+validate_private_root_directory() {
+  local path=$1
+  [[ -d ${path} && ! -L ${path} ]] || die "${path} must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "root:root:700" ]] || \
+    die "${path} must be root:root 0700"
+}
+
+recheck_private_root_directory() {
+  local path=$1
+  local expected_identity=$2
+  validate_private_root_directory "${path}"
+  [[ $(stat -c '%d:%i' -- "${path}") == "${expected_identity}" ]] || \
+    die "${path} changed after preflight"
+}
+
+create_private_root_directory() {
+  local path=$1
+  local created_variable=$2
+  local identity_variable=$3
+  local identity=""
+  [[ ! -e ${path} && ! -L ${path} ]] || \
+    die "${path} appeared after preflight"
+  printf -v "${created_variable}" '%s' true
+  if ! install -d -o root -g root -m 0700 "${path}"; then
+    if [[ -d ${path} && ! -L ${path} ]]; then
+      identity=$(stat -c '%d:%i' -- "${path}" 2>/dev/null || true)
+      printf -v "${identity_variable}" '%s' "${identity}"
+    fi
+    die "could not create ${path}"
+  fi
+  identity=$(stat -c '%d:%i' -- "${path}")
+  printf -v "${identity_variable}" '%s' "${identity}"
+  validate_private_root_directory "${path}"
+}
+
+validate_identity_directory() {
+  local path=$1
+  [[ -d ${path} && ! -L ${path} ]] || \
+    die "${path} must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "root:${AGENT_GROUP}:750" ]] || \
+    die "${path} must be root:${AGENT_GROUP} 0750"
+}
+
+ensure_root_directory /etc/autostream 0755
+ensure_root_directory /usr/local/bin 0755
+ensure_root_directory /etc/systemd/system 0755
+identity_config_dir_created=false
+identity_config_dir_identity=""
+if [[ -e ${CONFIG_DIR} || -L ${CONFIG_DIR} ]]; then
+  validate_identity_directory "${CONFIG_DIR}"
+  identity_config_dir_identity=$(stat -c '%d:%i' -- "${CONFIG_DIR}")
+else
+  install -d -o root -g "${AGENT_GROUP}" -m 0750 "${CONFIG_DIR}"
+  identity_config_dir_created=true
+  identity_config_dir_identity=$(stat -c '%d:%i' -- "${CONFIG_DIR}")
+  validate_identity_directory "${CONFIG_DIR}"
+fi
+local_executor_config_dir_existed=false
+local_executor_data_dir_existed=false
+local_executor_port_config_dir_existed=false
+local_executor_config_dir_identity=""
+local_executor_data_dir_identity=""
+local_executor_port_config_dir_identity=""
+if [[ ${install_mode} == "prepare" ]]; then
+  ensure_root_directory /usr/local/libexec 0755
+  ensure_root_directory /etc/tmpfiles.d 0755
+  ensure_root_directory /opt/autostream 0755
+  if [[ -e ${LOCAL_EXECUTOR_CONFIG_DIR} || -L ${LOCAL_EXECUTOR_CONFIG_DIR} ]]; then
+    validate_private_root_directory "${LOCAL_EXECUTOR_CONFIG_DIR}"
+    local_executor_config_dir_existed=true
+    local_executor_config_dir_identity=$(stat -c '%d:%i' -- "${LOCAL_EXECUTOR_CONFIG_DIR}")
+  fi
+  if [[ -e ${LOCAL_EXECUTOR_DATA_DIR} || -L ${LOCAL_EXECUTOR_DATA_DIR} ]]; then
+    validate_private_root_directory "${LOCAL_EXECUTOR_DATA_DIR}"
+    local_executor_data_dir_existed=true
+    local_executor_data_dir_identity=$(stat -c '%d:%i' -- "${LOCAL_EXECUTOR_DATA_DIR}")
+  fi
+  if [[ -e ${LOCAL_EXECUTOR_PORT_CONFIG_DIR} || -L ${LOCAL_EXECUTOR_PORT_CONFIG_DIR} ]]; then
+    validate_private_root_directory "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}"
+    local_executor_port_config_dir_existed=true
+    local_executor_port_config_dir_identity=$(stat -c '%d:%i' -- "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}")
+  fi
+fi
+if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
+  [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || die "${STATE_DIR} must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "${AGENT_USER}:${AGENT_GROUP}:700" ]] || \
+    die "${STATE_DIR} must be ${AGENT_USER}:${AGENT_GROUP} 0700"
+else
+  install -d -o "${AGENT_USER}" -g "${AGENT_GROUP}" -m 0700 "${STATE_DIR}"
+fi
+
+config_stage=""
+config_stage_sha256=""
+if [[ ${install_mode} == "configured" ]]; then
+  config_stage=$(mktemp "${CONFIG_DIR}/.identity.json.new.XXXXXX")
+fi
+binary_stage=$(mktemp /usr/local/bin/.autostream-host-agent.new.XXXXXX)
+unit_stage=$(mktemp /etc/systemd/system/.autostream-host-agent.service.new.XXXXXX)
+local_executor_binary_stage=""
+local_executor_service_stage=""
+local_executor_socket_stage=""
+local_executor_tmpfiles_stage=""
+self_update_recovery_service_stage=""
+self_update_recovery_timer_stage=""
+if [[ ${install_mode} == "prepare" ]]; then
+  local_executor_binary_stage=$(mktemp /usr/local/libexec/.autostream-local-executor.new.XXXXXX)
+  local_executor_service_stage=$(mktemp /etc/systemd/system/.autostream-local-executor.service.new.XXXXXX)
+  local_executor_socket_stage=$(mktemp /etc/systemd/system/.autostream-local-executor.socket.new.XXXXXX)
+  local_executor_tmpfiles_stage=$(mktemp /etc/tmpfiles.d/.autostream-local-executor.conf.new.XXXXXX)
+  self_update_recovery_service_stage=$(mktemp /etc/systemd/system/.autostream-host-self-update-recovery.service.new.XXXXXX)
+  self_update_recovery_timer_stage=$(mktemp /etc/systemd/system/.autostream-host-self-update-recovery.timer.new.XXXXXX)
+fi
+config_backup=""
+binary_backup=""
+unit_backup=""
+local_executor_binary_backup=""
+local_executor_service_backup=""
+local_executor_socket_backup=""
+local_executor_tmpfiles_backup=""
+self_update_recovery_service_backup=""
+self_update_recovery_timer_backup=""
+commit_started=false
+installation_complete=false
+was_active=false
+was_enabled=false
+service_quiesced=false
+config_existed=false
+config_identity=""
+config_sha256=""
+legacy_config_existed=false
+legacy_config_identity=""
+legacy_config_sha256=""
+legacy_config_retired=false
+binary_existed=false
+unit_existed=false
+local_executor_binary_existed=false
+local_executor_service_existed=false
+local_executor_socket_existed=false
+local_executor_tmpfiles_existed=false
+self_update_recovery_service_existed=false
+self_update_recovery_timer_existed=false
+config_backed_up=false
+binary_backed_up=false
+unit_backed_up=false
+local_executor_binary_backed_up=false
+local_executor_service_backed_up=false
+local_executor_socket_backed_up=false
+local_executor_tmpfiles_backed_up=false
+self_update_recovery_service_backed_up=false
+self_update_recovery_timer_backed_up=false
+config_installed=false
+binary_installed=false
+unit_installed=false
+local_executor_binary_installed=false
+local_executor_service_installed=false
+local_executor_socket_installed=false
+local_executor_tmpfiles_installed=false
+self_update_recovery_service_installed=false
+self_update_recovery_timer_installed=false
+self_update_recovery_timer_a_enabled=false
+self_update_recovery_timer_b_enabled=false
+self_update_layout_created=false
+binary_managed_link=false
+local_executor_config_dir_created=false
+local_executor_data_dir_created=false
+local_executor_port_config_dir_created=false
+
+rollback_prepared_private_directory() {
+  local path=$1
+  local expected_identity=$2
+  local label=$3
+  if [[ ! -d ${path} || -L ${path} ||
+    $(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) != "${expected_identity}" ]]; then
+    printf '%s\n' "install-autostream-host-agent: rollback refused changed ${label}; inspect ${path}" >&2
+    return 1
+  fi
+  if ! rmdir -- "${path}"; then
+    printf '%s\n' "install-autostream-host-agent: rollback could not remove new ${label}; inspect ${path}" >&2
+    return 1
+  fi
+}
+
+cleanup() {
+  local status=$?
+  local rollback_failed=false
+  if [[ ${installation_complete} == true ]]; then
+    [[ -z ${config_stage} ]] || rm -f -- "${config_stage}"
+    rm -f -- "${binary_stage}" "${unit_stage}"
+    [[ -z ${local_executor_binary_stage} ]] || rm -f -- "${local_executor_binary_stage}"
+    [[ -z ${local_executor_service_stage} ]] || rm -f -- "${local_executor_service_stage}"
+    [[ -z ${local_executor_socket_stage} ]] || rm -f -- "${local_executor_socket_stage}"
+    [[ -z ${local_executor_tmpfiles_stage} ]] || rm -f -- "${local_executor_tmpfiles_stage}"
+    [[ -z ${self_update_recovery_service_stage} ]] || rm -f -- "${self_update_recovery_service_stage}"
+    [[ -z ${self_update_recovery_timer_stage} ]] || rm -f -- "${self_update_recovery_timer_stage}"
+    [[ -z ${config_backup} ]] || rm -f -- "${config_backup}"
+    [[ -z ${binary_backup} ]] || rm -f -- "${binary_backup}"
+    [[ -z ${unit_backup} ]] || rm -f -- "${unit_backup}"
+    [[ -z ${local_executor_binary_backup} ]] || rm -f -- "${local_executor_binary_backup}"
+    [[ -z ${local_executor_service_backup} ]] || rm -f -- "${local_executor_service_backup}"
+    [[ -z ${local_executor_socket_backup} ]] || rm -f -- "${local_executor_socket_backup}"
+    [[ -z ${local_executor_tmpfiles_backup} ]] || rm -f -- "${local_executor_tmpfiles_backup}"
+    [[ -z ${self_update_recovery_service_backup} ]] || rm -f -- "${self_update_recovery_service_backup}"
+    [[ -z ${self_update_recovery_timer_backup} ]] || rm -f -- "${self_update_recovery_timer_backup}"
+    return "${status}"
+  fi
+
+  [[ -z ${config_stage} ]] || rm -f -- "${config_stage}"
+  rm -f -- "${binary_stage}" "${unit_stage}"
+  [[ -z ${local_executor_binary_stage} ]] || rm -f -- "${local_executor_binary_stage}"
+  [[ -z ${local_executor_service_stage} ]] || rm -f -- "${local_executor_service_stage}"
+  [[ -z ${local_executor_socket_stage} ]] || rm -f -- "${local_executor_socket_stage}"
+  [[ -z ${local_executor_tmpfiles_stage} ]] || rm -f -- "${local_executor_tmpfiles_stage}"
+  [[ -z ${self_update_recovery_service_stage} ]] || rm -f -- "${self_update_recovery_service_stage}"
+  [[ -z ${self_update_recovery_timer_stage} ]] || rm -f -- "${self_update_recovery_timer_stage}"
+  if [[ ${commit_started} == true ]]; then
+    systemctl stop "${UNIT_NAME}" >/dev/null 2>&1 || true
+    if [[ ${self_update_recovery_timer_a_enabled} == true ]]; then
+      systemctl disable --now "${SELF_UPDATE_RECOVERY_TIMER_A}" >/dev/null 2>&1 || rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_timer_b_enabled} == true ]]; then
+      systemctl disable --now "${SELF_UPDATE_RECOVERY_TIMER_B}" >/dev/null 2>&1 || rollback_failed=true
+    fi
+    if [[ ${was_enabled} == false && ( ${unit_installed} == true || ${unit_existed} == true ) ]]; then
+      if ! systemctl disable "${UNIT_NAME}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not restore the previous disabled state' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${config_installed} == true ]]; then
+      if ! rm -f -- "${CONFIG_DEST}"; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not remove the staged identity config' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${config_backed_up} == true && -e ${config_backup} ]]; then
+      if ! mv -f -- "${config_backup}" "${CONFIG_DEST}"; then
+        printf '%s\n' "install-autostream-host-agent: rollback could not restore ${config_backup}; preserve it for console recovery" >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${binary_installed} == true ]]; then
+      if ! rm -f -- "${BINARY_DEST}"; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not remove the staged binary' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${binary_backed_up} == true && -e ${binary_backup} ]]; then
+      if ! mv -f -- "${binary_backup}" "${BINARY_DEST}"; then
+        printf '%s\n' "install-autostream-host-agent: rollback could not restore ${binary_backup}; preserve it for console recovery" >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${unit_installed} == true ]]; then
+      if ! rm -f -- "${UNIT_DEST}"; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not remove the staged systemd unit' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${unit_backed_up} == true && -e ${unit_backup} ]]; then
+      if ! mv -f -- "${unit_backup}" "${UNIT_DEST}"; then
+        printf '%s\n' "install-autostream-host-agent: rollback could not restore ${unit_backup}; preserve it for console recovery" >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${local_executor_binary_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_BINARY_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor binary' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_binary_backed_up} == true && -e ${local_executor_binary_backup} ]] &&
+      ! mv -f -- "${local_executor_binary_backup}" "${LOCAL_EXECUTOR_BINARY_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_binary_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_layout_created} == true ]]; then
+      rm -f -- \
+        "${HOST_RUNTIME_CURRENT}" \
+        "${HOST_RUNTIME_AGENT}" \
+        "${HOST_RUNTIME_EXECUTOR}"
+      rmdir -- \
+        "${HOST_RUNTIME_INITIAL_SLOT}/bin" \
+        "${HOST_RUNTIME_INITIAL_SLOT}" \
+        "${HOST_RUNTIME_SLOTS}" \
+        "${HOST_RUNTIME_ROOT}" >/dev/null 2>&1 || {
+        printf '%s\n' 'install-autostream-host-agent: rollback could not remove the staged A/B runtime layout' >&2
+        rollback_failed=true
+      }
+    fi
+    if [[ ${local_executor_service_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_SERVICE_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor service' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_service_backed_up} == true && -e ${local_executor_service_backup} ]] &&
+      ! mv -f -- "${local_executor_service_backup}" "${LOCAL_EXECUTOR_SERVICE_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_service_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_socket_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_SOCKET_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor socket' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_socket_backed_up} == true && -e ${local_executor_socket_backup} ]] &&
+      ! mv -f -- "${local_executor_socket_backup}" "${LOCAL_EXECUTOR_SOCKET_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_socket_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_tmpfiles_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_TMPFILES_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor tmpfiles policy' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_tmpfiles_backed_up} == true && -e ${local_executor_tmpfiles_backup} ]] &&
+      ! mv -f -- "${local_executor_tmpfiles_backup}" "${LOCAL_EXECUTOR_TMPFILES_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_tmpfiles_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_service_installed} == true ]] &&
+      ! rm -f -- "${SELF_UPDATE_RECOVERY_SERVICE_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the self-update recovery service template' >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_service_backed_up} == true && -e ${self_update_recovery_service_backup} ]] &&
+      ! mv -f -- "${self_update_recovery_service_backup}" "${SELF_UPDATE_RECOVERY_SERVICE_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${self_update_recovery_service_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_timer_installed} == true ]] &&
+      ! rm -f -- "${SELF_UPDATE_RECOVERY_TIMER_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the self-update recovery timer template' >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_timer_backed_up} == true && -e ${self_update_recovery_timer_backup} ]] &&
+      ! mv -f -- "${self_update_recovery_timer_backup}" "${SELF_UPDATE_RECOVERY_TIMER_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${self_update_recovery_timer_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_port_config_dir_created} == true ]] &&
+      ! rollback_prepared_private_directory \
+        "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+        "${local_executor_port_config_dir_identity}" \
+        "local executor port directory"; then
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_data_dir_created} == true ]] &&
+      ! rollback_prepared_private_directory \
+        "${LOCAL_EXECUTOR_DATA_DIR}" \
+        "${local_executor_data_dir_identity}" \
+        "local executor data directory"; then
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_config_dir_created} == true ]] &&
+      ! rollback_prepared_private_directory \
+        "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+        "${local_executor_config_dir_identity}" \
+        "local executor policy directory"; then
+      rollback_failed=true
+    fi
+    if ! systemctl daemon-reload >/dev/null 2>&1; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not reload systemd state' >&2
+      rollback_failed=true
+    fi
+    if [[ ${was_enabled} == true ]]; then
+      if ! systemctl enable "${UNIT_NAME}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not re-enable the previous service; inspect it locally' >&2
+        rollback_failed=true
+      fi
+    fi
+  fi
+  if [[ ${identity_config_dir_created} == true ]]; then
+    if [[ ! -d ${CONFIG_DIR} || -L ${CONFIG_DIR} ||
+      $(stat -c '%d:%i' -- "${CONFIG_DIR}" 2>/dev/null || true) != "${identity_config_dir_identity}" ]]; then
+      printf '%s\n' "install-autostream-host-agent: rollback refused changed identity directory; inspect ${CONFIG_DIR}" >&2
+      rollback_failed=true
+    elif ! rmdir -- "${CONFIG_DIR}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not remove new identity directory; inspect ${CONFIG_DIR}" >&2
+      rollback_failed=true
+    fi
+  fi
+  if [[ ${service_quiesced} == true && ${was_active} == true ]]; then
+    systemctl start "${UNIT_NAME}" >/dev/null 2>&1 || \
+      {
+        printf '%s\n' 'install-autostream-host-agent: rollback could not restart the previous service; inspect it locally' >&2
+        rollback_failed=true
+      }
+  fi
+  if [[ ${rollback_failed} == true ]]; then
+    return 1
+  fi
+  return "${status}"
+}
+trap cleanup EXIT
+
+if [[ ${install_mode} == "configured" ]]; then
+  copy_verified_config_file "${config_source}" "${config_stage}"
+  config_stage_sha256=$(sha256sum -- "${config_stage}" | awk 'NR == 1 { print $1 }')
+fi
+copy_verified_release_file "${BINARY_SOURCE}" "${binary_stage}" root root 0755 "Host Agent binary"
+copy_verified_release_file "${UNIT_SOURCE}" "${unit_stage}" root root 0644 "Host Agent systemd unit"
+if [[ ${install_mode} == "prepare" ]]; then
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_BINARY_SOURCE}" "${local_executor_binary_stage}" root root 0755 "local executor binary"
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" "${local_executor_service_stage}" root root 0644 "local executor service"
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_SOCKET_SOURCE}" "${local_executor_socket_stage}" root root 0644 "local executor socket"
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_TMPFILES_SOURCE}" "${local_executor_tmpfiles_stage}" root root 0644 "local executor tmpfiles policy"
+  copy_verified_release_file \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" "${self_update_recovery_service_stage}" root root 0644 "self-update recovery service template"
+  copy_verified_release_file \
+    "${SELF_UPDATE_RECOVERY_TIMER_SOURCE}" "${self_update_recovery_timer_stage}" root root 0644 "self-update recovery timer template"
+fi
+
+if [[ ${install_mode} == "configured" ]]; then
+  "${binary_stage}" validate-config --config "${config_stage}"
+fi
+"${binary_stage}" --version >/dev/null
+if [[ ${install_mode} == "prepare" ]]; then
+  "${local_executor_binary_stage}" --version >/dev/null
+fi
+
+validate_existing() {
+  local path=$1
+  local owner=$2
+  local group=$3
+  local mode=$4
+  local label=$5
+  [[ ! -e ${path} && ! -L ${path} ]] && return 1
+  [[ -f ${path} && ! -L ${path} ]] || die "existing ${label} must be a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "${owner}:${group}:${mode}" ]] || \
+    die "existing ${label} must be ${owner}:${group} ${mode}"
+  return 0
+}
+
+retire_legacy_identity() {
+  local size
+  local blocks
+  local wipe_failed=false
+  validate_existing "${LEGACY_CONFIG_DEST}" root "${AGENT_GROUP}" 640 "legacy identity config" >/dev/null
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}") == "${legacy_config_identity}" &&
+    $(sha256sum -- "${LEGACY_CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${legacy_config_sha256}" ]] || \
+    die "legacy Host Agent identity changed before retirement"
+  size=$(stat -c '%s' -- "${LEGACY_CONFIG_DEST}")
+  [[ ${size} =~ ^[1-9][0-9]*$ && ${size} -le 65536 ]] || \
+    die "legacy Host Agent identity has an unsafe size"
+  blocks=$(( (size + 4095) / 4096 ))
+  dd if=/dev/zero of="${LEGACY_CONFIG_DEST}" bs=4096 count="${blocks}" conv=notrunc status=none ||
+    wipe_failed=true
+  sync -d "${LEGACY_CONFIG_DEST}" >/dev/null 2>&1 || wipe_failed=true
+  rm -f -- "${LEGACY_CONFIG_DEST}" || \
+    die "could not unlink the retired legacy Host Agent identity; the new identity remains installed and the service stays stopped"
+  sync -f /etc/autostream
+  [[ ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "legacy Host Agent identity survived retirement; the new identity remains installed and the service stays stopped"
+  legacy_config_retired=true
+  if [[ ${wipe_failed} == true ]]; then
+    printf '%s\n' 'install-autostream-host-agent: warning: legacy identity was unlinked, but its best-effort overwrite or sync was incomplete' >&2
+  fi
+}
+
+validate_managed_agent_link() {
+  [[ -L ${BINARY_DEST} ]] || return 1
+  [[ -L ${HOST_RUNTIME_CURRENT} ]] || \
+    die "managed Host Agent binary is missing the atomic current link"
+  local current_target
+  current_target=$(readlink -- "${HOST_RUNTIME_CURRENT}")
+  [[ ${current_target} == "slots/a" || ${current_target} == "slots/b" ]] || \
+    die "managed Host Agent current link points outside its fixed A/B slots"
+  [[ $(readlink -- "${BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" ]] || \
+    die "managed Host Agent binary link points outside the atomic current runtime"
+  local resolved
+  resolved=$(readlink -f -- "${BINARY_DEST}")
+  [[ ${resolved} == "${HOST_RUNTIME_SLOTS}/a/bin/autostream-host-agent" ||
+    ${resolved} == "${HOST_RUNTIME_SLOTS}/b/bin/autostream-host-agent" ]] || \
+    die "managed Host Agent binary resolves outside its fixed A/B slots"
+  [[ -f ${resolved} && ! -L ${resolved} ]] || \
+    die "managed Host Agent active binary is missing or unsafe"
+  [[ $(stat -c '%U:%G:%a' -- "${resolved}") == "root:root:755" ]] || \
+    die "managed Host Agent active binary must be root:root 0755"
+  return 0
+}
+
+if [[ ${install_mode} == "configured" ]]; then
+  if [[ ( -e ${CONFIG_DEST} || -L ${CONFIG_DEST} ) &&
+    ( -e ${LEGACY_CONFIG_DEST} || -L ${LEGACY_CONFIG_DEST} ) ]]; then
+    die "both current and legacy Host Agent identities exist; refusing an ambiguous migration"
+  fi
+  if validate_existing "${CONFIG_DEST}" root "${AGENT_GROUP}" 640 "identity config"; then
+    config_existed=true
+    config_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${CONFIG_DEST}")
+    config_sha256=$(sha256sum -- "${CONFIG_DEST}" | awk 'NR == 1 { print $1 }')
+  elif validate_existing "${LEGACY_CONFIG_DEST}" root "${AGENT_GROUP}" 640 "legacy identity config"; then
+    legacy_config_existed=true
+    legacy_config_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}")
+    legacy_config_sha256=$(sha256sum -- "${LEGACY_CONFIG_DEST}" | awk 'NR == 1 { print $1 }')
+  fi
+fi
+if [[ -L ${BINARY_DEST} ]]; then
+  if validate_managed_agent_link; then
+    binary_managed_link=true
+  fi
+elif validate_existing "${BINARY_DEST}" root root 755 "binary"; then
+  binary_existed=true
+fi
+if validate_existing "${UNIT_DEST}" root root 644 "systemd unit"; then
+  unit_existed=true
+fi
+if [[ ${install_mode} == "prepare" ]]; then
+  if validate_existing "${LOCAL_EXECUTOR_BINARY_DEST}" root root 755 "local executor binary"; then
+    local_executor_binary_existed=true
+  fi
+  if validate_existing "${LOCAL_EXECUTOR_SERVICE_DEST}" root root 644 "local executor service"; then
+    local_executor_service_existed=true
+  fi
+  if validate_existing "${LOCAL_EXECUTOR_SOCKET_DEST}" root root 644 "local executor socket"; then
+    local_executor_socket_existed=true
+  fi
+  if validate_existing "${LOCAL_EXECUTOR_TMPFILES_DEST}" root root 644 "local executor tmpfiles policy"; then
+    local_executor_tmpfiles_existed=true
+  fi
+  if validate_existing "${SELF_UPDATE_RECOVERY_SERVICE_DEST}" root root 644 "self-update recovery service template"; then
+    self_update_recovery_service_existed=true
+  fi
+  if validate_existing "${SELF_UPDATE_RECOVERY_TIMER_DEST}" root root 644 "self-update recovery timer template"; then
+    self_update_recovery_timer_existed=true
+  fi
+fi
+if systemctl is-active --quiet "${UNIT_NAME}"; then
+  was_active=true
+fi
+if systemctl is-enabled --quiet "${UNIT_NAME}"; then
+  was_enabled=true
+fi
+if [[ ${install_mode} == "prepare" ]]; then
+  [[ ${was_active} == false ]] || die "--prepare requires the Host Agent service to remain inactive"
+  [[ ${was_enabled} == false ]] || die "--prepare requires the Host Agent service to remain disabled"
+  [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+    ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "an identity appeared during --prepare; refusing to install or start the service"
+  [[ ! -e ${LOCAL_EXECUTOR_POLICY_DEST} && ! -L ${LOCAL_EXECUTOR_POLICY_DEST} ]] || \
+    die "a local executor policy appeared during --prepare; refusing to replace its runtime"
+  if systemctl is-active --quiet "${LOCAL_EXECUTOR_SERVICE_NAME}" ||
+    systemctl is-active --quiet "${LOCAL_EXECUTOR_SOCKET_NAME}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_SERVICE_A}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_SERVICE_B}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_TIMER_A}" ||
+    systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_TIMER_B}" ||
+    systemctl is-enabled --quiet "${LOCAL_EXECUTOR_SERVICE_NAME}" ||
+    systemctl is-enabled --quiet "${LOCAL_EXECUTOR_SOCKET_NAME}" ||
+    systemctl is-enabled --quiet "${SELF_UPDATE_RECOVERY_TIMER_A}" ||
+    systemctl is-enabled --quiet "${SELF_UPDATE_RECOVERY_TIMER_B}"; then
+    die "--prepare requires the local executor and self-update recovery timers to remain disabled and inactive"
+  fi
+else
+  validate_identity_directory "${CONFIG_DIR}"
+  [[ $(stat -c '%d:%i' -- "${CONFIG_DIR}") == "${identity_config_dir_identity}" ]] || \
+    die "Host Agent identity directory changed after preflight"
+  if [[ ${config_existed} == true ]]; then
+    validate_existing "${CONFIG_DEST}" root "${AGENT_GROUP}" 640 "identity config" >/dev/null
+    [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${CONFIG_DEST}") == "${config_identity}" &&
+      $(sha256sum -- "${CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${config_sha256}" ]] || \
+      die "existing Host Agent identity changed after preflight"
+    [[ ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+      die "a legacy Host Agent identity appeared after preflight"
+  elif [[ ${legacy_config_existed} == true ]]; then
+    [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} ]] || \
+      die "a current Host Agent identity appeared during legacy migration"
+    validate_existing "${LEGACY_CONFIG_DEST}" root "${AGENT_GROUP}" 640 "legacy identity config" >/dev/null
+    [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}") == "${legacy_config_identity}" &&
+      $(sha256sum -- "${LEGACY_CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${legacy_config_sha256}" ]] || \
+      die "legacy Host Agent identity changed after preflight"
+  else
+    [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+      ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+      die "a Host Agent identity appeared after preflight"
+  fi
+  systemctl stop "${UNIT_NAME}" >/dev/null 2>&1 || {
+    [[ ${was_active} == false ]] || die "could not stop the existing host agent"
+  }
+  service_quiesced=true
+  if [[ ${binary_managed_link} == true ]]; then
+    staged_binary_sha=$(sha256sum -- "${binary_stage}" | awk 'NR == 1 { print $1 }')
+    active_binary_sha=$(sha256sum -- "${BINARY_DEST}" | awk 'NR == 1 { print $1 }')
+    [[ ${staged_binary_sha} == "${active_binary_sha}" ]] || \
+      die "--config cannot replace an existing A/B runtime with a different release"
+  fi
+fi
+
+commit_started=true
+if [[ ${install_mode} == "prepare" ]]; then
+  if [[ ${local_executor_config_dir_existed} == true ]]; then
+    recheck_private_root_directory \
+      "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+      "${local_executor_config_dir_identity}"
+  else
+    create_private_root_directory \
+      "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+      local_executor_config_dir_created \
+      local_executor_config_dir_identity
+  fi
+  if [[ ${local_executor_data_dir_existed} == true ]]; then
+    recheck_private_root_directory \
+      "${LOCAL_EXECUTOR_DATA_DIR}" \
+      "${local_executor_data_dir_identity}"
+  else
+    create_private_root_directory \
+      "${LOCAL_EXECUTOR_DATA_DIR}" \
+      local_executor_data_dir_created \
+      local_executor_data_dir_identity
+  fi
+  if [[ ${local_executor_port_config_dir_existed} == true ]]; then
+    recheck_private_root_directory \
+      "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+      "${local_executor_port_config_dir_identity}"
+  else
+    create_private_root_directory \
+      "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+      local_executor_port_config_dir_created \
+      local_executor_port_config_dir_identity
+  fi
+fi
+if [[ ${install_mode} == "configured" && ${config_existed} == true ]]; then
+  config_backup=$(mktemp "${CONFIG_DIR}/.identity.json.backup.XXXXXX")
+  rm -f -- "${config_backup}"
+  mv -- "${CONFIG_DEST}" "${config_backup}"
+  config_backed_up=true
+fi
+if [[ ${binary_existed} == true ]]; then
+  binary_backup=$(mktemp /usr/local/bin/.autostream-host-agent.backup.XXXXXX)
+  rm -f -- "${binary_backup}"
+  mv -- "${BINARY_DEST}" "${binary_backup}"
+  binary_backed_up=true
+fi
+if [[ ${unit_existed} == true ]]; then
+  unit_backup=$(mktemp /etc/systemd/system/.autostream-host-agent.service.backup.XXXXXX)
+  rm -f -- "${unit_backup}"
+  mv -- "${UNIT_DEST}" "${unit_backup}"
+  unit_backed_up=true
+fi
+if [[ ${local_executor_binary_existed} == true ]]; then
+  local_executor_binary_backup=$(mktemp /usr/local/libexec/.autostream-local-executor.backup.XXXXXX)
+  rm -f -- "${local_executor_binary_backup}"
+  mv -- "${LOCAL_EXECUTOR_BINARY_DEST}" "${local_executor_binary_backup}"
+  local_executor_binary_backed_up=true
+fi
+if [[ ${local_executor_service_existed} == true ]]; then
+  local_executor_service_backup=$(mktemp /etc/systemd/system/.autostream-local-executor.service.backup.XXXXXX)
+  rm -f -- "${local_executor_service_backup}"
+  mv -- "${LOCAL_EXECUTOR_SERVICE_DEST}" "${local_executor_service_backup}"
+  local_executor_service_backed_up=true
+fi
+if [[ ${local_executor_socket_existed} == true ]]; then
+  local_executor_socket_backup=$(mktemp /etc/systemd/system/.autostream-local-executor.socket.backup.XXXXXX)
+  rm -f -- "${local_executor_socket_backup}"
+  mv -- "${LOCAL_EXECUTOR_SOCKET_DEST}" "${local_executor_socket_backup}"
+  local_executor_socket_backed_up=true
+fi
+if [[ ${local_executor_tmpfiles_existed} == true ]]; then
+  local_executor_tmpfiles_backup=$(mktemp /etc/tmpfiles.d/.autostream-local-executor.conf.backup.XXXXXX)
+  rm -f -- "${local_executor_tmpfiles_backup}"
+  mv -- "${LOCAL_EXECUTOR_TMPFILES_DEST}" "${local_executor_tmpfiles_backup}"
+  local_executor_tmpfiles_backed_up=true
+fi
+if [[ ${self_update_recovery_service_existed} == true ]]; then
+  self_update_recovery_service_backup=$(mktemp /etc/systemd/system/.autostream-host-self-update-recovery.service.backup.XXXXXX)
+  rm -f -- "${self_update_recovery_service_backup}"
+  mv -- "${SELF_UPDATE_RECOVERY_SERVICE_DEST}" "${self_update_recovery_service_backup}"
+  self_update_recovery_service_backed_up=true
+fi
+if [[ ${self_update_recovery_timer_existed} == true ]]; then
+  self_update_recovery_timer_backup=$(mktemp /etc/systemd/system/.autostream-host-self-update-recovery.timer.backup.XXXXXX)
+  rm -f -- "${self_update_recovery_timer_backup}"
+  mv -- "${SELF_UPDATE_RECOVERY_TIMER_DEST}" "${self_update_recovery_timer_backup}"
+  self_update_recovery_timer_backed_up=true
+fi
+
+if [[ ${install_mode} == "configured" ]]; then
+  mv -f -- "${config_stage}" "${CONFIG_DEST}"
+  config_installed=true
+  sync -f "${CONFIG_DIR}"
+fi
+if [[ ${install_mode} == "prepare" ]]; then
+  install -d -o root -g root -m 0755 \
+    "${HOST_RUNTIME_ROOT}" \
+    "${HOST_RUNTIME_SLOTS}" \
+    "${HOST_RUNTIME_INITIAL_SLOT}" \
+    "${HOST_RUNTIME_INITIAL_SLOT}/bin"
+  self_update_layout_created=true
+  mv -f -- "${binary_stage}" "${HOST_RUNTIME_AGENT}"
+  mv -f -- "${local_executor_binary_stage}" "${HOST_RUNTIME_EXECUTOR}"
+  ln -s "slots/a" "${HOST_RUNTIME_CURRENT}"
+  ln -s "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" "${BINARY_DEST}"
+  binary_installed=true
+  ln -s "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" "${LOCAL_EXECUTOR_BINARY_DEST}"
+  local_executor_binary_installed=true
+elif [[ ${binary_managed_link} == true ]]; then
+  rm -f -- "${binary_stage}"
+else
+  mv -f -- "${binary_stage}" "${BINARY_DEST}"
+  binary_installed=true
+fi
+mv -f -- "${unit_stage}" "${UNIT_DEST}"
+unit_installed=true
+if [[ ${install_mode} == "prepare" ]]; then
+  mv -f -- "${local_executor_service_stage}" "${LOCAL_EXECUTOR_SERVICE_DEST}"
+  local_executor_service_installed=true
+  mv -f -- "${local_executor_socket_stage}" "${LOCAL_EXECUTOR_SOCKET_DEST}"
+  local_executor_socket_installed=true
+  mv -f -- "${local_executor_tmpfiles_stage}" "${LOCAL_EXECUTOR_TMPFILES_DEST}"
+  local_executor_tmpfiles_installed=true
+  mv -f -- "${self_update_recovery_service_stage}" "${SELF_UPDATE_RECOVERY_SERVICE_DEST}"
+  self_update_recovery_service_installed=true
+  mv -f -- "${self_update_recovery_timer_stage}" "${SELF_UPDATE_RECOVERY_TIMER_DEST}"
+  self_update_recovery_timer_installed=true
+fi
+
+validate_identity_directory "${CONFIG_DIR}"
+[[ $(stat -c '%d:%i' -- "${CONFIG_DIR}") == "${identity_config_dir_identity}" ]] || \
+  die "Host Agent identity directory changed during installation"
+if [[ ${install_mode} == "configured" ]]; then
+  [[ $(stat -c '%U:%G:%a' -- "${CONFIG_DEST}") == "root:${AGENT_GROUP}:640" ]] || die "installed identity config failed verification"
+  [[ $(sha256sum -- "${CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${config_stage_sha256}" ]] || \
+    die "installed identity content changed during atomic replacement"
+  "${BINARY_DEST}" validate-config --config "${CONFIG_DEST}" || \
+    die "installed identity failed secure reread validation"
+fi
+if [[ ${install_mode} == "prepare" || ${binary_managed_link} == true ]]; then
+  validate_managed_agent_link || die "installed managed Host Agent binary failed verification"
+else
+  [[ $(stat -c '%U:%G:%a' -- "${BINARY_DEST}") == "root:root:755" ]] || \
+    die "installed binary failed verification"
+fi
+[[ $(stat -c '%U:%G:%a' -- "${UNIT_DEST}") == "root:root:644" ]] || die "installed systemd unit failed verification"
+if [[ ${install_mode} == "prepare" ]]; then
+  recheck_private_root_directory \
+    "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+    "${local_executor_config_dir_identity}"
+  recheck_private_root_directory \
+    "${LOCAL_EXECUTOR_DATA_DIR}" \
+    "${local_executor_data_dir_identity}"
+  recheck_private_root_directory \
+    "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+    "${local_executor_port_config_dir_identity}"
+  [[ -L ${LOCAL_EXECUTOR_BINARY_DEST} ]] || \
+    die "prepared local executor binary is not linked to the atomic current runtime"
+  [[ $(readlink -- "${LOCAL_EXECUTOR_BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" ]] || \
+    die "prepared local executor binary link escaped the atomic current runtime"
+  [[ $(readlink -f -- "${LOCAL_EXECUTOR_BINARY_DEST}") == "${HOST_RUNTIME_EXECUTOR}" ]] || \
+    die "prepared local executor binary resolves outside the initial A/B slot"
+  [[ $(stat -c '%U:%G:%a' -- "${HOST_RUNTIME_EXECUTOR}") == "root:root:755" ]] || \
+    die "prepared local executor binary failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${LOCAL_EXECUTOR_SERVICE_DEST}") == "root:root:644" ]] || \
+    die "prepared local executor service failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${LOCAL_EXECUTOR_SOCKET_DEST}") == "root:root:644" ]] || \
+    die "prepared local executor socket failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${LOCAL_EXECUTOR_TMPFILES_DEST}") == "root:root:644" ]] || \
+    die "prepared local executor tmpfiles policy failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${SELF_UPDATE_RECOVERY_SERVICE_DEST}") == "root:root:644" ]] || \
+    die "prepared self-update recovery service template failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${SELF_UPDATE_RECOVERY_TIMER_DEST}") == "root:root:644" ]] || \
+    die "prepared self-update recovery timer template failed verification"
+fi
+if [[ ${install_mode} == "configured" ]]; then
+  runuser -u "${AGENT_USER}" -- test -r "${CONFIG_DEST}" || die "agent service user cannot read installed identity config"
+fi
+
+systemctl daemon-reload
+if [[ ${install_mode} == "configured" ]]; then
+  if [[ ${legacy_config_existed} == true ]]; then
+    # From this point onward the new identity and installed unit are the
+    # recoverable state. Never roll them back after beginning destructive
+    # retirement of the legacy secret.
+    installation_complete=true
+    retire_legacy_identity
+  fi
+  systemctl enable --now autostream-host-agent.service
+  systemctl is-active --quiet "${UNIT_NAME}" || die "host agent did not become active"
+else
+  if systemctl is-active --quiet "${UNIT_NAME}" ||
+    systemctl is-enabled --quiet "${UNIT_NAME}" ||
+    systemctl is-active --quiet "${LOCAL_EXECUTOR_SERVICE_NAME}" ||
+    systemctl is-active --quiet "${LOCAL_EXECUTOR_SOCKET_NAME}" ||
+    systemctl is-enabled --quiet "${LOCAL_EXECUTOR_SERVICE_NAME}" ||
+    systemctl is-enabled --quiet "${LOCAL_EXECUTOR_SOCKET_NAME}"; then
+    die "--prepare must leave the Host Agent and local executor disabled and inactive"
+  fi
+  systemctl enable --now "${SELF_UPDATE_RECOVERY_TIMER_A}"
+  self_update_recovery_timer_a_enabled=true
+  systemctl enable --now "${SELF_UPDATE_RECOVERY_TIMER_B}"
+  self_update_recovery_timer_b_enabled=true
+  systemctl is-enabled --quiet "${SELF_UPDATE_RECOVERY_TIMER_A}" || \
+    die "slot A self-update recovery timer was not enabled"
+  systemctl is-enabled --quiet "${SELF_UPDATE_RECOVERY_TIMER_B}" || \
+    die "slot B self-update recovery timer was not enabled"
+  systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_TIMER_A}" || \
+    die "slot A self-update recovery timer did not become active"
+  systemctl is-active --quiet "${SELF_UPDATE_RECOVERY_TIMER_B}" || \
+    die "slot B self-update recovery timer did not become active"
+  [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+    ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "--prepare must not create an identity configuration"
+  [[ ! -e ${LOCAL_EXECUTOR_POLICY_DEST} && ! -L ${LOCAL_EXECUTOR_POLICY_DEST} ]] || \
+    die "--prepare must not create a local executor policy"
+fi
+
+installation_complete=true
+if [[ ${install_mode} == "configured" ]]; then
+  printf '%s\n' "AutoStream Host Agent installed in outbound pull mode; it opens no inbound listener."
+else
+  printf '%s\n' "AutoStream Host Agent and local executor runtime prepared but disabled; root A/B recovery timers are active. Run the Control Panel configure command before enabling either runtime unit."
+fi

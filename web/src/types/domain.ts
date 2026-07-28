@@ -57,10 +57,18 @@ export type WorkerNode = {
   health_status?: string;
   assignment_role?: string;
   current_stream_id?: string;
+  transport_mode?: "ssh_v1" | "pull_v2";
+  execution_host_id?: string;
+  ownership_epoch?: number;
   host?: string;
   port?: number;
   ssl_enabled?: boolean;
   public_url?: string;
+  desired_endpoint?: NodeServiceEndpoint;
+  applied_endpoint?: NodeServiceEndpoint;
+  reported_endpoint?: NodeServiceEndpoint;
+  endpoint_revision?: number;
+  endpoint_status?: string;
   version?: string;
   reported_version?: string;
   reported_commit?: string;
@@ -77,6 +85,13 @@ export type WorkerNode = {
   configure_token_expires_at?: string;
   configure_token_used_at?: string;
   node_token_rotated_at?: string;
+};
+
+export type NodeServiceEndpoint = {
+  host: string;
+  port: number;
+  ssl_enabled: boolean;
+  public_url: string;
 };
 
 export type AuditLog = {
@@ -231,6 +246,83 @@ export type AppVersion = ServiceUpdateInfo & {
 
 export type SystemUpdateStrategy = "when_idle" | "maintenance";
 
+export type SystemUpdateOperation = "software_update" | "port_reconfigure";
+
+export type SystemUpdatePortReconfigurationResult =
+  | "applied"
+  | "rolled_back"
+  | "unchanged"
+  | "rollback_failed";
+
+export type SystemUpdatePortReconfiguration = {
+  network_namespace?: string;
+  protocol?: "tcp" | "udp";
+  old_port?: number;
+  new_port?: number;
+  expected_endpoint_revision?: number;
+  target_endpoint_revision?: number;
+  expected_config_revision?: number;
+  target_config_revision?: number;
+  expected_config_sha256?: string;
+  target_config_sha256?: string;
+  expected_source_policy_revision?: number;
+  expected_updater_policy_revision?: number;
+  expected_executor_policy_revision?: number;
+  expected_executor_policy_sha256?: string;
+  port_plan_sha256?: string;
+  docker?: SystemUpdateDockerPortReconfiguration;
+  result?: SystemUpdatePortReconfigurationResult;
+};
+
+export type SystemUpdateDockerPortReconfiguration = {
+  published_host_ip: string;
+  old_published_port: number;
+  new_published_port: number;
+  old_container_port: number;
+  new_container_port: number;
+  old_health_port: number;
+  new_health_port: number;
+  approved_compose_config_sha256: string;
+  approved_compose_revision: number;
+  expected_version_env_sha256: string;
+  expected_container_id: string;
+  expected_image_id: string;
+  expected_repository_digest: string;
+};
+
+export type SystemUpdateSoftwareCreateRequest = {
+  operation?: "software_update";
+  target_id: string;
+  strategy: SystemUpdateStrategy;
+  idempotency_key: string;
+};
+
+export type SystemUpdateSystemdPortReconfigureCreateRequest = {
+  operation: "port_reconfigure";
+  target_id: string;
+  new_port: number;
+  expected_endpoint_revision: number;
+  idempotency_key: string;
+};
+
+export type SystemUpdateDockerPortReconfigureCreateRequest = {
+  operation: "port_reconfigure";
+  target_id: string;
+  new_advertised_port: number;
+  new_published_port: number;
+  new_container_port: number;
+  expected_endpoint_revision: number;
+  idempotency_key: string;
+};
+
+export type SystemUpdatePortReconfigureCreateRequest =
+  | SystemUpdateSystemdPortReconfigureCreateRequest
+  | SystemUpdateDockerPortReconfigureCreateRequest;
+
+export type SystemUpdateCreateRequest =
+  | SystemUpdateSoftwareCreateRequest
+  | SystemUpdatePortReconfigureCreateRequest;
+
 export type SystemUpdateReachability = "reachable" | "unreachable" | "unknown";
 
 export type SystemUpdateAgentStatus = {
@@ -239,6 +331,9 @@ export type SystemUpdateAgentStatus = {
   status: string;
   online: boolean;
   version: string;
+  transport_mode?: "ssh_v1" | "pull_v2";
+  execution_host_id?: string;
+  ownership_epoch?: number;
   last_heartbeat_at?: string;
   desired_revision?: number;
   applied_revision?: number;
@@ -275,8 +370,23 @@ export type SystemUpdateTarget = {
   current_stream_id?: string;
   eligible: boolean;
   blocked_reason?: string;
+  eligible_operations?: SystemUpdateOperation[];
+  operation_blocked_reasons?: Partial<Record<SystemUpdateOperation, string>>;
+  port_mapping?: SystemUpdatePortMapping;
   update_check_source?: string;
   update_check_error?: string;
+};
+
+export type SystemUpdatePortMapping = {
+  mode: "docker";
+  advertised_port?: number;
+  published_host_ip?: string;
+  published_port?: number;
+  container_port?: number;
+  health_port?: number;
+  config_revision?: number;
+  state: "applied" | "drifted" | "unavailable";
+  reported_at?: string;
 };
 
 export type SystemUpdateJob = {
@@ -284,6 +394,13 @@ export type SystemUpdateJob = {
   idempotency_key?: string;
   target_id: string;
   target_type: string;
+  host_id?: string;
+  transport_mode?: "ssh_v1" | "pull_v2";
+  ownership_epoch?: number;
+  policy_revision?: number;
+  updater_id?: string;
+  operation?: SystemUpdateOperation;
+  port_reconfigure?: SystemUpdatePortReconfiguration;
   current_version?: string;
   target_version?: string;
   deployment_mode?: string;
@@ -335,6 +452,7 @@ export type UpdaterSettingsHost = {
 
 export type UpdaterSettingsTarget = {
   target_id: string;
+  service_id: string;
   host_id: string;
   service_type: string;
   deployment_mode: string;
@@ -343,6 +461,30 @@ export type UpdaterSettingsTarget = {
 export type UpdaterSettings = {
   updater_id: string;
   revision: number;
+  projection_revision?: number;
+  local_executor_policy_revision?: number;
+  transport_mode: "ssh_v1" | "pull_v2";
+  execution_host_id?: string;
+  execution_host_ownership?: {
+    transport_mode: "ssh_v1" | "pull_v2";
+    agent_service_id?: string;
+    legacy_agent_service_id?: string;
+    ownership_epoch: number;
+    policy_revision: number;
+  };
+  pull_activation?: {
+    ready: boolean;
+    blocked_reason?: string;
+    status: string;
+    last_heartbeat_at?: string;
+    observe_only: boolean;
+    update_executor: boolean;
+    mutation_enabled: boolean;
+    recovery_pending: boolean;
+    reported_ownership_epoch: number;
+    reported_projection_revision: number;
+  };
+  local_executor_policy_sha256?: string;
   api: UpdaterSettingsAPI;
   poll_interval_seconds: number;
   heartbeat_interval_seconds: number;
@@ -353,12 +495,58 @@ export type UpdaterSettings = {
   updated_at?: string;
 };
 
-export type UpdaterSettingsUpdate = Pick<
-  UpdaterSettings,
-  "api" | "poll_interval_seconds" | "heartbeat_interval_seconds" | "hosts" | "targets"
-> & {
+export type UpdaterSettingsUpdate = {
   expected_revision: number;
+  api?: UpdaterSettingsAPI;
+  poll_interval_seconds: number;
+  heartbeat_interval_seconds: number;
+  hosts?: UpdaterSettingsHost[];
+  targets: UpdaterSettingsTarget[];
+  local_executor_policy_sha256?: string;
   github_token?: string;
+};
+
+export type PullUpdaterOwnershipActivationRequest = {
+  expected_execution_host_id: string;
+  expected_ownership_epoch: number;
+  expected_source_policy_revision: number;
+  expected_projection_revision: number;
+  expected_local_executor_policy_revision: number;
+  expected_local_executor_policy_sha256: string;
+};
+
+export type PullUpdaterOwnershipActivationResponse = {
+  updater_id: string;
+  execution_host_id: string;
+  transport_mode: "pull_v2";
+  agent_service_id: string;
+  ownership_epoch: number;
+  source_policy_revision: number;
+  projection_revision: number;
+  local_executor_policy_revision: number;
+  local_executor_policy_sha256: string;
+};
+
+export type PullUpdaterOwnershipDeactivationRequest = {
+  expected_execution_host_id: string;
+  expected_ownership_epoch: number;
+  expected_source_policy_revision: number;
+  expected_projection_revision: number;
+  expected_local_executor_policy_revision: number;
+  expected_local_executor_policy_sha256: string;
+};
+
+export type PullUpdaterOwnershipDeactivationResponse = {
+  updater_id: string;
+  execution_host_id: string;
+  transport_mode: "ssh_v1";
+  agent_service_id: string;
+  ownership_epoch: number;
+  agent_ownership_epoch: 0;
+  source_policy_revision: number;
+  projection_revision: number;
+  local_executor_policy_revision: number;
+  local_executor_policy_sha256: string;
 };
 
 export type UpdaterHostBootstrapEnvelope = {

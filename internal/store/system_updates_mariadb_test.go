@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"strconv"
@@ -30,6 +31,7 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	if err := database.RunEmbeddedMigrations(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	assertSystemdPortReconfigurationMariaDBSchema(t, ctx, db)
 
 	auth := store.NewMariaDBAuthStore(db)
 	token, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"})
@@ -295,5 +297,69 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	}
 	if firstConsume != 1 || replayedConsumes != consumers-1 {
 		t.Fatalf("parallel MariaDB grant consume first=%d replayed=%d", firstConsume, replayedConsumes)
+	}
+}
+
+func assertSystemdPortReconfigurationMariaDBSchema(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	type expectedColumn struct {
+		tableName  string
+		columnName string
+		dataType   string
+		columnType string
+		nullable   string
+		defaultVal string
+	}
+	for _, expected := range []expectedColumn{
+		{"services", "applied_config_revision", "bigint", "bigint(20)", "NO", "1"},
+		{"services", "applied_config_sha256", "char", "char(71)", "YES", ""},
+		{"system_update_execution_hosts", "legacy_agent_service_id", "varchar", "varchar(128)", "YES", ""},
+		{"update_agent_policies", "projection_revision", "bigint", "bigint(20)", "NO", "1"},
+		{"update_agent_policies", "local_executor_policy_revision", "bigint", "bigint(20)", "NO", "0"},
+		{"system_update_jobs", "operation", "varchar", "varchar(32)", "NO", "software_update"},
+		{"system_update_jobs", "network_namespace", "varchar", "varchar(128)", "YES", ""},
+		{"system_update_jobs", "new_port", "int", "int(10) unsigned", "YES", ""},
+		{"system_update_jobs", "expected_config_sha256", "char", "char(71)", "YES", ""},
+		{"system_update_jobs", "port_plan_sha256", "char", "char(64)", "YES", ""},
+		{"system_update_mutation_grants", "operation", "varchar", "varchar(32)", "NO", ""},
+		{"system_update_mutation_grants", "job_operation", "varchar", "varchar(32)", "NO", "software_update"},
+		{"system_update_mutation_grants", "expected_executor_policy_sha256", "char", "char(71)", "YES", ""},
+	} {
+		var dataType, columnType, nullable, defaultVal string
+		err := db.QueryRowContext(ctx, `
+			SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE,
+			       COALESCE(
+			         NULLIF(TRIM(BOTH '''' FROM COLUMN_DEFAULT), 'NULL'),
+			         ''
+			       )
+			FROM information_schema.COLUMNS
+			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+		`, expected.tableName, expected.columnName).Scan(&dataType, &columnType, &nullable, &defaultVal)
+		if err != nil {
+			t.Fatalf("inspect MariaDB column %s.%s: %v", expected.tableName, expected.columnName, err)
+		}
+		if dataType != expected.dataType || columnType != expected.columnType ||
+			nullable != expected.nullable || defaultVal != expected.defaultVal {
+			t.Fatalf(
+				"MariaDB column %s.%s = type %q column_type %q nullable %q default %q; want %q %q %q %q",
+				expected.tableName, expected.columnName,
+				dataType, columnType, nullable, defaultVal,
+				expected.dataType, expected.columnType, expected.nullable, expected.defaultVal,
+			)
+		}
+	}
+
+	var serviceIndexColumns string
+	if err := db.QueryRowContext(ctx, `
+		SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX)
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = DATABASE()
+		  AND TABLE_NAME = 'service_port_reservations'
+		  AND INDEX_NAME = 'idx_service_port_reservations_service_id'
+	`).Scan(&serviceIndexColumns); err != nil {
+		t.Fatalf("inspect service port reservation index: %v", err)
+	}
+	if serviceIndexColumns != "service_id" {
+		t.Fatalf("service port reservation lookup index columns = %q", serviceIndexColumns)
 	}
 }

@@ -34,7 +34,7 @@ func ValidateRuntimeTargets(ctx context.Context, cfg Config, runner CommandRunne
 		var version string
 		if target.DeploymentMode == ModeDocker {
 			version, err = validateDockerRuntimeTarget(ctx, target, runner, func(ctx context.Context, target Target, bundle string) (ResolvedDockerRelease, error) {
-				trustedDir, mkdirErr := os.MkdirTemp(target.Docker.ProjectDir, ".updater-validate-manifest-")
+				trustedDir, mkdirErr := makeDockerTempDir(target, ".updater-validate-manifest-")
 				if mkdirErr != nil {
 					return ResolvedDockerRelease{}, mkdirErr
 				}

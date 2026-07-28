@@ -8,8 +8,10 @@ import {
   encryptBootstrapCredentials,
 } from "../src/lib/bootstrap-envelope.ts";
 import {
+  acquireSystemUpdateTargetRequestLock,
   activeUpdaterHostBootstrapStatus,
   compareSystemUpdateVersions,
+  isSystemUpdateEndpointRevisionConflict,
   isControlPanelUpdateTarget,
   isSystemUpdateJobActive,
   isSystemUpdateJobCancellable,
@@ -19,11 +21,20 @@ import {
   normalizeUpdaterHostBootstrapJobsResponse,
   normalizeUpdaterSettingsResponse,
   normalizeSystemUpdatesResponse,
+  normalizePullUpdaterOwnershipActivationResponse,
+  normalizePullUpdaterOwnershipDeactivationResponse,
+  pullUpdaterOwnershipActivationEligibility,
+  pullUpdaterOwnershipActivationRequest,
+  pullUpdaterOwnershipDeactivationEligibility,
+  pullUpdaterOwnershipDeactivationRequest,
+  pullOwnershipMutationFenceAdvanced,
   recoverUpdaterHostBootstrapRequest,
+  requestSystemUpdatePortReconfigureWithRecovery,
   requestSystemUpdateWithRecovery,
   requestUpdaterHostBootstrapWithRecovery,
   runSystemUpdatesSequentially,
   systemUpdateDeploymentLabel,
+  systemUpdateDockerPortReconfigureRequest,
   systemUpdateErrorMessage,
   systemUpdateConnectivity,
   systemUpdateHostReachabilityLabel,
@@ -34,9 +45,16 @@ import {
   systemUpdateJobFromResponse,
   systemUpdateUpdaterPolicyState,
   systemUpdateProgress,
+  systemUpdatePortReconfigureEligibility,
+  systemUpdatePortReconfigureRequest,
+  systemUpdatePortReconfigureResultLabel,
+  systemUpdatePortRequestMatchesJob,
   systemUpdateRequest,
+  systemUpdateSoftwareOperationEligibility,
   systemUpdateStrategyForTarget,
+  systemUpdateTargetOperationEligibility,
   systemUpdateTargetBlockedReason,
+  SystemUpdateRequestAmbiguousError,
   updaterHostBootstrapConfirmationContext,
   updaterHostBootstrapEligibility,
   updaterHostBootstrapEligibilityMessage,
@@ -50,6 +68,7 @@ import type {
   UpdaterSettings,
   UpdaterSettingsHost,
   UpdaterSettingsTarget,
+  WorkerNode,
 } from "../src/types/domain.ts";
 import { mockGet, mockPost, mockPut } from "../src/features/mock-data.ts";
 import {
@@ -57,6 +76,15 @@ import {
   canIssueNodeConfiguration,
   canRotateNodeRuntimeToken,
 } from "../src/lib/node-configuration.ts";
+import {
+  buildNodeRegistrationRequest,
+  isExecutionHostID,
+  isServicePort,
+  nodeEndpointState,
+  nodeEndpointStatusPresentation,
+  nodeRegistrationDraftValid,
+  nodeServiceEndpointURL,
+} from "../src/lib/node-registration.ts";
 
 const baseTarget: SystemUpdateTarget = {
   target_id: "worker-main",
@@ -70,6 +98,7 @@ const baseTarget: SystemUpdateTarget = {
   updater_id: "updater-main",
   updater_online: true,
   eligible: true,
+  eligible_operations: ["software_update", "port_reconfigure"],
 };
 
 function toBase64URL(bytes: Uint8Array) {
@@ -243,6 +272,649 @@ test("an active stream is always queued with the when_idle strategy", () => {
   });
   assert.equal(systemUpdateStrategyForTarget(baseTarget), "maintenance");
   assert.equal(systemUpdateStrategyForTarget({ ...baseTarget, busy: false, current_stream_id: "stale-stream" }), "maintenance");
+});
+
+test("port reconfiguration is fail-closed and keeps the legacy software request unchanged", () => {
+  const updater: SystemUpdateAgentStatus = {
+    updater_id: "host-agent-main",
+    name: "Host Agent",
+    status: "online",
+    online: true,
+    version: "v2.0.0",
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    ownership_epoch: 3,
+    desired_revision: 9,
+    applied_revision: 9,
+    policy_status: "applied",
+  };
+  const node: WorkerNode = {
+    id: "worker-main",
+    service_id: "worker-main",
+    service_type: "worker",
+    service_name: "Main Worker",
+    status: "online",
+    desired_endpoint: { host: "worker.example.test", port: 18084, ssl_enabled: true, public_url: "https://worker.example.test:18084" },
+    applied_endpoint: { host: "worker.example.test", port: 8084, ssl_enabled: true, public_url: "https://worker.example.test:8084" },
+    reported_endpoint: { host: "127.0.0.1", port: 8084, ssl_enabled: false, public_url: "http://127.0.0.1:8084" },
+    endpoint_revision: 7,
+    endpoint_status: "applied",
+  };
+
+  assert.deepEqual(systemUpdateRequest(baseTarget, "legacy-software-request"), {
+    target_id: "worker-main",
+    strategy: "maintenance",
+    idempotency_key: "legacy-software-request",
+  });
+  const ready = systemUpdatePortReconfigureEligibility({
+    target: baseTarget,
+    updater,
+    node,
+    latestJob: undefined,
+    requestState: "idle",
+  });
+  assert.deepEqual(ready, {
+    ready: true,
+    reason: "",
+    deploymentMode: "systemd",
+    currentPort: 8084,
+    endpointRevision: 7,
+    dockerMapping: undefined,
+  });
+  assert.deepEqual(systemUpdatePortReconfigureRequest({
+    targetID: baseTarget.target_id,
+    currentPort: ready.currentPort,
+    newPort: 18084,
+    expectedEndpointRevision: ready.endpointRevision,
+    idempotencyKey: "port-worker-main-7",
+  }), {
+    operation: "port_reconfigure",
+    target_id: "worker-main",
+    new_port: 18084,
+    expected_endpoint_revision: 7,
+    idempotency_key: "port-worker-main-7",
+  });
+
+  const dockerMapping = {
+    mode: "docker" as const,
+    advertised_port: 8084,
+    published_host_ip: "127.0.0.1",
+    published_port: 18084,
+    container_port: 8080,
+    health_port: 18084,
+    config_revision: 11,
+    state: "applied" as const,
+    reported_at: "2026-07-28T00:00:00Z",
+  };
+  const dockerTarget = { ...baseTarget, deployment_mode: "docker", port_mapping: dockerMapping };
+  const dockerReady = systemUpdatePortReconfigureEligibility({ target: dockerTarget, updater, node, requestState: "idle" });
+  assert.deepEqual(dockerReady, {
+    ready: true,
+    reason: "",
+    deploymentMode: "docker",
+    currentPort: 8084,
+    endpointRevision: 7,
+    dockerMapping,
+  });
+  assert.deepEqual(systemUpdateDockerPortReconfigureRequest({
+    targetID: "worker-main",
+    currentMapping: dockerMapping,
+    newAdvertisedPort: 443,
+    newPublishedPort: 28084,
+    newContainerPort: 18080,
+    expectedEndpointRevision: 7,
+    idempotencyKey: "docker-port-worker-main-7",
+  }), {
+    operation: "port_reconfigure",
+    target_id: "worker-main",
+    new_advertised_port: 443,
+    new_published_port: 28084,
+    new_container_port: 18080,
+    expected_endpoint_revision: 7,
+    idempotency_key: "docker-port-worker-main-7",
+  });
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: { ...dockerTarget, port_mapping: { ...dockerMapping, state: "drifted" } },
+    updater,
+    node,
+    requestState: "idle",
+  }).reason, "docker_mapping_drifted");
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: { ...dockerTarget, port_mapping: { ...dockerMapping, published_host_ip: "0.0.0.0" } },
+    updater,
+    node,
+    requestState: "idle",
+  }).reason, "docker_mapping_unavailable");
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: { ...dockerTarget, port_mapping: undefined },
+    updater,
+    node,
+    requestState: "idle",
+  }).reason, "docker_mapping_unavailable");
+  assert.equal(systemUpdatePortReconfigureEligibility({ target: { ...baseTarget, deployment_mode: "binary" }, updater, node, requestState: "idle" }).reason, "unsupported_deployment");
+  assert.equal(systemUpdatePortReconfigureEligibility({ target: baseTarget, updater: { ...updater, transport_mode: "ssh_v1" }, node, requestState: "idle" }).reason, "unsupported_transport");
+  assert.equal(systemUpdatePortReconfigureEligibility({ target: { ...baseTarget, target_type: "control_panel" }, updater, node, requestState: "idle" }).reason, "unsupported_target");
+  assert.equal(systemUpdatePortReconfigureEligibility({ target: { ...baseTarget, busy: true }, updater, node, requestState: "idle" }).reason, "target_busy");
+  assert.equal(systemUpdatePortReconfigureEligibility({ target: baseTarget, updater, node, requestState: "pending" }).reason, "request_pending");
+  assert.equal(systemUpdatePortReconfigureEligibility({ target: baseTarget, updater, node, requestState: "ambiguous" }).reason, "request_ambiguous");
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: { ...baseTarget, eligible_operations: ["software_update"], operation_blocked_reasons: { port_reconfigure: "system_update_port_reconfigure_not_ready" } },
+    updater,
+    node,
+    requestState: "idle",
+  }).reason, "system_update_port_reconfigure_not_ready");
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: { ...baseTarget, eligible_operations: undefined },
+    updater,
+    node,
+    requestState: "idle",
+  }).reason, "operation_eligibility_unavailable");
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: baseTarget,
+    updater,
+    node,
+    latestJob: { id: "job-active", target_id: "worker-main", target_type: "worker", status: "applying", created_at: "", updated_at: "" },
+    requestState: "idle",
+  }).reason, "active_job");
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: baseTarget,
+    updater,
+    node,
+    latestJob: { id: "job-recovery", target_id: "worker-main", target_type: "worker", status: "failed", recovery_required: true, created_at: "", updated_at: "" },
+    requestState: "idle",
+  }).reason, "recovery_required");
+  assert.throws(() => systemUpdatePortReconfigureRequest({
+    targetID: "worker-main",
+    currentPort: 8084,
+    newPort: 8084,
+    expectedEndpointRevision: 7,
+    idempotencyKey: "same-port",
+  }), /port_unchanged/);
+  assert.throws(() => systemUpdatePortReconfigureRequest({
+    targetID: "worker-main",
+    currentPort: 8084,
+    newPort: 1023,
+    expectedEndpointRevision: 7,
+    idempotencyKey: "privileged-port",
+  }), /invalid_service_port/);
+  assert.throws(() => systemUpdateDockerPortReconfigureRequest({
+    targetID: "worker-main",
+    currentMapping: dockerMapping,
+    newAdvertisedPort: 8084,
+    newPublishedPort: 18084,
+    newContainerPort: 8080,
+    expectedEndpointRevision: 7,
+    idempotencyKey: "unchanged-docker",
+  }), /port_unchanged/);
+  assert.throws(() => systemUpdateDockerPortReconfigureRequest({
+    targetID: "worker-main",
+    currentMapping: dockerMapping,
+    newAdvertisedPort: 443,
+    newPublishedPort: 1023,
+    newContainerPort: 8080,
+    expectedEndpointRevision: 7,
+    idempotencyKey: "privileged-published",
+  }), /invalid_published_port/);
+});
+
+test("operation eligibility is strict when reported while legacy software eligibility stays compatible", () => {
+  assert.deepEqual(
+    systemUpdateTargetOperationEligibility(baseTarget, "software_update"),
+    { ready: true, reason: "" },
+  );
+  assert.deepEqual(
+    systemUpdateTargetOperationEligibility(baseTarget, "port_reconfigure"),
+    { ready: true, reason: "" },
+  );
+  assert.deepEqual(
+    systemUpdateTargetOperationEligibility(
+      {
+        ...baseTarget,
+        eligible_operations: ["software_update"],
+        operation_blocked_reasons: { port_reconfigure: "updater_policy_pending" },
+      },
+      "port_reconfigure",
+    ),
+    { ready: false, reason: "updater_policy_pending" },
+  );
+  assert.deepEqual(
+    systemUpdateTargetOperationEligibility(
+      { ...baseTarget, eligible_operations: [] },
+      "software_update",
+    ),
+    { ready: false, reason: "system_update_software_update_not_ready" },
+  );
+  assert.deepEqual(
+    systemUpdateTargetOperationEligibility(
+      { ...baseTarget, eligible_operations: undefined },
+      "software_update",
+    ),
+    { ready: false, reason: "operation_eligibility_unavailable" },
+  );
+  assert.deepEqual(
+    systemUpdateSoftwareOperationEligibility({ ...baseTarget, eligible_operations: undefined }),
+    { ready: true, reason: "" },
+  );
+  assert.deepEqual(
+    systemUpdateSoftwareOperationEligibility({
+      ...baseTarget,
+      eligible: false,
+      eligible_operations: undefined,
+      blocked_reason: "updater_policy_pending",
+    }),
+    { ready: false, reason: "updater_policy_pending" },
+  );
+  assert.deepEqual(
+    systemUpdateSoftwareOperationEligibility({ ...baseTarget, eligible_operations: [] }),
+    { ready: false, reason: "system_update_software_update_not_ready" },
+  );
+});
+
+test("port request identity is single-flight and stale endpoint revisions require a refresh", () => {
+  const activeTargets = new Set<string>();
+  assert.equal(acquireSystemUpdateTargetRequestLock(activeTargets, "worker-main"), true);
+  assert.equal(acquireSystemUpdateTargetRequestLock(activeTargets, "worker-main"), false);
+  assert.equal(acquireSystemUpdateTargetRequestLock(activeTargets, " worker-main "), false);
+  activeTargets.delete("worker-main");
+  assert.equal(acquireSystemUpdateTargetRequestLock(activeTargets, "worker-main"), true);
+  assert.equal(acquireSystemUpdateTargetRequestLock(activeTargets, ""), false);
+
+  assert.equal(isSystemUpdateEndpointRevisionConflict({
+    status: 409,
+    code: "system_update_endpoint_revision_conflict",
+  }), true);
+  assert.equal(isSystemUpdateEndpointRevisionConflict({
+    status: 409,
+    code: "service_port_reserved",
+  }), false);
+  assert.equal(isSystemUpdateEndpointRevisionConflict(new Error("system_update_endpoint_revision_conflict")), false);
+});
+
+test("port reconfiguration response loss never resends POST and remains visibly ambiguous", async () => {
+  const request = systemUpdatePortReconfigureRequest({
+    targetID: "worker-main",
+    currentPort: 8084,
+    newPort: 18084,
+    expectedEndpointRevision: 7,
+    idempotencyKey: "port-response-loss",
+  });
+  let postCalls = 0;
+  const committed = {
+    id: "job-port-response-loss",
+    idempotency_key: request.idempotency_key,
+    target_id: request.target_id,
+    target_type: "worker",
+    operation: "port_reconfigure" as const,
+    port_reconfigure: { old_port: 8084, new_port: 18084, expected_endpoint_revision: 7, result: "applied" as const },
+    status: "succeeded",
+    created_at: "2026-07-28T00:00:00Z",
+    updated_at: "2026-07-28T00:00:01Z",
+  };
+  const recovered = await requestSystemUpdatePortReconfigureWithRecovery(
+    request,
+    async () => {
+      postCalls += 1;
+      throw new Error("response_lost");
+    },
+    async () => [committed],
+  );
+  assert.equal(recovered.id, committed.id);
+  assert.equal(postCalls, 1);
+  await assert.rejects(
+    () => requestSystemUpdatePortReconfigureWithRecovery(
+      { ...request, idempotency_key: "port-still-ambiguous" },
+      async () => {
+        postCalls += 1;
+        throw new Error("network_lost");
+      },
+      async () => [],
+    ),
+    SystemUpdateRequestAmbiguousError,
+  );
+  assert.equal(postCalls, 2);
+  assert.equal(systemUpdatePortReconfigureResultLabel("applied"), "新しいポートを適用済み");
+  assert.equal(systemUpdatePortReconfigureResultLabel("rolled_back"), "以前のポートへロールバック済み");
+  assert.equal(systemUpdatePortReconfigureResultLabel("rollback_failed"), "ロールバック失敗");
+});
+
+test("Docker port recovery matches the entire mapping identity", async () => {
+  const currentMapping = {
+    mode: "docker" as const,
+    advertised_port: 8084,
+    published_host_ip: "127.0.0.1",
+    published_port: 18084,
+    container_port: 8080,
+    health_port: 18084,
+    config_revision: 4,
+    state: "applied" as const,
+  };
+  const request = systemUpdateDockerPortReconfigureRequest({
+    targetID: "worker-main",
+    currentMapping,
+    newAdvertisedPort: 443,
+    newPublishedPort: 28084,
+    newContainerPort: 18080,
+    expectedEndpointRevision: 7,
+    idempotencyKey: "docker-response-loss",
+  });
+  const committed = {
+    id: "job-docker-response-loss",
+    idempotency_key: request.idempotency_key,
+    target_id: request.target_id,
+    target_type: "worker",
+    deployment_mode: "docker",
+    operation: "port_reconfigure" as const,
+    port_reconfigure: {
+      old_port: 8084,
+      new_port: 443,
+      expected_endpoint_revision: 7,
+      docker: {
+        published_host_ip: "127.0.0.1",
+        old_published_port: 18084,
+        new_published_port: 28084,
+        old_container_port: 8080,
+        new_container_port: 18080,
+        old_health_port: 18084,
+        new_health_port: 28084,
+        approved_compose_config_sha256: "a".repeat(64),
+        approved_compose_revision: 4,
+        expected_version_env_sha256: `sha256:${"b".repeat(64)}`,
+        expected_container_id: "c".repeat(64),
+        expected_image_id: `sha256:${"d".repeat(64)}`,
+        expected_repository_digest: `sha256:${"e".repeat(64)}`,
+      },
+    },
+    status: "queued",
+    created_at: "2026-07-28T00:00:00Z",
+    updated_at: "2026-07-28T00:00:00Z",
+  };
+  assert.equal(systemUpdatePortRequestMatchesJob(request, committed), true);
+  assert.equal(systemUpdatePortRequestMatchesJob({ ...request, new_container_port: 18081 }, committed), false);
+  let calls = 0;
+  const recovered = await requestSystemUpdatePortReconfigureWithRecovery(
+    request,
+    async () => {
+      calls += 1;
+      throw new Error("response_lost");
+    },
+    async () => [committed],
+  );
+  assert.equal(recovered.id, committed.id);
+  assert.equal(calls, 1);
+});
+
+test("pull ownership activation uses only server-fenced settings and readiness fields", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const updater: SystemUpdateAgentStatus = {
+    updater_id: "host-agent-main",
+    name: "Host Agent",
+    status: "online",
+    online: true,
+    version: "v2.0.0",
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    ownership_epoch: 0,
+  };
+  const settings: UpdaterSettings = {
+    updater_id: updater.updater_id,
+    revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    execution_host_ownership: {
+      transport_mode: "ssh_v1",
+      agent_service_id: "updater-central",
+      ownership_epoch: 12,
+      policy_revision: 8,
+    },
+    pull_activation: {
+      ready: true,
+      status: "online",
+      last_heartbeat_at: "2026-07-28T00:00:00Z",
+      observe_only: true,
+      update_executor: true,
+      mutation_enabled: false,
+      recovery_pending: false,
+      reported_ownership_epoch: 0,
+      reported_projection_revision: 4,
+    },
+    local_executor_policy_sha256: digest,
+    api: { bind_host: "127.0.0.1", host: "127.0.0.1", port: 8090, ssl_enabled: false },
+    poll_interval_seconds: 15,
+    heartbeat_interval_seconds: 30,
+    hosts: [],
+    targets: [{ target_id: "worker-main", service_id: "worker-main", host_id: "host-main", service_type: "worker", deployment_mode: "systemd" }],
+    github_token_configured: false,
+  };
+  const eligibility = pullUpdaterOwnershipActivationEligibility({
+    updater,
+    settings,
+    jobs: [],
+    requestState: "idle",
+  });
+  assert.deepEqual(eligibility, { ready: true, reason: "" });
+  const request = pullUpdaterOwnershipActivationRequest(updater, settings);
+  assert.deepEqual(request, {
+    expected_execution_host_id: "host-main",
+    expected_ownership_epoch: 12,
+    expected_source_policy_revision: 9,
+    expected_projection_revision: 4,
+    expected_local_executor_policy_revision: 6,
+    expected_local_executor_policy_sha256: digest,
+  });
+  assert.equal(pullUpdaterOwnershipActivationEligibility({ updater: { ...updater, online: false }, settings, jobs: [], requestState: "idle" }).reason, "observer_offline");
+  assert.equal(pullUpdaterOwnershipActivationEligibility({
+    updater,
+    settings: { ...settings, pull_activation: { ...settings.pull_activation!, recovery_pending: true, ready: false } },
+    jobs: [],
+    requestState: "idle",
+  }).reason, "recovery_required");
+  assert.equal(pullUpdaterOwnershipActivationEligibility({
+    updater,
+    settings,
+    jobs: [{ id: "active", target_id: "worker-main", target_type: "worker", status: "applying", created_at: "", updated_at: "" }],
+    requestState: "idle",
+  }).reason, "active_job");
+  assert.equal(pullUpdaterOwnershipActivationEligibility({ updater, settings, jobs: [], requestState: "ambiguous" }).reason, "request_ambiguous");
+  assert.equal(pullUpdaterOwnershipActivationEligibility({
+    updater,
+    settings: { ...settings, pull_activation: { ...settings.pull_activation!, update_executor: false, ready: false } },
+    jobs: [],
+    requestState: "idle",
+  }).reason, "observer_not_ready");
+  assert.throws(
+    () => pullUpdaterOwnershipActivationRequest(updater, { ...settings, projection_revision: undefined }),
+    /pull_ownership_contract_unavailable/,
+  );
+
+  assert.deepEqual(normalizePullUpdaterOwnershipActivationResponse({
+    updater_id: "host-agent-main",
+    execution_host_id: "host-main",
+    transport_mode: "pull_v2",
+    agent_service_id: "host-agent-main",
+    ownership_epoch: 13,
+    source_policy_revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    local_executor_policy_sha256: digest,
+  }), {
+    updater_id: "host-agent-main",
+    execution_host_id: "host-main",
+    transport_mode: "pull_v2",
+    agent_service_id: "host-agent-main",
+    ownership_epoch: 13,
+    source_policy_revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    local_executor_policy_sha256: digest,
+  });
+  assert.throws(() => normalizePullUpdaterOwnershipActivationResponse({ ownership_epoch: 13 }), /invalid_pull_ownership_activation_response/);
+});
+
+test("pull ownership Bridge rollback is visible only for the exact active owner and validates the observer response", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const updater: SystemUpdateAgentStatus = {
+    updater_id: "host-agent-main",
+    name: "Host Agent",
+    status: "online",
+    online: true,
+    version: "v2.0.0",
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    ownership_epoch: 13,
+  };
+  const settings: UpdaterSettings = {
+    updater_id: updater.updater_id,
+    revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    execution_host_ownership: {
+      transport_mode: "pull_v2",
+      agent_service_id: updater.updater_id,
+      legacy_agent_service_id: "updater-central",
+      ownership_epoch: 13,
+      policy_revision: 4,
+    },
+    pull_activation: {
+      ready: false,
+      status: "online",
+      last_heartbeat_at: "2026-07-28T00:00:00Z",
+      observe_only: false,
+      update_executor: true,
+      mutation_enabled: true,
+      recovery_pending: false,
+      reported_ownership_epoch: 13,
+      reported_projection_revision: 4,
+    },
+    local_executor_policy_sha256: digest,
+    api: { bind_host: "127.0.0.1", host: "127.0.0.1", port: 8090, ssl_enabled: false },
+    poll_interval_seconds: 15,
+    heartbeat_interval_seconds: 30,
+    hosts: [],
+    targets: [{ target_id: "worker-main", service_id: "worker-main", host_id: "host-main", service_type: "worker", deployment_mode: "systemd" }],
+    github_token_configured: false,
+  };
+
+  assert.deepEqual(pullUpdaterOwnershipDeactivationEligibility({
+    updater,
+    settings,
+    jobs: [],
+    requestState: "idle",
+  }), { ready: true, reason: "" });
+  assert.deepEqual(pullUpdaterOwnershipDeactivationRequest(updater, settings), {
+    expected_execution_host_id: "host-main",
+    expected_ownership_epoch: 13,
+    expected_source_policy_revision: 9,
+    expected_projection_revision: 4,
+    expected_local_executor_policy_revision: 6,
+    expected_local_executor_policy_sha256: digest,
+  });
+  assert.equal(pullUpdaterOwnershipDeactivationEligibility({
+    updater,
+    settings: {
+      ...settings,
+      execution_host_ownership: { ...settings.execution_host_ownership!, legacy_agent_service_id: "" },
+    },
+    jobs: [],
+    requestState: "idle",
+  }).reason, "pull_rollback_contract_unavailable");
+  assert.equal(pullUpdaterOwnershipDeactivationEligibility({
+    updater: { ...updater, ownership_epoch: 12 },
+    settings,
+    jobs: [],
+    requestState: "idle",
+  }).reason, "pull_rollback_contract_unavailable");
+  assert.equal(pullUpdaterOwnershipDeactivationEligibility({
+    updater,
+    settings,
+    jobs: [{ id: "active", target_id: "worker-main", target_type: "worker", status: "applying", created_at: "", updated_at: "" }],
+    requestState: "idle",
+  }).reason, "active_job");
+  assert.equal(pullUpdaterOwnershipDeactivationEligibility({
+    updater,
+    settings: { ...settings, pull_activation: { ...settings.pull_activation!, recovery_pending: true } },
+    jobs: [],
+    requestState: "idle",
+  }).reason, "recovery_required");
+  assert.equal(pullUpdaterOwnershipDeactivationEligibility({
+    updater,
+    settings,
+    jobs: [],
+    requestState: "ambiguous",
+  }).reason, "request_ambiguous");
+  const deactivationAttempt = pullUpdaterOwnershipDeactivationRequest(updater, settings);
+  const rolledBackSettings: UpdaterSettings = {
+    ...settings,
+    execution_host_ownership: {
+      ...settings.execution_host_ownership!,
+      transport_mode: "ssh_v1",
+      agent_service_id: "updater-central",
+      ownership_epoch: 14,
+    },
+  };
+  assert.equal(
+    pullOwnershipMutationFenceAdvanced(deactivationAttempt, rolledBackSettings),
+    true,
+  );
+  assert.equal(
+    pullOwnershipMutationFenceAdvanced(deactivationAttempt, {
+      ...rolledBackSettings,
+      execution_host_ownership: {
+        ...rolledBackSettings.execution_host_ownership!,
+        transport_mode: "pull_v2",
+        agent_service_id: updater.updater_id,
+        ownership_epoch: 15,
+      },
+    }),
+    true,
+    "a resolved ambiguous attempt must not become ambiguous after the reverse transition",
+  );
+  assert.equal(
+    pullOwnershipMutationFenceAdvanced(deactivationAttempt, {
+      ...rolledBackSettings,
+      execution_host_id: "host-other",
+    }),
+    false,
+  );
+
+  assert.deepEqual(normalizePullUpdaterOwnershipDeactivationResponse({
+    updater_id: updater.updater_id,
+    execution_host_id: "host-main",
+    transport_mode: "ssh_v1",
+    agent_service_id: "updater-central",
+    ownership_epoch: 14,
+    agent_ownership_epoch: 0,
+    source_policy_revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    local_executor_policy_sha256: digest,
+  }), {
+    updater_id: updater.updater_id,
+    execution_host_id: "host-main",
+    transport_mode: "ssh_v1",
+    agent_service_id: "updater-central",
+    ownership_epoch: 14,
+    agent_ownership_epoch: 0,
+    source_policy_revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    local_executor_policy_sha256: digest,
+  });
+  assert.throws(() => normalizePullUpdaterOwnershipDeactivationResponse({
+    updater_id: updater.updater_id,
+    execution_host_id: "host-main",
+    transport_mode: "pull_v2",
+    agent_service_id: "updater-central",
+    ownership_epoch: 14,
+    agent_ownership_epoch: 0,
+    source_policy_revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    local_executor_policy_sha256: digest,
+  }), /invalid_pull_ownership_deactivation_response/);
 });
 
 test("bulk update requests are created sequentially", async () => {
@@ -549,13 +1221,83 @@ test("wire responses are normalized across the public and legacy field names", (
   const response = normalizeSystemUpdatesResponse({
     updaters: [{ updater_id: "updater-1", name: "Central Updater", status: "online", online: true, version: "v1.7.0", last_heartbeat_at: "2026-07-18T00:00:00Z" }],
     hosts: [{ host_id: "host-main", name: "Main Host", updater_id: "updater-1", reachability: "reachable", reachability_checked_at: "2026-07-18T00:00:00Z" }],
-    targets: [{ target_id: "worker-main", service_type: "worker", name: "Worker", host_id: "host-main", update_agent_id: "updater-1", updater_online: true, eligible: true, update_available: true, update_check_source: "github_release", update_check_error: "rate_limited" }],
-    jobs: [{ id: "job-1", idempotency_key: "request-1", target_id: "worker-main", target_service_type: "worker", requested_by_username: "ops", status: "queued", progress: 0, sequence: 3, lease_generation: 2, created_at: "2026-07-18T00:00:00Z", updated_at: "2026-07-18T00:00:00Z" }],
+    targets: [{
+      target_id: "worker-main",
+      service_type: "worker",
+      name: "Worker",
+      host_id: "host-main",
+      update_agent_id: "updater-1",
+      updater_online: true,
+      eligible: true,
+      eligible_operations: ["software_update", "port_reconfigure"],
+      operation_blocked_reasons: { software_update: "release_manifest_invalid" },
+      update_available: true,
+      update_check_source: "github_release",
+      update_check_error: "rate_limited",
+      port_mapping: {
+        mode: "docker",
+        advertised_port: 443,
+        published_host_ip: "127.0.0.1",
+        published_port: 18084,
+        container_port: 8080,
+        health_port: 18084,
+        config_revision: 12,
+        state: "applied",
+        reported_at: "2026-07-18T00:00:00Z",
+      },
+    }],
+    jobs: [{
+      id: "job-1",
+      idempotency_key: "request-1",
+      target_id: "worker-main",
+      target_service_type: "worker",
+      requested_by_username: "ops",
+      operation: "port_reconfigure",
+      port_reconfigure: {
+        old_port: 8084,
+        new_port: 443,
+        expected_endpoint_revision: 7,
+        docker: {
+          published_host_ip: "127.0.0.1",
+          old_published_port: 8084,
+          new_published_port: 18084,
+          old_container_port: 8080,
+          new_container_port: 18080,
+          old_health_port: 8084,
+          new_health_port: 18084,
+          approved_compose_config_sha256: "a".repeat(64),
+          approved_compose_revision: 12,
+          expected_version_env_sha256: `sha256:${"b".repeat(64)}`,
+          expected_container_id: "c".repeat(64),
+          expected_image_id: `sha256:${"d".repeat(64)}`,
+          expected_repository_digest: `sha256:${"e".repeat(64)}`,
+        },
+      },
+      status: "queued",
+      progress: 0,
+      sequence: 3,
+      lease_generation: 2,
+      created_at: "2026-07-18T00:00:00Z",
+      updated_at: "2026-07-18T00:00:00Z",
+    }],
   });
   assert.equal(response.targets[0].target_type, "worker");
   assert.equal(response.targets[0].host_id, "host-main");
   assert.equal(response.targets[0].updater_id, "updater-1");
   assert.equal(response.targets[0].updater_online, true);
+  assert.deepEqual(response.targets[0].eligible_operations, ["software_update", "port_reconfigure"]);
+  assert.deepEqual(response.targets[0].operation_blocked_reasons, { software_update: "release_manifest_invalid" });
+  assert.deepEqual(response.targets[0].port_mapping, {
+    mode: "docker",
+    advertised_port: 443,
+    published_host_ip: "127.0.0.1",
+    published_port: 18084,
+    container_port: 8080,
+    health_port: 18084,
+    config_revision: 12,
+    state: "applied",
+    reported_at: "2026-07-18T00:00:00Z",
+  });
   assert.deepEqual(response.updaters[0], { updater_id: "updater-1", name: "Central Updater", status: "online", online: true, version: "v1.7.0", last_heartbeat_at: "2026-07-18T00:00:00Z" });
   assert.deepEqual(response.hosts[0], { host_id: "host-main", name: "Main Host", updater_id: "updater-1", reachability: "reachable", reachability_checked_at: "2026-07-18T00:00:00Z", reachability_code: "" });
   assert.equal(response.targets[0].update_check_source, "github_release");
@@ -565,6 +1307,8 @@ test("wire responses are normalized across the public and legacy field names", (
   assert.equal(response.jobs[0].requested_by, "ops");
   assert.equal(response.jobs[0].sequence, 3);
   assert.equal(response.jobs[0].lease_generation, 2);
+  assert.equal(response.jobs[0].port_reconfigure?.docker?.new_published_port, 18084);
+  assert.equal(response.jobs[0].port_reconfigure?.docker?.new_container_port, 18080);
   assert.equal(systemUpdateJobFromResponse({ job: response.jobs[0] }).id, "job-1");
 
   const claimJob = systemUpdateJobFromResponse({
@@ -656,6 +1400,67 @@ test("updater settings response keeps only the panel-managed policy contract", (
   assert.equal(settings.github_token_configured, true);
   assert.equal("github_token" in settings, false);
   assert.equal("known_hosts_file" in settings, false);
+});
+
+test("pull_v2 updater settings remain portless and keep server-owned host binding", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const settings = normalizeUpdaterSettingsResponse({
+    updater_id: "host-agent-main",
+    revision: 3,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    execution_host_ownership: {
+      execution_host_id: "host-main",
+      transport_mode: "ssh_v1",
+      agent_service_id: "updater-central",
+      ownership_epoch: 12,
+      policy_revision: 3,
+    },
+    pull_activation: {
+      ready: true,
+      status: "online",
+      last_heartbeat_at: "2026-07-28T00:00:00Z",
+      observe_only: true,
+      update_executor: true,
+      mutation_enabled: false,
+      recovery_pending: false,
+      reported_ownership_epoch: 0,
+      reported_projection_revision: 4,
+    },
+    local_executor_policy_sha256: digest,
+    poll_interval_seconds: 15,
+    heartbeat_interval_seconds: 30,
+    targets: [{
+      target_id: "worker-main",
+      service_id: "worker-main",
+      host_id: "host-main",
+      service_type: "worker",
+      deployment_mode: "systemd",
+    }],
+    api: {},
+    hosts: [],
+  });
+
+  assert.equal(settings.transport_mode, "pull_v2");
+  assert.equal(settings.execution_host_id, "host-main");
+  assert.equal(settings.local_executor_policy_sha256, digest);
+  assert.equal(settings.targets[0].service_id, "worker-main");
+  assert.equal(settings.hosts.length, 0);
+  assert.deepEqual(settings.pull_activation, {
+    ready: true,
+    blocked_reason: "",
+    status: "online",
+    last_heartbeat_at: "2026-07-28T00:00:00Z",
+    observe_only: true,
+    update_executor: true,
+    mutation_enabled: false,
+    recovery_pending: false,
+    reported_ownership_epoch: 0,
+    reported_projection_revision: 4,
+  });
+  assert.equal(settings.github_token_configured, false);
 });
 
 test("system update response exposes only the updater bootstrap encryption public key metadata", () => {
@@ -1038,14 +1843,55 @@ test("system update UI manages updater policy in the panel and never instructs m
 
   assert.match(applicationSource, /canManageUpdaterSecrets=\{hasPermission\(currentUser\.data, "secrets\.update"\)\}/);
   assert.doesNotMatch(applicationSource, /各ホストへのUpdater導入は不要/);
-  assert.match(applicationSource, /常駐Updaterサービス/);
-  assert.match(applicationSource, /非常駐helper/);
-  assert.match(applicationSource, /canEdit=\{canExecute && canManageUpdaterSecrets\}/);
+  assert.match(applicationSource, /Host Agentがoutbound通信で受け取って安全に適用/);
+  assert.match(applicationSource, /SSH接続やUpdater用TCP受信ポートは使いません/);
+  assert.match(applicationSource, /canEdit=\{canExecute\}/);
+  assert.match(applicationSource, /希望endpoint（未適用を含む）/);
+  assert.match(applicationSource, /現在適用中のendpoint/);
+  assert.match(applicationSource, /Node報告endpoint/);
+  assert.match(applicationSource, /systemUpdatePortReconfigureEligibility/);
+  assert.match(applicationSource, /systemUpdateSoftwareOperationEligibility/);
+  assert.match(applicationSource, /requestSystemUpdatePortReconfigureWithRecovery/);
+  assert.match(applicationSource, /activePortRequestTargets = useRef\(new Set<string>\(\)\)/);
+  assert.match(applicationSource, /acquireSystemUpdateTargetRequestLock\(activePortRequestTargets\.current, targetID\)/);
+  assert.match(applicationSource, /isSystemUpdateEndpointRevisionConflict\(error\)/);
+  assert.match(applicationSource, /Promise\.allSettled\(refreshes\)/);
+  assert.match(applicationSource, /systemUpdatePortRequestMatchesJob\(ambiguousPortRequest, job\)/);
+  assert.match(applicationSource, /systemUpdateDockerPortReconfigureRequest/);
+  assert.match(applicationSource, /公開originやreverse proxy設定は自動変更しません/);
+  assert.match(applicationSource, /localhost publishedポート/);
+  assert.match(applicationSource, /container待受ポート/);
+  assert.match(applicationSource, /min=\{1024\}[\s\S]*max=\{65535\}/);
+  assert.match(applicationSource, /aria-describedby=\{`\$\{helpID\} \$\{describedBy\}`\}/);
+  assert.match(applicationSource, /aria-busy=\{submitting\}/);
+  assert.match(applicationSource, /submittingRef\.current/);
+  assert.match(applicationSource, /role="status" aria-live="polite"/);
+  assert.match(applicationSource, /ambiguousPortTargetID=\{unresolvedAmbiguousPortRequest\?\.target_id\}/);
+  assert.match(applicationSource, /retry:\s*false/);
   assert.match(settingsSource, /設定を保存/);
   assert.match(settingsSource, /Updaterが自動で反映/);
   assert.match(settingsSource, /別の安全な経路.*照合/s);
-  assert.match(settingsSource, /設定の変更には system_updates\.execute と secrets\.update の両方の権限が必要/);
+  assert.match(settingsSource, /設定の変更には system_updates\.execute 権限が必要/);
   assert.match(settingsSource, /system_updates\.execute/);
+  assert.match(settingsSource, /pullUpdaterOwnershipActivationEligibility/);
+  assert.match(settingsSource, /pullUpdaterOwnershipActivationRequest/);
+  assert.match(settingsSource, /\/pull-ownership\/activate/);
+  assert.match(settingsSource, /expected_execution_host_id/);
+  assert.match(settingsSource, /expected_ownership_epoch/);
+  assert.match(settingsSource, /expected_source_policy_revision/);
+  assert.match(settingsSource, /expected_projection_revision/);
+  assert.match(settingsSource, /expected_local_executor_policy_revision/);
+  assert.match(settingsSource, /expected_local_executor_policy_sha256/);
+  assert.match(settingsSource, /Bridge期間中はSSH UpdaterとHost Agentの実行権限をCASで切り替えます/);
+  assert.match(settingsSource, /aria-busy=\{activateOwnership\.isPending\}/);
+  assert.match(settingsSource, /pullUpdaterOwnershipDeactivationEligibility/);
+  assert.match(settingsSource, /pullUpdaterOwnershipDeactivationRequest/);
+  assert.match(settingsSource, /\/pull-ownership\/deactivate/);
+  assert.match(settingsSource, /\{activePullOwner \? \([\s\S]*緊急Bridge rollback/);
+  assert.match(settingsSource, /legacyAgentServiceID: rollbackLegacyAgentServiceID/);
+  assert.match(settingsSource, /setAmbiguousDeactivationAttempt\(attempt\)/);
+  assert.doesNotMatch(settingsSource, /deactivateOwnership\.mutate\(ambiguousDeactivationAttempt/);
+  assert.match(settingsSource, /role=\{ownershipFeedback\?\.tone === "error"[\s\S]*\? "alert" : "status"\}/);
   assert.match(settingsSource, /secrets\.update/);
   assert.match(settingsSource, /GitHub Release Token/);
   assert.match(settingsSource, /公開中のControl Panel repositoryにもTokenを必須/);
@@ -1056,6 +1902,17 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /const \[baseRevision, setBaseRevision\] = useState\(settings\.revision\)/);
   assert.match(settingsSource, /expected_revision: expectedRevision/);
   assert.doesNotMatch(settingsSource, /expected_revision: settings\.revision/);
+  assert.match(settingsSource, /updater\.transport_mode !== "pull_v2"/);
+  assert.match(settingsSource, /pullMode \? "Host Agentの動作" : "Updaterの動作"/);
+  assert.match(settingsSource, /SSH、受信API、8090ポートは使用しません/);
+  assert.match(settingsSource, /\{!pullMode \? \(\s*<>[\s\S]*?APIポート[\s\S]*?<\/>\s*\) : null\}/);
+  assert.match(settingsSource, /\{!pullMode \? <section[\s\S]*?SSHポート[\s\S]*?<\/section> : null\}/);
+  assert.doesNotMatch(settingsSource, /settings\.data\.revision !== 0/);
+  assert.match(settingsSource, /service_id: serviceID/);
+  assert.doesNotMatch(settingsSource, /service_id: targetID/);
+  assert.match(settingsSource, /new Set\(targets\.map\(\(target\) => target\.service_id\)\)/);
+  assert.match(settingsSource, /local_executor_policy_sha256: digest/);
+  assert.doesNotMatch(settingsSource, /\.\.\.\(digest \? \{ local_executor_policy_sha256: digest \} : \{\}\)/);
   assert.match(settingsSource, /\{ value: "docker", label: "Docker" \}/);
   assert.match(settingsSource, /min=\{5\}[\s\S]*max=\{3600\}/);
   const heartbeatField = settingsSource.match(/label="Heartbeat間隔（秒）"[\s\S]*?<\/Field>/)?.[0] ?? "";
@@ -1072,11 +1929,11 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /releaseTokenConfigured=\{settings\.github_token_configured\}/);
   assert.match(settingsSource, /const \[bootstrapActive, setBootstrapActive\] = useState\(false\)/);
   assert.match(settingsSource, /const \[bootstrapCloseBlocked, setBootstrapCloseBlocked\] = useState\(false\)/);
-  assert.match(settingsSource, /if \(!nextOpen && bootstrapCloseBlocked\) return/);
-  assert.match(settingsSource, /showCloseButton=\{!bootstrapCloseBlocked\}/);
+  assert.match(settingsSource, /if \(!nextOpen && \(bootstrapCloseBlocked \|\| ownershipMutationPending\)\) return/);
+  assert.match(settingsSource, /showCloseButton=\{!bootstrapCloseBlocked && !ownershipMutationPending\}/);
   assert.match(settingsSource, /onActiveChange=\{setBootstrapActive\}/);
   assert.match(settingsSource, /onCloseBlockedChange=\{onBootstrapCloseBlockedChange\}/);
-  assert.match(settingsSource, /disabled=\{saveSettings\.isPending \|\| bootstrapActive\}/);
+  assert.match(settingsSource, /disabled=\{saveSettings\.isPending \|\| bootstrapActive \|\| ownershipOperationBlocked\}/);
   assert.match(bootstrapSource, /onActiveChange\(Boolean\(activeBootstrapStatus\) \|\| busy\)/);
   assert.match(bootstrapSource, /onCloseBlockedChange\(busy\)/);
   assert.match(bootstrapSource, /未セットアップを一括セットアップ/);
@@ -1277,10 +2134,224 @@ test("updater mock configure command keeps the one-time token out of argv", () =
   );
 });
 
+test("node endpoint presentation distinguishes desired, applied, reported, legacy, and pull ownership", () => {
+  const baseNode: WorkerNode = {
+    id: "worker-endpoint",
+    service_type: "worker",
+    service_name: "Endpoint Worker",
+    status: "online",
+    health_status: "healthy",
+  };
+  const structured = nodeEndpointState({
+    ...baseNode,
+    host: "legacy-must-not-be-current.example.com",
+    port: 8443,
+    ssl_enabled: true,
+    public_url: "https://legacy-must-not-be-current.example.com:8443",
+    desired_endpoint: {
+      host: "desired.example.com",
+      port: 18084,
+      ssl_enabled: true,
+      public_url: "https://desired.example.com:18084",
+    },
+    applied_endpoint: {
+      host: "applied.example.com",
+      port: 8084,
+      ssl_enabled: false,
+      public_url: "http://applied.example.com:8084",
+    },
+    reported_endpoint: {
+      host: "reported.example.com",
+      port: 28084,
+      ssl_enabled: true,
+      public_url: "https://reported.example.com:28084",
+    },
+    endpoint_revision: 4,
+    endpoint_status: "pending",
+  });
+  assert.equal(structured.kind, "endpoint");
+  assert.deepEqual(structured.desired, { url: "https://desired.example.com:18084", source: "structured" });
+  assert.deepEqual(structured.applied, { url: "http://applied.example.com:8084", source: "structured" });
+  assert.deepEqual(structured.reported, { url: "https://reported.example.com:28084", source: "structured" });
+  assert.equal(structured.revision, 4);
+  assert.equal(structured.status.label, "反映待ち");
+  assert.equal(structured.status.tone, "secondary");
+  assert.notEqual(structured.desired.url, structured.applied.url, "desired must never be presented as the applied endpoint");
+
+  const legacy = nodeEndpointState({
+    ...baseNode,
+    host: "legacy.example.com",
+    port: 8443,
+    ssl_enabled: true,
+    public_url: "https://legacy.example.com:8443",
+  });
+  assert.deepEqual(legacy.desired, { url: "", source: "missing" });
+  assert.deepEqual(legacy.applied, { url: "https://legacy.example.com:8443", source: "legacy" });
+  assert.deepEqual(legacy.reported, { url: "", source: "missing" });
+  assert.equal(legacy.status.label, "反映済み");
+
+  const partialStructured = nodeEndpointState({
+    ...baseNode,
+    host: "legacy.example.com",
+    port: 8443,
+    ssl_enabled: true,
+    desired_endpoint: {
+      host: "desired.example.com",
+      port: 18084,
+      ssl_enabled: true,
+      public_url: "",
+    },
+  });
+  assert.equal(partialStructured.desired.url, "https://desired.example.com:18084");
+  assert.deepEqual(partialStructured.applied, { url: "", source: "missing" });
+  assert.equal(partialStructured.status.label, "未報告");
+
+  const pull = nodeEndpointState({
+    ...baseNode,
+    id: "host-agent-a",
+    service_type: "update_agent",
+    transport_mode: "pull_v2",
+    execution_host_id: "host-a",
+    ownership_epoch: 7,
+    host: "must-be-ignored.example.com",
+    port: 8090,
+    public_url: "https://must-be-ignored.example.com:8090",
+  });
+  assert.equal(pull.kind, "pull_v2");
+  assert.equal(pull.transportMode, "pull_v2");
+  assert.equal(pull.executionHostID, "host-a");
+  assert.equal(pull.ownershipEpoch, 7);
+  assert.deepEqual(pull.applied, { url: "", source: "missing" });
+
+  assert.equal(nodeServiceEndpointURL({
+    host: "fallback.example.com",
+    port: 18081,
+    ssl_enabled: false,
+    public_url: "",
+  }), "http://fallback.example.com:18081");
+  assert.deepEqual(
+    ["applied", "pending", "drift", "rollback", "blocked", "rollback_failed", ""].map((status) => {
+      const presentation = nodeEndpointStatusPresentation(status);
+      return [presentation.label, presentation.tone];
+    }),
+    [
+      ["反映済み", "default"],
+      ["反映待ち", "secondary"],
+      ["差分あり", "destructive"],
+      ["ロールバック中", "secondary"],
+      ["変更ブロック", "destructive"],
+      ["ロールバック失敗", "destructive"],
+      ["未報告", "outline"],
+    ],
+  );
+  assert.equal(nodeEndpointStatusPresentation("future_state").label, "状態不明 (future_state)");
+});
+
+test("pull host agent registration is endpointless and ordinary node ports use the unprivileged range", () => {
+  const base = {
+    nodeType: "update_agent",
+    nodeID: "host-agent-a",
+    name: "Host Agent A",
+    description: "Host A",
+    host: "must-not-leak.example.com",
+    port: "8090",
+    sslEnabled: true,
+    allowRuntimeSecrets: false,
+    allowRemediation: false,
+    transportMode: "pull_v2" as const,
+    executionHostID: "host-a",
+  };
+  const pull = buildNodeRegistrationRequest(base);
+  assert.deepEqual(pull, {
+    node_type: "update_agent",
+    node_id: "host-agent-a",
+    name: "Host Agent A",
+    description: "Host A",
+    allow_runtime_secrets: false,
+    allow_remediation: false,
+    transport_mode: "pull_v2",
+    execution_host_id: "host-a",
+  });
+  assert.equal(nodeRegistrationDraftValid(base), true);
+  assert.equal(isExecutionHostID("host-a"), true);
+  assert.equal(isExecutionHostID(" bad host "), false);
+
+  const worker = {
+    ...base,
+    nodeType: "worker",
+    nodeID: "worker-a",
+    name: "Worker A",
+    host: "worker.example.com",
+    port: "18084",
+    transportMode: "ssh_v1" as const,
+    executionHostID: "",
+  };
+  assert.deepEqual(buildNodeRegistrationRequest(worker), {
+    node_type: "worker",
+    node_id: "worker-a",
+    name: "Worker A",
+    description: "Host A",
+    host: "worker.example.com",
+    port: 18084,
+    ssl_enabled: true,
+    allow_runtime_secrets: false,
+    allow_remediation: false,
+  });
+  assert.equal(nodeRegistrationDraftValid(worker), true);
+  assert.equal(isServicePort("1023"), false);
+  assert.equal(isServicePort("1024"), true);
+  assert.equal(isServicePort("65535"), true);
+  assert.equal(isServicePort("65536"), false);
+
+  const assertEndpointlessNode = (value: unknown) => {
+    const node = value as Record<string, unknown>;
+    for (const field of [
+      "host",
+      "port",
+      "ssl_enabled",
+      "public_url",
+      "desired_endpoint",
+      "applied_endpoint",
+      "reported_endpoint",
+      "endpoint_revision",
+      "endpoint_status",
+    ]) {
+      assert.equal(field in node, false, `pull_v2 node must not expose ${field}`);
+    }
+  };
+  const assertEndpointlessResponse = (value: unknown) => {
+    const response = value as { node?: Record<string, unknown>; node_api_url?: unknown };
+    assert.equal("node_api_url" in response, false);
+    assert.ok(response.node);
+    assertEndpointlessNode(response.node);
+    assert.doesNotMatch(JSON.stringify(response), /must-not-leak\.example\.com|8090/);
+  };
+  const mockPull = mockPost("/nodes/registration-tokens", {
+    ...pull,
+    host: "must-not-leak.example.com",
+    port: 8090,
+    ssl_enabled: true,
+  });
+  assertEndpointlessResponse(mockPull);
+  assertEndpointlessResponse(mockGet("/nodes/host-agent-a/configuration"));
+  assertEndpointlessResponse(mockPost("/nodes/host-agent-a/configure-token"));
+  assertEndpointlessResponse(mockPost("/nodes/host-agent-a/rotate-token"));
+  const updatedMockPull = mockPut("/nodes/host-agent-a", {
+    service_name: "Host Agent A renamed",
+    description: "Updated host agent",
+    host: "must-not-return.example.com",
+    port: 8090,
+    ssl_enabled: false,
+  }) as Record<string, unknown>;
+  assert.equal(updatedMockPull.service_name, "Host Agent A renamed");
+  assertEndpointlessNode(updatedMockPull);
+  assert.doesNotMatch(JSON.stringify(updatedMockPull), /must-not-return\.example\.com|8090/);
+});
+
 test("updater configure failure guidance requires a fresh token before restart", () => {
   const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /設定処理が失敗または結果不確定の場合は、Updaterを再起動しないでください。/);
+  assert.match(source, /設定処理が失敗または結果不確定の場合は、対象サービスを再起動しないでください。/);
   assert.match(source, /新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行/);
   assert.doesNotMatch(source, /失敗または結果不確定の場合も旧Runtime Tokenは維持/);
   assert.doesNotMatch(source, /同じコマンドで再開|再生成を求められた場合だけ/);
@@ -1289,16 +2360,32 @@ test("updater configure failure guidance requires a fresh token before restart",
 test("updater configure delegates managed policy to the system update screen", () => {
   const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /中央Updaterホストで1回実行/);
+  assert.match(source, /中央Updaterを稼働させるホストで1回実行/);
   assert.match(source, /「アプリケーション情報」の中央Updater設定から登録/);
   assert.match(source, /保存後はUpdaterが自動で反映/);
   assert.match(source, /ローカル設定ファイルを手作業で編集する必要はありません/);
   assert.doesNotMatch(source, /updater\.json|known_hosts|--init-from|JSON手動設定/);
 });
 
-test("updater node description identifies its central multi-host responsibility", () => {
+test("updater node description identifies its portless per-host responsibility", () => {
   const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /value: "update_agent"[^{}\r\n]*description: "各管理対象ホストのサービス更新、検証、ロールバックを中央から担当するUpdater"/);
-  assert.doesNotMatch(source, /value: "update_agent"[^{}\r\n]*description: "このホストのサービス更新、検証、ロールバックを担当するUpdater"/);
+  assert.match(source, /value: "update_agent"[^{}\r\n]*description: "ホスト単位の更新状態をControl Panelへ外向き接続で報告するHost Agent"/);
+  assert.match(source, /受信listenerは作成しません/);
+  assert.match(source, /Host Pull Agent（推奨・SSH不要）/);
+  assert.match(source, /if \(isPullHostAgent\) return ""/);
+  assert.match(source, /!configurationIsPullHostAgent && configuration\.node_api_url/);
+  assert.match(source, /受信ポートなし（Outbound HTTPS）/);
+  assert.match(source, /Host Agentの初期設定/);
+  assert.match(source, /このHost Agentを稼働させる対象ホストで1回実行/);
+  assert.match(source, /受信API endpointや専用portは作成しません/);
+  assert.match(source, /transport_mode: \{state\.transportMode\}/);
+  assert.match(source, /execution_host_id: \{state\.executionHostID \|\| "未報告"\}/);
+  assert.match(source, /ownership_epoch: \{state\.ownershipEpoch \?\? "未報告"\}/);
+  assert.match(source, /label="希望値"/);
+  assert.match(source, /反映済み \(legacy\)/);
+  assert.match(source, /label="Node報告"/);
+  assert.match(source, /Revision \{state\.revision \?\? "未報告"\}/);
+  assert.doesNotMatch(source, /port_reconfigure/);
+  assert.doesNotMatch(source, /表示されたコマンドを中央Updaterホストで/);
 });

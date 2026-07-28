@@ -300,6 +300,20 @@ func TestConfigureStageFailureAbortsWithoutLeakingToken(t *testing.T) {
 	}
 }
 
+func TestConfigureRejectsPullHostAgentIdentityBeforeCommit(t *testing.T) {
+	prepared := &fakePreparedUpdaterConfig{}
+	dependencies := completeUpdaterConfigureDependencies(t, prepared, &strings.Builder{})
+	dependencies.Stage = func(context.Context, string, string, string, time.Duration) (updateagent.UpdaterStagedConfiguration, error) {
+		staged := stagedUpdaterConfiguration("https://panel.example.com", "runtime-secret")
+		staged.Config.TransportMode = "pull_v2"
+		return staged, nil
+	}
+	err := runUpdaterConfigure(context.Background(), []string{"--panel-url", "https://panel.example.com", "--node", "central-updater"}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "ssh_v1") || prepared.committed != nil || !prepared.aborted {
+		t.Fatalf("pull identity result err=%v committed=%#v aborted=%v", err, prepared.committed, prepared.aborted)
+	}
+}
+
 func TestConfigureCancellationAfterSuccessfulStageAbortsBeforeCommit(t *testing.T) {
 	for _, test := range []struct {
 		name        string

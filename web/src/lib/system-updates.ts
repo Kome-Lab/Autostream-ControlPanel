@@ -1,7 +1,17 @@
 import type {
+  PullUpdaterOwnershipActivationRequest,
+  PullUpdaterOwnershipActivationResponse,
+  PullUpdaterOwnershipDeactivationRequest,
+  PullUpdaterOwnershipDeactivationResponse,
   SystemUpdateAgentStatus,
+  SystemUpdateDockerPortReconfigureCreateRequest,
+  SystemUpdatePortMapping,
+  SystemUpdatePortReconfigureCreateRequest,
+  SystemUpdatePortReconfiguration,
+  SystemUpdatePortReconfigurationResult,
   SystemUpdateHostStatus,
   SystemUpdateJob,
+  SystemUpdateOperation,
   SystemUpdateReachability,
   SystemUpdateStrategy,
   SystemUpdateTarget,
@@ -13,6 +23,7 @@ import type {
   UpdaterSettings,
   UpdaterSettingsHost,
   UpdaterSettingsTarget,
+  WorkerNode,
 } from "@/types/domain";
 
 const activeStatuses = new Set([
@@ -395,6 +406,542 @@ export function systemUpdateRequest(target: Pick<SystemUpdateTarget, "target_id"
   };
 }
 
+export type SystemUpdateRequestState = "idle" | "pending" | "ambiguous";
+
+export type SystemUpdateTargetOperationEligibility = {
+  ready: boolean;
+  reason: string;
+};
+
+export function systemUpdateTargetOperationEligibility(
+  target: SystemUpdateTarget | undefined,
+  operation: SystemUpdateOperation,
+): SystemUpdateTargetOperationEligibility {
+  if (!target || !Array.isArray(target.eligible_operations)) {
+    return { ready: false, reason: "operation_eligibility_unavailable" };
+  }
+  if (target.eligible_operations.includes(operation)) {
+    return { ready: true, reason: "" };
+  }
+  return {
+    ready: false,
+    reason: target.operation_blocked_reasons?.[operation] || `system_update_${operation}_not_ready`,
+  };
+}
+
+export function systemUpdateSoftwareOperationEligibility(
+  target: SystemUpdateTarget | undefined,
+): SystemUpdateTargetOperationEligibility {
+  if (!target) return { ready: false, reason: "operation_eligibility_unavailable" };
+  if (Array.isArray(target.eligible_operations)) {
+    return systemUpdateTargetOperationEligibility(target, "software_update");
+  }
+  return target.eligible
+    ? { ready: true, reason: "" }
+    : { ready: false, reason: target.blocked_reason || "system_update_software_update_not_ready" };
+}
+
+export function acquireSystemUpdateTargetRequestLock(activeTargetIDs: Set<string>, targetID: string) {
+  const normalizedTargetID = String(targetID || "").trim();
+  if (!normalizedTargetID || activeTargetIDs.has(normalizedTargetID)) return false;
+  activeTargetIDs.add(normalizedTargetID);
+  return true;
+}
+
+export type SystemUpdatePortReconfigureEligibility = {
+  ready: boolean;
+  reason: string;
+  deploymentMode?: "systemd" | "docker";
+  currentPort?: number;
+  endpointRevision?: number;
+  dockerMapping?: SystemUpdatePortMapping;
+};
+
+export function systemUpdatePortReconfigureEligibility({
+  target,
+  updater,
+  node,
+  latestJob,
+  requestState,
+}: {
+  target?: SystemUpdateTarget;
+  updater?: SystemUpdateAgentStatus;
+  node?: WorkerNode;
+  latestJob?: SystemUpdateJob;
+  requestState: SystemUpdateRequestState;
+}): SystemUpdatePortReconfigureEligibility {
+  if (!target || !node || !updater) return { ready: false, reason: "port_contract_unavailable" };
+  if (isControlPanelUpdateTarget(target) || node.service_type === "control_panel" || node.service_type === "update_agent") {
+    return { ready: false, reason: "unsupported_target" };
+  }
+  const deploymentMode = normalize(target.deployment_mode);
+  if (deploymentMode !== "systemd" && deploymentMode !== "docker") {
+    return { ready: false, reason: "unsupported_deployment" };
+  }
+  if (updater.transport_mode !== "pull_v2") return { ready: false, reason: "unsupported_transport" };
+  const nodeID = String(node.service_id || node.id || "").trim();
+  if (!nodeID || nodeID !== target.target_id) return { ready: false, reason: "port_contract_unavailable" };
+  const currentPort = Number(node.applied_endpoint?.port);
+  const endpointRevision = Number(node.endpoint_revision);
+  if (
+    !Number.isSafeInteger(currentPort)
+    || currentPort < (deploymentMode === "docker" ? 1 : 1024)
+    || currentPort > 65535
+    || !Number.isSafeInteger(endpointRevision)
+    || endpointRevision < 1
+  ) {
+    return { ready: false, reason: "port_contract_unavailable" };
+  }
+  const base = {
+    deploymentMode,
+    currentPort,
+    endpointRevision,
+  } as const;
+  const dockerMapping = deploymentMode === "docker" ? target.port_mapping : undefined;
+  if (deploymentMode === "docker" && !validAppliedDockerPortMapping(dockerMapping, currentPort)) {
+    return {
+      ...base,
+      dockerMapping,
+      ready: false,
+      reason: dockerMapping?.state === "drifted" ? "docker_mapping_drifted" : "docker_mapping_unavailable",
+    };
+  }
+  const endpointStatus = normalize(node.endpoint_status);
+  if (endpointStatus !== "applied") {
+    return { ...base, dockerMapping, ready: false, reason: endpointStatus.includes("rollback") ? "endpoint_recovery" : "endpoint_not_applied" };
+  }
+  if (requestState === "pending") return { ...base, dockerMapping, ready: false, reason: "request_pending" };
+  if (requestState === "ambiguous") return { ...base, dockerMapping, ready: false, reason: "request_ambiguous" };
+  if (target.busy === true || Boolean(target.current_stream_id)) return { ...base, dockerMapping, ready: false, reason: "target_busy" };
+  if (latestJob?.recovery_required) return { ...base, dockerMapping, ready: false, reason: "recovery_required" };
+  if (latestJob && isSystemUpdateJobActive(latestJob.status)) return { ...base, dockerMapping, ready: false, reason: "active_job" };
+  if (!updater.online || !systemUpdateUpdaterPolicyState(updater).ready) {
+    return { ...base, dockerMapping, ready: false, reason: "updater_not_ready" };
+  }
+  const operationEligibility = systemUpdateTargetOperationEligibility(target, "port_reconfigure");
+  if (!operationEligibility.ready) {
+    return {
+      ready: false,
+      reason: operationEligibility.reason,
+      ...base,
+      dockerMapping,
+    };
+  }
+  return { ...base, dockerMapping, ready: true, reason: "" };
+}
+
+function validAppliedDockerPortMapping(
+  mapping: SystemUpdatePortMapping | undefined,
+  advertisedPort: number,
+) {
+  return Boolean(
+    mapping
+    && mapping.mode === "docker"
+    && mapping.state === "applied"
+    && mapping.published_host_ip === "127.0.0.1"
+    && mapping.advertised_port === advertisedPort
+    && validPort(Number(mapping.advertised_port), 1)
+    && validPort(Number(mapping.published_port), 1024)
+    && validPort(Number(mapping.container_port), 1024)
+    && mapping.health_port === mapping.published_port
+    && Number.isSafeInteger(Number(mapping.config_revision))
+    && Number(mapping.config_revision) >= 1,
+  );
+}
+
+function validPort(value: number, minimum: number) {
+  return Number.isSafeInteger(value) && value >= minimum && value <= 65535;
+}
+
+export function systemUpdatePortReconfigureRequest({
+  targetID,
+  currentPort,
+  newPort,
+  expectedEndpointRevision,
+  idempotencyKey,
+}: {
+  targetID: string;
+  currentPort: number;
+  newPort: number;
+  expectedEndpointRevision: number;
+  idempotencyKey: string;
+}): SystemUpdatePortReconfigureCreateRequest {
+  const normalizedTargetID = String(targetID || "").trim();
+  const normalizedKey = String(idempotencyKey || "").trim();
+  if (!normalizedTargetID || !normalizedKey) throw new Error("invalid_port_reconfigure_request");
+  if (!Number.isSafeInteger(newPort) || newPort < 1024 || newPort > 65535) throw new Error("invalid_service_port");
+  if (!Number.isSafeInteger(currentPort) || currentPort < 1024 || currentPort > 65535) throw new Error("invalid_current_service_port");
+  if (newPort === currentPort) throw new Error("port_unchanged");
+  if (!Number.isSafeInteger(expectedEndpointRevision) || expectedEndpointRevision < 1) throw new Error("invalid_endpoint_revision");
+  return {
+    operation: "port_reconfigure",
+    target_id: normalizedTargetID,
+    new_port: newPort,
+    expected_endpoint_revision: expectedEndpointRevision,
+    idempotency_key: normalizedKey,
+  };
+}
+
+export function systemUpdateDockerPortReconfigureRequest({
+  targetID,
+  currentMapping,
+  newAdvertisedPort,
+  newPublishedPort,
+  newContainerPort,
+  expectedEndpointRevision,
+  idempotencyKey,
+}: {
+  targetID: string;
+  currentMapping: SystemUpdatePortMapping;
+  newAdvertisedPort: number;
+  newPublishedPort: number;
+  newContainerPort: number;
+  expectedEndpointRevision: number;
+  idempotencyKey: string;
+}): SystemUpdateDockerPortReconfigureCreateRequest {
+  const normalizedTargetID = String(targetID || "").trim();
+  const normalizedKey = String(idempotencyKey || "").trim();
+  if (!normalizedTargetID || !normalizedKey) throw new Error("invalid_port_reconfigure_request");
+  if (!validAppliedDockerPortMapping(currentMapping, Number(currentMapping.advertised_port))) {
+    throw new Error("docker_mapping_unavailable");
+  }
+  if (!validPort(newAdvertisedPort, 1)) throw new Error("invalid_advertised_port");
+  if (!validPort(newPublishedPort, 1024)) throw new Error("invalid_published_port");
+  if (!validPort(newContainerPort, 1024)) throw new Error("invalid_container_port");
+  if (
+    newAdvertisedPort === Number(currentMapping.advertised_port)
+    && newPublishedPort === Number(currentMapping.published_port)
+    && newContainerPort === Number(currentMapping.container_port)
+  ) {
+    throw new Error("port_unchanged");
+  }
+  if (!Number.isSafeInteger(expectedEndpointRevision) || expectedEndpointRevision < 1) {
+    throw new Error("invalid_endpoint_revision");
+  }
+  return {
+    operation: "port_reconfigure",
+    target_id: normalizedTargetID,
+    new_advertised_port: newAdvertisedPort,
+    new_published_port: newPublishedPort,
+    new_container_port: newContainerPort,
+    expected_endpoint_revision: expectedEndpointRevision,
+    idempotency_key: normalizedKey,
+  };
+}
+
+export function systemUpdatePortRequestMatchesJob(
+  request: SystemUpdatePortReconfigureCreateRequest,
+  job: SystemUpdateJob,
+) {
+  if (
+    job.idempotency_key !== request.idempotency_key
+    || job.target_id !== request.target_id
+    || job.operation !== "port_reconfigure"
+    || job.port_reconfigure?.expected_endpoint_revision !== request.expected_endpoint_revision
+  ) {
+    return false;
+  }
+  if ("new_port" in request) return job.port_reconfigure.new_port === request.new_port;
+  return job.port_reconfigure.new_port === request.new_advertised_port
+    && job.port_reconfigure.docker?.new_published_port === request.new_published_port
+    && job.port_reconfigure.docker?.new_container_port === request.new_container_port;
+}
+
+export async function requestSystemUpdatePortReconfigureWithRecovery(
+  request: SystemUpdatePortReconfigureCreateRequest,
+  send: (request: SystemUpdatePortReconfigureCreateRequest) => Promise<unknown>,
+  refreshJobs: () => Promise<SystemUpdateJob[]>,
+) {
+  try {
+    return systemUpdateJobFromResponse(await send(request));
+  } catch (originalError) {
+    if (!ambiguousSystemUpdateCreateError(originalError)) throw originalError;
+    try {
+      const recovered = (await refreshJobs()).find((job) => systemUpdatePortRequestMatchesJob(request, job));
+      if (recovered) return recovered;
+    } catch {
+      // The original POST may have committed. Never issue a second POST while
+      // the request identity remains unresolved.
+    }
+    throw new SystemUpdateRequestAmbiguousError(request, originalError);
+  }
+}
+
+export class SystemUpdateRequestAmbiguousError extends Error {
+  request: SystemUpdatePortReconfigureCreateRequest;
+
+  constructor(request: SystemUpdatePortReconfigureCreateRequest, cause?: unknown) {
+    super("system_update_request_ambiguous", { cause });
+    this.name = "SystemUpdateRequestAmbiguousError";
+    this.request = request;
+  }
+}
+
+export function isSystemUpdateEndpointRevisionConflict(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const record = error as { code?: unknown; status?: unknown };
+  return record.code === "system_update_endpoint_revision_conflict" && Number(record.status) === 409;
+}
+
+export function systemUpdatePortReconfigureResultLabel(result?: SystemUpdatePortReconfigurationResult) {
+  const labels: Record<SystemUpdatePortReconfigurationResult, string> = {
+    applied: "新しいポートを適用済み",
+    rolled_back: "以前のポートへロールバック済み",
+    unchanged: "ポート変更なし",
+    rollback_failed: "ロールバック失敗",
+  };
+  return result ? labels[result] : "";
+}
+
+export function pullUpdaterOwnershipActivationEligibility({
+  updater,
+  settings,
+  jobs,
+  requestState,
+}: {
+  updater: SystemUpdateAgentStatus;
+  settings: UpdaterSettings;
+  jobs: SystemUpdateJob[];
+  requestState: SystemUpdateRequestState;
+}) {
+  if (updater.transport_mode !== "pull_v2" || settings.transport_mode !== "pull_v2") {
+    return { ready: false, reason: "unsupported_transport" };
+  }
+  if (!pullUpdaterOwnershipActivationContract(updater, settings)) {
+    return { ready: false, reason: "pull_ownership_contract_unavailable" };
+  }
+  if (requestState === "pending") return { ready: false, reason: "request_pending" };
+  if (requestState === "ambiguous") return { ready: false, reason: "request_ambiguous" };
+  const activation = settings.pull_activation;
+  if (!activation) return { ready: false, reason: "pull_ownership_contract_unavailable" };
+  if (!updater.online || activation.status.toLowerCase() !== "online" || !activation.last_heartbeat_at) {
+    return { ready: false, reason: "observer_offline" };
+  }
+  if (activation.recovery_pending) return { ready: false, reason: "recovery_required" };
+  const activeTargetIDs = new Set(settings.targets.map((target) => target.target_id));
+  if (jobs.some((job) => (
+    (job.updater_id === updater.updater_id || activeTargetIDs.has(job.target_id))
+    && (job.recovery_required || isSystemUpdateJobActive(job.status))
+  ))) {
+    return { ready: false, reason: "active_job" };
+  }
+  if (
+    !activation.ready
+    || Boolean(activation.blocked_reason)
+    || !activation.observe_only
+    || !activation.update_executor
+    || activation.mutation_enabled
+    || activation.reported_ownership_epoch !== 0
+    || activation.reported_projection_revision !== settings.projection_revision
+  ) {
+    return { ready: false, reason: "observer_not_ready" };
+  }
+  return { ready: true, reason: "" };
+}
+
+export function pullUpdaterOwnershipActivationRequest(
+  updater: SystemUpdateAgentStatus,
+  settings: UpdaterSettings,
+): PullUpdaterOwnershipActivationRequest {
+  const contract = pullUpdaterOwnershipActivationContract(updater, settings);
+  if (!contract) throw new Error("pull_ownership_contract_unavailable");
+  return contract;
+}
+
+export function normalizePullUpdaterOwnershipActivationResponse(value: unknown): PullUpdaterOwnershipActivationResponse {
+  const response = recordValue(value);
+  const normalized: PullUpdaterOwnershipActivationResponse = {
+    updater_id: stringValue(response.updater_id),
+    execution_host_id: stringValue(response.execution_host_id),
+    transport_mode: response.transport_mode === "pull_v2" ? "pull_v2" : "pull_v2",
+    agent_service_id: stringValue(response.agent_service_id),
+    ownership_epoch: nonNegativeIntegerValue(response.ownership_epoch, -1),
+    source_policy_revision: nonNegativeIntegerValue(response.source_policy_revision, 0),
+    projection_revision: nonNegativeIntegerValue(response.projection_revision, 0),
+    local_executor_policy_revision: nonNegativeIntegerValue(response.local_executor_policy_revision, 0),
+    local_executor_policy_sha256: stringValue(response.local_executor_policy_sha256).toLowerCase(),
+  };
+  if (
+    !normalized.updater_id
+    || !normalized.execution_host_id
+    || response.transport_mode !== "pull_v2"
+    || !normalized.agent_service_id
+    || normalized.ownership_epoch < 1
+    || normalized.source_policy_revision < 1
+    || normalized.projection_revision < 1
+    || normalized.local_executor_policy_revision < 1
+    || !validSystemUpdateDigest(normalized.local_executor_policy_sha256)
+  ) {
+    throw new Error("invalid_pull_ownership_activation_response");
+  }
+  return normalized;
+}
+
+function pullUpdaterOwnershipActivationContract(
+  updater: SystemUpdateAgentStatus,
+  settings: UpdaterSettings,
+): PullUpdaterOwnershipActivationRequest | null {
+  const executionHostID = String(settings.execution_host_id || "").trim();
+  const ownership = settings.execution_host_ownership;
+  const digest = String(settings.local_executor_policy_sha256 || "").trim().toLowerCase();
+  if (
+    updater.transport_mode !== "pull_v2"
+    || updater.execution_host_id !== executionHostID
+    || updater.ownership_epoch !== 0
+    || !executionHostID
+    || !ownership
+    || ownership.transport_mode !== "ssh_v1"
+    || !Number.isSafeInteger(ownership.ownership_epoch)
+    || ownership.ownership_epoch < 0
+    || !Number.isSafeInteger(settings.revision)
+    || settings.revision < 1
+    || !Number.isSafeInteger(settings.projection_revision)
+    || Number(settings.projection_revision) < 1
+    || !Number.isSafeInteger(settings.local_executor_policy_revision)
+    || Number(settings.local_executor_policy_revision) < 1
+    || !validSystemUpdateDigest(digest)
+  ) {
+    return null;
+  }
+  return {
+    expected_execution_host_id: executionHostID,
+    expected_ownership_epoch: ownership.ownership_epoch,
+    expected_source_policy_revision: settings.revision,
+    expected_projection_revision: Number(settings.projection_revision),
+    expected_local_executor_policy_revision: Number(settings.local_executor_policy_revision),
+    expected_local_executor_policy_sha256: digest,
+  };
+}
+
+export function pullOwnershipMutationFenceAdvanced(
+  attempt: Pick<
+    PullUpdaterOwnershipActivationRequest,
+    "expected_execution_host_id" | "expected_ownership_epoch"
+  >,
+  settings: Pick<UpdaterSettings, "execution_host_id" | "execution_host_ownership">,
+) {
+  const ownership = settings.execution_host_ownership;
+  return (
+    String(settings.execution_host_id || "").trim() === attempt.expected_execution_host_id
+    && Boolean(ownership)
+    && Number.isSafeInteger(ownership?.ownership_epoch)
+    && Number(ownership?.ownership_epoch) > attempt.expected_ownership_epoch
+  );
+}
+
+export function pullUpdaterOwnershipDeactivationEligibility({
+  updater,
+  settings,
+  jobs,
+  requestState,
+}: {
+  updater: SystemUpdateAgentStatus;
+  settings: UpdaterSettings;
+  jobs: SystemUpdateJob[];
+  requestState: SystemUpdateRequestState;
+}) {
+  if (!pullUpdaterOwnershipDeactivationContract(updater, settings)) {
+    return { ready: false, reason: "pull_rollback_contract_unavailable" };
+  }
+  if (requestState === "pending") return { ready: false, reason: "request_pending" };
+  if (requestState === "ambiguous") return { ready: false, reason: "request_ambiguous" };
+  if (settings.pull_activation?.recovery_pending) {
+    return { ready: false, reason: "recovery_required" };
+  }
+  const activeTargetIDs = new Set(settings.targets.map((target) => target.target_id));
+  if (jobs.some((job) => (
+    (job.updater_id === updater.updater_id || activeTargetIDs.has(job.target_id))
+    && (job.recovery_required || isSystemUpdateJobActive(job.status))
+  ))) {
+    return { ready: false, reason: "active_job" };
+  }
+  return { ready: true, reason: "" };
+}
+
+export function pullUpdaterOwnershipDeactivationRequest(
+  updater: SystemUpdateAgentStatus,
+  settings: UpdaterSettings,
+): PullUpdaterOwnershipDeactivationRequest {
+  const contract = pullUpdaterOwnershipDeactivationContract(updater, settings);
+  if (!contract) throw new Error("pull_rollback_contract_unavailable");
+  return contract;
+}
+
+export function normalizePullUpdaterOwnershipDeactivationResponse(
+  value: unknown,
+): PullUpdaterOwnershipDeactivationResponse {
+  const response = recordValue(value);
+  const normalized: PullUpdaterOwnershipDeactivationResponse = {
+    updater_id: stringValue(response.updater_id),
+    execution_host_id: stringValue(response.execution_host_id),
+    transport_mode: "ssh_v1",
+    agent_service_id: stringValue(response.agent_service_id),
+    ownership_epoch: nonNegativeIntegerValue(response.ownership_epoch, -1),
+    agent_ownership_epoch: nonNegativeIntegerValue(response.agent_ownership_epoch, -1) as 0,
+    source_policy_revision: nonNegativeIntegerValue(response.source_policy_revision, 0),
+    projection_revision: nonNegativeIntegerValue(response.projection_revision, 0),
+    local_executor_policy_revision: nonNegativeIntegerValue(response.local_executor_policy_revision, 0),
+    local_executor_policy_sha256: stringValue(response.local_executor_policy_sha256).toLowerCase(),
+  };
+  if (
+    !normalized.updater_id
+    || !normalized.execution_host_id
+    || response.transport_mode !== "ssh_v1"
+    || !normalized.agent_service_id
+    || normalized.ownership_epoch < 1
+    || normalized.agent_ownership_epoch !== 0
+    || normalized.source_policy_revision < 1
+    || normalized.projection_revision < 1
+    || normalized.local_executor_policy_revision < 1
+    || !validSystemUpdateDigest(normalized.local_executor_policy_sha256)
+  ) {
+    throw new Error("invalid_pull_ownership_deactivation_response");
+  }
+  return normalized;
+}
+
+function pullUpdaterOwnershipDeactivationContract(
+  updater: SystemUpdateAgentStatus,
+  settings: UpdaterSettings,
+): PullUpdaterOwnershipDeactivationRequest | null {
+  const executionHostID = String(settings.execution_host_id || "").trim();
+  const ownership = settings.execution_host_ownership;
+  const legacyAgentServiceID = String(ownership?.legacy_agent_service_id || "").trim();
+  const digest = String(settings.local_executor_policy_sha256 || "").trim().toLowerCase();
+  if (
+    updater.transport_mode !== "pull_v2"
+    || settings.transport_mode !== "pull_v2"
+    || updater.execution_host_id !== executionHostID
+    || !executionHostID
+    || !ownership
+    || ownership.transport_mode !== "pull_v2"
+    || ownership.agent_service_id !== updater.updater_id
+    || !legacyAgentServiceID
+    || !Number.isSafeInteger(ownership.ownership_epoch)
+    || ownership.ownership_epoch < 1
+    || !Number.isSafeInteger(updater.ownership_epoch)
+    || Number(updater.ownership_epoch) !== ownership.ownership_epoch
+    || !Number.isSafeInteger(settings.revision)
+    || settings.revision < 1
+    || !Number.isSafeInteger(settings.projection_revision)
+    || Number(settings.projection_revision) < 1
+    || ownership.policy_revision !== Number(settings.projection_revision)
+    || !Number.isSafeInteger(settings.local_executor_policy_revision)
+    || Number(settings.local_executor_policy_revision) < 1
+    || !validSystemUpdateDigest(digest)
+  ) {
+    return null;
+  }
+  return {
+    expected_execution_host_id: executionHostID,
+    expected_ownership_epoch: ownership.ownership_epoch,
+    expected_source_policy_revision: settings.revision,
+    expected_projection_revision: Number(settings.projection_revision),
+    expected_local_executor_policy_revision: Number(settings.local_executor_policy_revision),
+    expected_local_executor_policy_sha256: digest,
+  };
+}
+
 export async function requestSystemUpdateWithRecovery(
   target: SystemUpdateTarget,
   idempotencyKey: string,
@@ -491,6 +1038,9 @@ export function emptyUpdaterSettings(updaterID: string): UpdaterSettings {
   return {
     updater_id: updaterID,
     revision: 0,
+    transport_mode: "ssh_v1",
+    execution_host_id: "",
+    local_executor_policy_sha256: "",
     api: {
       bind_host: "127.0.0.1",
       host: "127.0.0.1",
@@ -514,6 +1064,8 @@ export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdater
   const updaterID = stringValue(settings.updater_id) || fallbackUpdaterID;
   const defaults = emptyUpdaterSettings(updaterID);
   const api = recordValue(settings.api);
+  const executionHostOwnership = recordValue(settings.execution_host_ownership);
+  const pullActivation = recordValue(settings.pull_activation);
   const hosts = Array.isArray(settings.hosts)
     ? settings.hosts.map((value) => {
       const host = recordValue(value);
@@ -538,6 +1090,7 @@ export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdater
       const target = recordValue(value);
       return {
         target_id: stringValue(target.target_id),
+        service_id: stringValue(target.service_id || target.target_id),
         host_id: stringValue(target.host_id),
         service_type: stringValue(target.service_type || target.target_type),
         deployment_mode: stringValue(target.deployment_mode),
@@ -547,6 +1100,34 @@ export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdater
   return {
     updater_id: updaterID,
     revision: nonNegativeIntegerValue(settings.revision, 0),
+    projection_revision: optionalNonNegativeIntegerValue(settings.projection_revision),
+    local_executor_policy_revision: optionalNonNegativeIntegerValue(settings.local_executor_policy_revision),
+    transport_mode: settings.transport_mode === "pull_v2" ? "pull_v2" : "ssh_v1",
+    execution_host_id: stringValue(settings.execution_host_id),
+    execution_host_ownership: Object.keys(executionHostOwnership).length > 0
+      ? {
+          transport_mode: executionHostOwnership.transport_mode === "pull_v2" ? "pull_v2" : "ssh_v1",
+          agent_service_id: stringValue(executionHostOwnership.agent_service_id),
+          legacy_agent_service_id: stringValue(executionHostOwnership.legacy_agent_service_id),
+          ownership_epoch: nonNegativeIntegerValue(executionHostOwnership.ownership_epoch, -1),
+          policy_revision: nonNegativeIntegerValue(executionHostOwnership.policy_revision, -1),
+        }
+      : undefined,
+    pull_activation: Object.keys(pullActivation).length > 0
+      ? {
+          ready: pullActivation.ready === true,
+          blocked_reason: stringValue(pullActivation.blocked_reason),
+          status: stringValue(pullActivation.status),
+          last_heartbeat_at: stringValue(pullActivation.last_heartbeat_at),
+          observe_only: pullActivation.observe_only === true,
+          update_executor: pullActivation.update_executor === true,
+          mutation_enabled: pullActivation.mutation_enabled === true,
+          recovery_pending: pullActivation.recovery_pending === true,
+          reported_ownership_epoch: nonNegativeIntegerValue(pullActivation.reported_ownership_epoch, -1),
+          reported_projection_revision: nonNegativeIntegerValue(pullActivation.reported_projection_revision, -1),
+        }
+      : undefined,
+    local_executor_policy_sha256: stringValue(settings.local_executor_policy_sha256),
     api: {
       bind_host: stringValue(api.bind_host) || defaults.api.bind_host,
       host: stringValue(api.host) || defaults.api.host,
@@ -620,6 +1201,9 @@ export function systemUpdateTargetBlockedReason(reason?: string) {
     stream_active: "配信中です。空き次第の更新を選択してください。",
     target_busy: "この対象では別の更新処理が進行中です。",
     job_in_progress: "この対象では別の更新処理が進行中です。",
+    operation_eligibility_unavailable: "更新操作の適格性が未報告です。Control Panelと更新エージェントを更新してから再取得してください。",
+    system_update_software_update_not_ready: "この対象ではソフトウェア更新を開始できません。",
+    system_update_port_reconfigure_not_ready: "この対象ではサービスのポートを変更できません。",
     unsupported_deployment_mode: "この配備方式は自動更新に対応していません。",
     deployment_mode_unsupported: "この配備方式は自動更新に対応していません。",
     release_manifest_unavailable: "更新用リリース情報を取得できません。",
@@ -665,6 +1249,22 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     invalid_target: "更新対象の指定が正しくありません。",
     invalid_system_update_request: "更新要求の内容が正しくありません。一覧を再取得してから再試行してください。",
     invalid_system_update_response: "更新サービスから正しい応答を受け取れませんでした。一覧を再取得してください。",
+    invalid_port_reconfigure_request: "ポート変更要求が現在のendpoint状態と一致しません。Node情報を再取得してください。",
+    invalid_service_port: "ポートは1024〜65535の整数で指定してください。",
+    service_port_reserved: "同じホストで指定したポートが既に使用または予約されています。",
+    system_update_endpoint_revision_conflict: "Endpoint revisionが変わりました。Node情報を再取得してからやり直してください。",
+    system_update_port_reconfigure_not_ready: "このサービスは現在ポートを変更できません。EndpointとHost Agentの状態を確認してください。",
+    invalid_pull_ownership_activation_request: "更新実行権限の切替条件が現在状態と一致しません。Updater状態を再取得してください。",
+    invalid_pull_activation_request: "更新実行権限の切替条件が現在状態と一致しません。Updater状態を再取得してください。",
+    invalid_pull_deactivation_request: "Bridge rollback条件が現在状態と一致しません。Updater状態を再取得してください。",
+    pull_ownership_not_ready: "Host Agent、Local Executor、または対象サービスの準備が完了していません。",
+    host_agent_not_ready: "Host Agent、Local Executor、または対象サービスの準備が完了していません。最新状態を再取得してください。",
+    system_update_agent_inactive: "Host Agentがオンラインになるまで更新実行権限を切り替えられません。",
+    update_agent_inactive: "Host Agentまたは保存済みSSH Updaterのtokenが有効ではありません。登録状態を確認してください。",
+    system_update_agent_binding_mismatch: "Host Agentの実行ホスト割り当てが変わりました。Updater状態を再取得してください。",
+    system_update_execution_host_busy: "対象ホストで更新ジョブまたはrecoveryが進行中です。",
+    host_lifecycle_busy: "対象ホストで更新、self-update、token rotation、またはmutation grantが進行中です。",
+    system_update_ownership_conflict: "更新実行権限のOwnerまたはepochが変わりました。Updater状態を再取得してください。",
     invalid_updater_policy: "Updater設定に不正な項目があります。入力内容を確認してください。",
     invalid_updater_host_public_key: "SSHホスト公開鍵を確認できません。対象ホストで確認したssh-ed25519公開鍵の全文を入力してください。",
     invalid_updater_host_bootstrap_request: "ホストセットアップ要求の内容が正しくありません。設定を再取得してから再試行してください。",
@@ -819,6 +1419,18 @@ function normalizeSystemUpdateTarget(value: unknown): SystemUpdateTarget {
   const target = recordValue(value);
   const updaterID = stringValue(target.updater_id || target.update_agent_id);
   const blockedReason = stringValue(target.blocked_reason);
+  const eligibleOperations = Array.isArray(target.eligible_operations)
+    ? target.eligible_operations.filter(
+        (operation): operation is SystemUpdateOperation => operation === "software_update" || operation === "port_reconfigure",
+      )
+    : undefined;
+  const rawOperationBlockedReasons = recordValue(target.operation_blocked_reasons);
+  const portMapping = normalizeSystemUpdatePortMapping(target.port_mapping);
+  const operationBlockedReasons: Partial<Record<SystemUpdateOperation, string>> = {};
+  for (const operation of ["software_update", "port_reconfigure"] as const) {
+    const reason = stringValue(rawOperationBlockedReasons[operation]);
+    if (reason) operationBlockedReasons[operation] = reason;
+  }
   return {
     target_id: stringValue(target.target_id),
     target_type: stringValue(target.target_type || target.service_type),
@@ -834,8 +1446,30 @@ function normalizeSystemUpdateTarget(value: unknown): SystemUpdateTarget {
     current_stream_id: stringValue(target.current_stream_id),
     eligible: Boolean(target.eligible),
     blocked_reason: blockedReason,
+    eligible_operations: eligibleOperations,
+    operation_blocked_reasons: Object.keys(operationBlockedReasons).length > 0 ? operationBlockedReasons : undefined,
+    port_mapping: portMapping,
     update_check_source: stringValue(target.update_check_source),
     update_check_error: stringValue(target.update_check_error),
+  };
+}
+
+function normalizeSystemUpdatePortMapping(value: unknown): SystemUpdatePortMapping | undefined {
+  const mapping = recordValue(value);
+  if (mapping.mode !== "docker") return undefined;
+  const state = mapping.state === "applied" || mapping.state === "drifted" || mapping.state === "unavailable"
+    ? mapping.state
+    : "unavailable";
+  return {
+    mode: "docker",
+    advertised_port: optionalNumberValue(mapping.advertised_port),
+    published_host_ip: stringValue(mapping.published_host_ip) || undefined,
+    published_port: optionalNumberValue(mapping.published_port),
+    container_port: optionalNumberValue(mapping.container_port),
+    health_port: optionalNumberValue(mapping.health_port),
+    config_revision: optionalNumberValue(mapping.config_revision),
+    state,
+    reported_at: stringValue(mapping.reported_at) || undefined,
   };
 }
 
@@ -850,6 +1484,13 @@ function normalizeSystemUpdateAgent(value: unknown): SystemUpdateAgentStatus {
     version: stringValue(updater.version),
     last_heartbeat_at: stringValue(updater.last_heartbeat_at),
   };
+  if (updater.transport_mode === "pull_v2" || updater.transport_mode === "ssh_v1") {
+    normalized.transport_mode = updater.transport_mode;
+  }
+  const executionHostID = stringValue(updater.execution_host_id);
+  const ownershipEpoch = optionalNumberValue(updater.ownership_epoch);
+  if (executionHostID) normalized.execution_host_id = executionHostID;
+  if (ownershipEpoch !== undefined) normalized.ownership_epoch = ownershipEpoch;
   const desiredRevision = optionalNumberValue(updater.desired_revision);
   const appliedRevision = optionalNumberValue(updater.applied_revision);
   const policyStatus = stringValue(updater.policy_status);
@@ -970,6 +1611,12 @@ function ambiguousUpdaterHostBootstrapCreateError(error: unknown) {
   return !Number.isInteger(status) || status < 400 || status >= 500;
 }
 
+function ambiguousSystemUpdateCreateError(error: unknown) {
+  if (!error || typeof error !== "object" || !("status" in error)) return true;
+  const status = Number((error as { status?: unknown }).status);
+  return !Number.isInteger(status) || status < 400 || status >= 500;
+}
+
 function sameUpdaterBootstrapTargetsForHost(
   hostID: string,
   savedTargets: UpdaterSettingsTarget[],
@@ -1020,11 +1667,24 @@ function normalizeSystemUpdateReachability(value: unknown): SystemUpdateReachabi
 
 function normalizeSystemUpdateJob(value: unknown): SystemUpdateJob {
   const job = recordValue(value);
+  const operation = job.operation === "port_reconfigure" || job.operation === "software_update"
+    ? job.operation
+    : undefined;
+  const portReconfigure = recordValue(job.port_reconfigure);
   return {
     id: stringValue(job.id),
     idempotency_key: stringValue(job.idempotency_key),
     target_id: stringValue(job.target_id),
     target_type: stringValue(job.target_type || job.target_service_type),
+    host_id: stringValue(job.host_id),
+    transport_mode: job.transport_mode === "pull_v2" || job.transport_mode === "ssh_v1" ? job.transport_mode : undefined,
+    ownership_epoch: optionalNonNegativeIntegerValue(job.ownership_epoch),
+    policy_revision: optionalNonNegativeIntegerValue(job.policy_revision),
+    updater_id: stringValue(job.updater_id),
+    operation,
+    port_reconfigure: operation === "port_reconfigure" && Object.keys(portReconfigure).length > 0
+      ? normalizeSystemUpdatePortReconfiguration(portReconfigure)
+      : undefined,
     current_version: stringValue(job.current_version),
     target_version: stringValue(job.target_version),
     deployment_mode: stringValue(job.deployment_mode),
@@ -1064,6 +1724,12 @@ function optionalNumberValue(value: unknown) {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function optionalNonNegativeIntegerValue(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+}
+
 function positiveIntegerValue(value: unknown, fallback: number) {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isInteger(number) && number > 0 ? number : fallback;
@@ -1081,4 +1747,57 @@ function stringRecordValue(value: unknown) {
       .filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1].trim()))
       .map(([key, item]) => [key, item.trim()]),
   );
+}
+
+function normalizeSystemUpdatePortReconfiguration(value: Record<string, unknown>): SystemUpdatePortReconfiguration {
+  const result: SystemUpdatePortReconfigurationResult | undefined = value.result === "applied"
+    || value.result === "rolled_back"
+    || value.result === "unchanged"
+    || value.result === "rollback_failed"
+    ? value.result as SystemUpdatePortReconfigurationResult
+    : undefined;
+  const protocol: "tcp" | "udp" | undefined = value.protocol === "tcp" || value.protocol === "udp"
+    ? value.protocol
+    : undefined;
+  const rawDocker = recordValue(value.docker);
+  const docker = Object.keys(rawDocker).length > 0
+    ? {
+        published_host_ip: stringValue(rawDocker.published_host_ip),
+        old_published_port: numberValue(rawDocker.old_published_port),
+        new_published_port: numberValue(rawDocker.new_published_port),
+        old_container_port: numberValue(rawDocker.old_container_port),
+        new_container_port: numberValue(rawDocker.new_container_port),
+        old_health_port: numberValue(rawDocker.old_health_port),
+        new_health_port: numberValue(rawDocker.new_health_port),
+        approved_compose_config_sha256: stringValue(rawDocker.approved_compose_config_sha256),
+        approved_compose_revision: numberValue(rawDocker.approved_compose_revision),
+        expected_version_env_sha256: stringValue(rawDocker.expected_version_env_sha256),
+        expected_container_id: stringValue(rawDocker.expected_container_id),
+        expected_image_id: stringValue(rawDocker.expected_image_id),
+        expected_repository_digest: stringValue(rawDocker.expected_repository_digest),
+      }
+    : undefined;
+  return {
+    network_namespace: stringValue(value.network_namespace),
+    protocol,
+    old_port: optionalNumberValue(value.old_port),
+    new_port: optionalNumberValue(value.new_port),
+    expected_endpoint_revision: optionalNumberValue(value.expected_endpoint_revision),
+    target_endpoint_revision: optionalNumberValue(value.target_endpoint_revision),
+    expected_config_revision: optionalNumberValue(value.expected_config_revision),
+    target_config_revision: optionalNumberValue(value.target_config_revision),
+    expected_config_sha256: stringValue(value.expected_config_sha256),
+    target_config_sha256: stringValue(value.target_config_sha256),
+    expected_source_policy_revision: optionalNumberValue(value.expected_source_policy_revision),
+    expected_updater_policy_revision: optionalNumberValue(value.expected_updater_policy_revision),
+    expected_executor_policy_revision: optionalNumberValue(value.expected_executor_policy_revision),
+    expected_executor_policy_sha256: stringValue(value.expected_executor_policy_sha256),
+    port_plan_sha256: stringValue(value.port_plan_sha256),
+    docker,
+    result,
+  };
+}
+
+function validSystemUpdateDigest(value: string) {
+  return /^sha256:[a-f0-9]{64}$/.test(value);
 }

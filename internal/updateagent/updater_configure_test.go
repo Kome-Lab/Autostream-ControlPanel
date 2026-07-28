@@ -34,7 +34,8 @@ func TestMergeUpdaterConfiguredIdentityReplacesLegacyPolicyWithManagedBootstrap(
 	}
 	identity := UpdaterConfigureIdentity{
 		PanelURL: "https://new-panel.example.com", NodeID: "central-updater", RuntimeToken: "new-runtime-token", ServiceName: "Central Updater", ServiceType: "update_agent",
-		API: APIConfig{Host: "panel-supplied.example.com", Port: 8090, SSLEnabled: true},
+		TransportMode: "pull_v2",
+		API:           APIConfig{Host: "panel-supplied.example.com", Port: 8090, SSLEnabled: true},
 	}
 
 	merged, err := mergeUpdaterConfiguredIdentity(existing, identity)
@@ -55,7 +56,7 @@ func TestMergeUpdaterConfiguredIdentityReplacesLegacyPolicyWithManagedBootstrap(
 	if got.PanelURL != identity.PanelURL || got.NodeID != identity.NodeID || got.RuntimeToken != identity.RuntimeToken || got.ServiceName != identity.ServiceName || !got.IsManagedBootstrap() {
 		t.Fatalf("configured identity = %#v", got)
 	}
-	for _, forbidden := range []string{"github_token", "api", "state_dir", "hosts", "targets", "helper_argv", "identity_file", "known_hosts", "local-github-secret", "github-local-secret", "panel-supplied.example.com"} {
+	for _, forbidden := range []string{"github_token", "api", "transport_mode", "state_dir", "hosts", "targets", "helper_argv", "identity_file", "known_hosts", "local-github-secret", "github-local-secret", "panel-supplied.example.com"} {
 		if strings.Contains(string(merged), forbidden) {
 			t.Fatalf("legacy or configure-only field %q remained in managed bootstrap: %s", forbidden, merged)
 		}
@@ -103,6 +104,169 @@ func TestStageUpdaterConfigurationUsesOneTimeTokenWithoutLocalPolicy(t *testing.
 	}
 	if staged.Config.NodeID != "central-updater" || staged.Config.ServiceType != "update_agent" || staged.Config.RuntimeToken != "runtime-token" || staged.Config.API.Host != "updater.example.com" || staged.ConfigurationID != "configuration-01" || staged.ActivationToken != "activation-token" || staged.ActivationExpiresAt.IsZero() {
 		t.Fatalf("staged configuration = %#v", staged)
+	}
+}
+
+func TestStageHostAgentConfigurationSendsOnlyBoundedPeerIdentityAndValidatesProjection(t *testing.T) {
+	configureToken := "configure-token-must-not-return"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["nodeId"] != "host-agent-a" ||
+			payload["configureToken"] != configureToken ||
+			payload["protocolVersion"] != float64(HostAgentConfigureProtocolVersion) ||
+			payload["agentUid"] != float64(1001) ||
+			payload["agentGid"] != float64(1002) ||
+			len(payload) != 5 {
+			t.Fatalf("Host Agent stage request = %#v", payload)
+		}
+		for _, forbidden := range []string{
+			"policy", "sha256", "path", "socket_path", "targets",
+		} {
+			if _, exists := payload[forbidden]; exists {
+				t.Fatalf("Host Agent supplied server-owned %s: %#v", forbidden, payload)
+			}
+		}
+		projection, err := BuildHostAgentConfigurePolicy(HostAgentConfigurePolicySource{
+			PanelURL:                    server.URL,
+			ExecutionHostID:             "host-a",
+			AgentUID:                    1001,
+			AgentGID:                    1002,
+			SourcePolicyRevision:        3,
+			ProjectionRevision:          4,
+			LocalExecutorPolicyRevision: 5,
+			Targets: []HostAgentConfigurePolicyTarget{{
+				ServiceID:             "worker-a",
+				ServiceType:           "worker",
+				DeploymentMode:        ModeSystemd,
+				EndpointRevision:      2,
+				AppliedConfigRevision: 7,
+				AppliedEndpointPort:   18084,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(UpdaterStagedConfiguration{
+			Config: UpdaterConfigureIdentity{
+				PanelURL:      server.URL,
+				NodeID:        "host-agent-a",
+				RuntimeToken:  "runtime-token",
+				ServiceName:   "Host Agent A",
+				ServiceType:   "update_agent",
+				TransportMode: "pull_v2",
+			},
+			ConfigurationID:     "configuration-01",
+			ActivationToken:     "activation-token",
+			ActivationExpiresAt: time.Now().UTC().Add(time.Hour),
+			ConfigureProtocol:   HostAgentConfigureProtocolVersion,
+			LocalExecutorPolicy: &projection,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	staged, err := StageHostAgentConfiguration(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"host-agent-a",
+		configureToken,
+		HostAgentConfigurePeerIdentity{UID: 1001, GID: 1002},
+		5*time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.LocalExecutorPolicy == nil ||
+		staged.LocalExecutorPolicy.SourcePolicyRevision != 3 ||
+		staged.LocalExecutorPolicy.ProjectionRevision != 4 ||
+		staged.LocalExecutorPolicy.PolicyRevision != 5 {
+		t.Fatalf("staged Host Agent projection = %#v", staged)
+	}
+}
+
+func TestPullConfigureActivationBindsInstalledPolicyDigestAndRevisions(t *testing.T) {
+	var server *httptest.Server
+	projection := ConfigurePolicyProjection{}
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["configureProtocolVersion"] != float64(HostAgentConfigureProtocolVersion) ||
+			payload["agentUid"] != float64(1001) ||
+			payload["agentGid"] != float64(1002) ||
+			payload["localExecutorPolicySha256"] != projection.SHA256 ||
+			payload["sourcePolicyRevision"] != float64(projection.SourcePolicyRevision) ||
+			payload["projectionRevision"] != float64(projection.ProjectionRevision) ||
+			payload["localExecutorPolicyRevision"] != float64(projection.PolicyRevision) {
+			t.Fatalf("Host Agent activation binding = %#v", payload)
+		}
+		_ = json.NewEncoder(w).Encode(UpdaterActivationResult{
+			State:                       "activated",
+			ConfigurationID:             "configuration-01",
+			ConfigureProtocol:           HostAgentConfigureProtocolVersion,
+			LocalExecutorPolicySHA256:   projection.SHA256,
+			SourcePolicyRevision:        projection.SourcePolicyRevision,
+			ProjectionRevision:          projection.ProjectionRevision,
+			LocalExecutorPolicyRevision: projection.PolicyRevision,
+		})
+	}))
+	defer server.Close()
+	var err error
+	projection, err = BuildHostAgentConfigurePolicy(HostAgentConfigurePolicySource{
+		PanelURL:                    server.URL,
+		ExecutionHostID:             "host-a",
+		AgentUID:                    1001,
+		AgentGID:                    1002,
+		SourcePolicyRevision:        3,
+		ProjectionRevision:          4,
+		LocalExecutorPolicyRevision: 5,
+		Targets: []HostAgentConfigurePolicyTarget{{
+			ServiceID:             "worker-a",
+			ServiceType:           "worker",
+			DeploymentMode:        ModeSystemd,
+			EndpointRevision:      2,
+			AppliedConfigRevision: 7,
+			AppliedEndpointPort:   18084,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := UpdaterStagedConfiguration{
+		Config: UpdaterConfigureIdentity{
+			PanelURL: server.URL, NodeID: "host-agent-a", RuntimeToken: "runtime-token",
+			ServiceName: "Host Agent A", ServiceType: "update_agent", TransportMode: "pull_v2",
+		},
+		ConfigurationID:     "configuration-01",
+		ActivationToken:     "activation-token",
+		ActivationExpiresAt: time.Now().UTC().Add(time.Hour),
+		ConfigureProtocol:   HostAgentConfigureProtocolVersion,
+		LocalExecutorPolicy: &projection,
+	}
+	result, err := ActivateUpdaterConfiguration(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		staged,
+		UpdaterRuntimeReport{Hostname: "host-a", OS: "linux", Arch: "amd64"},
+		5*time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LocalExecutorPolicySHA256 != projection.SHA256 ||
+		result.SourcePolicyRevision != projection.SourcePolicyRevision ||
+		result.ProjectionRevision != projection.ProjectionRevision ||
+		result.LocalExecutorPolicyRevision != projection.PolicyRevision {
+		t.Fatalf("activation result = %#v", result)
 	}
 }
 

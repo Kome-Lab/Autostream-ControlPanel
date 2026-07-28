@@ -155,6 +155,31 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	if claim.ReportSequence != 1 || claim.LeaseGeneration != 1 || claim.RecoveryRequired {
 		t.Fatalf("claim recovery contract = %#v", claim)
 	}
+	softwareWithPortResultBody, err := json.Marshal(map[string]any{
+		"service_id": "updater-01", "lease_token": claim.LeaseToken,
+		"lease_generation": claim.LeaseGeneration, "sequence": claim.ReportSequence,
+		"status": "succeeded", "progress": 100,
+		"port_reconfigure": map[string]any{"result": "applied"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	softwareWithPortResultRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/services/update-jobs/"+job.ID+"/report",
+		bytes.NewReader(softwareWithPortResultBody),
+	)
+	softwareWithPortResultRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
+	softwareWithPortResultResponse := httptest.NewRecorder()
+	handler.ServeHTTP(softwareWithPortResultResponse, softwareWithPortResultRequest)
+	if softwareWithPortResultResponse.Code != http.StatusBadRequest ||
+		!strings.Contains(softwareWithPortResultResponse.Body.String(), `"code":"invalid_system_update_report"`) {
+		t.Fatalf(
+			"software report with port result = %d %s",
+			softwareWithPortResultResponse.Code,
+			softwareWithPortResultResponse.Body.String(),
+		)
+	}
 	reportBody, err := json.Marshal(map[string]any{"service_id": "updater-01", "lease_token": claim.LeaseToken, "lease_generation": claim.LeaseGeneration, "sequence": claim.ReportSequence, "status": "succeeded", "progress": 100, "message": "update complete"})
 	if err != nil {
 		t.Fatal(err)
