@@ -106,8 +106,13 @@ jobs:
         run: |
           set -euo pipefail
           smoke_binary="${RUNNER_TEMP}/updateagent-docker-port.test"
+          smoke_fixture="${RUNNER_TEMP}/docker-port-fixture"
           smoke_tmp="${RUNNER_TEMP}/docker-port-root-tmp"
           smoke_cache="${RUNNER_TEMP}/docker-port-root-gocache"
+          CGO_ENABLED=0 GOOS=linux \
+            go build -trimpath -ldflags="-s -w" \
+              -o "${smoke_fixture}" \
+              ./internal/updateagent/testdata/docker-port-fixture
           go test -c ./internal/updateagent -o "${smoke_binary}"
           sudo install -d -o root -g root -m 0700 "${smoke_tmp}" "${smoke_cache}"
           cleanup_docker_port_smoke() {
@@ -150,6 +155,7 @@ jobs:
           trap cleanup_docker_port_smoke EXIT
           sudo --preserve-env=AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE \
             env \
+              AUTOSTREAM_DOCKER_PORT_FIXTURE_BINARY="${smoke_fixture}" \
               HOME=/root \
               PATH="${PATH}" \
               GOCACHE="${smoke_cache}" \
