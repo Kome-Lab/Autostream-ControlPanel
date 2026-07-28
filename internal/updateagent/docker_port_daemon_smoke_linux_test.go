@@ -93,6 +93,7 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 		requireDockerPortSmokePortAvailable(t, port)
 	}
 	requireDockerPortSmokeHostClean(t, baseRunner)
+	hardenDockerPortSmokeProjectParent(t)
 
 	stateDir := t.TempDir()
 	if err := os.Chmod(stateDir, 0o700); err != nil {
@@ -206,8 +207,14 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 		t.Fatalf("fixture policy: %v", err)
 	}
 	writeDockerPortSmokeJSON(t, dockerPortSmokePolicyPath, policy)
-	if _, err := LoadLocalExecutorPolicy(dockerPortSmokePolicyPath, true); err != nil {
+	loadedPolicy, err := LoadLocalExecutorPolicy(dockerPortSmokePolicyPath, true)
+	if err != nil {
 		t.Fatalf("reload root policy: %v", err)
+	}
+	if _, err := securePrivilegedTarget(
+		loadedPolicy.Targets[0].runtimeTarget(loadedPolicy.HostID),
+	); err != nil {
+		t.Fatalf("secure Docker target preflight: %v", err)
 	}
 
 	adapter, err := dockerPortAdapterFor("worker", &dockerTarget)
@@ -606,6 +613,39 @@ func dockerPortSmokeTarget() DockerTarget {
 		PortComposeRevision:     13,
 		CurrentVersion:          "v1.0.0",
 		Channel:                 "docker",
+	}
+}
+
+func hardenDockerPortSmokeProjectParent(t *testing.T) {
+	t.Helper()
+	parent := filepath.Dir(filepath.Clean(dockerPortSmokeProjectDir))
+	info, err := os.Lstat(parent)
+	if err != nil ||
+		!info.IsDir() ||
+		info.Mode()&os.ModeSymlink != 0 ||
+		!isRootOwner(info) {
+		t.Fatalf(
+			"Docker port smoke project parent %s must be a root-owned non-symlink directory",
+			parent,
+		)
+	}
+	originalMode := info.Mode()
+	hardenedMode := originalMode &^ 0o022
+	if hardenedMode != originalMode {
+		if err := os.Chmod(parent, hardenedMode); err != nil {
+			t.Fatalf("harden Docker port smoke project parent %s: %v", parent, err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(parent, originalMode); err != nil {
+				t.Errorf(
+					"restore Docker port smoke project parent %s mode: %v",
+					parent, err,
+				)
+			}
+		})
+	}
+	if err := validateSecureRootPath(parent, true); err != nil {
+		t.Fatalf("secure Docker port smoke project parent %s: %v", parent, err)
 	}
 }
 
