@@ -113,12 +113,19 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		"mktemp failure mutated the service account",
 		"unsafe root-anchor mode ${mode} unexpectedly passed",
 		"unsafe root-anchor mode ${mode} mutated managed state",
-		"failed to restore /usr/local/bin mode ${usr_local_bin_original_mode}",
-		"failed to normalize /usr/local/bin to root:root mode 0755",
-		"failed to restore /opt mode ${opt_original_mode}",
-		"failed to normalize /opt to root:root mode 0755",
-		"failed to restore /usr/share mode ${usr_share_original_mode}",
-		"failed to normalize /usr/share to root:root mode 0755",
+		"AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS",
+		"autostream-control-panel-installer-test-bin /usr/local/bin",
+		"autostream-control-panel-installer-test-sbin /usr/local/sbin",
+		"autostream-control-panel-installer-test-opt /opt",
+		"autostream-control-panel-installer-test-share /usr/share",
+		"isolated /usr/local/bin mount is missing",
+		"isolated /usr/local/sbin mount is missing",
+		"isolated /opt mount is missing",
+		"isolated /usr/share mount is missing",
+		"could not create an isolated safe /usr/local/bin fixture",
+		"could not create an isolated safe /usr/local/sbin fixture",
+		"could not create an isolated safe /opt fixture",
+		"could not create an isolated safe /usr/share fixture",
 		"unsafe service state symlink unexpectedly passed",
 		"installer ignored updater lock contention",
 		"prefix-colliding binary version unexpectedly passed",
@@ -134,6 +141,14 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		if !strings.Contains(integration, marker) {
 			t.Fatalf("installer integration test is missing scenario %q", marker)
 		}
+	}
+	namespaceIndex := strings.Index(
+		integration,
+		`if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS:-} != "1" ]]; then`,
+	)
+	workDirIndex := strings.Index(integration, `WORK_DIR="$(mktemp`)
+	if namespaceIndex < 0 || workDirIndex < 0 || namespaceIndex >= workDirIndex {
+		t.Fatal("installer integration fixture must enter its isolated mount namespace before creating mutable state")
 	}
 	if count := strings.Count(integration, "[Install]\nWantedBy=multi-user.target"); count != 2 {
 		t.Fatalf("integration fixture must define two enable-capable but disabled units, got %d", count)
