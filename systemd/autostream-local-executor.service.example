@@ -49,6 +49,8 @@ ReadWritePaths=-/opt/autostream/discord-bot
 ReadWritePaths=-/opt/autostream/observability
 ReadWritePaths=-/opt/autostream/host-agent
 ReadWritePaths=-/opt/autostream/local-executor
+ReadWritePaths=-/var/backups/autostream/control-panel
+ReadWritePaths=-/var/backups/autostream/observability
 StateDirectory=autostream-local-executor
 StateDirectoryMode=0700
 

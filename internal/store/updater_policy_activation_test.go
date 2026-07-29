@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +74,122 @@ func TestMemoryActivatePullUpdaterOwnershipFromSyntheticAndSSHOwner(t *testing.T
 			}
 			if !validSystemUpdateDigest(targetService.AppliedConfigSHA256) {
 				t.Fatalf("activation did not pin applied config digest: %#v", targetService)
+			}
+		})
+	}
+}
+
+func TestMemoryActivatePullUpdaterOwnershipUsesExactServerOwnedControlPanelTarget(t *testing.T) {
+	policies, registry, updates, params := newMemoryPullActivationFixture(t, true)
+	policy := policies.policies[params.ServiceID]
+	policy.Targets = append(policy.Targets, UpdaterPolicyTarget{
+		TargetID:       "control-panel",
+		ServiceID:      "control-panel",
+		HostID:         params.ExecutionHostID,
+		ServiceType:    "control_panel",
+		DeploymentMode: "systemd",
+		DatabaseName:   "autostream_panel",
+	})
+	policies.policies[params.ServiceID] = policy
+	params.ControlPanelTarget = &PullUpdaterControlPanelTarget{
+		ServiceID:             "control-panel",
+		ServiceType:           "control_panel",
+		EndpointRevision:      1,
+		AppliedConfigRevision: 1,
+		AppliedConfigSHA256:   "sha256:" + strings.Repeat("d", 64),
+		AppliedEndpoint: ServiceEndpoint{
+			Host:       "127.0.0.1",
+			Port:       18080,
+			SSLEnabled: false,
+			PublicURL:  "http://127.0.0.1:18080",
+		},
+	}
+	agent := registry.services[params.ServiceID]
+	addPullActivationTargetReport(
+		agent.ReportedCapabilities,
+		"control-panel",
+		params.ControlPanelTarget.registeredService(),
+		policy,
+	)
+	registry.services[params.ServiceID] = agent
+
+	if _, err := policies.ActivatePullUpdaterOwnership(
+		t.Context(), registry, updates, params,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.GetService(t.Context(), "control-panel"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("synthetic Control Panel leaked into service registry: %v", err)
+	}
+	reservations, err := updates.ListServicePortReservations(t.Context(), params.ExecutionHostID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ports := map[string]int{}
+	for _, reservation := range reservations {
+		ports[reservation.ServiceID] = reservation.Port
+	}
+	if ports["worker-a"] != 18081 {
+		t.Fatalf("registered target baseline reservations = %#v", reservations)
+	}
+	if _, exists := ports["control-panel"]; exists {
+		t.Fatalf("synthetic Control Panel cannot use the services-owned reservation table: %#v", reservations)
+	}
+}
+
+func TestNormalizeActivatePullUpdaterOwnershipRejectsForgedControlPanelTarget(t *testing.T) {
+	base := ActivatePullUpdaterOwnershipParams{
+		ServiceID:                           "host-agent-a",
+		ExecutionHostID:                     "host-a",
+		ExpectedExecutionHostOwnershipEpoch: 1,
+		ExpectedSourcePolicyRevision:        1,
+		ExpectedProjectionRevision:          1,
+		ExpectedLocalExecutorPolicyRevision: 1,
+		ExpectedLocalExecutorPolicySHA256:   "sha256:" + strings.Repeat("a", 64),
+		ControlPanelTarget: &PullUpdaterControlPanelTarget{
+			ServiceID:             "control-panel",
+			ServiceType:           "control_panel",
+			EndpointRevision:      1,
+			AppliedConfigRevision: 1,
+			AppliedConfigSHA256:   "sha256:" + strings.Repeat("b", 64),
+			AppliedEndpoint: ServiceEndpoint{
+				Host: "127.0.0.1", Port: 18080, PublicURL: "http://127.0.0.1:18080",
+			},
+		},
+	}
+	tests := map[string]func(*PullUpdaterControlPanelTarget){
+		"service id": func(target *PullUpdaterControlPanelTarget) {
+			target.ServiceID = "worker-a"
+		},
+		"service type": func(target *PullUpdaterControlPanelTarget) {
+			target.ServiceType = "worker"
+		},
+		"non loopback": func(target *PullUpdaterControlPanelTarget) {
+			target.AppliedEndpoint.Host = "0.0.0.0"
+		},
+		"IPv6 loopback differs from canonical sidecar": func(target *PullUpdaterControlPanelTarget) {
+			target.AppliedEndpoint.Host = "::1"
+			target.AppliedEndpoint.PublicURL = "http://[::1]:18080"
+		},
+		"alternate IPv4 loopback differs from canonical sidecar": func(target *PullUpdaterControlPanelTarget) {
+			target.AppliedEndpoint.Host = "127.0.0.2"
+			target.AppliedEndpoint.PublicURL = "http://127.0.0.2:18080"
+		},
+		"privileged port": func(target *PullUpdaterControlPanelTarget) {
+			target.AppliedEndpoint.Port = 80
+		},
+		"missing digest": func(target *PullUpdaterControlPanelTarget) {
+			target.AppliedConfigSHA256 = ""
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			target := *base.ControlPanelTarget
+			candidate.ControlPanelTarget = &target
+			mutate(candidate.ControlPanelTarget)
+			if _, err := normalizeActivatePullUpdaterOwnershipParams(candidate); !errors.Is(err, ErrInvalidSettings) {
+				t.Fatalf("forged target error = %v, want ErrInvalidSettings", err)
 			}
 		})
 	}

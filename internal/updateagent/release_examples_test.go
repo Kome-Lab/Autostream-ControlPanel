@@ -18,10 +18,11 @@ func TestControlPanelInstallGuidePreparesUpdaterBackup(t *testing.T) {
 		"## Prepare the updater backup command",
 		`test -x "$RELEASE_DIR/backup/autostream-backup-control-panel"`,
 		`sudo install -o root -g root -m 0700 "$RELEASE_DIR/backup/autostream-backup-control-panel" /usr/local/sbin/autostream-backup-control-panel`,
-		"sudo chmod 0600 /etc/autostream/mariadb-backup.cnf",
+		"sudo chmod 0600 /etc/autostream-local-executor/mariadb-backup.cnf",
 		"GRANT SELECT, SHOW VIEW, TRIGGER ON \\`${DATABASE_NAME}\\`.*",
 		"exact `DATABASE_NAME` must be used for the MariaDB grant, the real dump, and the",
 		"sudo /usr/local/sbin/autostream-backup-control-panel",
+		"Save this exact database name in **Application Info > System Updates**",
 	} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("Control Panel install guide is missing %q", want)
@@ -42,6 +43,30 @@ func TestControlPanelInstallGuidePreparesUpdaterBackup(t *testing.T) {
 	}
 }
 
+func TestControlPanelSystemdUnitLoadsConfigurePortSidecarAfterBaseEnvironment(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(
+		"..",
+		"..",
+		"systemd",
+		"autostream-control-panel.service.example",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := string(body)
+	base := strings.Index(
+		unit,
+		"EnvironmentFile=/etc/autostream/control-panel.env",
+	)
+	sidecar := strings.Index(
+		unit,
+		"EnvironmentFile=-/opt/autostream/local-executor/ports/control-panel.env",
+	)
+	if base < 0 || sidecar < 0 || sidecar <= base {
+		t.Fatal("Control Panel systemd unit must load the optional configure sidecar after its base environment")
+	}
+}
+
 func TestReleaseDoesNotShipLegacyUpdaterPolicySample(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("..", "..", "release", "autostream-updater.json.example")); !os.IsNotExist(err) {
 		t.Fatalf("obsolete updater policy sample must not be shipped; stat error = %v", err)
@@ -55,47 +80,42 @@ func TestControlPanelInstallGuideUsesManagedUpdaterSettings(t *testing.T) {
 	}
 	guide := strings.Join(strings.Fields(string(body)), " ")
 	for _, marker := range []string{
-		"`/usr/local/bin/autostream-updater`",
-		"`/usr/share/autostream-control-panel`",
-		"Installing only the central updater does not require migrating an existing `/usr/local/bin/control-panel`",
-		"For that existing direct layout, skip to **Install the central updater once**.",
-		"sudo install -d -o root -g root -m 0755 /etc/autostream",
-		"sudo /usr/local/bin/autostream-updater configure --panel-url \"https://control.example.com\" --node \"central-updater\"",
+		"## Install the pull_v2 Host Agent and Local Executor",
+		"one Host Agent for the physical host",
+		"assign both the synthetic `control-panel` target and the registered Observability service",
+		"sudo ./install/install-autostream-host-agent --prepare",
+		"sudo /usr/local/bin/autostream-host-agent configure",
 		"reads it from the TTY or bounded standard input with echo disabled",
-		"`/etc/autostream/updater.json` as `root:autostream-updater 0640`",
-		"sudo -u autostream-updater test -r /etc/autostream/updater.json",
-		"The generated file contains only the Control Panel connection identity",
-		"Do not edit it",
+		"`/etc/autostream-host-agent/identity.json`",
+		"`/etc/autostream-local-executor/policy.json`",
+		"sudo ./install/install-autostream-local-executor",
+		"sudo systemctl enable --now autostream-host-agent.service",
 		"**Application Info > System Updates**",
-		"The current runtime is pinned to this public Control Panel repository",
-		"Changing the repository to private requires a separate trust-root and provenance-policy implementation",
-		"It is write-only in the Control Panel and is never shown after saving.",
-		"delivers it only once to the updater that claims an authorized update job",
-		"complete SSH server public key, verified through an independent channel",
-		"Do not trust `ssh-keyscan` output by itself",
-		"Saving starts automatic pull and validation. No service restart is required.",
-		"generates a separate Ed25519 client key and reports only its public key",
-		"Automatic bootstrap requires the saved SSH user to be exactly `autostream-update-host`",
-		"For a standard systemd host, use **helper automatic setup**",
-		"This temporary administrator is separate from the saved `autostream-update-host` user",
-		"Control Panel on `8080`, Encoder / Recorder on `8081`, Observability on `8082`, Discord Bot on `8083`, and Worker on `8084`",
-		"The managed host does not run another updater daemon or listener",
-		"no helper-specific port, environment file, Node Runtime Token, or `/etc/autostream/updater.json`",
-		"That identity-only `updater.json` belongs only to the central updater host.",
-		"For Docker, a non-standard port or path, or a custom target",
-		"`applied` means the updater accepted the desired revision",
-		"defers applying the new revision until that job reaches a safe terminal state",
+		"`autostream_control_panel`",
+		"`autostream_observability`",
+		"MariaDBデータベース名",
+		"exact final component of each service's real `DATABASE_URL`",
+		"does not place either database name in the configure command",
+		"outbound-only `pull_v2`",
+		"No SSH key, `known_hosts`, `/etc/autostream/updater.json`, or central `autostream-updater` daemon",
+		"activate ownership",
 	} {
 		if !strings.Contains(guide, marker) {
 			t.Fatalf("control panel install guide is missing managed updater marker %q", marker)
 		}
 	}
 	for _, obsolete := range []string{
+		"## Install the central updater once",
+		"## Update the central updater binary",
+		"/usr/local/bin/autostream-updater configure",
+		"systemctl enable --now autostream-updater",
+		"helper automatic setup",
+		"ssh-keyscan",
+		`"backup_argv":`,
 		"if ! sudo test -e /etc/autostream/updater.json; then",
 		`"$RELEASE_DIR/autostream-updater.json.example" /etc/autostream/updater.json`,
 		"`/opt/autostream/control-panel/current/autostream-updater.json.example` as",
 		"`--init-from",
-		"known_hosts",
 		"Rerun the exact same token-free Auto Configure command",
 		"sudo ssh-keygen",
 		`--config "/etc/autostream/updater.json"`,
@@ -106,6 +126,72 @@ func TestControlPanelInstallGuideUsesManagedUpdaterSettings(t *testing.T) {
 	} {
 		if strings.Contains(guide, obsolete) {
 			t.Fatalf("control panel install guide contains obsolete updater setup %q", obsolete)
+		}
+	}
+}
+
+func TestPullV2ReleaseGuidesDocumentDatabaseBackupBoundary(t *testing.T) {
+	hostAgentBody, err := os.ReadFile(filepath.Join("..", "..", "release", "README.host-agent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localExecutorBody, err := os.ReadFile(filepath.Join("..", "..", "release", "README.local-executor.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostAgent := strings.Join(strings.Fields(string(hostAgentBody)), " ")
+	localExecutor := strings.Join(strings.Fields(string(localExecutorBody)), " ")
+	for _, marker := range []string{
+		"one Host Agent per physical host",
+		"server-owned `database_name`",
+		"`/etc/autostream-local-executor/mariadb-backup.cnf`",
+		"configure does not create or transmit the credential",
+		"never accepts the database name in argv",
+	} {
+		if !strings.Contains(hostAgent, marker) {
+			t.Fatalf("Host Agent guide is missing database boundary marker %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		"server-owned `database_name`",
+		"`/etc/autostream-local-executor/mariadb-backup.cnf`",
+		"`/var/backups/autostream/control-panel`",
+		"`/var/backups/autostream/observability`",
+		"Control Panel participates in initial configure",
+	} {
+		if !strings.Contains(localExecutor, marker) {
+			t.Fatalf("Local Executor guide is missing database boundary marker %q", marker)
+		}
+	}
+	for _, guide := range []string{hostAgent, localExecutor} {
+		if strings.Contains(guide, `"backup_argv":`) {
+			t.Fatal("pull_v2 release guides must not require hand-editing backup_argv")
+		}
+	}
+}
+
+func TestPullV2ReleaseGuidesDocumentLegacyWriterRollbackDrain(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "release", "README.install.md"),
+		filepath.Join("..", "..", "release", "README.host-agent.md"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guide := strings.Join(strings.Fields(string(body)), " ")
+		for _, marker := range []string{
+			"deactivate `pull_v2` ownership",
+			"`single-writer` drain",
+			"Do not save System Updates settings with the old binary",
+			"roll forward to the current Control Panel as the sole writer",
+			"Re-save the exact MariaDB database names",
+			"rerun the generated Host Agent configure command",
+			"Reactivate ownership only after",
+		} {
+			if !strings.Contains(strings.ToLower(guide), strings.ToLower(marker)) {
+				t.Fatalf("%s is missing rollback marker %q", path, marker)
+			}
 		}
 	}
 }

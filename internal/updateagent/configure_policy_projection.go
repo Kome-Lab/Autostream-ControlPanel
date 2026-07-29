@@ -44,6 +44,7 @@ type HostAgentConfigurePolicyTarget struct {
 	ServiceID             string
 	ServiceType           string
 	DeploymentMode        string
+	DatabaseName          string
 	EndpointRevision      int64
 	AppliedConfigRevision int64
 	AppliedConfigSHA256   string
@@ -53,9 +54,11 @@ type HostAgentConfigurePolicyTarget struct {
 // BuildHostAgentConfigurePolicy expands a declarative pull policy into the
 // exact root Local Executor policy installed by Host Agent configure.
 //
-// Systemd paths and commands come only from the compiled allowlist. Docker
-// targets and systemd services with operator-selected database names remain
-// fail-closed until their additional server-owned runtime state is modeled.
+// Systemd paths and commands come only from the compiled allowlist. The only
+// variable database backup authority is a validated server-owned database
+// name; callers cannot supply an executable or arbitrary argv. Docker targets
+// remain fail-closed until their additional server-owned runtime state is
+// modeled.
 func BuildHostAgentConfigurePolicy(
 	source HostAgentConfigurePolicySource,
 ) (ConfigurePolicyProjection, error) {
@@ -127,19 +130,21 @@ func buildHostAgentConfigureSystemdTarget(
 	if !ok {
 		return LocalExecutorTarget{}, errors.New("systemd service type is unsupported")
 	}
-	if profile.backupExecutable != "" {
-		return LocalExecutorTarget{}, errors.New("server-owned database name is unavailable")
+	if profile.backupExecutable == "" {
+		if source.DatabaseName != "" {
+			return LocalExecutorTarget{}, errors.New("server-owned database name is not allowed for this systemd service")
+		}
+	} else if !databaseNamePattern.MatchString(source.DatabaseName) {
+		return LocalExecutorTarget{}, errors.New("server-owned database name is invalid or unavailable")
 	}
-	adapter, err := systemdPortAdapterFor(source.ServiceType, profile.unit)
+	configSHA256, err := SystemdConfigurePortSidecarSHA256(
+		source.ServiceType,
+		source.AppliedEndpointPort,
+		source.AppliedConfigRevision,
+	)
 	if err != nil {
 		return LocalExecutorTarget{}, err
 	}
-	configSHA256 := systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
-		"127.0.0.1",
-		source.AppliedEndpointPort,
-		source.AppliedConfigRevision,
-	))
 	if source.AppliedConfigSHA256 != "" &&
 		source.AppliedConfigSHA256 != configSHA256 {
 		return LocalExecutorTarget{}, errors.New("applied config digest does not match the canonical systemd sidecar")
@@ -148,6 +153,7 @@ func buildHostAgentConfigureSystemdTarget(
 		ServiceID:        source.ServiceID,
 		ServiceType:      source.ServiceType,
 		DeploymentMode:   ModeSystemd,
+		DatabaseName:     source.DatabaseName,
 		EndpointRevision: source.EndpointRevision,
 		ConfigRevision:   source.AppliedConfigRevision,
 		ConfigSHA256:     configSHA256,
@@ -166,6 +172,57 @@ func buildHostAgentConfigureSystemdTarget(
 			RequiredPaths: append([]string(nil), profile.requiredPaths...),
 		},
 	}, nil
+}
+
+// hostAgentConfigureSystemdPortAdapterFor expands the fixed initial sidecar
+// authority used during Host Agent configure. Control Panel participates only
+// in this initial projection path; systemdPortAdapterFor and
+// validSystemdPortServiceType continue to reject runtime Control Panel port
+// reconfiguration.
+func hostAgentConfigureSystemdPortAdapterFor(
+	serviceType string,
+	policyUnit string,
+) (systemdPortAdapter, error) {
+	if serviceType != "control_panel" {
+		return systemdPortAdapterFor(serviceType, policyUnit)
+	}
+	adapter := systemdPortAdapter{
+		Unit:         "autostream-control-panel.service",
+		SidecarPath:  "/opt/autostream/local-executor/ports/control-panel.env",
+		BindVariable: "AUTOSTREAM_BIND_ADDR",
+	}
+	if policyUnit != adapter.Unit {
+		return systemdPortAdapter{}, errors.New("root policy unit does not match the fixed service adapter")
+	}
+	return adapter, nil
+}
+
+// SystemdConfigurePortSidecarSHA256 returns the digest of the canonical
+// loopback-only port sidecar installed during Host Agent configure. Callers
+// provide no unit, path, bind variable, or host; every privileged value comes
+// from the compiled service profile and configure-only adapter.
+func SystemdConfigurePortSidecarSHA256(
+	serviceType string,
+	port int,
+	configRevision int64,
+) (string, error) {
+	if !validSystemdPort(port) || configRevision < 1 {
+		return "", errors.New("systemd configure port sidecar state is incomplete")
+	}
+	profile, ok := standardSystemdProfileFor(serviceType)
+	if !ok {
+		return "", errors.New("systemd configure service type is unsupported")
+	}
+	adapter, err := hostAgentConfigureSystemdPortAdapterFor(serviceType, profile.unit)
+	if err != nil {
+		return "", err
+	}
+	return systemdPortSidecarSHA256(systemdPortSidecarBytes(
+		adapter.BindVariable,
+		"127.0.0.1",
+		port,
+		configRevision,
+	)), nil
 }
 
 func BuildConfigurePolicyProjection(

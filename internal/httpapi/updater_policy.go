@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,14 +16,23 @@ import (
 )
 
 type updaterPolicyUpdateRequest struct {
-	ExpectedRevision          int64                       `json:"expected_revision"`
-	API                       store.UpdaterPolicyAPI      `json:"api"`
-	PollIntervalSeconds       int                         `json:"poll_interval_seconds"`
-	HeartbeatIntervalSeconds  int                         `json:"heartbeat_interval_seconds"`
-	Hosts                     []store.UpdaterPolicyHost   `json:"hosts"`
-	Targets                   []store.UpdaterPolicyTarget `json:"targets"`
-	LocalExecutorPolicySHA256 string                      `json:"local_executor_policy_sha256,omitempty"`
-	GitHubToken               *string                     `json:"github_token"`
+	ExpectedRevision          int64                        `json:"expected_revision"`
+	API                       store.UpdaterPolicyAPI       `json:"api"`
+	PollIntervalSeconds       int                          `json:"poll_interval_seconds"`
+	HeartbeatIntervalSeconds  int                          `json:"heartbeat_interval_seconds"`
+	Hosts                     []store.UpdaterPolicyHost    `json:"hosts"`
+	Targets                   []updaterPolicyTargetRequest `json:"targets"`
+	LocalExecutorPolicySHA256 string                       `json:"local_executor_policy_sha256,omitempty"`
+	GitHubToken               *string                      `json:"github_token"`
+}
+
+type updaterPolicyTargetRequest struct {
+	TargetID       string          `json:"target_id"`
+	ServiceID      string          `json:"service_id"`
+	HostID         string          `json:"host_id"`
+	ServiceType    string          `json:"service_type"`
+	DeploymentMode string          `json:"deployment_mode"`
+	DatabaseName   json.RawMessage `json:"database_name,omitempty"`
 }
 
 type activatePullUpdaterOwnershipRequest struct {
@@ -87,6 +97,7 @@ type updaterPolicyTargetResponse struct {
 	HostID         string `json:"host_id"`
 	ServiceType    string `json:"service_type"`
 	DeploymentMode string `json:"deployment_mode"`
+	DatabaseName   string `json:"database_name,omitempty"`
 }
 
 type updaterPolicyResponse struct {
@@ -215,6 +226,8 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 		code := "invalid_updater_policy"
 		if errors.Is(err, errInvalidUpdaterHostPublicKey) {
 			code = "invalid_updater_host_public_key"
+		} else if errors.Is(err, errInvalidUpdaterDatabaseName) {
+			code = "invalid_updater_database_name"
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
@@ -349,6 +362,22 @@ func (s *Server) activatePullUpdaterOwnership(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "system_update_execution_host_store_unavailable"})
 		return
 	}
+	policy, err := s.updaterPolicies.GetUpdaterPolicy(r.Context(), agent.ServiceID)
+	if errors.Is(err, store.ErrNotFound) {
+		writePullUpdaterActivationError(w, store.ErrConflict)
+		return
+	}
+	if err != nil {
+		writePullUpdaterActivationError(w, err)
+		return
+	}
+	controlPanelTarget, err := controlPanelPullUpdaterActivationTarget(policy)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"code": "control_panel_update_target_unavailable",
+		})
+		return
+	}
 	result, err := s.updaterPolicies.ActivatePullUpdaterOwnership(
 		r.Context(),
 		s.services,
@@ -361,6 +390,7 @@ func (s *Server) activatePullUpdaterOwnership(w http.ResponseWriter, r *http.Req
 			ExpectedProjectionRevision:          body.ExpectedProjectionRevision,
 			ExpectedLocalExecutorPolicyRevision: body.ExpectedLocalExecutorPolicyRevision,
 			ExpectedLocalExecutorPolicySHA256:   body.ExpectedLocalExecutorPolicySHA256,
+			ControlPanelTarget:                  controlPanelTarget,
 		},
 	)
 	if err != nil {
@@ -575,7 +605,11 @@ func (s *Server) serviceUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, makeLegacyUpdaterPolicyResponse(policy))
 }
 
-var errInvalidUpdaterHostPublicKey = errors.New("invalid updater host public key")
+var (
+	errInvalidUpdaterHostPublicKey = errors.New("invalid updater host public key")
+	errInvalidUpdaterDatabaseName  = errors.New("invalid updater database name")
+	updaterDatabaseNamePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+)
 
 func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterPolicyUpdateRequest) (store.UpdaterPolicy, error) {
 	transportMode := strings.ToLower(strings.TrimSpace(agent.TransportMode))
@@ -591,6 +625,10 @@ func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterP
 	} else if transportMode != store.SystemUpdateTransportSSHV1 {
 		return store.UpdaterPolicy{}, store.ErrInvalidSettings
 	}
+	targets, err := normalizedUpdaterPolicyTargets(transportMode, body.Targets)
+	if err != nil {
+		return store.UpdaterPolicy{}, err
+	}
 	policy := store.UpdaterPolicy{
 		UpdaterID:                 agent.ServiceID,
 		TransportMode:             transportMode,
@@ -598,7 +636,7 @@ func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterP
 		LocalExecutorPolicySHA256: strings.TrimSpace(body.LocalExecutorPolicySHA256),
 		API:                       body.API,
 		PollIntervalSeconds:       body.PollIntervalSeconds, HeartbeatIntervalSeconds: body.HeartbeatIntervalSeconds,
-		Hosts: append([]store.UpdaterPolicyHost(nil), body.Hosts...), Targets: append([]store.UpdaterPolicyTarget(nil), body.Targets...),
+		Hosts: append([]store.UpdaterPolicyHost(nil), body.Hosts...), Targets: targets,
 	}
 	for index := range policy.Hosts {
 		key, err := parseUpdaterED25519PublicKey(policy.Hosts[index].HostPublicKey)
@@ -608,6 +646,46 @@ func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterP
 		policy.Hosts[index].HostPublicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 	}
 	return store.NormalizeUpdaterPolicy(agent.ServiceID, policy)
+}
+
+func normalizedUpdaterPolicyTargets(
+	transportMode string,
+	requests []updaterPolicyTargetRequest,
+) ([]store.UpdaterPolicyTarget, error) {
+	targets := make([]store.UpdaterPolicyTarget, 0, len(requests))
+	for _, request := range requests {
+		target := store.UpdaterPolicyTarget{
+			TargetID:       request.TargetID,
+			ServiceID:      request.ServiceID,
+			HostID:         request.HostID,
+			ServiceType:    request.ServiceType,
+			DeploymentMode: request.DeploymentMode,
+		}
+		requiresDatabase := transportMode == store.SystemUpdateTransportPullV2 &&
+			strings.TrimSpace(request.DeploymentMode) == "systemd" &&
+			(strings.TrimSpace(request.ServiceType) == "control_panel" ||
+				strings.TrimSpace(request.ServiceType) == "observability")
+		if !requiresDatabase {
+			if request.DatabaseName != nil {
+				return nil, errInvalidUpdaterDatabaseName
+			}
+			targets = append(targets, target)
+			continue
+		}
+		if request.DatabaseName == nil {
+			return nil, errInvalidUpdaterDatabaseName
+		}
+		var databaseName string
+		if err := json.Unmarshal(request.DatabaseName, &databaseName); err != nil {
+			return nil, errInvalidUpdaterDatabaseName
+		}
+		target.DatabaseName = strings.TrimSpace(databaseName)
+		if !updaterDatabaseNamePattern.MatchString(target.DatabaseName) {
+			return nil, errInvalidUpdaterDatabaseName
+		}
+		targets = append(targets, target)
+	}
+	return targets, nil
 }
 
 func systemUpdateAgentObserveOnly(agent store.RegisteredService) bool {
@@ -665,6 +743,7 @@ func makeUpdaterPolicyResponse(policy store.UpdaterPolicy, tokenStatus *store.Se
 		targets = append(targets, updaterPolicyTargetResponse{
 			TargetID: target.TargetID, ServiceID: target.ServiceID, HostID: hostID,
 			ServiceType: target.ServiceType, DeploymentMode: target.DeploymentMode,
+			DatabaseName: target.DatabaseName,
 		})
 	}
 	response := updaterPolicyResponse{
@@ -717,6 +796,9 @@ func (s *Server) enrichPullUpdaterPolicyResponse(
 	servicesByID := make(map[string]store.RegisteredService, len(services))
 	for _, service := range services {
 		servicesByID[service.ServiceID] = service
+	}
+	if err := addControlPanelSystemUpdateServiceForPolicy(servicesByID, policy); err != nil {
+		return err
 	}
 	reportedOwnershipEpoch, _ := capabilityInt64(agent.ReportedCapabilities["ownership_epoch"])
 	reportedProjectionRevision, _ := capabilityInt64(agent.ReportedCapabilities["policy_revision"])

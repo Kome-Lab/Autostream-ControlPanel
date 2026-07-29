@@ -666,17 +666,10 @@ func (s *Server) updaterVersion(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":         version.Current(),
-		"service_id":      controlPanelServiceID(),
+		"service_id":      controlPanelSystemUpdateServiceID,
 		"service_type":    "control_panel",
 		"config_revision": configRevision,
 	})
-}
-
-func controlPanelServiceID() string {
-	if serviceID := strings.TrimSpace(os.Getenv("SERVICE_ID")); serviceID != "" {
-		return serviceID
-	}
-	return "control-panel"
 }
 
 func controlPanelConfigRevision() (int64, error) {

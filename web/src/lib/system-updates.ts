@@ -84,12 +84,63 @@ const standardBootstrapServiceTypes = new Set([
   "worker",
 ]);
 
+const updaterDatabaseOwnerServiceTypes = new Set(["control_panel", "observability"]);
+const updaterDatabaseNamePattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
 export function isControlPanelUpdateTarget(target: Pick<SystemUpdateTarget, "target_id" | "target_type">) {
   return target.target_type === "control_panel" || target.target_id === "control-panel";
 }
 
 export function isUpdaterPolicyHostID(value: string) {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+export function updaterSettingsTargetRequiresDatabase(
+  transportMode: UpdaterSettings["transport_mode"],
+  target: Pick<UpdaterSettingsTarget, "service_type" | "deployment_mode">,
+) {
+  return transportMode === "pull_v2"
+    && target.deployment_mode.trim() === "systemd"
+    && updaterDatabaseOwnerServiceTypes.has(target.service_type.trim());
+}
+
+export function normalizeUpdaterSettingsTargetDatabaseName(
+  transportMode: UpdaterSettings["transport_mode"],
+  target: Pick<UpdaterSettingsTarget, "service_type" | "deployment_mode" | "database_name">,
+  label: string,
+) {
+  const databaseName = String(target.database_name || "").trim();
+  if (!updaterSettingsTargetRequiresDatabase(transportMode, target)) {
+    if (databaseName) {
+      throw new Error(`${label}ではMariaDBデータベース名を指定できません。`);
+    }
+    return undefined;
+  }
+  if (!databaseName) {
+    throw new Error(`${label}のMariaDBデータベース名を入力してください。`);
+  }
+  if (!updaterDatabaseNamePattern.test(databaseName)) {
+    throw new Error(`${label}のMariaDBデータベース名は英数字で始まり、英数字・_・-の64文字以内で入力してください。`);
+  }
+  return databaseName;
+}
+
+export function applyUpdaterSettingsTargetPatch(
+  transportMode: UpdaterSettings["transport_mode"],
+  target: UpdaterSettingsTarget,
+  patch: Partial<UpdaterSettingsTarget>,
+) {
+  const nextTarget = { ...target, ...patch };
+  const identityChanged = (
+    (patch.target_id !== undefined && patch.target_id !== target.target_id)
+    || (patch.service_id !== undefined && patch.service_id !== target.service_id)
+    || (patch.host_id !== undefined && patch.host_id !== target.host_id)
+    || (patch.service_type !== undefined && patch.service_type !== target.service_type)
+  );
+  if (identityChanged || !updaterSettingsTargetRequiresDatabase(transportMode, nextTarget)) {
+    delete nextTarget.database_name;
+  }
+  return nextTarget;
 }
 
 export function isSystemUpdateJobActive(status?: string) {
@@ -1094,6 +1145,7 @@ export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdater
         host_id: stringValue(target.host_id),
         service_type: stringValue(target.service_type || target.target_type),
         deployment_mode: stringValue(target.deployment_mode),
+        database_name: stringValue(target.database_name) || undefined,
       };
     }).filter((target) => target.target_id)
     : [];
@@ -1266,6 +1318,7 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     host_lifecycle_busy: "対象ホストで更新、self-update、token rotation、またはmutation grantが進行中です。",
     system_update_ownership_conflict: "更新実行権限のOwnerまたはepochが変わりました。Updater状態を再取得してください。",
     invalid_updater_policy: "Updater設定に不正な項目があります。入力内容を確認してください。",
+    invalid_updater_database_name: "Control PanelまたはObservabilityが実際に使用しているMariaDBデータベース名を確認してください。",
     invalid_updater_host_public_key: "SSHホスト公開鍵を確認できません。対象ホストで確認したssh-ed25519公開鍵の全文を入力してください。",
     invalid_updater_host_bootstrap_request: "ホストセットアップ要求の内容が正しくありません。設定を再取得してから再試行してください。",
     updater_host_not_found: "セットアップ対象ホストが保存済み設定に見つかりません。",

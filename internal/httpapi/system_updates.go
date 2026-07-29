@@ -372,6 +372,10 @@ func (s *Server) createDockerPortReconfiguration(
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_port_store_mismatch"})
 		return
 	}
+	// The selected policy is resolved transactionally by the coordinator. An
+	// invalid local runtime therefore becomes nil here: unrelated policies stay
+	// usable, while a policy containing Control Panel fails closed.
+	controlPanelTarget, _ := controlPanelPullUpdaterRuntimeTarget()
 	job, created, err := coordinator.CreateDockerPortReconfigurationJob(
 		r.Context(),
 		s.services,
@@ -385,6 +389,7 @@ func (s *Server) createDockerPortReconfiguration(
 			IdempotencyKey:           body.IdempotencyKey,
 			RequestedByUserID:        current.User.ID,
 			RequestedByUsername:      current.User.Username,
+			ControlPanelTarget:       controlPanelTarget,
 		},
 	)
 	if writeSystemUpdatePortCreateError(w, err) {
@@ -462,6 +467,10 @@ func (s *Server) createSystemdPortReconfiguration(
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_port_store_mismatch"})
 		return
 	}
+	// A malformed local Control Panel endpoint must not block unrelated
+	// policies. The coordinator resolves the selected pull_v2 policy and fails
+	// closed when that policy actually contains the exact synthetic target.
+	controlPanelTarget, _ := controlPanelPullUpdaterRuntimeTarget()
 	job, created, err := coordinator.CreateSystemdPortReconfigurationJob(
 		r.Context(),
 		s.services,
@@ -473,6 +482,7 @@ func (s *Server) createSystemdPortReconfiguration(
 			IdempotencyKey:           body.IdempotencyKey,
 			RequestedByUserID:        current.User.ID,
 			RequestedByUsername:      current.User.Username,
+			ControlPanelTarget:       controlPanelTarget,
 		},
 	)
 	switch {
@@ -1444,7 +1454,30 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 			updater.SSHClientPublicKeys, updater.SSHClientKeyFingerprints = systemUpdateSSHClientKeys(reportedHosts, managedHostIDs)
 		}
 		updaters = append(updaters, updater)
-		approved := approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(agent, now, managedPolicy, reportedHosts, servicesByID)
+		targetServicesByID := servicesByID
+		if managedPolicy != nil &&
+			updaterPolicyUsesControlPanelSystemUpdateTarget(*managedPolicy) {
+			targetServicesByID = make(
+				map[string]store.RegisteredService,
+				len(servicesByID)+1,
+			)
+			for serviceID, service := range servicesByID {
+				targetServicesByID[serviceID] = service
+			}
+			if err := addControlPanelSystemUpdateServiceForPolicy(
+				targetServicesByID,
+				*managedPolicy,
+			); err != nil {
+				delete(targetServicesByID, controlPanelSystemUpdateServiceID)
+			}
+		}
+		approved := approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(
+			agent,
+			now,
+			managedPolicy,
+			reportedHosts,
+			targetServicesByID,
+		)
 		for _, targetID := range sortedApprovedSystemUpdateTargetIDs(approved) {
 			if _, exists := assignments[targetID]; exists {
 				continue
@@ -1508,6 +1541,11 @@ func (s *Server) systemUpdateTargetsForAgentHostClaim(ctx context.Context, agent
 	byID := make(map[string]store.RegisteredService, len(services))
 	for _, service := range services {
 		byID[service.ServiceID] = service
+	}
+	if managedPolicy != nil {
+		if err := addControlPanelSystemUpdateServiceForPolicy(byID, *managedPolicy); err != nil {
+			return nil, err
+		}
 	}
 	var approved map[string]systemUpdateApprovedTarget
 	if allowBusyRecovery &&
@@ -1792,7 +1830,8 @@ func approvedPullSystemUpdateAgentTargetAssignments(
 		reportedOwnershipEpoch == agent.OwnershipEpoch &&
 		policy.ProjectionRevision > 0 &&
 		policy.LocalExecutorPolicyRevision > 0 &&
-		validUpdateManifestDigest(policy.LocalExecutorPolicySHA256)
+		validUpdateManifestDigest(policy.LocalExecutorPolicySHA256) &&
+		store.PullUpdaterPolicyDatabaseBindingsReady(policy)
 	approved := make(map[string]systemUpdateApprovedTarget, len(policy.Targets))
 	for _, target := range policy.Targets {
 		serviceID := strings.TrimSpace(target.ServiceID)

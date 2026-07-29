@@ -58,6 +58,144 @@ func TestMariaDBActivatePullUpdaterOwnershipAndBaselineReservation(t *testing.T)
 	}
 }
 
+func TestMariaDBActivatePullUpdaterOwnershipDoesNotPersistSyntheticControlPanelReservation(
+	t *testing.T,
+) {
+	db, ctx := openMariaDBPullActivationTest(t)
+	fixture := newMariaDBPullActivationFixture(t, ctx, db, false)
+	policy, err := fixture.policies.GetUpdaterPolicy(ctx, fixture.params.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Targets = append(policy.Targets, store.UpdaterPolicyTarget{
+		TargetID:       "control-panel",
+		ServiceID:      "control-panel",
+		HostID:         fixture.params.ExecutionHostID,
+		ServiceType:    "control_panel",
+		DeploymentMode: "systemd",
+		DatabaseName:   "autostream_panel",
+	})
+	policy, err = fixture.policies.SavePullUpdaterPolicy(
+		ctx,
+		fixture.updates,
+		fixture.params.ServiceID,
+		policy.Revision,
+		fixture.params.ExpectedExecutionHostOwnershipEpoch,
+		policy,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPanelTarget := &store.PullUpdaterControlPanelTarget{
+		ServiceID:             "control-panel",
+		ServiceType:           "control_panel",
+		EndpointRevision:      1,
+		AppliedConfigRevision: 1,
+		AppliedConfigSHA256:   "sha256:" + strings.Repeat("d", 64),
+		AppliedEndpoint: store.ServiceEndpoint{
+			Host:      "127.0.0.1",
+			Port:      18080,
+			PublicURL: "http://127.0.0.1:18080",
+		},
+	}
+	agent, err := fixture.auth.GetService(ctx, fixture.params.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := agent.ReportedCapabilities
+	capabilities["policy_revision"] = policy.ProjectionRevision
+	capabilities["policy_status"] = "applied"
+	setTargetCapability := func(key string, value any) {
+		t.Helper()
+		values, ok := capabilities[key].(map[string]any)
+		if !ok {
+			t.Fatalf("capability %s = %#v", key, capabilities[key])
+		}
+		values["control-panel"] = value
+	}
+	setTargetCapability("target_availability", "available")
+	setTargetCapability("target_availability_codes", "executor_verified")
+	setTargetCapability("reported_ports", int64(18080))
+	setTargetCapability("port_drift", false)
+	setTargetCapability("reported_service_types", "control_panel")
+	setTargetCapability("reported_deployment_modes", "systemd")
+	for targetID := range capabilities["reported_executor_policy_revisions"].(map[string]any) {
+		capabilities["reported_executor_policy_revisions"].(map[string]any)[targetID] =
+			policy.LocalExecutorPolicyRevision
+	}
+	setTargetCapability(
+		"reported_executor_policy_revisions",
+		policy.LocalExecutorPolicyRevision,
+	)
+	setTargetCapability(
+		"reported_executor_policy_sha256",
+		policy.LocalExecutorPolicySHA256,
+	)
+	setTargetCapability("reported_config_revisions", int64(1))
+	setTargetCapability(
+		"reported_config_sha256",
+		controlPanelTarget.AppliedConfigSHA256,
+	)
+	if _, err := fixture.auth.Heartbeat(ctx, fixture.agentToken, store.ServiceHeartbeat{
+		ServiceID:    fixture.params.ServiceID,
+		Status:       "online",
+		Version:      "v1.0.0",
+		Capabilities: capabilities,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.params.ExpectedSourcePolicyRevision = policy.Revision
+	fixture.params.ExpectedProjectionRevision = policy.ProjectionRevision
+	fixture.params.ExpectedLocalExecutorPolicyRevision =
+		policy.LocalExecutorPolicyRevision
+	fixture.params.ExpectedLocalExecutorPolicySHA256 =
+		policy.LocalExecutorPolicySHA256
+	fixture.params.ControlPanelTarget = controlPanelTarget
+
+	if _, err := fixture.policies.ActivatePullUpdaterOwnership(
+		ctx,
+		fixture.auth,
+		fixture.updates,
+		fixture.params,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.auth.GetService(
+		ctx,
+		"control-panel",
+	); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("synthetic Control Panel leaked into services: %v", err)
+	}
+	reservations, err := fixture.updates.ListServicePortReservations(
+		ctx,
+		fixture.params.ExecutionHostID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reservations) != 1 ||
+		reservations[0].ServiceID != fixture.targetID ||
+		reservations[0].Port != 18081 {
+		t.Fatalf("synthetic Control Panel leaked into reservations: %#v", reservations)
+	}
+	var controlPanelReservationCount int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*)
+FROM service_port_reservations
+WHERE execution_host_id = ? AND service_id = 'control-panel'`,
+		fixture.params.ExecutionHostID,
+	).Scan(&controlPanelReservationCount); err != nil {
+		t.Fatal(err)
+	}
+	if controlPanelReservationCount != 0 {
+		t.Fatalf(
+			"synthetic Control Panel reservation rows = %d",
+			controlPanelReservationCount,
+		)
+	}
+}
+
 func TestMariaDBActivatePullUpdaterOwnershipConcurrentCASAllowsOneWinner(t *testing.T) {
 	db, ctx := openMariaDBPullActivationTest(t)
 	fixture := newMariaDBPullActivationFixture(t, ctx, db, true)

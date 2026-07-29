@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestInitialSystemdPortSidecarPlansUseFourFixedRootPathsAndExactTwoLines(
+func TestInitialSystemdPortSidecarPlansUseFiveFixedRootPathsAndExactTwoLines(
 	t *testing.T,
 ) {
 	policy := configureTransactionPolicyFixture(t)
@@ -18,10 +18,11 @@ func TestInitialSystemdPortSidecarPlansUseFourFixedRootPathsAndExactTwoLines(
 	if err != nil {
 		t.Fatalf("plan initial sidecars: %v", err)
 	}
-	if len(plans) != 4 {
+	if len(plans) != 5 {
 		t.Fatalf("plans = %#v", plans)
 	}
 	want := map[string]string{
+		"/opt/autostream/local-executor/ports/control-panel.env":    "AUTOSTREAM_BIND_ADDR=127.0.0.1:18080\nAUTOSTREAM_CONFIG_REVISION=10\n",
 		"/opt/autostream/local-executor/ports/worker.env":           "AUTOSTREAM_BIND_ADDR=127.0.0.1:18081\nAUTOSTREAM_CONFIG_REVISION=11\n",
 		"/opt/autostream/local-executor/ports/encoder-recorder.env": "AUTOSTREAM_BIND_ADDR=127.0.0.1:18082\nAUTOSTREAM_CONFIG_REVISION=12\n",
 		"/opt/autostream/local-executor/ports/discord-bot.env":      "AUTOSTREAM_BIND_ADDR=127.0.0.1:18083\nAUTOSTREAM_CONFIG_REVISION=13\n",
@@ -36,6 +37,30 @@ func TestInitialSystemdPortSidecarPlansUseFourFixedRootPathsAndExactTwoLines(
 			bytes.Count(plan.Body, []byte{'\n'}) != 2 ||
 			plan.SHA256 != systemdPortSidecarSHA256(plan.Body) {
 			t.Fatalf("non-canonical sidecar plan = %#v", plan)
+		}
+	}
+}
+
+func TestCanonicalSystemdPortSidecarPathsCoverFiveConfigureServices(t *testing.T) {
+	paths, err := canonicalSystemdPortSidecarPaths(
+		defaultSystemdPortSidecarDirectory,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"/opt/autostream/local-executor/ports/control-panel.env":    true,
+		"/opt/autostream/local-executor/ports/worker.env":           true,
+		"/opt/autostream/local-executor/ports/encoder-recorder.env": true,
+		"/opt/autostream/local-executor/ports/discord-bot.env":      true,
+		"/opt/autostream/local-executor/ports/observability.env":    true,
+	}
+	if len(paths) != len(want) {
+		t.Fatalf("canonical paths = %#v", paths)
+	}
+	for _, candidate := range paths {
+		if !want[filepath.ToSlash(candidate)] {
+			t.Fatalf("unexpected canonical sidecar path %q", candidate)
 		}
 	}
 }
@@ -116,6 +141,7 @@ func configureTransactionPolicyFixture(t *testing.T) LocalExecutorPolicy {
 		revision    int64
 		database    string
 	}{
+		{id: "control-panel", serviceType: "control_panel", port: 18080, revision: 10, database: "autostream_control_panel"},
 		{id: "worker-a", serviceType: "worker", port: 18081, revision: 11},
 		{id: "encoder-a", serviceType: "encoder_recorder", port: 18082, revision: 12},
 		{id: "discord-a", serviceType: "discord_bot", port: 18083, revision: 13},
@@ -127,7 +153,7 @@ func configureTransactionPolicyFixture(t *testing.T) LocalExecutorPolicy {
 		if !ok {
 			t.Fatalf("missing profile for %s", definition.serviceType)
 		}
-		adapter, err := systemdPortAdapterFor(
+		adapter, err := hostAgentConfigureSystemdPortAdapterFor(
 			definition.serviceType,
 			profile.unit,
 		)

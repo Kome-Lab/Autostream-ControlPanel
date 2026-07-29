@@ -81,6 +81,7 @@ func TestControlPanelBackupScriptDeclaresDefaultAndQuotedDatabaseArgument(t *tes
 	}
 	script := string(body)
 	for _, want := range []string{
+		"readonly DEFAULTS_FILE=/etc/autostream-local-executor/mariadb-backup.cnf",
 		"readonly DEFAULT_DATABASE=autostream_control_panel",
 		`readonly DATABASE="${1-$DEFAULT_DATABASE}"`,
 		`--databases "$DATABASE"`,
@@ -89,7 +90,9 @@ func TestControlPanelBackupScriptDeclaresDefaultAndQuotedDatabaseArgument(t *tes
 			t.Fatalf("Control Panel backup script is missing %q", want)
 		}
 	}
-
+	if strings.Contains(script, "DEFAULTS_FILE=/etc/autostream/mariadb-backup.cnf") {
+		t.Fatal("Control Panel backup script can still read service credentials from /etc/autostream")
+	}
 }
 
 func TestControlPanelInstallGuidePassesConfiguredDatabaseName(t *testing.T) {
@@ -100,12 +103,12 @@ func TestControlPanelInstallGuidePassesConfiguredDatabaseName(t *testing.T) {
 	guide := string(body)
 	for _, want := range []string{
 		"DATABASE_NAME='autostream_control_panel'",
+		"/etc/autostream-local-executor/mariadb-backup.cnf",
 		"exact `DATABASE_NAME` must be used for the MariaDB grant, the real dump, and the",
 		"GRANT SELECT, SHOW VIEW, TRIGGER ON \\`${DATABASE_NAME}\\`.*",
 		`sudo /usr/local/sbin/autostream-backup-control-panel "$DATABASE_NAME"`,
-		`"backup_argv": [`,
-		`"/usr/local/sbin/autostream-backup-control-panel",`,
-		`"replace-with-the-exact-DATABASE_NAME-printed-above"`,
+		"Save this exact database name in **Application Info > System Updates**",
+		"server-owned `database_name`",
 	} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("Control Panel install guide is missing %q", want)
@@ -113,9 +116,12 @@ func TestControlPanelInstallGuidePassesConfiguredDatabaseName(t *testing.T) {
 	}
 	grant := strings.Index(guide, "GRANT SELECT, SHOW VIEW, TRIGGER")
 	dump := strings.Index(guide, `sudo /usr/local/sbin/autostream-backup-control-panel "$DATABASE_NAME"`)
-	policy := strings.Index(guide, `"replace-with-the-exact-DATABASE_NAME-printed-above"`)
-	if grant < 0 || dump <= grant || policy <= dump {
-		t.Fatal("Control Panel install guide must use one selected database name for grant, real dump, then backup_argv")
+	settings := strings.Index(guide, "Save this exact database name in **Application Info > System Updates**")
+	if grant < 0 || dump <= grant || settings <= dump {
+		t.Fatal("Control Panel install guide must use one selected database name for grant, real dump, then server-owned settings")
+	}
+	if strings.Contains(guide, `"backup_argv":`) {
+		t.Fatal("pull_v2 Control Panel install guide must not require hand-editing backup_argv")
 	}
 }
 

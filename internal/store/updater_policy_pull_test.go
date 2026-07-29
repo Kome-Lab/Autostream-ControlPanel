@@ -114,6 +114,141 @@ func TestNormalizePullUpdaterPolicyRejectsDuplicateServiceID(t *testing.T) {
 	}
 }
 
+func TestNormalizePullUpdaterPolicyRequiresOnlyFixedDatabaseBindings(t *testing.T) {
+	t.Parallel()
+
+	digest := "sha256:" + strings.Repeat("a", 64)
+	base := UpdaterPolicy{
+		TransportMode:             SystemUpdateTransportPullV2,
+		ExecutionHostID:           "host-a",
+		LocalExecutorPolicySHA256: digest,
+		PollIntervalSeconds:       15,
+		HeartbeatIntervalSeconds:  30,
+		Targets: []UpdaterPolicyTarget{{
+			TargetID:       "control-panel",
+			ServiceID:      "control-panel",
+			ServiceType:    "control_panel",
+			DeploymentMode: "systemd",
+			DatabaseName:   "autostream_panel",
+		}},
+	}
+	normalized, err := NormalizeUpdaterPolicy("host-agent-a", base)
+	if err != nil {
+		t.Fatalf("NormalizeUpdaterPolicy: %v", err)
+	}
+	if got := normalized.Targets[0].DatabaseName; got != "autostream_panel" {
+		t.Fatalf("database binding = %q", got)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "database_name") ||
+		strings.Contains(string(encoded), "autostream_panel") {
+		t.Fatalf("rollback-incompatible database binding leaked into policy_json: %s", encoded)
+	}
+	if _, err := decodeUpdaterPolicyRevisions(
+		"host-agent-a",
+		1,
+		1,
+		1,
+		encoded,
+		time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("v1.8.1-compatible policy_json did not decode: %v", err)
+	}
+
+	tests := map[string]func(*UpdaterPolicy){
+		"missing database": func(policy *UpdaterPolicy) {
+			policy.Targets[0].DatabaseName = ""
+		},
+		"unsafe database": func(policy *UpdaterPolicy) {
+			policy.Targets[0].DatabaseName = "--all-databases"
+		},
+		"docker database": func(policy *UpdaterPolicy) {
+			policy.Targets[0].DeploymentMode = "docker"
+		},
+		"non database service": func(policy *UpdaterPolicy) {
+			policy.Targets[0].ServiceType = "worker"
+		},
+		"forged control panel identity": func(policy *UpdaterPolicy) {
+			policy.Targets[0].TargetID = "control-panel-alias"
+			policy.Targets[0].ServiceID = "control-panel-alias"
+		},
+		"docker control panel alias without database": func(policy *UpdaterPolicy) {
+			policy.Targets[0].TargetID = "control-panel-alias"
+			policy.Targets[0].ServiceID = "control-panel-alias"
+			policy.Targets[0].DeploymentMode = "docker"
+			policy.Targets[0].DatabaseName = ""
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			candidate.Targets = append([]UpdaterPolicyTarget(nil), base.Targets...)
+			mutate(&candidate)
+			if _, err := NormalizeUpdaterPolicy("host-agent-a", candidate); !errors.Is(err, ErrInvalidSettings) {
+				t.Fatalf("error = %v, want ErrInvalidSettings", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeLegacyUpdaterPolicyRejectsDatabaseBindings(t *testing.T) {
+	t.Parallel()
+
+	policy := validUpdaterPolicy()
+	policy.Targets[0].DatabaseName = "must_not_persist"
+	if _, err := NormalizeUpdaterPolicy("updater-01", policy); !errors.Is(err, ErrInvalidSettings) {
+		t.Fatalf("legacy database binding error = %v, want ErrInvalidSettings", err)
+	}
+}
+
+func TestMemoryPullUpdaterPolicyDatabaseBindingChangesAdvanceAllRevisions(t *testing.T) {
+	policies := NewMemoryUpdaterPolicyStore()
+	updates := NewMemorySystemUpdateStore()
+	input := UpdaterPolicy{
+		TransportMode:             SystemUpdateTransportPullV2,
+		ExecutionHostID:           "host-a",
+		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64),
+		PollIntervalSeconds:       15,
+		HeartbeatIntervalSeconds:  30,
+		Targets: []UpdaterPolicyTarget{{
+			TargetID:       "observability-a",
+			ServiceID:      "observability-a",
+			ServiceType:    "observability",
+			DeploymentMode: "systemd",
+			DatabaseName:   "autostream_o11y",
+		}},
+	}
+	created, err := policies.SavePullUpdaterPolicy(
+		t.Context(), updates, "host-agent-a", 0, 0, input,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Targets[0].DatabaseName = "autostream_o11y_next"
+	updated, err := policies.SavePullUpdaterPolicy(
+		t.Context(), updates, "host-agent-a", created.Revision, 0, input,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Revision != created.Revision+1 ||
+		updated.ProjectionRevision != updated.Revision ||
+		updated.LocalExecutorPolicyRevision != updated.Revision ||
+		updated.Targets[0].DatabaseName != "autostream_o11y_next" {
+		t.Fatalf("updated database-bound policy = %#v", updated)
+	}
+	stored, err := policies.GetUpdaterPolicy(t.Context(), updated.UpdaterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Targets[0].DatabaseName != "autostream_o11y_next" {
+		t.Fatalf("stored database binding = %#v", stored.Targets)
+	}
+}
+
 func TestNormalizeLegacyUpdaterPolicyDefaultsToSSHV1(t *testing.T) {
 	t.Parallel()
 

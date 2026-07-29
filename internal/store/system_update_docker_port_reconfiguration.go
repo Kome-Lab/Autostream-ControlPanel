@@ -24,6 +24,9 @@ type CreateDockerPortReconfigurationJobParams struct {
 	IdempotencyKey           string
 	RequestedByUserID        string
 	RequestedByUsername      string
+	// ControlPanelTarget is server-owned runtime state used only to fence the
+	// synthetic Control Panel host listener.
+	ControlPanelTarget *PullUpdaterControlPanelTarget
 }
 
 type SystemUpdateDockerPortReconfigurationStore interface {
@@ -496,6 +499,14 @@ func (s *MemorySystemUpdateStore) CreateDockerPortReconfigurationJob(
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	if err := validateSyntheticControlPanelHostPortFence(
+		policy,
+		params.TargetID,
+		params.NewPublishedPort,
+		params.ControlPanelTarget,
+	); err != nil {
+		return SystemUpdateJob{}, false, err
+	}
 	if err := validateMemoryPortReservationsLocked(
 		s,
 		ownership.ExecutionHostID,
@@ -687,6 +698,14 @@ FOR UPDATE`, ownership.ExecutionHostID).Scan(&activeRotationID)
 		now,
 	)
 	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	if err := validateSyntheticControlPanelHostPortFence(
+		policy,
+		params.TargetID,
+		params.NewPublishedPort,
+		params.ControlPanelTarget,
+	); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
 	if err := validateMariaDBPortReservationsForUpdate(

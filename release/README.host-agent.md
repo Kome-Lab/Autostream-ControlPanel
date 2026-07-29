@@ -8,6 +8,12 @@ matching executor-policy digest are active, the same outbound `pull_v2` loop
 claims jobs and drives bounded stage/apply/reconcile operations through the
 root local executor.
 
+Install one Host Agent per physical host, not one Agent per service. A host
+running both Control Panel and Observability uses one execution-host identity
+whose server-owned policy contains both targets. No SSH key, `known_hosts`,
+inbound updater port, or central updater daemon is part of this `pull_v2`
+boundary.
+
 ## Verify the release
 
 Verify the archive sidecar with `sha256sum --check --strict`, verify
@@ -42,8 +48,20 @@ Agent cannot run. An existing directory must already be a non-symlink
 directories and removes only empty directories whose inodes were created by
 that attempt.
 
-Register the Update Agent service in the Control Panel and run its generated
-command. It has this form:
+Register the Update Agent service in the Control Panel and assign the systemd
+targets on this physical host. A Control Panel or Observability target also
+requires its exact existing database name in System Updates. The value is saved
+as server-owned `database_name` and combined only with the compiled fixed
+backup executable.
+
+Before configure, install and test the fixed backup scripts, create the fixed
+backup directories, and provide the dedicated root-only credential at
+`/etc/autostream-local-executor/mariadb-backup.cnf`. The operator owns this
+file: configure does not create or transmit the credential and never accepts
+the database name in argv. It only projects the saved non-secret identifier
+into the root policy.
+
+Save the policy, then run the generated command. It has this form:
 
 ```bash
 sudo /usr/local/bin/autostream-host-agent configure \
@@ -70,6 +88,9 @@ Each sidecar contains exactly the service-specific bind variable and
 `AUTOSTREAM_CONFIG_REVISION`, terminated by LF. An existing sidecar must match
 the canonical bytes; configure never overwrites a different file. Policy,
 sidecars, and identity are re-read and digest/revision-bound before activation.
+The possible initial systemd sidecars are fixed to Control Panel, Worker,
+Encoder Recorder, Discord Bot, and Observability. Control Panel receives an
+initial canonical sidecar but remains ineligible for runtime port changes.
 The four-field identity still does not receive or persist a host ID, ownership
 epoch, target policy, GitHub token, SSH setting, or local command.
 
@@ -160,6 +181,12 @@ Installed paths:
 /var/lib/autostream-local-executor/
 /opt/autostream/local-executor/ports/
 ```
+
+For database-owning targets the operator additionally provisions
+`/etc/autostream-local-executor/mariadb-backup.cnf` as `root:root 0600` and the
+fixed `/var/backups/autostream/control-panel` and/or
+`/var/backups/autostream/observability` directory as `root:root 0700`. They are
+not installed, rewritten, or removed by the Host Agent package.
 
 The state directory is intentionally distinct from the legacy central updater's
 `/var/lib/autostream-updater`.
@@ -363,3 +390,20 @@ The legacy central Updater, SSH helper, keys, and port 8090 assets are
 independent and are not removed by either command. Keep them during the Bridge.
 Remove them only in a later release after every host has moved to `pull_v2`,
 canary and rollback drills have passed, and no active/recovery job remains.
+
+## Control Panel writer rollback
+
+Before rolling the Control Panel back to an older binary, confirm that no
+update, recovery, or token-rotation job is active, deactivate `pull_v2`
+ownership in System Updates, and stop this Host Agent. Complete a
+`single-writer` drain by stopping every Control Panel instance before starting
+exactly one old or new writer; never run both generations concurrently.
+
+Treat a pre-059 Control Panel binary as read-only for updater policy settings.
+Do not save System Updates settings with the old binary. If it advances an
+updater policy revision, keep ownership inactive and roll forward to the
+current Control Panel as the sole writer. Re-save the exact MariaDB database
+names for all Control Panel and Observability targets in **Application Info >
+System Updates**, rerun the generated Host Agent configure command, and
+validate the Local Executor policy. Start the Agent and reactivate ownership
+only after the configure revision and target observations are applied.

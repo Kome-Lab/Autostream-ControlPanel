@@ -101,6 +101,10 @@ type CreateSystemdPortReconfigurationJobParams struct {
 	IdempotencyKey           string
 	RequestedByUserID        string
 	RequestedByUsername      string
+	// ControlPanelTarget is server-owned runtime state used only to fence the
+	// synthetic Control Panel listener, which intentionally has no services or
+	// service_port_reservations row.
+	ControlPanelTarget *PullUpdaterControlPanelTarget
 }
 
 // SystemUpdatePortReconfigurationStore is deliberately additive so Bridge

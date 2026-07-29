@@ -25,14 +25,17 @@ const (
 	UpdaterGitHubReleaseTokenSecretName  = "updater_github_release_token"
 	maxUpdaterReleaseTokenBytes          = 4096
 	pullUpdaterActivationHeartbeatMaxAge = 180 * time.Second
+	updaterPolicySnapshotReadMaxAttempts = 3
 )
 
 var (
-	ErrConflict                     = errors.New("conflict")
-	errUpdaterReleaseTokenIntegrity = errors.New("updater release token integrity check failed")
-	updaterPolicyIdentifierPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
-	updaterPolicyHostIDPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	updaterPolicyLinuxUserPattern   = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	ErrConflict                      = errors.New("conflict")
+	errUpdaterReleaseTokenIntegrity  = errors.New("updater release token integrity check failed")
+	errUpdaterPolicySnapshotChanged  = errors.New("updater policy snapshot changed")
+	updaterPolicyIdentifierPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	updaterPolicyHostIDPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	updaterPolicyLinuxUserPattern    = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	updaterPolicyDatabaseNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 )
 
 type UpdaterPolicy struct {
@@ -76,6 +79,10 @@ type UpdaterPolicyTarget struct {
 	HostID         string `json:"host_id"`
 	ServiceType    string `json:"service_type"`
 	DeploymentMode string `json:"deployment_mode"`
+	// DatabaseName is stored in update_agent_target_databases rather than
+	// policy_json so an older strict decoder can still read the declarative
+	// policy after a Control Panel rollback.
+	DatabaseName string `json:"-"`
 }
 
 type UpdaterPolicyStore interface {
@@ -111,6 +118,40 @@ type ActivatePullUpdaterOwnershipParams struct {
 	ExpectedProjectionRevision          int64
 	ExpectedLocalExecutorPolicyRevision int64
 	ExpectedLocalExecutorPolicySHA256   string
+	ControlPanelTarget                  *PullUpdaterControlPanelTarget
+}
+
+// PullUpdaterControlPanelTarget is the server-owned runtime view of the
+// Control Panel process. The Control Panel is not a registered Node service,
+// so activation receives this narrowly validated synthetic target instead of
+// accepting a caller-provided services row.
+type PullUpdaterControlPanelTarget struct {
+	ServiceID             string
+	ServiceType           string
+	EndpointRevision      int64
+	AppliedConfigRevision int64
+	AppliedConfigSHA256   string
+	AppliedEndpoint       ServiceEndpoint
+}
+
+func (target PullUpdaterControlPanelTarget) registeredService() RegisteredService {
+	endpoint := target.AppliedEndpoint
+	return RegisteredService{
+		ServiceID:             target.ServiceID,
+		ServiceType:           target.ServiceType,
+		ServiceName:           "Control Panel",
+		Host:                  endpoint.Host,
+		Port:                  endpoint.Port,
+		SSLEnabled:            endpoint.SSLEnabled,
+		PublicURL:             endpoint.PublicURL,
+		DesiredEndpoint:       copyServiceEndpoint(&endpoint),
+		AppliedEndpoint:       copyServiceEndpoint(&endpoint),
+		EndpointRevision:      target.EndpointRevision,
+		EndpointStatus:        "applied",
+		AppliedConfigRevision: target.AppliedConfigRevision,
+		AppliedConfigSHA256:   target.AppliedConfigSHA256,
+		Status:                "online",
+	}
 }
 
 type ActivatePullUpdaterOwnershipResult struct {
@@ -468,12 +509,27 @@ func (s *MemoryUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
 	}
 	targetServices := make(map[string]RegisteredService, len(policy.Targets))
+	controlPanelTargetUsed := false
 	for _, target := range policy.Targets {
+		if updaterPolicyControlPanelTarget(target) {
+			if params.ControlPanelTarget == nil {
+				return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+			}
+			targetServices[target.ServiceID] = params.ControlPanelTarget.registeredService()
+			controlPanelTargetUsed = true
+			continue
+		}
 		targetService, exists := registry.services[target.ServiceID]
 		if !exists {
 			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 		}
 		targetServices[target.ServiceID] = targetService
+	}
+	if params.ControlPanelTarget != nil && !controlPanelTargetUsed {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	if !PullUpdaterPolicyDatabaseBindingsReady(policy) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
 	}
 	if !registeredPullObserverReadyForActivation(service, policy, targetServices, time.Now().UTC()) {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
@@ -751,6 +807,19 @@ func (s MariaDBUpdaterPolicyStore) GetUpdaterPolicy(ctx context.Context, service
 	if !updaterPolicyIdentifierPattern.MatchString(serviceID) {
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
+	for attempt := 0; attempt < updaterPolicySnapshotReadMaxAttempts; attempt++ {
+		policy, err := s.getUpdaterPolicyOnce(ctx, serviceID)
+		if !errors.Is(err, errUpdaterPolicySnapshotChanged) {
+			return policy, err
+		}
+	}
+	return UpdaterPolicy{}, ErrConflict
+}
+
+func (s MariaDBUpdaterPolicyStore) getUpdaterPolicyOnce(
+	ctx context.Context,
+	serviceID string,
+) (UpdaterPolicy, error) {
 	var (
 		revision                    int64
 		projectionRevision          int64
@@ -771,7 +840,7 @@ WHERE service_id = ?`,
 	if err != nil {
 		return UpdaterPolicy{}, err
 	}
-	return decodeUpdaterPolicyRevisions(
+	policy, err := decodeUpdaterPolicyRevisions(
 		serviceID,
 		revision,
 		projectionRevision,
@@ -779,9 +848,28 @@ WHERE service_id = ?`,
 		body,
 		updatedAt,
 	)
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if err := attachUpdaterTargetDatabases(ctx, s.db, &policy); err != nil {
+		return UpdaterPolicy{}, err
+	}
+	return policy, nil
 }
 
 func (s MariaDBUpdaterPolicyStore) ListUpdaterPolicies(ctx context.Context) ([]UpdaterPolicy, error) {
+	for attempt := 0; attempt < updaterPolicySnapshotReadMaxAttempts; attempt++ {
+		policies, err := s.listUpdaterPoliciesOnce(ctx)
+		if !errors.Is(err, errUpdaterPolicySnapshotChanged) {
+			return policies, err
+		}
+	}
+	return nil, ErrConflict
+}
+
+func (s MariaDBUpdaterPolicyStore) listUpdaterPoliciesOnce(
+	ctx context.Context,
+) ([]UpdaterPolicy, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
 		`SELECT service_id, revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
@@ -828,6 +916,14 @@ ORDER BY service_id`,
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range policies {
+		if err := attachUpdaterTargetDatabases(ctx, s.db, &policies[index]); err != nil {
+			return nil, err
+		}
 	}
 	sort.Slice(policies, func(i, j int) bool {
 		return policies[i].UpdaterID < policies[j].UpdaterID
@@ -1071,6 +1167,9 @@ FOR UPDATE`,
 	if err := saveUpdaterPolicyCAS(ctx, tx, expectedRevision, normalized, body); err != nil {
 		return UpdaterPolicy{}, err
 	}
+	if err := replaceUpdaterTargetDatabases(ctx, tx, normalized); err != nil {
+		return UpdaterPolicy{}, err
+	}
 	if !activePullOwner {
 		if err := tx.Commit(); err != nil {
 			return UpdaterPolicy{}, err
@@ -1157,6 +1256,9 @@ FOR UPDATE`,
 		updatedAt,
 	)
 	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if err := attachUpdaterTargetDatabases(ctx, tx, &current); err != nil {
 		return UpdaterPolicy{}, err
 	}
 	if current.TransportMode != SystemUpdateTransportPullV2 ||
@@ -1338,6 +1440,12 @@ FOR UPDATE`,
 	if err != nil {
 		return ActivatePullUpdaterOwnershipResult{}, err
 	}
+	if err := attachUpdaterTargetDatabases(ctx, tx, &policy); err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if !PullUpdaterPolicyDatabaseBindingsReady(policy) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
+	}
 	if policy.Revision != params.ExpectedSourcePolicyRevision ||
 		policy.ProjectionRevision != params.ExpectedProjectionRevision ||
 		policy.LocalExecutorPolicyRevision != params.ExpectedLocalExecutorPolicyRevision ||
@@ -1347,11 +1455,23 @@ FOR UPDATE`,
 		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
 	}
 	targetIDs := make([]string, 0, len(policy.Targets))
+	targetServices := make(map[string]RegisteredService, len(policy.Targets))
+	controlPanelTargetUsed := false
 	for _, target := range policy.Targets {
+		if updaterPolicyControlPanelTarget(target) {
+			if params.ControlPanelTarget == nil {
+				return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+			}
+			targetServices[target.ServiceID] = params.ControlPanelTarget.registeredService()
+			controlPanelTargetUsed = true
+			continue
+		}
 		targetIDs = append(targetIDs, target.ServiceID)
 	}
+	if params.ControlPanelTarget != nil && !controlPanelTargetUsed {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
 	sort.Strings(targetIDs)
-	targetServices := make(map[string]RegisteredService, len(targetIDs))
 	for _, targetID := range targetIDs {
 		targetService, targetErr := scanService(tx.QueryRowContext(
 			ctx,
@@ -1984,6 +2104,131 @@ type updaterPolicyQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+type updaterPolicyRowsQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func attachUpdaterTargetDatabases(
+	ctx context.Context,
+	queryer updaterPolicyRowsQueryer,
+	policy *UpdaterPolicy,
+) error {
+	if policy == nil || queryer == nil {
+		return ErrInvalidSettings
+	}
+	rows, err := queryer.QueryContext(
+		ctx,
+		`SELECT p.revision AS current_policy_revision,
+       d.target_id,
+       d.binding_policy_revision,
+       d.database_name
+FROM update_agent_policies AS p
+LEFT JOIN update_agent_target_databases AS d
+  ON d.updater_service_id = p.service_id
+WHERE p.service_id = ?
+ORDER BY d.target_id`,
+		policy.UpdaterID,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	targetIndexes := make(map[string]int, len(policy.Targets))
+	for index := range policy.Targets {
+		targetIndexes[policy.Targets[index].TargetID] = index
+	}
+	databases := make(map[int]string, len(policy.Targets))
+	snapshotFound := false
+	for rows.Next() {
+		var (
+			currentPolicyRevision int64
+			targetID              sql.NullString
+			bindingPolicyRevision sql.NullInt64
+			databaseName          sql.NullString
+		)
+		if err := rows.Scan(
+			&currentPolicyRevision,
+			&targetID,
+			&bindingPolicyRevision,
+			&databaseName,
+		); err != nil {
+			return err
+		}
+		snapshotFound = true
+		if currentPolicyRevision != policy.Revision {
+			return errUpdaterPolicySnapshotChanged
+		}
+		if !targetID.Valid && !bindingPolicyRevision.Valid && !databaseName.Valid {
+			continue
+		}
+		if !targetID.Valid || !bindingPolicyRevision.Valid || !databaseName.Valid {
+			return ErrInvalidSettings
+		}
+		if bindingPolicyRevision.Int64 != policy.Revision {
+			continue
+		}
+		index, exists := targetIndexes[targetID.String]
+		if !exists ||
+			!updaterPolicyTargetRequiresDatabase(policy.Targets[index]) ||
+			!updaterPolicyDatabaseNamePattern.MatchString(databaseName.String) {
+			continue
+		}
+		databases[index] = databaseName.String
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !snapshotFound {
+		return errUpdaterPolicySnapshotChanged
+	}
+	candidate := cloneUpdaterPolicy(*policy)
+	for index := range candidate.Targets {
+		candidate.Targets[index].DatabaseName = databases[index]
+	}
+	*policy = candidate
+	return nil
+}
+
+func replaceUpdaterTargetDatabases(
+	ctx context.Context,
+	execer updaterPolicyExecer,
+	policy UpdaterPolicy,
+) error {
+	if execer == nil ||
+		policy.TransportMode != SystemUpdateTransportPullV2 ||
+		policy.Revision < 1 ||
+		!PullUpdaterPolicyDatabaseBindingsReady(policy) {
+		return ErrInvalidSettings
+	}
+	if _, err := execer.ExecContext(
+		ctx,
+		`DELETE FROM update_agent_target_databases WHERE updater_service_id = ?`,
+		policy.UpdaterID,
+	); err != nil {
+		return err
+	}
+	for _, target := range policy.Targets {
+		if !updaterPolicyTargetRequiresDatabase(target) {
+			continue
+		}
+		if _, err := execer.ExecContext(
+			ctx,
+			`INSERT INTO update_agent_target_databases
+(updater_service_id, target_id, binding_policy_revision, database_name, updated_at)
+VALUES (?, ?, ?, ?, ?)`,
+			policy.UpdaterID,
+			target.TargetID,
+			policy.Revision,
+			target.DatabaseName,
+			policy.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func prepareUpdaterPolicySave(serviceID string, expectedRevision int64, input UpdaterPolicy) (UpdaterPolicy, []byte, error) {
 	if expectedRevision < 0 || expectedRevision == math.MaxInt64 {
 		return UpdaterPolicy{}, nil, ErrConflict
@@ -2021,7 +2266,56 @@ func normalizeActivatePullUpdaterOwnershipParams(params ActivatePullUpdaterOwner
 		!validSystemUpdateDigest(params.ExpectedLocalExecutorPolicySHA256) {
 		return ActivatePullUpdaterOwnershipParams{}, ErrInvalidSettings
 	}
+	controlPanelTarget, err := normalizePullUpdaterControlPanelTarget(params.ControlPanelTarget)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipParams{}, err
+	}
+	params.ControlPanelTarget = controlPanelTarget
 	return params, nil
+}
+
+func normalizePullUpdaterControlPanelTarget(
+	input *PullUpdaterControlPanelTarget,
+) (*PullUpdaterControlPanelTarget, error) {
+	if input == nil {
+		return nil, nil
+	}
+	target := *input
+	target.ServiceID = strings.TrimSpace(target.ServiceID)
+	target.ServiceType = strings.TrimSpace(target.ServiceType)
+	target.AppliedConfigSHA256 = strings.ToLower(strings.TrimSpace(target.AppliedConfigSHA256))
+	target.AppliedEndpoint.Host = strings.TrimSpace(target.AppliedEndpoint.Host)
+	target.AppliedEndpoint.PublicURL = strings.TrimSpace(target.AppliedEndpoint.PublicURL)
+	if target.ServiceID != "control-panel" ||
+		target.ServiceType != "control_panel" ||
+		target.EndpointRevision < 1 ||
+		target.AppliedConfigRevision < 1 ||
+		target.AppliedConfigSHA256 == "" ||
+		!validSystemUpdateDigest(target.AppliedConfigSHA256) ||
+		target.AppliedEndpoint.Host != "127.0.0.1" ||
+		target.AppliedEndpoint.Port < 1024 ||
+		target.AppliedEndpoint.Port > 65535 ||
+		target.AppliedEndpoint.SSLEnabled {
+		return nil, ErrInvalidSettings
+	}
+	canonicalPublicURL := buildServiceURL(
+		target.AppliedEndpoint.Host,
+		target.AppliedEndpoint.Port,
+		false,
+	)
+	if target.AppliedEndpoint.PublicURL != "" &&
+		target.AppliedEndpoint.PublicURL != canonicalPublicURL {
+		return nil, ErrInvalidSettings
+	}
+	target.AppliedEndpoint.PublicURL = canonicalPublicURL
+	return &target, nil
+}
+
+func updaterPolicyControlPanelTarget(target UpdaterPolicyTarget) bool {
+	return target.TargetID == "control-panel" &&
+		target.ServiceID == "control-panel" &&
+		target.ServiceType == "control_panel" &&
+		target.DeploymentMode == "systemd"
 }
 
 func normalizeDeactivatePullUpdaterOwnershipParams(
@@ -2176,6 +2470,9 @@ func registeredPullObserverReadyForActivation(
 	servicesByID map[string]RegisteredService,
 	now time.Time,
 ) bool {
+	if !PullUpdaterPolicyDatabaseBindingsReady(policy) {
+		return false
+	}
 	if !strings.EqualFold(strings.TrimSpace(service.Status), "online") ||
 		service.LastHeartbeatAt == nil ||
 		service.LastHeartbeatAt.IsZero() {
@@ -2276,6 +2573,13 @@ func pullActivationBaselineReservations(
 	reservations := make([]ServicePortReservation, 0, len(policy.Targets))
 	seen := make(map[servicePortReservationKey]ServicePortReservation, len(policy.Targets))
 	for _, target := range policy.Targets {
+		// service_port_reservations is deliberately owned by rows in services.
+		// Control Panel is a server-owned synthetic target and cannot satisfy
+		// that foreign key. Its fixed listener is fenced against systemd and
+		// Docker host-port changes at job creation and verified by Host Agent.
+		if updaterPolicyControlPanelTarget(target) {
+			continue
+		}
 		service, exists := servicesByID[target.ServiceID]
 		if !exists || service.AppliedEndpoint == nil {
 			return nil, ErrSystemUpdateAgentNotReady
@@ -2531,6 +2835,18 @@ func validStoredUpdaterReleaseToken(value string) bool {
 }
 
 func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolicy, error) {
+	return normalizeUpdaterPolicyWithDatabaseBindings(serviceID, input, true)
+}
+
+func normalizeStoredUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolicy, error) {
+	return normalizeUpdaterPolicyWithDatabaseBindings(serviceID, input, false)
+}
+
+func normalizeUpdaterPolicyWithDatabaseBindings(
+	serviceID string,
+	input UpdaterPolicy,
+	requireDatabaseBindings bool,
+) (UpdaterPolicy, error) {
 	serviceID = strings.TrimSpace(serviceID)
 	input.UpdaterID = strings.TrimSpace(input.UpdaterID)
 	if !updaterPolicyIdentifierPattern.MatchString(serviceID) ||
@@ -2556,7 +2872,7 @@ func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
 	if input.TransportMode == SystemUpdateTransportPullV2 {
-		return normalizePullUpdaterPolicy(input)
+		return normalizePullUpdaterPolicy(input, requireDatabaseBindings)
 	}
 	if input.TransportMode != SystemUpdateTransportSSHV1 ||
 		input.ExecutionHostID != "" ||
@@ -2630,6 +2946,9 @@ func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 		target.HostID = strings.TrimSpace(target.HostID)
 		target.ServiceType = strings.TrimSpace(target.ServiceType)
 		target.DeploymentMode = strings.TrimSpace(target.DeploymentMode)
+		if target.DatabaseName != "" {
+			return UpdaterPolicy{}, ErrInvalidSettings
+		}
 		if !updaterPolicyIdentifierPattern.MatchString(target.TargetID) || targets[target.TargetID] ||
 			!updaterPolicyIdentifierPattern.MatchString(target.ServiceID) ||
 			!updaterPolicyHostIDPattern.MatchString(target.HostID) || !hosts[target.HostID] ||
@@ -2653,7 +2972,10 @@ func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolic
 	return cloneUpdaterPolicy(input), nil
 }
 
-func normalizePullUpdaterPolicy(input UpdaterPolicy) (UpdaterPolicy, error) {
+func normalizePullUpdaterPolicy(
+	input UpdaterPolicy,
+	requireDatabaseBindings bool,
+) (UpdaterPolicy, error) {
 	if !executionHostIDPattern.MatchString(input.ExecutionHostID) ||
 		!validSystemUpdateDigest(input.LocalExecutorPolicySHA256) ||
 		input.API != (UpdaterPolicyAPI{}) ||
@@ -2690,6 +3012,24 @@ func normalizePullUpdaterPolicy(input UpdaterPolicy) (UpdaterPolicy, error) {
 			(target.DeploymentMode != "systemd" && target.DeploymentMode != "docker") {
 			return UpdaterPolicy{}, ErrInvalidSettings
 		}
+		requiresDatabase := updaterPolicyTargetRequiresDatabase(*target)
+		if target.ServiceType == "control_panel" &&
+			(target.TargetID != "control-panel" ||
+				target.ServiceID != "control-panel" ||
+				target.DeploymentMode != "systemd") {
+			return UpdaterPolicy{}, ErrInvalidSettings
+		}
+		switch {
+		case requiresDatabase && requireDatabaseBindings &&
+			!updaterPolicyDatabaseNamePattern.MatchString(target.DatabaseName):
+			return UpdaterPolicy{}, ErrInvalidSettings
+		case requiresDatabase && !requireDatabaseBindings &&
+			target.DatabaseName != "" &&
+			!updaterPolicyDatabaseNamePattern.MatchString(target.DatabaseName):
+			return UpdaterPolicy{}, ErrInvalidSettings
+		case !requiresDatabase && target.DatabaseName != "":
+			return UpdaterPolicy{}, ErrInvalidSettings
+		}
 		targets[target.TargetID] = true
 		serviceIDs[target.ServiceID] = true
 	}
@@ -2707,6 +3047,35 @@ func normalizePullUpdaterPolicy(input UpdaterPolicy) (UpdaterPolicy, error) {
 // without assigning a database revision or update timestamp.
 func NormalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolicy, error) {
 	return normalizeUpdaterPolicy(serviceID, input)
+}
+
+// PullUpdaterPolicyDatabaseBindingsReady reports whether every database-owning
+// pull target has an exact, revision-bound database binding and no other target
+// has one. It is safe to use on policies loaded for display: missing bindings
+// remain visible as empty values so an administrator can repair them.
+func PullUpdaterPolicyDatabaseBindingsReady(policy UpdaterPolicy) bool {
+	if policy.TransportMode != SystemUpdateTransportPullV2 || len(policy.Targets) == 0 {
+		return false
+	}
+	for _, target := range policy.Targets {
+		if updaterPolicyTargetRequiresDatabase(target) {
+			if !updaterPolicyDatabaseNamePattern.MatchString(target.DatabaseName) {
+				return false
+			}
+			continue
+		}
+		if target.DatabaseName != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func updaterPolicyTargetRequiresDatabase(target UpdaterPolicyTarget) bool {
+	if target.DeploymentMode != "systemd" {
+		return false
+	}
+	return target.ServiceType == "control_panel" || target.ServiceType == "observability"
 }
 
 func decodeUpdaterPolicy(serviceID string, revision int64, body []byte, updatedAt time.Time) (UpdaterPolicy, error) {
@@ -2731,7 +3100,7 @@ func decodeUpdaterPolicyRevisions(
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return UpdaterPolicy{}, errors.New("updater policy contains trailing data")
 	}
-	normalized, err := normalizeUpdaterPolicy(serviceID, policy)
+	normalized, err := normalizeStoredUpdaterPolicy(serviceID, policy)
 	if err != nil {
 		return UpdaterPolicy{}, err
 	}

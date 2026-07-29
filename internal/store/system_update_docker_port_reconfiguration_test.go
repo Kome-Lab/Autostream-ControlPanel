@@ -235,6 +235,68 @@ func TestMemoryCreateDockerPortReconfigurationBindsPublishedAndContainerPorts(t 
 	}
 }
 
+func TestMemoryDockerPortReconfigurationRejectsSyntheticControlPanelPublishedPortWithoutPartialState(t *testing.T) {
+	policies, registry, updates := readyMemoryDockerPortCoordinator(t)
+	policies.mu.Lock()
+	policy := policies.policies["host-agent-a"]
+	policy.Targets = append(policy.Targets, UpdaterPolicyTarget{
+		TargetID:       "control-panel",
+		ServiceID:      "control-panel",
+		HostID:         policy.ExecutionHostID,
+		ServiceType:    "control_panel",
+		DeploymentMode: "systemd",
+		DatabaseName:   "autostream_panel",
+	})
+	policies.policies[policy.UpdaterID] = policy
+	policies.mu.Unlock()
+	controlPanelTarget := &PullUpdaterControlPanelTarget{
+		ServiceID:             "control-panel",
+		ServiceType:           "control_panel",
+		EndpointRevision:      1,
+		AppliedConfigRevision: 1,
+		AppliedConfigSHA256:   "sha256:" + strings.Repeat("d", 64),
+		AppliedEndpoint: ServiceEndpoint{
+			Host: "127.0.0.1", Port: 18080, PublicURL: "http://127.0.0.1:18080",
+		},
+	}
+
+	if _, _, err := updates.CreateDockerPortReconfigurationJob(
+		t.Context(),
+		registry,
+		policies,
+		CreateDockerPortReconfigurationJobParams{
+			TargetID:                 "worker-a",
+			NewAdvertisedPort:        443,
+			NewPublishedPort:         controlPanelTarget.AppliedEndpoint.Port,
+			NewContainerPort:         18082,
+			ExpectedEndpointRevision: 3,
+			IdempotencyKey:           "docker-synthetic-control-panel-port-collision",
+			RequestedByUserID:        "admin-a",
+			ControlPanelTarget:       controlPanelTarget,
+		},
+	); !errors.Is(err, ErrServicePortReserved) {
+		t.Fatalf("synthetic Control Panel published-port collision = %v, want ErrServicePortReserved", err)
+	}
+	service, err := registry.GetService(t.Context(), "worker-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.EndpointRevision != 3 || service.EndpointStatus != "applied" ||
+		!sameServiceEndpoint(service.DesiredEndpoint, service.AppliedEndpoint) {
+		t.Fatalf("collision partially mutated service = %#v", service)
+	}
+	jobs, err := updates.ListSystemUpdateJobs(t.Context(), 100)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("collision partially created jobs = %#v err=%v", jobs, err)
+	}
+	reservations, err := updates.ListServicePortReservations(t.Context(), "host-a")
+	if err != nil || len(reservations) != 1 ||
+		reservations[0].ServiceID != "worker-a" ||
+		reservations[0].Port != 18081 {
+		t.Fatalf("collision partially mutated reservations = %#v err=%v", reservations, err)
+	}
+}
+
 func TestMemoryCreateDockerPortReconfigurationAcceptsDistinctAdvertisedAndPublishedBaseline(t *testing.T) {
 	policies, registry, updates := readyMemoryDockerPortCoordinator(t)
 	registry.mu.Lock()

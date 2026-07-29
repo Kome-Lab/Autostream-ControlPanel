@@ -80,6 +80,8 @@ func TestLocalExecutorSystemdUnitsUseRootSocketActivationWithoutTCP(t *testing.T
 		"ReadWritePaths=-/opt/autostream/observability",
 		"ReadWritePaths=-/opt/autostream/host-agent",
 		"ReadWritePaths=-/opt/autostream/local-executor",
+		"ReadWritePaths=-/var/backups/autostream/control-panel",
+		"ReadWritePaths=-/var/backups/autostream/observability",
 		"StateDirectory=autostream-local-executor",
 		"StateDirectoryMode=0700",
 	} {
@@ -90,6 +92,10 @@ func TestLocalExecutorSystemdUnitsUseRootSocketActivationWithoutTCP(t *testing.T
 	if strings.Contains(service, "ReadWritePaths=/var/lib/autostream-local-executor /opt/autostream") ||
 		strings.Contains(service, "ReadWritePaths=/opt/autostream\n") {
 		t.Fatal("local executor service grants broad write access to /opt/autostream")
+	}
+	if strings.Contains(service, "ReadWritePaths=/var/backups/autostream\n") ||
+		strings.Contains(service, "ReadWritePaths=-/var/backups/autostream\n") {
+		t.Fatal("local executor service grants broad write access to /var/backups/autostream")
 	}
 	for _, marker := range []string{
 		"ListenStream=/run/autostream-local-executor/executor.sock",

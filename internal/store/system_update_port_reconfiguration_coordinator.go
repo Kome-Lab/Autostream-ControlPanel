@@ -68,6 +68,14 @@ func (s *MemorySystemUpdateStore) CreateSystemdPortReconfigurationJob(
 	if err := validateSystemdPortCoordinatorState(policy, policyTarget, target, agent, ownership, params, now); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	if err := validateSyntheticControlPanelHostPortFence(
+		policy,
+		params.TargetID,
+		params.NewPort,
+		params.ControlPanelTarget,
+	); err != nil {
+		return SystemUpdateJob{}, false, err
+	}
 	if err := validateMemoryPortReservationsLocked(s, ownership.ExecutionHostID, target.ServiceID, target.AppliedEndpoint.Port, params.NewPort); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
@@ -284,6 +292,14 @@ FOR UPDATE`, ownership.ExecutionHostID).Scan(&activeRotationID)
 	}
 	now := time.Now().UTC()
 	if err := validateSystemdPortCoordinatorState(policy, policyTarget, target, agent, ownership, params, now); err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	if err := validateSyntheticControlPanelHostPortFence(
+		policy,
+		params.TargetID,
+		params.NewPort,
+		params.ControlPanelTarget,
+	); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
 	if err := validateMariaDBPortReservationsForUpdate(
@@ -538,6 +554,35 @@ func sameSystemdPortCreateRequest(job SystemUpdateJob, params CreateSystemdPortR
 		job.PortReconfigure != nil &&
 		job.PortReconfigure.NewPort == params.NewPort &&
 		job.PortReconfigure.ExpectedEndpointRevision == params.ExpectedEndpointRevision
+}
+
+func validateSyntheticControlPanelHostPortFence(
+	policy UpdaterPolicy,
+	targetID string,
+	requestedHostPort int,
+	runtimeTarget *PullUpdaterControlPanelTarget,
+) error {
+	usesControlPanel := false
+	for _, target := range policy.Targets {
+		if updaterPolicyControlPanelTarget(target) {
+			usesControlPanel = true
+			break
+		}
+	}
+	if !usesControlPanel {
+		return nil
+	}
+	controlPanelTarget, err := normalizePullUpdaterControlPanelTarget(
+		runtimeTarget,
+	)
+	if err != nil || controlPanelTarget == nil {
+		return ErrSystemUpdateAgentNotReady
+	}
+	if targetID != controlPanelTarget.ServiceID &&
+		requestedHostPort == controlPanelTarget.AppliedEndpoint.Port {
+		return ErrServicePortReserved
+	}
+	return nil
 }
 
 func validateSystemdPortCoordinatorState(

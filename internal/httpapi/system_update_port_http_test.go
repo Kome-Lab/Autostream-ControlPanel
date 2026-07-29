@@ -234,6 +234,7 @@ func TestCreateSystemUpdateStrictlySeparatesSoftwareAndPortRequests(t *testing.T
 }
 
 func TestCreateDockerPortReconfigurationUsesIndependentFieldsAndExactIdempotency(t *testing.T) {
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "127.0.0.1:18080")
 	handler, cookie, csrf, updates := newPortCoordinatorHTTPFixture(t, nil)
 	body := `{"operation":"port_reconfigure","target_id":"worker-a","new_advertised_port":443,"new_published_port":18084,"new_container_port":18080,"expected_endpoint_revision":7,"idempotency_key":"docker-port-request-1"}`
 	response := postSystemUpdateForTest(t, handler, cookie, csrf, body)
@@ -247,7 +248,12 @@ func TestCreateDockerPortReconfigurationUsesIndependentFieldsAndExactIdempotency
 		updates.dockerParams.NewContainerPort != 18080 ||
 		updates.dockerParams.ExpectedEndpointRevision != 7 ||
 		updates.dockerParams.IdempotencyKey != "docker-port-request-1" ||
-		updates.dockerParams.RequestedByUserID != "port-admin" {
+		updates.dockerParams.RequestedByUserID != "port-admin" ||
+		updates.dockerParams.ControlPanelTarget == nil ||
+		updates.dockerParams.ControlPanelTarget.ServiceID != "control-panel" ||
+		updates.dockerParams.ControlPanelTarget.ServiceType != "control_panel" ||
+		updates.dockerParams.ControlPanelTarget.AppliedEndpoint.Host != "127.0.0.1" ||
+		updates.dockerParams.ControlPanelTarget.AppliedEndpoint.Port != 18080 {
 		t.Fatalf("Docker coordinator call=%#v", updates.dockerParams)
 	}
 	var created store.SystemUpdateJob
@@ -278,6 +284,7 @@ func TestCreateDockerPortReconfigurationUsesIndependentFieldsAndExactIdempotency
 }
 
 func TestCreateSystemdPortReconfigurationUsesCoordinatorAndExactIdempotency(t *testing.T) {
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "127.0.0.1:18080")
 	handler, cookie, csrf, updates := newPortCoordinatorHTTPFixture(t, nil)
 	body := `{"operation":"port_reconfigure","target_id":"worker-a","new_port":18081,"expected_endpoint_revision":7,"idempotency_key":"port-request-1"}`
 	response := postSystemUpdateForTest(t, handler, cookie, csrf, body)
@@ -292,7 +299,12 @@ func TestCreateSystemdPortReconfigurationUsesCoordinatorAndExactIdempotency(t *t
 		updates.params.ExpectedEndpointRevision != 7 ||
 		updates.params.IdempotencyKey != "port-request-1" ||
 		updates.params.RequestedByUserID != "port-admin" ||
-		updates.params.RequestedByUsername != "port-admin" {
+		updates.params.RequestedByUsername != "port-admin" ||
+		updates.params.ControlPanelTarget == nil ||
+		updates.params.ControlPanelTarget.ServiceID != "control-panel" ||
+		updates.params.ControlPanelTarget.ServiceType != "control_panel" ||
+		updates.params.ControlPanelTarget.AppliedEndpoint.Host != "127.0.0.1" ||
+		updates.params.ControlPanelTarget.AppliedEndpoint.Port != 18080 {
 		t.Fatalf("coordinator call = %#v", updates)
 	}
 	var created store.SystemUpdateJob

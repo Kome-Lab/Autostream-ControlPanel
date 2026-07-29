@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,92 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/store"
 )
+
+func TestActivatePullUpdaterOwnershipPassesExactSyntheticControlPanelTarget(t *testing.T) {
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "127.0.0.1:36190")
+	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "7")
+	auth, policies, updates, _, _, _, saved := newPullActivationHTTPFixture(t, true)
+	ownership, err := updates.GetSystemUpdateExecutionHost(t.Context(), "host-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = policies.SavePullUpdaterPolicy(
+		t.Context(),
+		updates,
+		"host-agent-a",
+		saved.Revision,
+		ownership.OwnershipEpoch,
+		store.UpdaterPolicy{
+			TransportMode:             store.SystemUpdateTransportPullV2,
+			ExecutionHostID:           "host-a",
+			LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("d", 64),
+			PollIntervalSeconds:       15,
+			HeartbeatIntervalSeconds:  30,
+			Targets: []store.UpdaterPolicyTarget{{
+				TargetID:       "control-panel",
+				ServiceID:      "control-panel",
+				ServiceType:    "control_panel",
+				DeploymentMode: "systemd",
+				DatabaseName:   "autostream_panel",
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capturingPolicies := &capturePullActivationPolicyStore{
+		MemoryUpdaterPolicyStore: policies,
+	}
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithUpdaterPolicyStore(capturingPolicies),
+		WithSystemUpdateStore(updates),
+	)
+	cookie, csrf := loginForTest(
+		t,
+		handler,
+		"activation-admin",
+		"correct horse battery",
+	)
+	response := activatePullOwnershipForTest(
+		t,
+		handler,
+		cookie,
+		csrf,
+		activatePullUpdaterOwnershipRequest{
+			ExpectedExecutionHostID:             "host-a",
+			ExpectedOwnershipEpoch:              ownership.OwnershipEpoch,
+			ExpectedSourcePolicyRevision:        saved.Revision,
+			ExpectedProjectionRevision:          saved.ProjectionRevision,
+			ExpectedLocalExecutorPolicyRevision: saved.LocalExecutorPolicyRevision,
+			ExpectedLocalExecutorPolicySHA256:   saved.LocalExecutorPolicySHA256,
+		},
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf(
+			"activate Control Panel pull owner = %d %s",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+	target := capturingPolicies.params.ControlPanelTarget
+	if target == nil ||
+		target.ServiceID != "control-panel" ||
+		target.ServiceType != "control_panel" ||
+		target.EndpointRevision != 7 ||
+		target.AppliedConfigRevision != 7 ||
+		target.AppliedConfigSHA256 == "" ||
+		target.AppliedEndpoint != (store.ServiceEndpoint{
+			Host:      "127.0.0.1",
+			Port:      36190,
+			PublicURL: "http://127.0.0.1:36190",
+		}) {
+		t.Fatalf("captured Control Panel activation target = %#v", target)
+	}
+}
 
 func TestActivatePullUpdaterOwnershipUsesAtomicServerOwnedTransition(t *testing.T) {
 	auth, policies, updates, handler, cookie, csrf, saved := newPullActivationHTTPFixture(t, true)
@@ -93,6 +180,45 @@ func TestActivatePullUpdaterOwnershipUsesAtomicServerOwnedTransition(t *testing.
 		!strings.Contains(stale.Body.String(), `"code":"system_update_ownership_conflict"`) {
 		t.Fatalf("stale activation = %d %s", stale.Code, stale.Body.String())
 	}
+}
+
+type capturePullActivationPolicyStore struct {
+	*store.MemoryUpdaterPolicyStore
+	params store.ActivatePullUpdaterOwnershipParams
+}
+
+func (s *capturePullActivationPolicyStore) ActivatePullUpdaterOwnership(
+	ctx context.Context,
+	services store.ServiceRegistryStore,
+	executionHosts store.SystemUpdateExecutionHostStore,
+	params store.ActivatePullUpdaterOwnershipParams,
+) (store.ActivatePullUpdaterOwnershipResult, error) {
+	s.params = params
+	service, err := services.GetService(ctx, params.ServiceID)
+	if err != nil {
+		return store.ActivatePullUpdaterOwnershipResult{}, err
+	}
+	ownership, err := executionHosts.GetSystemUpdateExecutionHost(
+		ctx,
+		params.ExecutionHostID,
+	)
+	if err != nil {
+		return store.ActivatePullUpdaterOwnershipResult{}, err
+	}
+	policy, err := s.GetUpdaterPolicy(ctx, params.ServiceID)
+	if err != nil {
+		return store.ActivatePullUpdaterOwnershipResult{}, err
+	}
+	ownership.TransportMode = store.SystemUpdateTransportPullV2
+	ownership.AgentServiceID = params.ServiceID
+	ownership.OwnershipEpoch++
+	ownership.PolicyRevision = policy.ProjectionRevision
+	service.OwnershipEpoch = ownership.OwnershipEpoch
+	return store.ActivatePullUpdaterOwnershipResult{
+		Service:   service,
+		Ownership: ownership,
+		Policy:    policy,
+	}, nil
 }
 
 func TestDeactivatePullUpdaterOwnershipRestoresSavedLegacyOwnerAtomically(t *testing.T) {

@@ -66,6 +66,8 @@ func TestSystemUpdateAgentTopologyExposesTransportOwnershipIdentity(t *testing.T
 }
 
 func TestPullSystemUpdateTargetApprovalUsesServiceIdentityAndNoReleaseToken(t *testing.T) {
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "0.0.0.0:80")
+	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "0")
 	now := time.Now().UTC()
 	agent, service, policy := pullSystemUpdateTargetApprovalFixture(now)
 	assignments, updaters, hosts := systemUpdateAgentTopologyWithPolicies(
@@ -112,6 +114,87 @@ func TestPullSystemUpdateTargetApprovalUsesServiceIdentityAndNoReleaseToken(t *t
 	)
 	if !target.Eligible || target.BlockedReason != "" {
 		t.Fatalf("approved pull target = %#v", target)
+	}
+}
+
+func TestPullSystemUpdateTargetApprovalSynthesizesControlPanelService(t *testing.T) {
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "127.0.0.1:36190")
+	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "7")
+
+	now := time.Now().UTC()
+	controlPanelService, err := controlPanelSystemUpdateService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, _, policy := pullSystemUpdateTargetApprovalFixture(now)
+	policy.Targets[0] = store.UpdaterPolicyTarget{
+		TargetID:       "control-panel",
+		ServiceID:      "control-panel",
+		HostID:         "host-a",
+		ServiceType:    "control_panel",
+		DeploymentMode: "systemd",
+		DatabaseName:   "autostream_panel",
+	}
+	agent.ReportedCapabilities["target_availability"] = map[string]any{
+		"control-panel": "available",
+	}
+	agent.ReportedCapabilities["target_availability_codes"] = map[string]any{
+		"control-panel": "executor_verified",
+	}
+	agent.ReportedCapabilities["reported_ports"] = map[string]any{
+		"control-panel": float64(36190),
+	}
+	agent.ReportedCapabilities["port_drift"] = map[string]any{
+		"control-panel": false,
+	}
+	agent.ReportedCapabilities["reported_service_types"] = map[string]any{
+		"control-panel": "control_panel",
+	}
+	agent.ReportedCapabilities["reported_deployment_modes"] = map[string]any{
+		"control-panel": "systemd",
+	}
+	agent.ReportedCapabilities["reported_executor_policy_revisions"] = map[string]any{
+		"control-panel": float64(2),
+	}
+	agent.ReportedCapabilities["reported_executor_policy_sha256"] = map[string]any{
+		"control-panel": policy.LocalExecutorPolicySHA256,
+	}
+	agent.ReportedCapabilities["reported_config_revisions"] = map[string]any{
+		"control-panel": float64(7),
+	}
+	agent.ReportedCapabilities["reported_config_sha256"] = map[string]any{
+		"control-panel": controlPanelService.AppliedConfigSHA256,
+	}
+
+	assignments, _, _ := systemUpdateAgentTopologyWithPolicies(
+		[]store.RegisteredService{agent},
+		now,
+		map[string]store.UpdaterPolicy{agent.ServiceID: policy},
+		false,
+	)
+	assignment, ok := assignments["control-panel"]
+	if !ok {
+		t.Fatalf("synthetic Control Panel assignment missing: %#v", assignments)
+	}
+	if !assignment.PolicyReady ||
+		assignment.PolicyBlockedReason != "" ||
+		assignment.TargetServiceType != "control_panel" ||
+		assignment.DeploymentMode != "systemd" ||
+		assignment.HostReachability != "reachable" {
+		t.Fatalf("synthetic Control Panel assignment = %#v", assignment)
+	}
+
+	policy.Targets[0].DatabaseName = ""
+	assignments, _, _ = systemUpdateAgentTopologyWithPolicies(
+		[]store.RegisteredService{agent},
+		now,
+		map[string]store.UpdaterPolicy{agent.ServiceID: policy},
+		false,
+	)
+	assignment = assignments["control-panel"]
+	if assignment.PolicyReady ||
+		assignment.PolicyBlockedReason != "updater_policy_mismatch" {
+		t.Fatalf("missing Control Panel database binding = %#v", assignment)
 	}
 }
 

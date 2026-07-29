@@ -14038,13 +14038,14 @@ func TestUpdaterVersionEndpointIsUnauthenticatedAndBoundedIdentity(t *testing.T)
 	}
 	if len(payload) != 4 ||
 		payload["version"] != "v1.7.1" ||
-		payload["service_id"] != "control-panel-primary" ||
+		payload["service_id"] != "control-panel" ||
 		payload["service_type"] != "control_panel" ||
 		payload["config_revision"] != float64(7) {
 		t.Fatalf("unexpected updater version response: %#v", payload)
 	}
 	for _, forbidden := range []string{
 		"from-environment",
+		"control-panel-primary",
 		"must-not-be-exposed",
 		version.Commit,
 		version.BuildDate,

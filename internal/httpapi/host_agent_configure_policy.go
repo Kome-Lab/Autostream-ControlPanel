@@ -48,6 +48,9 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 	for _, service := range services {
 		servicesByID[service.ServiceID] = service
 	}
+	if err := addControlPanelSystemUpdateServiceForPolicy(servicesByID, policy); err != nil {
+		return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+	}
 	targets := make([]updateagent.HostAgentConfigurePolicyTarget, 0, len(policy.Targets))
 	for _, target := range policy.Targets {
 		service, exists := servicesByID[target.ServiceID]
@@ -61,6 +64,7 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 			ServiceID:             target.ServiceID,
 			ServiceType:           target.ServiceType,
 			DeploymentMode:        target.DeploymentMode,
+			DatabaseName:          target.DatabaseName,
 			EndpointRevision:      service.EndpointRevision,
 			AppliedConfigRevision: service.AppliedConfigRevision,
 			AppliedConfigSHA256:   service.AppliedConfigSHA256,

@@ -100,7 +100,9 @@ func TestMariaDBSavePullUpdaterPolicyRollsBackPolicyWhenOwnershipWriteFails(t *t
 		state.policyCommitted || state.ownershipCommitted {
 		t.Fatalf("failed pull transaction state = %#v", state)
 	}
-	if !state.policyExecInTransaction || !state.ownershipExecInTransaction {
+	if !state.policyExecInTransaction ||
+		!state.databaseBindingExecInTransaction ||
+		!state.ownershipExecInTransaction {
 		t.Fatalf("pull writes did not share one transaction: %#v", state)
 	}
 	if state.tokenExecInTransaction || state.tokenCiphertextCommitted != "" {
@@ -123,18 +125,19 @@ func openUpdaterPolicyAtomicTestDB(t *testing.T, state *updaterPolicyAtomicDBSta
 }
 
 type updaterPolicyAtomicDBState struct {
-	mu                         sync.Mutex
-	failTokenWrite             bool
-	failOwnershipWrite         bool
-	begins                     int
-	commits                    int
-	rollbacks                  int
-	policyExecInTransaction    bool
-	tokenExecInTransaction     bool
-	ownershipExecInTransaction bool
-	policyCommitted            bool
-	ownershipCommitted         bool
-	tokenCiphertextCommitted   string
+	mu                               sync.Mutex
+	failTokenWrite                   bool
+	failOwnershipWrite               bool
+	begins                           int
+	commits                          int
+	rollbacks                        int
+	policyExecInTransaction          bool
+	databaseBindingExecInTransaction bool
+	tokenExecInTransaction           bool
+	ownershipExecInTransaction       bool
+	policyCommitted                  bool
+	ownershipCommitted               bool
+	tokenCiphertextCommitted         string
 }
 
 type updaterPolicyAtomicDriver struct {
@@ -189,6 +192,9 @@ func (c *updaterPolicyAtomicConn) ExecContext(ctx context.Context, query string,
 	case strings.Contains(query, "INSERT INTO update_agent_policies"):
 		c.state.policyExecInTransaction = c.inTransaction
 		c.stagedPolicy = true
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "update_agent_target_databases"):
+		c.state.databaseBindingExecInTransaction = c.inTransaction
 		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "INSERT INTO secrets"):
 		c.state.tokenExecInTransaction = c.inTransaction

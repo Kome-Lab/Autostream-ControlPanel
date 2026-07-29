@@ -132,6 +132,12 @@ func (s *Server) serviceHostAgentPolicy(w http.ResponseWriter, r *http.Request) 
 	for _, service := range services {
 		servicesByID[service.ServiceID] = service
 	}
+	if err := addControlPanelSystemUpdateServiceForPolicy(servicesByID, policy); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"code": "control_panel_update_target_unavailable",
+		})
+		return
+	}
 	targets := make([]hostAgentPolicyTarget, 0, len(policy.Targets))
 	for _, target := range policy.Targets {
 		if target.HostID != agent.ExecutionHostID {

@@ -13,6 +13,8 @@ import (
 
 func TestHostAgentPolicyUsesServerOwnedBindingAndRegisteredServiceEndpoints(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "worker.example.com")
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "0.0.0.0:80")
+	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "0")
 	auth := store.NewMemoryAuthStore()
 	agentToken, err := auth.CreateServiceToken(t.Context(), "update_agent", []string{"service.register", "service.heartbeat", "service.config.read"})
 	if err != nil {

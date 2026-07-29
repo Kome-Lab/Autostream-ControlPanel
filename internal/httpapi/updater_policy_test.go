@@ -150,6 +150,79 @@ func TestUpdaterPolicyAdminNormalizesHostKeyCommentAndKeepsReleaseTokenWriteOnly
 	}
 }
 
+func TestSSHUpdaterPolicyRejectsDatabaseNameWithoutMutatingReleaseToken(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(
+		store.User{ID: "ssh-policy-admin", Username: "ssh-policy-admin"},
+		"correct horse battery",
+		[]string{"system_updates.execute", "secrets.update"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	registerUpdateAgentForPolicyTest(t, auth, "updater-ssh")
+	policies := store.NewMemoryUpdaterPolicyStore()
+	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
+	const originalToken = "github_pat_original"
+	originalPolicy, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
+		t.Context(),
+		"updater-ssh",
+		0,
+		updaterPolicyForHTTPTest(hostKey),
+		func() *string {
+			value := originalToken
+			return &value
+		}(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithUpdaterPolicyStore(policies),
+	)
+	cookie, csrf := loginForTest(t, handler, "ssh-policy-admin", "correct horse battery")
+	for name, databaseName := range map[string]json.RawMessage{
+		"value": json.RawMessage(`"autostream_panel"`),
+		"null":  json.RawMessage(`null`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			requestBody := validUpdaterPolicyRequest(t)
+			requestBody.ExpectedRevision = originalPolicy.Revision
+			requestBody.Targets[0].DatabaseName = databaseName
+			replacementToken := "github_pat_replacement"
+			requestBody.GitHubToken = &replacementToken
+			payload, err := json.Marshal(requestBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(
+				http.MethodPut,
+				"/system-updates/updaters/updater-ssh/settings",
+				bytes.NewReader(payload),
+			)
+			request.AddCookie(cookie)
+			request.Header.Set("X-CSRF-Token", csrf)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest ||
+				!strings.Contains(response.Body.String(), `"code":"invalid_updater_database_name"`) {
+				t.Fatalf("SSH database name = %d %s", response.Code, response.Body.String())
+			}
+			storedPolicy, err := policies.GetUpdaterPolicy(t.Context(), "updater-ssh")
+			if err != nil || storedPolicy.Revision != originalPolicy.Revision {
+				t.Fatalf("SSH database name mutated policy: %#v, %v", storedPolicy, err)
+			}
+			storedToken, err := policies.GetUpdaterReleaseTokenValue(t.Context())
+			if err != nil || storedToken != originalToken {
+				t.Fatalf("SSH database name mutated token: %q, %v", storedToken, err)
+			}
+		})
+	}
+}
+
 func TestUpdaterPolicySaveRejectsEveryActiveBootstrapStateWithoutMutation(t *testing.T) {
 	for _, bootstrapState := range []UpdateHostBootstrapStatus{
 		UpdateHostBootstrapStatusQueued,
@@ -338,7 +411,7 @@ func TestUpdaterPolicyRejectsNonASCIIReleaseTokenWithoutMutation(t *testing.T) {
 		ExpectedRevision:    0,
 		API:                 store.UpdaterPolicyAPI{BindHost: "127.0.0.1", Host: "127.0.0.1", Port: 8090},
 		PollIntervalSeconds: 15, HeartbeatIntervalSeconds: 30,
-		Hosts: updaterPolicyForHTTPTest(hostKey).Hosts, Targets: updaterPolicyForHTTPTest(hostKey).Targets,
+		Hosts: updaterPolicyForHTTPTest(hostKey).Hosts, Targets: updaterPolicyTargetRequestsForTest(updaterPolicyForHTTPTest(hostKey).Targets),
 		GitHubToken: &unsafeToken,
 	}
 	payload, err := json.Marshal(body)
@@ -388,7 +461,7 @@ func TestUpdaterPolicyRejectsHeartbeatAboveAvailabilityWindow(t *testing.T) {
 		ExpectedRevision:    0,
 		API:                 store.UpdaterPolicyAPI{BindHost: "127.0.0.1", Host: "127.0.0.1", Port: 8090},
 		PollIntervalSeconds: 15, HeartbeatIntervalSeconds: 61,
-		Hosts: updaterPolicyForHTTPTest(hostKey).Hosts, Targets: updaterPolicyForHTTPTest(hostKey).Targets,
+		Hosts: updaterPolicyForHTTPTest(hostKey).Hosts, Targets: updaterPolicyTargetRequestsForTest(updaterPolicyForHTTPTest(hostKey).Targets),
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -574,7 +647,7 @@ func TestUpdaterPolicySaveRequiresSecretPermissionOnlyWhenTokenChanges(t *testin
 		PollIntervalSeconds:      originalPolicy.PollIntervalSeconds,
 		HeartbeatIntervalSeconds: originalPolicy.HeartbeatIntervalSeconds,
 		Hosts:                    originalPolicy.Hosts,
-		Targets:                  originalPolicy.Targets,
+		Targets:                  updaterPolicyTargetRequestsForTest(originalPolicy.Targets),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -637,7 +710,7 @@ func TestUpdaterPolicyRevisionConflictDoesNotMutateReleaseToken(t *testing.T) {
 	requestBody := updaterPolicyUpdateRequest{
 		ExpectedRevision: 0, API: store.UpdaterPolicyAPI{BindHost: "127.0.0.1", Host: "127.0.0.1", Port: 8090},
 		PollIntervalSeconds: 15, HeartbeatIntervalSeconds: 30,
-		Hosts: updaterPolicyForHTTPTest(hostKey).Hosts, Targets: updaterPolicyForHTTPTest(hostKey).Targets,
+		Hosts: updaterPolicyForHTTPTest(hostKey).Hosts, Targets: updaterPolicyTargetRequestsForTest(updaterPolicyForHTTPTest(hostKey).Targets),
 	}
 	replacement := "replacement-token"
 	requestBody.GitHubToken = &replacement
@@ -1319,6 +1392,20 @@ func updaterPolicyForHTTPTest(hostPublicKey string) store.UpdaterPolicy {
 			TargetID: "worker-01", HostID: "host-01", ServiceType: "worker", DeploymentMode: "systemd",
 		}},
 	}
+}
+
+func updaterPolicyTargetRequestsForTest(targets []store.UpdaterPolicyTarget) []updaterPolicyTargetRequest {
+	requests := make([]updaterPolicyTargetRequest, 0, len(targets))
+	for _, target := range targets {
+		requests = append(requests, updaterPolicyTargetRequest{
+			TargetID:       target.TargetID,
+			ServiceID:      target.ServiceID,
+			HostID:         target.HostID,
+			ServiceType:    target.ServiceType,
+			DeploymentMode: target.DeploymentMode,
+		})
+	}
+	return requests
 }
 
 func ed25519AuthorizedKeyForTest(t *testing.T, comment string) (string, string) {

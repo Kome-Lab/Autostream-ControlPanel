@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -190,6 +191,149 @@ func TestMemorySystemdPortReconfigurationRejectsCollisionWithoutPartialState(t *
 	jobs, err := updates.ListSystemUpdateJobs(t.Context(), 100)
 	if err != nil || len(jobs) != 0 {
 		t.Fatalf("collision partially created jobs = %#v err=%v", jobs, err)
+	}
+}
+
+func TestMemorySystemdPortReconfigurationRejectsSyntheticControlPanelPortWithoutPartialState(t *testing.T) {
+	policies, registry, updates, activation := newMemoryPullActivationFixture(t, false)
+	policy := policies.policies[activation.ServiceID]
+	policy.Targets = append(policy.Targets, UpdaterPolicyTarget{
+		TargetID:       "control-panel",
+		ServiceID:      "control-panel",
+		HostID:         activation.ExecutionHostID,
+		ServiceType:    "control_panel",
+		DeploymentMode: "systemd",
+		DatabaseName:   "autostream_panel",
+	})
+	policies.policies[activation.ServiceID] = policy
+	controlPanelTarget := &PullUpdaterControlPanelTarget{
+		ServiceID:             "control-panel",
+		ServiceType:           "control_panel",
+		EndpointRevision:      1,
+		AppliedConfigRevision: 1,
+		AppliedConfigSHA256:   "sha256:" + strings.Repeat("d", 64),
+		AppliedEndpoint: ServiceEndpoint{
+			Host: "127.0.0.1", Port: 18080, PublicURL: "http://127.0.0.1:18080",
+		},
+	}
+	activation.ControlPanelTarget = controlPanelTarget
+	agent := registry.services[activation.ServiceID]
+	addPullActivationTargetReport(
+		agent.ReportedCapabilities,
+		controlPanelTarget.ServiceID,
+		controlPanelTarget.registeredService(),
+		policy,
+	)
+	registry.services[activation.ServiceID] = agent
+
+	activated, err := policies.ActivatePullUpdaterOwnership(
+		t.Context(), registry, updates, activation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.mu.Lock()
+	target := registry.services["worker-a"]
+	target.Host = target.AppliedEndpoint.Host
+	target.Port = target.AppliedEndpoint.Port
+	target.SSLEnabled = target.AppliedEndpoint.SSLEnabled
+	target.PublicURL = target.AppliedEndpoint.PublicURL
+	target.Version = "v1.0.0"
+	target.ReportedVersion = "v1.0.0"
+	target.DesiredEndpoint = copyServiceEndpoint(target.AppliedEndpoint)
+	target.EndpointStatus = "applied"
+	registry.services[target.ServiceID] = target
+	agent = registry.services[activation.ServiceID]
+	agent.Status = "online"
+	now := time.Now().UTC()
+	agent.LastHeartbeatAt = &now
+	agent.ReportedCapabilities["observe_only"] = false
+	agent.ReportedCapabilities["mutation_enabled"] = true
+	agent.ReportedCapabilities["ownership_epoch"] = activated.Ownership.OwnershipEpoch
+	agent.ReportedCapabilities["policy_revision"] = activated.Policy.ProjectionRevision
+	registry.services[agent.ServiceID] = agent
+	registry.mu.Unlock()
+
+	if _, _, err := updates.CreateSystemdPortReconfigurationJob(
+		t.Context(), registry, policies, CreateSystemdPortReconfigurationJobParams{
+			TargetID:                 "worker-a",
+			NewPort:                  controlPanelTarget.AppliedEndpoint.Port,
+			ExpectedEndpointRevision: 3,
+			IdempotencyKey:           "synthetic-control-panel-port-collision",
+			RequestedByUserID:        "admin-a",
+			ControlPanelTarget:       controlPanelTarget,
+		},
+	); !errors.Is(err, ErrServicePortReserved) {
+		t.Fatalf("synthetic Control Panel port collision = %v, want ErrServicePortReserved", err)
+	}
+	service, err := registry.GetService(t.Context(), "worker-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.EndpointRevision != 3 || service.EndpointStatus != "applied" ||
+		!sameServiceEndpoint(service.DesiredEndpoint, service.AppliedEndpoint) {
+		t.Fatalf("collision partially mutated service = %#v", service)
+	}
+	jobs, err := updates.ListSystemUpdateJobs(t.Context(), 100)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("collision partially created jobs = %#v err=%v", jobs, err)
+	}
+	reservations, err := updates.ListServicePortReservations(
+		t.Context(), activation.ExecutionHostID,
+	)
+	if err != nil || len(reservations) != 1 ||
+		reservations[0].ServiceID != "worker-a" ||
+		reservations[0].Port != 18081 {
+		t.Fatalf("collision partially mutated reservations = %#v err=%v", reservations, err)
+	}
+}
+
+func TestSyntheticControlPanelHostPortFenceFailsClosedOnlyForExactPolicy(t *testing.T) {
+	malformed := &PullUpdaterControlPanelTarget{
+		ServiceID:   "control-panel-alias",
+		ServiceType: "control_panel",
+	}
+	workerPolicy := UpdaterPolicy{
+		Targets: []UpdaterPolicyTarget{{
+			TargetID:       "worker-a",
+			ServiceID:      "worker-a",
+			ServiceType:    "worker",
+			DeploymentMode: "systemd",
+		}},
+	}
+	if err := validateSyntheticControlPanelHostPortFence(
+		workerPolicy,
+		"worker-a",
+		18084,
+		malformed,
+	); err != nil {
+		t.Fatalf("non-Control Panel policy read unrelated runtime: %v", err)
+	}
+
+	controlPanelPolicy := workerPolicy
+	controlPanelPolicy.Targets = append(
+		append([]UpdaterPolicyTarget(nil), workerPolicy.Targets...),
+		UpdaterPolicyTarget{
+			TargetID:       "control-panel",
+			ServiceID:      "control-panel",
+			ServiceType:    "control_panel",
+			DeploymentMode: "systemd",
+		},
+	)
+	for name, runtimeTarget := range map[string]*PullUpdaterControlPanelTarget{
+		"missing":   nil,
+		"malformed": malformed,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateSyntheticControlPanelHostPortFence(
+				controlPanelPolicy,
+				"worker-a",
+				18084,
+				runtimeTarget,
+			); !errors.Is(err, ErrSystemUpdateAgentNotReady) {
+				t.Fatalf("error = %v, want ErrSystemUpdateAgentNotReady", err)
+			}
+		})
 	}
 }
 

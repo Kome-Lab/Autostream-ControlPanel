@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,7 +27,7 @@ func TestNormalizedUpdaterPolicyRequestUsesServerOwnedPullBinding(t *testing.T) 
 		PollIntervalSeconds:       15,
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: digest,
-		Targets: []store.UpdaterPolicyTarget{{
+		Targets: []updaterPolicyTargetRequest{{
 			TargetID:       "worker-a",
 			ServiceID:      "worker-a",
 			ServiceType:    "worker",
@@ -61,7 +62,7 @@ func TestNormalizedUpdaterPolicyRequestAllowsObserveOnlyEpochZero(t *testing.T) 
 		PollIntervalSeconds:       15,
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: digest,
-		Targets: []store.UpdaterPolicyTarget{{
+		Targets: []updaterPolicyTargetRequest{{
 			TargetID:       "worker-a",
 			ServiceID:      "worker-a",
 			ServiceType:    "worker",
@@ -90,7 +91,7 @@ func TestNormalizedUpdaterPolicyRequestRejectsPullSSHAndLongLivedReleaseToken(t 
 	base := updaterPolicyUpdateRequest{
 		PollIntervalSeconds:      15,
 		HeartbeatIntervalSeconds: 30,
-		Targets: []store.UpdaterPolicyTarget{{
+		Targets: []updaterPolicyTargetRequest{{
 			TargetID:       "worker-a",
 			ServiceID:      "worker-a",
 			ServiceType:    "worker",
@@ -112,12 +113,195 @@ func TestNormalizedUpdaterPolicyRequestRejectsPullSSHAndLongLivedReleaseToken(t 
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
 			candidate := base
-			candidate.Targets = append([]store.UpdaterPolicyTarget(nil), base.Targets...)
+			candidate.Targets = append([]updaterPolicyTargetRequest(nil), base.Targets...)
 			mutate(&candidate)
 			if _, err := normalizedUpdaterPolicyRequest(agent, candidate); err == nil {
 				t.Fatal("unsafe pull settings were accepted")
 			}
 		})
+	}
+}
+
+func TestPullUpdaterPolicyDatabaseNamesRoundTripAndRejectInvalidScope(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(
+		store.User{ID: "database-policy-admin", Username: "database-policy-admin"},
+		"correct horse battery",
+		[]string{"system_updates.read", "system_updates.execute"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	registerPullSystemUpdateAgentForOwnershipTest(
+		t,
+		auth,
+		"host-agent-database",
+		"host-database",
+		1,
+		map[string]any{},
+	)
+	policies := store.NewMemoryUpdaterPolicyStore()
+	updates := store.NewMemorySystemUpdateStore()
+	if _, err := updates.SwitchSystemUpdateExecutionHost(
+		t.Context(),
+		"host-database",
+		0,
+		store.SystemUpdateTransportPullV2,
+		"host-agent-database",
+		0,
+	); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithUpdaterPolicyStore(policies),
+		WithSystemUpdateStore(updates),
+	)
+	cookie, csrf := loginForTest(t, handler, "database-policy-admin", "correct horse battery")
+	save := func(targets []map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		payload, err := json.Marshal(map[string]any{
+			"expected_revision":            0,
+			"poll_interval_seconds":        15,
+			"heartbeat_interval_seconds":   30,
+			"local_executor_policy_sha256": "sha256:" + strings.Repeat("d", 64),
+			"targets":                      targets,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(
+			http.MethodPut,
+			"/system-updates/updaters/host-agent-database/settings",
+			bytes.NewReader(payload),
+		)
+		request.AddCookie(cookie)
+		request.Header.Set("X-CSRF-Token", csrf)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	baseTarget := map[string]any{
+		"target_id":       "control-panel",
+		"service_id":      "control-panel",
+		"host_id":         "host-database",
+		"service_type":    "control_panel",
+		"deployment_mode": "systemd",
+	}
+	invalidTargets := []map[string]any{
+		baseTarget,
+		{
+			"target_id":       "control-panel",
+			"service_id":      "control-panel",
+			"service_type":    "control_panel",
+			"deployment_mode": "systemd",
+			"database_name":   "autostream.panel",
+		},
+		{
+			"target_id":       "worker-main",
+			"service_id":      "worker-main",
+			"service_type":    "worker",
+			"deployment_mode": "systemd",
+			"database_name":   "autostream_worker",
+		},
+		{
+			"target_id":       "worker-main",
+			"service_id":      "worker-main",
+			"service_type":    "worker",
+			"deployment_mode": "systemd",
+			"database_name":   nil,
+		},
+		{
+			"target_id":       "control-panel",
+			"service_id":      "control-panel",
+			"service_type":    "control_panel",
+			"deployment_mode": "docker",
+			"database_name":   "autostream_panel",
+		},
+		{
+			"target_id":       "control-panel",
+			"service_id":      "control-panel",
+			"service_type":    "control_panel",
+			"deployment_mode": "docker",
+			"database_name":   nil,
+		},
+	}
+	for index, target := range invalidTargets {
+		response := save([]map[string]any{target})
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), `"code":"invalid_updater_database_name"`) {
+			t.Fatalf("invalid database target %d = %d %s", index, response.Code, response.Body.String())
+		}
+	}
+	if _, err := policies.GetUpdaterPolicy(t.Context(), "host-agent-database"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("invalid database target mutated policy: %v", err)
+	}
+
+	validTarget := map[string]any{}
+	for key, value := range baseTarget {
+		validTarget[key] = value
+	}
+	validTarget["database_name"] = "  autostream-kometubu_panel  "
+	observabilityTarget := map[string]any{
+		"target_id":       "observability",
+		"service_id":      "observability",
+		"host_id":         "host-database",
+		"service_type":    "observability",
+		"deployment_mode": "systemd",
+		"database_name":   "autostream-kometubu_o11y",
+	}
+	response := save([]map[string]any{validTarget, observabilityTarget})
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid database target = %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Targets []struct {
+			HostID       string `json:"host_id"`
+			ServiceType  string `json:"service_type"`
+			DatabaseName string `json:"database_name"`
+		} `json:"targets"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Targets) != 2 ||
+		body.Targets[0].HostID != "host-database" ||
+		body.Targets[0].ServiceType != "control_panel" ||
+		body.Targets[0].DatabaseName != "autostream-kometubu_panel" ||
+		body.Targets[1].ServiceType != "observability" ||
+		body.Targets[1].DatabaseName != "autostream-kometubu_o11y" {
+		t.Fatalf("database target response = %#v", body.Targets)
+	}
+	stored, err := policies.GetUpdaterPolicy(t.Context(), "host-agent-database")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Targets) != 2 ||
+		stored.Targets[0].DatabaseName != "autostream-kometubu_panel" ||
+		stored.Targets[1].DatabaseName != "autostream-kometubu_o11y" {
+		t.Fatalf("stored database target = %#v", stored.Targets)
+	}
+	foundSaveAudit := false
+	for _, event := range auth.AuditEvents() {
+		if event.Action != "system_updates.updater_policy.save" {
+			continue
+		}
+		foundSaveAudit = true
+		metadata, err := json.Marshal(event.Metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(metadata), "autostream-kometubu_panel") ||
+			strings.Contains(string(metadata), "autostream-kometubu_o11y") ||
+			strings.Contains(string(metadata), "database_name") ||
+			strings.Contains(strings.ToLower(string(metadata)), "dsn") {
+			t.Fatalf("database target leaked into audit metadata: %s", metadata)
+		}
+	}
+	if !foundSaveAudit {
+		t.Fatal("database target save audit was not written")
 	}
 }
 
@@ -175,7 +359,7 @@ func TestPullUpdaterPolicySaveNeedsNoSecretPermissionAndAdvancesOwnershipRevisio
 		PollIntervalSeconds:       15,
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64),
-		Targets: []store.UpdaterPolicyTarget{{
+		Targets: []updaterPolicyTargetRequest{{
 			TargetID:       "legacy-slot",
 			ServiceID:      "worker-a",
 			ServiceType:    "worker",
@@ -349,7 +533,7 @@ func TestPullObserverPolicySavePreservesExistingSSHOwnershipAndActiveJob(t *test
 		PollIntervalSeconds:       15,
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("c", 64),
-		Targets: []store.UpdaterPolicyTarget{{
+		Targets: []updaterPolicyTargetRequest{{
 			TargetID:       "worker-slot",
 			ServiceID:      "worker-a",
 			ServiceType:    "worker",
@@ -444,6 +628,6 @@ func validUpdaterPolicyRequest(t *testing.T) updaterPolicyUpdateRequest {
 		PollIntervalSeconds:      policy.PollIntervalSeconds,
 		HeartbeatIntervalSeconds: policy.HeartbeatIntervalSeconds,
 		Hosts:                    policy.Hosts,
-		Targets:                  policy.Targets,
+		Targets:                  updaterPolicyTargetRequestsForTest(policy.Targets),
 	}
 }

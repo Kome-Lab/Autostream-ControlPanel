@@ -213,7 +213,10 @@ func initialSystemdPortSidecarPlans(
 		if target.Systemd == nil {
 			return nil, errors.New("systemd target is missing its fixed service definition")
 		}
-		adapter, err := systemdPortAdapterFor(target.ServiceType, target.Systemd.Unit)
+		adapter, err := hostAgentConfigureSystemdPortAdapterFor(
+			target.ServiceType,
+			target.Systemd.Unit,
+		)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"derive initial systemd port sidecar for %s: %w",
@@ -288,6 +291,7 @@ func canonicalSystemdPortSidecarPaths(parent string) ([]string, error) {
 		serviceType string
 		unit        string
 	}{
+		{serviceType: "control_panel", unit: "autostream-control-panel.service"},
 		{serviceType: "worker", unit: "autostream-worker.service"},
 		{serviceType: "encoder_recorder", unit: "autostream-encoder-recorder.service"},
 		{serviceType: "discord_bot", unit: "autostream-discord-bot.service"},
@@ -295,7 +299,10 @@ func canonicalSystemdPortSidecarPaths(parent string) ([]string, error) {
 	}
 	paths := make([]string, 0, len(fixed))
 	for _, item := range fixed {
-		adapter, err := systemdPortAdapterFor(item.serviceType, item.unit)
+		adapter, err := hostAgentConfigureSystemdPortAdapterFor(
+			item.serviceType,
+			item.unit,
+		)
 		if err != nil {
 			return nil, err
 		}

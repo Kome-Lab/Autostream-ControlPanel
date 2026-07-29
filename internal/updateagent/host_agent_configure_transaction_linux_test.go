@@ -182,12 +182,13 @@ func TestHostAgentConfigurationTransactionPreservesPairWhenIdentityRenameReports
 			ProjectionRevision:          4,
 			LocalExecutorPolicyRevision: 5,
 			Targets: []HostAgentConfigurePolicyTarget{{
-				ServiceID:             "worker-a",
-				ServiceType:           "worker",
+				ServiceID:             "control-panel",
+				ServiceType:           "control_panel",
 				DeploymentMode:        ModeSystemd,
+				DatabaseName:          "autostream_control_panel",
 				EndpointRevision:      2,
 				AppliedConfigRevision: 7,
-				AppliedEndpointPort:   18081,
+				AppliedEndpointPort:   18080,
 			}},
 		},
 	)
@@ -221,8 +222,8 @@ func TestHostAgentConfigurationTransactionPreservesPairWhenIdentityRenameReports
 	if _, err := os.Lstat(policyPath); err != nil {
 		t.Fatalf("policy was rolled back after identity rename uncertainty: %v", err)
 	}
-	workerSidecar := filepath.Join(sidecarDir, "worker.env")
-	if _, err := os.Lstat(workerSidecar); err != nil {
+	controlPanelSidecar := filepath.Join(sidecarDir, "control-panel.env")
+	if _, err := os.Lstat(controlPanelSidecar); err != nil {
 		t.Fatalf("sidecar was rolled back after identity rename uncertainty: %v", err)
 	}
 }

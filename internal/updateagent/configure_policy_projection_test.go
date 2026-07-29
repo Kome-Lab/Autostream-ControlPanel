@@ -133,6 +133,259 @@ func TestBuildHostAgentConfigurePolicyDerivesFixedSystemdAuthority(t *testing.T)
 	}
 }
 
+func TestSystemdConfigurePortSidecarSHA256UsesOnlyFixedConfigureAuthority(t *testing.T) {
+	tests := []struct {
+		name         string
+		serviceType  string
+		bindVariable string
+		port         int
+		revision     int64
+	}{
+		{
+			name:         "control panel",
+			serviceType:  "control_panel",
+			bindVariable: "AUTOSTREAM_BIND_ADDR",
+			port:         18080,
+			revision:     7,
+		},
+		{
+			name:         "encoder recorder",
+			serviceType:  "encoder_recorder",
+			bindVariable: "AUTOSTREAM_BIND_ADDR",
+			port:         18081,
+			revision:     8,
+		},
+		{
+			name:         "observability",
+			serviceType:  "observability",
+			bindVariable: "OBSERVABILITY_BIND_ADDR",
+			port:         18082,
+			revision:     9,
+		},
+		{
+			name:         "discord bot",
+			serviceType:  "discord_bot",
+			bindVariable: "AUTOSTREAM_BIND_ADDR",
+			port:         18083,
+			revision:     10,
+		},
+		{
+			name:         "worker",
+			serviceType:  "worker",
+			bindVariable: "AUTOSTREAM_BIND_ADDR",
+			port:         18084,
+			revision:     11,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := SystemdConfigurePortSidecarSHA256(
+				test.serviceType,
+				test.port,
+				test.revision,
+			)
+			if err != nil {
+				t.Fatalf("compute configure sidecar digest: %v", err)
+			}
+			want := systemdPortSidecarSHA256(systemdPortSidecarBytes(
+				test.bindVariable,
+				"127.0.0.1",
+				test.port,
+				test.revision,
+			))
+			if got != want {
+				t.Fatalf("digest = %q, want %q", got, want)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name        string
+		serviceType string
+		port        int
+		revision    int64
+	}{
+		{name: "unsupported service", serviceType: "other", port: 18080, revision: 1},
+		{name: "missing port", serviceType: "control_panel", port: 0, revision: 1},
+		{name: "privileged port", serviceType: "control_panel", port: 443, revision: 1},
+		{name: "port overflow", serviceType: "control_panel", port: 65536, revision: 1},
+		{name: "missing revision", serviceType: "control_panel", port: 18080, revision: 0},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := SystemdConfigurePortSidecarSHA256(
+				test.serviceType,
+				test.port,
+				test.revision,
+			); err == nil {
+				t.Fatal("invalid configure sidecar authority was accepted")
+			}
+		})
+	}
+
+	if _, err := systemdPortAdapterFor(
+		"control_panel",
+		"autostream-control-panel.service",
+	); err == nil {
+		t.Fatal("control panel escaped the configure-only adapter boundary")
+	}
+	if validSystemdPortServiceType("control_panel") {
+		t.Fatal("control panel escaped the configure-only runtime mutation boundary")
+	}
+}
+
+func TestBuildHostAgentConfigurePolicyDerivesFixedDatabaseBackupAuthority(t *testing.T) {
+	tests := []struct {
+		name         string
+		serviceID    string
+		serviceType  string
+		databaseName string
+		port         int
+	}{
+		{
+			name:         "control panel",
+			serviceID:    "control-panel",
+			serviceType:  "control_panel",
+			databaseName: "autostream-kometubu_panel",
+			port:         18080,
+		},
+		{
+			name:         "observability",
+			serviceID:    "observability-a",
+			serviceType:  "observability",
+			databaseName: "autostream-kometubu_o11y",
+			port:         18082,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := databaseConfigurePolicySource(
+				test.serviceID,
+				test.serviceType,
+				test.databaseName,
+				test.port,
+			)
+			projection, err := BuildHostAgentConfigurePolicy(input)
+			if err != nil {
+				t.Fatalf("build Host Agent configure policy: %v", err)
+			}
+			var policy LocalExecutorPolicy
+			if err := json.Unmarshal(projection.Policy, &policy); err != nil {
+				t.Fatal(err)
+			}
+			if len(policy.Targets) != 1 {
+				t.Fatalf("targets = %#v", policy.Targets)
+			}
+			target := policy.Targets[0]
+			profile, ok := standardSystemdProfileFor(test.serviceType)
+			if !ok {
+				t.Fatalf("missing fixed profile for %s", test.serviceType)
+			}
+			runtimeTarget := target.runtimeTarget(policy.HostID)
+			if target.DatabaseName != test.databaseName ||
+				len(runtimeTarget.BackupArgv) != 2 ||
+				runtimeTarget.BackupArgv[0] != profile.backupExecutable ||
+				runtimeTarget.BackupArgv[1] != test.databaseName {
+				t.Fatalf(
+					"database backup authority was not fixed: target=%#v backup=%#v",
+					target,
+					runtimeTarget.BackupArgv,
+				)
+			}
+		})
+	}
+}
+
+func TestBuildHostAgentConfigurePolicyRejectsUntrustedDatabaseAuthority(t *testing.T) {
+	tests := []struct {
+		name         string
+		serviceID    string
+		serviceType  string
+		databaseName string
+	}{
+		{
+			name:        "control panel database missing",
+			serviceID:   "control-panel",
+			serviceType: "control_panel",
+		},
+		{
+			name:        "observability database missing",
+			serviceID:   "observability-a",
+			serviceType: "observability",
+		},
+		{
+			name:         "shell metacharacter",
+			serviceID:    "control-panel",
+			serviceType:  "control_panel",
+			databaseName: "database;touch-pwned",
+		},
+		{
+			name:         "path traversal",
+			serviceID:    "observability-a",
+			serviceType:  "observability",
+			databaseName: "../database",
+		},
+		{
+			name:         "leading option",
+			serviceID:    "observability-a",
+			serviceType:  "observability",
+			databaseName: "--all-databases",
+		},
+		{
+			name:         "unsupported punctuation",
+			serviceID:    "control-panel",
+			serviceType:  "control_panel",
+			databaseName: "bad.name",
+		},
+		{
+			name:         "too long",
+			serviceID:    "control-panel",
+			serviceType:  "control_panel",
+			databaseName: strings.Repeat("a", 65),
+		},
+		{
+			name:         "database for non owner",
+			serviceID:    "worker-a",
+			serviceType:  "worker",
+			databaseName: "worker_db",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := databaseConfigurePolicySource(
+				test.serviceID,
+				test.serviceType,
+				test.databaseName,
+				18084,
+			)
+			if _, err := BuildHostAgentConfigurePolicy(input); err == nil {
+				t.Fatal("untrusted database authority generated a privileged policy")
+			}
+		})
+	}
+}
+
+func TestBuildHostAgentConfigurePolicyDigestBindsDatabaseName(t *testing.T) {
+	input := databaseConfigurePolicySource(
+		"observability-a",
+		"observability",
+		"autostream_observability_a",
+		18082,
+	)
+	first, err := BuildHostAgentConfigurePolicy(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Targets[0].DatabaseName = "autostream_observability_b"
+	second, err := BuildHostAgentConfigurePolicy(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(first.Policy, second.Policy) || first.SHA256 == second.SHA256 {
+		t.Fatal("database authority was not bound into the canonical policy digest")
+	}
+}
+
 func TestBuildHostAgentConfigurePolicyFailsClosedWhenServerStateCannotDefineAuthority(t *testing.T) {
 	base := HostAgentConfigurePolicySource{
 		PanelURL:                    "https://panel.example.com",
@@ -161,11 +414,6 @@ func TestBuildHostAgentConfigurePolicyFailsClosedWhenServerStateCannotDefineAuth
 		"stored digest drift": func(input *HostAgentConfigurePolicySource) {
 			input.Targets[0].AppliedConfigSHA256 = "sha256:" + strings.Repeat("f", 64)
 		},
-		"database name unavailable": func(input *HostAgentConfigurePolicySource) {
-			input.Targets[0].ServiceID = "control-panel"
-			input.Targets[0].ServiceType = "control_panel"
-			input.Targets[0].AppliedEndpointPort = 18080
-		},
 		"docker runtime state unavailable": func(input *HostAgentConfigurePolicySource) {
 			input.Targets[0].DeploymentMode = ModeDocker
 		},
@@ -179,6 +427,32 @@ func TestBuildHostAgentConfigurePolicyFailsClosedWhenServerStateCannotDefineAuth
 				t.Fatal("incomplete server state generated privileged policy")
 			}
 		})
+	}
+}
+
+func databaseConfigurePolicySource(
+	serviceID string,
+	serviceType string,
+	databaseName string,
+	port int,
+) HostAgentConfigurePolicySource {
+	return HostAgentConfigurePolicySource{
+		PanelURL:                    "https://panel.example.com",
+		ExecutionHostID:             "host-a",
+		AgentUID:                    1001,
+		AgentGID:                    1002,
+		SourcePolicyRevision:        3,
+		ProjectionRevision:          4,
+		LocalExecutorPolicyRevision: 5,
+		Targets: []HostAgentConfigurePolicyTarget{{
+			ServiceID:             serviceID,
+			ServiceType:           serviceType,
+			DeploymentMode:        ModeSystemd,
+			DatabaseName:          databaseName,
+			EndpointRevision:      2,
+			AppliedConfigRevision: 7,
+			AppliedEndpointPort:   port,
+		}},
 	}
 }
 

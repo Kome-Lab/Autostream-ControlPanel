@@ -18,6 +18,8 @@ import (
 )
 
 func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "0.0.0.0:80")
+	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "0")
 	t.Setenv(
 		"AUTOSTREAM_SECRET_ENCRYPTION_KEY",
 		"test-secret-encryption-key-32-bytes",

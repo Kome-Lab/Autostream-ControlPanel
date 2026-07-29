@@ -22,7 +22,9 @@ import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-b
 import { useUpdaterSettings } from "@/features/queries";
 import { apiPost, apiPut } from "@/lib/api/client";
 import {
+  applyUpdaterSettingsTargetPatch,
   isUpdaterPolicyHostID,
+  normalizeUpdaterSettingsTargetDatabaseName,
   normalizePullUpdaterOwnershipActivationResponse,
   normalizePullUpdaterOwnershipDeactivationResponse,
   normalizeUpdaterSettingsResponse,
@@ -34,6 +36,7 @@ import {
   systemUpdateErrorMessage,
   systemUpdatePolicyErrorMessage,
   systemUpdateUpdaterPolicyState,
+  updaterSettingsTargetRequiresDatabase,
 } from "@/lib/system-updates";
 import type {
   PullUpdaterOwnershipActivationRequest,
@@ -511,7 +514,9 @@ function UpdaterSettingsForm({
       setForm(settingsToForm(saved));
       setGithubToken("");
       setDeleteGitHubToken(false);
-      setFeedback({ tone: "success", message: "設定を保存しました。Updaterが自動で反映します。反映済みになるまで更新操作は安全のため停止します。" });
+      setFeedback({ tone: "success", message: pullMode
+        ? "設定を保存しました。Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。"
+        : "設定を保存しました。Updaterが自動で反映します。反映済みになるまで更新操作は安全のため停止します。" });
       queryClient.setQueryData(["system-updates", "updaters", updater.updater_id, "settings"], saved);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
@@ -551,7 +556,9 @@ function UpdaterSettingsForm({
   const updateTarget = (index: number, patch: Partial<UpdaterSettingsTarget>) => {
     setForm((current) => ({
       ...current,
-      targets: current.targets.map((target, targetIndex) => targetIndex === index ? { ...target, ...patch } : target),
+      targets: current.targets.map((target, targetIndex) => targetIndex === index
+        ? applyUpdaterSettingsTargetPatch(settings.transport_mode, target, patch)
+        : target),
     }));
   };
 
@@ -571,7 +578,9 @@ function UpdaterSettingsForm({
           </div>
         ) : (
           <div className="rounded-md border border-blue-300 bg-blue-50 p-3 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/35 dark:text-blue-100">
-            「設定を保存」を押すと、この内容をUpdaterが自動で取得して反映します。反映に失敗した場合は更新操作を安全のため停止し、旧設定への復帰または自動再試行の状態をここに表示します。
+            {pullMode
+              ? "「設定を保存」を押した後、Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。"
+              : "「設定を保存」を押すと、この内容をUpdaterが自動で取得して反映します。反映に失敗した場合は更新操作を安全のため停止し、旧設定への復帰または自動再試行の状態をここに表示します。"}
           </div>
         )}
 
@@ -860,6 +869,28 @@ function UpdaterSettingsForm({
                       <Trash2 className="size-4" />
                     </Button>
                   ) : null}
+                  {updaterSettingsTargetRequiresDatabase(settings.transport_mode, target) ? (
+                    <div className="sm:col-span-2 lg:col-span-full">
+                      <Field
+                        label="MariaDBデータベース名"
+                        htmlFor={`${formID}-target-${index}-database-name`}
+                        hint="このサービスが実際に使用しているデータベース名です。ユーザー名・パスワード・DSNは入力しません。"
+                      >
+                        <Input
+                          id={`${formID}-target-${index}-database-name`}
+                          value={target.database_name || ""}
+                          onChange={(event) => updateTarget(index, { database_name: event.target.value })}
+                          disabled={!canEdit}
+                          maxLength={64}
+                          spellCheck={false}
+                          autoCapitalize="none"
+                          placeholder={target.service_type === "control_panel"
+                            ? "autostream_control_panel"
+                            : "autostream_observability"}
+                        />
+                      </Field>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -1018,6 +1049,7 @@ function buildUpdaterSettingsPayload(
       { ...target, host_id: executionHostID },
       index,
       hostIDs,
+      "pull_v2",
     ));
     if (new Set(targets.map((target) => target.target_id)).size !== targets.length) throw new Error("更新対象IDが重複しています。");
     if (new Set(targets.map((target) => target.service_id)).size !== targets.length) throw new Error("NodeサービスIDが重複しています。");
@@ -1040,7 +1072,7 @@ function buildUpdaterSettingsPayload(
   const hosts = form.hosts.map((host, index) => normalizeHostForSave(host, index));
   const hostIDs = new Set(hosts.map((host) => host.host_id));
   if (hostIDs.size !== hosts.length) throw new Error("ホストIDが重複しています。");
-  const targets = form.targets.map((target, index) => normalizeTargetForSave(target, index, hostIDs));
+  const targets = form.targets.map((target, index) => normalizeTargetForSave(target, index, hostIDs, "ssh_v1"));
   if (new Set(targets.map((target) => target.target_id)).size !== targets.length) throw new Error("対象IDが重複しています。");
   const referencedHostIDs = new Set(targets.map((target) => target.host_id));
   const unusedHost = hosts.find((host) => !referencedHostIDs.has(host.host_id));
@@ -1093,7 +1125,12 @@ function normalizeHostForSave(host: UpdaterSettingsHost, index: number): Updater
   };
 }
 
-function normalizeTargetForSave(target: UpdaterSettingsTarget, index: number, hostIDs: Set<string>): UpdaterSettingsTarget {
+function normalizeTargetForSave(
+  target: UpdaterSettingsTarget,
+  index: number,
+  hostIDs: Set<string>,
+  transportMode: UpdaterSettings["transport_mode"],
+): UpdaterSettingsTarget {
   const prefix = `サービス ${index + 1}`;
   const hostID = requiredText(target.host_id, `${prefix}のホスト`);
   if (!hostIDs.has(hostID)) throw new Error(`${prefix}で選択したホストが見つかりません。`);
@@ -1101,13 +1138,20 @@ function normalizeTargetForSave(target: UpdaterSettingsTarget, index: number, ho
   if (!validPolicyIdentifier(targetID)) throw new Error(`${prefix}の対象IDは英数字で始まり、英数字・.・_・:・-のみで入力してください。`);
   const serviceID = requiredText(target.service_id || targetID, `${prefix}のNodeサービスID`);
   if (!validPolicyIdentifier(serviceID)) throw new Error(`${prefix}のNodeサービスIDは英数字で始まり、英数字・.・_・:・-のみで入力してください。`);
-  return {
+  const normalizedTarget: UpdaterSettingsTarget = {
     target_id: targetID,
     service_id: serviceID,
     host_id: hostID,
     service_type: requiredText(target.service_type, `${prefix}のサービス種別`),
     deployment_mode: requiredText(target.deployment_mode, `${prefix}の配備方式`),
   };
+  const databaseName = normalizeUpdaterSettingsTargetDatabaseName(
+    transportMode,
+    { ...normalizedTarget, database_name: target.database_name },
+    prefix,
+  );
+  if (databaseName) normalizedTarget.database_name = databaseName;
+  return normalizedTarget;
 }
 
 function requiredText(value: unknown, label: string) {

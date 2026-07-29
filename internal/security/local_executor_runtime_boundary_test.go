@@ -37,6 +37,8 @@ func TestLocalExecutorUnitHasExactWritePathAllowlist(t *testing.T) {
 		"ReadWritePaths=-/opt/autostream/local-executor",
 		"ReadWritePaths=-/opt/autostream/observability",
 		"ReadWritePaths=-/opt/autostream/worker",
+		"ReadWritePaths=-/var/backups/autostream/control-panel",
+		"ReadWritePaths=-/var/backups/autostream/observability",
 		"ReadWritePaths=/etc/autostream-host-agent",
 		"ReadWritePaths=/var/lib/autostream-local-executor",
 	}

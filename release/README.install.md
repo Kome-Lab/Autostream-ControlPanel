@@ -1,11 +1,12 @@
 # AutoStream Control Panel Host Install
 
-This archive contains the Control Panel and central `autostream-updater` Linux
-binaries, systemd examples, placeholder configuration, and matching web assets.
-The central updater is installed once. Managed hosts use the separate
-non-resident `autostream-update-host` bootstrap artifact. The System Updates
-page can install it remotely on supported standard systemd hosts; Docker,
-non-standard-port, and custom targets use the manual bootstrap procedure.
+This archive contains the Control Panel Linux binary, systemd example,
+placeholder configuration, and matching web assets. The current automatic
+update architecture uses the separate `autostream-host-agent` release artifact
+on every physical host. Its outbound-only `pull_v2` Agent drives a root Local
+Executor over a private Unix socket. The standalone central
+`autostream-updater` and SSH `autostream-update-host` path are legacy migration
+inputs and are not installed by this guide.
 
 ## Requirements
 
@@ -13,17 +14,18 @@ non-standard-port, and custom targets use the manual bootstrap procedure.
 - A dedicated `autostream` user and group.
 - Authenticated `gh`, `jq`, `sha256sum`, and `curl` for release verification,
   plus `/usr/bin/mariadb-dump` for the required pre-update backup.
-- OpenSSH client access from the central updater host to every managed host.
+- The matching verified `autostream-host-agent_<version>_linux_<arch>.tar.gz`
+  artifact for the host.
 - A reverse proxy with HTTPS for production.
 - A production database and secret values supplied outside Git.
 
 ## Install a verified managed release for the Control Panel target
 
-Use this section only when the Control Panel itself will be updated as a managed
-target with rollback. Installing only the central updater does not require
-migrating an existing `/usr/local/bin/control-panel` and
-`/usr/share/autostream-control-panel` installation. For that existing direct
-layout, skip to **Install the central updater once**.
+The managed layout is required when the Control Panel itself will be updated
+with rollback. An existing direct `/usr/local/bin/control-panel` and
+`/usr/share/autostream-control-panel` installation must first be migrated to
+the verified release tree below. The compatibility `/usr/local/bin/control-panel`
+link may remain, but it must resolve through the managed `current` link.
 
 The systemd unit runs the Control Panel through
 `/opt/autostream/control-panel/current`. Seed that link from the same immutable
@@ -93,19 +95,21 @@ sudo test -d "$RELEASE_DIR"
 test -x "$RELEASE_DIR/backup/autostream-backup-control-panel"
 sudo install -d -o root -g root -m 0700 /var/backups/autostream/control-panel
 sudo install -o root -g root -m 0700 "$RELEASE_DIR/backup/autostream-backup-control-panel" /usr/local/sbin/autostream-backup-control-panel
-sudo install -d -o root -g root -m 0755 /etc/autostream
-if ! sudo test -e /etc/autostream/mariadb-backup.cnf; then
-  sudo install -o root -g root -m 0600 /dev/null /etc/autostream/mariadb-backup.cnf
+sudo install -d -o root -g root -m 0700 /etc/autostream-local-executor
+if ! sudo test -e /etc/autostream-local-executor/mariadb-backup.cnf; then
+  sudo install -o root -g root -m 0600 /dev/null \
+    /etc/autostream-local-executor/mariadb-backup.cnf
 else
-  echo "preserving existing /etc/autostream/mariadb-backup.cnf"
+  echo "preserving existing /etc/autostream-local-executor/mariadb-backup.cnf"
 fi
-sudo chown root:root /etc/autostream/mariadb-backup.cnf
-sudo chmod 0600 /etc/autostream/mariadb-backup.cnf
+sudo chown root:root /etc/autostream-local-executor/mariadb-backup.cnf
+sudo chmod 0600 /etc/autostream-local-executor/mariadb-backup.cnf
 ```
 
-Set the root-only defaults file to a dedicated backup account. A shared host
-may reuse this account/file for Observability after granting that database
-separately:
+Set the root-only defaults file to a dedicated backup account. It deliberately
+lives outside `/etc/autostream`, which remains invisible to the Local Executor.
+A shared Control Panel and Observability host may reuse this account/file after
+granting both databases separately:
 
 ```ini
 [client]
@@ -131,8 +135,8 @@ with a letter or digit.
 
 Select the database name once below, then keep the same shell open. The same
 exact `DATABASE_NAME` must be used for the MariaDB grant, the real dump, and the
-second `backup_argv` item. In this example, replace the default with the final
-path component of the real `DATABASE_URL` when they differ:
+server-owned target setting. In this example, replace the default with the
+final path component of the real `DATABASE_URL` when they differ:
 
 ```bash
 set -euo pipefail
@@ -146,21 +150,18 @@ sudo mariadb <<SQL
 GRANT SELECT, SHOW VIEW, TRIGGER ON \`${DATABASE_NAME}\`.* TO 'autostream_backup'@'127.0.0.1';
 SQL
 
-test "$(sudo stat -c '%u:%a' /etc/autostream/mariadb-backup.cnf)" = "0:600"
+test "$(sudo stat -c '%u:%a' /etc/autostream-local-executor/mariadb-backup.cnf)" = "0:600"
 test "$(sudo stat -c '%u:%a' /usr/local/sbin/autostream-backup-control-panel)" = "0:700"
 sudo /usr/local/sbin/autostream-backup-control-panel "$DATABASE_NAME"
-printf 'Use this exact database name as the second backup_argv item: %s\n' "$DATABASE_NAME"
+printf 'Database name to save in System Updates: %s\n' "$DATABASE_NAME"
 ```
 
-Copy the value printed by that command into the root-owned host policy. It is
-never supplied by an update job or the browser:
-
-```json
-"backup_argv": [
-  "/usr/local/sbin/autostream-backup-control-panel",
-  "replace-with-the-exact-DATABASE_NAME-printed-above"
-]
-```
+Save this exact database name in **Application Info > System Updates** on the
+Control Panel target. It is persisted as the server-owned `database_name` and
+combined only with the compiled fixed backup executable. Do not edit
+`/etc/autostream-local-executor/policy.json`; the Host Agent configure flow
+generates it from the saved target settings. The configure command, Host Agent
+identity, and update jobs never accept an arbitrary backup executable or argv.
 
 The script uses `umask 077` and atomically renames a timestamped, non-empty
 dump only after `mariadb-dump` succeeds. Configure retention and encrypted
@@ -231,167 +232,133 @@ new release instead of modifying an existing release asset.
 Do not commit real `.env` files, provider credentials, tokens, SSH private
 keys, logs, screenshots, or verification records.
 
-## Install the central updater once
+## Install the pull_v2 Host Agent and Local Executor
 
-The central updater is the only persistent updater process. It claims jobs from
-the Control Panel and opens outbound, host-key-pinned SSH connections. It has no
-sudo rule, Docker socket, `systemctl` authority, or root helper. Privileged
-target policy remains on each managed host in root-owned
-`/etc/autostream/update-host.json`.
+Install one Host Agent for the physical host, not one Agent per service. On a
+host that runs both Control Panel and Observability, assign both the synthetic
+`control-panel` target and the registered Observability service to that one
+execution host.
 
-Install the central binary and service directly from the extracted Control Panel
-archive. This procedure uses the existing `/usr/local/bin` Control Panel layout
-and `/usr/share/autostream-control-panel`; it does not assume that
-`/opt/autostream/control-panel/current/bin` exists. Replace `vX.Y.Z` below with
-the extracted release version.
+Before configuring the Agent:
 
-```bash
-getent group autostream-updater >/dev/null 2>&1 || \
-  sudo groupadd --system autostream-updater
-id -u autostream-updater >/dev/null 2>&1 || \
-  sudo useradd --system --gid autostream-updater \
-    --home /var/lib/autostream-updater --shell /usr/sbin/nologin \
-    autostream-updater
-sudo install -d -o autostream-updater -g autostream-updater -m 0700 \
-  /var/lib/autostream-updater
-sudo install -d -o root -g root -m 0755 /etc/autostream
-cd /opt/autostream/releases/artifacts/autostream-control-panel_vX.Y.Z_linux_amd64
-sudo install -o root -g root -m 0755 \
-  bin/autostream-updater /usr/local/bin/autostream-updater
-sudo install -o root -g root -m 0644 \
-  systemd/autostream-updater.service.example \
-  /etc/systemd/system/autostream-updater.service
-sudo systemctl daemon-reload
-```
+- seed verified managed `current` releases for both services;
+- make both systemd units execute their managed `current` binaries and load
+  their optional fixed sidecars after the base environment files;
+- verify Control Panel `/health` and `/updater/version` on its configured
+  loopback port, and do the same for Observability;
+- install and successfully run both fixed backup scripts;
+- prepare `/etc/autostream-local-executor/mariadb-backup.cnf` as
+  `root:root 0600` and the two backup directories as `root:root 0700`.
 
-Create exactly one `Update Agent` Node in the Control Panel for this central
-updater. Do not create one for every managed host. Copy the command shown in the
-Node Configuration view and run it once on the central host:
+Verify and extract the matching Host Agent release artifact, enter its extracted
+directory, then prepare the non-root Agent and root executor boundary:
 
 ```bash
-sudo /usr/local/bin/autostream-updater configure --panel-url "https://control.example.com" --node "central-updater"
+sudo ./install/install-autostream-host-agent --prepare
 ```
 
-Paste the separately displayed Configure Token into the prompt. The updater
-reads it from the TTY or bounded standard input with echo disabled, so it is not
-placed in the command, process arguments, or shell history. In this one run the
-updater stages the identity, atomically creates
-`/etc/autostream/updater.json` as `root:autostream-updater 0640`, validates it,
-and activates the Runtime Token. The generated file contains only the Control
-Panel connection identity. Do not edit it and do not add a GitHub Release
-Token, host, target, or SSH setting to it.
+In **Application Info > System Updates**, create one Update Agent using
+`pull_v2` and a stable execution-host ID. Assign the Control Panel and
+Observability systemd targets to it. Set **MariaDBデータベース名** to the
+exact final component of each service's real `DATABASE_URL`. The packaged
+defaults are:
 
-Enable the service after configure succeeds:
+- Control Panel: `autostream_control_panel`
+- Observability: `autostream_observability`
+
+Replace either default when the real `DATABASE_URL` differs. Saving binds each
+value as server-owned `database_name`; it does not place either database name
+in the configure command.
+
+Copy the generated command and run it on this host. It has this form:
 
 ```bash
-sudo -u autostream-updater test -r /etc/autostream/updater.json
-sudo -u autostream-updater test -w /var/lib/autostream-updater
-sudo systemd-analyze verify /etc/systemd/system/autostream-updater.service
-sudo systemctl enable --now autostream-updater
-sudo systemctl status autostream-updater
+sudo /usr/local/bin/autostream-host-agent configure \
+  --panel-url https://control.example.com \
+  --node registered-update-agent-service-id \
+  --config /etc/autostream-host-agent/identity.json
 ```
 
-Open **Application Info > System Updates**, select the central updater, and
-configure:
+Enter the one-time Configure Token at the protected prompt. The command reads it
+from the TTY or bounded standard input with echo disabled. It atomically stages
+`/etc/autostream-host-agent/identity.json`, the canonical
+`/etc/autostream-local-executor/policy.json`, and any missing fixed port
+sidecars. It refuses incomplete applied target state and never accepts target
+paths, systemd units, backup commands, DB credentials, or Runtime Tokens in
+argv.
 
-- the GitHub Release Token. The current runtime is pinned to this public
-  Control Panel repository and still requires a repository-scoped token with
-  only `Contents (read)` and `Attestations (read)`. It is write-only in the
-  Control Panel and is never shown after saving. Changing the repository to
-  private requires a separate trust-root and provenance-policy implementation;
-  this release fails closed instead of treating that as supported.
-- the loopback API port and the poll and heartbeat intervals;
-- each host ID, name, address, SSH port, SSH user, and architecture. Automatic
-  bootstrap requires the saved SSH user to be exactly
-  `autostream-update-host`;
-- the complete SSH server public key, verified through an independent channel;
-- the targets assigned to each host.
+Activate the exact generated root policy from the same extracted Host Agent
+release, then enable the Agent:
 
-Do not trust `ssh-keyscan` output by itself. Compare the fingerprint with the
-server console or another independent inventory before saving the complete host
-public key. The Control Panel stores the GitHub Release Token as an encrypted
-secret and delivers it only once to the updater that claims an authorized
-update job.
+```bash
+sudo ./install/install-autostream-local-executor \
+  --policy /etc/autostream-local-executor/policy.json
+sudo systemctl enable --now autostream-host-agent.service
+```
 
-Saving starts automatic pull and validation. No service restart is required.
-For every new host the updater generates a separate Ed25519 client key and
-reports only its public key to the System Updates page. The private key remains
-on the central updater.
+Return to **Application Info > System Updates**, confirm the first observe-only
+heartbeat, review the projected targets and policy digest, then activate
+ownership. Only a positive ownership epoch with a matching policy digest can
+claim update jobs.
 
-For a standard systemd host, use **helper automatic setup** on the System
-Updates page. Enter a temporary non-root administrator SSH user and private key
-that can run the required installer with non-interactive `NOPASSWD` sudo.
-This temporary administrator is separate from the saved
-`autostream-update-host` user used for the restricted steady-state connection.
-The browser encrypts the credential directly to the central updater; the
-Control Panel does not retain the plaintext.
+Verify the local boundary:
 
-Automatic setup supports only the fixed standard profiles: Control Panel on
-`8080`, Encoder / Recorder on `8081`, Observability on `8082`, Discord Bot on
-`8083`, and Worker on `8084`, with the documented
-`/opt/autostream/<service>/releases` and
-`/opt/autostream/<service>/current` paths. It downloads the verified
-`autostream-update-host_<version>_linux_<arch>.tar.gz` artifact, installs the
-root-owned `/etc/autostream/update-host.json`, forced SSH command, and
-non-resident helper, then verifies both `/health` and `/updater/version`.
+```bash
+sudo /usr/local/libexec/autostream-local-executor validate-policy \
+  --policy /etc/autostream-local-executor/policy.json
+sudo systemctl status autostream-host-agent.service
+sudo systemctl status autostream-local-executor.socket
+sudo systemctl status autostream-local-executor.service
+sudo stat -c '%U:%G:%a %n' \
+  /etc/autostream-host-agent/identity.json \
+  /etc/autostream-local-executor/policy.json \
+  /etc/autostream-local-executor/mariadb-backup.cnf \
+  /var/backups/autostream/control-panel \
+  /var/backups/autostream/observability
+```
 
-The managed host does not run another updater daemon or listener and has no
-helper-specific port, environment file, Node Runtime Token, or
-`/etc/autostream/updater.json`. That identity-only `updater.json` belongs only
-to the central updater host.
+No SSH key, `known_hosts`, `/etc/autostream/updater.json`, or central
+`autostream-updater` daemon is part of this outbound-only `pull_v2` path. Keep a
+legacy updater stopped after pull_v2 ownership and both target observations are
+healthy. Do not delete its identity or forced-command authorization until the
+new path has completed a staged update and rollback/reconcile exercise.
 
-For Docker, a non-standard port or path, or a custom target, follow the
-artifact's `README.bootstrap.md` manual procedure and use the reported client
-public key as `--authorized-key`. The same manual procedure remains available
-as a fallback for a standard systemd host.
+## Roll back to an older Control Panel writer
 
-The settings view reports `applied`, `pending`, or `failed`. `applied` means the
-updater accepted the desired revision and is running with it; it does not mean
-every host is reachable. A missing helper, an uninstalled client public key, a
-server-key mismatch, or a remote-policy mismatch is shown separately as host
-`unreachable`. The updater retries host probes automatically. If an update job
-is active when settings are saved, it defers applying the new revision until
-that job reaches a safe terminal state. A failed revision leaves the previous
-applied settings active.
+Before starting a Control Panel binary from before the revision-bound database
+settings, first confirm that no update, recovery, or token-rotation job is
+active, deactivate `pull_v2` ownership in System Updates, and stop the Host
+Agent on the affected host. Perform a `single-writer` drain: stop every Control
+Panel instance, verify that no old or new instance can write
+`update_agent_policies`, then start exactly one selected binary. Never overlap
+old and new Control Panel writers.
 
-The unit is intentionally hardened with `NoNewPrivileges`, an empty capability
-set, a read-only system image, and a single writable state directory. If it
-cannot start, fix the connection identity, state ownership, or OS systemd
-compatibility. Do not weaken the unit or add a broad sudo rule.
+Treat a pre-059 Control Panel binary as read-only for updater policy settings.
+Do not save System Updates settings with the old binary. It cannot advance the
+policy row and its companion database-name bindings as one revision-bound
+write. If an old writer nevertheless advances a policy revision, keep
+`pull_v2` ownership inactive, stop it, and roll forward to the current Control
+Panel as the sole writer. In **Application Info > System Updates**, re-save the
+exact MariaDB database names for every Control Panel and Observability target,
+then rerun the generated Host Agent configure command and validate the
+installed Local Executor policy. Reactivate ownership only after the new
+configure revision and target observations are applied.
 
 ## Database backup and Docker credentials
 
-Control Panel and Observability targets still require a root-owned backup
-command on the host that owns the database. Docker targets still require that
-host's root Docker credential store when pulling private GHCR images. These are
-remote target prerequisites and are not credentials for the central updater.
-Automatic setup does not create or transmit these credentials. Prepare and test
-them on the managed host before starting automatic or manual bootstrap.
+The Local Executor can read its dedicated
+`/etc/autostream-local-executor/mariadb-backup.cnf`, but `/etc/autostream`
+remains inaccessible. It can write only the two fixed database backup
+directories, not `/var/backups/autostream` as a whole. A nonzero dump exit
+aborts an update before stopping either service.
 
-The non-resident helper refuses an unverified rollback baseline. A legacy
-release without an immutable manifest remains manual-only. Publish and manually
-deploy a new manifest-bearing release, verify health and version, then approve
-it as the initial rollback baseline. Never add assets to an existing tag.
+Docker credentials remain a separate root-owned Local Executor prerequisite for
+Docker targets. They are not used by the Control Panel and Observability
+systemd targets in this guide.
 
-## Update the central updater binary
+## Update the Host Agent and Local Executor
 
-The central updater is not one of its own managed targets. It stays at the
-fixed `/usr/local/bin/autostream-updater` path. Wait until no update job is
-active, verify and extract the new Control Panel host artifact, then replace it
-explicitly. Replace `vX.Y.Z` with the extracted release version:
-
-```bash
-cd /opt/autostream/releases/artifacts/autostream-control-panel_vX.Y.Z_linux_amd64
-sudo systemctl stop autostream-updater
-sudo install -o root -g root -m 0755 \
-  bin/autostream-updater \
-  /usr/local/bin/autostream-updater.next
-sudo mv -f /usr/local/bin/autostream-updater.next \
-  /usr/local/bin/autostream-updater
-/usr/local/bin/autostream-updater --version
-sudo systemctl start autostream-updater
-```
-
-Update remote helper binaries through an explicit, verified maintenance
-bootstrap after active jobs finish. Re-running a central Control Panel update
-does not silently replace helpers on other hosts.
+The Host Agent artifact contains both runtime binaries and fixed A/B recovery
+units. Follow `README.md` in that artifact under **Host Agent and Local Executor
+self-update**. Do not replace either active binary directly while an update,
+token rotation, or recovery transaction is running.

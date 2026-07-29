@@ -10,6 +10,7 @@ import {
 import {
   acquireSystemUpdateTargetRequestLock,
   activeUpdaterHostBootstrapStatus,
+  applyUpdaterSettingsTargetPatch,
   compareSystemUpdateVersions,
   isSystemUpdateEndpointRevisionConflict,
   isControlPanelUpdateTarget,
@@ -44,6 +45,7 @@ import {
   systemUpdatePolicyErrorMessage,
   systemUpdateJobFromResponse,
   systemUpdateUpdaterPolicyState,
+  normalizeUpdaterSettingsTargetDatabaseName,
   systemUpdateProgress,
   systemUpdatePortReconfigureEligibility,
   systemUpdatePortReconfigureRequest,
@@ -54,6 +56,7 @@ import {
   systemUpdateStrategyForTarget,
   systemUpdateTargetOperationEligibility,
   systemUpdateTargetBlockedReason,
+  updaterSettingsTargetRequiresDatabase,
   SystemUpdateRequestAmbiguousError,
   updaterHostBootstrapConfirmationContext,
   updaterHostBootstrapEligibility,
@@ -1433,11 +1436,12 @@ test("pull_v2 updater settings remain portless and keep server-owned host bindin
     poll_interval_seconds: 15,
     heartbeat_interval_seconds: 30,
     targets: [{
-      target_id: "worker-main",
-      service_id: "worker-main",
+      target_id: "control-panel",
+      service_id: "control-panel",
       host_id: "host-main",
-      service_type: "worker",
+      service_type: "control_panel",
       deployment_mode: "systemd",
+      database_name: "autostream-kometubu_panel",
     }],
     api: {},
     hosts: [],
@@ -1446,7 +1450,8 @@ test("pull_v2 updater settings remain portless and keep server-owned host bindin
   assert.equal(settings.transport_mode, "pull_v2");
   assert.equal(settings.execution_host_id, "host-main");
   assert.equal(settings.local_executor_policy_sha256, digest);
-  assert.equal(settings.targets[0].service_id, "worker-main");
+  assert.equal(settings.targets[0].service_id, "control-panel");
+  assert.equal(settings.targets[0].database_name, "autostream-kometubu_panel");
   assert.equal(settings.hosts.length, 0);
   assert.deepEqual(settings.pull_activation, {
     ready: true,
@@ -1461,6 +1466,93 @@ test("pull_v2 updater settings remain portless and keep server-owned host bindin
     reported_projection_revision: 4,
   });
   assert.equal(settings.github_token_configured, false);
+});
+
+test("pull_v2 database owner target validation is narrow and trims the saved database name", () => {
+  const controlPanelTarget: UpdaterSettingsTarget = {
+    target_id: "control-panel",
+    service_id: "control-panel",
+    host_id: "host-main",
+    service_type: "control_panel",
+    deployment_mode: "systemd",
+    database_name: "  autostream-kometubu_panel  ",
+  };
+  assert.equal(updaterSettingsTargetRequiresDatabase("pull_v2", controlPanelTarget), true);
+  assert.equal(
+    normalizeUpdaterSettingsTargetDatabaseName("pull_v2", controlPanelTarget, "サービス 1"),
+    "autostream-kometubu_panel",
+  );
+  assert.equal(updaterSettingsTargetRequiresDatabase("ssh_v1", controlPanelTarget), false);
+  assert.equal(
+    updaterSettingsTargetRequiresDatabase("pull_v2", { ...controlPanelTarget, deployment_mode: "docker" }),
+    false,
+  );
+  assert.equal(
+    updaterSettingsTargetRequiresDatabase("pull_v2", { ...controlPanelTarget, service_type: "worker" }),
+    false,
+  );
+  assert.throws(
+    () => normalizeUpdaterSettingsTargetDatabaseName(
+      "pull_v2",
+      { ...controlPanelTarget, database_name: "" },
+      "サービス 1",
+    ),
+    /MariaDBデータベース名を入力してください/,
+  );
+  assert.throws(
+    () => normalizeUpdaterSettingsTargetDatabaseName(
+      "pull_v2",
+      { ...controlPanelTarget, database_name: "autostream.panel" },
+      "サービス 1",
+    ),
+    /英数字・_・-/,
+  );
+  assert.throws(
+    () => normalizeUpdaterSettingsTargetDatabaseName(
+      "pull_v2",
+      { ...controlPanelTarget, service_type: "worker" },
+      "サービス 1",
+    ),
+    /MariaDBデータベース名を指定できません/,
+  );
+  assert.throws(
+    () => normalizeUpdaterSettingsTargetDatabaseName("ssh_v1", controlPanelTarget, "サービス 1"),
+    /MariaDBデータベース名を指定できません/,
+  );
+});
+
+test("changing a database owner target identity clears the previous database name", () => {
+  const controlPanelTarget: UpdaterSettingsTarget = {
+    target_id: "control-panel",
+    service_id: "control-panel",
+    host_id: "host-main",
+    service_type: "control_panel",
+    deployment_mode: "systemd",
+    database_name: "autostream_control_panel",
+  };
+  assert.equal(
+    applyUpdaterSettingsTargetPatch("pull_v2", controlPanelTarget, { service_type: "observability" }).database_name,
+    undefined,
+  );
+  assert.equal(
+    applyUpdaterSettingsTargetPatch("pull_v2", controlPanelTarget, {
+      target_id: "control-panel-new",
+      service_id: "control-panel-new",
+    }).database_name,
+    undefined,
+  );
+  assert.equal(
+    applyUpdaterSettingsTargetPatch("pull_v2", controlPanelTarget, { host_id: "host-new" }).database_name,
+    undefined,
+  );
+  assert.equal(
+    applyUpdaterSettingsTargetPatch("pull_v2", controlPanelTarget, { deployment_mode: "docker" }).database_name,
+    undefined,
+  );
+  assert.equal(
+    applyUpdaterSettingsTargetPatch("pull_v2", controlPanelTarget, { database_name: "new_database" }).database_name,
+    "new_database",
+  );
 });
 
 test("system update response exposes only the updater bootstrap encryption public key metadata", () => {
@@ -1920,6 +2012,13 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /new Set\(targets\.map\(\(target\) => target\.service_id\)\)/);
   assert.match(settingsSource, /local_executor_policy_sha256: digest/);
   assert.doesNotMatch(settingsSource, /\.\.\.\(digest \? \{ local_executor_policy_sha256: digest \} : \{\}\)/);
+  assert.match(settingsSource, /label="MariaDBデータベース名"/);
+  assert.match(settingsSource, /ユーザー名・パスワード・DSNは入力しません/);
+  assert.match(settingsSource, /updaterSettingsTargetRequiresDatabase\(settings\.transport_mode, target\)/);
+  assert.match(settingsSource, /applyUpdaterSettingsTargetPatch\(/);
+  assert.match(settingsSource, /normalizeUpdaterSettingsTargetDatabaseName\(/);
+  assert.match(settingsSource, /maxLength=\{64\}/);
+  assert.match(settingsSource, /Host Agentのconfigureを再実行すると反映されます/);
   assert.match(settingsSource, /\{ value: "docker", label: "Docker" \}/);
   assert.match(settingsSource, /min=\{5\}[\s\S]*max=\{3600\}/);
   const heartbeatField = settingsSource.match(/label="Heartbeat間隔（秒）"[\s\S]*?<\/Field>/)?.[0] ?? "";
@@ -2050,6 +2149,7 @@ test("update API codes are shown as actionable Japanese guidance", () => {
   assert.match(systemUpdateErrorMessage({ code: "download_failed", message: "GitHub returned 403 for asset X" }), /ダウンロード.*GitHub returned 403/);
   assert.match(systemUpdateErrorMessage({ code: "system_update_target_active" }), /進行中/);
   assert.match(systemUpdateErrorMessage({ code: "system_update_not_cancellable" }), /キャンセルできません/);
+  assert.match(systemUpdateErrorMessage({ code: "invalid_updater_database_name" }), /MariaDBデータベース名/);
   assert.equal(
     systemUpdateErrorMessage({ code: "updater_host_bootstrap_in_progress" }),
     "ホストの自動セットアップ中はUpdater設定を変更できません。完了後に再試行してください。",

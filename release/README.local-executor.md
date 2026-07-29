@@ -32,6 +32,20 @@ the Agent, Executor, and socket remain inactive/disabled. Run the Control Panel 
 server-generated policy and missing canonical systemd sidecars before
 activating the staged four-field identity.
 
+When this host owns a Control Panel or Observability database, install the
+verified fixed backup script from that service release and prepare:
+
+```text
+/etc/autostream-local-executor/mariadb-backup.cnf  root:root 0600
+/var/backups/autostream/control-panel              root:root 0700
+/var/backups/autostream/observability              root:root 0700
+```
+
+Grant the dedicated MariaDB account only the required read privileges and run
+each backup script successfully before configure. The database credential file
+is operator-provisioned; neither the Host Agent nor configure creates,
+transmits, or rewrites it.
+
 ## Prepare the policy
 
 For the recommended first installation, do not copy or edit the example.
@@ -54,12 +68,15 @@ and binds its non-root UID/GID into the stage/activation commitment. The
 client cannot choose a host ID, target path, unit, command, policy digest, or
 revision. Ports must be in `1024..65535`. Systemd unit, executable, release
 root, current link, binary path, smoke user, and required paths are fixed by
-`service_type`; changing them is rejected. Database-owning targets and Docker
-authority fail closed during automatic configuration. Auto Configure generates
-only the systemd root policy and sidecars; it never derives Docker authority
-from Node registration values. A Docker target is eligible only when a
-root-owned fixed target policy and an approved frozen Compose baseline already
-provide every required field.
+`service_type`; changing them is rejected. For a systemd Control Panel or
+Observability target, the only variable backup authority is the validated
+server-owned `database_name` saved in System Updates. It is combined with the
+compiled fixed backup executable; a missing/invalid name or a name on any other
+service fails closed. Docker authority still fails closed during automatic
+configuration. Auto Configure generates only the systemd root policy and
+sidecars; it never derives Docker authority from Node registration values. A
+Docker target is eligible only when a root-owned fixed target policy and an
+approved frozen Compose baseline already provide every required field.
 
 The subsequent installer keeps the executor prepared by the Host Agent as the
 fixed `/usr/local/libexec/autostream-local-executor` A/B symlink. It accepts
@@ -73,6 +90,7 @@ input.
 Systemd sidecars are created only at these fixed paths:
 
 ```text
+/opt/autostream/local-executor/ports/control-panel.env
 /opt/autostream/local-executor/ports/worker.env
 /opt/autostream/local-executor/ports/encoder-recorder.env
 /opt/autostream/local-executor/ports/discord-bot.env
@@ -94,15 +112,18 @@ mutation remain unavailable and fail closed. With a matching active policy and
 positive server-owned ownership epoch, the Host Agent can claim jobs and ask
 this executor to stage/apply/reconcile them without SSH.
 
-For a systemd port job the executor accepts only Worker, Encoder Recorder,
-Discord Bot, and Observability fixed adapters. It checkpoints the old exact
-sidecar, atomically stages the new two-line sidecar, restarts only the fixed
-unit, and verifies listener ownership, service identity, health, version,
-config revision, and sidecar SHA-256. A failed verification restores and
-re-verifies the old sidecar/port. An uncertain result is reconciled from the
-durable ledger without reapplying. `rollback_failed` is a terminal local
-quarantine with no applied overlay; the Control Panel keeps both reservations
-until explicit recovery proves an exact effective state.
+Control Panel participates in initial configure so its existing loopback port
+is represented by a canonical sidecar. Runtime Control Panel port changes
+remain unsupported because they also require reverse-proxy coordination. For a
+systemd port job the executor accepts only Worker, Encoder Recorder, Discord
+Bot, and Observability fixed adapters. It checkpoints the old exact sidecar,
+atomically stages the new two-line sidecar, restarts only the fixed unit, and
+verifies listener ownership, service identity, health, version, config
+revision, and sidecar SHA-256. A failed verification restores and re-verifies
+the old sidecar/port. An uncertain result is reconciled from the durable ledger
+without reapplying. `rollback_failed` is a terminal local quarantine with no
+applied overlay; the Control Panel keeps both reservations until explicit
+recovery proves an exact effective state.
 
 Docker software update uses the fixed Compose authority described below.
 Worker, Encoder Recorder, Discord Bot, and Observability also support a
@@ -232,13 +253,17 @@ Durable Docker checkpoints stay under
 read-only to the executor.
 
 The systemd sandbox makes `/etc/autostream` inaccessible, so the executor
-cannot read another service secret. Its read-only policy and Docker credential
-live under the separate `/etc/autostream-local-executor` directory. The unit
-grants `/etc/autostream-host-agent` only for the dedicated fixed-path Runtime
-Token rotation/recovery implementation described above; generic target
-mutation cannot access a caller-selected identity or token. Writable release
-paths are listed per supported service; the unit never grants write access to
-`/opt/autostream` as a whole.
+cannot read another service secret. Its dedicated MariaDB backup credential is
+the read-only `/etc/autostream-local-executor/mariadb-backup.cnf`; the policy
+and Docker credential also live under that separate configuration directory.
+The only writable database backup paths are
+`/var/backups/autostream/control-panel` and
+`/var/backups/autostream/observability`; the unit does not grant the parent
+backup tree. It grants `/etc/autostream-host-agent` only for the dedicated
+fixed-path Runtime Token rotation/recovery implementation described above;
+generic target mutation cannot access a caller-selected identity or token.
+Writable release paths are listed per supported service; the unit never grants
+write access to `/opt/autostream` as a whole.
 
 ## Install
 
@@ -264,6 +289,9 @@ The installer:
 - creates dedicated `root:root 0700` port and Docker-version directories under
   `/opt/autostream/local-executor` and the read-only Docker credential
   directory under `/etc/autostream-local-executor/docker`;
+- keeps `/etc/autostream` inaccessible while making the separately
+  operator-provisioned MariaDB backup credential read-only and granting only
+  the two fixed Control Panel/Observability backup directories for writes;
 - enables the `root:autostream-host-agent 0660` systemd Unix socket and starts
   the root service. The service may make outbound HTTPS connections but
   `SocketBindDeny=any` prevents it from opening an inbound network listener.

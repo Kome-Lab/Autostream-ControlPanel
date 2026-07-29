@@ -456,6 +456,7 @@ export type UpdaterSettingsTarget = {
   host_id: string;
   service_type: string;
   deployment_mode: string;
+  database_name?: string;
 };
 
 export type UpdaterSettings = {
