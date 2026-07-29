@@ -49,6 +49,13 @@ func ManagedSSHIdentityPrivatePath(stateDir, hostID string) (string, error) {
 // EnsureManagedSSHIdentity creates one daemon-owned Ed25519 client identity per
 // managed host. Existing valid key material is reused byte-for-byte.
 func EnsureManagedSSHIdentity(stateDir, hostID string) (privatePath, authorizedPublicKey, fingerprint string, err error) {
+	return ensureManagedSSHIdentity(stateDir, hostID, managedSSHPathExists)
+}
+
+func ensureManagedSSHIdentity(
+	stateDir, hostID string,
+	pathExists func(string) (bool, error),
+) (privatePath, authorizedPublicKey, fingerprint string, err error) {
 	privatePath, err = ManagedSSHIdentityPrivatePath(stateDir, hostID)
 	if err != nil {
 		return "", "", "", err
@@ -70,13 +77,19 @@ func EnsureManagedSSHIdentity(stateDir, hostID string) (privatePath, authorizedP
 	}
 
 	publicPath := privatePath + ".pub"
-	privateExists, err := managedSSHPathExists(privatePath)
+	privateExists, err := pathExists(privatePath)
 	if err != nil {
 		return "", "", "", fmt.Errorf("inspect managed SSH private key: %w", err)
 	}
-	publicExists, err := managedSSHPathExists(publicPath)
+	publicExists, err := pathExists(publicPath)
 	if err != nil {
 		return "", "", "", fmt.Errorf("inspect managed SSH public key: %w", err)
+	}
+	if !privateExists && publicExists {
+		privateExists, err = pathExists(privatePath)
+		if err != nil {
+			return "", "", "", fmt.Errorf("reinspect managed SSH private key: %w", err)
+		}
 	}
 	if !privateExists && publicExists {
 		return "", "", "", errors.New("managed SSH public key exists without its private key")
@@ -102,7 +115,7 @@ func EnsureManagedSSHIdentity(stateDir, hostID string) (privatePath, authorizedP
 		return "", "", "", fmt.Errorf("managed SSH private key is invalid: %w", err)
 	}
 	expectedPublicLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
-	publicExists, err = managedSSHPathExists(publicPath)
+	publicExists, err = pathExists(publicPath)
 	if err != nil {
 		return "", "", "", fmt.Errorf("inspect managed SSH public key: %w", err)
 	}

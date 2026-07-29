@@ -49,9 +49,13 @@ password=control-panel-installer-integration-preserve-exactly"
 created_autostream_user=false
 created_mariadb_dump=false
 old_pid=""
+usr_local_bin_mode_captured=false
+usr_local_bin_original_mode=""
+usr_local_bin_original_identity=""
 
 cleanup() {
   local exit_code=$?
+  local cleanup_failed=false
   set +e
   systemctl stop "${UNIT}" >/dev/null 2>&1
   systemctl disable "${UNIT}" >/dev/null 2>&1
@@ -88,9 +92,48 @@ cleanup() {
     userdel autostream >/dev/null 2>&1
     groupdel autostream >/dev/null 2>&1
   fi
+  if [[ ${usr_local_bin_mode_captured} == true ]]; then
+    if [[ -d /usr/local/bin &&
+      ! -L /usr/local/bin &&
+      $(readlink -f -- /usr/local/bin) == "/usr/local/bin" &&
+      $(stat -c '%U:%G' -- /usr/local/bin) == "root:root" &&
+      $(stat -c '%d:%i' -- /usr/local/bin) == "${usr_local_bin_original_identity}" ]] &&
+      chmod "${usr_local_bin_original_mode}" /usr/local/bin &&
+      [[ $(stat -c '%U:%G:%a' -- /usr/local/bin) == \
+        "root:root:${usr_local_bin_original_mode}" ]]; then
+      :
+    else
+      printf '%s\n' \
+        "control-panel installer integration test: failed to restore /usr/local/bin mode ${usr_local_bin_original_mode}" \
+        >&2
+      cleanup_failed=true
+    fi
+  fi
+  if [[ ${cleanup_failed} == true && ${exit_code} -eq 0 ]]; then
+    exit_code=1
+  fi
   exit "${exit_code}"
 }
 trap cleanup EXIT
+
+[[ -d /usr/local/bin && ! -L /usr/local/bin ]] || \
+  die "/usr/local/bin must be a real directory"
+[[ $(readlink -f -- /usr/local/bin) == "/usr/local/bin" ]] || \
+  die "/usr/local/bin must resolve to its canonical path"
+[[ $(stat -c '%U:%G' -- /usr/local/bin) == "root:root" ]] || \
+  die "/usr/local/bin must be owned by root:root"
+usr_local_bin_original_mode=$(stat -c '%a' -- /usr/local/bin) || \
+  die "could not capture /usr/local/bin mode"
+[[ ${usr_local_bin_original_mode} =~ ^[0-7]{3,4}$ ]] || \
+  die "/usr/local/bin mode is invalid"
+usr_local_bin_original_identity=$(stat -c '%d:%i' -- /usr/local/bin) || \
+  die "could not capture /usr/local/bin identity"
+[[ ${usr_local_bin_original_identity} =~ ^[0-9]+:[0-9]+$ ]] || \
+  die "/usr/local/bin identity is invalid"
+usr_local_bin_mode_captured=true
+chmod 0755 /usr/local/bin
+[[ $(stat -c '%U:%G:%a' -- /usr/local/bin) == "root:root:755" ]] || \
+  die "failed to normalize /usr/local/bin to root:root mode 0755"
 
 for path in \
   "${UNIT_PATH}" \
@@ -219,6 +262,34 @@ archive_size="$(stat -c %s "${ARCHIVE}")"
   cd -- "${ARTIFACTS_DIR}"
   sha256sum release-manifest.json > release-manifest.json.sha256
 )
+
+assert_unsafe_root_anchor_mode_rejected() {
+  local mode=$1
+  local output="${WORK_DIR}/unsafe-root-anchor-${mode}.out"
+  local status
+  chmod "${mode}" /usr/local/bin
+  [[ $(stat -c '%a' -- /usr/local/bin) == "${mode}" ]] || \
+    die "could not set /usr/local/bin mode ${mode} for the unsafe root-anchor test"
+  set +e
+  "${EXTRACTED_ROOT}/install-autostream-control-panel" > "${output}" 2>&1
+  status=$?
+  set -e
+  chmod 0755 /usr/local/bin
+  [[ ${status} -ne 0 ]] || \
+    die "unsafe root-anchor mode ${mode} unexpectedly passed"
+  grep -F -- "required system directory has unsafe mode bits: /usr/local/bin" \
+    "${output}" >/dev/null || \
+    die "unsafe root-anchor mode ${mode} did not fail with the expected message"
+  [[ ! -e ${MANAGED_ROOT} && ! -L ${MANAGED_ROOT} ]] || \
+    die "unsafe root-anchor mode ${mode} mutated managed state"
+  if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+    die "unsafe root-anchor mode ${mode} mutated the service account"
+  fi
+}
+
+for unsafe_root_anchor_mode in 777 4755 2755 1755; do
+  assert_unsafe_root_anchor_mode_rejected "${unsafe_root_anchor_mode}"
+done
 
 cat > "${WORK_DIR}/failing-mktemp" <<EOF
 #!/bin/sh

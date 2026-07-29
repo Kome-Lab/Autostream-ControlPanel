@@ -62,6 +62,12 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 			t.Fatalf("service installer must print, not automatically execute, %q", forbidden)
 		}
 	}
+	if strings.Contains(installer, "& 7022") {
+		t.Fatal("service installer uses a decimal permission mask instead of the intended octal 07022 mask")
+	}
+	if count := strings.Count(installer, "& 07022"); count != 4 {
+		t.Fatalf("service installer octal unsafe-mode guard count = %d, want 4", count)
+	}
 
 	workflowBytes, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release-host.yml"))
 	if err != nil {
@@ -105,6 +111,10 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	for _, marker := range []string{
 		"mktemp failure injection did not execute the installer mktemp boundary",
 		"mktemp failure mutated the service account",
+		"unsafe root-anchor mode ${mode} unexpectedly passed",
+		"unsafe root-anchor mode ${mode} mutated managed state",
+		"failed to restore /usr/local/bin mode ${usr_local_bin_original_mode}",
+		"failed to normalize /usr/local/bin to root:root mode 0755",
 		"unsafe service state symlink unexpectedly passed",
 		"installer ignored updater lock contention",
 		"prefix-colliding binary version unexpectedly passed",

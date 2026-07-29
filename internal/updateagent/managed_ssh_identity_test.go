@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -174,6 +175,72 @@ func TestEnsureManagedSSHIdentityConcurrentFirstUseKeepsOneIdentity(t *testing.T
 		if current.privatePath != first.privatePath || current.publicKey != first.publicKey || current.fingerprint != first.fingerprint {
 			t.Fatalf("concurrent callers observed different identities: first=%#v current=%#v", first, current)
 		}
+	}
+}
+
+func TestEnsureManagedSSHIdentityHandlesConcurrentPublisherBetweenExistenceChecks(t *testing.T) {
+	requireManagedSSHIdentityCaller(t)
+	stateDir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privatePath, err := ManagedSSHIdentityPrivatePath(stateDir, "edge-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		privatePath string
+		publicKey   string
+		fingerprint string
+		err         error
+	}
+	privateObservedMissing := make(chan struct{})
+	publisherFinished := make(chan struct{})
+	ensureFinished := make(chan result, 1)
+	go func() {
+		firstPrivateCheck := true
+		privatePath, publicKey, fingerprint, err := ensureManagedSSHIdentity(
+			stateDir,
+			"edge-01",
+			func(path string) (bool, error) {
+				exists, err := managedSSHPathExists(path)
+				if path == privatePath && firstPrivateCheck {
+					firstPrivateCheck = false
+					if err == nil && !exists {
+						close(privateObservedMissing)
+						<-publisherFinished
+					}
+				}
+				return exists, err
+			},
+		)
+		ensureFinished <- result{
+			privatePath: privatePath,
+			publicKey:   publicKey,
+			fingerprint: fingerprint,
+			err:         err,
+		}
+	}()
+
+	select {
+	case <-privateObservedMissing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first ensure did not observe the missing private key")
+	}
+	winnerPath, winnerPublicKey, winnerFingerprint, winnerErr := EnsureManagedSSHIdentity(stateDir, "edge-01")
+	close(publisherFinished)
+	current := <-ensureFinished
+	if winnerErr != nil {
+		t.Fatalf("concurrent publisher: %v", winnerErr)
+	}
+	if current.err != nil {
+		t.Fatalf("ensure after concurrent publisher: %v", current.err)
+	}
+	if current.privatePath != winnerPath || current.publicKey != winnerPublicKey || current.fingerprint != winnerFingerprint {
+		t.Fatalf("ensure observed a different identity: winner=%q/%q/%q current=%q/%q/%q",
+			winnerPath, winnerPublicKey, winnerFingerprint,
+			current.privatePath, current.publicKey, current.fingerprint)
 	}
 }
 

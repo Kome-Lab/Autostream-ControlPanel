@@ -495,7 +495,7 @@ require_secure_root_directory() {
   [[ $(stat -c '%U:%G' -- "${path}") == "root:root" ]] || \
     die "required system directory must be owned by root:root: ${path}"
   mode="$(stat -c '%a' -- "${path}")"
-  (( (8#${mode} & 7022) == 0 )) || \
+  (( (8#${mode} & 07022) == 0 )) || \
     die "required system directory has unsafe mode bits: ${path}"
 }
 
@@ -545,7 +545,7 @@ if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
   [[ $(readlink -f -- "${STATE_DIR}") == "${STATE_DIR}" ]] || \
     die "existing service state directory does not resolve to its fixed path: ${STATE_DIR}"
   state_mode="$(stat -c '%a' -- "${STATE_DIR}")"
-  (( (8#${state_mode} & 7022) == 0 )) || \
+  (( (8#${state_mode} & 07022) == 0 )) || \
     die "existing service state directory has unsafe mode bits: ${STATE_DIR}"
   existing_state_directory=true
 fi
@@ -755,7 +755,7 @@ if [[ -e ${BACKUP_EXECUTABLE} || -L ${BACKUP_EXECUTABLE} ]]; then
   [[ $(stat -c '%U:%G' -- "${BACKUP_EXECUTABLE}") == "root:root" ]] || \
     die "existing backup executable must be owned by root:root"
   backup_mode="$(stat -c '%a' -- "${BACKUP_EXECUTABLE}")"
-  (( (8#${backup_mode} & 7022) == 0 )) || die "existing backup executable has unsafe mode bits"
+  (( (8#${backup_mode} & 07022) == 0 )) || die "existing backup executable has unsafe mode bits"
   if [[ ${backup_mode} == "700" ]] && cmp -s \
     "${BACKUP_EXECUTABLE}" \
     "${RELEASE_DIR}/backup/autostream-backup-control-panel"; then
@@ -814,7 +814,7 @@ preflight_public_path() {
     [[ $(stat -c '%U:%G' -- "${link_path}") == "root:root" ]] || \
       die "existing public path must be owned by root:root: ${link_path}"
     path_mode="$(stat -c '%a' -- "${link_path}")"
-    (( (8#${path_mode} & 7022) == 0 )) || \
+    (( (8#${path_mode} & 07022) == 0 )) || \
       die "existing public path has unsafe mode bits: ${link_path}"
   fi
   if [[ -e ${link_path} && ! -L ${link_path} && ( -e ${backup_path} || -L ${backup_path} ) ]]; then
