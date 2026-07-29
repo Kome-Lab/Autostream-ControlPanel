@@ -115,6 +115,10 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		"unsafe root-anchor mode ${mode} mutated managed state",
 		"failed to restore /usr/local/bin mode ${usr_local_bin_original_mode}",
 		"failed to normalize /usr/local/bin to root:root mode 0755",
+		"failed to restore /opt mode ${opt_original_mode}",
+		"failed to normalize /opt to root:root mode 0755",
+		"failed to restore /usr/share mode ${usr_share_original_mode}",
+		"failed to normalize /usr/share to root:root mode 0755",
 		"unsafe service state symlink unexpectedly passed",
 		"installer ignored updater lock contention",
 		"prefix-colliding binary version unexpectedly passed",
@@ -124,10 +128,15 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		"successful migration replaced the running legacy process",
 		"idempotent reinstall changed the existing environment",
 		"fresh installer unexpectedly started the service",
+		`legacy_unit_file_state="$(systemctl is-enabled "${UNIT}" 2>/dev/null || true)"`,
+		"legacy fixture must begin disabled",
 	} {
 		if !strings.Contains(integration, marker) {
 			t.Fatalf("installer integration test is missing scenario %q", marker)
 		}
+	}
+	if count := strings.Count(integration, "[Install]\nWantedBy=multi-user.target"); count != 2 {
+		t.Fatalf("integration fixture must define two enable-capable but disabled units, got %d", count)
 	}
 
 	unitBytes, err := os.ReadFile(filepath.Join(root, "systemd", "autostream-control-panel.service.example"))

@@ -52,6 +52,12 @@ old_pid=""
 usr_local_bin_mode_captured=false
 usr_local_bin_original_mode=""
 usr_local_bin_original_identity=""
+opt_mode_captured=false
+opt_original_mode=""
+opt_original_identity=""
+usr_share_mode_captured=false
+usr_share_original_mode=""
+usr_share_original_identity=""
 
 cleanup() {
   local exit_code=$?
@@ -109,6 +115,40 @@ cleanup() {
       cleanup_failed=true
     fi
   fi
+  if [[ ${opt_mode_captured} == true ]]; then
+    if [[ -d /opt &&
+      ! -L /opt &&
+      $(readlink -f -- /opt) == "/opt" &&
+      $(stat -c '%U:%G' -- /opt) == "root:root" &&
+      $(stat -c '%d:%i' -- /opt) == "${opt_original_identity}" ]] &&
+      chmod "${opt_original_mode}" /opt &&
+      [[ $(stat -c '%U:%G:%a' -- /opt) == \
+        "root:root:${opt_original_mode}" ]]; then
+      :
+    else
+      printf '%s\n' \
+        "control-panel installer integration test: failed to restore /opt mode ${opt_original_mode}" \
+        >&2
+      cleanup_failed=true
+    fi
+  fi
+  if [[ ${usr_share_mode_captured} == true ]]; then
+    if [[ -d /usr/share &&
+      ! -L /usr/share &&
+      $(readlink -f -- /usr/share) == "/usr/share" &&
+      $(stat -c '%U:%G' -- /usr/share) == "root:root" &&
+      $(stat -c '%d:%i' -- /usr/share) == "${usr_share_original_identity}" ]] &&
+      chmod "${usr_share_original_mode}" /usr/share &&
+      [[ $(stat -c '%U:%G:%a' -- /usr/share) == \
+        "root:root:${usr_share_original_mode}" ]]; then
+      :
+    else
+      printf '%s\n' \
+        "control-panel installer integration test: failed to restore /usr/share mode ${usr_share_original_mode}" \
+        >&2
+      cleanup_failed=true
+    fi
+  fi
   if [[ ${cleanup_failed} == true && ${exit_code} -eq 0 ]]; then
     exit_code=1
   fi
@@ -134,6 +174,35 @@ usr_local_bin_mode_captured=true
 chmod 0755 /usr/local/bin
 [[ $(stat -c '%U:%G:%a' -- /usr/local/bin) == "root:root:755" ]] || \
   die "failed to normalize /usr/local/bin to root:root mode 0755"
+
+[[ -d /opt && ! -L /opt ]] || die "/opt must be a real directory"
+[[ $(readlink -f -- /opt) == "/opt" ]] || die "/opt must resolve to its canonical path"
+[[ $(stat -c '%U:%G' -- /opt) == "root:root" ]] || die "/opt must be owned by root:root"
+opt_original_mode=$(stat -c '%a' -- /opt) || die "could not capture /opt mode"
+[[ ${opt_original_mode} =~ ^[0-7]{3,4}$ ]] || die "/opt mode is invalid"
+opt_original_identity=$(stat -c '%d:%i' -- /opt) || die "could not capture /opt identity"
+[[ ${opt_original_identity} =~ ^[0-9]+:[0-9]+$ ]] || die "/opt identity is invalid"
+opt_mode_captured=true
+chmod 0755 /opt
+[[ $(stat -c '%U:%G:%a' -- /opt) == "root:root:755" ]] || \
+  die "failed to normalize /opt to root:root mode 0755"
+
+[[ -d /usr/share && ! -L /usr/share ]] || die "/usr/share must be a real directory"
+[[ $(readlink -f -- /usr/share) == "/usr/share" ]] || \
+  die "/usr/share must resolve to its canonical path"
+[[ $(stat -c '%U:%G' -- /usr/share) == "root:root" ]] || \
+  die "/usr/share must be owned by root:root"
+usr_share_original_mode=$(stat -c '%a' -- /usr/share) || \
+  die "could not capture /usr/share mode"
+[[ ${usr_share_original_mode} =~ ^[0-7]{3,4}$ ]] || die "/usr/share mode is invalid"
+usr_share_original_identity=$(stat -c '%d:%i' -- /usr/share) || \
+  die "could not capture /usr/share identity"
+[[ ${usr_share_original_identity} =~ ^[0-9]+:[0-9]+$ ]] || \
+  die "/usr/share identity is invalid"
+usr_share_mode_captured=true
+chmod 0755 /usr/share
+[[ $(stat -c '%U:%G:%a' -- /usr/share) == "root:root:755" ]] || \
+  die "failed to normalize /usr/share to root:root mode 0755"
 
 for path in \
   "${UNIT_PATH}" \
@@ -399,6 +468,9 @@ Description=${LEGACY_UNIT_CONTENT}
 [Service]
 Type=simple
 ExecStart=/usr/bin/sleep infinity
+
+[Install]
+WantedBy=multi-user.target
 EOF
 chmod 0644 "${UNIT_PATH}"
 systemctl daemon-reload
@@ -406,7 +478,9 @@ systemctl start "${UNIT}"
 old_pid="$(systemctl show --property MainPID --value "${UNIT}")"
 [[ ${old_pid} =~ ^[1-9][0-9]*$ ]] || die "legacy service did not start"
 kill -0 "${old_pid}" || die "legacy service PID is not alive"
-systemctl is-enabled --quiet "${UNIT}" && die "legacy fixture must begin disabled"
+legacy_unit_file_state="$(systemctl is-enabled "${UNIT}" 2>/dev/null || true)"
+[[ ${legacy_unit_file_state} == "disabled" ]] || \
+  die "legacy fixture must begin disabled, got ${legacy_unit_file_state:-unknown}"
 
 env_before="$(sha256sum "${ENV_PATH}" | awk 'NR == 1 { print $1 }')"
 db_before="$(sha256sum "${MARIADB_DEFAULTS}" | awk 'NR == 1 { print $1 }')"
