@@ -63,6 +63,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Check service installer syntax
+        run: bash -n release/install-autostream-control-panel
+
+      - name: Test service installer migration and rollback
+        run: sudo bash release/test-install-autostream-control-panel-integration.sh
+
       - name: Resolve release metadata
         id: meta
         shell: bash
@@ -298,6 +304,8 @@ jobs:
             cp systemd/autostream-control-panel.service.example systemd/autostream-updater.service.example "${root}/systemd/"
             cp release/autostream-backup-control-panel.example "${root}/backup/autostream-backup-control-panel"
             chmod 0755 "${root}/backup/autostream-backup-control-panel"
+            cp release/install-autostream-control-panel "${root}/install-autostream-control-panel"
+            chmod 0755 "${root}/install-autostream-control-panel"
             test -d web/out
             cp -R web/out/. "${root}/share/autostream-control-panel/"
             cp release/README.install.md "${root}/README.install.md"
@@ -943,6 +951,14 @@ jobs:
           jq -S '[.[] | {name, size, digest}]' \
             "${uploaded_assets}" > "${uploaded_projection}"
           diff -u "${RUNNER_TEMP}/host-release-expected-assets.json" "${uploaded_projection}"
+
+      - name: Attest Control Panel archives
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            artifacts/autostream-control-panel_${{ needs.release-host.outputs.version }}_linux_amd64.tar.gz
+            artifacts/autostream-control-panel_${{ needs.release-host.outputs.version }}_linux_arm64.tar.gz
+          create-storage-record: false
 
       - name: Attest release manifest
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0

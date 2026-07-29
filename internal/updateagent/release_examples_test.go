@@ -15,10 +15,11 @@ func TestControlPanelInstallGuidePreparesUpdaterBackup(t *testing.T) {
 	}
 	guide := string(body)
 	for _, want := range []string{
+		"sudo ./install-autostream-control-panel",
 		"## Prepare the updater backup command",
-		`test -x "$RELEASE_DIR/backup/autostream-backup-control-panel"`,
-		`sudo install -o root -g root -m 0700 "$RELEASE_DIR/backup/autostream-backup-control-panel" /usr/local/sbin/autostream-backup-control-panel`,
-		"sudo chmod 0600 /etc/autostream-local-executor/mariadb-backup.cnf",
+		"The installer creates the private backup directory",
+		"`/usr/local/sbin/autostream-backup-control-panel`",
+		"`/etc/autostream-local-executor/mariadb-backup.cnf`",
 		"GRANT SELECT, SHOW VIEW, TRIGGER ON \\`${DATABASE_NAME}\\`.*",
 		"exact `DATABASE_NAME` must be used for the MariaDB grant, the real dump, and the",
 		"sudo /usr/local/sbin/autostream-backup-control-panel",
@@ -28,18 +29,33 @@ func TestControlPanelInstallGuidePreparesUpdaterBackup(t *testing.T) {
 			t.Fatalf("Control Panel install guide is missing %q", want)
 		}
 	}
-	backupCheck := strings.Index(guide, "sudo /usr/local/sbin/autostream-backup-control-panel")
-	managedSwitch := strings.Index(guide, `sudo ln -s "$RELEASE_DIR" "${CURRENT_LINK}.next"`)
-	if backupCheck < 0 || managedSwitch < 0 || backupCheck > managedSwitch {
-		t.Fatal("Control Panel install guide must verify a real database backup before switching the managed release")
+
+	installerBody, err := os.ReadFile(filepath.Join(
+		"..",
+		"..",
+		"release",
+		"install-autostream-control-panel",
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
+	installer := string(installerBody)
+	backupInstall := strings.Index(
+		installer,
+		`mv -Tf -- "${backup_exec_stage}" "${BACKUP_EXECUTABLE}"`,
+	)
+	managedSwitch := strings.Index(installer, `mv -Tf -- "${current_next}" "${CURRENT_LINK}"`)
+	if backupInstall < 0 || managedSwitch < 0 || backupInstall > managedSwitch {
+		t.Fatal("Control Panel installer must prepare the fixed backup executable before switching current")
+	}
+
 	backupSectionStart := strings.Index(guide, "## Prepare the updater backup command")
-	activationStart := strings.Index(guide, "## Activate the managed release")
+	activationStart := strings.Index(guide, "## Review settings and start the service")
 	if backupSectionStart < 0 || activationStart < 0 || backupSectionStart >= activationStart {
 		t.Fatal("Control Panel install guide has invalid backup and activation sections")
 	}
-	if strings.Contains(guide[backupSectionStart:activationStart], "readlink -f /opt/autostream/control-panel/current") {
-		t.Fatal("backup preparation must select the verified new release before the current link exists")
+	if strings.Contains(guide, `sudo ln -s "$RELEASE_DIR"`) {
+		t.Fatal("Control Panel install guide must not expose installer-owned current-link switching")
 	}
 }
 

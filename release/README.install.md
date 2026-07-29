@@ -11,100 +11,76 @@ inputs and are not installed by this guide.
 ## Requirements
 
 - Linux amd64 or arm64 matching the archive name.
-- A dedicated `autostream` user and group.
-- Authenticated `gh`, `jq`, `sha256sum`, and `curl` for release verification,
-  plus `/usr/bin/mariadb-dump` for the required pre-update backup.
+- `gh`, `jq`, `sha256sum`, `tar`, systemd, and `/usr/bin/mariadb-dump`. The
+  installer creates the dedicated `autostream` account when it is missing.
+- All four files listed below, obtained from the same immutable GitHub Release.
 - The matching verified `autostream-host-agent_<version>_linux_<arch>.tar.gz`
   artifact for the host.
 - A reverse proxy with HTTPS for production.
 - A production database and secret values supplied outside Git.
 
-## Install a verified managed release for the Control Panel target
+## Install or migrate the Control Panel
 
-The managed layout is required when the Control Panel itself will be updated
-with rollback. An existing direct `/usr/local/bin/control-panel` and
-`/usr/share/autostream-control-panel` installation must first be migrated to
-the verified release tree below. The compatibility `/usr/local/bin/control-panel`
-link may remain, but it must resolve through the managed `current` link.
+Download these four files from the same immutable GitHub Release and keep them
+in one directory:
 
-The systemd unit runs the Control Panel through
-`/opt/autostream/control-panel/current`. Seed that link from the same immutable
-release manifest and checksums that supplied the archive. Automated updates
-refuse an unseeded target because it would have no verified rollback release.
-When replacing an existing Control Panel manually, record the current link and
-complete a database backup before running the switch below.
+- `autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz`
+- `autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz.sha256`
+- `release-manifest.json`
+- `release-manifest.json.sha256`
+
+For arm64, use the two arm64 artifact files instead. Copy the four downloaded
+files into the root-owned artifact directory, then verify the copied manifest
+as your ordinary login user:
 
 ```bash
-set -euo pipefail
-VERSION="${VERSION:?export VERSION=vX.Y.Z before continuing}"
-ARCH="${ARCH:-amd64}"
-ASSET="autostream-control-panel_${VERSION}_linux_${ARCH}.tar.gz"
-ARTIFACT_ROOT=/opt/autostream/releases
-
-sudo install -d -o root -g root -m 0755 "$ARTIFACT_ROOT"
-sudo install -d -o "$USER" -g "$USER" -m 0755 "$ARTIFACT_ROOT/artifacts"
-gh release download "$VERSION" \
+sudo install -d -o root -g root -m 0755 /opt/autostream/releases/artifacts
+sudo install -o root -g root -m 0644 /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz /opt/autostream/releases/artifacts/
+sudo install -o root -g root -m 0644 /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz.sha256 /opt/autostream/releases/artifacts/
+sudo install -o root -g root -m 0644 /tmp/release-manifest.json /opt/autostream/releases/artifacts/
+sudo install -o root -g root -m 0644 /tmp/release-manifest.json.sha256 /opt/autostream/releases/artifacts/
+cd /opt/autostream/releases/artifacts
+gh attestation verify autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz \
   --repo Kome-Lab/Autostream-ControlPanel \
-  --pattern "$ASSET" \
-  --pattern "$ASSET.sha256" \
-  --pattern release-manifest.json \
-  --pattern release-manifest.json.sha256 \
-  --dir "$ARTIFACT_ROOT/artifacts" \
-  --clobber
-(cd "$ARTIFACT_ROOT/artifacts" && sha256sum --check --strict "$ASSET.sha256")
-(cd "$ARTIFACT_ROOT/artifacts" && sha256sum --check --strict release-manifest.json.sha256)
-
-DIGEST="$(awk 'NR == 1 { print $1 }' "$ARTIFACT_ROOT/artifacts/$ASSET.sha256")"
-[[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
-jq -e --arg version "$VERSION" --arg asset "$ASSET" --arg sha "$DIGEST" \
-  '.schema_version == 1 and .release_id == $version and .channel == "host" and
-   ([.components[] | select(.service == "control-panel" and .source_version == $version) |
-     .artifacts[] | select(.name == $asset and .sha256 == $sha)] | length == 1)' \
-  "$ARTIFACT_ROOT/artifacts/release-manifest.json"
-
-RELEASE_ROOT=/opt/autostream/control-panel/releases
-RELEASE_DIR="$RELEASE_ROOT/${VERSION}-${DIGEST:0:12}"
-sudo test ! -e "$RELEASE_DIR"
-sudo install -d -o root -g root -m 0755 "$RELEASE_DIR"
-sudo tar --no-same-owner --strip-components=1 -xzf "$ARTIFACT_ROOT/artifacts/$ASSET" -C "$RELEASE_DIR"
-(cd "$RELEASE_DIR" && sha256sum --check --strict checksums.txt)
-sudo test -d "$RELEASE_DIR/share/autostream-control-panel"
-printf '%s\n' "$DIGEST" | sudo tee "$RELEASE_DIR/.artifact-sha256" >/dev/null
-printf '%s\n' "$VERSION" | sudo tee "$RELEASE_DIR/.version" >/dev/null
-sudo chown root:root "$RELEASE_DIR/.artifact-sha256" "$RELEASE_DIR/.version"
-sudo chmod 0444 "$RELEASE_DIR/.artifact-sha256" "$RELEASE_DIR/.version"
-sudo /usr/sbin/runuser -u autostream -- "$RELEASE_DIR/bin/control-panel" --version | grep -F -- "$VERSION"
+  --signer-workflow Kome-Lab/Autostream-ControlPanel/.github/workflows/release-host.yml \
+  --deny-self-hosted-runners
+gh attestation verify release-manifest.json \
+  --repo Kome-Lab/Autostream-ControlPanel \
+  --signer-workflow Kome-Lab/Autostream-ControlPanel/.github/workflows/release-host.yml \
+  --deny-self-hosted-runners
 ```
+
+After verification succeeds, extract and run the installer:
+
+```bash
+cd /opt/autostream/releases/artifacts
+sudo tar --no-same-owner --no-same-permissions -xzf autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz
+cd autostream-control-panel_vX.Y.Z_linux_amd64
+sudo ./install-autostream-control-panel
+```
+
+The installer verifies the archive sidecar, release manifest, architecture,
+inner checksums, and binary version before changing the host. It then creates
+the `autostream` account when needed, seeds the rollback release, installs the
+unit and backup executable, creates state directories, and exposes:
+
+- `/usr/local/bin/control-panel`
+- `/usr/share/autostream-control-panel`
+
+Existing direct-install files are retained under
+`/var/backups/autostream/install-migrations/control-panel`. Existing
+`/etc/autostream/control-panel.env` content is preserved byte-for-byte.
+`/opt/autostream/control-panel/releases` and
+`/opt/autostream/control-panel/current` are installer-owned updater and
+rollback state; do not edit or recreate them manually.
 
 ## Prepare the updater backup command
 
 A Control Panel target is fail-closed unless its fixed backup command exists
-and succeeds. Install the verified script from this release and prepare its
-private directory and MariaDB client defaults before enabling the updater:
-
-```bash
-set -euo pipefail
-VERSION="${VERSION:?export VERSION=vX.Y.Z before continuing}"
-ARCH="${ARCH:-amd64}"
-ASSET="autostream-control-panel_${VERSION}_linux_${ARCH}.tar.gz"
-ARTIFACT_ROOT=/opt/autostream/releases
-DIGEST="$(awk 'NR == 1 { print $1 }' "$ARTIFACT_ROOT/artifacts/$ASSET.sha256")"
-[[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
-RELEASE_DIR="/opt/autostream/control-panel/releases/${VERSION}-${DIGEST:0:12}"
-sudo test -d "$RELEASE_DIR"
-test -x "$RELEASE_DIR/backup/autostream-backup-control-panel"
-sudo install -d -o root -g root -m 0700 /var/backups/autostream/control-panel
-sudo install -o root -g root -m 0700 "$RELEASE_DIR/backup/autostream-backup-control-panel" /usr/local/sbin/autostream-backup-control-panel
-sudo install -d -o root -g root -m 0700 /etc/autostream-local-executor
-if ! sudo test -e /etc/autostream-local-executor/mariadb-backup.cnf; then
-  sudo install -o root -g root -m 0600 /dev/null \
-    /etc/autostream-local-executor/mariadb-backup.cnf
-else
-  echo "preserving existing /etc/autostream-local-executor/mariadb-backup.cnf"
-fi
-sudo chown root:root /etc/autostream-local-executor/mariadb-backup.cnf
-sudo chmod 0600 /etc/autostream-local-executor/mariadb-backup.cnf
-```
+and succeeds. The installer creates the private backup directory, installs
+`/usr/local/sbin/autostream-backup-control-panel`, and safely creates or
+preserves `/etc/autostream-local-executor/mariadb-backup.cnf`. Only the real
+database credentials, account, grant, and database name remain manual.
 
 Set the root-only defaults file to a dedicated backup account. It deliberately
 lives outside `/etc/autostream`, which remains invisible to the Local Executor.
@@ -169,54 +145,28 @@ off-host copying separately. The updater rejects a missing backup executable,
 a symlink, or a path that is not root-owned or is writable by group/other
 users; a nonzero dump exit aborts the update before stopping the Control Panel.
 
-## Activate the managed release
+## Review settings and start the service
 
-Only after the real backup succeeds, switch the managed link and install the
-unit. Recompute the release directory from the already verified sidecar so this
-separate shell cannot silently select a different archive:
+Edit `/etc/autostream/control-panel.env` with the real environment-specific
+values. Keep this public web path:
 
-```bash
-set -euo pipefail
-VERSION="${VERSION:?export VERSION=vX.Y.Z before continuing}"
-ARCH="${ARCH:-amd64}"
-ASSET="autostream-control-panel_${VERSION}_linux_${ARCH}.tar.gz"
-ARTIFACT_ROOT=/opt/autostream/releases
-DIGEST="$(awk 'NR == 1 { print $1 }' "$ARTIFACT_ROOT/artifacts/$ASSET.sha256")"
-[[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
-RELEASE_DIR="/opt/autostream/control-panel/releases/${VERSION}-${DIGEST:0:12}"
-CURRENT_LINK=/opt/autostream/control-panel/current
-sudo test -d "$RELEASE_DIR"
-test "$(sudo cat "$RELEASE_DIR/.version")" = "$VERSION"
-
-sudo ln -s "$RELEASE_DIR" "${CURRENT_LINK}.next"
-sudo mv -Tf "${CURRENT_LINK}.next" "$CURRENT_LINK"
-sudo ln -sfn "$CURRENT_LINK/bin/control-panel" /usr/local/bin/control-panel
-sudo install -d -o autostream -g autostream /var/lib/autostream/control-panel
-sudo install -o root -g root -m 0644 "$RELEASE_DIR/systemd/autostream-control-panel.service.example" /etc/systemd/system/autostream-control-panel.service
-if ! sudo test -e /etc/autostream/control-panel.env; then
-  sudo install -o root -g root -m 0640 "$RELEASE_DIR/.env.example" /etc/autostream/control-panel.env
-else
-  echo "preserving existing /etc/autostream/control-panel.env; review .env.example for new settings"
-fi
-sudo sed -i 's#^AUTOSTREAM_WEB_DIR=.*#AUTOSTREAM_WEB_DIR=/opt/autostream/control-panel/current/share/autostream-control-panel#' /etc/autostream/control-panel.env
-sudo grep -qx 'AUTOSTREAM_WEB_DIR=/opt/autostream/control-panel/current/share/autostream-control-panel' /etc/autostream/control-panel.env
+```ini
+AUTOSTREAM_WEB_DIR=/usr/share/autostream-control-panel
 ```
 
-Edit `/etc/autostream/control-panel.env` with real environment-specific values.
-Keep `AUTOSTREAM_WEB_DIR` pointed at the managed `current` link, then run:
+For a first installation, run:
 
 ```bash
-set -euo pipefail
-VERSION="${VERSION:?export VERSION=vX.Y.Z before continuing}"
-sudo systemctl daemon-reload
-sudo systemctl enable autostream-control-panel
+sudo systemctl enable --now autostream-control-panel
+sudo systemctl status autostream-control-panel
+```
+
+For an already-running older installation, the installer preserves its
+settings and running process. Restart explicitly after reviewing the settings:
+
+```bash
 sudo systemctl restart autostream-control-panel
-PID="$(sudo systemctl show --property=MainPID --value autostream-control-panel)"
-EXPECTED="$(sudo readlink -f /opt/autostream/control-panel/current/bin/control-panel)"
-test "$(sudo readlink -f "/proc/$PID/exe")" = "$EXPECTED"
-curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/health >/dev/null
-test "$(curl --fail --silent --show-error --max-time 10 \
-  http://127.0.0.1:8080/updater/version | jq -r '.version')" = "$VERSION"
+sudo systemctl status autostream-control-panel
 ```
 
 Use the host's configured loopback port if it differs from `8080`.

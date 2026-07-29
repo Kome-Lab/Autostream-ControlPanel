@@ -9,6 +9,16 @@ permissions:
   contents: read
 
 jobs:
+  service-installer:
+    name: Service installer migration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check service installer integration test syntax
+        run: bash -n release/test-install-autostream-control-panel-integration.sh
+      - name: Test fresh install, legacy migration, idempotence, and rollback
+        run: sudo bash release/test-install-autostream-control-panel-integration.sh
+
   go:
     runs-on: ubuntu-24.04
     services:
@@ -32,6 +42,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.mod
+      - name: Check service installer syntax
+        run: bash -n release/install-autostream-control-panel
       - run: go test ./...
       - name: Test production Docker port reconfiguration daemon boundary
         shell: bash
