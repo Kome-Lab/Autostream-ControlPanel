@@ -114,18 +114,41 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		"unsafe root-anchor mode ${mode} unexpectedly passed",
 		"unsafe root-anchor mode ${mode} mutated managed state",
 		"AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS",
+		`exec unshare --mount --propagation private bash -c '
+    set -euo pipefail`,
+		"autostream-control-panel-installer-test-scratch /mnt",
+		"mount --rbind /usr /mnt/usr-lower",
+		"mount --make-rprivate /mnt/usr-lower",
+		"/mnt/usr-upper/local",
+		"install -d -o root -g root -m 0700 /mnt/usr-work",
+		"lowerdir=/mnt/usr-lower,upperdir=/mnt/usr-upper,workdir=/mnt/usr-work",
+		"autostream-control-panel-installer-test-usr /usr",
 		"autostream-control-panel-installer-test-bin /usr/local/bin",
 		"autostream-control-panel-installer-test-sbin /usr/local/sbin",
 		"autostream-control-panel-installer-test-opt /opt",
 		"autostream-control-panel-installer-test-share /usr/share",
+		`grep -Eq ' /mnt .* - tmpfs autostream-control-panel-installer-test-scratch '`,
+		`grep -Eq ' /usr .* - overlay autostream-control-panel-installer-test-usr '`,
+		`[[ $(stat -c '%U:%G:%a' -- /mnt) == "root:root:755" ]]`,
+		`[[ $(stat -c '%U:%G:%a' -- /usr) == "root:root:755" ]]`,
+		`[[ $(stat -c '%U:%G:%a' -- /usr/local) == "root:root:755" ]]`,
+		`[[ $(stat -c '%m' -- /usr/local/bin) == "/usr/local/bin" ]]`,
+		`[[ $(stat -c '%m' -- /usr/local/sbin) == "/usr/local/sbin" ]]`,
+		`[[ $(stat -c '%m' -- /opt) == "/opt" ]]`,
+		`[[ $(stat -c '%m' -- /usr/share) == "/usr/share" ]]`,
 		"isolated /usr/local/bin mount is missing",
 		"isolated /usr/local/sbin mount is missing",
 		"isolated /opt mount is missing",
 		"isolated /usr/share mount is missing",
+		"could not create an isolated safe /mnt scratch fixture",
+		"could not create an isolated safe /usr fixture",
+		"could not create an isolated safe /usr/local fixture",
 		"could not create an isolated safe /usr/local/bin fixture",
 		"could not create an isolated safe /usr/local/sbin fixture",
 		"could not create an isolated safe /opt fixture",
 		"could not create an isolated safe /usr/share fixture",
+		"could not restore isolated /usr/local/bin to root:root mode 0755",
+		"chmod 00755 /usr/local/bin",
 		"unsafe service state symlink unexpectedly passed",
 		"installer ignored updater lock contention",
 		"prefix-colliding binary version unexpectedly passed",
@@ -146,9 +169,75 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		integration,
 		`if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS:-} != "1" ]]; then`,
 	)
+	strictModeIndex := strings.Index(
+		integration,
+		`exec unshare --mount --propagation private bash -c '
+    set -euo pipefail`,
+	)
+	scratchMountIndex := strings.Index(
+		integration,
+		"autostream-control-panel-installer-test-scratch /mnt",
+	)
+	lowerBindIndex := strings.Index(integration, "mount --rbind /usr /mnt/usr-lower")
+	lowerPrivateIndex := strings.Index(integration, "mount --make-rprivate /mnt/usr-lower")
+	upperLocalIndex := strings.Index(integration, "/mnt/usr-upper/local")
+	overlayWorkIndex := strings.Index(
+		integration,
+		"install -d -o root -g root -m 0700 /mnt/usr-work",
+	)
+	usrOverlayIndex := strings.Index(
+		integration,
+		"autostream-control-panel-installer-test-usr /usr",
+	)
+	binMountIndex := strings.Index(
+		integration,
+		"autostream-control-panel-installer-test-bin /usr/local/bin",
+	)
+	sbinMountIndex := strings.Index(
+		integration,
+		"autostream-control-panel-installer-test-sbin /usr/local/sbin",
+	)
+	optMountIndex := strings.Index(
+		integration,
+		"autostream-control-panel-installer-test-opt /opt",
+	)
+	shareMountIndex := strings.Index(
+		integration,
+		"autostream-control-panel-installer-test-share /usr/share",
+	)
 	workDirIndex := strings.Index(integration, `WORK_DIR="$(mktemp`)
-	if namespaceIndex < 0 || workDirIndex < 0 || namespaceIndex >= workDirIndex {
-		t.Fatal("installer integration fixture must enter its isolated mount namespace before creating mutable state")
+	if namespaceIndex < 0 ||
+		strictModeIndex < 0 ||
+		scratchMountIndex < 0 ||
+		lowerBindIndex < 0 ||
+		lowerPrivateIndex < 0 ||
+		upperLocalIndex < 0 ||
+		overlayWorkIndex < 0 ||
+		usrOverlayIndex < 0 ||
+		binMountIndex < 0 ||
+		sbinMountIndex < 0 ||
+		optMountIndex < 0 ||
+		shareMountIndex < 0 ||
+		workDirIndex < 0 ||
+		namespaceIndex >= strictModeIndex ||
+		strictModeIndex >= scratchMountIndex ||
+		scratchMountIndex >= lowerBindIndex ||
+		lowerBindIndex >= lowerPrivateIndex ||
+		lowerPrivateIndex >= upperLocalIndex ||
+		upperLocalIndex >= overlayWorkIndex ||
+		overlayWorkIndex >= usrOverlayIndex ||
+		usrOverlayIndex >= binMountIndex ||
+		usrOverlayIndex >= sbinMountIndex ||
+		usrOverlayIndex >= optMountIndex ||
+		usrOverlayIndex >= shareMountIndex ||
+		binMountIndex >= workDirIndex ||
+		sbinMountIndex >= workDirIndex ||
+		optMountIndex >= workDirIndex ||
+		shareMountIndex >= workDirIndex {
+		t.Fatal("installer integration fixture must enter strict mode, mount scratch, prepare the /usr overlay, then mount child fixtures before creating mutable state")
+	}
+	if count := strings.Count(integration, "restore_safe_root_anchor_fixture"); count != 3 {
+		t.Fatalf("unsafe root-anchor fixture safe reset count = %d, want helper plus before/after calls", count)
 	}
 	if count := strings.Count(integration, "[Install]\nWantedBy=multi-user.target"); count != 2 {
 		t.Fatalf("integration fixture must define two enable-capable but disabled units, got %d", count)

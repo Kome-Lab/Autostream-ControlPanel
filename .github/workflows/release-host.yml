@@ -123,44 +123,30 @@ jobs:
           sudo install -d -o root -g root -m 0700 "${smoke_tmp}" "${smoke_cache}"
           cleanup_docker_port_smoke() {
             set +e
-            if sudo test -f /opt/autostream/.docker-port-smoke-owner &&
-              sudo grep -qx 'github-actions-docker-port-smoke' /opt/autostream/.docker-port-smoke-owner; then
+            smoke_owner="${smoke_tmp}/.docker-port-smoke-owner"
+            if sudo test -f "${smoke_owner}" &&
+              sudo grep -qx 'github-actions-docker-port-smoke' "${smoke_owner}"; then
               sudo /usr/bin/docker ps -aq \
                 --filter label=com.docker.compose.project=autostream |
+                xargs -r sudo /usr/bin/docker rm -f
+              sudo /usr/bin/docker ps -aq \
+                --filter label=com.kome-lab.autostream.test=docker-port-smoke |
                 xargs -r sudo /usr/bin/docker rm -f
               sudo /usr/bin/docker network rm autostream_default >/dev/null 2>&1 || true
               sudo /usr/bin/docker image ls -q \
                 --filter label=com.kome-lab.autostream.test=docker-port-smoke |
                 xargs -r sudo /usr/bin/docker image rm -f
               sudo rm -f \
-                /opt/autostream/local-executor/docker/ports/worker.env \
-                /opt/autostream/local-executor/docker/worker.env \
-                /opt/autostream/compose.yml \
-                /opt/autostream/.env \
-                /opt/autostream/.docker-port-smoke-owner \
                 /run/autostream-updater/.autostream-host-lifecycle.lock \
-                /run/autostream-updater/.autostream-updater-f7868912f69c.lock
-              sudo rmdir \
-                /opt/autostream/local-executor/docker/ports \
-                /opt/autostream/local-executor/docker \
-                /opt/autostream/local-executor \
-                /opt/autostream \
-                /run/autostream-updater >/dev/null 2>&1 || true
-            fi
-            if sudo test -f /etc/autostream-local-executor/.docker-port-smoke-owner &&
-              sudo grep -qx 'github-actions-docker-port-smoke' /etc/autostream-local-executor/.docker-port-smoke-owner; then
-              sudo rm -f \
-                /etc/autostream-local-executor/docker/config.json \
-                /etc/autostream-local-executor/policy.json \
-                /etc/autostream-local-executor/.docker-port-smoke-owner
-              sudo rmdir \
-                /etc/autostream-local-executor/docker \
-                /etc/autostream-local-executor >/dev/null 2>&1 || true
+                /run/autostream-updater/.autostream-updater-f7868912f69c.lock \
+                "${smoke_owner}"
             fi
           }
           trap cleanup_docker_port_smoke EXIT
           sudo --preserve-env=AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE \
-            env \
+            /usr/bin/unshare --mount --propagation private \
+            /usr/bin/env \
+              AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE_MOUNT_NS=1 \
               AUTOSTREAM_DOCKER_PORT_FIXTURE_BINARY="${smoke_fixture}" \
               HOME=/root \
               PATH="${PATH}" \

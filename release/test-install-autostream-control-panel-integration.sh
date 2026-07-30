@@ -15,6 +15,19 @@ die() {
 
 if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS:-} != "1" ]]; then
   exec unshare --mount --propagation private bash -c '
+    set -euo pipefail
+    mount -t tmpfs -o nodev,nosuid,mode=0755,uid=0,gid=0 \
+      autostream-control-panel-installer-test-scratch /mnt
+    install -d -o root -g root -m 0755 /mnt/usr-lower
+    mount --rbind /usr /mnt/usr-lower
+    mount --make-rprivate /mnt/usr-lower
+    install -d -o root -g root -m 0755 \
+      /mnt/usr-upper \
+      /mnt/usr-upper/local
+    install -d -o root -g root -m 0700 /mnt/usr-work
+    mount -t overlay \
+      -o nodev,nosuid,lowerdir=/mnt/usr-lower,upperdir=/mnt/usr-upper,workdir=/mnt/usr-work \
+      autostream-control-panel-installer-test-usr /usr
     mount -t tmpfs -o nodev,nosuid,mode=0755,uid=0,gid=0 \
       autostream-control-panel-installer-test-bin /usr/local/bin
     mount -t tmpfs -o nodev,nosuid,mode=0755,uid=0,gid=0 \
@@ -26,6 +39,10 @@ if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS:-} != "1" ]]; then
     exec env AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS=1 bash "$1"
   ' autostream-control-panel-installer-test-mount "$0"
 fi
+grep -Eq ' /mnt .* - tmpfs autostream-control-panel-installer-test-scratch ' \
+  /proc/self/mountinfo || die "isolated /mnt scratch mount is missing"
+grep -Eq ' /usr .* - overlay autostream-control-panel-installer-test-usr ' \
+  /proc/self/mountinfo || die "isolated /usr overlay mount is missing"
 grep -Eq ' /usr/local/bin .* - tmpfs autostream-control-panel-installer-test-bin ' \
   /proc/self/mountinfo || die "isolated /usr/local/bin mount is missing"
 grep -Eq ' /usr/local/sbin .* - tmpfs autostream-control-panel-installer-test-sbin ' \
@@ -34,6 +51,20 @@ grep -Eq ' /opt .* - tmpfs autostream-control-panel-installer-test-opt ' \
   /proc/self/mountinfo || die "isolated /opt mount is missing"
 grep -Eq ' /usr/share .* - tmpfs autostream-control-panel-installer-test-share ' \
   /proc/self/mountinfo || die "isolated /usr/share mount is missing"
+[[ $(stat -c '%m' -- /usr/local/bin) == "/usr/local/bin" ]] || \
+  die "isolated /usr/local/bin mount is not effective"
+[[ $(stat -c '%m' -- /usr/local/sbin) == "/usr/local/sbin" ]] || \
+  die "isolated /usr/local/sbin mount is not effective"
+[[ $(stat -c '%m' -- /opt) == "/opt" ]] || \
+  die "isolated /opt mount is not effective"
+[[ $(stat -c '%m' -- /usr/share) == "/usr/share" ]] || \
+  die "isolated /usr/share mount is not effective"
+[[ $(stat -c '%U:%G:%a' -- /mnt) == "root:root:755" ]] || \
+  die "could not create an isolated safe /mnt scratch fixture"
+[[ $(stat -c '%U:%G:%a' -- /usr) == "root:root:755" ]] || \
+  die "could not create an isolated safe /usr fixture"
+[[ $(stat -c '%U:%G:%a' -- /usr/local) == "root:root:755" ]] || \
+  die "could not create an isolated safe /usr/local fixture"
 [[ $(stat -c '%U:%G:%a' -- /usr/local/bin) == "root:root:755" ]] || \
   die "could not create an isolated safe /usr/local/bin fixture"
 [[ $(stat -c '%U:%G:%a' -- /usr/local/sbin) == "root:root:755" ]] || \
@@ -250,18 +281,28 @@ archive_size="$(stat -c %s "${ARCHIVE}")"
   sha256sum release-manifest.json > release-manifest.json.sha256
 )
 
+restore_safe_root_anchor_fixture() {
+  chmod 00755 /usr/local/bin
+  [[ $(stat -c '%U:%G:%a' -- /usr/local/bin) == "root:root:755" ]] || \
+    die "could not restore isolated /usr/local/bin to root:root mode 0755"
+}
+
 assert_unsafe_root_anchor_mode_rejected() {
   local mode=$1
   local output="${WORK_DIR}/unsafe-root-anchor-${mode}.out"
   local status
+  local actual_mode
+  restore_safe_root_anchor_fixture
   chmod "${mode}" /usr/local/bin
-  [[ $(stat -c '%a' -- /usr/local/bin) == "${mode}" ]] || \
-    die "could not set /usr/local/bin mode ${mode} for the unsafe root-anchor test"
+  actual_mode="$(stat -c '%a' -- /usr/local/bin)" || \
+    die "could not inspect /usr/local/bin mode ${mode} for the unsafe root-anchor test"
+  [[ ${actual_mode} == "${mode}" ]] || \
+    die "could not set /usr/local/bin mode ${mode} for the unsafe root-anchor test; got ${actual_mode}"
   set +e
   "${EXTRACTED_ROOT}/install-autostream-control-panel" > "${output}" 2>&1
   status=$?
   set -e
-  chmod 0755 /usr/local/bin
+  restore_safe_root_anchor_fixture
   [[ ${status} -ne 0 ]] || \
     die "unsafe root-anchor mode ${mode} unexpectedly passed"
   grep -F -- "required system directory has unsafe mode bits: /usr/local/bin" \

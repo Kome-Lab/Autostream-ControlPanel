@@ -37,10 +37,11 @@ func TestDockerPortDaemonSmokeRunsCompiledProductionHarnessAsRoot(t *testing.T) 
 				"go test -c ./internal/updateagent -o \"${smoke_binary}\"",
 				"GOCACHE=\"${smoke_cache}\"",
 				"TMPDIR=\"${smoke_tmp}\"",
+				"/usr/bin/unshare --mount --propagation private",
+				"AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE_MOUNT_NS=1",
 				"-test.run '^TestDockerPortDaemonSmoke$'",
 				"trap cleanup_docker_port_smoke EXIT",
-				"/opt/autostream/.docker-port-smoke-owner",
-				"/etc/autostream-local-executor/.docker-port-smoke-owner",
+				`smoke_owner="${smoke_tmp}/.docker-port-smoke-owner"`,
 				"/run/autostream-updater/.autostream-host-lifecycle.lock",
 				"/run/autostream-updater/.autostream-updater-f7868912f69c.lock",
 			} {
@@ -48,6 +49,47 @@ func TestDockerPortDaemonSmokeRunsCompiledProductionHarnessAsRoot(t *testing.T) 
 					t.Fatalf(
 						"%s does not enforce Docker smoke contract %q",
 						workflowName, required,
+					)
+				}
+			}
+			cleanupStart := strings.Index(
+				stepTail,
+				"cleanup_docker_port_smoke() {",
+			)
+			cleanupEnd := strings.Index(
+				stepTail,
+				"\n          }\n          trap cleanup_docker_port_smoke EXIT",
+			)
+			if cleanupStart < 0 || cleanupEnd <= cleanupStart {
+				t.Fatalf("%s has no bounded Docker smoke cleanup", workflowName)
+			}
+			cleanup := stepTail[cleanupStart:cleanupEnd]
+			normalizedCleanup := strings.Join(strings.Fields(
+				strings.ReplaceAll(cleanup, "\\", " "),
+			), " ")
+			labelledContainerCleanup := strings.Join(strings.Fields(`
+				sudo /usr/bin/docker ps -aq
+				--filter label=com.kome-lab.autostream.test=docker-port-smoke
+				| xargs -r sudo /usr/bin/docker rm -f
+			`), " ")
+			if !strings.Contains(
+				normalizedCleanup,
+				labelledContainerCleanup,
+			) {
+				t.Fatalf(
+					"%s does not clean labelled Docker smoke containers",
+					workflowName,
+				)
+			}
+			for _, forbidden := range []string{
+				"/opt/autostream",
+				"/etc/autostream-local-executor",
+				"rmdir /run/autostream-updater",
+			} {
+				if strings.Contains(cleanup, forbidden) {
+					t.Fatalf(
+						"%s mutates host path %s outside the private mount namespace",
+						workflowName, forbidden,
 					)
 				}
 			}
@@ -107,7 +149,9 @@ func TestDockerPortDaemonSmokeRunsCompiledProductionHarnessAsRoot(t *testing.T) 
 			}
 			for _, required := range []string{
 				"sudo --preserve-env=AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE",
-				"env",
+				"/usr/bin/unshare --mount --propagation private",
+				"/usr/bin/env",
+				"AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE_MOUNT_NS=1",
 				`AUTOSTREAM_DOCKER_PORT_FIXTURE_BINARY="${smoke_fixture}"`,
 				`"${smoke_binary}"`,
 			} {
