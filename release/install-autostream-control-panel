@@ -459,6 +459,7 @@ verify_release_checksum_inventory "${EXTRACTED_ROOT}" false
 
 for required in \
   "bin/control-panel" \
+  "bin/autostream-updater" \
   ".env.example" \
   "backup/autostream-backup-control-panel" \
   "systemd/autostream-control-panel.service.example" \
@@ -472,6 +473,7 @@ done
 [[ -n $(find "${EXTRACTED_ROOT}/share/autostream-control-panel" -type f -print -quit) ]] || \
   die "Control Panel web asset directory is empty"
 [[ -x ${EXTRACTED_ROOT}/bin/control-panel ]] || die "Control Panel binary is not executable"
+[[ -x ${EXTRACTED_ROOT}/bin/autostream-updater ]] || die "updater binary is not executable"
 [[ -x ${EXTRACTED_ROOT}/backup/autostream-backup-control-panel ]] || die "backup executable is not executable"
 grep -Fx -- "ExecStart=${PUBLIC_BINARY}" \
   "${EXTRACTED_ROOT}/systemd/autostream-control-panel.service.example" >/dev/null || \
@@ -646,23 +648,33 @@ verify_managed_release() {
 
 if [[ -e ${RELEASE_DIR} || -L ${RELEASE_DIR} ]]; then
   verify_managed_release "${RELEASE_DIR}"
+  managed_version_output="$(runuser -u autostream -- "${RELEASE_DIR}/bin/control-panel" --version)"
+  [[ ${managed_version_output%%$'\n'*} == "autostream-control-panel ${VERSION}" ]] || \
+    die "managed Control Panel binary is not runnable with the expected version by autostream"
 else
   managed_candidate="$(mktemp -d "${RELEASES_DIR}/.install-${VERSION}.XXXXXXXX")"
   cp -a --no-preserve=ownership -- "${EXTRACTED_ROOT}/." "${managed_candidate}/"
   chown -R root:root "${managed_candidate}"
-  chmod 0755 "${managed_candidate}"
+  find "${managed_candidate}" -type d -exec chmod 0755 {} +
+  find "${managed_candidate}" -type f -exec chmod 0644 {} +
+  chmod 0755 \
+    "${managed_candidate}/bin/control-panel" \
+    "${managed_candidate}/bin/autostream-updater" \
+    "${managed_candidate}/backup/autostream-backup-control-panel" \
+    "${managed_candidate}/install-autostream-control-panel"
   printf '%s\n' "${ARTIFACT_SHA256}" > "${managed_candidate}/.artifact-sha256"
   printf '%s\n' "${VERSION}" > "${managed_candidate}/.version"
   chmod 0444 "${managed_candidate}/.artifact-sha256" "${managed_candidate}/.version"
-  (cd -- "${managed_candidate}" && sha256sum --check --strict checksums.txt)
+  verify_managed_release "${managed_candidate}"
+  candidate_version_output="$(runuser -u autostream -- "${managed_candidate}/bin/control-panel" --version)"
+  [[ ${candidate_version_output%%$'\n'*} == "autostream-control-panel ${VERSION}" ]] || \
+    die "managed Control Panel candidate is not runnable with the expected version by autostream"
   sync -f "${managed_candidate}"
   mv -T -- "${managed_candidate}" "${RELEASE_DIR}"
   managed_candidate=""
+  sync -f "${RELEASES_DIR}"
   verify_managed_release "${RELEASE_DIR}"
 fi
-managed_version_output="$(runuser -u autostream -- "${RELEASE_DIR}/bin/control-panel" --version)"
-[[ ${managed_version_output%%$'\n'*} == "autostream-control-panel ${VERSION}" ]] || \
-  die "managed Control Panel binary is not runnable with the expected version by autostream"
 
 validate_existing_current() {
   local resolved

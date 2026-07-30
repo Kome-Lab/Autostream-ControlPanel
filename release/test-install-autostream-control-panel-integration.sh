@@ -18,16 +18,51 @@ if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS:-} != "1" ]]; then
     set -euo pipefail
     mount -t tmpfs -o nodev,nosuid,mode=0755,uid=0,gid=0 \
       autostream-control-panel-installer-test-scratch /mnt
-    install -d -o root -g root -m 0755 /mnt/usr-lower
+    install -d -o root -g root -m 0755 \
+      /mnt/usr-lower \
+      /mnt/etc-lower \
+      /mnt/var-lower \
+      /mnt/run-lower
     mount --rbind /usr /mnt/usr-lower
     mount --make-rprivate /mnt/usr-lower
+    mount --rbind /etc /mnt/etc-lower
+    mount --make-rprivate /mnt/etc-lower
+    mount --rbind /var /mnt/var-lower
+    mount --make-rprivate /mnt/var-lower
+    mount --rbind /run /mnt/run-lower
+    mount --make-rprivate /mnt/run-lower
     install -d -o root -g root -m 0755 \
       /mnt/usr-upper \
-      /mnt/usr-upper/local
-    install -d -o root -g root -m 0700 /mnt/usr-work
+      /mnt/usr-upper/local \
+      /mnt/etc-upper \
+      /mnt/etc-upper/systemd \
+      /mnt/etc-upper/systemd/system \
+      /mnt/var-upper \
+      /mnt/var-upper/lib \
+      /mnt/var-upper/backups \
+      /mnt/run-upper
+    install -d -o root -g root -m 1777 /mnt/var-upper/tmp
+    install -d -o root -g root -m 0700 \
+      /mnt/usr-work \
+      /mnt/etc-work \
+      /mnt/var-work \
+      /mnt/run-work
     mount -t overlay \
       -o nodev,nosuid,lowerdir=/mnt/usr-lower,upperdir=/mnt/usr-upper,workdir=/mnt/usr-work \
       autostream-control-panel-installer-test-usr /usr
+    mount -t overlay \
+      -o nodev,nosuid,lowerdir=/mnt/etc-lower,upperdir=/mnt/etc-upper,workdir=/mnt/etc-work \
+      autostream-control-panel-installer-test-etc /etc
+    mount -t overlay \
+      -o nodev,nosuid,lowerdir=/mnt/var-lower,upperdir=/mnt/var-upper,workdir=/mnt/var-work \
+      autostream-control-panel-installer-test-var /var
+    mount -t overlay \
+      -o nodev,nosuid,lowerdir=/mnt/run-lower,upperdir=/mnt/run-upper,workdir=/mnt/run-work \
+      autostream-control-panel-installer-test-run /run
+    mount --rbind /mnt/run-lower/systemd /run/systemd
+    mount --make-rprivate /run/systemd
+    run_systemd_identity="$(stat -c "%d:%i" -- /mnt/run-lower/systemd)"
+    [[ $(stat -c "%d:%i" -- /run/systemd) == "${run_systemd_identity}" ]]
     mount -t tmpfs -o nodev,nosuid,mode=0755,uid=0,gid=0 \
       autostream-control-panel-installer-test-bin /usr/local/bin
     mount -t tmpfs -o nodev,nosuid,mode=0755,uid=0,gid=0 \
@@ -36,13 +71,37 @@ if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS:-} != "1" ]]; then
       autostream-control-panel-installer-test-opt /opt
     mount -t tmpfs -o nodev,nosuid,mode=0755,uid=0,gid=0 \
       autostream-control-panel-installer-test-share /usr/share
-    exec env AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS=1 bash "$1"
+    mount -t tmpfs -o ro,nodev,nosuid,noexec,mode=0555,uid=0,gid=0 \
+      autostream-control-panel-installer-test-sealed /mnt
+    exec env \
+      AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS=1 \
+      AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_RUN_SYSTEMD_IDENTITY="${run_systemd_identity}" \
+      bash "$1"
   ' autostream-control-panel-installer-test-mount "$0"
 fi
 grep -Eq ' /mnt .* - tmpfs autostream-control-panel-installer-test-scratch ' \
   /proc/self/mountinfo || die "isolated /mnt scratch mount is missing"
 grep -Eq ' /usr .* - overlay autostream-control-panel-installer-test-usr ' \
   /proc/self/mountinfo || die "isolated /usr overlay mount is missing"
+grep -Eq ' /etc .* - overlay autostream-control-panel-installer-test-etc ' \
+  /proc/self/mountinfo || die "isolated /etc overlay mount is missing"
+grep -Eq ' /var .* - overlay autostream-control-panel-installer-test-var ' \
+  /proc/self/mountinfo || die "isolated /var overlay mount is missing"
+grep -Eq ' /run .* - overlay autostream-control-panel-installer-test-run ' \
+  /proc/self/mountinfo || die "isolated /run overlay mount is missing"
+grep -Eq ' /mnt ro[^ ]*( [^ ]+)* - tmpfs autostream-control-panel-installer-test-sealed ' \
+  /proc/self/mountinfo || die "sealed /mnt mount is missing or writable"
+[[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_RUN_SYSTEMD_IDENTITY:-} =~ ^[0-9]+:[0-9]+$ ]] || \
+  die "host-backed /run/systemd identity was not preserved"
+[[ $(stat -c '%d:%i' -- /run/systemd) == \
+  "${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_RUN_SYSTEMD_IDENTITY}" ]] || \
+  die "host-backed /run/systemd bind changed identity"
+[[ $(stat -c '%U:%G:%a' -- /mnt) == "root:root:555" ]] || \
+  die "sealed /mnt mount ownership or mode is invalid"
+if touch /mnt/autostream-control-panel-installer-test-write-probe 2>/dev/null; then
+  rm -f -- /mnt/autostream-control-panel-installer-test-write-probe
+  die "sealed /mnt unexpectedly permits writes to hidden host aliases"
+fi
 grep -Eq ' /usr/local/bin .* - tmpfs autostream-control-panel-installer-test-bin ' \
   /proc/self/mountinfo || die "isolated /usr/local/bin mount is missing"
 grep -Eq ' /usr/local/sbin .* - tmpfs autostream-control-panel-installer-test-sbin ' \
@@ -59,10 +118,24 @@ grep -Eq ' /usr/share .* - tmpfs autostream-control-panel-installer-test-share '
   die "isolated /opt mount is not effective"
 [[ $(stat -c '%m' -- /usr/share) == "/usr/share" ]] || \
   die "isolated /usr/share mount is not effective"
-[[ $(stat -c '%U:%G:%a' -- /mnt) == "root:root:755" ]] || \
-  die "could not create an isolated safe /mnt scratch fixture"
 [[ $(stat -c '%U:%G:%a' -- /usr) == "root:root:755" ]] || \
   die "could not create an isolated safe /usr fixture"
+[[ $(stat -c '%U:%G:%a' -- /etc) == "root:root:755" ]] || \
+  die "could not create an isolated safe /etc fixture"
+[[ $(stat -c '%U:%G:%a' -- /etc/systemd) == "root:root:755" ]] || \
+  die "could not create an isolated safe /etc/systemd fixture"
+[[ $(stat -c '%U:%G:%a' -- /etc/systemd/system) == "root:root:755" ]] || \
+  die "could not create an isolated safe /etc/systemd/system fixture"
+[[ $(stat -c '%U:%G:%a' -- /var) == "root:root:755" ]] || \
+  die "could not create an isolated safe /var fixture"
+[[ $(stat -c '%U:%G:%a' -- /var/lib) == "root:root:755" ]] || \
+  die "could not create an isolated safe /var/lib fixture"
+[[ $(stat -c '%U:%G:%a' -- /var/backups) == "root:root:755" ]] || \
+  die "could not create an isolated safe /var/backups fixture"
+[[ $(stat -c '%U:%G:%a' -- /var/tmp) == "root:root:1777" ]] || \
+  die "could not create an isolated safe /var/tmp fixture"
+[[ $(stat -c '%U:%G:%a' -- /run) == "root:root:755" ]] || \
+  die "could not create an isolated safe /run fixture"
 [[ $(stat -c '%U:%G:%a' -- /usr/local) == "root:root:755" ]] || \
   die "could not create an isolated safe /usr/local fixture"
 [[ $(stat -c '%U:%G:%a' -- /usr/local/bin) == "root:root:755" ]] || \
@@ -86,6 +159,11 @@ readonly EXTRACTED_ROOT="${ARTIFACTS_DIR}/${ARTIFACT_ID}"
 readonly ARCHIVE="${ARTIFACTS_DIR}/${ARTIFACT_ID}.tar.gz"
 readonly UNIT="autostream-control-panel.service"
 readonly UNIT_PATH="/etc/systemd/system/${UNIT}"
+readonly RUNTIME_UNIT_PATH="/run/systemd/system/${UNIT}"
+[[ -d /run/systemd/system && ! -L /run/systemd/system &&
+  $(readlink -f -- /run/systemd/system) == "/run/systemd/system" &&
+  $(stat -c '%U:%G:%a' -- /run/systemd/system) == "root:root:755" ]] || \
+  die "systemd runtime unit directory is unsafe"
 readonly PUBLIC_BINARY="/usr/local/bin/control-panel"
 readonly PUBLIC_WEB="/usr/share/autostream-control-panel"
 readonly ENV_PATH="/etc/autostream/control-panel.env"
@@ -109,39 +187,256 @@ password=control-panel-installer-integration-preserve-exactly"
 
 created_autostream_user=false
 created_mariadb_dump=false
+fixture_paths_owned=false
+fixture_service_start_attempted=false
 old_pid=""
+old_pid_start_time=""
+runtime_unit_candidate=""
+runtime_unit_identity=""
+runtime_unit_owned=false
+runtime_sync_precommit_hook=""
+runtime_cleanup_preremove_hook=""
+runtime_race_active=false
+runtime_race_backup=""
+runtime_race_foreign_stage=""
+runtime_race_foreign_identity=""
+runtime_race_foreign_hash=""
+
+read_proc_pid_start_time() {
+  local pid=$1
+  local start_time=""
+  local stat_line=""
+  local stat_tail=""
+  [[ ${pid} =~ ^[1-9][0-9]*$ && -r /proc/${pid}/stat ]] || return 1
+  IFS= read -r stat_line < "/proc/${pid}/stat" || return 1
+  [[ ${stat_line} == *") "* ]] || return 1
+  stat_tail="${stat_line##*) }"
+  set -- ${stat_tail}
+  [[ $# -ge 20 ]] || return 1
+  start_time="${20}"
+  [[ ${start_time} =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "${start_time}"
+}
+
+record_fixture_process_identity() {
+  local pid=$1
+  local start_time=""
+  [[ ${pid} =~ ^[1-9][0-9]*$ ]] || die "fixture service did not report a valid PID"
+  start_time="$(read_proc_pid_start_time "${pid}")" || \
+    die "fixture service process identity is unavailable"
+  [[ ${start_time} =~ ^[1-9][0-9]*$ ]] || die "fixture service process start time is invalid"
+  old_pid="${pid}"
+  old_pid_start_time="${start_time}"
+}
+
+clear_fixture_process_identity() {
+  old_pid=""
+  old_pid_start_time=""
+}
+
+kill_recorded_fixture_process() {
+  local current_start_time=""
+  [[ -n ${old_pid} && -n ${old_pid_start_time} ]] || return 0
+  current_start_time="$(read_proc_pid_start_time "${old_pid}" 2>/dev/null)" || return 0
+  [[ ${current_start_time} == "${old_pid_start_time}" ]] || return 0
+  kill "${old_pid}" >/dev/null 2>&1
+}
+
+assert_pid_reuse_guard() (
+  local probe_pid=""
+  local probe_start_time=""
+  /usr/bin/sleep infinity &
+  probe_pid=$!
+  trap 'kill "${probe_pid}" >/dev/null 2>&1; wait "${probe_pid}" >/dev/null 2>&1' EXIT
+  probe_start_time="$(read_proc_pid_start_time "${probe_pid}")"
+  [[ ${probe_start_time} =~ ^[1-9][0-9]*$ ]] || \
+    die "PID reuse guard probe could not read process identity"
+  old_pid="${probe_pid}"
+  old_pid_start_time=$((probe_start_time + 1))
+  kill_recorded_fixture_process
+  kill -0 "${probe_pid}" || die "PID reuse guard signaled an unrelated process"
+)
+
+runtime_unit_identity_is_owned() {
+  [[ ${runtime_unit_owned} == true &&
+    -n ${runtime_unit_identity} &&
+    -f ${RUNTIME_UNIT_PATH} &&
+    ! -L ${RUNTIME_UNIT_PATH} &&
+    $(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}") == "${runtime_unit_identity}" ]]
+}
+
+restore_runtime_sync_race() {
+  local current_identity=""
+  [[ ${runtime_race_active} == true ]] || return 0
+  [[ -n ${runtime_race_backup} &&
+    -f ${runtime_race_backup} &&
+    ! -L ${runtime_race_backup} &&
+    $(stat -c '%d:%i' -- "${runtime_race_backup}") == "${runtime_unit_identity}" ]] || \
+    return 1
+  if [[ -f ${RUNTIME_UNIT_PATH} && ! -L ${RUNTIME_UNIT_PATH} ]]; then
+    current_identity="$(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}")"
+  fi
+  if [[ ${current_identity} == "${runtime_race_foreign_identity}" ]]; then
+    mv -Tf -- "${runtime_race_backup}" "${RUNTIME_UNIT_PATH}" || return 1
+    runtime_race_backup=""
+  elif [[ ${current_identity} == "${runtime_unit_identity}" ]]; then
+    rm -f -- "${runtime_race_backup}" || return 1
+    runtime_race_backup=""
+  else
+    return 1
+  fi
+  if [[ -n ${runtime_race_foreign_stage} ]]; then
+    [[ -f ${runtime_race_foreign_stage} &&
+      ! -L ${runtime_race_foreign_stage} &&
+      $(stat -c '%d:%i' -- "${runtime_race_foreign_stage}") == \
+        "${runtime_race_foreign_identity}" ]] || return 1
+    rm -f -- "${runtime_race_foreign_stage}" || return 1
+    runtime_race_foreign_stage=""
+  fi
+  sync -f /run/systemd/system || return 1
+  runtime_unit_identity_is_owned || return 1
+  runtime_race_active=false
+  runtime_race_foreign_identity=""
+  runtime_race_foreign_hash=""
+}
+
+replace_runtime_unit_for_precommit_probe() {
+  runtime_unit_identity_is_owned || return 1
+  runtime_race_backup="$(
+    mktemp "/run/systemd/system/.${UNIT}.race-backup.XXXXXXXX"
+  )" || return 1
+  rm -f -- "${runtime_race_backup}" || return 1
+  ln -- "${RUNTIME_UNIT_PATH}" "${runtime_race_backup}" || return 1
+  [[ $(stat -c '%d:%i' -- "${runtime_race_backup}") == "${runtime_unit_identity}" ]] || \
+    return 1
+  runtime_race_active=true
+
+  runtime_race_foreign_stage="$(
+    mktemp "/run/systemd/system/.${UNIT}.race-foreign.XXXXXXXX"
+  )" || return 1
+  runtime_race_foreign_identity="$(
+    stat -c '%d:%i' -- "${runtime_race_foreign_stage}"
+  )" || return 1
+  cat > "${runtime_race_foreign_stage}" <<EOF
+[Unit]
+Description=control-panel-installer-integration-foreign-runtime-unit
+
+[Service]
+Type=simple
+User=nobody
+ExecStart=/usr/bin/false
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${runtime_race_foreign_stage}" || return 1
+  runtime_race_foreign_hash="$(
+    sha256sum "${runtime_race_foreign_stage}" | awk 'NR == 1 { print $1 }'
+  )" || return 1
+  sync -f "${runtime_race_foreign_stage}" || return 1
+  mv -Tf -- "${runtime_race_foreign_stage}" "${RUNTIME_UNIT_PATH}" || return 1
+  runtime_race_foreign_stage=""
+  sync -f /run/systemd/system || return 1
+  [[ $(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}") == \
+    "${runtime_race_foreign_identity}" ]]
+}
+
+remove_owned_runtime_unit_for_cleanup() {
+  if [[ -n ${runtime_cleanup_preremove_hook} ]] &&
+    ! "${runtime_cleanup_preremove_hook}"; then
+      return 76
+  fi
+  runtime_unit_identity_is_owned || return 75
+  rm -f -- "${RUNTIME_UNIT_PATH}"
+}
 
 cleanup() {
   local exit_code=$?
+  local cleanup_failed=false
+  local load_state=""
+  local runtime_unit_identity_matches=false
+  local runtime_unit_removed=false
   set +e
-  systemctl stop "${UNIT}" >/dev/null 2>&1
-  systemctl disable "${UNIT}" >/dev/null 2>&1
-  rm -f -- "${UNIT_PATH}"
-  systemctl daemon-reload >/dev/null 2>&1
-  if [[ -n ${old_pid} ]]; then
-    kill "${old_pid}" >/dev/null 2>&1
+  if [[ ${runtime_race_active} == true ]] && ! restore_runtime_sync_race; then
+    cleanup_failed=true
+    printf 'control-panel installer integration test: cleanup could not restore the runtime race probe\n' >&2
   fi
-  rm -f -- \
-    "${PUBLIC_BINARY}" \
-    "${BACKUP_EXECUTABLE}" \
-    "${ENV_PATH}" \
-    "${MARIADB_DEFAULTS}" \
-    "${TARGET_LOCK}"
-  rm -rf -- \
-    "${PUBLIC_WEB}" \
-    "${STATE_DIR}" \
-    "${MANAGED_ROOT}" \
-    "${DATABASE_BACKUP_DIR}" \
-    "${INSTALL_BACKUP_ROOT}" \
-    "${WORK_DIR}"
-  rmdir \
-    /var/backups/autostream/install-migrations \
-    /var/backups/autostream \
-    /var/lib/autostream \
-    /opt/autostream \
-    /etc/autostream \
-    /etc/autostream-local-executor \
-    /run/autostream-updater >/dev/null 2>&1
+  if [[ ${runtime_unit_owned} == true &&
+    -n ${runtime_unit_identity} &&
+    -f ${RUNTIME_UNIT_PATH} &&
+    ! -L ${RUNTIME_UNIT_PATH} &&
+    $(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}") == "${runtime_unit_identity}" ]]; then
+    runtime_unit_identity_matches=true
+  fi
+  if [[ ${runtime_unit_owned} == true &&
+    ${runtime_unit_identity_matches} != true ]]; then
+    cleanup_failed=true
+    printf 'control-panel installer integration test: cleanup refused a missing or replaced runtime unit\n' >&2
+  fi
+  if [[ ${fixture_service_start_attempted} == true &&
+    ${runtime_unit_identity_matches} == true ]]; then
+    if systemctl stop "${UNIT}" >/dev/null 2>&1; then
+      clear_fixture_process_identity
+    else
+      cleanup_failed=true
+      printf 'control-panel installer integration test: cleanup could not stop the fixture service\n' >&2
+    fi
+  fi
+  if [[ ${runtime_unit_owned} == true &&
+    ${runtime_unit_identity_matches} == true ]]; then
+    if remove_owned_runtime_unit_for_cleanup; then
+      runtime_unit_removed=true
+    else
+      cleanup_failed=true
+      printf 'control-panel installer integration test: cleanup refused a changed runtime unit or could not remove it\n' >&2
+    fi
+    if [[ ${runtime_unit_removed} == true ]] &&
+      ! systemctl daemon-reload >/dev/null 2>&1; then
+        cleanup_failed=true
+        printf 'control-panel installer integration test: cleanup daemon-reload failed\n' >&2
+    fi
+  fi
+  if [[ ${fixture_service_start_attempted} == true ]]; then
+    kill_recorded_fixture_process
+    if systemctl is-active --quiet "${UNIT}"; then
+      cleanup_failed=true
+      printf 'control-panel installer integration test: cleanup left the fixture service active\n' >&2
+    fi
+    load_state="$(systemctl show --property LoadState --value "${UNIT}" 2>/dev/null)"
+    if [[ ${load_state} != "not-found" ]]; then
+      cleanup_failed=true
+      printf 'control-panel installer integration test: cleanup left the fixture unit loaded\n' >&2
+    fi
+  fi
+  if [[ -n ${runtime_unit_candidate} ]]; then
+    if ! rm -f -- "${runtime_unit_candidate}"; then
+      cleanup_failed=true
+      printf 'control-panel installer integration test: cleanup could not remove runtime staging\n' >&2
+    fi
+  fi
+  if [[ ${fixture_paths_owned} == true ]]; then
+    rm -f -- \
+      "${UNIT_PATH}" \
+      "${PUBLIC_BINARY}" \
+      "${BACKUP_EXECUTABLE}" \
+      "${ENV_PATH}" \
+      "${MARIADB_DEFAULTS}" \
+      "${TARGET_LOCK}"
+    rm -rf -- \
+      "${PUBLIC_WEB}" \
+      "${STATE_DIR}" \
+      "${MANAGED_ROOT}" \
+      "${DATABASE_BACKUP_DIR}" \
+      "${INSTALL_BACKUP_ROOT}"
+    rmdir \
+      /var/backups/autostream/install-migrations \
+      /var/backups/autostream \
+      /var/lib/autostream \
+      /opt/autostream \
+      /etc/autostream \
+      /etc/autostream-local-executor \
+      /run/autostream-updater >/dev/null 2>&1
+  fi
   if [[ ${created_mariadb_dump} == true ]]; then
     rm -f /usr/bin/mariadb-dump
   fi
@@ -149,12 +444,19 @@ cleanup() {
     userdel autostream >/dev/null 2>&1
     groupdel autostream >/dev/null 2>&1
   fi
+  rm -rf -- "${WORK_DIR}"
+  if [[ ${cleanup_failed} == true && ${exit_code} -eq 0 ]]; then
+    exit_code=1
+  fi
   exit "${exit_code}"
 }
 trap cleanup EXIT
 
+assert_pid_reuse_guard
+
 for path in \
   "${UNIT_PATH}" \
+  "${RUNTIME_UNIT_PATH}" \
   "${PUBLIC_BINARY}" \
   "${PUBLIC_WEB}" \
   "${ENV_PATH}" \
@@ -163,13 +465,170 @@ for path in \
   "${BACKUP_EXECUTABLE}" \
   "${DATABASE_BACKUP_DIR}" \
   "${INSTALL_BACKUP_ROOT}" \
-  "${MARIADB_DEFAULTS}"; do
+  "${MARIADB_DEFAULTS}" \
+  "${TARGET_LOCK}"; do
   [[ ! -e ${path} && ! -L ${path} ]] || die "runner is not clean at ${path}"
 done
 if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
   die "runner already has an autostream account"
 fi
+fixture_paths_owned=true
 created_autostream_user=true
+
+install_runtime_unit_exclusive() {
+  [[ ${runtime_unit_owned} == false ]] || die "runtime unit is already fixture-owned"
+  [[ ! -e ${RUNTIME_UNIT_PATH} && ! -L ${RUNTIME_UNIT_PATH} ]] || \
+    die "runtime unit path appeared after preflight"
+  runtime_unit_candidate="$(mktemp "/run/systemd/system/.${UNIT}.XXXXXXXX")" || \
+    die "could not create runtime unit candidate"
+  install -o root -g root -m 0644 "${UNIT_PATH}" "${runtime_unit_candidate}" || \
+    die "could not populate runtime unit candidate"
+  sync -f "${runtime_unit_candidate}"
+  if ! ln -- "${runtime_unit_candidate}" "${RUNTIME_UNIT_PATH}"; then
+    rm -f -- "${runtime_unit_candidate}"
+    runtime_unit_candidate=""
+    die "runtime unit path appeared after the clean-runner preflight"
+  fi
+  runtime_unit_owned=true
+  runtime_unit_identity="$(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}")"
+  rm -f -- "${runtime_unit_candidate}"
+  runtime_unit_candidate=""
+  sync -f /run/systemd/system
+  assert_owned_runtime_unit_identity
+  cmp -s -- "${UNIT_PATH}" "${RUNTIME_UNIT_PATH}" || \
+    die "atomic runtime unit creation changed the private unit"
+}
+
+replace_owned_runtime_unit() {
+  assert_owned_runtime_unit_identity
+  runtime_unit_candidate="$(mktemp "/run/systemd/system/.${UNIT}.XXXXXXXX")" || \
+    die "could not create replacement runtime unit candidate"
+  install -o root -g root -m 0644 "${UNIT_PATH}" "${runtime_unit_candidate}" || \
+    die "could not populate replacement runtime unit candidate"
+  cmp -s -- "${UNIT_PATH}" "${runtime_unit_candidate}" || \
+    die "replacement runtime unit staging changed the private unit"
+  sync -f "${runtime_unit_candidate}"
+  if [[ -n ${runtime_sync_precommit_hook} ]] &&
+    ! "${runtime_sync_precommit_hook}"; then
+    rm -f -- "${runtime_unit_candidate}"
+    runtime_unit_candidate=""
+    return 76
+  fi
+  if ! runtime_unit_identity_is_owned; then
+    rm -f -- "${runtime_unit_candidate}"
+    runtime_unit_candidate=""
+    return 75
+  fi
+  mv -Tf -- "${runtime_unit_candidate}" "${RUNTIME_UNIT_PATH}" || \
+    die "could not atomically replace the owned runtime unit"
+  runtime_unit_candidate=""
+  runtime_unit_identity="$(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}")"
+  sync -f /run/systemd/system
+  assert_owned_runtime_unit_identity
+  cmp -s -- "${UNIT_PATH}" "${RUNTIME_UNIT_PATH}" || \
+    die "runtime unit does not match the migrated private unit"
+}
+
+assert_owned_runtime_unit_identity() {
+  runtime_unit_identity_is_owned || die "runtime unit is not strictly fixture-owned"
+  [[ $(stat -c '%U:%G:%a' -- "${RUNTIME_UNIT_PATH}") == "root:root:644" ]] || \
+    die "runtime unit path has unsafe ownership or mode"
+}
+
+assert_legacy_runtime_unit_loaded() {
+  assert_owned_runtime_unit_identity
+  cmp -s -- "${UNIT_PATH}" "${RUNTIME_UNIT_PATH}" || \
+    die "legacy runtime unit differs from the private rollback unit"
+  [[ $(systemctl show --property FragmentPath --value "${UNIT}") == "${RUNTIME_UNIT_PATH}" ]] || \
+    die "systemd did not keep the legacy runtime unit loaded"
+  systemctl show --property ExecStart --value "${UNIT}" |
+    grep -F -- "path=/usr/bin/sleep" >/dev/null || \
+    die "systemd did not keep the legacy ExecStart loaded"
+  if [[ -n ${old_pid} ]]; then
+    [[ $(systemctl show --property MainPID --value "${UNIT}") == "${old_pid}" ]] || \
+      die "systemd replaced the running legacy process"
+  fi
+}
+
+assert_managed_runtime_unit_loaded() {
+  assert_owned_runtime_unit_identity
+  cmp -s -- "${UNIT_PATH}" "${RUNTIME_UNIT_PATH}" || \
+    die "managed runtime unit differs from the private installed unit"
+  [[ $(systemctl show --property FragmentPath --value "${UNIT}") == "${RUNTIME_UNIT_PATH}" ]] || \
+    die "systemd did not load the managed runtime unit"
+  systemctl show --property ExecStart --value "${UNIT}" |
+    grep -F -- "path=/usr/local/bin/control-panel" >/dev/null || \
+    die "systemd did not load the managed ExecStart"
+  [[ $(systemctl show --property User --value "${UNIT}") == "autostream" ]] || \
+    die "systemd did not load the managed service user"
+}
+
+snapshot_managed_release_tree() {
+  local release_dir=$1
+  local output_path=$2
+  (
+    cd -- "${release_dir}"
+    find . -printf '%P|%D:%i|%U:%G|%m|%s\n' | LC_ALL=C sort
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  ) > "${output_path}"
+}
+
+if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_PREFLIGHT_PROBE:-} != "1" ]]; then
+  cat > "${UNIT_PATH}" <<'EOF'
+[Unit]
+Description=AutoStream Control Panel fixture preflight preservation probe
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sleep infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${UNIT_PATH}"
+  install_runtime_unit_exclusive
+  rm -f -- "${UNIT_PATH}"
+  systemctl daemon-reload
+  fixture_service_start_attempted=true
+  systemctl start "${UNIT}"
+  preflight_probe_pid="$(systemctl show --property MainPID --value "${UNIT}")"
+  record_fixture_process_identity "${preflight_probe_pid}"
+  preflight_probe_identity="$(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}")"
+  preflight_probe_hash="$(sha256sum "${RUNTIME_UNIT_PATH}" | awk 'NR == 1 { print $1 }')"
+  preflight_probe_enabled="$(systemctl is-enabled "${UNIT}" 2>/dev/null || true)"
+
+  set +e
+  AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS=1 \
+    AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_PREFLIGHT_PROBE=1 \
+    bash "$0" > "${WORK_DIR}/preflight-preservation.out" 2>&1
+  preflight_probe_status=$?
+  set -e
+  [[ ${preflight_probe_status} -ne 0 ]] || \
+    die "preflight preservation probe unexpectedly passed"
+  grep -F -- "runner is not clean at ${RUNTIME_UNIT_PATH}" \
+    "${WORK_DIR}/preflight-preservation.out" >/dev/null || \
+    die "preflight preservation probe did not stop at the runtime unit"
+  [[ $(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}") == "${preflight_probe_identity}" ]] || \
+    die "preflight failure replaced the existing runtime unit"
+  [[ $(sha256sum "${RUNTIME_UNIT_PATH}" | awk 'NR == 1 { print $1 }') == \
+    "${preflight_probe_hash}" ]] || \
+    die "preflight failure changed the existing runtime unit"
+  [[ $(systemctl show --property MainPID --value "${UNIT}") == "${preflight_probe_pid}" ]] || \
+    die "preflight failure replaced the existing service process"
+  kill -0 "${preflight_probe_pid}" || \
+    die "preflight failure stopped the existing service process"
+  [[ $(systemctl is-enabled "${UNIT}" 2>/dev/null || true) == "${preflight_probe_enabled}" ]] || \
+    die "preflight failure changed the existing service enablement"
+
+  systemctl stop "${UNIT}"
+  fixture_service_start_attempted=false
+  clear_fixture_process_identity
+  assert_owned_runtime_unit_identity
+  rm -f -- "${RUNTIME_UNIT_PATH}"
+  systemctl daemon-reload
+  runtime_unit_owned=false
+  runtime_unit_identity=""
+fi
 
 if [[ ! -e /usr/bin/mariadb-dump && ! -L /usr/bin/mariadb-dump ]]; then
   install -o root -g root -m 0755 /dev/null /usr/bin/mariadb-dump
@@ -203,6 +662,16 @@ exit 99
 EOF
 chmod 0755 "${EXTRACTED_ROOT}/bin/control-panel"
 
+cat > "${EXTRACTED_ROOT}/bin/autostream-updater" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  printf '%s\n' 'autostream-updater v9.9.9'
+  exit 0
+fi
+exit 99
+EOF
+chmod 0755 "${EXTRACTED_ROOT}/bin/autostream-updater"
+
 cat > "${EXTRACTED_ROOT}/backup/autostream-backup-control-panel" <<'EOF'
 #!/bin/sh
 exit 0
@@ -234,6 +703,9 @@ printf '%s\n' 'integration-web-asset' \
     sort -z |
     xargs -0 sha256sum > checksums.txt
 )
+grep -Eq '^[0-9a-f]{64}  \./bin/autostream-updater$' \
+  "${EXTRACTED_ROOT}/checksums.txt" || \
+  die "fixture checksum inventory does not cover bin/autostream-updater"
 tar -C "${ARTIFACTS_DIR}" -czf "${ARCHIVE}" "${ARTIFACT_ID}"
 (
   cd -- "${ARTIFACTS_DIR}"
@@ -381,6 +853,49 @@ set -e
 "${EXTRACTED_ROOT}/install-autostream-control-panel" > "${WORK_DIR}/fresh.out"
 [[ -L ${PUBLIC_BINARY} && -L ${PUBLIC_WEB} ]] || \
   die "fresh install did not install stable public links"
+fresh_release="$(readlink -f -- "${MANAGED_ROOT}/current")"
+[[ ${fresh_release} == "${MANAGED_ROOT}/releases/"* ]] || \
+  die "fresh managed release resolved outside the release root"
+for directory_path in \
+  "${fresh_release}" \
+  "${fresh_release}/bin" \
+  "${fresh_release}/backup" \
+  "${fresh_release}/share" \
+  "${fresh_release}/share/autostream-control-panel" \
+  "${fresh_release}/systemd"; do
+  [[ $(stat -c '%U:%G:%a' -- "${directory_path}") == "root:root:755" ]] || \
+    die "fresh managed directory was not normalized to root:root mode 0755"
+done
+for executable_path in \
+  "${fresh_release}/bin/control-panel" \
+  "${fresh_release}/bin/autostream-updater" \
+  "${fresh_release}/backup/autostream-backup-control-panel" \
+  "${fresh_release}/install-autostream-control-panel"; do
+  [[ $(stat -c '%U:%G:%a' -- "${executable_path}") == "root:root:755" ]] || \
+    die "fresh managed executable was not normalized to root:root mode 0755"
+done
+for regular_path in \
+  "${fresh_release}/.env.example" \
+  "${fresh_release}/checksums.txt" \
+  "${fresh_release}/share/autostream-control-panel/index.html" \
+  "${fresh_release}/systemd/autostream-control-panel.service.example"; do
+  [[ $(stat -c '%U:%G:%a' -- "${regular_path}") == "root:root:644" ]] || \
+    die "fresh managed regular file was not normalized to root:root mode 0644"
+done
+for marker_path in \
+  "${fresh_release}/.artifact-sha256" \
+  "${fresh_release}/.version"; do
+  [[ $(stat -c '%U:%G:%a' -- "${marker_path}") == "root:root:444" ]] || \
+    die "fresh managed marker was not normalized to root:root mode 0444"
+done
+runuser -u autostream -- "${fresh_release}/bin/control-panel" --version |
+  grep -Fx -- "autostream-control-panel ${VERSION}" >/dev/null || \
+  die "fresh managed release was not runnable by autostream"
+snapshot_managed_release_tree "${fresh_release}" "${WORK_DIR}/fresh-release.before"
+"${EXTRACTED_ROOT}/install-autostream-control-panel" > "${WORK_DIR}/fresh-idempotent.out"
+snapshot_managed_release_tree "${fresh_release}" "${WORK_DIR}/fresh-release.after"
+cmp -s -- "${WORK_DIR}/fresh-release.before" "${WORK_DIR}/fresh-release.after" || \
+  die "idempotent reinstall changed existing managed release metadata or content"
 [[ -f ${ENV_PATH} && ! -L ${ENV_PATH} ]] || die "fresh install did not seed the environment"
 [[ -f ${MARIADB_DEFAULTS} && ! -L ${MARIADB_DEFAULTS} ]] || \
   die "fresh install did not seed the MariaDB defaults"
@@ -432,11 +947,13 @@ ExecStart=/usr/bin/sleep infinity
 WantedBy=multi-user.target
 EOF
 chmod 0644 "${UNIT_PATH}"
+install_runtime_unit_exclusive
 systemctl daemon-reload
+fixture_service_start_attempted=true
 systemctl start "${UNIT}"
-old_pid="$(systemctl show --property MainPID --value "${UNIT}")"
-[[ ${old_pid} =~ ^[1-9][0-9]*$ ]] || die "legacy service did not start"
+record_fixture_process_identity "$(systemctl show --property MainPID --value "${UNIT}")"
 kill -0 "${old_pid}" || die "legacy service PID is not alive"
+assert_legacy_runtime_unit_loaded
 legacy_unit_file_state="$(systemctl is-enabled "${UNIT}" 2>/dev/null || true)"
 [[ ${legacy_unit_file_state} == "disabled" ]] || \
   die "legacy fixture must begin disabled, got ${legacy_unit_file_state:-unknown}"
@@ -519,6 +1036,7 @@ grep -Fx -- "${LEGACY_WEB_CONTENT}" "${PUBLIC_WEB}/legacy.txt" >/dev/null || \
   die "failed migration did not restore the systemd unit"
 [[ $(sha256sum "${BACKUP_EXECUTABLE}" | awk 'NR == 1 { print $1 }') == "${helper_before}" ]] || \
   die "failed migration did not restore the backup executable"
+assert_legacy_runtime_unit_loaded
 kill -0 "${old_pid}" || die "failed migration stopped the running legacy process"
 
 install -o root -g root -m 0755 /usr/bin/sync "${WORK_DIR}/real-sync"
@@ -569,9 +1087,91 @@ grep -Fx -- "${LEGACY_BINARY_CONTENT}" "${PUBLIC_BINARY}" >/dev/null || \
   die "sync failure rollback did not restore the backup executable"
 [[ $(systemctl show --property MainPID --value "${UNIT}") == "${old_pid}" ]] || \
   die "sync failure rollback replaced the running legacy process"
+assert_legacy_runtime_unit_loaded
 kill -0 "${old_pid}" || die "sync failure rollback stopped the running legacy process"
 
 "${EXTRACTED_ROOT}/install-autostream-control-panel" > "${WORK_DIR}/migration.out"
+runtime_race_fragment_before="$(systemctl show --property FragmentPath --value "${UNIT}")"
+runtime_race_exec_start_before="$(systemctl show --property ExecStart --value "${UNIT}")"
+runtime_race_user_before="$(systemctl show --property User --value "${UNIT}")"
+runtime_race_pid_before="$(systemctl show --property MainPID --value "${UNIT}")"
+runtime_race_enabled_before="$(systemctl is-enabled "${UNIT}" 2>/dev/null || true)"
+runtime_sync_precommit_hook=replace_runtime_unit_for_precommit_probe
+set +e
+replace_owned_runtime_unit
+runtime_race_status=$?
+set -e
+runtime_sync_precommit_hook=""
+[[ ${runtime_race_status} -eq 75 ]] || \
+  die "runtime precommit race unexpectedly committed"
+[[ ${runtime_race_active} == true ]] || \
+  die "runtime precommit race did not retain recovery ownership"
+[[ $(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}") == \
+  "${runtime_race_foreign_identity}" ]] || \
+  die "runtime precommit race changed the foreign unit inode"
+[[ $(sha256sum "${RUNTIME_UNIT_PATH}" | awk 'NR == 1 { print $1 }') == \
+  "${runtime_race_foreign_hash}" ]] || \
+  die "runtime precommit race changed the foreign unit hash"
+[[ $(systemctl show --property FragmentPath --value "${UNIT}") == \
+  "${runtime_race_fragment_before}" ]] || \
+  die "runtime precommit race changed PID1 FragmentPath"
+[[ $(systemctl show --property ExecStart --value "${UNIT}") == \
+  "${runtime_race_exec_start_before}" ]] || \
+  die "runtime precommit race changed PID1 ExecStart"
+[[ $(systemctl show --property User --value "${UNIT}") == \
+  "${runtime_race_user_before}" ]] || \
+  die "runtime precommit race changed PID1 User"
+[[ $(systemctl show --property MainPID --value "${UNIT}") == \
+  "${runtime_race_pid_before}" ]] || \
+  die "runtime precommit race changed PID1 MainPID"
+[[ $(systemctl is-enabled "${UNIT}" 2>/dev/null || true) == \
+  "${runtime_race_enabled_before}" ]] || \
+  die "runtime precommit race changed the enabled state"
+kill -0 "${old_pid}" || die "runtime precommit race stopped the legacy process"
+restore_runtime_sync_race || die "could not restore the owned runtime unit after the race probe"
+[[ $(sha256sum "${RUNTIME_UNIT_PATH}" | awk 'NR == 1 { print $1 }') == \
+  "${unit_before}" ]] || die "runtime race probe did not restore the legacy unit"
+
+runtime_cleanup_preremove_hook=replace_runtime_unit_for_precommit_probe
+set +e
+remove_owned_runtime_unit_for_cleanup
+runtime_cleanup_race_status=$?
+set -e
+runtime_cleanup_preremove_hook=""
+[[ ${runtime_cleanup_race_status} -eq 75 ]] || \
+  die "cleanup pre-remove race unexpectedly removed or accepted a foreign unit"
+[[ ${runtime_race_active} == true ]] || \
+  die "cleanup pre-remove race did not retain recovery ownership"
+[[ $(stat -c '%d:%i' -- "${RUNTIME_UNIT_PATH}") == \
+  "${runtime_race_foreign_identity}" ]] || \
+  die "cleanup pre-remove race changed the foreign unit inode"
+[[ $(sha256sum "${RUNTIME_UNIT_PATH}" | awk 'NR == 1 { print $1 }') == \
+  "${runtime_race_foreign_hash}" ]] || \
+  die "cleanup pre-remove race changed the foreign unit hash"
+[[ $(systemctl show --property FragmentPath --value "${UNIT}") == \
+  "${runtime_race_fragment_before}" ]] || \
+  die "cleanup pre-remove race changed PID1 FragmentPath"
+[[ $(systemctl show --property ExecStart --value "${UNIT}") == \
+  "${runtime_race_exec_start_before}" ]] || \
+  die "cleanup pre-remove race changed PID1 ExecStart"
+[[ $(systemctl show --property User --value "${UNIT}") == \
+  "${runtime_race_user_before}" ]] || \
+  die "cleanup pre-remove race changed PID1 User"
+[[ $(systemctl show --property MainPID --value "${UNIT}") == \
+  "${runtime_race_pid_before}" ]] || \
+  die "cleanup pre-remove race changed PID1 MainPID"
+[[ $(systemctl is-enabled "${UNIT}" 2>/dev/null || true) == \
+  "${runtime_race_enabled_before}" ]] || \
+  die "cleanup pre-remove race changed the enabled state"
+kill -0 "${old_pid}" || die "cleanup pre-remove race stopped the legacy process"
+restore_runtime_sync_race || \
+  die "could not restore the owned runtime unit after the cleanup race probe"
+[[ $(sha256sum "${RUNTIME_UNIT_PATH}" | awk 'NR == 1 { print $1 }') == \
+  "${unit_before}" ]] || die "cleanup race probe did not restore the legacy unit"
+
+replace_owned_runtime_unit
+systemctl daemon-reload
+assert_managed_runtime_unit_loaded
 [[ -L ${MANAGED_ROOT}/current ]] || die "successful migration did not activate current"
 [[ -L ${PUBLIC_BINARY} && -L ${PUBLIC_WEB} ]] || \
   die "successful migration did not install stable public links"
@@ -596,6 +1196,7 @@ systemctl is-enabled --quiet "${UNIT}" && die "migration unexpectedly enabled th
 kill -0 "${old_pid}" || die "successful migration stopped the running legacy process"
 
 "${EXTRACTED_ROOT}/install-autostream-control-panel" > "${WORK_DIR}/idempotent.out"
+assert_managed_runtime_unit_loaded
 systemctl is-enabled --quiet "${UNIT}" && die "idempotent reinstall unexpectedly enabled the service"
 [[ $(systemctl show --property MainPID --value "${UNIT}") == "${old_pid}" ]] || \
   die "idempotent reinstall replaced the running legacy process"
