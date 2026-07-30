@@ -247,7 +247,7 @@ assert_pid_reuse_guard() (
   local probe_start_time=""
   /usr/bin/sleep infinity &
   probe_pid=$!
-  trap 'kill "${probe_pid}" >/dev/null 2>&1; wait "${probe_pid}" >/dev/null 2>&1' EXIT
+  trap 'kill "${probe_pid}" >/dev/null 2>&1 || true; wait "${probe_pid}" >/dev/null 2>&1 || true' EXIT
   probe_start_time="$(read_proc_pid_start_time "${probe_pid}")"
   [[ ${probe_start_time} =~ ^[1-9][0-9]*$ ]] || \
     die "PID reuse guard probe could not read process identity"

@@ -248,6 +248,7 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`[[ ${current_start_time} == "${old_pid_start_time}" ]]`,
 		"assert_pid_reuse_guard()",
 		"PID reuse guard signaled an unrelated process",
+		`trap 'kill "${probe_pid}" >/dev/null 2>&1 || true; wait "${probe_pid}" >/dev/null 2>&1 || true' EXIT`,
 		`sync -f /run/systemd/system`,
 		"assert_legacy_runtime_unit_loaded()",
 		"assert_managed_runtime_unit_loaded()",
@@ -270,6 +271,12 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		if !strings.Contains(integration, marker) {
 			t.Fatalf("installer integration test is missing scenario %q", marker)
 		}
+	}
+	if strings.Contains(
+		integration,
+		`trap 'kill "${probe_pid}" >/dev/null 2>&1; wait "${probe_pid}" >/dev/null 2>&1' EXIT`,
+	) {
+		t.Fatal("PID reuse probe EXIT trap must absorb the expected SIGTERM wait status")
 	}
 	sealedMountPattern := regexp.MustCompile(
 		` /mnt ro[^ ]*( [^ ]+)* - tmpfs autostream-control-panel-installer-test-sealed `,
