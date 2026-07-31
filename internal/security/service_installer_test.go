@@ -288,6 +288,28 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		userHelperJournal >= userHelperRestore {
 		t.Fatal("Control Panel user creation and rollback journal capture must share one deferred-signal window")
 	}
+	finishHelperStart := strings.Index(installer, "finish_installer_signal_transaction() {")
+	if finishHelperStart < 0 {
+		t.Fatal("Control Panel deferred-signal completion helper is missing")
+	}
+	finishHelperEnd := strings.Index(installer[finishHelperStart:], "\n}\n\nINPUT_STAGE=")
+	if finishHelperEnd < 0 {
+		t.Fatal("Control Panel deferred-signal completion helper boundary is missing")
+	}
+	finishHelper := installer[finishHelperStart : finishHelperStart+finishHelperEnd]
+	finishDeactivate := strings.Index(finishHelper, "signal_transaction_active=false")
+	finishCapture := strings.Index(finishHelper, `pending_status="${deferred_termination_status}"`)
+	finishClear := strings.Index(finishHelper, "deferred_termination_status=0")
+	finishDispatch := strings.Index(finishHelper, `handle_installer_signal "${pending_status}"`)
+	if finishDeactivate < 0 ||
+		finishCapture < 0 ||
+		finishClear < 0 ||
+		finishDispatch < 0 ||
+		finishDeactivate >= finishCapture ||
+		finishCapture >= finishClear ||
+		finishClear >= finishDispatch {
+		t.Fatal("Control Panel must close the signal transaction before capturing and clearing its deferred status")
+	}
 	cleanupStart := strings.Index(installer, "\ncleanup() {")
 	cleanupTrap := strings.Index(installer, `trap 'cleanup "$?"' EXIT`)
 	if cleanupStart < 0 || cleanupTrap < 0 || cleanupStart >= cleanupTrap {

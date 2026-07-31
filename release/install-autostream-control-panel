@@ -152,8 +152,9 @@ begin_installer_signal_transaction() {
 }
 
 finish_installer_signal_transaction() {
-  local pending_status="${deferred_termination_status}"
+  local pending_status
   signal_transaction_active=false
+  pending_status="${deferred_termination_status}"
   deferred_termination_status=0
   if [[ ${pending_status} -ne 0 ]]; then
     handle_installer_signal "${pending_status}"
