@@ -834,9 +834,13 @@ assert_unsafe_root_anchor_mode_rejected() {
   restore_safe_root_anchor_fixture
   [[ ${status} -ne 0 ]] || \
     die "unsafe root-anchor mode ${mode} unexpectedly passed"
-  grep -F -- "required system directory has unsafe mode bits: /usr/local/bin" \
-    "${output}" >/dev/null || \
+  if ! grep -F -- "required system directory has unsafe mode bits: /usr/local/bin" \
+    "${output}" >/dev/null; then
+    printf 'control-panel installer integration test: captured installer output for unsafe root-anchor mode %s:\n' \
+      "${mode}" >&2
+    cat -- "${output}" >&2
     die "unsafe root-anchor mode ${mode} did not fail with the expected message"
+  fi
   [[ ! -e ${MANAGED_ROOT} && ! -L ${MANAGED_ROOT} ]] || \
     die "unsafe root-anchor mode ${mode} mutated managed state"
   if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then

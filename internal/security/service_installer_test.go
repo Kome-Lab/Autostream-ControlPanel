@@ -65,6 +65,8 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`chown root:root /proc/self/fd/8`,
 		`chmod 0600 /proc/self/fd/8`,
 		`shared_lock_fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)"`,
+		`-f /proc/self/fd/8`,
+		`$(stat -Lc '%U:%G:%a' -- /proc/self/fd/8) == "root:root:600"`,
 		`die "shared host-setup lock identity changed while being opened"`,
 		`flock -n 8 || die "another AutoStream installer is provisioning shared host state"`,
 		`die "shared host-setup lock identity changed after acquisition"`,
@@ -73,6 +75,8 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`chown root:root /proc/self/fd/9`,
 		`chmod 0600 /proc/self/fd/9`,
 		`target_lock_fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)"`,
+		`-f /proc/self/fd/9`,
+		`$(stat -Lc '%U:%G:%a' -- /proc/self/fd/9) == "root:root:600"`,
 		`die "updater target lock identity changed while being opened"`,
 		`flock -n 9 || die "another privileged update is already active for ${UNIT_NAME}"`,
 		`die "updater target lock identity changed after acquisition"`,
@@ -156,6 +160,7 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`exec 8>"${SHARED_HOST_SETUP_LOCK}"`,
 		`exec 9>"${TARGET_LOCK}"`,
 		`exec 9>>"${TARGET_LOCK}"`,
+		`stat -Lc '%F:%U:%G:%a'`,
 		`rm -f -- "${SHARED_HOST_SETUP_LOCK}"`,
 		`rm -f -- "${TARGET_LOCK}"`,
 	} {
@@ -168,6 +173,16 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	}
 	if count := strings.Count(installer, "& 07022"); count != 4 {
 		t.Fatalf("service installer octal unsafe-mode guard count = %d, want 4", count)
+	}
+	rootAnchorCheck := strings.Index(installer, "for fixed_parent in")
+	inputStageAllocation := strings.Index(
+		installer,
+		`mktemp -d /var/tmp/autostream-control-panel-install.XXXXXXXX`,
+	)
+	if rootAnchorCheck < 0 ||
+		inputStageAllocation < 0 ||
+		rootAnchorCheck >= inputStageAllocation {
+		t.Fatal("Control Panel must reject unsafe fixed root anchors before allocating release staging")
 	}
 	bundleVerify := strings.Index(
 		installer,
