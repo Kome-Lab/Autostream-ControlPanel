@@ -985,6 +985,18 @@ func TestControlPanelInstallerRollbackPreservesPreexistingAutostreamGroup(t *tes
 		t.Fatal(err)
 	}
 	integration := string(integrationBytes)
+	currentLinkDefinition := strings.Index(
+		integration,
+		`readonly CURRENT_LINK="${MANAGED_ROOT}/current"`,
+	)
+	currentLinkProbe := strings.Index(
+		integration,
+		`cat > "${WORK_DIR}/signal-mv" <<EOF`,
+	)
+	if currentLinkDefinition < 0 || currentLinkProbe < 0 ||
+		currentLinkDefinition >= currentLinkProbe {
+		t.Fatal("integration fixture must define CURRENT_LINK before expanding the current-link fault probe")
+	}
 	for _, marker := range []string{
 		"useradd TERM transaction exited with",
 		"useradd TERM transaction did not reach its injection boundary",
