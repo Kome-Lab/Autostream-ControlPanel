@@ -1009,6 +1009,8 @@ install -o root -g root -m 0755 "$(command -v groupadd)" \
   "${WORK_DIR}/real-groupadd"
 install -o root -g root -m 0755 "$(command -v groupdel)" \
   "${WORK_DIR}/real-groupdel"
+install -o root -g root -m 0755 "$(command -v useradd)" \
+  "${WORK_DIR}/real-useradd"
 cat > "${WORK_DIR}/signal-groupadd" <<EOF
 #!/bin/bash
 set -euo pipefail
@@ -1089,11 +1091,26 @@ for signal_absent_path in \
     die "signal-interrupted groupadd left persistent installer state"
 done
 
+report_failed_install_probe() {
+  local boundary=$1
+  local output_path=$2
+  printf 'control-panel installer integration test: captured installer output for %s:\n' \
+    "${boundary}" >&2
+  if [[ -f ${output_path} && ! -L ${output_path} ]]; then
+    cat -- "${output_path}" >&2
+  else
+    printf 'control-panel installer integration test: captured output is missing or unsafe: %s\n' \
+      "${output_path}" >&2
+  fi
+}
+
 assert_failed_install_rollback_clean() {
   local boundary=$1
   local stage_before=$2
+  local output_path=$3
   local stage_after
   if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+    report_failed_install_probe "${boundary}" "${output_path}"
     die "${boundary} left the service account behind"
   fi
   stage_after="$(
@@ -1101,8 +1118,14 @@ assert_failed_install_rollback_clean() {
       -name 'autostream-control-panel-install.*' -printf '%f\n' |
       LC_ALL=C sort
   )"
-  [[ ${stage_after} == "${stage_before}" ]] || \
+  if [[ ${stage_after} != "${stage_before}" ]]; then
+    printf 'control-panel installer integration test: %s staging before:\n%s\n' \
+      "${boundary}" "${stage_before}" >&2
+    printf 'control-panel installer integration test: %s staging after:\n%s\n' \
+      "${boundary}" "${stage_after}" >&2
+    report_failed_install_probe "${boundary}" "${output_path}"
     die "${boundary} left private input staging behind"
+  fi
   for absent_path in \
     /opt/autostream \
     /var/lib/autostream \
@@ -1114,8 +1137,10 @@ assert_failed_install_rollback_clean() {
     "${PUBLIC_WEB}" \
     "${BACKUP_EXECUTABLE}" \
     "${MANAGED_ROOT}/current"; do
-    [[ ! -e ${absent_path} && ! -L ${absent_path} ]] || \
+    if [[ -e ${absent_path} || -L ${absent_path} ]]; then
+      report_failed_install_probe "${boundary}" "${output_path}"
       die "${boundary} left persistent installer state"
+    fi
   done
 }
 
@@ -1172,7 +1197,120 @@ fi
 [[ -f ${WORK_DIR}/cleanup-signal-groupdel.executed ]] || \
   die "cleanup-signal groupdel wrapper did not execute"
 assert_failed_install_rollback_clean \
-  "partial-success groupadd rollback" "${partial_success_stage_before}"
+  "partial-success groupadd rollback" \
+  "${partial_success_stage_before}" \
+  "${WORK_DIR}/partial-success-groupadd.out"
+
+cat > "${WORK_DIR}/signal-useradd" <<EOF
+#!/bin/bash
+set -euo pipefail
+useradd_status=0
+if "${WORK_DIR}/real-useradd" "\$@"; then
+  :
+else
+  useradd_status=\$?
+fi
+if [[ \${useradd_status} -eq 0 ]]; then
+  printf '%s\n' delivered > "${WORK_DIR}/signal-useradd.executed"
+  kill -TERM "\${PPID}"
+fi
+exit "\${useradd_status}"
+EOF
+chmod 0755 "${WORK_DIR}/signal-useradd"
+"${WORK_DIR}/real-groupadd" --system autostream
+useradd_term_group_before="$(getent group autostream)"
+useradd_term_group_digest_before="$(
+  sha256sum -- /etc/group | awk 'NR == 1 { print $1 }'
+)"
+useradd_term_gshadow_digest_before="$(
+  sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }'
+)"
+[[ ${useradd_term_group_digest_before} =~ ^[0-9a-f]{64}$ &&
+  ${useradd_term_gshadow_digest_before} =~ ^[0-9a-f]{64}$ ]] || \
+  die "could not snapshot the local group databases before the useradd TERM transaction"
+useradd_term_stage_before="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/signal-useradd' /usr/sbin/useradd &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/signal-useradd-rollback.out" 2>&1
+useradd_term_status=$?
+set -e
+if [[ ${useradd_term_status} -ne 143 ]]; then
+  report_failed_install_probe \
+    "useradd TERM transaction" \
+    "${WORK_DIR}/signal-useradd-rollback.out"
+  die "useradd TERM transaction exited with ${useradd_term_status}, expected 143"
+fi
+if [[ ! -f ${WORK_DIR}/signal-useradd.executed ]]; then
+  report_failed_install_probe \
+    "useradd TERM transaction" \
+    "${WORK_DIR}/signal-useradd-rollback.out"
+  die "useradd TERM transaction did not reach its injection boundary"
+fi
+if id autostream >/dev/null 2>&1; then
+  report_failed_install_probe \
+    "useradd TERM transaction" \
+    "${WORK_DIR}/signal-useradd-rollback.out"
+  die "useradd TERM transaction left the invocation-created service user"
+fi
+if getent passwd autostream-install-rollback >/dev/null 2>&1 ||
+  getent group autostream-install-rollback >/dev/null 2>&1; then
+  report_failed_install_probe \
+    "useradd TERM transaction" \
+    "${WORK_DIR}/signal-useradd-rollback.out"
+  die "useradd TERM transaction left the reserved rollback login"
+fi
+if [[ $(getent group autostream 2>/dev/null || true) != \
+  "${useradd_term_group_before}" ]]; then
+  report_failed_install_probe \
+    "useradd TERM transaction" \
+    "${WORK_DIR}/signal-useradd-rollback.out"
+  die "useradd TERM transaction changed the pre-existing service group"
+fi
+if [[ $(sha256sum -- /etc/group | awk 'NR == 1 { print $1 }') != \
+    "${useradd_term_group_digest_before}" ||
+  $(sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }') != \
+    "${useradd_term_gshadow_digest_before}" ]]; then
+  report_failed_install_probe \
+    "useradd TERM transaction" \
+    "${WORK_DIR}/signal-useradd-rollback.out"
+  die "useradd TERM transaction changed the pre-existing local group databases"
+fi
+useradd_term_stage_after="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+if [[ ${useradd_term_stage_after} != "${useradd_term_stage_before}" ]]; then
+  report_failed_install_probe \
+    "useradd TERM transaction" \
+    "${WORK_DIR}/signal-useradd-rollback.out"
+  die "useradd TERM transaction left private input staging behind"
+fi
+for useradd_term_absent_path in \
+  /opt/autostream \
+  /var/lib/autostream \
+  /etc/autostream \
+  /etc/autostream-local-executor \
+  /var/backups/autostream \
+  "${UNIT_PATH}" \
+  "${PUBLIC_BINARY}" \
+  "${PUBLIC_WEB}" \
+  "${BACKUP_EXECUTABLE}" \
+  "${MANAGED_ROOT}/current"; do
+  if [[ -e ${useradd_term_absent_path} || -L ${useradd_term_absent_path} ]]; then
+    report_failed_install_probe \
+      "useradd TERM transaction" \
+      "${WORK_DIR}/signal-useradd-rollback.out"
+    die "useradd TERM transaction left persistent installer state"
+  fi
+done
+"${WORK_DIR}/real-groupdel" autostream
 
 install -o root -g root -m 0755 "$(command -v install)" \
   "${WORK_DIR}/real-install"
@@ -1202,7 +1340,10 @@ set -e
   die "signal-interrupted directory mutation did not exit with deferred TERM status 143"
 [[ -f ${WORK_DIR}/signal-install.executed ]] || \
   die "signal-interrupted directory mutation did not reach its injection boundary"
-assert_failed_install_rollback_clean directory-mutation "${signal_directory_stage_before}"
+assert_failed_install_rollback_clean \
+  directory-mutation \
+  "${signal_directory_stage_before}" \
+  "${WORK_DIR}/signal-directory-rollback.out"
 
 install -o root -g root -m 0755 "$(command -v mktemp)" \
   "${WORK_DIR}/real-mktemp"
@@ -1233,7 +1374,10 @@ set -e
   die "signal-interrupted temporary allocation did not exit with deferred TERM status 143"
 [[ -f ${WORK_DIR}/signal-mktemp.executed ]] || \
   die "signal-interrupted temporary allocation did not reach its injection boundary"
-assert_failed_install_rollback_clean temporary-allocation "${signal_temporary_stage_before}"
+assert_failed_install_rollback_clean \
+  temporary-allocation \
+  "${signal_temporary_stage_before}" \
+  "${WORK_DIR}/signal-temporary-rollback.out"
 
 install -o root -g root -m 0755 "$(command -v mv)" \
   "${WORK_DIR}/real-mv"
@@ -1264,7 +1408,10 @@ set -e
   die "signal-interrupted current-link mutation did not exit with deferred TERM status 143"
 [[ -f ${WORK_DIR}/signal-mv.executed ]] || \
   die "signal-interrupted current-link mutation did not reach its injection boundary"
-assert_failed_install_rollback_clean current-link-mutation "${signal_link_stage_before}"
+assert_failed_install_rollback_clean \
+  current-link-mutation \
+  "${signal_link_stage_before}" \
+  "${WORK_DIR}/signal-link-rollback.out"
 
 groupadd --system --gid 0 --non-unique autostream
 hostile_group_before="$(getent group autostream)"
@@ -1365,7 +1512,12 @@ done
 rm -f -- "${ENV_PATH}" "${STATE_DIR}/rollback-sentinel"
 rmdir "${STATE_DIR}" /var/lib/autostream /etc/autostream
 userdel autostream
-groupdel autostream
+if getent group autostream >/dev/null 2>&1; then
+  groupdel autostream
+fi
+if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+  die "fixture account teardown left the service account behind"
+fi
 
 install -d -o root -g root -m 0700 /etc/autostream
 printf '%s\n' 'CONTROL_PANEL_INSTALLER_ROLLBACK_ENV=fresh-account' > "${ENV_PATH}"
