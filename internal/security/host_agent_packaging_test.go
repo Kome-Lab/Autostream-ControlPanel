@@ -117,12 +117,31 @@ func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 		`validate_root_parent_chain "${source}" "release source"`,
 		`release asset ${source} must be owned by root:root`,
 		`release asset ${source} must not be writable by group or other`,
-		`for command in awk dd dirname getent groupadd id install ln mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl test tr useradd; do`,
+		`readonly ARTIFACT_MANIFEST_NAME="artifact-manifest.json"`,
+		`readonly MAX_ARCHIVE_SIZE=268435456`,
+		`readonly ARCHIVE_SOURCE="${ARTIFACT_PARENT}/${ARCHIVE_NAME}"`,
+		`$(stat -c '%U:%G:%a' -- "${BUNDLE_STAGE}") == "root:root:700"`,
+		`copy_stable_bundle_archive`,
+		`awk '{ sub(/\/$/, ""); print }' "${BUNDLE_STAGE}/archive.list"`,
+		`die "bundle archive contains duplicate paths"`,
+		`${entry} != *\\*`,
+		`${entry} != *"/./"*`,
+		`${entry} != *"//"*`,
+		`verify_release_checksum_inventory "${EXTRACTED_ROOT}"`,
+		`(.component == "host-agent")`,
+		`(.minimum_agent_version == null)`,
+		`(.minimum_panel_version == $version)`,
+		`(.rollback_compatible == true)`,
+		`(.database_schema == "none")`,
+		`verify_binary_identity "${BINARY_SOURCE}" "autostream-host-agent"`,
+		`verify_binary_identity "${LOCAL_EXECUTOR_BINARY_SOURCE}" "autostream-local-executor"`,
+		`for command in awk basename chmod chown dd dirname find getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel; do`,
 		`HOST_RUNTIME_ROOT="/opt/autostream/host-agent"`,
 		`HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"`,
-		`ln -s "slots/a" "${HOST_RUNTIME_CURRENT}"`,
-		`ln -s "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" "${BINARY_DEST}"`,
-		`ln -s "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" "${LOCAL_EXECUTOR_BINARY_DEST}"`,
+		`create_symlink_with_journal`,
+		`"slots/a" "${HOST_RUNTIME_CURRENT}"`,
+		`"${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" "${BINARY_DEST}"`,
+		`"${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor"`,
 		`config source must be root:root 0600`,
 		`validate_root_parent_chain "${source}" "config source"`,
 		`source_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${source}")`,
@@ -134,7 +153,7 @@ func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 		`create_private_root_directory`,
 		`rollback_prepared_private_directory`,
 		`local_executor_port_config_dir_created`,
-		`install -d -o root -g "${AGENT_GROUP}" -m 0750 "${CONFIG_DIR}"`,
+		`"${CONFIG_DIR}" root "${AGENT_GROUP}" 0750 \`,
 		`die "${path} must be root:${AGENT_GROUP} 0750"`,
 		`both current and legacy Host Agent identities exist; refusing an ambiguous migration`,
 		`retire_legacy_identity`,
@@ -147,6 +166,19 @@ func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 	if strings.Contains(installer, "runtime_token=") || strings.Contains(installer, "--runtime-token") {
 		t.Fatal("host agent installer must not copy the runtime token into argv or environment")
 	}
+	for _, forbidden := range []string{".artifact-sha256", "slot-binding"} {
+		if strings.Contains(installer, forbidden) {
+			t.Fatalf("host agent bootstrap must not write partial self-update binding marker %q", forbidden)
+		}
+	}
+	bundleVerify := strings.Index(
+		installer,
+		`verify_binary_identity "${LOCAL_EXECUTOR_BINARY_SOURCE}" "autostream-local-executor"`,
+	)
+	accountMutation := strings.Index(installer, `groupadd --system "${AGENT_GROUP}"`)
+	if bundleVerify < 0 || accountMutation < 0 || bundleVerify >= accountMutation {
+		t.Fatal("Host Agent bundle and both binary identities must be verified before account mutation")
+	}
 	preflight := strings.Index(installer, `if validate_existing "${CONFIG_DEST}"`)
 	commit := strings.LastIndex(installer, "commit_started=true")
 	if preflight < 0 || commit < 0 || preflight >= commit {
@@ -154,9 +186,9 @@ func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 	}
 	for _, rollbackMarker := range []string{
 		"was_enabled=false",
-		"service_quiesced=false",
+		"service_quiesce_attempted=false",
 		`systemctl disable "${UNIT_NAME}"`,
-		`if [[ ${service_quiesced} == true && ${was_active} == true ]]; then`,
+		`if [[ ${service_quiesce_attempted} == true && ${was_active} == true ]]; then`,
 	} {
 		if !strings.Contains(installer, rollbackMarker) {
 			t.Fatalf("host agent installer is missing rollback marker %q", rollbackMarker)
@@ -205,6 +237,94 @@ func TestHostAgentPrepareModeFailsClosedWithoutIdentity(t *testing.T) {
 	}
 }
 
+func TestHostAgentInstallerRollsBackFreshBootstrapState(t *testing.T) {
+	installerPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-host-agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerPayload)
+	earlyTrap := strings.Index(installer, "arm_cleanup_handler cleanup_bootstrap")
+	accountMutation := strings.Index(installer, `groupadd --system "${AGENT_GROUP}"`)
+	if earlyTrap < 0 || accountMutation < 0 || earlyTrap >= accountMutation {
+		t.Fatal("Host Agent bootstrap rollback trap must be armed before account mutation")
+	}
+	for _, marker := range []string{
+		"agent_group_created=false",
+		"agent_user_created=false",
+		"state_dir_created=false",
+		`rollback_created_directory "${STATE_DIR}" "${state_dir_identity}" "Host Agent state directory"`,
+		"rollback_created_account",
+		"self_update_recovery_timer_a_enable_attempted=true",
+		"self_update_recovery_timer_b_enable_attempted=true",
+		`systemctl stop "${SELF_UPDATE_RECOVERY_SERVICE_A}"`,
+		`systemctl stop "${SELF_UPDATE_RECOVERY_SERVICE_B}"`,
+	} {
+		if !strings.Contains(installer, marker) {
+			t.Fatalf("Host Agent installer is missing bootstrap rollback marker %q", marker)
+		}
+	}
+
+	smokePayload, err := os.ReadFile(filepath.Join(
+		"..", "..", "internal", "security", "testdata",
+		"run-host-agent-installer-prepare-smoke.sh",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	smoke := string(smokePayload)
+	for _, marker := range []string{
+		"late destination preflight failure left a fresh Host Agent account or group",
+		"late destination preflight failure left fresh Host Agent directories",
+		"failed prepare changed the existing Host Agent state directory",
+		"timer enable failure left a recovery timer enabled or active",
+	} {
+		if !strings.Contains(smoke, marker) {
+			t.Fatalf("Host Agent root smoke is missing rollback fixture %q", marker)
+		}
+	}
+}
+
+func TestHostAgentInstallerJournalsSignalSensitiveMutations(t *testing.T) {
+	installerPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-host-agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerPayload)
+	for _, marker := range []string{
+		"pending_cleanup_signal=",
+		"defer_cleanup_signals",
+		"resume_cleanup_signals",
+		`trap - EXIT`,
+		`trap '' INT TERM`,
+		"move_with_journal",
+		"create_symlink_with_journal",
+		"agent_group_creation_attempted=true",
+		"agent_user_creation_attempted=true",
+	} {
+		if !strings.Contains(installer, marker) {
+			t.Fatalf("Host Agent installer is missing signal-safe mutation marker %q", marker)
+		}
+	}
+	if strings.Contains(installer, "trap - EXIT INT TERM") {
+		t.Fatal("Host Agent cleanup must ignore a second INT/TERM instead of restoring their default actions")
+	}
+
+	createStart := strings.Index(installer, "create_managed_directory()")
+	createEnd := strings.Index(installer[createStart:], "\n}")
+	if createStart < 0 || createEnd < 0 {
+		t.Fatal("Host Agent managed-directory helper is missing")
+	}
+	createBody := installer[createStart : createStart+createEnd]
+	deferIndex := strings.Index(createBody, "defer_cleanup_signals")
+	mkdirIndex := strings.Index(createBody, `mkdir -- "${path}"`)
+	journalIndex := strings.Index(createBody, `printf -v "${identity_variable}"`)
+	resumeIndex := strings.Index(createBody, "resume_cleanup_signals")
+	if deferIndex < 0 || mkdirIndex < 0 || journalIndex < 0 || resumeIndex < 0 ||
+		!(deferIndex < mkdirIndex && mkdirIndex < journalIndex && journalIndex < resumeIndex) {
+		t.Fatal("Host Agent directory creation must defer cleanup signals until its rollback identity is journaled")
+	}
+}
+
 func TestHostAgentReleaseSmokePurgesNonEmptyAndEmptyWipeTombstones(t *testing.T) {
 	smokePayload, err := os.ReadFile(filepath.Join(
 		"..", "..", "internal", "security", "testdata",
@@ -220,6 +340,9 @@ func TestHostAgentReleaseSmokePurgesNonEmptyAndEmptyWipeTombstones(t *testing.T)
 		`install -o root -g autostream-host-agent -m 0640 /dev/null \`,
 		`test "$(stat -c '%s:%U:%G:%a' \`,
 		`"0:root:autostream-host-agent:640"`,
+		`prepare mode accepted a self-consistent bundle with invalid artifact metadata`,
+		`prepare mode accepted an archive with a duplicate canonical path`,
+		`duplicate archive path mutated the Host Agent account`,
 	} {
 		if !strings.Contains(smoke, marker) {
 			t.Fatalf("Host Agent root smoke is missing wipe tombstone marker %q", marker)
@@ -253,9 +376,13 @@ func TestHostReleaseAddsAttestedHostAgentAssetsWithoutRemovingLegacyAssets(t *te
 		`channel: "host-agent"`,
 		`- name: Attest host agent manifest`,
 		`subject-path: artifacts/host-agent-manifest.json`,
+		`- name: Attest Host Agent archives`,
+		`artifacts/autostream-host-agent_${{ needs.release-host.outputs.version }}_linux_amd64.tar.gz`,
+		`artifacts/autostream-host-agent_${{ needs.release-host.outputs.version }}_linux_arm64.tar.gz`,
 		`if [[ "${#assets[@]}" -ne 18 ]]; then`,
 		`(length == 18)`,
 		`(.assets | length == 18)`,
+		`-e "s/vX\\.Y\\.Z/${version}/g" \`,
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("host release workflow is missing %q", marker)

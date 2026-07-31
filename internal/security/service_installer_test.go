@@ -26,31 +26,113 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`readonly ENV_DEST="/etc/autostream/control-panel.env"`,
 		`readonly UNIT_DEST="/etc/systemd/system/autostream-control-panel.service"`,
 		`readonly INSTALL_BACKUP_ROOT="/var/backups/autostream/install-migrations/control-panel"`,
-		"sha256sum --check --strict",
-		"release-manifest.json",
-		`(.minimum_agent_version | type == "string"`,
+		`readonly ARTIFACT_MANIFEST_NAME="artifact-manifest.json"`,
+		`readonly MAX_ARCHIVE_SIZE=268435456`,
+		`$(stat -c '%U:%G:%a' -- "${INPUT_STAGE}") == "root:root:700"`,
+		`[[ ${ARTIFACT_SIZE} -le ${MAX_ARCHIVE_SIZE} ]]`,
+		`awk '{ sub(/\/$/, ""); print }' "${INPUT_STAGE}/archive.list"`,
+		`die "release archive contains duplicate paths"`,
+		`${entry} != *\\*`,
+		`${entry} != *"/./"*`,
+		`${entry} != *"//"*`,
+		`["archive", "build_date", "commit", "compatibility", "component",`,
+		`(.component == "control-panel")`,
+		`(.minimum_agent_version == "v1.7.0")`,
+		`(.minimum_panel_version == null)`,
+		`(.rollback_compatible == true)`,
 		`(.database_schema == "backward_compatible")`,
-		`([.artifacts[].arch] | sort == ["amd64", "arm64"])`,
-		`.size | type == "number" and . > 0 and . <= 268435456`,
+		`(.name == $archive_name)`,
+		`(.root == $artifact_id)`,
+		`(.os == "linux")`,
+		`(.arch == $arch)`,
 		`verify_release_checksum_inventory "${release_dir}" true`,
 		`release file is not listed in checksums.txt`,
 		".artifact-sha256",
 		".version",
 		`existing environment file must be root-only or root-readable with mode 0600/0640`,
 		`[[ -f /usr/bin/mariadb-dump && ! -L /usr/bin/mariadb-dump && -x /usr/bin/mariadb-dump ]]`,
-		`[[ ${binary_version_output%%$'\n'*} == "autostream-control-panel ${VERSION}" ]]`,
 		`ensure_root_only_backup_directory "${INSTALL_BACKUP_ROOT}"`,
 		`require_secure_root_directory "${fixed_parent}"`,
 		`required system directory does not resolve to its fixed path`,
 		`existing service state path is not a safe directory`,
 		`sync_installer_filesystems || die "could not durably commit the installed files"`,
+		`ensure_permanent_lock_directory /run/autostream-updater`,
+		`ensure_permanent_lock_path_atomically()`,
+		`if ln -- "${lock_create_stage}" "${path}" 2>/dev/null; then`,
+		`readonly SHARED_HOST_SETUP_LOCK="/run/autostream-updater/.autostream-runtime-host-setup.lock"`,
+		`ensure_permanent_lock_path_atomically "${SHARED_HOST_SETUP_LOCK}"`,
+		`exec 8<>"${SHARED_HOST_SETUP_LOCK}"`,
+		`chown root:root /proc/self/fd/8`,
+		`chmod 0600 /proc/self/fd/8`,
+		`shared_lock_fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)"`,
+		`die "shared host-setup lock identity changed while being opened"`,
+		`flock -n 8 || die "another AutoStream installer is provisioning shared host state"`,
+		`die "shared host-setup lock identity changed after acquisition"`,
+		`ensure_permanent_lock_path_atomically "${TARGET_LOCK}"`,
+		`exec 9<>"${TARGET_LOCK}"`,
+		`chown root:root /proc/self/fd/9`,
+		`chmod 0600 /proc/self/fd/9`,
+		`target_lock_fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)"`,
+		`die "updater target lock identity changed while being opened"`,
 		`flock -n 9 || die "another privileged update is already active for ${UNIT_NAME}"`,
+		`die "updater target lock identity changed after acquisition"`,
 		`rollback was incomplete; root-only recovery evidence is retained`,
-		`cp -a -- "${link_path}" "${backup_path}"`,
+		`prepare_install_directory`,
+		`rollback_prepared_directories`,
+		`service_user_created`,
+		`service_group_created`,
+		`release_dir_created`,
+		`A published lock pathname is intentionally persistent`,
+		`shared_lock_opened`,
+		`target_lock_opened`,
+		`remove_pending_link`,
+		`record_created_backup`,
+		`unit_backup_created=false`,
+		`unit_backup_identity=""`,
+		`backup_exec_backup_created=false`,
+		`backup_exec_backup_identity=""`,
+		`previous_public_backup_created`,
+		`previous_public_backup_identities`,
+		`previous_public_backup_sha256`,
+		`previous_public_uids`,
+		`previous_public_gids`,
+		`previous_public_modes`,
+		`previous_public_sha256`,
+		`die "legacy public backup must be owned by root:root: ${backup_path}"`,
+		`service_group_gid="$(getent group autostream | awk -F: 'NR == 1 { print $3 }')"`,
+		`die "autostream service group must not use GID 0"`,
+		`service_user_gid="$(id -g autostream)"`,
+		`[[ ${service_user_gid} == "${service_group_gid}" ]]`,
+		`userdel autostream`,
+		`groupdel autostream`,
+		`cleanup_running=false`,
+		`signal_transaction_active=false`,
+		`deferred_termination_status=0`,
+		`handle_installer_signal()`,
+		`restore_installer_signal_traps()`,
+		`trap '' HUP INT TERM`,
+		`trap 'handle_installer_signal 129' HUP`,
+		`trap 'handle_installer_signal 130' INT`,
+		`trap 'handle_installer_signal 143' TERM`,
+		`begin_installer_signal_transaction()`,
+		`finish_installer_signal_transaction()`,
+		`create_journaled_temporary_path()`,
+		`copy_created_backup_and_record()`,
+		`create_autostream_group()`,
+		`create_autostream_user()`,
+		`create_journaled_temporary_path managed_candidate directory`,
+		`create_journaled_temporary_path lock_create_stage file`,
+		`create_journaled_temporary_path env_stage file`,
+		`create_journaled_temporary_path unit_stage file`,
+		`create_journaled_temporary_path backup_exec_stage file`,
+		`create_journaled_temporary_path backup_config_stage file`,
+		`copy_created_backup_and_record "${link_path}" "${backup_path}"`,
 		`find "${managed_candidate}" -type d -exec chmod 0755 {} +`,
 		`find "${managed_candidate}" -type f -exec chmod 0644 {} +`,
 		`"${managed_candidate}/bin/autostream-updater"`,
 		`verify_managed_release "${managed_candidate}"`,
+		`verify_binary_identity "${EXTRACTED_ROOT}/bin/control-panel" "autostream-control-panel"`,
+		`verify_binary_identity "${EXTRACTED_ROOT}/bin/autostream-updater" "autostream-updater"`,
 		`candidate_version_output="$(runuser -u autostream -- "${managed_candidate}/bin/control-panel" --version)"`,
 		`sync -f "${RELEASES_DIR}"`,
 		`managed_version_output="$(runuser -u autostream -- "${RELEASE_DIR}/bin/control-panel" --version)"`,
@@ -68,6 +150,14 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`normalize_managed_release_modes`,
 		`find "${RELEASE_DIR}" -type d -exec chmod`,
 		`find "${RELEASE_DIR}" -type f -exec chmod`,
+		"ARCHIVE_CHECKSUM_SOURCE",
+		"MANIFEST_SOURCE",
+		"release-manifest.json",
+		`exec 8>"${SHARED_HOST_SETUP_LOCK}"`,
+		`exec 9>"${TARGET_LOCK}"`,
+		`exec 9>>"${TARGET_LOCK}"`,
+		`rm -f -- "${SHARED_HOST_SETUP_LOCK}"`,
+		`rm -f -- "${TARGET_LOCK}"`,
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("service installer must print, not automatically execute, %q", forbidden)
@@ -78,6 +168,118 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	}
 	if count := strings.Count(installer, "& 07022"); count != 4 {
 		t.Fatalf("service installer octal unsafe-mode guard count = %d, want 4", count)
+	}
+	bundleVerify := strings.Index(
+		installer,
+		`verify_binary_identity "${EXTRACTED_ROOT}/bin/autostream-updater" "autostream-updater"`,
+	)
+	accountMutation := strings.Index(installer, "groupadd --system autostream")
+	if bundleVerify < 0 || accountMutation < 0 || bundleVerify >= accountMutation {
+		t.Fatal("Control Panel archive, manifest, and binary identities must be verified before account mutation")
+	}
+	sharedLockAcquisition := strings.Index(
+		installer,
+		`flock -n 8 || die "another AutoStream installer is provisioning shared host state"`,
+	)
+	targetLockAcquisition := strings.Index(
+		installer,
+		`flock -n 9 || die "another privileged update is already active for ${UNIT_NAME}"`,
+	)
+	sharedLockPrecheck := strings.Index(
+		installer,
+		`die "shared host-setup lock identity changed while being opened"`,
+	)
+	sharedLockPostcheck := strings.Index(
+		installer,
+		`die "shared host-setup lock identity changed after acquisition"`,
+	)
+	targetLockPrecheck := strings.Index(
+		installer,
+		`die "updater target lock identity changed while being opened"`,
+	)
+	targetLockPostcheck := strings.Index(
+		installer,
+		`die "updater target lock identity changed after acquisition"`,
+	)
+	parentMutation := strings.Index(
+		installer,
+		`prepare_install_directory /opt/autostream root root 0755`,
+	)
+	if sharedLockAcquisition < 0 ||
+		targetLockAcquisition < 0 ||
+		sharedLockPrecheck < 0 ||
+		sharedLockPostcheck < 0 ||
+		targetLockPrecheck < 0 ||
+		targetLockPostcheck < 0 ||
+		accountMutation < 0 ||
+		parentMutation < 0 ||
+		sharedLockPrecheck >= sharedLockAcquisition ||
+		sharedLockAcquisition >= sharedLockPostcheck ||
+		sharedLockPostcheck >= targetLockPrecheck ||
+		targetLockPrecheck >= targetLockAcquisition ||
+		targetLockAcquisition >= targetLockPostcheck ||
+		sharedLockAcquisition >= targetLockAcquisition ||
+		targetLockAcquisition >= accountMutation ||
+		targetLockAcquisition >= parentMutation ||
+		targetLockPostcheck >= accountMutation ||
+		targetLockPostcheck >= parentMutation {
+		t.Fatal("Control Panel must acquire the shared host lock, then its target lock, before shared mutations")
+	}
+	groupGIDValidation := strings.Index(installer, `die "autostream service group must not use GID 0"`)
+	userMutation := strings.Index(installer, `create_autostream_user "${service_group_gid}"`)
+	if groupGIDValidation < 0 || userMutation < 0 || groupGIDValidation >= userMutation {
+		t.Fatal("Control Panel service group numeric GID must be validated before user creation")
+	}
+	groupHelperStart := strings.Index(installer, "create_autostream_group()")
+	userHelperStart := strings.Index(installer, "create_autostream_user()")
+	groupHelperMask := strings.Index(installer[groupHelperStart:userHelperStart], "begin_installer_signal_transaction")
+	groupHelperMutation := strings.Index(installer[groupHelperStart:userHelperStart], "groupadd --system autostream")
+	groupHelperJournal := strings.Index(installer[groupHelperStart:userHelperStart], "service_group_created=true")
+	groupHelperRestore := strings.Index(installer[groupHelperStart:userHelperStart], "finish_installer_signal_transaction")
+	if groupHelperStart < 0 ||
+		userHelperStart < 0 ||
+		groupHelperMask < 0 ||
+		groupHelperMutation < 0 ||
+		groupHelperJournal < 0 ||
+		groupHelperRestore < 0 ||
+		groupHelperMask >= groupHelperMutation ||
+		groupHelperMutation >= groupHelperJournal ||
+		groupHelperJournal >= groupHelperRestore {
+		t.Fatal("Control Panel group creation and rollback journal capture must share one deferred-signal window")
+	}
+	userHelperEnd := strings.Index(installer[userHelperStart:], "\n\nif ! getent group autostream")
+	if userHelperEnd < 0 {
+		t.Fatal("Control Panel user helper boundary is missing")
+	}
+	userHelper := installer[userHelperStart : userHelperStart+userHelperEnd]
+	userHelperMask := strings.Index(userHelper, "begin_installer_signal_transaction")
+	userHelperMutation := strings.Index(userHelper, "useradd --system")
+	userHelperJournal := strings.Index(userHelper, "service_user_created=true")
+	userHelperRestore := strings.Index(userHelper, "finish_installer_signal_transaction")
+	if userHelperMask < 0 ||
+		userHelperMutation < 0 ||
+		userHelperJournal < 0 ||
+		userHelperRestore < 0 ||
+		userHelperMask >= userHelperMutation ||
+		userHelperMutation >= userHelperJournal ||
+		userHelperJournal >= userHelperRestore {
+		t.Fatal("Control Panel user creation and rollback journal capture must share one deferred-signal window")
+	}
+	cleanupStart := strings.Index(installer, "\ncleanup() {")
+	cleanupTrap := strings.Index(installer, `trap 'cleanup "$?"' EXIT`)
+	if cleanupStart < 0 || cleanupTrap < 0 || cleanupStart >= cleanupTrap {
+		t.Fatal("Control Panel cleanup boundary is missing")
+	}
+	cleanupBody := installer[cleanupStart:cleanupTrap]
+	cleanupMask := strings.Index(cleanupBody, "trap '' HUP INT TERM")
+	cleanupJournal := strings.Index(cleanupBody, "cleanup_running=true")
+	cleanupExitTrapRemoval := strings.Index(cleanupBody, "trap - EXIT")
+	if cleanupMask < 0 ||
+		cleanupJournal < 0 ||
+		cleanupExitTrapRemoval < 0 ||
+		cleanupMask >= cleanupJournal ||
+		cleanupJournal >= cleanupExitTrapRemoval {
+		t.Fatal("Control Panel cleanup must mask termination before disabling its EXIT trap")
 	}
 
 	workflowBytes, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release-host.yml"))
@@ -94,6 +296,13 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`- name: Attest Control Panel archives`,
 		`artifacts/autostream-control-panel_${{ needs.release-host.outputs.version }}_linux_amd64.tar.gz`,
 		`artifacts/autostream-control-panel_${{ needs.release-host.outputs.version }}_linux_arm64.tar.gz`,
+		`"s/vX\\.Y\\.Z/${version}/g"`,
+		`"s/<version>/${version}/g"`,
+		`"s/<arch>/${arch}/g"`,
+		`"s/linux_amd64/linux_${arch}/g"`,
+		`autostream-host-agent_${version}_linux_${arch}.tar.gz`,
+		`(( size > 268435456 ))`,
+		`(.size | type == "number" and . > 0 and . <= 268435456)`,
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("host release workflow is missing installer packaging marker %q", marker)
@@ -123,6 +332,28 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	for _, marker := range []string{
 		"mktemp failure injection did not execute the installer mktemp boundary",
 		"mktemp failure mutated the service account",
+		"self-consistent archive with invalid artifact metadata unexpectedly passed",
+		"invalid artifact metadata mutated the service account",
+		"archive with a duplicate canonical path unexpectedly passed",
+		"duplicate archive path mutated the service account",
+		"late environment preflight changed the existing state directory",
+		"late environment preflight changed the existing service account",
+		"late environment preflight left a fresh service account",
+		"late environment preflight left persistent installer state",
+		"hostile GID 0 mutated the service user or persistent paths",
+		"shared host-setup lock contention mutated account, parents, or current",
+		"shared host-setup contention replaced or truncated the permanent lock",
+		"non-root legacy public backup changed the live or backup boundary",
+		"late failure removed or changed a pre-existing legacy backup",
+		"intentionally stale and ignored",
+		"fixture must begin with the archive as its only adjacent release file",
+		"signal-interrupted groupadd did not exit with deferred TERM status 143",
+		"signal-interrupted groupadd left the service account behind",
+		"signal during rollback left private input staging behind",
+		"signal-safe groupdel wrapper did not execute",
+		"signal-interrupted directory mutation did not exit with deferred TERM status 143",
+		"signal-interrupted temporary allocation did not exit with deferred TERM status 143",
+		"signal-interrupted current-link mutation did not exit with deferred TERM status 143",
 		"unsafe root-anchor mode ${mode} unexpectedly passed",
 		"unsafe root-anchor mode ${mode} mutated managed state",
 		"AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_MOUNT_NS",
@@ -490,11 +721,11 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	guide := string(guideBytes)
 	for _, marker := range []string{
 		"sudo ./install-autostream-control-panel",
-		"gh attestation verify autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz",
-		"gh attestation verify release-manifest.json",
+		"gh attestation verify /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz",
 		"--repo Kome-Lab/Autostream-ControlPanel",
 		"sudo install -o root -g root -m 0644 /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz",
 		"sudo tar --no-same-owner --no-same-permissions -xzf",
+		"サーバーへ転送する release asset は、この `.tar.gz` 1 個だけです",
 		"AUTOSTREAM_WEB_DIR=/usr/share/autostream-control-panel",
 		"installer-owned",
 	} {

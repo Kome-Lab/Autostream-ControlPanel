@@ -20,8 +20,23 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 
 	packagingContract := []string{
 		"- name: Package linux artifacts",
+		`component: "control-panel"`,
+		`minimum_agent_version: "v1.7.0"`,
+		`database_schema: "backward_compatible"`,
+		`"${root}/artifact-manifest.json"`,
 		`find . -type f ! -path './checksums.txt' -print0 | sort -z | xargs -0 sha256sum > checksums.txt`,
 		`tar -C staging -czf "artifacts/${artifact}.tar.gz" "${artifact}"`,
+		`component: "host-agent"`,
+		`minimum_panel_version: $version`,
+		`database_schema: "none"`,
+		`"${host_agent_root}/artifact-manifest.json"`,
+		"- name: Verify embedded artifact manifests against published manifests",
+		`tar -xOzf "artifacts/${control_name}"`,
+		`"${control_root}/checksums.txt" > "${control_checksums}"`,
+		`grep -Fx -- "${control_embedded_sha}  ./artifact-manifest.json"`,
+		`tar -xOzf "artifacts/${host_name}"`,
+		`"${host_root}/checksums.txt" > "${host_checksums}"`,
+		`grep -Fx -- "${host_embedded_sha}  ./artifact-manifest.json"`,
 	}
 	position := 0
 	for _, marker := range packagingContract {
@@ -30,6 +45,22 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 			t.Fatalf("release workflow is missing ordered updater packaging marker %q", marker)
 		}
 		position += relative + len(marker)
+	}
+	for marker, minimumCount := range map[string]int{
+		`(( size > 268435456 ))`:                                  2,
+		`(.size | type == "number" and . > 0 and . <= 268435456)`: 2,
+		`"s/<version>/${version}/g"`:                              1,
+		`"s/<arch>/${arch}/g"`:                                    1,
+		`"s/linux_amd64/linux_${arch}/g"`:                         2,
+		`autostream-host-agent_${version}_linux_${arch}.tar.gz`:   1,
+	} {
+		if strings.Count(workflow, marker) < minimumCount {
+			t.Fatalf(
+				"release workflow needs at least %d occurrence(s) of %q",
+				minimumCount,
+				marker,
+			)
+		}
 	}
 	for _, marker := range []string{
 		`recovery_protocol_version: 2,`,
@@ -76,6 +107,7 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		".digest | type == \"string\" and test(\"^sha256:[0-9a-f]{64}$\")",
 		"- name: Attest release manifest",
 		"- name: Attest update host bootstrap manifest",
+		"- name: Attest Host Agent archives",
 		"- name: Publish verified release atomically",
 		"moved during staging; refusing to publish mismatched assets",
 		"Cannot re-confirm immutable releases immediately before publication",
@@ -260,5 +292,134 @@ func TestHostReleaseManualDispatchCannotPublish(t *testing.T) {
 	}
 	if strings.Contains(resolveStep, `push_release="${INPUT_PUSH_RELEASE}"`) {
 		t.Fatal("workflow_dispatch push_release input must never flow directly to the publish job")
+	}
+}
+
+func TestHostReleaseVerifiesActualArchivesAndPinsExactLegacyAssets(t *testing.T) {
+	workflowPath := filepath.Join("..", "..", ".github", "workflows", "release-host.yml")
+	payload, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(payload)
+
+	const stableVersionGuard = `if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then`
+	if !strings.Contains(workflow, stableVersionGuard) {
+		t.Fatal("stable Host Release workflow must reject prerelease version suffixes")
+	}
+
+	for _, marker := range []string{
+		`bash -n .github/scripts/verify-release-archive.sh`,
+		`bash -n .github/scripts/test-verify-release-archive.sh`,
+		`bash .github/scripts/test-verify-release-archive.sh .github/scripts/verify-release-archive.sh`,
+		`bash .github/scripts/verify-release-archive.sh "artifacts/${artifact}.tar.gz" "${artifact}"`,
+		`bash .github/scripts/verify-release-archive.sh "artifacts/${host_agent_artifact}.tar.gz" "${host_agent_artifact}"`,
+	} {
+		if !strings.Contains(workflow, marker) {
+			t.Fatalf("Host Release workflow is missing archive verifier marker %q", marker)
+		}
+	}
+
+	expectedAssets := []string{
+		"autostream-control-panel_${RELEASE_VERSION}_linux_amd64.tar.gz",
+		"autostream-control-panel_${RELEASE_VERSION}_linux_amd64.tar.gz.sha256",
+		"autostream-control-panel_${RELEASE_VERSION}_linux_arm64.tar.gz",
+		"autostream-control-panel_${RELEASE_VERSION}_linux_arm64.tar.gz.sha256",
+		"autostream-update-host_${RELEASE_VERSION}_linux_amd64.tar.gz",
+		"autostream-update-host_${RELEASE_VERSION}_linux_amd64.tar.gz.sha256",
+		"autostream-update-host_${RELEASE_VERSION}_linux_arm64.tar.gz",
+		"autostream-update-host_${RELEASE_VERSION}_linux_arm64.tar.gz.sha256",
+		"autostream-host-agent_${RELEASE_VERSION}_linux_amd64.tar.gz",
+		"autostream-host-agent_${RELEASE_VERSION}_linux_amd64.tar.gz.sha256",
+		"autostream-host-agent_${RELEASE_VERSION}_linux_arm64.tar.gz",
+		"autostream-host-agent_${RELEASE_VERSION}_linux_arm64.tar.gz.sha256",
+		"host-agent-manifest.json",
+		"host-agent-manifest.json.sha256",
+		"release-manifest.json",
+		"release-manifest.json.sha256",
+		"update-host-bootstrap-manifest.json",
+		"update-host-bootstrap-manifest.json.sha256",
+	}
+	assertExactExpectedReleaseAssets(t, workflow, expectedAssets)
+
+	verifierPath := filepath.Join("..", "..", ".github", "scripts", "verify-release-archive.sh")
+	verifier, err := os.ReadFile(verifierPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`release archive contains a non-file/non-directory member`,
+		`release archive contains a non-canonical member name`,
+		`release archive contains duplicate canonical member names`,
+		`release checksums.txt does not cover the exact regular-file inventory`,
+		`sha256sum --check --strict checksums.txt`,
+	} {
+		if !strings.Contains(string(verifier), marker) {
+			t.Fatalf("release archive verifier is missing %q", marker)
+		}
+	}
+
+	fixturePath := filepath.Join("..", "..", ".github", "scripts", "test-verify-release-archive.sh")
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"extra-file",
+		"missing-checksum",
+		"stale-checksum",
+		"duplicate-member",
+		"symlink-entry",
+		"fifo-entry",
+		"canonical-alias",
+	} {
+		if !strings.Contains(string(fixture), marker) {
+			t.Fatalf("release archive verifier fixture is missing %q", marker)
+		}
+	}
+}
+
+func assertExactExpectedReleaseAssets(t *testing.T, workflow string, expected []string) {
+	t.Helper()
+
+	lines := strings.Split(workflow, "\n")
+	var actual []string
+	inExpectedNames := false
+	foundBlock := false
+	for _, line := range lines {
+		if strings.Contains(line, `cat > "${expected_names}" <<EOF`) {
+			if foundBlock {
+				t.Fatal("release workflow contains multiple expected_names heredocs")
+			}
+			foundBlock = true
+			inExpectedNames = true
+			continue
+		}
+		if !inExpectedNames {
+			continue
+		}
+		name := strings.TrimSpace(line)
+		if name == "EOF" {
+			inExpectedNames = false
+			continue
+		}
+		if name == "" {
+			t.Fatal("expected_names heredoc contains an empty asset name")
+		}
+		actual = append(actual, name)
+	}
+	if !foundBlock || inExpectedNames {
+		t.Fatal("release workflow expected_names heredoc is missing or unterminated")
+	}
+
+	seen := make(map[string]struct{}, len(actual))
+	for _, name := range actual {
+		if _, duplicate := seen[name]; duplicate {
+			t.Fatalf("release workflow expected_names contains duplicate %q", name)
+		}
+		seen[name] = struct{}{}
+	}
+	if got, want := strings.Join(actual, "\n"), strings.Join(expected, "\n"); got != want {
+		t.Fatalf("release workflow expected_names mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }

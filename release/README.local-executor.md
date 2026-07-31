@@ -14,11 +14,16 @@ request carries only the immutable release plan, ownership epoch, policy
 revision, and (for state-changing apply/reconcile operations) a short-lived
 one-time mutation grant.
 
-Use only the same Host Agent archive whose outer SHA-256, manifest, and
-provenance attestation were verified as described in `README.md`, and extract
-it under a root-owned non-writable parent chain. The installer additionally
-binds every binary/unit source by inode identity and SHA-256 during its
-transaction.
+Use only the same unchanged
+`autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz` whose GitHub archive
+attestation was verified as described in `README.md`. Keep that one archive
+adjacent to the root-owned extracted directory until this installer finishes.
+The external SHA-256 and Host Agent manifest assets are automatic-updater
+compatibility inputs and are not manual installer inputs. This entry point
+independently stable-copies and safely re-extracts the adjacent archive,
+verifies its internal checksum inventory and exact `artifact-manifest.json`,
+and binds both Host Agent and Local Executor build identities before persistent
+mutation.
 
 ## Prerequisite
 
@@ -278,6 +283,8 @@ sudo ./install/install-autostream-local-executor \
 The installer:
 
 - requires a regular `root:root 0600` policy source;
+- requires only the unchanged adjacent Host Agent `.tar.gz` as release input;
+- requires `jq`, `sha256sum`, and `tar` on the server;
 - validates it with the packaged binary before replacing any live file;
 - requires its numeric Agent UID/GID to match the installed Host Agent;
 - installs the policy as

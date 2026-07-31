@@ -95,7 +95,7 @@ jobs:
             echo "Version must look like v1.2.3, not ${version}. Remove the dot after v." >&2
             exit 1
           fi
-          if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Version must look like v1.2.3; got ${version}" >&2
             exit 1
           fi
@@ -256,6 +256,16 @@ jobs:
             /bin/bash /workspace/internal/security/testdata/run-local-executor-installer-smoke.sh \
               /workspace
 
+      - name: Validate release archive verifier syntax
+        shell: bash
+        run: |
+          bash -n .github/scripts/verify-release-archive.sh
+          bash -n .github/scripts/test-verify-release-archive.sh
+
+      - name: Test release archive verifier
+        shell: bash
+        run: bash .github/scripts/test-verify-release-archive.sh .github/scripts/verify-release-archive.sh
+
       - name: Build web assets
         working-directory: web
         run: |
@@ -295,8 +305,68 @@ jobs:
             test -d web/out
             cp -R web/out/. "${root}/share/autostream-control-panel/"
             cp release/README.install.md "${root}/README.install.md"
+            sed -i \
+              -e "s/vX\\.Y\\.Z/${version}/g" \
+              -e "s/<version>/${version}/g" \
+              -e "s/<arch>/${arch}/g" \
+              -e "s/linux_amd64/linux_${arch}/g" \
+              "${root}/README.install.md"
+            if grep -Eq -- 'vX\.Y\.Z|<version>|<arch>' "${root}/README.install.md"; then
+              echo "Control Panel release README contains an unresolved version placeholder" >&2
+              exit 1
+            fi
+            grep -F -- \
+              "autostream-host-agent_${version}_linux_${arch}.tar.gz" \
+              "${root}/README.install.md" > /dev/null
+            jq -n \
+              --arg version "${version}" \
+              --arg commit "${GITHUB_SHA}" \
+              --arg build_date "${build_date}" \
+              --arg arch "${arch}" \
+              --arg archive_name "${artifact}.tar.gz" \
+              --arg artifact_root "${artifact}" \
+              '{
+                schema_version: 1,
+                component: "control-panel",
+                source_version: $version,
+                commit: $commit,
+                build_date: $build_date,
+                platform: {os: "linux", arch: $arch},
+                archive: {name: $archive_name, root: $artifact_root},
+                compatibility: {
+                  minimum_agent_version: "v1.7.0",
+                  minimum_panel_version: null,
+                  rollback_compatible: true,
+                  database_schema: "backward_compatible"
+                }
+              }' > "${root}/artifact-manifest.json"
+            jq -e \
+              --arg version "${version}" \
+              --arg commit "${GITHUB_SHA}" \
+              --arg build_date "${build_date}" \
+              --arg arch "${arch}" \
+              --arg archive_name "${artifact}.tar.gz" \
+              --arg artifact_root "${artifact}" \
+              '((keys | sort) ==
+                  ["archive", "build_date", "commit", "compatibility", "component",
+                   "platform", "schema_version", "source_version"]) and
+               (.schema_version == 1) and
+               (.component == "control-panel") and
+               (.source_version == $version) and
+               (.commit == $commit) and
+               (.build_date == $build_date) and
+               (.platform == {os: "linux", arch: $arch}) and
+               (.archive == {name: $archive_name, root: $artifact_root}) and
+               (.compatibility == {
+                 minimum_agent_version: "v1.7.0",
+                 minimum_panel_version: null,
+                 rollback_compatible: true,
+                 database_schema: "backward_compatible"
+               })' \
+              "${root}/artifact-manifest.json" >/dev/null
             (cd "${root}" && find . -type f ! -path './checksums.txt' -print0 | sort -z | xargs -0 sha256sum > checksums.txt)
             tar -C staging -czf "artifacts/${artifact}.tar.gz" "${artifact}"
+            bash .github/scripts/verify-release-archive.sh "artifacts/${artifact}.tar.gz" "${artifact}"
             (cd artifacts && sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256")
             checksum_path="artifacts/${artifact}.tar.gz.sha256"
             test "$(wc -l < "${checksum_path}")" -eq 1
@@ -330,6 +400,17 @@ jobs:
             cp release/uninstall-autostream-local-executor "${host_agent_root}/install/uninstall-autostream-local-executor"
             cp release/README.host-agent.md "${host_agent_root}/README.md"
             cp release/README.local-executor.md "${host_agent_root}/README.local-executor.md"
+            sed -i \
+              -e "s/vX\\.Y\\.Z/${version}/g" \
+              -e "s/linux_amd64/linux_${arch}/g" \
+              "${host_agent_root}/README.md" \
+              "${host_agent_root}/README.local-executor.md"
+            if grep -F 'vX.Y.Z' \
+              "${host_agent_root}/README.md" \
+              "${host_agent_root}/README.local-executor.md"; then
+              echo "Host Agent release README contains an unresolved version placeholder" >&2
+              exit 1
+            fi
             cp systemd/autostream-host-agent.service.example "${host_agent_root}/systemd/autostream-host-agent.service"
             cp systemd/autostream-local-executor.service.example "${host_agent_root}/systemd/autostream-local-executor.service"
             cp systemd/autostream-local-executor.socket.example "${host_agent_root}/systemd/autostream-local-executor.socket"
@@ -341,8 +422,55 @@ jobs:
               "${host_agent_root}/install/uninstall-autostream-host-agent" \
               "${host_agent_root}/install/install-autostream-local-executor" \
               "${host_agent_root}/install/uninstall-autostream-local-executor"
+            jq -n \
+              --arg version "${version}" \
+              --arg commit "${GITHUB_SHA}" \
+              --arg build_date "${build_date}" \
+              --arg arch "${arch}" \
+              --arg archive_name "${host_agent_artifact}.tar.gz" \
+              --arg artifact_root "${host_agent_artifact}" \
+              '{
+                schema_version: 1,
+                component: "host-agent",
+                source_version: $version,
+                commit: $commit,
+                build_date: $build_date,
+                platform: {os: "linux", arch: $arch},
+                archive: {name: $archive_name, root: $artifact_root},
+                compatibility: {
+                  minimum_agent_version: null,
+                  minimum_panel_version: $version,
+                  rollback_compatible: true,
+                  database_schema: "none"
+                }
+              }' > "${host_agent_root}/artifact-manifest.json"
+            jq -e \
+              --arg version "${version}" \
+              --arg commit "${GITHUB_SHA}" \
+              --arg build_date "${build_date}" \
+              --arg arch "${arch}" \
+              --arg archive_name "${host_agent_artifact}.tar.gz" \
+              --arg artifact_root "${host_agent_artifact}" \
+              '((keys | sort) ==
+                  ["archive", "build_date", "commit", "compatibility", "component",
+                   "platform", "schema_version", "source_version"]) and
+               (.schema_version == 1) and
+               (.component == "host-agent") and
+               (.source_version == $version) and
+               (.commit == $commit) and
+               (.build_date == $build_date) and
+               (.platform == {os: "linux", arch: $arch}) and
+               (.archive == {name: $archive_name, root: $artifact_root}) and
+               (.compatibility == {
+                 minimum_agent_version: null,
+                 minimum_panel_version: $version,
+                 rollback_compatible: true,
+                 database_schema: "none"
+               })' \
+              "${host_agent_root}/artifact-manifest.json" >/dev/null
             (cd "${host_agent_root}" && find . -type f ! -path './checksums.txt' -print0 | sort -z | xargs -0 sha256sum > checksums.txt)
             tar -C staging -czf "artifacts/${host_agent_artifact}.tar.gz" "${host_agent_artifact}"
+            bash .github/scripts/verify-release-archive.sh "artifacts/${host_agent_artifact}.tar.gz" "${host_agent_artifact}"
             (cd artifacts && sha256sum "${host_agent_artifact}.tar.gz" > "${host_agent_artifact}.tar.gz.sha256")
             host_agent_checksum_path="artifacts/${host_agent_artifact}.tar.gz.sha256"
             test "$(wc -l < "${host_agent_checksum_path}")" -eq 1
@@ -388,6 +516,10 @@ jobs:
             (cd artifacts && sha256sum --check --strict "${name}.sha256")
 
             size="$(stat -c %s "${path}")"
+            if [[ ! "${size}" =~ ^[1-9][0-9]*$ ]] || (( size > 268435456 )); then
+              echo "Archive ${name} must be between 1 and 268435456 bytes." >&2
+              exit 1
+            fi
             release_artifacts="$(
               jq -c \
                 --arg arch "${arch}" \
@@ -446,7 +578,7 @@ jobs:
                .os == "linux" and
                (.arch == "amd64" or .arch == "arm64") and
                (.name | type == "string") and
-               (.size | type == "number" and . > 0) and
+               (.size | type == "number" and . > 0 and . <= 268435456) and
                (.sha256 | test("^[0-9a-f]{64}$"))))' \
             artifacts/release-manifest.json > /dev/null
 
@@ -572,6 +704,10 @@ jobs:
             (cd artifacts && sha256sum --check --strict "${name}.sha256")
 
             size="$(stat -c %s "${path}")"
+            if [[ ! "${size}" =~ ^[1-9][0-9]*$ ]] || (( size > 268435456 )); then
+              echo "Archive ${name} must be between 1 and 268435456 bytes." >&2
+              exit 1
+            fi
             host_agent_artifacts="$(
               jq -c \
                 --arg arch "${arch}" \
@@ -638,7 +774,7 @@ jobs:
              (all(.artifacts[];
                .os == "linux" and
                (.name == ("autostream-host-agent_" + $version + "_linux_" + .arch + ".tar.gz")) and
-               (.size | type == "number" and . > 0) and
+               (.size | type == "number" and . > 0 and . <= 268435456) and
                (.sha256 | test("^[0-9a-f]{64}$"))))' \
             artifacts/host-agent-manifest.json > /dev/null
 
@@ -646,6 +782,107 @@ jobs:
           test "$(wc -l < artifacts/host-agent-manifest.json.sha256)" -eq 1
           LC_ALL=C grep -Eq '^[0-9a-f]{64}  host-agent-manifest\.json$' artifacts/host-agent-manifest.json.sha256
           (cd artifacts && sha256sum --check --strict host-agent-manifest.json.sha256)
+
+      - name: Verify embedded artifact manifests against published manifests
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          embedded_dir="${RUNNER_TEMP}/embedded-artifact-manifests"
+          rm -rf "${embedded_dir}"
+          mkdir -p "${embedded_dir}"
+          for arch in amd64 arm64; do
+            control_name="autostream-control-panel_${RELEASE_VERSION}_linux_${arch}.tar.gz"
+            control_root="${control_name%.tar.gz}"
+            control_embedded="${embedded_dir}/control-panel-${arch}.json"
+            control_checksums="${embedded_dir}/control-panel-${arch}.checksums.txt"
+            tar -xOzf "artifacts/${control_name}" \
+              "${control_root}/artifact-manifest.json" > "${control_embedded}"
+            tar -xOzf "artifacts/${control_name}" \
+              "${control_root}/checksums.txt" > "${control_checksums}"
+            control_embedded_sha="$(sha256sum "${control_embedded}" | awk 'NR == 1 { print $1 }')"
+            grep -Fx -- "${control_embedded_sha}  ./artifact-manifest.json" \
+              "${control_checksums}" >/dev/null
+            jq -e \
+              --arg version "${RELEASE_VERSION}" \
+              --arg arch "${arch}" \
+              --arg name "${control_name}" \
+              --arg root "${control_root}" \
+              --arg commit "${GITHUB_SHA}" \
+              --slurpfile embedded "${control_embedded}" \
+              '($embedded | length == 1) and
+               ($embedded[0] as $m |
+                 ((($m | keys) | sort) ==
+                   ["archive", "build_date", "commit", "compatibility", "component",
+                    "platform", "schema_version", "source_version"]) and
+                 ($m.schema_version == 1) and
+                 ($m.component == .components[0].service) and
+                 ($m.component == "control-panel") and
+                 ($m.source_version == .components[0].source_version) and
+                 ($m.source_version == $version) and
+                 ($m.commit == .components[0].commit) and
+                 ($m.commit == $commit) and
+                 ($m.build_date | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+                 ($m.platform == {os: "linux", arch: $arch}) and
+                 ($m.archive == {name: $name, root: $root}) and
+                 ((($m.compatibility | keys) | sort) ==
+                   ["database_schema", "minimum_agent_version", "minimum_panel_version",
+                    "rollback_compatible"]) and
+                 ($m.compatibility.minimum_agent_version == .minimum_agent_version) and
+                 ($m.compatibility.minimum_agent_version == "v1.7.0") and
+                 ($m.compatibility.minimum_panel_version == null) and
+                 ($m.compatibility.rollback_compatible == .components[0].rollback_compatible) and
+                 ($m.compatibility.database_schema == .components[0].database_schema) and
+                 ([.components[0].artifacts[] |
+                   select(.os == "linux" and .arch == $arch and .name == $name)] |
+                   length == 1))' \
+              artifacts/release-manifest.json >/dev/null
+
+            host_name="autostream-host-agent_${RELEASE_VERSION}_linux_${arch}.tar.gz"
+            host_root="${host_name%.tar.gz}"
+            host_embedded="${embedded_dir}/host-agent-${arch}.json"
+            host_checksums="${embedded_dir}/host-agent-${arch}.checksums.txt"
+            tar -xOzf "artifacts/${host_name}" \
+              "${host_root}/artifact-manifest.json" > "${host_embedded}"
+            tar -xOzf "artifacts/${host_name}" \
+              "${host_root}/checksums.txt" > "${host_checksums}"
+            host_embedded_sha="$(sha256sum "${host_embedded}" | awk 'NR == 1 { print $1 }')"
+            grep -Fx -- "${host_embedded_sha}  ./artifact-manifest.json" \
+              "${host_checksums}" >/dev/null
+            jq -e \
+              --arg version "${RELEASE_VERSION}" \
+              --arg arch "${arch}" \
+              --arg name "${host_name}" \
+              --arg root "${host_root}" \
+              --arg commit "${GITHUB_SHA}" \
+              --slurpfile embedded "${host_embedded}" \
+              '($embedded | length == 1) and
+               ($embedded[0] as $m |
+                 ((($m | keys) | sort) ==
+                   ["archive", "build_date", "commit", "compatibility", "component",
+                    "platform", "schema_version", "source_version"]) and
+                 ($m.schema_version == 1) and
+                 ($m.component == "host-agent") and
+                 ($m.source_version == .agent_version) and
+                 ($m.source_version == $version) and
+                 ($m.commit == .commit) and
+                 ($m.commit == $commit) and
+                 ($m.build_date | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+                 ($m.platform == {os: "linux", arch: $arch}) and
+                 ($m.archive == {name: $name, root: $root}) and
+                 ($m.compatibility == {
+                   minimum_agent_version: null,
+                   minimum_panel_version: .minimum_panel_version,
+                   rollback_compatible: true,
+                   database_schema: "none"
+                 }) and
+                 ($m.compatibility.minimum_panel_version == $version) and
+                 ([.artifacts[] |
+                   select(.os == "linux" and .arch == $arch and .name == $name)] |
+                   length == 1))' \
+              artifacts/host-agent-manifest.json >/dev/null
+          done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -962,6 +1199,14 @@ jobs:
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-path: artifacts/host-agent-manifest.json
+          create-storage-record: false
+
+      - name: Attest Host Agent archives
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            artifacts/autostream-host-agent_${{ needs.release-host.outputs.version }}_linux_amd64.tar.gz
+            artifacts/autostream-host-agent_${{ needs.release-host.outputs.version }}_linux_arm64.tar.gz
           create-storage-record: false
 
       - name: Publish verified release atomically

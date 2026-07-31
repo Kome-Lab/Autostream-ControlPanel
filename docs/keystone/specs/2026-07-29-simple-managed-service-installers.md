@@ -13,7 +13,7 @@ pull_v2 Local Executor.
 - Control Panel, Observability, Worker, Discord Bot, and Encoder/Recorder host
   release archives.
 - Initial installation and migration from the older direct-file layout.
-- Immutable release checksum and manifest binding.
+- Immutable attested archive, internal checksum, and artifact-manifest binding.
 - Service account, state directory, environment placeholder, systemd unit,
   stable public links, and Control Panel web link.
 - Fixed database-backup executable and private backup filesystem setup for
@@ -24,12 +24,17 @@ pull_v2 Local Executor.
 1. The installer accepts no operator-supplied paths or secrets.
 2. It derives service version and architecture from the official extracted
    directory name.
-3. The archive, archive sidecar, release manifest, and manifest sidecar must be
-   adjacent to that directory.
-4. Release workflows attest both service archives and the manifest. Operators
-   verify both before any root extraction or installer execution.
-5. All outer and inner checksums, the manifest tuple, architecture, required
-   files, and binary version are verified before managed state is activated.
+3. Only the unchanged original archive must be adjacent to that directory.
+   Manual installers never read an external checksum sidecar, release
+   manifest, or manifest sidecar.
+4. Release workflows attest service archives. Operators verify the archive
+   attestation on an operator machine before transferring the one archive to
+   the server.
+5. The installer makes a stable private copy, computes the archive SHA-256,
+   rejects unsafe or duplicate archive entries, safely re-extracts it, and
+   verifies the complete internal checksums, exact `artifact-manifest.json`,
+   architecture, required files, and complete binary build identity before
+   managed state is activated.
 6. Managed releases are named `<version>-<first-12-artifact-sha256>` and carry
    root-owned read-only `.version` and `.artifact-sha256` markers.
 7. Reinstalling the same verified release is idempotent. Conflicting or unsafe
@@ -62,7 +67,7 @@ consumers together.
 ## Acceptance checks
 
 - Every host release archive contains its executable installer before
-  `checksums.txt` is generated.
+  `artifact-manifest.json` and `checksums.txt` are generated.
 - Every systemd example uses the canonical public binary.
 - Static installer contract tests pass in all five repositories.
 - Bash syntax is checked by CI and the release workflow.

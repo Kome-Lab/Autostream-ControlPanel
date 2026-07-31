@@ -150,6 +150,8 @@ grep -Eq ' /usr/share .* - tmpfs autostream-control-panel-installer-test-share '
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly INSTALLER_SOURCE="${SCRIPT_DIR}/install-autostream-control-panel"
 readonly VERSION="v9.9.9"
+readonly BUILD_COMMIT="0123456789abcdef0123456789abcdef01234567"
+readonly BUILD_DATE="2026-07-31T00:00:00Z"
 readonly ARTIFACT_ID="autostream-control-panel_${VERSION}_linux_amd64"
 WORK_DIR="$(mktemp -d /var/tmp/autostream-control-panel-installer-test.XXXXXXXX)" || \
   die "could not create integration work directory"
@@ -173,6 +175,7 @@ readonly BACKUP_EXECUTABLE="/usr/local/sbin/autostream-backup-control-panel"
 readonly DATABASE_BACKUP_DIR="/var/backups/autostream/control-panel"
 readonly INSTALL_BACKUP_ROOT="/var/backups/autostream/install-migrations/control-panel"
 readonly MARIADB_DEFAULTS="/etc/autostream-local-executor/mariadb-backup.cnf"
+readonly SHARED_HOST_SETUP_LOCK="/run/autostream-updater/.autostream-runtime-host-setup.lock"
 TARGET_LOCK_ID="$(printf '%s' "${UNIT}" | sha256sum | awk 'NR == 1 { print substr($1, 1, 12) }')"
 [[ ${TARGET_LOCK_ID} =~ ^[0-9a-f]{12}$ ]] || die "could not derive updater target lock ID"
 readonly TARGET_LOCK_ID
@@ -421,6 +424,7 @@ cleanup() {
       "${BACKUP_EXECUTABLE}" \
       "${ENV_PATH}" \
       "${MARIADB_DEFAULTS}" \
+      "${SHARED_HOST_SETUP_LOCK}" \
       "${TARGET_LOCK}"
     rm -rf -- \
       "${PUBLIC_WEB}" \
@@ -466,6 +470,7 @@ for path in \
   "${DATABASE_BACKUP_DIR}" \
   "${INSTALL_BACKUP_ROOT}" \
   "${MARIADB_DEFAULTS}" \
+  "${SHARED_HOST_SETUP_LOCK}" \
   "${TARGET_LOCK}"; do
   [[ ! -e ${path} && ! -L ${path} ]] || die "runner is not clean at ${path}"
 done
@@ -654,8 +659,8 @@ if [ "${1:-}" = "--version" ]; then
   else
     printf '%s\n' 'autostream-control-panel v9.9.9'
   fi
-  printf '%s\n' 'commit: integration-test'
-  printf '%s\n' 'build_date: integration-test'
+  printf '%s\n' 'commit: 0123456789abcdef0123456789abcdef01234567'
+  printf '%s\n' 'build_date: 2026-07-31T00:00:00Z'
   exit 0
 fi
 exit 99
@@ -666,6 +671,8 @@ cat > "${EXTRACTED_ROOT}/bin/autostream-updater" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
   printf '%s\n' 'autostream-updater v9.9.9'
+  printf '%s\n' 'commit: 0123456789abcdef0123456789abcdef01234567'
+  printf '%s\n' 'build_date: 2026-07-31T00:00:00Z'
   exit 0
 fi
 exit 99
@@ -697,61 +704,111 @@ printf '%s\n' 'AUTOSTREAM_WEB_DIR=/usr/share/autostream-control-panel' \
 printf '%s\n' 'integration-web-asset' \
   > "${EXTRACTED_ROOT}/share/autostream-control-panel/index.html"
 
-(
-  cd -- "${EXTRACTED_ROOT}"
-  find . -type f ! -path './checksums.txt' -print0 |
-    sort -z |
-    xargs -0 sha256sum > checksums.txt
-)
-grep -Eq '^[0-9a-f]{64}  \./bin/autostream-updater$' \
-  "${EXTRACTED_ROOT}/checksums.txt" || \
-  die "fixture checksum inventory does not cover bin/autostream-updater"
-tar -C "${ARTIFACTS_DIR}" -czf "${ARCHIVE}" "${ARTIFACT_ID}"
-(
-  cd -- "${ARTIFACTS_DIR}"
-  sha256sum "${ARTIFACT_ID}.tar.gz" > "${ARTIFACT_ID}.tar.gz.sha256"
-)
-archive_sha256="$(sha256sum "${ARCHIVE}" | awk 'NR == 1 { print $1 }')"
-archive_size="$(stat -c %s "${ARCHIVE}")"
-  jq -n \
+jq -n \
   --arg version "${VERSION}" \
-  --arg name "${ARTIFACT_ID}.tar.gz" \
-  --arg sha256 "${archive_sha256}" \
-  --argjson size "${archive_size}" \
+  --arg commit "${BUILD_COMMIT}" \
+  --arg build_date "${BUILD_DATE}" \
+  --arg archive_name "${ARTIFACT_ID}.tar.gz" \
+  --arg artifact_root "${ARTIFACT_ID}" \
   '{
     schema_version: 1,
-    release_id: $version,
-    channel: "host",
-    published_at: "2026-07-29T00:00:00Z",
-    minimum_agent_version: "v1.7.0",
-    components: [{
-      service: "control-panel",
-      source_version: $version,
-      commit: "0123456789abcdef0123456789abcdef01234567",
+    component: "control-panel",
+    source_version: $version,
+    commit: $commit,
+    build_date: $build_date,
+    platform: {
+      os: "linux",
+      arch: "amd64"
+    },
+    archive: {
+      name: $archive_name,
+      root: $artifact_root
+    },
+    compatibility: {
+      minimum_agent_version: "v1.7.0",
+      minimum_panel_version: null,
       rollback_compatible: true,
-      database_schema: "backward_compatible",
-      artifacts: [
-        {
-          os: "linux",
-          arch: "amd64",
-          name: $name,
-          sha256: $sha256,
-          size: $size
-        },
-        {
-          os: "linux",
-          arch: "arm64",
-          name: ("autostream-control-panel_" + $version + "_linux_arm64.tar.gz"),
-          sha256: "0000000000000000000000000000000000000000000000000000000000000000",
-          size: 1
-        }
-      ]
-    }]
-  }' > "${ARTIFACTS_DIR}/release-manifest.json"
+      database_schema: "backward_compatible"
+    }
+  }' > "${EXTRACTED_ROOT}/artifact-manifest.json"
+
+rebuild_fixture_archive() {
+  rm -f -- "${EXTRACTED_ROOT}/checksums.txt" "${ARCHIVE}"
+  (
+    cd -- "${EXTRACTED_ROOT}"
+    find . -type f ! -path './checksums.txt' -print0 |
+      sort -z |
+      xargs -0 sha256sum > checksums.txt
+  )
+  tar -C "${ARTIFACTS_DIR}" -czf "${ARCHIVE}" "${ARTIFACT_ID}"
+}
+
+rebuild_fixture_archive
 (
-  cd -- "${ARTIFACTS_DIR}"
-  sha256sum release-manifest.json > release-manifest.json.sha256
+  grep -Eq '^[0-9a-f]{64}  \./bin/autostream-updater$' \
+  "${EXTRACTED_ROOT}/checksums.txt" || \
+    die "fixture checksum inventory does not cover bin/autostream-updater"
+  grep -Eq '^[0-9a-f]{64}  \./artifact-manifest.json$' \
+    "${EXTRACTED_ROOT}/checksums.txt" || \
+    die "fixture checksum inventory does not cover artifact-manifest.json"
 )
+[[ $(find "${ARTIFACTS_DIR}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n') == \
+  "${ARTIFACT_ID}.tar.gz" ]] || \
+  die "fixture must begin with the archive as its only adjacent release file"
+
+install -o root -g root -m 0600 "${EXTRACTED_ROOT}/artifact-manifest.json" \
+  "${WORK_DIR}/artifact-manifest.valid.json"
+jq '.component = "worker"' "${WORK_DIR}/artifact-manifest.valid.json" \
+  > "${EXTRACTED_ROOT}/artifact-manifest.json"
+rebuild_fixture_archive
+set +e
+"${EXTRACTED_ROOT}/install-autostream-control-panel" \
+  > "${WORK_DIR}/invalid-artifact-manifest.out" 2>&1
+invalid_artifact_manifest_status=$?
+set -e
+[[ ${invalid_artifact_manifest_status} -ne 0 ]] || \
+  die "self-consistent archive with invalid artifact metadata unexpectedly passed"
+grep -F -- "artifact-manifest.json does not authorize this exact artifact" \
+  "${WORK_DIR}/invalid-artifact-manifest.out" >/dev/null || \
+  die "invalid artifact metadata did not fail at the metadata boundary"
+[[ ! -e ${MANAGED_ROOT} && ! -L ${MANAGED_ROOT} ]] || \
+  die "invalid artifact metadata mutated managed state"
+if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+  die "invalid artifact metadata mutated the service account"
+fi
+install -o root -g root -m 0600 "${WORK_DIR}/artifact-manifest.valid.json" \
+  "${EXTRACTED_ROOT}/artifact-manifest.json"
+rebuild_fixture_archive
+
+printf '%s\n' 'canonical archive alias probe' \
+  > "${ARTIFACTS_DIR}/control-panel-canonical-alias-file"
+tar -C "${ARTIFACTS_DIR}" -czf "${ARCHIVE}" \
+  "${ARTIFACT_ID}" \
+  --transform="s#^control-panel-canonical-alias-file\$#${ARTIFACT_ID}#" \
+  control-panel-canonical-alias-file
+rm -f -- "${ARTIFACTS_DIR}/control-panel-canonical-alias-file"
+set +e
+"${EXTRACTED_ROOT}/install-autostream-control-panel" \
+  > "${WORK_DIR}/duplicate-archive-entry.out" 2>&1
+duplicate_archive_status=$?
+set -e
+[[ ${duplicate_archive_status} -ne 0 ]] || \
+  die "archive with a duplicate canonical path unexpectedly passed"
+grep -F -- "release archive contains duplicate paths" \
+  "${WORK_DIR}/duplicate-archive-entry.out" >/dev/null || \
+  die "duplicate archive path did not fail at the archive layout boundary"
+[[ ! -e ${MANAGED_ROOT} && ! -L ${MANAGED_ROOT} ]] || \
+  die "duplicate archive path mutated managed state"
+if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+  die "duplicate archive path mutated the service account"
+fi
+rebuild_fixture_archive
+archive_sha256="$(sha256sum "${ARCHIVE}" | awk 'NR == 1 { print $1 }')"
+
+printf '%s\n' 'intentionally stale and ignored' > "${ARCHIVE}.sha256"
+printf '%s\n' '{not valid json' > "${ARTIFACTS_DIR}/release-manifest.json"
+printf '%s\n' 'intentionally stale and ignored' \
+  > "${ARTIFACTS_DIR}/release-manifest.json.sha256"
 
 restore_safe_root_anchor_fixture() {
   chmod 00755 /usr/local/bin
@@ -850,6 +907,398 @@ set -e
 [[ ! -e ${MANAGED_ROOT} && ! -L ${MANAGED_ROOT} ]] || \
   die "wrong binary version mutated managed state"
 
+install -d -o root -g root -m 0700 /run/autostream-updater
+printf '%s\n' 'control-panel shared host-setup lock sentinel' \
+  > "${SHARED_HOST_SETUP_LOCK}"
+chown root:root "${SHARED_HOST_SETUP_LOCK}"
+chmod 0600 "${SHARED_HOST_SETUP_LOCK}"
+shared_lock_before="$(stat -c '%d:%i:%u:%g:%a:%s' -- "${SHARED_HOST_SETUP_LOCK}")"
+shared_lock_hash_before="$(
+  sha256sum -- "${SHARED_HOST_SETUP_LOCK}" | awk 'NR == 1 { print $1 }'
+)"
+shared_parent_metadata_before="$(
+  for shared_parent in \
+    /opt \
+    /usr/local/bin \
+    /usr/local/sbin \
+    /usr/share \
+    /etc \
+    /var/lib \
+    /var/backups \
+    /run/autostream-updater; do
+    stat -c '%n|%d:%i:%u:%g:%a' -- "${shared_parent}"
+  done
+)"
+(
+  exec 7<>"${SHARED_HOST_SETUP_LOCK}"
+  flock -n 7 || die "test could not acquire the shared host-setup lock"
+  set +e
+  "${EXTRACTED_ROOT}/install-autostream-control-panel" \
+    > "${WORK_DIR}/shared-lock-contention.out" 2>&1
+  shared_contention_status=$?
+  set -e
+  [[ ${shared_contention_status} -eq 1 ]] || \
+    die "shared host-setup lock contention did not fail closed with the expected status"
+)
+grep -Fx -- \
+  "install-autostream-control-panel: another AutoStream installer is provisioning shared host state" \
+  "${WORK_DIR}/shared-lock-contention.out" >/dev/null || \
+  die "shared host-setup lock contention did not report the expected error"
+[[ $(stat -c '%d:%i:%u:%g:%a:%s' -- "${SHARED_HOST_SETUP_LOCK}") == \
+  "${shared_lock_before}" &&
+  $(sha256sum -- "${SHARED_HOST_SETUP_LOCK}" | awk 'NR == 1 { print $1 }') == \
+    "${shared_lock_hash_before}" ]] || \
+  die "shared host-setup contention replaced or truncated the permanent lock"
+shared_parent_metadata_after="$(
+  for shared_parent in \
+    /opt \
+    /usr/local/bin \
+    /usr/local/sbin \
+    /usr/share \
+    /etc \
+    /var/lib \
+    /var/backups \
+    /run/autostream-updater; do
+    stat -c '%n|%d:%i:%u:%g:%a' -- "${shared_parent}"
+  done
+)"
+[[ ${shared_parent_metadata_after} == "${shared_parent_metadata_before}" ]] || \
+  die "shared host-setup lock contention mutated account, parents, or current"
+if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+  die "shared host-setup lock contention mutated account, parents, or current"
+fi
+for shared_contention_absent_path in \
+  /opt/autostream \
+  /var/lib/autostream \
+  /etc/autostream \
+  /etc/autostream-local-executor \
+  /var/backups/autostream \
+  "${UNIT_PATH}" \
+  "${PUBLIC_BINARY}" \
+  "${PUBLIC_WEB}" \
+  "${BACKUP_EXECUTABLE}" \
+  "${MANAGED_ROOT}/current" \
+  "${TARGET_LOCK}"; do
+  [[ ! -e ${shared_contention_absent_path} &&
+    ! -L ${shared_contention_absent_path} ]] || \
+    die "shared host-setup lock contention mutated account, parents, or current"
+done
+
+install -o root -g root -m 0755 "$(command -v groupadd)" \
+  "${WORK_DIR}/real-groupadd"
+install -o root -g root -m 0755 "$(command -v groupdel)" \
+  "${WORK_DIR}/real-groupdel"
+cat > "${WORK_DIR}/signal-groupadd" <<EOF
+#!/bin/bash
+set -euo pipefail
+"${WORK_DIR}/real-groupadd" "\$@"
+kill -TERM "\${PPID}"
+exit 73
+EOF
+cat > "${WORK_DIR}/signal-groupdel" <<EOF
+#!/bin/bash
+set -euo pipefail
+printf '%s\n' signal-safe > "${WORK_DIR}/signal-groupdel.executed"
+kill -TERM "\${PPID}"
+"${WORK_DIR}/real-groupdel" "\$@"
+EOF
+chmod 0755 "${WORK_DIR}/signal-groupadd" "${WORK_DIR}/signal-groupdel"
+signal_stage_before="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/signal-groupadd' /usr/sbin/groupadd &&
+    mount --bind '${WORK_DIR}/signal-groupdel' /usr/sbin/groupdel &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/signal-account-rollback.out" 2>&1
+signal_account_status=$?
+set -e
+[[ ${signal_account_status} -eq 143 ]] || \
+  die "signal-interrupted groupadd did not exit with deferred TERM status 143"
+if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+  die "signal-interrupted groupadd left the service account behind"
+fi
+[[ -f ${WORK_DIR}/signal-groupdel.executed ]] || \
+  die "signal-safe groupdel wrapper did not execute"
+signal_stage_after="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+[[ ${signal_stage_after} == "${signal_stage_before}" ]] || \
+  die "signal during rollback left private input staging behind"
+for signal_absent_path in \
+  /opt/autostream \
+  /var/lib/autostream \
+  /etc/autostream \
+  /etc/autostream-local-executor \
+  /var/backups/autostream \
+  "${UNIT_PATH}" \
+  "${PUBLIC_BINARY}" \
+  "${PUBLIC_WEB}" \
+  "${BACKUP_EXECUTABLE}" \
+  "${MANAGED_ROOT}/current"; do
+  [[ ! -e ${signal_absent_path} && ! -L ${signal_absent_path} ]] || \
+    die "signal-interrupted groupadd left persistent installer state"
+done
+
+assert_signal_rollback_clean() {
+  local boundary=$1
+  local stage_before=$2
+  local stage_after
+  if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+    die "signal-interrupted ${boundary} left the service account behind"
+  fi
+  stage_after="$(
+    find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+      -name 'autostream-control-panel-install.*' -printf '%f\n' |
+      LC_ALL=C sort
+  )"
+  [[ ${stage_after} == "${stage_before}" ]] || \
+    die "signal-interrupted ${boundary} left private input staging behind"
+  for absent_path in \
+    /opt/autostream \
+    /var/lib/autostream \
+    /etc/autostream \
+    /etc/autostream-local-executor \
+    /var/backups/autostream \
+    "${UNIT_PATH}" \
+    "${PUBLIC_BINARY}" \
+    "${PUBLIC_WEB}" \
+    "${BACKUP_EXECUTABLE}" \
+    "${MANAGED_ROOT}/current"; do
+    [[ ! -e ${absent_path} && ! -L ${absent_path} ]] || \
+      die "signal-interrupted ${boundary} left persistent installer state"
+  done
+}
+
+install -o root -g root -m 0755 "$(command -v install)" \
+  "${WORK_DIR}/real-install"
+cat > "${WORK_DIR}/signal-install" <<EOF
+#!/bin/bash
+set -euo pipefail
+"${WORK_DIR}/real-install" "\$@"
+if [[ "\$*" == *"/opt/autostream"* ]]; then
+  printf '%s\n' delivered > "${WORK_DIR}/signal-install.executed"
+  kill -TERM "\${PPID}"
+fi
+EOF
+chmod 0755 "${WORK_DIR}/signal-install"
+signal_directory_stage_before="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/signal-install' /usr/bin/install &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/signal-directory-rollback.out" 2>&1
+signal_directory_status=$?
+set -e
+[[ ${signal_directory_status} -eq 143 ]] || \
+  die "signal-interrupted directory mutation did not exit with deferred TERM status 143"
+[[ -f ${WORK_DIR}/signal-install.executed ]] || \
+  die "signal-interrupted directory mutation did not reach its injection boundary"
+assert_signal_rollback_clean directory-mutation "${signal_directory_stage_before}"
+
+install -o root -g root -m 0755 "$(command -v mktemp)" \
+  "${WORK_DIR}/real-mktemp"
+cat > "${WORK_DIR}/signal-mktemp" <<EOF
+#!/bin/bash
+set -euo pipefail
+temporary_path="\$("${WORK_DIR}/real-mktemp" "\$@")"
+printf '%s\n' "\${temporary_path}"
+if [[ "\$*" == *".install-v9.9.9.XXXXXXXX"* ]]; then
+  printf '%s\n' delivered > "${WORK_DIR}/signal-mktemp.executed"
+  kill -TERM "\${PPID}"
+fi
+EOF
+chmod 0755 "${WORK_DIR}/signal-mktemp"
+signal_temporary_stage_before="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/signal-mktemp' /usr/bin/mktemp &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/signal-temporary-rollback.out" 2>&1
+signal_temporary_status=$?
+set -e
+[[ ${signal_temporary_status} -eq 143 ]] || \
+  die "signal-interrupted temporary allocation did not exit with deferred TERM status 143"
+[[ -f ${WORK_DIR}/signal-mktemp.executed ]] || \
+  die "signal-interrupted temporary allocation did not reach its injection boundary"
+assert_signal_rollback_clean temporary-allocation "${signal_temporary_stage_before}"
+
+install -o root -g root -m 0755 "$(command -v mv)" \
+  "${WORK_DIR}/real-mv"
+cat > "${WORK_DIR}/signal-mv" <<EOF
+#!/bin/bash
+set -euo pipefail
+"${WORK_DIR}/real-mv" "\$@"
+last_argument="\${!#}"
+if [[ \${last_argument} == "${CURRENT_LINK}" ]]; then
+  printf '%s\n' delivered > "${WORK_DIR}/signal-mv.executed"
+  kill -TERM "\${PPID}"
+fi
+EOF
+chmod 0755 "${WORK_DIR}/signal-mv"
+signal_link_stage_before="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/signal-mv' /usr/bin/mv &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/signal-link-rollback.out" 2>&1
+signal_link_status=$?
+set -e
+[[ ${signal_link_status} -eq 143 ]] || \
+  die "signal-interrupted current-link mutation did not exit with deferred TERM status 143"
+[[ -f ${WORK_DIR}/signal-mv.executed ]] || \
+  die "signal-interrupted current-link mutation did not reach its injection boundary"
+assert_signal_rollback_clean current-link-mutation "${signal_link_stage_before}"
+
+groupadd --system --gid 0 --non-unique autostream
+hostile_group_before="$(getent group autostream)"
+set +e
+"${EXTRACTED_ROOT}/install-autostream-control-panel" \
+  > "${WORK_DIR}/hostile-gid-zero.out" 2>&1
+hostile_gid_zero_status=$?
+set -e
+[[ ${hostile_gid_zero_status} -ne 0 ]] || \
+  die "hostile GID 0 service group unexpectedly passed"
+grep -F -- "autostream service group must not use GID 0" \
+  "${WORK_DIR}/hostile-gid-zero.out" >/dev/null || \
+  die "hostile GID 0 service group did not fail before user creation"
+[[ $(getent group autostream) == "${hostile_group_before}" ]] || \
+  die "hostile GID 0 changed the pre-existing service group"
+if id autostream >/dev/null 2>&1; then
+  die "hostile GID 0 mutated the service user or persistent paths"
+fi
+for hostile_gid_absent_path in \
+  "${MANAGED_ROOT}" \
+  "${STATE_DIR}" \
+  "${ENV_PATH}" \
+  "${UNIT_PATH}" \
+  "${BACKUP_EXECUTABLE}" \
+  "${DATABASE_BACKUP_DIR}" \
+  "${INSTALL_BACKUP_ROOT}" \
+  "${MARIADB_DEFAULTS}"; do
+  [[ ! -e ${hostile_gid_absent_path} && ! -L ${hostile_gid_absent_path} ]] || \
+    die "hostile GID 0 mutated the service user or persistent paths"
+done
+groupdel autostream
+
+groupadd --system autostream
+useradd --system --gid autostream --home-dir /var/lib/autostream \
+  --no-create-home --shell /usr/sbin/nologin autostream
+install -d -o root -g root -m 0700 /var/lib/autostream /etc/autostream
+install -d -o autostream -g autostream -m 0700 "${STATE_DIR}"
+printf '%s\n' 'preserve-existing-state-exactly' > "${STATE_DIR}/rollback-sentinel"
+chown autostream:autostream "${STATE_DIR}/rollback-sentinel"
+chmod 0600 "${STATE_DIR}/rollback-sentinel"
+printf '%s\n' 'CONTROL_PANEL_INSTALLER_ROLLBACK_ENV=preserve-exactly' > "${ENV_PATH}"
+chmod 0644 "${ENV_PATH}"
+existing_state_metadata_before="$(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}")"
+existing_state_sentinel_before="$(
+  sha256sum -- "${STATE_DIR}/rollback-sentinel" | awk 'NR == 1 { print $1 }'
+)"
+existing_account_before="$(getent passwd autostream)"
+existing_group_before="$(getent group autostream)"
+existing_state_parent_before="$(stat -c '%d:%i:%u:%g:%a' -- /var/lib/autostream)"
+existing_env_parent_before="$(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream)"
+existing_env_before="$(sha256sum -- "${ENV_PATH}" | awk 'NR == 1 { print $1 }')"
+
+set +e
+"${EXTRACTED_ROOT}/install-autostream-control-panel" \
+  > "${WORK_DIR}/late-env-existing-state.out" 2>&1
+late_env_existing_state_status=$?
+set -e
+[[ ${late_env_existing_state_status} -ne 0 ]] || \
+  die "late environment preflight with an existing state unexpectedly passed"
+grep -F -- "existing environment file must be root-only or root-readable with mode 0600/0640" \
+  "${WORK_DIR}/late-env-existing-state.out" >/dev/null || \
+  die "late environment preflight did not fail at the expected boundary"
+[[ $(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}") == \
+  "${existing_state_metadata_before}" ]] || \
+  die "late environment preflight changed the existing state directory"
+[[ $(sha256sum -- "${STATE_DIR}/rollback-sentinel" | awk 'NR == 1 { print $1 }') == \
+  "${existing_state_sentinel_before}" ]] || \
+  die "late environment preflight changed the existing state directory"
+[[ $(getent passwd autostream) == "${existing_account_before}" &&
+  $(getent group autostream) == "${existing_group_before}" ]] || \
+  die "late environment preflight changed the existing service account"
+[[ $(stat -c '%d:%i:%u:%g:%a' -- /var/lib/autostream) == \
+  "${existing_state_parent_before}" ]] || \
+  die "late environment preflight changed the existing state boundary"
+[[ $(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) == \
+  "${existing_env_parent_before}" &&
+  $(sha256sum -- "${ENV_PATH}" | awk 'NR == 1 { print $1 }') == \
+    "${existing_env_before}" ]] || \
+  die "late environment preflight changed the existing environment boundary"
+for rollback_absent_path in \
+  /opt/autostream \
+  /var/backups/autostream \
+  /etc/autostream-local-executor; do
+  [[ ! -e ${rollback_absent_path} && ! -L ${rollback_absent_path} ]] || \
+    die "late environment preflight left persistent installer state"
+done
+[[ -d /run/autostream-updater &&
+  ! -L /run/autostream-updater &&
+  $(stat -c '%U:%G:%a' -- /run/autostream-updater) == "root:root:700" &&
+  -f ${SHARED_HOST_SETUP_LOCK} &&
+  ! -L ${SHARED_HOST_SETUP_LOCK} &&
+  $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600" &&
+  -f ${TARGET_LOCK} &&
+  ! -L ${TARGET_LOCK} &&
+  $(stat -c '%U:%G:%a' -- "${TARGET_LOCK}") == "root:root:600" ]] || \
+  die "late environment preflight left an unsafe runtime lock boundary"
+
+rm -f -- "${ENV_PATH}" "${STATE_DIR}/rollback-sentinel"
+rmdir "${STATE_DIR}" /var/lib/autostream /etc/autostream
+userdel autostream
+groupdel autostream
+
+install -d -o root -g root -m 0700 /etc/autostream
+printf '%s\n' 'CONTROL_PANEL_INSTALLER_ROLLBACK_ENV=fresh-account' > "${ENV_PATH}"
+chmod 0644 "${ENV_PATH}"
+fresh_failure_env_parent_before="$(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream)"
+fresh_failure_env_before="$(sha256sum -- "${ENV_PATH}" | awk 'NR == 1 { print $1 }')"
+set +e
+"${EXTRACTED_ROOT}/install-autostream-control-panel" \
+  > "${WORK_DIR}/late-env-fresh-account.out" 2>&1
+late_env_fresh_account_status=$?
+set -e
+[[ ${late_env_fresh_account_status} -ne 0 ]] || \
+  die "late environment preflight with a fresh account unexpectedly passed"
+if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
+  die "late environment preflight left a fresh service account"
+fi
+[[ $(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) == \
+  "${fresh_failure_env_parent_before}" &&
+  $(sha256sum -- "${ENV_PATH}" | awk 'NR == 1 { print $1 }') == \
+    "${fresh_failure_env_before}" ]] || \
+  die "late environment preflight changed the fresh environment boundary"
+for rollback_absent_path in \
+  /opt/autostream \
+  /var/lib/autostream \
+  /var/backups/autostream \
+  /etc/autostream-local-executor; do
+  [[ ! -e ${rollback_absent_path} && ! -L ${rollback_absent_path} ]] || \
+    die "late environment preflight left persistent installer state"
+done
+rm -f -- "${ENV_PATH}"
+rmdir /etc/autostream
+
 "${EXTRACTED_ROOT}/install-autostream-control-panel" > "${WORK_DIR}/fresh.out"
 [[ -L ${PUBLIC_BINARY} && -L ${PUBLIC_WEB} ]] || \
   die "fresh install did not install stable public links"
@@ -876,6 +1325,7 @@ for executable_path in \
 done
 for regular_path in \
   "${fresh_release}/.env.example" \
+  "${fresh_release}/artifact-manifest.json" \
   "${fresh_release}/checksums.txt" \
   "${fresh_release}/share/autostream-control-panel/index.html" \
   "${fresh_release}/systemd/autostream-control-panel.service.example"; do
@@ -963,9 +1413,80 @@ db_before="$(sha256sum "${MARIADB_DEFAULTS}" | awk 'NR == 1 { print $1 }')"
 unit_before="$(sha256sum "${UNIT_PATH}" | awk 'NR == 1 { print $1 }')"
 helper_before="$(sha256sum "${BACKUP_EXECUTABLE}" | awk 'NR == 1 { print $1 }')"
 
+legacy_backup_dir="${INSTALL_BACKUP_ROOT}/${VERSION}-${archive_sha256:0:12}"
+install -d -o root -g root -m 0700 "${legacy_backup_dir}"
+install -o root -g root -m 0644 "${UNIT_PATH}" \
+  "${legacy_backup_dir}/autostream-control-panel.service"
+install -o root -g root -m 0700 "${BACKUP_EXECUTABLE}" \
+  "${legacy_backup_dir}/autostream-backup-control-panel"
+install -o root -g root -m 0755 "${PUBLIC_BINARY}" \
+  "${legacy_backup_dir}/control-panel"
+legacy_binary_live_metadata_before="$(
+  stat -c '%d:%i:%u:%g:%a:%s' -- "${PUBLIC_BINARY}"
+)"
+legacy_binary_live_hash_before="$(
+  sha256sum -- "${PUBLIC_BINARY}" | awk 'NR == 1 { print $1 }'
+)"
+chown 65534:65534 "${legacy_backup_dir}/control-panel"
+nonroot_legacy_backup_metadata_before="$(
+  stat -c '%d:%i:%u:%g:%a:%s' -- "${legacy_backup_dir}/control-panel"
+)"
+nonroot_legacy_backup_hash_before="$(
+  sha256sum -- "${legacy_backup_dir}/control-panel" | awk 'NR == 1 { print $1 }'
+)"
+nonroot_state_metadata_before="$(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}")"
+nonroot_account_before="$(getent passwd autostream)"
+nonroot_group_before="$(getent group autostream)"
+set +e
+"${EXTRACTED_ROOT}/install-autostream-control-panel" \
+  > "${WORK_DIR}/nonroot-legacy-public-backup.out" 2>&1
+nonroot_legacy_public_backup_status=$?
+set -e
+[[ ${nonroot_legacy_public_backup_status} -ne 0 ]] || \
+  die "non-root legacy public backup unexpectedly passed"
+grep -F -- "legacy public backup must be owned by root:root" \
+  "${WORK_DIR}/nonroot-legacy-public-backup.out" >/dev/null || \
+  die "non-root legacy public backup did not fail at the ownership boundary"
+[[ $(stat -c '%d:%i:%u:%g:%a:%s' -- "${PUBLIC_BINARY}") == \
+  "${legacy_binary_live_metadata_before}" &&
+  $(sha256sum -- "${PUBLIC_BINARY}" | awk 'NR == 1 { print $1 }') == \
+    "${legacy_binary_live_hash_before}" ]] || \
+  die "non-root legacy public backup changed the live or backup boundary"
+[[ $(stat -c '%d:%i:%u:%g:%a:%s' -- "${legacy_backup_dir}/control-panel") == \
+  "${nonroot_legacy_backup_metadata_before}" &&
+  $(sha256sum -- "${legacy_backup_dir}/control-panel" | awk 'NR == 1 { print $1 }') == \
+    "${nonroot_legacy_backup_hash_before}" ]] || \
+  die "non-root legacy public backup changed the live or backup boundary"
+[[ $(systemctl show --property MainPID --value "${UNIT}") == "${old_pid}" ]] || \
+  die "non-root legacy public backup changed the running legacy process"
+[[ ! -e ${MANAGED_ROOT} && ! -L ${MANAGED_ROOT} &&
+  $(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}") == "${nonroot_state_metadata_before}" &&
+  $(getent passwd autostream) == "${nonroot_account_before}" &&
+  $(getent group autostream) == "${nonroot_group_before}" ]] || \
+  die "non-root legacy public backup changed persistent installer state"
+chown root:root "${legacy_backup_dir}/control-panel"
+legacy_unit_backup_metadata_before="$(
+  stat -c '%d:%i:%u:%g:%a:%s' -- "${legacy_backup_dir}/autostream-control-panel.service"
+)"
+legacy_unit_backup_hash_before="$(
+  sha256sum -- "${legacy_backup_dir}/autostream-control-panel.service" | awk 'NR == 1 { print $1 }'
+)"
+legacy_helper_backup_metadata_before="$(
+  stat -c '%d:%i:%u:%g:%a:%s' -- "${legacy_backup_dir}/autostream-backup-control-panel"
+)"
+legacy_helper_backup_hash_before="$(
+  sha256sum -- "${legacy_backup_dir}/autostream-backup-control-panel" | awk 'NR == 1 { print $1 }'
+)"
+legacy_binary_backup_metadata_before="$(
+  stat -c '%d:%i:%u:%g:%a:%s' -- "${legacy_backup_dir}/control-panel"
+)"
+legacy_binary_backup_hash_before="$(
+  sha256sum -- "${legacy_backup_dir}/control-panel" | awk 'NR == 1 { print $1 }'
+)"
+
 (
-  exec 8>"${TARGET_LOCK}"
-  flock -n 8 || die "test could not acquire the updater target lock"
+  exec 7<>"${TARGET_LOCK}"
+  flock -n 7 || die "test could not acquire the updater target lock"
   set +e
   "${EXTRACTED_ROOT}/install-autostream-control-panel" \
     > "${WORK_DIR}/contention.out" 2>&1
@@ -1036,6 +1557,18 @@ grep -Fx -- "${LEGACY_WEB_CONTENT}" "${PUBLIC_WEB}/legacy.txt" >/dev/null || \
   die "failed migration did not restore the systemd unit"
 [[ $(sha256sum "${BACKUP_EXECUTABLE}" | awk 'NR == 1 { print $1 }') == "${helper_before}" ]] || \
   die "failed migration did not restore the backup executable"
+[[ $(stat -c '%d:%i:%u:%g:%a:%s' -- \
+  "${legacy_backup_dir}/autostream-control-panel.service") == \
+    "${legacy_unit_backup_metadata_before}" &&
+  $(sha256sum -- "${legacy_backup_dir}/autostream-control-panel.service" |
+    awk 'NR == 1 { print $1 }') == "${legacy_unit_backup_hash_before}" ]] || \
+  die "late failure removed or changed a pre-existing legacy backup"
+[[ $(stat -c '%d:%i:%u:%g:%a:%s' -- \
+  "${legacy_backup_dir}/autostream-backup-control-panel") == \
+    "${legacy_helper_backup_metadata_before}" &&
+  $(sha256sum -- "${legacy_backup_dir}/autostream-backup-control-panel" |
+    awk 'NR == 1 { print $1 }') == "${legacy_helper_backup_hash_before}" ]] || \
+  die "late failure removed or changed a pre-existing legacy backup"
 assert_legacy_runtime_unit_loaded
 kill -0 "${old_pid}" || die "failed migration stopped the running legacy process"
 
@@ -1085,6 +1618,11 @@ grep -Fx -- "${LEGACY_BINARY_CONTENT}" "${PUBLIC_BINARY}" >/dev/null || \
   die "sync failure rollback did not restore the systemd unit"
 [[ $(sha256sum "${BACKUP_EXECUTABLE}" | awk 'NR == 1 { print $1 }') == "${helper_before}" ]] || \
   die "sync failure rollback did not restore the backup executable"
+[[ $(stat -c '%d:%i:%u:%g:%a:%s' -- "${legacy_backup_dir}/control-panel") == \
+  "${legacy_binary_backup_metadata_before}" &&
+  $(sha256sum -- "${legacy_backup_dir}/control-panel" |
+    awk 'NR == 1 { print $1 }') == "${legacy_binary_backup_hash_before}" ]] || \
+  die "late failure removed or changed a pre-existing legacy backup"
 [[ $(systemctl show --property MainPID --value "${UNIT}") == "${old_pid}" ]] || \
   die "sync failure rollback replaced the running legacy process"
 assert_legacy_runtime_unit_loaded

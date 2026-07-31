@@ -16,14 +16,37 @@ boundary.
 
 ## Verify the release
 
-Verify the archive sidecar with `sha256sum --check --strict`, verify
-`host-agent-manifest.json` and its sidecar, and verify the manifest provenance
-attestation from `.github/workflows/release-host.yml` before extracting or
-installing the archive. Extract the verified archive into a root-owned
-directory whose parent chain is not group/other-writable. The installers also
-bind every consumed release source by inode identity and SHA-256 while copying,
-so a source swap fails closed; those checks do not replace the outer checksum
-and attestation verification.
+Download `autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz` on the operator
+machine and verify the archive attestation from
+`.github/workflows/release-host.yml`. The SHA-256 sidecar,
+`host-agent-manifest.json`, and its sidecar remain published for automatic
+updater compatibility; the manual installers neither require nor read them.
+
+```bash
+gh attestation verify /tmp/autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz \
+  --repo Kome-Lab/Autostream-ControlPanel \
+  --signer-workflow Kome-Lab/Autostream-ControlPanel/.github/workflows/release-host.yml \
+  --deny-self-hosted-runners
+```
+
+Transfer that one unchanged archive to the server. The server requires `jq`,
+`sha256sum`, `tar`, and systemd. Copy and extract it only through the fixed
+root-owned artifact directory:
+
+```bash
+sudo install -d -o root -g root -m 0755 /opt/autostream/releases/artifacts
+sudo install -o root -g root -m 0644 /tmp/autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz /opt/autostream/releases/artifacts/
+cd /opt/autostream/releases/artifacts
+sudo tar --no-same-owner --no-same-permissions -xzf autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz
+cd autostream-host-agent_vX.Y.Z_linux_amd64
+```
+
+Leave the original archive adjacent to the extracted directory until both Host
+Agent and Local Executor installation commands are complete. Each privileged
+entry point independently stable-copies and safely re-extracts that archive,
+verifies the complete internal checksum inventory and exact
+`artifact-manifest.json`, and binds the complete binary build identities before
+persistent mutation.
 
 ## Recommended first installation
 
@@ -36,7 +59,8 @@ sudo ./install/install-autostream-host-agent --prepare
 ```
 
 This command verifies that all bundled executor preparation assets are present
-and installs them atomically with the Host Agent. It creates neither
+and installs them atomically with the Host Agent. It does not write partial
+self-update slot binding markers. It creates neither
 `/etc/autostream-host-agent/identity.json` nor `policy.json`. It creates
 `/etc/autostream-local-executor`, `/opt/autostream/local-executor`, and
 `/opt/autostream/local-executor/ports` as `root:root 0700`, then leaves both

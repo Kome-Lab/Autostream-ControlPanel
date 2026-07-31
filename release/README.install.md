@@ -11,9 +11,11 @@ inputs and are not installed by this guide.
 ## Requirements
 
 - Linux amd64 or arm64 matching the archive name.
-- `gh`, `jq`, `sha256sum`, `tar`, systemd, and `/usr/bin/mariadb-dump`. The
-  installer creates the dedicated `autostream` account when it is missing.
-- All four files listed below, obtained from the same immutable GitHub Release.
+- On the operator machine: `gh` for GitHub artifact-attestation verification.
+- On the server: `jq`, `sha256sum`, `tar`, systemd, and
+  `/usr/bin/mariadb-dump`. The installer creates the dedicated `autostream`
+  account when it is missing.
+- One unchanged Control Panel `.tar.gz` from the immutable GitHub Release.
 - The matching verified `autostream-host-agent_<version>_linux_<arch>.tar.gz`
   artifact for the host.
 - A reverse proxy with HTTPS for production.
@@ -21,48 +23,39 @@ inputs and are not installed by this guide.
 
 ## Install or migrate the Control Panel
 
-Download these four files from the same immutable GitHub Release and keep them
-in one directory:
-
-- `autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz`
-- `autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz.sha256`
-- `release-manifest.json`
-- `release-manifest.json.sha256`
-
-For arm64, use the two arm64 artifact files instead. Copy the four downloaded
-files into the root-owned artifact directory, then verify the copied manifest
-as your ordinary login user:
+Download `autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz` on the operator
+machine and verify its GitHub artifact attestation before transferring it. For
+arm64, use the arm64 archive instead. The SHA-256 sidecar and external release
+manifest remain published for automatic updater compatibility, but the manual
+installer neither requires nor reads them.
 
 ```bash
-sudo install -d -o root -g root -m 0755 /opt/autostream/releases/artifacts
-sudo install -o root -g root -m 0644 /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz /opt/autostream/releases/artifacts/
-sudo install -o root -g root -m 0644 /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz.sha256 /opt/autostream/releases/artifacts/
-sudo install -o root -g root -m 0644 /tmp/release-manifest.json /opt/autostream/releases/artifacts/
-sudo install -o root -g root -m 0644 /tmp/release-manifest.json.sha256 /opt/autostream/releases/artifacts/
-cd /opt/autostream/releases/artifacts
-gh attestation verify autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz \
-  --repo Kome-Lab/Autostream-ControlPanel \
-  --signer-workflow Kome-Lab/Autostream-ControlPanel/.github/workflows/release-host.yml \
-  --deny-self-hosted-runners
-gh attestation verify release-manifest.json \
+gh attestation verify /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz \
   --repo Kome-Lab/Autostream-ControlPanel \
   --signer-workflow Kome-Lab/Autostream-ControlPanel/.github/workflows/release-host.yml \
   --deny-self-hosted-runners
 ```
 
-After verification succeeds, extract and run the installer:
+サーバーへ転送する release asset は、この `.tar.gz` 1 個だけです。Upload
+it to `/tmp`, then copy it into the fixed root-owned artifact directory,
+extract it as root, and leave the unchanged archive adjacent to the extracted
+directory until installation completes:
 
 ```bash
+sudo install -d -o root -g root -m 0755 /opt/autostream/releases/artifacts
+sudo install -o root -g root -m 0644 /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz /opt/autostream/releases/artifacts/
 cd /opt/autostream/releases/artifacts
 sudo tar --no-same-owner --no-same-permissions -xzf autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz
 cd autostream-control-panel_vX.Y.Z_linux_amd64
 sudo ./install-autostream-control-panel
 ```
 
-The installer verifies the archive sidecar, release manifest, architecture,
-inner checksums, and binary version before changing the host. It then creates
-the `autostream` account when needed, seeds the rollback release, installs the
-unit and backup executable, creates state directories, and exposes:
+The installer makes a stable private copy of the adjacent archive, computes its
+SHA-256, rejects unsafe archive entries, safely re-extracts it, and verifies
+the checksummed `artifact-manifest.json`, architecture, and complete Control
+Panel/updater build identities before changing the host. It then creates the
+`autostream` account when needed, seeds the rollback release, installs the unit
+and backup executable, creates state directories, and exposes:
 
 - `/usr/local/bin/control-panel`
 - `/usr/share/autostream-control-panel`
@@ -176,8 +169,8 @@ Info API and must not be configured as a target `version_url`. Block the exact
 `/updater/version` path at any public reverse proxy.
 
 Do not fabricate `.artifact-sha256` or `.version` from an unverified local
-binary. Releases without `release-manifest.json` remain manual-only; publish a
-new release instead of modifying an existing release asset.
+binary. External checksum/manifest assets are updater inputs, not manual
+installer inputs. Never modify or recompress an attested archive.
 
 Do not commit real `.env` files, provider credentials, tokens, SSH private
 keys, logs, screenshots, or verification records.

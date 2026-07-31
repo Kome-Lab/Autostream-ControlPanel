@@ -164,7 +164,7 @@ func TestLocalExecutorInstallersPreserveRootPolicyBoundary(t *testing.T) {
 		`validate-policy --policy "${policy_stage}"`,
 		`systemd-tmpfiles --create "${TMPFILES_DEST}"`,
 		`systemctl enable --now autostream-local-executor.socket`,
-		`systemctl is-active --quiet autostream-local-executor.service`,
+		`[[ $(unit_active_state "${SERVICE_NAME}") == "active" ]]`,
 		`AGENT_USER="autostream-host-agent"`,
 		`AGENT_GROUP="autostream-host-agent"`,
 		`policy agent_uid does not match`,
@@ -183,6 +183,23 @@ func TestLocalExecutorInstallersPreserveRootPolicyBoundary(t *testing.T) {
 		`validate_root_parent_chain "${source}" "release source"`,
 		`release asset ${source} must be owned by root:root`,
 		`release asset ${source} must not be writable by group or other`,
+		`readonly ARTIFACT_MANIFEST_NAME="artifact-manifest.json"`,
+		`readonly MAX_ARCHIVE_SIZE=268435456`,
+		`readonly ARCHIVE_SOURCE="${ARTIFACT_PARENT}/${ARCHIVE_NAME}"`,
+		`$(stat -c '%U:%G:%a' -- "${BUNDLE_STAGE}") == "root:root:700"`,
+		`copy_stable_bundle_archive`,
+		`awk '{ sub(/\/$/, ""); print }' "${BUNDLE_STAGE}/archive.list"`,
+		`die "bundle archive contains duplicate paths"`,
+		`${entry} != *\\*`,
+		`${entry} != *"/./"*`,
+		`${entry} != *"//"*`,
+		`verify_release_checksum_inventory "${EXTRACTED_ROOT}"`,
+		`(.component == "host-agent")`,
+		`(.minimum_agent_version == null)`,
+		`(.minimum_panel_version == $version)`,
+		`(.rollback_compatible == true)`,
+		`(.database_schema == "none")`,
+		`verify_binary_identity "${BINARY_SOURCE}" "autostream-local-executor"`,
 		`HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"`,
 		`validate_managed_runtime_binary`,
 		`binary destination symlink is outside the fixed Host Agent A/B runtime`,
@@ -200,10 +217,20 @@ func TestLocalExecutorInstallersPreserveRootPolicyBoundary(t *testing.T) {
 		"--unit",
 		"--url",
 		"systemctl enable --now autostream-local-executor.service",
+		".artifact-sha256",
+		"slot-binding",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("local executor installer contains forbidden authority/network marker %q", forbidden)
 		}
+	}
+	bundleVerify := strings.Index(
+		installer,
+		`verify_binary_identity "${BINARY_SOURCE}" "autostream-local-executor"`,
+	)
+	persistentMutation := strings.Index(installer, `ensure_root_directory "${CONFIG_DIR}" 0700`)
+	if bundleVerify < 0 || persistentMutation < 0 || bundleVerify >= persistentMutation {
+		t.Fatal("Local Executor bundle and binary identity must be verified before persistent mutation")
 	}
 	for _, marker := range []string{
 		`systemctl disable --now autostream-local-executor.socket`,
@@ -256,6 +283,126 @@ func TestLocalExecutorInstallersPreserveRootPolicyBoundary(t *testing.T) {
 	}
 }
 
+func TestLocalExecutorInstallerRollsBackPrerequisitesAndRuntimeState(t *testing.T) {
+	installerPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-local-executor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerPayload)
+	earlyTrap := strings.Index(installer, "arm_cleanup_handler cleanup_prerequisites")
+	firstPersistentMutation := strings.Index(installer, `ensure_root_directory "${CONFIG_DIR}" 0700`)
+	if earlyTrap < 0 || firstPersistentMutation < 0 || earlyTrap >= firstPersistentMutation {
+		t.Fatal("Local Executor prerequisite rollback trap must be armed before directory mutation")
+	}
+	for _, marker := range []string{
+		"config_dir_identity=",
+		"executor_data_dir_identity=",
+		"state_snapshot=",
+		`restore_executor_state`,
+		`rollback_created_directory "${CONFIG_DIR}" "${config_dir_identity}"`,
+		`verify_unit_inactive "${SERVICE_NAME}"`,
+		`verify_unit_inactive "${SOCKET_NAME}"`,
+		`verify_unit_disabled "${SOCKET_NAME}"`,
+	} {
+		if !strings.Contains(installer, marker) {
+			t.Fatalf("Local Executor installer is missing rollback marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		`systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true`,
+		`systemctl disable --now "${SOCKET_NAME}" >/dev/null 2>&1 || true`,
+	} {
+		if strings.Contains(installer, forbidden) {
+			t.Fatalf("Local Executor installer ignores a quiesce failure: %q", forbidden)
+		}
+	}
+
+	smokePayload, err := os.ReadFile(filepath.Join(
+		"..", "..", "internal", "security", "testdata",
+		"run-local-executor-installer-smoke.sh",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	smoke := string(smokePayload)
+	for _, marker := range []string{
+		"unsafe late state path left fresh Local Executor directories",
+		"quiesce failure replaced Local Executor managed files",
+		"post-start failure left fresh Local Executor state",
+		"post-start failure changed existing Local Executor state",
+	} {
+		if !strings.Contains(smoke, marker) {
+			t.Fatalf("Local Executor root smoke is missing rollback fixture %q", marker)
+		}
+	}
+}
+
+func TestLocalExecutorInstallerRestoresEarlyRuntimeStateAndSignalJournals(t *testing.T) {
+	installerPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-local-executor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerPayload)
+	for _, marker := range []string{
+		"managed_file_change_started=false",
+		"restore_initial_runtime_state",
+		`if [[ ${managed_file_change_started} == false &&`,
+		"verify_initial_runtime_state",
+		"pending_cleanup_signal=",
+		"defer_cleanup_signals",
+		"resume_cleanup_signals",
+		`trap - EXIT`,
+		`trap '' INT TERM`,
+		"move_with_journal",
+		"tmpfiles_creation_attempted=true",
+	} {
+		if !strings.Contains(installer, marker) {
+			t.Fatalf("Local Executor installer is missing rollback/signal marker %q", marker)
+		}
+	}
+	if strings.Contains(installer, "trap - EXIT INT TERM") {
+		t.Fatal("Local Executor cleanup must ignore a second INT/TERM instead of restoring their default actions")
+	}
+	mainCommit := strings.LastIndex(installer, "\ncommit_started=true")
+	if mainCommit < 0 {
+		t.Fatal("Local Executor installer is missing its main commit boundary")
+	}
+	mainTransaction := installer[mainCommit:]
+	for _, marker := range []string{
+		`systemctl disable --now "${SOCKET_NAME}" >/dev/null 2>&1 ||`,
+		`die "could not disable the Local Executor socket"`,
+		`systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 ||`,
+		`die "could not stop the Local Executor service"`,
+	} {
+		if !strings.Contains(mainTransaction, marker) {
+			t.Fatalf("Local Executor main quiesce must fail closed on command errors: missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"if ! systemctl disable --now \"${SOCKET_NAME}\" >/dev/null 2>&1; then\n  :\nfi",
+		"if ! systemctl stop \"${SERVICE_NAME}\" >/dev/null 2>&1; then\n  :\nfi",
+	} {
+		if strings.Contains(mainTransaction, forbidden) {
+			t.Fatalf("Local Executor main quiesce ignores a command error: %q", forbidden)
+		}
+	}
+
+	createStart := strings.Index(installer, "create_managed_directory()")
+	createEnd := strings.Index(installer[createStart:], "\n}")
+	if createStart < 0 || createEnd < 0 {
+		t.Fatal("Local Executor managed-directory helper is missing")
+	}
+	createBody := installer[createStart : createStart+createEnd]
+	deferIndex := strings.Index(createBody, "defer_cleanup_signals")
+	mkdirIndex := strings.Index(createBody, `mkdir -- "${path}"`)
+	journalIndex := strings.Index(createBody, `printf -v "${identity_variable}"`)
+	resumeIndex := strings.Index(createBody, "resume_cleanup_signals")
+	if deferIndex < 0 || mkdirIndex < 0 || journalIndex < 0 || resumeIndex < 0 ||
+		!(deferIndex < mkdirIndex && mkdirIndex < journalIndex && journalIndex < resumeIndex) {
+		t.Fatal("Local Executor directory creation must defer cleanup signals until its rollback identity is journaled")
+	}
+}
+
 func TestHostReleaseIncludesLocalExecutorAsPartOfHostAgentBundle(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release-host.yml"))
 	if err != nil {
@@ -283,6 +430,24 @@ func TestHostReleaseIncludesLocalExecutorAsPartOfHostAgentBundle(t *testing.T) {
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("host release workflow is missing local executor bundle marker %q", marker)
+		}
+	}
+	smokePayload, err := os.ReadFile(filepath.Join(
+		"..", "..", "internal", "security", "testdata",
+		"run-local-executor-installer-smoke.sh",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	smoke := string(smokePayload)
+	for _, marker := range []string{
+		`installer accepted a self-consistent bundle with invalid artifact metadata`,
+		`installer accepted an archive with a duplicate canonical path`,
+		`test ! -e /etc/autostream-local-executor`,
+		`test ! -e /opt/autostream/local-executor`,
+	} {
+		if !strings.Contains(smoke, marker) {
+			t.Fatalf("Local Executor root smoke is missing archive validation marker %q", marker)
 		}
 	}
 }
