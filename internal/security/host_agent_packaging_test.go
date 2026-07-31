@@ -135,7 +135,7 @@ func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 		`(.database_schema == "none")`,
 		`verify_binary_identity "${BINARY_SOURCE}" "autostream-host-agent"`,
 		`verify_binary_identity "${LOCAL_EXECUTOR_BINARY_SOURCE}" "autostream-local-executor"`,
-		`for command in awk basename chmod chown dd dirname find getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel; do`,
+		`for command in awk basename chmod chown dd dirname find getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel usermod; do`,
 		`HOST_RUNTIME_ROOT="/opt/autostream/host-agent"`,
 		`HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"`,
 		`create_symlink_with_journal`,
@@ -307,6 +307,52 @@ func TestHostAgentInstallerRollsBackFreshBootstrapState(t *testing.T) {
 	} {
 		if !strings.Contains(smoke, marker) {
 			t.Fatalf("Host Agent root smoke is missing rollback fixture %q", marker)
+		}
+	}
+}
+
+func TestHostAgentInstallerPreservesPreexistingGroupDuringCreatedUserRollback(t *testing.T) {
+	installerPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-host-agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerPayload)
+	for _, marker := range []string{
+		`AGENT_USER_ROLLBACK_LOGIN=`,
+		"preexisting_agent_group_identity=",
+		"agent_account_databases_match_digests",
+		`usermod --login "${AGENT_USER_ROLLBACK_LOGIN}" "${AGENT_USER}"`,
+		`userdel "${AGENT_USER_ROLLBACK_LOGIN}"`,
+	} {
+		if !strings.Contains(installer, marker) {
+			t.Fatalf("Host Agent account rollback is missing group-preservation marker %q", marker)
+		}
+	}
+	renameUser := strings.Index(installer, `usermod --login "${AGENT_USER_ROLLBACK_LOGIN}" "${AGENT_USER}"`)
+	deleteUser := strings.Index(installer, `userdel "${AGENT_USER_ROLLBACK_LOGIN}"`)
+	deleteGroup := strings.Index(installer, `groupdel "${AGENT_GROUP}"`)
+	if renameUser < 0 || deleteUser < 0 || deleteGroup < 0 || renameUser >= deleteUser || deleteUser >= deleteGroup {
+		t.Fatal("Host Agent rollback must rename the created login before deleting it and delete only its created group afterwards")
+	}
+
+	smokePayload, err := os.ReadFile(filepath.Join(
+		"..", "..", "internal", "security", "testdata",
+		"run-host-agent-installer-prepare-smoke.sh",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	smoke := string(smokePayload)
+	for _, marker := range []string{
+		"artifact-manifest.json does not authorize this exact Host Agent bundle",
+		"bundle archive contains duplicate paths",
+		"release source parents must not be writable by group or other",
+		"preexisting_group_record_before=",
+		"pre-existing Host Agent group changed during rollback",
+		"if getent group autostream-host-agent >/dev/null 2>&1; then",
+	} {
+		if !strings.Contains(smoke, marker) {
+			t.Fatalf("Host Agent root smoke is missing account rollback guard %q", marker)
 		}
 	}
 }

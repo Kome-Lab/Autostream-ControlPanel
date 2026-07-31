@@ -301,6 +301,8 @@ func TestLocalExecutorInstallerRollsBackPrerequisitesAndRuntimeState(t *testing.
 		"config_dir_identity=",
 		"executor_data_dir_identity=",
 		"state_snapshot=",
+		`[[ ${state_dir_existed} == true ]] || return 0`,
+		`[[ ${replacement_started} == true ]] || return 0`,
 		`restore_executor_state`,
 		`rollback_created_directory "${CONFIG_DIR}" "${config_dir_identity}"`,
 		`verify_unit_inactive "${SERVICE_NAME}"`,

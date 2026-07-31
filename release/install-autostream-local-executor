@@ -717,7 +717,7 @@ validate_executor_state_tree() {
 }
 
 snapshot_executor_state() {
-  [[ ${state_dir_existed} == true ]] || return
+  [[ ${state_dir_existed} == true ]] || return 0
   [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} &&
     $(stat -c '%d:%i' -- "${STATE_DIR}") == "${state_dir_identity}" ]] || \
     die "Local Executor state directory changed before snapshot"
@@ -1110,7 +1110,7 @@ restore_file() {
   local destination=$2
   local existed=$3
   local replacement_started=$4
-  [[ ${replacement_started} == true ]] || return
+  [[ ${replacement_started} == true ]] || return 0
   if [[ -n ${backup} && -e ${backup} ]]; then
     rm -f -- "${destination}" || return 1
     mv -fT -- "${backup}" "${destination}" || return 1

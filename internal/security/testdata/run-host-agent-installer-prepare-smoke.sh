@@ -199,12 +199,45 @@ EOF
   rm -f -- "${jq_shim}"
 fi
 
+systemctl_path=/usr/bin/systemctl
+if [[ -e ${systemctl_path} || -L ${systemctl_path} ]]; then
+  if [[ -e ${systemctl_path}.real || -L ${systemctl_path}.real ]]; then
+    printf '%s\n' 'could not preserve the pre-existing systemctl command for the smoke fixture' >&2
+    exit 1
+  fi
+  mv -- "${systemctl_path}" "${systemctl_path}.real"
+fi
+early_systemctl=$(mktemp)
+cat > "${early_systemctl}" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+printf 'unexpected early systemctl invocation: %s\n' "$*" >&2
+exit 98
+EOF
+install -m 0755 "${early_systemctl}" "${systemctl_path}"
+rm -f -- "${early_systemctl}"
+
 sed 's/"component": "host-agent"/"component": "worker"/' \
   /root/autostream-host-agent-artifact-manifest.valid.json \
   > "${PACKAGE_ROOT}/artifact-manifest.json"
 rebuild_bundle_archive
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
+if invalid_manifest_output="$(
+  "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare 2>&1
+)"; then
   printf '%s\n' 'prepare mode accepted a self-consistent bundle with invalid artifact metadata' >&2
+  exit 1
+fi
+if [[ ${invalid_manifest_output} != \
+    *'artifact-manifest.json does not authorize this exact Host Agent bundle'* ]]; then
+  printf '%s\n%s\n' \
+    'invalid artifact metadata did not fail at its authorization boundary; captured output:' \
+    "${invalid_manifest_output}" >&2
+  exit 1
+fi
+if [[ ${invalid_manifest_output} == *'required command is unavailable'* ]]; then
+  printf '%s\n%s\n' \
+    'invalid artifact metadata failed because a required command was unavailable; captured output:' \
+    "${invalid_manifest_output}" >&2
   exit 1
 fi
 test ! -e /etc/autostream-host-agent
@@ -228,8 +261,22 @@ tar -C /root -czf "${ARCHIVE}" \
   --transform="s#^host-agent-canonical-alias-file\$#${ARTIFACT_ID}#" \
   host-agent-canonical-alias-file
 rm -f -- /root/host-agent-canonical-alias-file
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
+if duplicate_path_output="$(
+  "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare 2>&1
+)"; then
   printf '%s\n' 'prepare mode accepted an archive with a duplicate canonical path' >&2
+  exit 1
+fi
+if [[ ${duplicate_path_output} != *'bundle archive contains duplicate paths'* ]]; then
+  printf '%s\n%s\n' \
+    'duplicate canonical path did not fail at its archive boundary; captured output:' \
+    "${duplicate_path_output}" >&2
+  exit 1
+fi
+if [[ ${duplicate_path_output} == *'required command is unavailable'* ]]; then
+  printf '%s\n%s\n' \
+    'duplicate canonical path failed because a required command was unavailable; captured output:' \
+    "${duplicate_path_output}" >&2
   exit 1
 fi
 test ! -e /etc/autostream-host-agent
@@ -244,18 +291,30 @@ fi
 rebuild_bundle_archive
 
 chmod 0777 "${PACKAGE_ROOT}"
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
+if writable_release_output="$(
+  "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare 2>&1
+)"; then
   printf '%s\n' 'prepare mode accepted a group/other-writable release root' >&2
+  exit 1
+fi
+if [[ ${writable_release_output} != \
+    *'release source parents must not be writable by group or other'* ]]; then
+  printf '%s\n%s\n' \
+    'writable release root did not fail at its parent-chain boundary; captured output:' \
+    "${writable_release_output}" >&2
+  exit 1
+fi
+if [[ ${writable_release_output} == *'required command is unavailable'* ]]; then
+  printf '%s\n%s\n' \
+    'writable release root failed because a required command was unavailable; captured output:' \
+    "${writable_release_output}" >&2
   exit 1
 fi
 chmod 0755 "${PACKAGE_ROOT}"
 test ! -e /usr/local/bin/autostream-host-agent
 test ! -e /usr/local/libexec/autostream-local-executor
 
-systemctl_path=/usr/bin/systemctl
-if [[ -e ${systemctl_path} ]]; then
-  mv -- "${systemctl_path}" "${systemctl_path}.real"
-fi
+rm -f -- "${systemctl_path}"
 fake_systemctl=$(mktemp)
 cat > "${fake_systemctl}" <<'EOF'
 #!/bin/bash
@@ -412,11 +471,27 @@ install -m 0755 "${fake_tmpfiles}" "${tmpfiles_path}"
 rm -f -- "${fake_tmpfiles}"
 
 ln -s /root /etc/systemd/system/autostream-local-executor.service
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
+if fresh_late_failure_output="$(
+  "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare 2>&1
+)"; then
   printf '%s\n' 'prepare mode survived a late destination preflight failure' >&2
   exit 1
 fi
 rm -f -- /etc/systemd/system/autostream-local-executor.service
+if [[ ${fresh_late_failure_output} != \
+    *'existing local executor service must be a regular non-symlink file'* ]]; then
+  printf '%s\n%s\n' \
+    'late destination preflight did not fail at the local executor service boundary; captured output:' \
+    "${fresh_late_failure_output}" >&2
+  exit 1
+fi
+if [[ ${fresh_late_failure_output} == *'rollback refused'* ||
+  ${fresh_late_failure_output} == *'rollback could not'* ]]; then
+  printf '%s\n%s\n' \
+    'late destination preflight reported an account rollback failure; captured output:' \
+    "${fresh_late_failure_output}" >&2
+  exit 1
+fi
 if id autostream-host-agent >/dev/null 2>&1 ||
   getent group autostream-host-agent >/dev/null 2>&1; then
   printf '%s\n' 'late destination preflight failure left a fresh Host Agent account or group' >&2
@@ -428,6 +503,64 @@ if [[ -e /etc/autostream-host-agent ||
   -e /opt/autostream/host-agent ||
   -e /opt/autostream/local-executor ]]; then
   printf '%s\n' 'late destination preflight failure left fresh Host Agent directories' >&2
+  exit 1
+fi
+
+groupadd --system autostream-host-agent
+preexisting_group_record_before="$(getent group autostream-host-agent)"
+preexisting_group_database_before="$(
+  sha256sum -- /etc/group | awk 'NR == 1 { print $1 }'
+)"
+preexisting_gshadow_database_before="$(
+  sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }'
+)"
+if [[ -z ${preexisting_group_record_before} ||
+  ! ${preexisting_group_database_before} =~ ^[0-9a-f]{64}$ ||
+  ! ${preexisting_gshadow_database_before} =~ ^[0-9a-f]{64}$ ]]; then
+  printf '%s\n' 'could not snapshot the pre-existing Host Agent group fixture' >&2
+  exit 1
+fi
+if id autostream-host-agent >/dev/null 2>&1; then
+  printf '%s\n' 'pre-existing Host Agent group fixture unexpectedly has a user' >&2
+  exit 1
+fi
+ln -s /root /etc/systemd/system/autostream-local-executor.service
+if preexisting_group_failure_output="$(
+  "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare 2>&1
+)"; then
+  printf '%s\n' 'prepare mode survived failure with only a pre-existing Host Agent group' >&2
+  exit 1
+fi
+rm -f -- /etc/systemd/system/autostream-local-executor.service
+if [[ ${preexisting_group_failure_output} != \
+    *'existing local executor service must be a regular non-symlink file'* ]]; then
+  printf '%s\n%s\n' \
+    'pre-existing Host Agent group probe did not fail at the local executor service boundary; captured output:' \
+    "${preexisting_group_failure_output}" >&2
+  exit 1
+fi
+if [[ ${preexisting_group_failure_output} == *'rollback refused'* ||
+  ${preexisting_group_failure_output} == *'rollback could not'* ]]; then
+  printf '%s\n%s\n' \
+    'pre-existing Host Agent group probe reported an account rollback failure; captured output:' \
+    "${preexisting_group_failure_output}" >&2
+  exit 1
+fi
+if id autostream-host-agent >/dev/null 2>&1; then
+  printf '%s\n' 'pre-existing Host Agent group rollback left its temporary user behind' >&2
+  exit 1
+fi
+if [[ $(getent group autostream-host-agent) != "${preexisting_group_record_before}" ||
+  $(sha256sum -- /etc/group | awk 'NR == 1 { print $1 }') != \
+    "${preexisting_group_database_before}" ||
+  $(sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }') != \
+    "${preexisting_gshadow_database_before}" ]]; then
+  printf '%s\n' 'pre-existing Host Agent group changed during rollback' >&2
+  exit 1
+fi
+groupdel autostream-host-agent
+if getent group autostream-host-agent >/dev/null 2>&1; then
+  printf '%s\n' 'pre-existing Host Agent group fixture cleanup left the group behind' >&2
   exit 1
 fi
 
@@ -460,7 +593,14 @@ fi
 rm -f -- /var/lib/autostream-host-agent/sentinel
 rmdir -- /var/lib/autostream-host-agent /etc/autostream-host-agent
 userdel autostream-host-agent
-groupdel autostream-host-agent
+if getent group autostream-host-agent >/dev/null 2>&1; then
+  groupdel autostream-host-agent
+fi
+if id autostream-host-agent >/dev/null 2>&1 ||
+  getent group autostream-host-agent >/dev/null 2>&1; then
+  printf '%s\n' 'existing Host Agent account fixture cleanup left the account or group behind' >&2
+  exit 1
+fi
 
 hostile_gid_group_database_before="$(
   sha256sum -- /etc/group | awk 'NR == 1 { print $1 }'
@@ -845,6 +985,9 @@ fi
 "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare
 "${PACKAGE_ROOT}/install/install-autostream-host-agent" \
   --config /root/autostream-host-agent.json
+systemctl disable --now autostream-host-agent.service
+test ! -e /tmp/autostream-host-agent-active
+test ! -e /tmp/autostream-host-agent-enabled
 "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   --policy /root/autostream-local-executor-policy.json
 "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor" --purge
