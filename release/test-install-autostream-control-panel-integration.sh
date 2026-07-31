@@ -1414,6 +1414,15 @@ assert_failed_install_rollback_clean \
   "${signal_link_stage_before}" \
   "${WORK_DIR}/signal-link-rollback.out"
 
+hostile_gid_group_database_before="$(
+  sha256sum -- /etc/group | awk 'NR == 1 { print $1 }'
+)"
+hostile_gid_gshadow_database_before="$(
+  sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }'
+)"
+[[ ${hostile_gid_group_database_before} =~ ^[0-9a-f]{64}$ &&
+  ${hostile_gid_gshadow_database_before} =~ ^[0-9a-f]{64}$ ]] || \
+  die "could not snapshot local group databases before the hostile GID 0 fixture"
 groupadd --system --gid 0 --non-unique autostream
 hostile_group_before="$(getent group autostream)"
 set +e
@@ -1443,7 +1452,16 @@ for hostile_gid_absent_path in \
   [[ ! -e ${hostile_gid_absent_path} && ! -L ${hostile_gid_absent_path} ]] || \
     die "hostile GID 0 mutated the service user or persistent paths"
 done
-groupdel autostream
+groupdel --force autostream
+if getent group autostream >/dev/null 2>&1; then
+  die "hostile GID 0 fixture cleanup left the service group behind"
+fi
+if [[ $(sha256sum -- /etc/group | awk 'NR == 1 { print $1 }') != \
+    "${hostile_gid_group_database_before}" ||
+  $(sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }') != \
+    "${hostile_gid_gshadow_database_before}" ]]; then
+  die "hostile GID 0 fixture cleanup changed the local group databases"
+fi
 
 groupadd --system autostream
 useradd --system --gid autostream --home-dir /var/lib/autostream \

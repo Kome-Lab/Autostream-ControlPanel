@@ -462,6 +462,17 @@ rmdir -- /var/lib/autostream-host-agent /etc/autostream-host-agent
 userdel autostream-host-agent
 groupdel autostream-host-agent
 
+hostile_gid_group_database_before="$(
+  sha256sum -- /etc/group | awk 'NR == 1 { print $1 }'
+)"
+hostile_gid_gshadow_database_before="$(
+  sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }'
+)"
+if [[ ! ${hostile_gid_group_database_before} =~ ^[0-9a-f]{64}$ ||
+  ! ${hostile_gid_gshadow_database_before} =~ ^[0-9a-f]{64}$ ]]; then
+  printf '%s\n' 'could not snapshot local group databases before the hostile GID 0 fixture' >&2
+  exit 1
+fi
 groupadd --system --non-unique --gid 0 autostream-host-agent
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   printf '%s\n' 'prepare mode accepted a Host Agent group using gid 0' >&2
@@ -472,7 +483,18 @@ if id autostream-host-agent >/dev/null 2>&1 ||
   printf '%s\n' 'gid 0 rejection mutated the Host Agent account or paths' >&2
   exit 1
 fi
-groupdel autostream-host-agent
+groupdel --force autostream-host-agent
+if getent group autostream-host-agent >/dev/null 2>&1; then
+  printf '%s\n' 'hostile GID 0 fixture cleanup left the Host Agent group behind' >&2
+  exit 1
+fi
+if [[ $(sha256sum -- /etc/group | awk 'NR == 1 { print $1 }') != \
+    "${hostile_gid_group_database_before}" ||
+  $(sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }') != \
+    "${hostile_gid_gshadow_database_before}" ]]; then
+  printf '%s\n' 'hostile GID 0 fixture cleanup changed the local group databases' >&2
+  exit 1
+fi
 
 touch \
   /tmp/autostream-host-agent-fail-timer-enable-after-side-effect \

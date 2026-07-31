@@ -275,6 +275,30 @@ func TestHostAgentInstallerRollsBackFreshBootstrapState(t *testing.T) {
 		t.Fatal(err)
 	}
 	smoke := string(smokePayload)
+	hostileGIDStart := strings.Index(smoke, "hostile_gid_group_database_before=")
+	if hostileGIDStart < 0 {
+		t.Fatal("Host Agent root smoke is missing the hostile GID 0 database snapshot")
+	}
+	hostileGIDEndOffset := strings.Index(smoke[hostileGIDStart:], "\ntouch \\")
+	if hostileGIDEndOffset < 0 {
+		t.Fatal("Host Agent root smoke is missing the hostile GID 0 fixture boundary")
+	}
+	hostileGIDBody := smoke[hostileGIDStart : hostileGIDStart+hostileGIDEndOffset]
+	hostileGIDCursor := 0
+	for _, marker := range []string{
+		"hostile_gid_group_database_before=",
+		"hostile_gid_gshadow_database_before=",
+		"groupadd --system --non-unique --gid 0 autostream-host-agent",
+		"groupdel --force autostream-host-agent",
+		"hostile GID 0 fixture cleanup left the Host Agent group behind",
+		"hostile GID 0 fixture cleanup changed the local group databases",
+	} {
+		markerOffset := strings.Index(hostileGIDBody[hostileGIDCursor:], marker)
+		if markerOffset < 0 {
+			t.Fatalf("Host Agent hostile GID 0 fixture is missing safe cleanup marker %q", marker)
+		}
+		hostileGIDCursor += markerOffset + len(marker)
+	}
 	for _, marker := range []string{
 		"late destination preflight failure left a fresh Host Agent account or group",
 		"late destination preflight failure left fresh Host Agent directories",

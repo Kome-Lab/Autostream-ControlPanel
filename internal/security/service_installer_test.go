@@ -553,6 +553,36 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 			t.Fatalf("installer integration test is missing scenario %q", marker)
 		}
 	}
+	hostileGIDStart := strings.Index(
+		integration,
+		"hostile_gid_group_database_before=",
+	)
+	if hostileGIDStart < 0 {
+		t.Fatal("installer integration test is missing the hostile GID 0 database snapshot")
+	}
+	hostileGIDEndOffset := strings.Index(
+		integration[hostileGIDStart:],
+		"\ngroupadd --system autostream",
+	)
+	if hostileGIDEndOffset < 0 {
+		t.Fatal("installer integration test is missing the hostile GID 0 fixture boundary")
+	}
+	hostileGIDBody := integration[hostileGIDStart : hostileGIDStart+hostileGIDEndOffset]
+	hostileGIDCursor := 0
+	for _, marker := range []string{
+		"hostile_gid_group_database_before=",
+		"hostile_gid_gshadow_database_before=",
+		"groupadd --system --gid 0 --non-unique autostream",
+		"groupdel --force autostream",
+		"hostile GID 0 fixture cleanup left the service group behind",
+		"hostile GID 0 fixture cleanup changed the local group databases",
+	} {
+		markerOffset := strings.Index(hostileGIDBody[hostileGIDCursor:], marker)
+		if markerOffset < 0 {
+			t.Fatalf("hostile GID 0 fixture is missing safe cleanup marker %q", marker)
+		}
+		hostileGIDCursor += markerOffset + len(marker)
+	}
 	probeBody := func(name string, declaration string) string {
 		t.Helper()
 		start := strings.Index(integration, declaration)
