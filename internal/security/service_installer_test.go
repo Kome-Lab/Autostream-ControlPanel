@@ -356,6 +356,8 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		"mktemp failure injection did not execute the installer mktemp boundary",
 		"mktemp failure mutated the service account",
 		"self-consistent archive with invalid artifact metadata unexpectedly passed",
+		`grep -Eq '^jq: (error:|[0-9]+ compile errors?)'`,
+		"artifact manifest verifier emitted a jq parser or compile error",
 		"invalid artifact metadata mutated the service account",
 		"archive with a duplicate canonical path unexpectedly passed",
 		"duplicate archive path mutated the service account",

@@ -771,6 +771,14 @@ set -e
 grep -F -- "artifact-manifest.json does not authorize this exact artifact" \
   "${WORK_DIR}/invalid-artifact-manifest.out" >/dev/null || \
   die "invalid artifact metadata did not fail at the metadata boundary"
+if grep -Eq '^jq: (error:|[0-9]+ compile errors?)' \
+  "${WORK_DIR}/invalid-artifact-manifest.out"; then
+  printf '%s\n' \
+    'control-panel installer integration test: captured jq artifact-manifest verifier failure:' \
+    >&2
+  cat -- "${WORK_DIR}/invalid-artifact-manifest.out" >&2
+  die "artifact manifest verifier emitted a jq parser or compile error"
+fi
 [[ ! -e ${MANAGED_ROOT} && ! -L ${MANAGED_ROOT} ]] || \
   die "invalid artifact metadata mutated managed state"
 if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then

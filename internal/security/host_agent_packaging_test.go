@@ -163,6 +163,9 @@ func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 			t.Fatalf("host agent installer is missing %q", marker)
 		}
 	}
+	if strings.Contains(installer, `(.database_schema == "none")))`) {
+		t.Fatal("host agent artifact-manifest jq filter has an extra closing parenthesis")
+	}
 	if strings.Contains(installer, "runtime_token=") || strings.Contains(installer, "--runtime-token") {
 		t.Fatal("host agent installer must not copy the runtime token into argv or environment")
 	}

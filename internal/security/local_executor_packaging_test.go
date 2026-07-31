@@ -210,6 +210,9 @@ func TestLocalExecutorInstallersPreserveRootPolicyBoundary(t *testing.T) {
 			t.Fatalf("local executor installer is missing %q", marker)
 		}
 	}
+	if strings.Contains(installer, `(.database_schema == "none")))`) {
+		t.Fatal("local executor artifact-manifest jq filter has an extra closing parenthesis")
+	}
 	for _, forbidden := range []string{
 		"curl ",
 		"wget ",

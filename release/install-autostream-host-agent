@@ -411,7 +411,7 @@ jq -e \
      (.minimum_agent_version == null) and
      (.minimum_panel_version == $version) and
      (.rollback_compatible == true) and
-     (.database_schema == "none")))' \
+     (.database_schema == "none"))' \
   "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}" >/dev/null || \
   die "${ARTIFACT_MANIFEST_NAME} does not authorize this exact Host Agent bundle"
 MANIFEST_COMMIT="$(jq -er '.commit' "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}")" || \

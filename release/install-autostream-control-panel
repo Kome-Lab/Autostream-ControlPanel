@@ -976,7 +976,7 @@ jq -e \
      (.minimum_agent_version == "v1.7.0") and
      (.minimum_panel_version == null) and
      (.rollback_compatible == true) and
-     (.database_schema == "backward_compatible")))' \
+     (.database_schema == "backward_compatible"))' \
   "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}" >/dev/null || \
   die "${ARTIFACT_MANIFEST_NAME} does not authorize this exact artifact"
 MANIFEST_COMMIT="$(jq -er '.commit' "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}")" || \
