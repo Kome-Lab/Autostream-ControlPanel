@@ -891,9 +891,13 @@ set +e
 unsafe_state_status=$?
 set -e
 [[ ${unsafe_state_status} -ne 0 ]] || die "unsafe service state symlink unexpectedly passed"
-grep -F -- "existing service state path is not a safe directory" \
-  "${WORK_DIR}/unsafe-state.out" >/dev/null || \
+if ! grep -F -- "existing service state path is not a safe directory" \
+  "${WORK_DIR}/unsafe-state.out" >/dev/null; then
+  printf 'control-panel installer integration test: captured installer output for unsafe service state symlink:\n' \
+    >&2
+  cat -- "${WORK_DIR}/unsafe-state.out" >&2
   die "unsafe service state symlink did not fail with the expected message"
+fi
 if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
   die "unsafe service state validation mutated the service account"
 fi

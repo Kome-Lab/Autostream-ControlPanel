@@ -75,6 +75,12 @@ for fixed_parent in \
   require_secure_root_directory "${fixed_parent}"
 done
 
+# Reject the specialized state-path type boundary before release processing or
+# generic managed-parent validation can obscure it.
+if [[ -L ${STATE_DIR} ]]; then
+  die "existing service state path is not a safe directory: ${STATE_DIR}"
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || \
   die "could not resolve the installer directory"
 [[ -n ${SCRIPT_DIR} && -d ${SCRIPT_DIR} && ! -L ${SCRIPT_DIR} ]] || \

@@ -184,6 +184,14 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		rootAnchorCheck >= inputStageAllocation {
 		t.Fatal("Control Panel must reject unsafe fixed root anchors before allocating release staging")
 	}
+	stateSymlinkCheck := strings.Index(installer, `if [[ -L ${STATE_DIR} ]]; then`)
+	managedParentCheck := strings.Index(installer, "for managed_parent in")
+	if stateSymlinkCheck < 0 ||
+		managedParentCheck < 0 ||
+		stateSymlinkCheck >= inputStageAllocation ||
+		stateSymlinkCheck >= managedParentCheck {
+		t.Fatal("Control Panel must reject an unsafe service-state symlink before release staging and generic managed-parent validation")
+	}
 	bundleVerify := strings.Index(
 		installer,
 		`verify_binary_identity "${EXTRACTED_ROOT}/bin/autostream-updater" "autostream-updater"`,
