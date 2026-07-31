@@ -1012,15 +1012,22 @@ install -o root -g root -m 0755 "$(command -v groupdel)" \
 cat > "${WORK_DIR}/signal-groupadd" <<EOF
 #!/bin/bash
 set -euo pipefail
-"${WORK_DIR}/real-groupadd" "\$@"
-kill -TERM "\${PPID}"
-exit 73
+status=0
+if "${WORK_DIR}/real-groupadd" "\$@"; then
+  :
+else
+  status=\$?
+fi
+if [[ \${status} -eq 0 ]]; then
+  printf '%s\n' delivered > "${WORK_DIR}/signal-groupadd.executed"
+  kill -TERM "\${PPID}"
+fi
+exit "\${status}"
 EOF
 cat > "${WORK_DIR}/signal-groupdel" <<EOF
 #!/bin/bash
 set -euo pipefail
 printf '%s\n' signal-safe > "${WORK_DIR}/signal-groupdel.executed"
-kill -TERM "\${PPID}"
 "${WORK_DIR}/real-groupdel" "\$@"
 EOF
 chmod 0755 "${WORK_DIR}/signal-groupadd" "${WORK_DIR}/signal-groupdel"
@@ -1037,8 +1044,24 @@ unshare --mount --propagation private bash -c \
   > "${WORK_DIR}/signal-account-rollback.out" 2>&1
 signal_account_status=$?
 set -e
-[[ ${signal_account_status} -eq 143 ]] || \
+if [[ ${signal_account_status} -ne 143 ]]; then
+  printf 'control-panel installer integration test: signal-interrupted groupadd status=%s\n' \
+    "${signal_account_status}" >&2
+  for signal_marker in signal-groupadd.executed signal-groupdel.executed; do
+    if [[ -f ${WORK_DIR}/${signal_marker} ]]; then
+      printf 'control-panel installer integration test: %s=present\n' "${signal_marker}" >&2
+    else
+      printf 'control-panel installer integration test: %s=absent\n' "${signal_marker}" >&2
+    fi
+  done
+  printf '%s\n' \
+    'control-panel installer integration test: captured installer output for signal-interrupted groupadd:' \
+    >&2
+  cat -- "${WORK_DIR}/signal-account-rollback.out" >&2
   die "signal-interrupted groupadd did not exit with deferred TERM status 143"
+fi
+[[ -f ${WORK_DIR}/signal-groupadd.executed ]] || \
+  die "signal-interrupted groupadd did not reach its injection boundary"
 if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
   die "signal-interrupted groupadd left the service account behind"
 fi
@@ -1066,12 +1089,12 @@ for signal_absent_path in \
     die "signal-interrupted groupadd left persistent installer state"
 done
 
-assert_signal_rollback_clean() {
+assert_failed_install_rollback_clean() {
   local boundary=$1
   local stage_before=$2
   local stage_after
   if id autostream >/dev/null 2>&1 || getent group autostream >/dev/null 2>&1; then
-    die "signal-interrupted ${boundary} left the service account behind"
+    die "${boundary} left the service account behind"
   fi
   stage_after="$(
     find /var/tmp -mindepth 1 -maxdepth 1 -type d \
@@ -1079,7 +1102,7 @@ assert_signal_rollback_clean() {
       LC_ALL=C sort
   )"
   [[ ${stage_after} == "${stage_before}" ]] || \
-    die "signal-interrupted ${boundary} left private input staging behind"
+    die "${boundary} left private input staging behind"
   for absent_path in \
     /opt/autostream \
     /var/lib/autostream \
@@ -1092,9 +1115,64 @@ assert_signal_rollback_clean() {
     "${BACKUP_EXECUTABLE}" \
     "${MANAGED_ROOT}/current"; do
     [[ ! -e ${absent_path} && ! -L ${absent_path} ]] || \
-      die "signal-interrupted ${boundary} left persistent installer state"
+      die "${boundary} left persistent installer state"
   done
 }
+
+cat > "${WORK_DIR}/partial-success-groupadd" <<EOF
+#!/bin/bash
+set -euo pipefail
+"${WORK_DIR}/real-groupadd" "\$@"
+printf '%s\n' delivered > "${WORK_DIR}/partial-success-groupadd.executed"
+exit 73
+EOF
+cat > "${WORK_DIR}/cleanup-signal-groupdel" <<EOF
+#!/bin/bash
+set -euo pipefail
+printf '%s\n' delivered > "${WORK_DIR}/cleanup-signal-groupdel.executed"
+kill -TERM "\${PPID}"
+"${WORK_DIR}/real-groupdel" "\$@"
+EOF
+chmod 0755 \
+  "${WORK_DIR}/partial-success-groupadd" \
+  "${WORK_DIR}/cleanup-signal-groupdel"
+partial_success_stage_before="$(
+  find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'autostream-control-panel-install.*' -printf '%f\n' |
+    LC_ALL=C sort
+)"
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/partial-success-groupadd' /usr/sbin/groupadd &&
+    mount --bind '${WORK_DIR}/cleanup-signal-groupdel' /usr/sbin/groupdel &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/partial-success-groupadd.out" 2>&1
+partial_success_status=$?
+set -e
+if [[ ${partial_success_status} -ne 1 ]]; then
+  printf 'control-panel installer integration test: partial-success groupadd status=%s\n' \
+    "${partial_success_status}" >&2
+  for partial_marker in \
+    partial-success-groupadd.executed \
+    cleanup-signal-groupdel.executed; do
+    if [[ -f ${WORK_DIR}/${partial_marker} ]]; then
+      printf 'control-panel installer integration test: %s=present\n' "${partial_marker}" >&2
+    else
+      printf 'control-panel installer integration test: %s=absent\n' "${partial_marker}" >&2
+    fi
+  done
+  printf '%s\n' \
+    'control-panel installer integration test: captured installer output for partial-success groupadd:' \
+    >&2
+  cat -- "${WORK_DIR}/partial-success-groupadd.out" >&2
+  die "partial-success groupadd did not exit with status 1"
+fi
+[[ -f ${WORK_DIR}/partial-success-groupadd.executed ]] || \
+  die "partial-success groupadd did not reach its injection boundary"
+[[ -f ${WORK_DIR}/cleanup-signal-groupdel.executed ]] || \
+  die "cleanup-signal groupdel wrapper did not execute"
+assert_failed_install_rollback_clean \
+  "partial-success groupadd rollback" "${partial_success_stage_before}"
 
 install -o root -g root -m 0755 "$(command -v install)" \
   "${WORK_DIR}/real-install"
@@ -1124,7 +1202,7 @@ set -e
   die "signal-interrupted directory mutation did not exit with deferred TERM status 143"
 [[ -f ${WORK_DIR}/signal-install.executed ]] || \
   die "signal-interrupted directory mutation did not reach its injection boundary"
-assert_signal_rollback_clean directory-mutation "${signal_directory_stage_before}"
+assert_failed_install_rollback_clean directory-mutation "${signal_directory_stage_before}"
 
 install -o root -g root -m 0755 "$(command -v mktemp)" \
   "${WORK_DIR}/real-mktemp"
@@ -1155,7 +1233,7 @@ set -e
   die "signal-interrupted temporary allocation did not exit with deferred TERM status 143"
 [[ -f ${WORK_DIR}/signal-mktemp.executed ]] || \
   die "signal-interrupted temporary allocation did not reach its injection boundary"
-assert_signal_rollback_clean temporary-allocation "${signal_temporary_stage_before}"
+assert_failed_install_rollback_clean temporary-allocation "${signal_temporary_stage_before}"
 
 install -o root -g root -m 0755 "$(command -v mv)" \
   "${WORK_DIR}/real-mv"
@@ -1186,7 +1264,7 @@ set -e
   die "signal-interrupted current-link mutation did not exit with deferred TERM status 143"
 [[ -f ${WORK_DIR}/signal-mv.executed ]] || \
   die "signal-interrupted current-link mutation did not reach its injection boundary"
-assert_signal_rollback_clean current-link-mutation "${signal_link_stage_before}"
+assert_failed_install_rollback_clean current-link-mutation "${signal_link_stage_before}"
 
 groupadd --system --gid 0 --non-unique autostream
 hostile_group_before="$(getent group autostream)"

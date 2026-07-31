@@ -550,6 +550,78 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 			t.Fatalf("installer integration test is missing scenario %q", marker)
 		}
 	}
+	probeBody := func(name string, declaration string) string {
+		t.Helper()
+		start := strings.Index(integration, declaration)
+		if start < 0 {
+			t.Fatalf("installer integration test is missing the %s probe start", name)
+		}
+		bodyStart := start + len(declaration)
+		bodyEnd := strings.Index(integration[bodyStart:], "\nEOF\n")
+		if bodyEnd < 0 {
+			t.Fatalf("installer integration test is missing the %s probe end", name)
+		}
+		return integration[bodyStart : bodyStart+bodyEnd]
+	}
+	requireMarkersInOrder := func(name string, body string, markers ...string) {
+		t.Helper()
+		cursor := 0
+		for _, marker := range markers {
+			offset := strings.Index(body[cursor:], marker)
+			if offset < 0 {
+				t.Fatalf("%s probe is missing ordered marker %q", name, marker)
+			}
+			cursor += offset + len(marker)
+		}
+	}
+	signalGroupadd := probeBody(
+		"deferred-TERM groupadd",
+		`cat > "${WORK_DIR}/signal-groupadd" <<EOF`,
+	)
+	for _, marker := range []string{
+		`status=\$?`,
+		`signal-groupadd.executed`,
+		`kill -TERM "\${PPID}"`,
+		`exit "\${status}"`,
+	} {
+		if !strings.Contains(signalGroupadd, marker) {
+			t.Fatalf("deferred-TERM groupadd probe is missing marker %q", marker)
+		}
+	}
+	if strings.Contains(signalGroupadd, "exit 73") {
+		t.Fatal("deferred-TERM groupadd probe must not mix a synthetic command failure into the signal boundary")
+	}
+	partialSuccessGroupadd := probeBody(
+		"partial-success groupadd",
+		`cat > "${WORK_DIR}/partial-success-groupadd" <<EOF`,
+	)
+	requireMarkersInOrder(
+		"partial-success groupadd",
+		partialSuccessGroupadd,
+		`"${WORK_DIR}/real-groupadd" "\$@"`,
+		`partial-success-groupadd.executed`,
+		"exit 73",
+	)
+	cleanupSignalGroupdel := probeBody(
+		"cleanup-signal groupdel",
+		`cat > "${WORK_DIR}/cleanup-signal-groupdel" <<EOF`,
+	)
+	requireMarkersInOrder(
+		"cleanup-signal groupdel",
+		cleanupSignalGroupdel,
+		`cleanup-signal-groupdel.executed`,
+		`kill -TERM "\${PPID}"`,
+		`"${WORK_DIR}/real-groupdel" "\$@"`,
+	)
+	for _, marker := range []string{
+		"partial-success groupadd did not exit with status 1",
+		"captured installer output for partial-success groupadd",
+		"captured installer output for signal-interrupted groupadd",
+	} {
+		if !strings.Contains(integration, marker) {
+			t.Fatalf("installer integration test is missing split account rollback marker %q", marker)
+		}
+	}
 	if strings.Contains(
 		integration,
 		`trap 'kill "${probe_pid}" >/dev/null 2>&1; wait "${probe_pid}" >/dev/null 2>&1' EXIT`,
