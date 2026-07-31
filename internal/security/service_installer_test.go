@@ -96,12 +96,18 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`backup_exec_backup_created=false`,
 		`backup_exec_backup_identity=""`,
 		`previous_public_backup_created`,
+		`previous_public_backup_complete`,
 		`previous_public_backup_identities`,
+		`previous_public_source_identities`,
 		`previous_public_backup_sha256`,
 		`previous_public_uids`,
 		`previous_public_gids`,
 		`previous_public_modes`,
 		`previous_public_sha256`,
+		`previous_public_tree_sha256`,
+		`installed_public_targets`,
+		`installed_public_identities`,
+		`public_directory_tree_sha256()`,
 		`die "legacy public backup must be owned by root:root: ${backup_path}"`,
 		`service_group_gid="$(getent group autostream | awk -F: 'NR == 1 { print $3 }')"`,
 		`die "autostream service group must not use GID 0"`,
@@ -147,6 +153,97 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		if !strings.Contains(installer, marker) {
 			t.Fatalf("service installer is missing %q", marker)
 		}
+	}
+	publicDirectoryStart := strings.Index(
+		installer,
+		`elif [[ -d ${link_path} && ! -L ${link_path} ]]; then`,
+	)
+	if publicDirectoryStart < 0 {
+		t.Fatal("service installer is missing the legacy public directory migration branch")
+	}
+	publicDirectoryEndOffset := strings.Index(
+		installer[publicDirectoryStart:],
+		`elif [[ -e ${link_path} ]]; then`,
+	)
+	if publicDirectoryEndOffset < 0 {
+		t.Fatal("service installer is missing the legacy public directory migration boundary")
+	}
+	publicDirectoryBody := installer[publicDirectoryStart : publicDirectoryStart+publicDirectoryEndOffset]
+	publicDirectoryCursor := 0
+	for _, marker := range []string{
+		`previous_source_identity="$(stat -c '%d:%i' -- "${link_path}")"`,
+		`previous_tree_sha256="$(public_directory_tree_sha256 "${link_path}")"`,
+		`begin_installer_signal_transaction`,
+		`previous_public_backup_complete+=("${directory_backup_complete}")`,
+		`previous_public_source_identities+=("${previous_source_identity}")`,
+		`previous_public_tree_sha256+=("${previous_tree_sha256}")`,
+		`installed_public_targets+=("")`,
+		`installed_public_identities+=("")`,
+		`if mv -T -- "${link_path}" "${backup_path}"; then`,
+		`$(public_directory_tree_sha256 "${backup_path}" 2>/dev/null || true) ==`,
+		`previous_backup_identity="$(stat -c '%d:%i' -- "${backup_path}")"`,
+		`previous_public_backup_identities[journal_index]="${previous_backup_identity}"`,
+		`previous_public_backup_created[journal_index]=true`,
+		`previous_public_backup_complete[journal_index]=true`,
+		`previous_public_backup_complete[journal_index]=false`,
+		`sync -f "${LEGACY_BACKUP_DIR}"`,
+		`finish_installer_signal_transaction`,
+		`if [[ ${directory_move_status} -ne 0 ]]; then`,
+		`return "${directory_move_status}"`,
+	} {
+		markerOffset := strings.Index(publicDirectoryBody[publicDirectoryCursor:], marker)
+		if markerOffset < 0 {
+			t.Fatalf("legacy public directory migration is missing ordered cross-filesystem marker %q", marker)
+		}
+		publicDirectoryCursor += markerOffset + len(marker)
+	}
+	rollbackPublicStart := strings.Index(installer, "rollback_public_links() {")
+	rollbackPublicEnd := strings.Index(installer, "rollback_current_link() {")
+	if rollbackPublicStart < 0 || rollbackPublicEnd < 0 || rollbackPublicStart >= rollbackPublicEnd {
+		t.Fatal("service installer is missing the public-link rollback boundary")
+	}
+	rollbackPublicBody := installer[rollbackPublicStart:rollbackPublicEnd]
+	for _, marker := range []string{
+		`source_identity="${previous_public_source_identities[index]}"`,
+		`backup_complete="${previous_public_backup_complete[index]}"`,
+		`previous_tree_sha256="${previous_public_tree_sha256[index]}"`,
+		`installed_target="${installed_public_targets[index]}"`,
+		`installed_identity="${installed_public_identities[index]}"`,
+		`${backup_complete} == false`,
+		`rm -rf -- "${backup}"`,
+		`${backup_complete} == true`,
+		`$(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) == "${installed_identity}"`,
+		`$(readlink -- "${path}" 2>/dev/null || true) == "${installed_target}"`,
+		`$(public_directory_tree_sha256 "${path}" 2>/dev/null || true) ==`,
+		`! -e ${backup} && ! -L ${backup}`,
+		`$(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) == "${source_identity}"`,
+	} {
+		if !strings.Contains(rollbackPublicBody, marker) {
+			t.Fatalf("legacy public directory rollback is missing safe cross-filesystem marker %q", marker)
+		}
+	}
+	publicPublishStart := strings.Index(installer, `public_next="${link_next}"`)
+	publicPublishEnd := strings.Index(installer, "\n}\n\nif [[ ${unit_previous_kind}")
+	if publicPublishStart < 0 || publicPublishEnd < 0 || publicPublishStart >= publicPublishEnd {
+		t.Fatal("service installer is missing the public-link publication boundary")
+	}
+	publicPublishBody := installer[publicPublishStart:publicPublishEnd]
+	publicPublishCursor := 0
+	for _, marker := range []string{
+		`public_next_identity="$(stat -c '%d:%i' -- "${link_next}")"`,
+		`if mv -Tf -- "${link_next}" "${link_path}"; then`,
+		`$(stat -c '%d:%i' -- "${link_path}" 2>/dev/null || true) == "${public_next_identity}"`,
+		`installed_public_targets[journal_index]="${target}"`,
+		`installed_public_identities[journal_index]="${public_next_identity}"`,
+		`finish_installer_signal_transaction`,
+		`if [[ ${public_link_status} -ne 0 ]]; then`,
+		`return "${public_link_status}"`,
+	} {
+		markerOffset := strings.Index(publicPublishBody[publicPublishCursor:], marker)
+		if markerOffset < 0 {
+			t.Fatalf("public-link publication is missing ordered partial-success marker %q", marker)
+		}
+		publicPublishCursor += markerOffset + len(marker)
 	}
 	for _, forbidden := range []string{
 		`systemctl restart "${UNIT_NAME}"`,
@@ -477,6 +574,23 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		"daemon-reload failure injection unexpectedly succeeded",
 		"activation sync failure injection unexpectedly succeeded",
 		"sync failure injection did not reach the post-activation durability boundary",
+		"legacy web and install backup fixtures must use different filesystems",
+		"sync-post-activation.executed",
+		"sync failure rollback changed the legacy web directory",
+		"sync failure rollback changed the legacy web directory metadata",
+		"sync failure rollback did not restore the legacy web tree exactly",
+		"sync failure rollback left the legacy web backup behind",
+		"sync failure rollback reported an earlier migration or incomplete rollback",
+		"snapshot_legacy_web_tree()",
+		`tar --sort=name --numeric-owner -cf "${output_path}" -C "${web_dir}" .`,
+		`install -d -o root -g root -m 0710 "${PUBLIC_WEB}/assets"`,
+		`ln -s -- ../legacy.txt "${PUBLIC_WEB}/assets/legacy-link"`,
+		"post-mutation legacy web move did not preserve status 73",
+		"post-mutation legacy web move rollback changed the legacy web tree",
+		"post-mutation legacy web move rollback left the legacy web backup behind",
+		"partial legacy web move did not preserve status 72",
+		"partial legacy web move rollback changed the legacy web tree",
+		"partial legacy web move rollback left the partial backup behind",
 		"successful migration replaced the running legacy process",
 		"idempotent reinstall changed the existing environment",
 		"fresh installer unexpectedly started the service",
@@ -606,6 +720,76 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 			}
 			cursor += offset + len(marker)
 		}
+	}
+	mvPostMutation := probeBody(
+		"post-mutation legacy web move",
+		`cat > "${WORK_DIR}/mv-post-mutation-fail" <<EOF`,
+	)
+	requireMarkersInOrder(
+		"post-mutation legacy web move",
+		mvPostMutation,
+		`"${WORK_DIR}/real-mv" "\$@"`,
+		`status=\$?`,
+		`mv-post-mutation.executed`,
+		`exit 73`,
+	)
+	mvPartialDestination := probeBody(
+		"partial legacy web move",
+		`cat > "${WORK_DIR}/mv-partial-destination-fail" <<EOF`,
+	)
+	requireMarkersInOrder(
+		"partial legacy web move",
+		mvPartialDestination,
+		`destination="\${!#}"`,
+		`install -d -o root -g root -m 0755 "\${destination}"`,
+		`partial-copy.txt`,
+		`mv-partial-destination.executed`,
+		`exit 72`,
+	)
+	syncFailure := probeBody(
+		"activation sync failure",
+		`cat > "${WORK_DIR}/sync-fail" <<EOF`,
+	)
+	requireMarkersInOrder(
+		"activation sync failure",
+		syncFailure,
+		`"\$*" == "-f /usr/local/bin"`,
+		`-L "${CURRENT_LINK}"`,
+		`-L "${PUBLIC_BINARY}"`,
+		`\$(readlink -- "${PUBLIC_BINARY}") == "${CURRENT_LINK}/bin/control-panel"`,
+		`-L "${PUBLIC_WEB}"`,
+		`\$(readlink -- "${PUBLIC_WEB}") ==`,
+		`sync-post-activation.executed`,
+		`exit 74`,
+	)
+	if strings.Contains(syncFailure, "sync-usr-local-bin.count") {
+		t.Fatal("activation sync failure probe must gate on published links instead of call count")
+	}
+	webRestoreAssertion := strings.Index(
+		integration,
+		"sync failure rollback did not restore the legacy web directory",
+	)
+	webContentAssertion := strings.Index(
+		integration,
+		"sync failure rollback changed the legacy web directory",
+	)
+	webTreeAssertion := strings.Index(
+		integration,
+		"sync failure rollback did not restore the legacy web tree exactly",
+	)
+	webBackupAssertion := strings.Index(
+		integration,
+		"sync failure rollback left the legacy web backup behind",
+	)
+	activationMarkerAssertion := strings.Index(
+		integration,
+		`if [[ ! -f ${WORK_DIR}/sync-post-activation.executed ]]; then`,
+	)
+	if webRestoreAssertion < 0 || webContentAssertion < 0 || webTreeAssertion < 0 ||
+		webBackupAssertion < 0 || activationMarkerAssertion < 0 ||
+		!(webRestoreAssertion < webContentAssertion && webContentAssertion < webTreeAssertion &&
+			webTreeAssertion < webBackupAssertion && webBackupAssertion < activationMarkerAssertion) {
+		t.Fatal("activation sync rollback must restore the full legacy web tree and remove its backup before accepting the injection marker")
 	}
 	signalGroupadd := probeBody(
 		"deferred-TERM groupadd",

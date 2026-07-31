@@ -118,6 +118,8 @@ grep -Eq ' /usr/share .* - tmpfs autostream-control-panel-installer-test-share '
   die "isolated /opt mount is not effective"
 [[ $(stat -c '%m' -- /usr/share) == "/usr/share" ]] || \
   die "isolated /usr/share mount is not effective"
+[[ $(stat -c '%d' -- /usr/share) != $(stat -c '%d' -- /var/backups) ]] || \
+  die "legacy web and install backup fixtures must use different filesystems"
 [[ $(stat -c '%U:%G:%a' -- /usr) == "root:root:755" ]] || \
   die "could not create an isolated safe /usr fixture"
 [[ $(stat -c '%U:%G:%a' -- /etc) == "root:root:755" ]] || \
@@ -577,6 +579,13 @@ snapshot_managed_release_tree() {
     find . -printf '%P|%D:%i|%U:%G|%m|%s\n' | LC_ALL=C sort
     find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
   ) > "${output_path}"
+}
+
+snapshot_legacy_web_tree() {
+  local web_dir=$1
+  local output_path=$2
+  [[ -d ${web_dir} && ! -L ${web_dir} ]] || return 1
+  tar --sort=name --numeric-owner -cf "${output_path}" -C "${web_dir}" .
 }
 
 if [[ ${AUTOSTREAM_CONTROL_PANEL_INSTALLER_TEST_PREFLIGHT_PROBE:-} != "1" ]]; then
@@ -1645,9 +1654,15 @@ systemctl daemon-reload
 install -d -o root -g root -m 0755 /etc/autostream /var/lib/autostream
 install -d -o autostream -g autostream -m 0750 "${STATE_DIR}"
 install -d -o root -g root -m 0755 "${PUBLIC_WEB}"
+install -d -o root -g root -m 0710 "${PUBLIC_WEB}/assets"
 printf '%s\n' "${LEGACY_BINARY_CONTENT}" > "${PUBLIC_BINARY}"
 chmod 0755 "${PUBLIC_BINARY}"
 printf '%s\n' "${LEGACY_WEB_CONTENT}" > "${PUBLIC_WEB}/legacy.txt"
+printf '%s\n' "nested legacy web content" > "${PUBLIC_WEB}/assets/nested.txt"
+chown root:root "${PUBLIC_WEB}/legacy.txt" "${PUBLIC_WEB}/assets/nested.txt"
+chmod 0644 "${PUBLIC_WEB}/legacy.txt"
+chmod 0640 "${PUBLIC_WEB}/assets/nested.txt"
+ln -s -- ../legacy.txt "${PUBLIC_WEB}/assets/legacy-link"
 printf '%s\n' "${LEGACY_ENV_CONTENT}" > "${ENV_PATH}"
 chmod 0640 "${ENV_PATH}"
 printf '%s\n' "${LEGACY_HELPER_CONTENT}" > "${BACKUP_EXECUTABLE}"
@@ -1682,6 +1697,8 @@ env_before="$(sha256sum "${ENV_PATH}" | awk 'NR == 1 { print $1 }')"
 db_before="$(sha256sum "${MARIADB_DEFAULTS}" | awk 'NR == 1 { print $1 }')"
 unit_before="$(sha256sum "${UNIT_PATH}" | awk 'NR == 1 { print $1 }')"
 helper_before="$(sha256sum "${BACKUP_EXECUTABLE}" | awk 'NR == 1 { print $1 }')"
+snapshot_legacy_web_tree "${PUBLIC_WEB}" "${WORK_DIR}/legacy-web.before.tar" || \
+  die "could not snapshot the legacy web fixture"
 
 legacy_backup_dir="${INSTALL_BACKUP_ROOT}/${VERSION}-${archive_sha256:0:12}"
 install -d -o root -g root -m 0700 "${legacy_backup_dir}"
@@ -1819,6 +1836,14 @@ grep -Fx -- "${LEGACY_BINARY_CONTENT}" "${PUBLIC_BINARY}" >/dev/null || \
   die "failed migration did not restore the legacy web directory"
 grep -Fx -- "${LEGACY_WEB_CONTENT}" "${PUBLIC_WEB}/legacy.txt" >/dev/null || \
   die "failed migration changed the legacy web directory"
+snapshot_legacy_web_tree "${PUBLIC_WEB}" "${WORK_DIR}/failed-install-web.after.tar" || \
+  die "failed migration could not snapshot the restored legacy web directory"
+cmp -s -- "${WORK_DIR}/legacy-web.before.tar" \
+  "${WORK_DIR}/failed-install-web.after.tar" || \
+  die "failed migration did not restore the legacy web tree exactly"
+[[ ! -e ${legacy_backup_dir}/autostream-control-panel &&
+  ! -L ${legacy_backup_dir}/autostream-control-panel ]] || \
+  die "failed migration left the legacy web backup behind"
 [[ $(sha256sum "${ENV_PATH}" | awk 'NR == 1 { print $1 }') == "${env_before}" ]] || \
   die "failed migration changed the existing environment"
 [[ $(sha256sum "${MARIADB_DEFAULTS}" | awk 'NR == 1 { print $1 }') == "${db_before}" ]] || \
@@ -1842,20 +1867,129 @@ grep -Fx -- "${LEGACY_WEB_CONTENT}" "${PUBLIC_WEB}/legacy.txt" >/dev/null || \
 assert_legacy_runtime_unit_loaded
 kill -0 "${old_pid}" || die "failed migration stopped the running legacy process"
 
+install -o root -g root -m 0755 /usr/bin/mv "${WORK_DIR}/real-mv"
+cat > "${WORK_DIR}/mv-post-mutation-fail" <<EOF
+#!/bin/bash
+set -euo pipefail
+set +e
+"${WORK_DIR}/real-mv" "\$@"
+status=\$?
+set -e
+[[ \${status} -eq 0 ]] || exit "\${status}"
+destination="\${!#}"
+if [[ \${destination} == "${legacy_backup_dir}/autostream-control-panel" &&
+  ! -e "${WORK_DIR}/mv-post-mutation.executed" ]]; then
+  printf '%s\n' delivered > "${WORK_DIR}/mv-post-mutation.executed"
+  exit 73
+fi
+EOF
+chmod 0755 "${WORK_DIR}/mv-post-mutation-fail"
+
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/mv-post-mutation-fail' /usr/bin/mv &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/mv-post-mutation.out" 2>&1
+mv_post_mutation_status=$?
+set -e
+if [[ ${mv_post_mutation_status} -ne 73 ]]; then
+  report_failed_install_probe \
+    "post-mutation legacy web move" "${WORK_DIR}/mv-post-mutation.out"
+  die "post-mutation legacy web move did not preserve status 73"
+fi
+[[ -f ${WORK_DIR}/mv-post-mutation.executed ]] || \
+  die "post-mutation legacy web move did not reach its injection boundary"
+[[ ! -e ${MANAGED_ROOT}/current && ! -L ${MANAGED_ROOT}/current ]] || \
+  die "post-mutation legacy web move rollback left current activated"
+[[ -f ${PUBLIC_BINARY} && ! -L ${PUBLIC_BINARY} ]] || \
+  die "post-mutation legacy web move rollback did not restore the legacy binary"
+grep -Fx -- "${LEGACY_BINARY_CONTENT}" "${PUBLIC_BINARY}" >/dev/null || \
+  die "post-mutation legacy web move rollback changed the legacy binary"
+snapshot_legacy_web_tree \
+  "${PUBLIC_WEB}" "${WORK_DIR}/mv-post-mutation-web.after.tar" || \
+  die "post-mutation legacy web move rollback did not restore the legacy web directory"
+cmp -s -- "${WORK_DIR}/legacy-web.before.tar" \
+  "${WORK_DIR}/mv-post-mutation-web.after.tar" || \
+  die "post-mutation legacy web move rollback changed the legacy web tree"
+[[ ! -e ${legacy_backup_dir}/autostream-control-panel &&
+  ! -L ${legacy_backup_dir}/autostream-control-panel ]] || \
+  die "post-mutation legacy web move rollback left the legacy web backup behind"
+if grep -F -- "rollback was incomplete" "${WORK_DIR}/mv-post-mutation.out" >/dev/null; then
+  report_failed_install_probe \
+    "post-mutation legacy web move" "${WORK_DIR}/mv-post-mutation.out"
+  die "post-mutation legacy web move reported an incomplete rollback"
+fi
+assert_legacy_runtime_unit_loaded
+kill -0 "${old_pid}" || \
+  die "post-mutation legacy web move rollback stopped the running legacy process"
+
+cat > "${WORK_DIR}/mv-partial-destination-fail" <<EOF
+#!/bin/bash
+set -euo pipefail
+destination="\${!#}"
+if [[ \${destination} == "${legacy_backup_dir}/autostream-control-panel" &&
+  ! -e "${WORK_DIR}/mv-partial-destination.executed" ]]; then
+  install -d -o root -g root -m 0755 "\${destination}"
+  printf '%s\n' partial > "\${destination}/partial-copy.txt"
+  printf '%s\n' delivered > "${WORK_DIR}/mv-partial-destination.executed"
+  exit 72
+fi
+exec "${WORK_DIR}/real-mv" "\$@"
+EOF
+chmod 0755 "${WORK_DIR}/mv-partial-destination-fail"
+
+set +e
+unshare --mount --propagation private bash -c \
+  "mount --bind '${WORK_DIR}/mv-partial-destination-fail' /usr/bin/mv &&
+    '${EXTRACTED_ROOT}/install-autostream-control-panel'" \
+  > "${WORK_DIR}/mv-partial-destination.out" 2>&1
+mv_partial_destination_status=$?
+set -e
+if [[ ${mv_partial_destination_status} -ne 72 ]]; then
+  report_failed_install_probe \
+    "partial legacy web move" "${WORK_DIR}/mv-partial-destination.out"
+  die "partial legacy web move did not preserve status 72"
+fi
+[[ -f ${WORK_DIR}/mv-partial-destination.executed ]] || \
+  die "partial legacy web move did not reach its injection boundary"
+[[ ! -e ${MANAGED_ROOT}/current && ! -L ${MANAGED_ROOT}/current ]] || \
+  die "partial legacy web move rollback left current activated"
+[[ -f ${PUBLIC_BINARY} && ! -L ${PUBLIC_BINARY} ]] || \
+  die "partial legacy web move rollback did not restore the legacy binary"
+grep -Fx -- "${LEGACY_BINARY_CONTENT}" "${PUBLIC_BINARY}" >/dev/null || \
+  die "partial legacy web move rollback changed the legacy binary"
+snapshot_legacy_web_tree \
+  "${PUBLIC_WEB}" "${WORK_DIR}/mv-partial-destination-web.after.tar" || \
+  die "partial legacy web move rollback did not retain the legacy web directory"
+cmp -s -- "${WORK_DIR}/legacy-web.before.tar" \
+  "${WORK_DIR}/mv-partial-destination-web.after.tar" || \
+  die "partial legacy web move rollback changed the legacy web tree"
+[[ ! -e ${legacy_backup_dir}/autostream-control-panel &&
+  ! -L ${legacy_backup_dir}/autostream-control-panel ]] || \
+  die "partial legacy web move rollback left the partial backup behind"
+if grep -F -- "rollback was incomplete" "${WORK_DIR}/mv-partial-destination.out" >/dev/null; then
+  report_failed_install_probe \
+    "partial legacy web move" "${WORK_DIR}/mv-partial-destination.out"
+  die "partial legacy web move reported an incomplete rollback"
+fi
+assert_legacy_runtime_unit_loaded
+kill -0 "${old_pid}" || \
+  die "partial legacy web move rollback stopped the running legacy process"
+
 install -o root -g root -m 0755 /usr/bin/sync "${WORK_DIR}/real-sync"
 cat > "${WORK_DIR}/sync-fail" <<EOF
 #!/bin/bash
 printf '%s\n' "\$*" >> "${WORK_DIR}/sync-fail.log"
-if [[ "\$*" == "-f /usr/local/bin" ]]; then
-  count=0
-  if [[ -f "${WORK_DIR}/sync-usr-local-bin.count" ]]; then
-    count=\$(<"${WORK_DIR}/sync-usr-local-bin.count")
-  fi
-  count=\$((count + 1))
-  printf '%s\n' "\${count}" > "${WORK_DIR}/sync-usr-local-bin.count"
-  if [[ \${count} -eq 2 ]]; then
-    exit 74
-  fi
+if [[ "\$*" == "-f /usr/local/bin" &&
+  ! -e "${WORK_DIR}/sync-post-activation.executed" &&
+  -L "${CURRENT_LINK}" &&
+  -L "${PUBLIC_BINARY}" &&
+  \$(readlink -- "${PUBLIC_BINARY}") == "${CURRENT_LINK}/bin/control-panel" &&
+  -L "${PUBLIC_WEB}" &&
+  \$(readlink -- "${PUBLIC_WEB}") == \
+    "${CURRENT_LINK}/share/autostream-control-panel" ]]; then
+  printf '%s\n' delivered > "${WORK_DIR}/sync-post-activation.executed"
+  exit 74
 fi
 exec "${WORK_DIR}/real-sync" "\$@"
 EOF
@@ -1869,17 +2003,55 @@ unshare --mount --propagation private bash -c \
 sync_failure_status=$?
 set -e
 [[ ${sync_failure_status} -ne 0 ]] || die "activation sync failure injection unexpectedly succeeded"
-[[ -f ${WORK_DIR}/sync-usr-local-bin.count &&
-  $(<"${WORK_DIR}/sync-usr-local-bin.count") -ge 2 ]] || \
-  die "sync failure injection did not reach the post-activation durability boundary"
 [[ ! -e ${MANAGED_ROOT}/current && ! -L ${MANAGED_ROOT}/current ]] || \
   die "sync failure rollback left current activated"
 [[ -f ${PUBLIC_BINARY} && ! -L ${PUBLIC_BINARY} ]] || \
   die "sync failure rollback did not restore the legacy binary"
 grep -Fx -- "${LEGACY_BINARY_CONTENT}" "${PUBLIC_BINARY}" >/dev/null || \
   die "sync failure rollback changed the legacy binary"
-[[ -d ${PUBLIC_WEB} && ! -L ${PUBLIC_WEB} ]] || \
+if [[ ! -d ${PUBLIC_WEB} || -L ${PUBLIC_WEB} ]]; then
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
   die "sync failure rollback did not restore the legacy web directory"
+fi
+grep -Fx -- "${LEGACY_WEB_CONTENT}" "${PUBLIC_WEB}/legacy.txt" >/dev/null || {
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
+  die "sync failure rollback changed the legacy web directory"
+}
+[[ $(stat -c '%u:%g:%a' -- "${PUBLIC_WEB}") == "0:0:755" ]] || {
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
+  die "sync failure rollback changed the legacy web directory metadata"
+}
+snapshot_legacy_web_tree "${PUBLIC_WEB}" "${WORK_DIR}/sync-failure-web.after.tar" || {
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
+  die "sync failure rollback could not snapshot the restored legacy web directory"
+}
+cmp -s -- "${WORK_DIR}/legacy-web.before.tar" \
+  "${WORK_DIR}/sync-failure-web.after.tar" || {
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
+  die "sync failure rollback did not restore the legacy web tree exactly"
+}
+[[ ! -e ${legacy_backup_dir}/autostream-control-panel &&
+  ! -L ${legacy_backup_dir}/autostream-control-panel ]] || {
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
+  die "sync failure rollback left the legacy web backup behind"
+}
+if [[ ! -f ${WORK_DIR}/sync-post-activation.executed ]]; then
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
+  die "sync failure injection did not reach the post-activation durability boundary"
+fi
+if grep -F -e "legacy public directory backup identity changed during commit" \
+  -e "rollback was incomplete" "${WORK_DIR}/sync-failure.out" >/dev/null; then
+  report_failed_install_probe \
+    "activation sync failure" "${WORK_DIR}/sync-failure.out"
+  die "sync failure rollback reported an earlier migration or incomplete rollback"
+fi
 [[ $(sha256sum "${ENV_PATH}" | awk 'NR == 1 { print $1 }') == "${env_before}" ]] || \
   die "sync failure rollback changed the existing environment"
 [[ $(sha256sum "${MARIADB_DEFAULTS}" | awk 'NR == 1 { print $1 }') == "${db_before}" ]] || \
@@ -1996,6 +2168,13 @@ grep -Fx -- "${LEGACY_BINARY_CONTENT}" \
 grep -Fx -- "${LEGACY_WEB_CONTENT}" \
   "${INSTALL_BACKUP_ROOT}/${VERSION}-${archive_sha256:0:12}/autostream-control-panel/legacy.txt" >/dev/null || \
   die "successful migration did not retain the legacy web directory"
+snapshot_legacy_web_tree \
+  "${INSTALL_BACKUP_ROOT}/${VERSION}-${archive_sha256:0:12}/autostream-control-panel" \
+  "${WORK_DIR}/successful-migration-web.tar" || \
+  die "successful migration could not snapshot the retained legacy web directory"
+cmp -s -- "${WORK_DIR}/legacy-web.before.tar" \
+  "${WORK_DIR}/successful-migration-web.tar" || \
+  die "successful migration did not retain the legacy web tree exactly"
 grep -F -- "sudo systemctl restart ${UNIT}" "${WORK_DIR}/migration.out" >/dev/null || \
   die "active migration did not print the explicit restart command"
 systemctl is-enabled --quiet "${UNIT}" && die "migration unexpectedly enabled the service"

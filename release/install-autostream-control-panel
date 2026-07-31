@@ -269,13 +269,18 @@ declare -a previous_public_kinds=()
 declare -a previous_public_targets=()
 declare -a previous_public_backups=()
 declare -a previous_public_backup_created=()
+declare -a previous_public_backup_complete=()
 declare -a previous_public_backup_identities=()
+declare -a previous_public_source_identities=()
 declare -a previous_public_backup_metadata=()
 declare -a previous_public_backup_sha256=()
 declare -a previous_public_uids=()
 declare -a previous_public_gids=()
 declare -a previous_public_modes=()
 declare -a previous_public_sha256=()
+declare -a previous_public_tree_sha256=()
+declare -a installed_public_targets=()
+declare -a installed_public_identities=()
 declare -a prepared_directory_paths=()
 declare -a prepared_directory_existed=()
 declare -a prepared_directory_identities=()
@@ -738,6 +743,14 @@ remove_pending_link() {
   [[ ! -e ${path} && ! -L ${path} ]]
 }
 
+public_directory_tree_sha256() {
+  local path=$1
+  [[ -d ${path} && ! -L ${path} && $(readlink -f -- "${path}") == "${path}" ]] || return 1
+  tar --sort=name --numeric-owner -cf - -C "${path}" . |
+    sha256sum |
+    awk 'NR == 1 { print $1 }'
+}
+
 rollback_public_links() {
   local index
   local path
@@ -745,13 +758,18 @@ rollback_public_links() {
   local target
   local backup
   local backup_created
+  local backup_complete
   local backup_identity
+  local source_identity
   local backup_metadata
   local backup_sha256
   local previous_uid
   local previous_gid
   local previous_mode
   local previous_sha256
+  local previous_tree_sha256
+  local installed_target
+  local installed_identity
   local rollback_next
   local failed=false
   for ((index=${#changed_public_paths[@]} - 1; index >= 0; index--)); do
@@ -760,13 +778,18 @@ rollback_public_links() {
     target="${previous_public_targets[index]}"
     backup="${previous_public_backups[index]}"
     backup_created="${previous_public_backup_created[index]}"
+    backup_complete="${previous_public_backup_complete[index]}"
     backup_identity="${previous_public_backup_identities[index]}"
+    source_identity="${previous_public_source_identities[index]}"
     backup_metadata="${previous_public_backup_metadata[index]}"
     backup_sha256="${previous_public_backup_sha256[index]}"
     previous_uid="${previous_public_uids[index]}"
     previous_gid="${previous_public_gids[index]}"
     previous_mode="${previous_public_modes[index]}"
     previous_sha256="${previous_public_sha256[index]}"
+    previous_tree_sha256="${previous_public_tree_sha256[index]}"
+    installed_target="${installed_public_targets[index]}"
+    installed_identity="${installed_public_identities[index]}"
     case "${kind}" in
       file)
         if [[ -n ${backup_identity} &&
@@ -805,14 +828,61 @@ rollback_public_links() {
         ;;
       directory)
         if [[ ${backup_created} == true &&
+          ${backup_complete} == false &&
           -n ${backup_identity} &&
           -d ${backup} &&
           ! -L ${backup} &&
-          $(stat -c '%d:%i' -- "${backup}" 2>/dev/null || true) == "${backup_identity}" ]]; then
-          rm -f -- "${path}" || failed=true
-          mv -T -- "${backup}" "${path}" || failed=true
-          [[ -d ${path} && ! -L ${path} ]] || failed=true
-        elif [[ -d ${path} && ! -L ${path} ]]; then
+          $(readlink -f -- "${backup}" 2>/dev/null || true) == "${backup}" &&
+          $(stat -c '%d:%i' -- "${backup}" 2>/dev/null || true) == "${backup_identity}" &&
+          -n ${source_identity} &&
+          -d ${path} && ! -L ${path} &&
+          $(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) == "${source_identity}" &&
+          $(stat -c '%u:%g:%a' -- "${path}" 2>/dev/null || true) == \
+            "${previous_uid}:${previous_gid}:${previous_mode}" &&
+          $(public_directory_tree_sha256 "${path}" 2>/dev/null || true) == \
+            "${previous_tree_sha256}" ]]; then
+          rm -rf -- "${backup}" || failed=true
+          [[ ! -e ${backup} && ! -L ${backup} ]] || failed=true
+          sync -f "$(dirname -- "${backup}")" || failed=true
+        elif [[ ${backup_created} == true &&
+          ${backup_complete} == true &&
+          -n ${backup_identity} &&
+          -d ${backup} &&
+          ! -L ${backup} &&
+          $(readlink -f -- "${backup}" 2>/dev/null || true) == "${backup}" &&
+          $(stat -c '%d:%i' -- "${backup}" 2>/dev/null || true) == "${backup_identity}" &&
+          $(public_directory_tree_sha256 "${backup}" 2>/dev/null || true) == \
+            "${previous_tree_sha256}" ]]; then
+          if [[ ! -e ${path} && ! -L ${path} ]]; then
+            :
+          elif [[ -n ${installed_identity} &&
+            -L ${path} &&
+            $(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) == "${installed_identity}" &&
+            $(readlink -- "${path}" 2>/dev/null || true) == "${installed_target}" ]]; then
+            rm -f -- "${path}" || failed=true
+          else
+            failed=true
+            continue
+          fi
+          if mv -T -- "${backup}" "${path}"; then
+            [[ -d ${path} && ! -L ${path} &&
+              ! -e ${backup} && ! -L ${backup} &&
+              $(stat -c '%u:%g:%a' -- "${path}" 2>/dev/null || true) == \
+                "${previous_uid}:${previous_gid}:${previous_mode}" &&
+              $(public_directory_tree_sha256 "${path}" 2>/dev/null || true) == \
+                "${previous_tree_sha256}" ]] || failed=true
+          else
+            failed=true
+          fi
+        elif [[ ${backup_created} == false &&
+          ! -e ${backup} && ! -L ${backup} &&
+          -n ${source_identity} &&
+          -d ${path} && ! -L ${path} &&
+          $(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) == "${source_identity}" &&
+          $(stat -c '%u:%g:%a' -- "${path}" 2>/dev/null || true) == \
+            "${previous_uid}:${previous_gid}:${previous_mode}" &&
+          $(public_directory_tree_sha256 "${path}" 2>/dev/null || true) == \
+            "${previous_tree_sha256}" ]]; then
           :
         else
           failed=true
@@ -1772,13 +1842,20 @@ install_public_link() {
   local previous_backup=""
   local previous_backup_created=false
   local previous_backup_identity=""
+  local previous_source_identity=""
   local previous_backup_metadata=""
   local previous_backup_sha256=""
   local previous_uid=""
   local previous_gid=""
   local previous_mode=""
   local previous_sha256=""
+  local previous_tree_sha256=""
   local journal_recorded=false
+  local journal_index=0
+  local directory_move_status=0
+  local directory_sync_status=0
+  local directory_backup_complete=false
+  local public_link_status=0
   backup_name="$(basename -- "${link_path}")" || die "could not resolve the public path name"
   backup_path="${LEGACY_BACKUP_DIR}/${backup_name}"
   if [[ -L ${link_path} ]]; then
@@ -1822,8 +1899,14 @@ install_public_link() {
   elif [[ -d ${link_path} && ! -L ${link_path} ]]; then
     previous_kind="directory"
     previous_backup="${backup_path}"
-    previous_backup_created=true
-    previous_backup_identity="$(stat -c '%d:%i' -- "${link_path}")"
+    previous_source_identity="$(stat -c '%d:%i' -- "${link_path}")"
+    previous_uid="$(stat -c '%u' -- "${link_path}")"
+    previous_gid="$(stat -c '%g' -- "${link_path}")"
+    previous_mode="$(stat -c '%a' -- "${link_path}")"
+    previous_tree_sha256="$(public_directory_tree_sha256 "${link_path}")" || \
+      die "could not snapshot the legacy public directory: ${link_path}"
+    [[ ${previous_tree_sha256} =~ ^[0-9a-f]{64}$ ]] || \
+      die "legacy public directory snapshot is invalid: ${link_path}"
     prepare_install_directory "${LEGACY_BACKUP_DIR}" root root 0700
     begin_installer_signal_transaction
     changed_public_paths+=("${link_path}")
@@ -1831,20 +1914,80 @@ install_public_link() {
     previous_public_targets+=("${previous_target}")
     previous_public_backups+=("${previous_backup}")
     previous_public_backup_created+=("${previous_backup_created}")
+    previous_public_backup_complete+=("${directory_backup_complete}")
     previous_public_backup_identities+=("${previous_backup_identity}")
+    previous_public_source_identities+=("${previous_source_identity}")
     previous_public_backup_metadata+=("${previous_backup_metadata}")
     previous_public_backup_sha256+=("${previous_backup_sha256}")
     previous_public_uids+=("${previous_uid}")
     previous_public_gids+=("${previous_gid}")
     previous_public_modes+=("${previous_mode}")
     previous_public_sha256+=("${previous_sha256}")
+    previous_public_tree_sha256+=("${previous_tree_sha256}")
+    installed_public_targets+=("")
+    installed_public_identities+=("")
+    journal_index=$((${#previous_public_backup_identities[@]} - 1))
     journal_recorded=true
-    mv -T -- "${link_path}" "${backup_path}"
-    [[ $(stat -c '%d:%i' -- "${backup_path}" 2>/dev/null || true) == \
-      "${previous_backup_identity}" ]] || \
-      die "legacy public directory backup identity changed during commit: ${backup_path}"
-    sync -f "${LEGACY_BACKUP_DIR}"
+    if [[ -d ${link_path} && ! -L ${link_path} &&
+      $(stat -c '%d:%i' -- "${link_path}" 2>/dev/null || true) == \
+        "${previous_source_identity}" &&
+      $(stat -c '%u:%g:%a' -- "${link_path}" 2>/dev/null || true) == \
+        "${previous_uid}:${previous_gid}:${previous_mode}" ]]; then
+      if mv -T -- "${link_path}" "${backup_path}"; then
+        :
+      else
+        directory_move_status=$?
+      fi
+    else
+      directory_move_status=1
+    fi
+    if [[ ! -e ${link_path} && ! -L ${link_path} &&
+      -d ${backup_path} && ! -L ${backup_path} &&
+      $(readlink -f -- "${backup_path}" 2>/dev/null || true) == "${backup_path}" &&
+      $(stat -c '%u:%g:%a' -- "${backup_path}" 2>/dev/null || true) == \
+        "${previous_uid}:${previous_gid}:${previous_mode}" &&
+      $(public_directory_tree_sha256 "${backup_path}" 2>/dev/null || true) == \
+        "${previous_tree_sha256}" ]]; then
+      previous_backup_identity="$(stat -c '%d:%i' -- "${backup_path}")"
+      previous_backup_created=true
+      directory_backup_complete=true
+      previous_public_backup_identities[journal_index]="${previous_backup_identity}"
+      previous_public_backup_created[journal_index]=true
+      previous_public_backup_complete[journal_index]=true
+    elif [[ -d ${link_path} && ! -L ${link_path} &&
+      $(stat -c '%d:%i' -- "${link_path}" 2>/dev/null || true) == \
+        "${previous_source_identity}" &&
+      $(stat -c '%u:%g:%a' -- "${link_path}" 2>/dev/null || true) == \
+        "${previous_uid}:${previous_gid}:${previous_mode}" &&
+      -d ${backup_path} && ! -L ${backup_path} &&
+      $(readlink -f -- "${backup_path}" 2>/dev/null || true) == "${backup_path}" ]]; then
+      previous_backup_identity="$(stat -c '%d:%i' -- "${backup_path}")"
+      previous_backup_created=true
+      previous_public_backup_identities[journal_index]="${previous_backup_identity}"
+      previous_public_backup_created[journal_index]=true
+      previous_public_backup_complete[journal_index]=false
+      [[ ${directory_move_status} -ne 0 ]] || directory_move_status=1
+    elif [[ ${directory_move_status} -eq 0 ]]; then
+      directory_move_status=1
+    fi
+    if [[ ${previous_backup_created} == true ]]; then
+      if sync -f "${LEGACY_BACKUP_DIR}"; then
+        :
+      else
+        directory_sync_status=$?
+      fi
+    fi
     finish_installer_signal_transaction
+    if [[ ${directory_move_status} -ne 0 ]]; then
+      printf 'install-autostream-control-panel: could not safely move the legacy public directory into backup (mv status %s): %s\n' \
+        "${directory_move_status}" "${backup_path}" >&2
+      return "${directory_move_status}"
+    fi
+    if [[ ${directory_sync_status} -ne 0 ]]; then
+      printf 'install-autostream-control-panel: could not durably commit the legacy public directory backup (sync status %s): %s\n' \
+        "${directory_sync_status}" "${backup_path}" >&2
+      return "${directory_sync_status}"
+    fi
   elif [[ -e ${link_path} ]]; then
     die "public path is not a replaceable file or directory: ${link_path}"
   else
@@ -1863,19 +2006,42 @@ install_public_link() {
     previous_public_targets+=("${previous_target}")
     previous_public_backups+=("${previous_backup}")
     previous_public_backup_created+=("${previous_backup_created}")
+    previous_public_backup_complete+=("${directory_backup_complete}")
     previous_public_backup_identities+=("${previous_backup_identity}")
+    previous_public_source_identities+=("${previous_source_identity}")
     previous_public_backup_metadata+=("${previous_backup_metadata}")
     previous_public_backup_sha256+=("${previous_backup_sha256}")
     previous_public_uids+=("${previous_uid}")
     previous_public_gids+=("${previous_gid}")
     previous_public_modes+=("${previous_mode}")
     previous_public_sha256+=("${previous_sha256}")
+    previous_public_tree_sha256+=("${previous_tree_sha256}")
+    installed_public_targets+=("")
+    installed_public_identities+=("")
+    journal_index=$((${#previous_public_backup_identities[@]} - 1))
   fi
-  mv -Tf -- "${link_next}" "${link_path}"
-  public_next=""
-  public_next_identity=""
-  public_next_target=""
+  if mv -Tf -- "${link_next}" "${link_path}"; then
+    :
+  else
+    public_link_status=$?
+  fi
+  if [[ -L ${link_path} &&
+    $(stat -c '%d:%i' -- "${link_path}" 2>/dev/null || true) == "${public_next_identity}" &&
+    $(readlink -- "${link_path}" 2>/dev/null || true) == "${target}" ]]; then
+    installed_public_targets[journal_index]="${target}"
+    installed_public_identities[journal_index]="${public_next_identity}"
+    public_next=""
+    public_next_identity=""
+    public_next_target=""
+  elif [[ ${public_link_status} -eq 0 ]]; then
+    public_link_status=1
+  fi
   finish_installer_signal_transaction
+  if [[ ${public_link_status} -ne 0 ]]; then
+    printf 'install-autostream-control-panel: could not safely publish the managed public link (mv status %s): %s\n' \
+      "${public_link_status}" "${link_path}" >&2
+    return "${public_link_status}"
+  fi
 }
 
 if [[ ${unit_previous_kind} == "regular" || ${backup_exec_previous_kind} == "regular" ]]; then
