@@ -532,6 +532,18 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	) {
 		t.Fatal("PID reuse probe EXIT trap must absorb the expected SIGTERM wait status")
 	}
+	if !strings.Contains(
+		integration,
+		`7>&- > "${WORK_DIR}/shared-lock-contention.out" 2>&1`,
+	) {
+		t.Fatal("shared host-setup contention probe must not inherit the fixture's locked file descriptor")
+	}
+	if !strings.Contains(
+		integration,
+		"captured installer output for shared host-setup lock contention",
+	) {
+		t.Fatal("shared host-setup contention mismatch must expose the captured installer error")
+	}
 	sealedMountPattern := regexp.MustCompile(
 		` /mnt ro[^ ]*( [^ ]+)* - tmpfs autostream-control-panel-installer-test-sealed `,
 	)

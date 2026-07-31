@@ -942,16 +942,21 @@ shared_parent_metadata_before="$(
   flock -n 7 || die "test could not acquire the shared host-setup lock"
   set +e
   "${EXTRACTED_ROOT}/install-autostream-control-panel" \
-    > "${WORK_DIR}/shared-lock-contention.out" 2>&1
+    7>&- > "${WORK_DIR}/shared-lock-contention.out" 2>&1
   shared_contention_status=$?
   set -e
   [[ ${shared_contention_status} -eq 1 ]] || \
     die "shared host-setup lock contention did not fail closed with the expected status"
 )
-grep -Fx -- \
+if ! grep -Fx -- \
   "install-autostream-control-panel: another AutoStream installer is provisioning shared host state" \
-  "${WORK_DIR}/shared-lock-contention.out" >/dev/null || \
+  "${WORK_DIR}/shared-lock-contention.out" >/dev/null; then
+  printf '%s\n' \
+    'control-panel installer integration test: captured installer output for shared host-setup lock contention:' \
+    >&2
+  cat -- "${WORK_DIR}/shared-lock-contention.out" >&2
   die "shared host-setup lock contention did not report the expected error"
+fi
 [[ $(stat -c '%d:%i:%u:%g:%a:%s' -- "${SHARED_HOST_SETUP_LOCK}") == \
   "${shared_lock_before}" &&
   $(sha256sum -- "${SHARED_HOST_SETUP_LOCK}" | awk 'NR == 1 { print $1 }') == \
