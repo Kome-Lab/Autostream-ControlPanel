@@ -133,6 +133,48 @@ func TestBuildHostAgentConfigurePolicyDerivesFixedSystemdAuthority(t *testing.T)
 	}
 }
 
+func TestBuildHostAgentConfigurePolicySeparatesPublicAndLocalPorts(t *testing.T) {
+	input := HostAgentConfigurePolicySource{
+		PanelURL:                    "https://panel.example.com",
+		ExecutionHostID:             "host-a",
+		AgentUID:                    1001,
+		AgentGID:                    1002,
+		SourcePolicyRevision:        3,
+		ProjectionRevision:          4,
+		LocalExecutorPolicyRevision: 5,
+		Targets: []HostAgentConfigurePolicyTarget{{
+			ServiceID:             "observability-a",
+			ServiceType:           "observability",
+			DeploymentMode:        ModeSystemd,
+			DatabaseName:          "autostream_observability",
+			EndpointRevision:      2,
+			AppliedConfigRevision: 7,
+			AppliedEndpointPort:   443,
+			LocalListenPort:       8082,
+		}},
+	}
+	projection, err := BuildHostAgentConfigurePolicy(input)
+	if err != nil {
+		t.Fatalf("build Host Agent configure policy: %v", err)
+	}
+	var policy LocalExecutorPolicy
+	if err := json.Unmarshal(projection.Policy, &policy); err != nil {
+		t.Fatal(err)
+	}
+	wantConfigSHA256, err := SystemdConfigurePortSidecarSHA256("observability", 8082, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.Targets) != 1 ||
+		policy.Targets[0].LocalListen != (LocalExecutorEndpoint{
+			Host: "127.0.0.1",
+			Port: 8082,
+		}) ||
+		policy.Targets[0].ConfigSHA256 != wantConfigSHA256 {
+		t.Fatalf("local target = %#v", policy.Targets)
+	}
+}
+
 func TestSystemdConfigurePortSidecarSHA256UsesOnlyFixedConfigureAuthority(t *testing.T) {
 	tests := []struct {
 		name         string

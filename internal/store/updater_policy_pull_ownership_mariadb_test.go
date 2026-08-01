@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
@@ -47,7 +48,7 @@ func TestMariaDBSavePullUpdaterPolicyCASAndOwnershipRevision(t *testing.T) {
 		ServiceID:   targetID,
 		ServiceType: "worker",
 		ServiceName: targetID,
-		PublicURL:   "https://worker.example.com:18081",
+		PublicURL:   "https://worker.example.com",
 	})
 
 	updates := store.NewMariaDBSystemUpdateStore(db)
@@ -70,10 +71,11 @@ func TestMariaDBSavePullUpdaterPolicyCASAndOwnershipRevision(t *testing.T) {
 		PollIntervalSeconds:       15,
 		HeartbeatIntervalSeconds:  30,
 		Targets: []store.UpdaterPolicyTarget{{
-			TargetID:       targetID,
-			ServiceID:      targetID,
-			ServiceType:    "worker",
-			DeploymentMode: "systemd",
+			TargetID:        targetID,
+			ServiceID:       targetID,
+			ServiceType:     "worker",
+			DeploymentMode:  "systemd",
+			LocalListenPort: 18084,
 		}},
 	}
 
@@ -81,14 +83,15 @@ func TestMariaDBSavePullUpdaterPolicyCASAndOwnershipRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 1, ownership.OwnershipEpoch)
+	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 1, ownership.OwnershipEpoch, 18084)
 
 	if _, err := policies.SavePullUpdaterPolicy(ctx, updates, agentID, 0, ownership.OwnershipEpoch, input); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("stale create error = %v, want ErrConflict", err)
 	}
-	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 1, ownership.OwnershipEpoch)
+	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 1, ownership.OwnershipEpoch, 18084)
 
 	input.PollIntervalSeconds = 20
+	input.Targets[0].LocalListenPort = 28084
 	updated, err := policies.SavePullUpdaterPolicy(ctx, updates, agentID, created.Revision, ownership.OwnershipEpoch, input)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +99,66 @@ func TestMariaDBSavePullUpdaterPolicyCASAndOwnershipRevision(t *testing.T) {
 	if updated.Revision != 2 || updated.PollIntervalSeconds != 20 {
 		t.Fatalf("updated policy = %#v", updated)
 	}
-	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 2, ownership.OwnershipEpoch)
+	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 2, ownership.OwnershipEpoch, 28084)
+
+	// Simulate a downgrade writer that can update policy_json but knows
+	// nothing about the revision-bound local-listener side table.
+	oldWriter := updated
+	oldWriter.Revision = 3
+	oldWriter.ProjectionRevision = 3
+	oldWriter.LocalExecutorPolicyRevision = 3
+	oldWriter.UpdatedAt = time.Now().UTC()
+	oldWriterBody, err := json.Marshal(oldWriter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE update_agent_policies
+SET revision = ?, projection_revision = ?, local_executor_policy_revision = ?, policy_json = ?, updated_at = ?
+WHERE service_id = ? AND revision = ?`,
+		oldWriter.Revision,
+		oldWriter.ProjectionRevision,
+		oldWriter.LocalExecutorPolicyRevision,
+		oldWriterBody,
+		oldWriter.UpdatedAt,
+		agentID,
+		updated.Revision,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE system_update_execution_hosts
+SET policy_revision = ?, updated_at = ?
+WHERE execution_host_id = ? AND ownership_epoch = ?`,
+		oldWriter.ProjectionRevision,
+		oldWriter.UpdatedAt,
+		hostID,
+		ownership.OwnershipEpoch,
+	); err != nil {
+		t.Fatal(err)
+	}
+	repairable, err := policies.GetUpdaterPolicy(ctx, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repairable.Revision != 3 || repairable.Targets[0].LocalListenPort != 0 {
+		t.Fatalf("stale listener binding was not ignored: %#v", repairable)
+	}
+	repairable.Targets[0].LocalListenPort = 28084
+	repaired, err := policies.SavePullUpdaterPolicy(
+		ctx,
+		updates,
+		agentID,
+		repairable.Revision,
+		ownership.OwnershipEpoch,
+		repairable,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Revision != 4 {
+		t.Fatalf("repaired policy revision = %d", repaired.Revision)
+	}
+	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 4, ownership.OwnershipEpoch, 28084)
+	updated = repaired
 
 	job, createdJob, err := updates.CreateSystemUpdateJob(ctx, store.CreateSystemUpdateJobParams{
 		TargetID:          targetID,
@@ -117,7 +179,7 @@ func TestMariaDBSavePullUpdaterPolicyCASAndOwnershipRevision(t *testing.T) {
 	if _, err := policies.SavePullUpdaterPolicy(ctx, updates, agentID, updated.Revision, ownership.OwnershipEpoch, input); !errors.Is(err, store.ErrSystemUpdateExecutionHostBusy) {
 		t.Fatalf("active-job save error = %v, want ErrSystemUpdateExecutionHostBusy", err)
 	}
-	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 2, ownership.OwnershipEpoch)
+	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 4, ownership.OwnershipEpoch, 28084)
 
 	if _, err := updates.CancelSystemUpdateJob(ctx, job.ID, "mariadb-policy-test"); err != nil {
 		t.Fatal(err)
@@ -126,10 +188,10 @@ func TestMariaDBSavePullUpdaterPolicyCASAndOwnershipRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterCancel.Revision != 3 {
+	if afterCancel.Revision != 5 {
 		t.Fatalf("post-cancel policy revision = %d", afterCancel.Revision)
 	}
-	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 3, ownership.OwnershipEpoch)
+	assertMariaDBPullPolicyOwnership(t, ctx, policies, updates, agentID, hostID, 5, ownership.OwnershipEpoch, 28084)
 }
 
 func TestMariaDBSavePullUpdaterPolicyPreservesSSHObserverOwnership(t *testing.T) {
@@ -252,6 +314,7 @@ func assertMariaDBPullPolicyOwnership(
 	updates *store.MariaDBSystemUpdateStore,
 	serviceID, hostID string,
 	wantRevision, wantEpoch int64,
+	wantLocalListenPort int,
 ) {
 	t.Helper()
 	policy, err := policies.GetUpdaterPolicy(ctx, serviceID)
@@ -263,8 +326,10 @@ func assertMariaDBPullPolicyOwnership(
 		t.Fatal(err)
 	}
 	if policy.Revision != wantRevision ||
+		len(policy.Targets) != 1 ||
+		policy.Targets[0].LocalListenPort != wantLocalListenPort ||
 		ownership.PolicyRevision != wantRevision ||
 		ownership.OwnershipEpoch != wantEpoch {
-		t.Fatalf("policy/ownership = revision %d / %#v, want revision %d epoch %d", policy.Revision, ownership, wantRevision, wantEpoch)
+		t.Fatalf("policy/ownership = %#v / %#v, want revision %d epoch %d local listener %d", policy, ownership, wantRevision, wantEpoch, wantLocalListenPort)
 	}
 }

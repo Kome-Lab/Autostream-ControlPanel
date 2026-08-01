@@ -82,6 +82,8 @@ func TestMariaDBSavePullUpdaterPolicyRollsBackPolicyWhenOwnershipWriteFails(t *t
 	db := openUpdaterPolicyAtomicTestDB(t, state)
 	policies := NewMariaDBUpdaterPolicyAdminStore(db, "unused-for-pull")
 	updates := NewMariaDBSystemUpdateStore(db)
+	input := validPullUpdaterPolicyForOwnership()
+	input.Targets[0].LocalListenPort = 18084
 
 	_, err := policies.SavePullUpdaterPolicy(
 		t.Context(),
@@ -89,7 +91,7 @@ func TestMariaDBSavePullUpdaterPolicyRollsBackPolicyWhenOwnershipWriteFails(t *t
 		"host-agent-a",
 		0,
 		1,
-		validPullUpdaterPolicyForOwnership(),
+		input,
 	)
 	if err == nil {
 		t.Fatal("forced ownership write failure was accepted")
@@ -102,6 +104,8 @@ func TestMariaDBSavePullUpdaterPolicyRollsBackPolicyWhenOwnershipWriteFails(t *t
 	}
 	if !state.policyExecInTransaction ||
 		!state.databaseBindingExecInTransaction ||
+		!state.localListenerDeleteExecInTransaction ||
+		!state.localListenerInsertExecInTransaction ||
 		!state.ownershipExecInTransaction {
 		t.Fatalf("pull writes did not share one transaction: %#v", state)
 	}
@@ -125,19 +129,21 @@ func openUpdaterPolicyAtomicTestDB(t *testing.T, state *updaterPolicyAtomicDBSta
 }
 
 type updaterPolicyAtomicDBState struct {
-	mu                               sync.Mutex
-	failTokenWrite                   bool
-	failOwnershipWrite               bool
-	begins                           int
-	commits                          int
-	rollbacks                        int
-	policyExecInTransaction          bool
-	databaseBindingExecInTransaction bool
-	tokenExecInTransaction           bool
-	ownershipExecInTransaction       bool
-	policyCommitted                  bool
-	ownershipCommitted               bool
-	tokenCiphertextCommitted         string
+	mu                                   sync.Mutex
+	failTokenWrite                       bool
+	failOwnershipWrite                   bool
+	begins                               int
+	commits                              int
+	rollbacks                            int
+	policyExecInTransaction              bool
+	databaseBindingExecInTransaction     bool
+	localListenerDeleteExecInTransaction bool
+	localListenerInsertExecInTransaction bool
+	tokenExecInTransaction               bool
+	ownershipExecInTransaction           bool
+	policyCommitted                      bool
+	ownershipCommitted                   bool
+	tokenCiphertextCommitted             string
 }
 
 type updaterPolicyAtomicDriver struct {
@@ -195,6 +201,12 @@ func (c *updaterPolicyAtomicConn) ExecContext(ctx context.Context, query string,
 		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "update_agent_target_databases"):
 		c.state.databaseBindingExecInTransaction = c.inTransaction
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "DELETE FROM update_agent_target_local_listeners"):
+		c.state.localListenerDeleteExecInTransaction = c.inTransaction
+		return driver.RowsAffected(1), nil
+	case strings.Contains(query, "INSERT INTO update_agent_target_local_listeners"):
+		c.state.localListenerInsertExecInTransaction = c.inTransaction
 		return driver.RowsAffected(1), nil
 	case strings.Contains(query, "INSERT INTO secrets"):
 		c.state.tokenExecInTransaction = c.inTransaction

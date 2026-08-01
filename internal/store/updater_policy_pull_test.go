@@ -41,6 +41,183 @@ func TestNormalizePullUpdaterPolicyNeedsNoSSHOrInboundAPI(t *testing.T) {
 	}
 }
 
+func TestPullUpdaterPolicyTargetLocalListenPortResolution(t *testing.T) {
+	t.Parallel()
+
+	publicService := RegisteredService{
+		AppliedEndpoint: &ServiceEndpoint{
+			Host:       "observability.example.com",
+			Port:       443,
+			SSLEnabled: true,
+			PublicURL:  "https://observability.example.com",
+		},
+	}
+	legacyService := RegisteredService{
+		AppliedEndpoint: &ServiceEndpoint{
+			Host:      "127.0.0.1",
+			Port:      18082,
+			PublicURL: "http://127.0.0.1:18082",
+		},
+	}
+
+	tests := []struct {
+		name    string
+		target  UpdaterPolicyTarget
+		service RegisteredService
+		want    int
+		ok      bool
+	}{
+		{
+			name: "explicit systemd listener wins over public endpoint",
+			target: UpdaterPolicyTarget{
+				TargetID: "observability-a", ServiceID: "observability-a",
+				ServiceType: "observability", DeploymentMode: "systemd",
+				LocalListenPort: 18082,
+			},
+			service: publicService,
+			want:    18082,
+			ok:      true,
+		},
+		{
+			name: "legacy systemd listener uses applied endpoint port",
+			target: UpdaterPolicyTarget{
+				TargetID: "worker-a", ServiceID: "worker-a",
+				ServiceType: "worker", DeploymentMode: "systemd",
+			},
+			service: legacyService,
+			want:    18082,
+			ok:      true,
+		},
+		{
+			name: "invalid explicit listener does not fall back",
+			target: UpdaterPolicyTarget{
+				TargetID: "worker-a", ServiceID: "worker-a",
+				ServiceType: "worker", DeploymentMode: "systemd",
+				LocalListenPort: 443,
+			},
+			service: legacyService,
+		},
+		{
+			name: "docker has no systemd listener",
+			target: UpdaterPolicyTarget{
+				TargetID: "worker-a", ServiceID: "worker-a",
+				ServiceType: "worker", DeploymentMode: "docker",
+				LocalListenPort: 18082,
+			},
+			service: legacyService,
+		},
+		{
+			name: "control panel forbids an explicit override",
+			target: UpdaterPolicyTarget{
+				TargetID: "control-panel", ServiceID: "control-panel",
+				ServiceType: "control_panel", DeploymentMode: "systemd",
+				LocalListenPort: 18080,
+			},
+			service: legacyService,
+		},
+		{
+			name: "control panel uses its synthetic applied listener",
+			target: UpdaterPolicyTarget{
+				TargetID: "control-panel", ServiceID: "control-panel",
+				ServiceType: "control_panel", DeploymentMode: "systemd",
+			},
+			service: legacyService,
+			want:    18082,
+			ok:      true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := PullUpdaterPolicyTargetLocalListenPort(test.target, test.service)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("resolution = (%d, %v), want (%d, %v)", got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
+func TestNormalizePullUpdaterPolicyKeepsLocalListenerOutOfPolicyJSON(t *testing.T) {
+	t.Parallel()
+
+	policy := UpdaterPolicy{
+		TransportMode:             SystemUpdateTransportPullV2,
+		ExecutionHostID:           "host-a",
+		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64),
+		PollIntervalSeconds:       15,
+		HeartbeatIntervalSeconds:  30,
+		Targets: []UpdaterPolicyTarget{{
+			TargetID:        "observability-a",
+			ServiceID:       "observability-a",
+			ServiceType:     "observability",
+			DeploymentMode:  "systemd",
+			DatabaseName:    "autostream_observability",
+			LocalListenPort: 18082,
+		}},
+	}
+	normalized, err := NormalizeUpdaterPolicy("host-agent-a", policy)
+	if err != nil {
+		t.Fatalf("NormalizeUpdaterPolicy: %v", err)
+	}
+	if normalized.Targets[0].LocalListenPort != 18082 {
+		t.Fatalf("local listener = %d", normalized.Targets[0].LocalListenPort)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "local_listen_port") ||
+		strings.Contains(string(encoded), "18082") {
+		t.Fatalf("rollback-incompatible local listener leaked into policy_json: %s", encoded)
+	}
+
+	legacy := policy
+	legacy.Targets = append([]UpdaterPolicyTarget(nil), policy.Targets...)
+	legacy.Targets[0].LocalListenPort = 0
+	if _, err := NormalizeUpdaterPolicy("host-agent-a", legacy); err != nil {
+		t.Fatalf("legacy missing local listener was rejected: %v", err)
+	}
+
+	invalid := policy
+	invalid.Targets = append([]UpdaterPolicyTarget(nil), policy.Targets...)
+	invalid.Targets[0].LocalListenPort = 443
+	if _, err := NormalizeUpdaterPolicy("host-agent-a", invalid); !errors.Is(err, ErrInvalidSettings) {
+		t.Fatalf("invalid explicit listener error = %v, want ErrInvalidSettings", err)
+	}
+}
+
+func TestMemoryPullUpdaterPolicyLocalListenerRoundTrip(t *testing.T) {
+	policies := NewMemoryUpdaterPolicyStore()
+	input := UpdaterPolicy{
+		TransportMode:             SystemUpdateTransportPullV2,
+		ExecutionHostID:           "host-a",
+		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64),
+		PollIntervalSeconds:       15,
+		HeartbeatIntervalSeconds:  30,
+		Targets: []UpdaterPolicyTarget{{
+			TargetID:        "worker-a",
+			ServiceID:       "worker-a",
+			ServiceType:     "worker",
+			DeploymentMode:  "systemd",
+			LocalListenPort: 18084,
+		}},
+	}
+
+	saved, err := policies.SavePullUpdaterPolicy(
+		t.Context(), NewMemorySystemUpdateStore(), "host-agent-a", 0, 0, input,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := policies.GetUpdaterPolicy(t.Context(), saved.UpdaterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Targets[0].LocalListenPort != 18084 {
+		t.Fatalf("stored local listener = %#v", loaded.Targets)
+	}
+}
+
 func TestNormalizePullUpdaterPolicyRejectsLegacyOrUnpinnedAuthority(t *testing.T) {
 	t.Parallel()
 

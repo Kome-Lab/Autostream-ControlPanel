@@ -202,9 +202,18 @@ sudo ./install/install-autostream-host-agent --prepare
 
 In **Application Info > System Updates**, create one Update Agent using
 `pull_v2` and a stable execution-host ID. Assign the Control Panel and
-Observability systemd targets to it. Set **MariaDBデータベース名** to the
-exact final component of each service's real `DATABASE_URL`. The packaged
-defaults are:
+Observability systemd targets to it. For every non-Control-Panel systemd
+target, set **ローカル待受ポート** to the port where that service actually
+listens on `127.0.0.1`. This is not the public reverse-proxy or Cloudflare
+Tunnel port. For example, keep a public `https://observability.example.com:443`
+endpoint and enter `8082` when the local origin is `127.0.0.1:8082`. Confirm
+the active environment or sidecar instead of assuming a default. Packaged
+defaults are Encoder / Recorder `8081`, Observability `8082`, Discord Bot
+`8083`, and Worker `8084`; the Control Panel listener is derived directly from
+`AUTOSTREAM_BIND_ADDR` and is not entered here.
+
+Set **MariaDBデータベース名** to the exact final component of each service's
+real `DATABASE_URL`. The packaged defaults are:
 
 - Control Panel: `autostream_control_panel`
 - Observability: `autostream_observability`
@@ -212,6 +221,13 @@ defaults are:
 Replace either default when the real `DATABASE_URL` differs. Saving binds each
 value as server-owned `database_name`; it does not place either database name
 in the configure command.
+
+After upgrading a policy created before local-listener bindings were
+available, a target whose public endpoint uses privileged port `443` has no
+safe legacy local-port fallback. Enter its verified local listener, save the
+Updater settings, issue a fresh Configure Token, and only then rerun
+`autostream-host-agent configure`. Do not rewrite the registered public
+endpoint to loopback merely to make configure pass.
 
 Copy the generated command and run it on this host. It has this form:
 

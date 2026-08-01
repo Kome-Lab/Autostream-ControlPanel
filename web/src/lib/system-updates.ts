@@ -86,6 +86,12 @@ const supportedUpdaterServiceTypes = new Set([
 
 const updaterDatabaseOwnerServiceTypes = new Set(["control_panel", "observability"]);
 const updaterDatabaseNamePattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const standardSystemdLocalListenPorts: Record<string, number> = {
+  encoder_recorder: 8081,
+  observability: 8082,
+  discord_bot: 8083,
+  worker: 8084,
+};
 
 export function isControlPanelUpdateTarget(target: Pick<SystemUpdateTarget, "target_id" | "target_type">) {
   return target.target_type === "control_panel" || target.target_id === "control-panel";
@@ -102,6 +108,33 @@ export function updaterSettingsTargetRequiresDatabase(
   return transportMode === "pull_v2"
     && target.deployment_mode.trim() === "systemd"
     && updaterDatabaseOwnerServiceTypes.has(target.service_type.trim());
+}
+
+export function updaterSettingsTargetRequiresLocalListenPort(
+  transportMode: UpdaterSettings["transport_mode"],
+  target: Pick<UpdaterSettingsTarget, "service_type" | "deployment_mode">,
+) {
+  return transportMode === "pull_v2"
+    && target.deployment_mode.trim() === "systemd"
+    && target.service_type.trim() !== "control_panel";
+}
+
+export function normalizeUpdaterSettingsTargetLocalListenPort(
+  transportMode: UpdaterSettings["transport_mode"],
+  target: Pick<UpdaterSettingsTarget, "service_type" | "deployment_mode" | "local_listen_port">,
+  label: string,
+) {
+  if (!updaterSettingsTargetRequiresLocalListenPort(transportMode, target)) {
+    if (target.local_listen_port !== undefined) {
+      throw new Error(`${label}ではローカル待受ポートを指定できません。`);
+    }
+    return undefined;
+  }
+  const port = Number(target.local_listen_port);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error(`${label}のローカル待受ポートは1024〜65535の整数で入力してください。`);
+  }
+  return port;
 }
 
 export function normalizeUpdaterSettingsTargetDatabaseName(
@@ -139,6 +172,9 @@ export function applyUpdaterSettingsTargetPatch(
   );
   if (identityChanged || !updaterSettingsTargetRequiresDatabase(transportMode, nextTarget)) {
     delete nextTarget.database_name;
+  }
+  if (identityChanged || !updaterSettingsTargetRequiresLocalListenPort(transportMode, nextTarget)) {
+    delete nextTarget.local_listen_port;
   }
   return nextTarget;
 }
@@ -191,6 +227,7 @@ export function updaterSettingsTargetOptions(
 }
 
 export function firstUnusedUpdaterSettingsTarget(
+  transportMode: UpdaterSettings["transport_mode"],
   availableTargets: SystemUpdateTarget[],
   configuredTargets: UpdaterSettingsTarget[],
   hostID: string,
@@ -199,13 +236,18 @@ export function firstUnusedUpdaterSettingsTarget(
   const candidate = selectableUpdaterSettingsTargets(availableTargets)
     .find((target) => !usedTargetIDs.has(target.target_id));
   if (!candidate) return undefined;
-  return {
+  const target: UpdaterSettingsTarget = {
     target_id: candidate.target_id,
     service_id: candidate.target_id,
     host_id: hostID,
     service_type: candidate.target_type,
     deployment_mode: "systemd",
   };
+  const standardPort = standardSystemdLocalListenPorts[candidate.target_type];
+  if (transportMode === "pull_v2" && standardPort !== undefined) {
+    target.local_listen_port = standardPort;
+  }
+  return target;
 }
 
 export function applyUpdaterSettingsTargetSelection(
@@ -216,11 +258,15 @@ export function applyUpdaterSettingsTargetSelection(
   const targetID = selectedTarget.target_id.trim();
   const serviceType = selectedTarget.target_type.trim();
   if (!targetID || !supportedUpdaterServiceTypes.has(serviceType)) return target;
-  return applyUpdaterSettingsTargetPatch(transportMode, target, {
+  const selected = applyUpdaterSettingsTargetPatch(transportMode, target, {
     target_id: targetID,
     service_id: targetID,
     service_type: serviceType,
   });
+  if (updaterSettingsTargetRequiresLocalListenPort(transportMode, selected)) {
+    selected.local_listen_port = standardSystemdLocalListenPorts[serviceType];
+  }
+  return selected;
 }
 
 function selectableUpdaterSettingsTargets(availableTargets: SystemUpdateTarget[]) {
@@ -1245,6 +1291,7 @@ export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdater
         service_type: stringValue(target.service_type || target.target_type),
         deployment_mode: stringValue(target.deployment_mode),
         database_name: stringValue(target.database_name) || undefined,
+        local_listen_port: optionalNonNegativeIntegerValue(target.local_listen_port),
       };
     }).filter((target) => target.target_id)
     : [];
@@ -1418,6 +1465,7 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     system_update_ownership_conflict: "更新実行権限のOwnerまたはepochが変わりました。Updater状態を再取得してください。",
     invalid_updater_policy: "Updater設定に不正な項目があります。入力内容を確認してください。",
     invalid_updater_database_name: "Control PanelまたはObservabilityが実際に使用しているMariaDBデータベース名を確認してください。",
+    invalid_updater_local_listen_port: "systemdサービスが127.0.0.1で実際に待ち受ける1024〜65535のポートを確認してください。公開HTTPSポート443は指定しません。",
     invalid_updater_host_public_key: "SSHホスト公開鍵を確認できません。対象ホストで確認したssh-ed25519公開鍵の全文を入力してください。",
     invalid_updater_host_bootstrap_request: "ホストセットアップ要求の内容が正しくありません。設定を再取得してから再試行してください。",
     updater_host_not_found: "セットアップ対象ホストが保存済み設定に見つかりません。",
@@ -1795,6 +1843,7 @@ function updaterBootstrapTargetSignatures(hostID: string, targets: UpdaterSettin
       target.host_id.trim(),
       target.service_type.trim(),
       target.deployment_mode.trim(),
+      String(target.local_listen_port ?? ""),
     ].join("\u0000"))
     .sort();
 }

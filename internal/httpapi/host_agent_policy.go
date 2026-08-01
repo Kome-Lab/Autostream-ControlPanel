@@ -157,7 +157,9 @@ func (s *Server) serviceHostAgentPolicy(w http.ResponseWriter, r *http.Request) 
 			}
 			item.AppliedConfigSHA256 = service.AppliedConfigSHA256
 			if target.DeploymentMode == "systemd" {
-				item.LocalListenEndpoint = localSystemdHostAgentEndpoint(service.AppliedEndpoint)
+				if localListenPort, ok := store.PullUpdaterPolicyTargetLocalListenPort(target, service); ok {
+					item.LocalListenEndpoint = localSystemdHostAgentEndpoint(localListenPort)
+				}
 				item.LocalHealthEndpoint = copyHostAgentEndpoint(item.LocalListenEndpoint)
 			}
 		}
@@ -435,14 +437,14 @@ func copyHostAgentEndpoint(endpoint *store.ServiceEndpoint) *store.ServiceEndpoi
 	return &copied
 }
 
-func localSystemdHostAgentEndpoint(applied *store.ServiceEndpoint) *store.ServiceEndpoint {
-	if applied == nil || applied.Port < 1024 || applied.Port > 65535 {
+func localSystemdHostAgentEndpoint(port int) *store.ServiceEndpoint {
+	if port < 1024 || port > 65535 {
 		return nil
 	}
 	return &store.ServiceEndpoint{
 		Host:       "127.0.0.1",
-		Port:       applied.Port,
+		Port:       port,
 		SSLEnabled: false,
-		PublicURL:  fmt.Sprintf("http://127.0.0.1:%d", applied.Port),
+		PublicURL:  fmt.Sprintf("http://127.0.0.1:%d", port),
 	}
 }

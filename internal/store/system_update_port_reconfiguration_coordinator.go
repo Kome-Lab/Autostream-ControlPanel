@@ -594,6 +594,12 @@ func validateSystemdPortCoordinatorState(
 	params CreateSystemdPortReconfigurationJobParams,
 	now time.Time,
 ) error {
+	if policyTarget.LocalListenPort != 0 {
+		// Explicit local listener bindings are independent from advertised
+		// endpoints. The legacy transaction rewrites both as one port and must
+		// not run until it can update the revision-bound binding atomically.
+		return ErrSystemUpdatePortUnsupported
+	}
 	if policy.TransportMode != SystemUpdateTransportPullV2 ||
 		policy.ExecutionHostID == "" ||
 		policy.Revision < 1 || policy.ProjectionRevision < 1 ||

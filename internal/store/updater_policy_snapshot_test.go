@@ -26,13 +26,14 @@ func TestMariaDBGetUpdaterPolicyRetriesPolicyBindingSnapshotChange(t *testing.T)
 	}
 	if policy.Revision != 2 ||
 		len(policy.Targets) != 1 ||
-		policy.Targets[0].DatabaseName != "autostream_o11y" {
+		policy.Targets[0].DatabaseName != "autostream_o11y" ||
+		policy.Targets[0].LocalListenPort != 18082 {
 		t.Fatalf("policy = %#v", policy)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.policyReads != 2 || state.bindingReads != 2 {
-		t.Fatalf("read counts = policy:%d binding:%d", state.policyReads, state.bindingReads)
+	if state.policyReads != 2 || state.bindingReads != 2 || state.listenerReads != 1 {
+		t.Fatalf("read counts = policy:%d binding:%d listener:%d", state.policyReads, state.bindingReads, state.listenerReads)
 	}
 }
 
@@ -46,13 +47,37 @@ func TestMariaDBListUpdaterPoliciesRetriesPolicyBindingSnapshotChange(t *testing
 	if len(policies) != 1 ||
 		policies[0].Revision != 2 ||
 		len(policies[0].Targets) != 1 ||
-		policies[0].Targets[0].DatabaseName != "autostream_o11y" {
+		policies[0].Targets[0].DatabaseName != "autostream_o11y" ||
+		policies[0].Targets[0].LocalListenPort != 18082 {
 		t.Fatalf("policies = %#v", policies)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.policyReads != 2 || state.bindingReads != 2 {
-		t.Fatalf("read counts = policy:%d binding:%d", state.policyReads, state.bindingReads)
+	if state.policyReads != 2 || state.bindingReads != 2 || state.listenerReads != 1 {
+		t.Fatalf("read counts = policy:%d binding:%d listener:%d", state.policyReads, state.bindingReads, state.listenerReads)
+	}
+}
+
+func TestMariaDBGetUpdaterPolicyRetriesLocalListenerSnapshotChange(t *testing.T) {
+	state := &updaterPolicySnapshotDBState{listenerSnapshotChangesOnce: true}
+	db := openUpdaterPolicySnapshotTestDB(t, state)
+	policy, err := NewMariaDBUpdaterPolicyStore(db).GetUpdaterPolicy(
+		t.Context(),
+		"host-agent-a",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Revision != 2 ||
+		len(policy.Targets) != 1 ||
+		policy.Targets[0].DatabaseName != "autostream_o11y" ||
+		policy.Targets[0].LocalListenPort != 18082 {
+		t.Fatalf("policy = %#v", policy)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.policyReads != 3 || state.bindingReads != 3 || state.listenerReads != 2 {
+		t.Fatalf("read counts = policy:%d binding:%d listener:%d", state.policyReads, state.bindingReads, state.listenerReads)
 	}
 }
 
@@ -68,8 +93,8 @@ func TestMariaDBGetUpdaterPolicyFailsAfterBoundedSnapshotRetries(t *testing.T) {
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.policyReads != 3 || state.bindingReads != 3 {
-		t.Fatalf("unbounded read counts = policy:%d binding:%d", state.policyReads, state.bindingReads)
+	if state.policyReads != 3 || state.bindingReads != 3 || state.listenerReads != 0 {
+		t.Fatalf("unbounded read counts = policy:%d binding:%d listener:%d", state.policyReads, state.bindingReads, state.listenerReads)
 	}
 }
 
@@ -82,8 +107,8 @@ func TestMariaDBListUpdaterPoliciesFailsAfterBoundedSnapshotRetries(t *testing.T
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.policyReads != 3 || state.bindingReads != 3 {
-		t.Fatalf("unbounded read counts = policy:%d binding:%d", state.policyReads, state.bindingReads)
+	if state.policyReads != 3 || state.bindingReads != 3 || state.listenerReads != 0 {
+		t.Fatalf("unbounded read counts = policy:%d binding:%d listener:%d", state.policyReads, state.bindingReads, state.listenerReads)
 	}
 }
 
@@ -115,16 +140,18 @@ func TestMariaDBGetUpdaterPolicyReturnsStableIncompleteBindingsForRepair(t *test
 			if err != nil ||
 				len(policy.Targets) != 1 ||
 				policy.Targets[0].DatabaseName != "" ||
+				policy.Targets[0].LocalListenPort != 18082 ||
 				PullUpdaterPolicyDatabaseBindingsReady(policy) {
 				t.Fatalf("repairable policy = %#v err=%v", policy, err)
 			}
 			state.mu.Lock()
 			defer state.mu.Unlock()
-			if state.policyReads != 1 || state.bindingReads != 1 {
+			if state.policyReads != 1 || state.bindingReads != 1 || state.listenerReads != 1 {
 				t.Fatalf(
-					"read counts = policy:%d binding:%d",
+					"read counts = policy:%d binding:%d listener:%d",
 					state.policyReads,
 					state.bindingReads,
+					state.listenerReads,
 				)
 			}
 		})
@@ -159,16 +186,18 @@ func TestMariaDBListUpdaterPoliciesReturnsStableIncompleteBindingsForRepair(t *t
 				len(policies) != 1 ||
 				len(policies[0].Targets) != 1 ||
 				policies[0].Targets[0].DatabaseName != "" ||
+				policies[0].Targets[0].LocalListenPort != 18082 ||
 				PullUpdaterPolicyDatabaseBindingsReady(policies[0]) {
 				t.Fatalf("repairable policies = %#v err=%v", policies, err)
 			}
 			state.mu.Lock()
 			defer state.mu.Unlock()
-			if state.policyReads != 1 || state.bindingReads != 1 {
+			if state.policyReads != 1 || state.bindingReads != 1 || state.listenerReads != 1 {
 				t.Fatalf(
-					"read counts = policy:%d binding:%d",
+					"read counts = policy:%d binding:%d listener:%d",
 					state.policyReads,
 					state.bindingReads,
+					state.listenerReads,
 				)
 			}
 		})
@@ -266,15 +295,17 @@ func openUpdaterPolicySnapshotTestDB(
 }
 
 type updaterPolicySnapshotDBState struct {
-	mu             sync.Mutex
-	body           []byte
-	policyReads    int
-	bindingReads   int
-	lastRevision   int64
-	alwaysStale    bool
-	missingBinding bool
-	staleBinding   bool
-	blankBinding   bool
+	mu                          sync.Mutex
+	body                        []byte
+	policyReads                 int
+	bindingReads                int
+	listenerReads               int
+	lastRevision                int64
+	alwaysStale                 bool
+	listenerSnapshotChangesOnce bool
+	missingBinding              bool
+	staleBinding                bool
+	blankBinding                bool
 }
 
 type updaterPolicySnapshotDriver struct {
@@ -374,6 +405,26 @@ func (c *updaterPolicySnapshotConn) QueryContext(
 				"observability-a",
 				int64(2),
 				"autostream_o11y",
+			}},
+		}, nil
+	case containsAll(query, "FROM update_agent_policies", "LEFT JOIN update_agent_target_local_listeners"):
+		c.state.listenerReads++
+		currentRevision := c.state.lastRevision
+		if c.state.listenerSnapshotChangesOnce && c.state.listenerReads == 1 {
+			currentRevision++
+		}
+		return &updaterPolicyAtomicRows{
+			columns: []string{
+				"current_policy_revision",
+				"target_id",
+				"binding_policy_revision",
+				"local_listen_port",
+			},
+			values: [][]driver.Value{{
+				currentRevision,
+				"observability-a",
+				c.state.lastRevision,
+				int64(18082),
 			}},
 		}, nil
 	case containsAll(query, "FROM update_agent_policies", "ORDER BY service_id"):

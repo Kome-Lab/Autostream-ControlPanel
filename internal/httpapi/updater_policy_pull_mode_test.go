@@ -28,10 +28,11 @@ func TestNormalizedUpdaterPolicyRequestUsesServerOwnedPullBinding(t *testing.T) 
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: digest,
 		Targets: []updaterPolicyTargetRequest{{
-			TargetID:       "worker-a",
-			ServiceID:      "worker-a",
-			ServiceType:    "worker",
-			DeploymentMode: "systemd",
+			TargetID:        "worker-a",
+			ServiceID:       "worker-a",
+			ServiceType:     "worker",
+			DeploymentMode:  "systemd",
+			LocalListenPort: json.RawMessage("8084"),
 		}},
 	})
 	if err != nil {
@@ -63,10 +64,11 @@ func TestNormalizedUpdaterPolicyRequestAllowsObserveOnlyEpochZero(t *testing.T) 
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: digest,
 		Targets: []updaterPolicyTargetRequest{{
-			TargetID:       "worker-a",
-			ServiceID:      "worker-a",
-			ServiceType:    "worker",
-			DeploymentMode: "systemd",
+			TargetID:        "worker-a",
+			ServiceID:       "worker-a",
+			ServiceType:     "worker",
+			DeploymentMode:  "systemd",
+			LocalListenPort: json.RawMessage("8084"),
 		}},
 	})
 	if err != nil {
@@ -349,6 +351,110 @@ func TestNormalizedUpdaterPolicyRequestRejectsPullSSHAndLongLivedReleaseToken(t 
 	}
 }
 
+func TestNormalizedUpdaterPolicyRequestRequiresExplicitSystemdLocalListenPort(t *testing.T) {
+	t.Parallel()
+	agent := store.RegisteredService{
+		ServiceID:       "host-agent-a",
+		ServiceType:     "update_agent",
+		TransportMode:   store.SystemUpdateTransportPullV2,
+		ExecutionHostID: "host-a",
+		OwnershipEpoch:  1,
+	}
+	base := updaterPolicyUpdateRequest{
+		PollIntervalSeconds:      15,
+		HeartbeatIntervalSeconds: 30,
+		Targets: []updaterPolicyTargetRequest{{
+			TargetID:        "observability-a",
+			ServiceID:       "observability-a",
+			ServiceType:     "observability",
+			DeploymentMode:  "systemd",
+			DatabaseName:    json.RawMessage(`"autostream_observability"`),
+			LocalListenPort: json.RawMessage("8082"),
+		}},
+	}
+	policy, err := normalizedUpdaterPolicyRequest(agent, base)
+	if err != nil {
+		t.Fatalf("explicit local listener: %v", err)
+	}
+	if len(policy.Targets) != 1 || policy.Targets[0].LocalListenPort != 8082 {
+		t.Fatalf("normalized local listener = %#v", policy.Targets)
+	}
+	for name, rawPort := range map[string]json.RawMessage{
+		"missing":      nil,
+		"public https": json.RawMessage("443"),
+		"too high":     json.RawMessage("65536"),
+		"null":         json.RawMessage("null"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			candidate.Targets = append([]updaterPolicyTargetRequest(nil), base.Targets...)
+			candidate.Targets[0].LocalListenPort = rawPort
+			if _, err := normalizedUpdaterPolicyRequest(agent, candidate); !errors.Is(err, errInvalidUpdaterLocalListenPort) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCanonicalizePullUpdaterLocalListenerStoresOnlySplitEndpoints(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "worker.example.com,observability.example.com")
+	auth := store.NewMemoryAuthStore()
+	register := func(serviceType string, registration store.ServiceRegistration) {
+		t.Helper()
+		token, err := auth.CreateServiceToken(
+			t.Context(),
+			serviceType,
+			[]string{"service.register", "service.heartbeat"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerServiceWithTokenForTest(t, auth, token, registration)
+	}
+	register("worker", store.ServiceRegistration{
+		ServiceID:   "worker-a",
+		ServiceType: "worker",
+		ServiceName: "Worker A",
+		PublicURL:   "https://worker.example.com:8084",
+	})
+	register("observability", store.ServiceRegistration{
+		ServiceID:   "observability-a",
+		ServiceType: "observability",
+		ServiceName: "Observability A",
+		PublicURL:   "https://observability.example.com",
+	})
+	server := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithServiceRegistryStore(auth),
+	)
+	policy, err := server.canonicalizePullUpdaterLocalListenerBindings(
+		t.Context(),
+		store.UpdaterPolicy{
+			TransportMode: store.SystemUpdateTransportPullV2,
+			Targets: []store.UpdaterPolicyTarget{
+				{
+					TargetID: "worker-a", ServiceID: "worker-a",
+					ServiceType: "worker", DeploymentMode: "systemd",
+					LocalListenPort: 8084,
+				},
+				{
+					TargetID: "observability-a", ServiceID: "observability-a",
+					ServiceType: "observability", DeploymentMode: "systemd",
+					LocalListenPort: 8082,
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Targets[0].LocalListenPort != 0 ||
+		policy.Targets[1].LocalListenPort != 8082 {
+		t.Fatalf("canonical listener bindings = %#v", policy.Targets)
+	}
+}
+
 func TestPullUpdaterPolicyDatabaseNamesRoundTripAndRejectInvalidScope(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(
@@ -427,18 +533,20 @@ func TestPullUpdaterPolicyDatabaseNamesRoundTripAndRejectInvalidScope(t *testing
 			"database_name":   "autostream.panel",
 		},
 		{
-			"target_id":       "worker-main",
-			"service_id":      "worker-main",
-			"service_type":    "worker",
-			"deployment_mode": "systemd",
-			"database_name":   "autostream_worker",
+			"target_id":         "worker-main",
+			"service_id":        "worker-main",
+			"service_type":      "worker",
+			"deployment_mode":   "systemd",
+			"database_name":     "autostream_worker",
+			"local_listen_port": 8084,
 		},
 		{
-			"target_id":       "worker-main",
-			"service_id":      "worker-main",
-			"service_type":    "worker",
-			"deployment_mode": "systemd",
-			"database_name":   nil,
+			"target_id":         "worker-main",
+			"service_id":        "worker-main",
+			"service_type":      "worker",
+			"deployment_mode":   "systemd",
+			"database_name":     nil,
+			"local_listen_port": 8084,
 		},
 		{
 			"target_id":       "control-panel",
@@ -472,12 +580,13 @@ func TestPullUpdaterPolicyDatabaseNamesRoundTripAndRejectInvalidScope(t *testing
 	}
 	validTarget["database_name"] = "  autostream-kometubu_panel  "
 	observabilityTarget := map[string]any{
-		"target_id":       "observability",
-		"service_id":      "observability",
-		"host_id":         "host-database",
-		"service_type":    "observability",
-		"deployment_mode": "systemd",
-		"database_name":   "autostream-kometubu_o11y",
+		"target_id":         "observability",
+		"service_id":        "observability",
+		"host_id":           "host-database",
+		"service_type":      "observability",
+		"deployment_mode":   "systemd",
+		"database_name":     "autostream-kometubu_o11y",
+		"local_listen_port": 8082,
 	}
 	response := save([]map[string]any{validTarget, observabilityTarget})
 	if response.Code != http.StatusOK {
@@ -485,9 +594,10 @@ func TestPullUpdaterPolicyDatabaseNamesRoundTripAndRejectInvalidScope(t *testing
 	}
 	var body struct {
 		Targets []struct {
-			HostID       string `json:"host_id"`
-			ServiceType  string `json:"service_type"`
-			DatabaseName string `json:"database_name"`
+			HostID          string `json:"host_id"`
+			ServiceType     string `json:"service_type"`
+			DatabaseName    string `json:"database_name"`
+			LocalListenPort int    `json:"local_listen_port"`
 		} `json:"targets"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
@@ -498,7 +608,8 @@ func TestPullUpdaterPolicyDatabaseNamesRoundTripAndRejectInvalidScope(t *testing
 		body.Targets[0].ServiceType != "control_panel" ||
 		body.Targets[0].DatabaseName != "autostream-kometubu_panel" ||
 		body.Targets[1].ServiceType != "observability" ||
-		body.Targets[1].DatabaseName != "autostream-kometubu_o11y" {
+		body.Targets[1].DatabaseName != "autostream-kometubu_o11y" ||
+		body.Targets[1].LocalListenPort != 8082 {
 		t.Fatalf("database target response = %#v", body.Targets)
 	}
 	stored, err := policies.GetUpdaterPolicy(t.Context(), "host-agent-database")
@@ -507,7 +618,8 @@ func TestPullUpdaterPolicyDatabaseNamesRoundTripAndRejectInvalidScope(t *testing
 	}
 	if len(stored.Targets) != 2 ||
 		stored.Targets[0].DatabaseName != "autostream-kometubu_panel" ||
-		stored.Targets[1].DatabaseName != "autostream-kometubu_o11y" {
+		stored.Targets[1].DatabaseName != "autostream-kometubu_o11y" ||
+		stored.Targets[1].LocalListenPort != 8082 {
 		t.Fatalf("stored database target = %#v", stored.Targets)
 	}
 	foundSaveAudit := false
@@ -587,10 +699,11 @@ func TestPullUpdaterPolicySaveNeedsNoSecretPermissionAndAdvancesOwnershipRevisio
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64),
 		Targets: []updaterPolicyTargetRequest{{
-			TargetID:       "legacy-slot",
-			ServiceID:      "worker-a",
-			ServiceType:    "worker",
-			DeploymentMode: "systemd",
+			TargetID:        "legacy-slot",
+			ServiceID:       "worker-a",
+			ServiceType:     "worker",
+			DeploymentMode:  "systemd",
+			LocalListenPort: json.RawMessage("8084"),
 		}},
 	}
 	save := func(body updaterPolicyUpdateRequest) *httptest.ResponseRecorder {
@@ -761,10 +874,11 @@ func TestPullObserverPolicySavePreservesExistingSSHOwnershipAndActiveJob(t *test
 		HeartbeatIntervalSeconds:  30,
 		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("c", 64),
 		Targets: []updaterPolicyTargetRequest{{
-			TargetID:       "worker-slot",
-			ServiceID:      "worker-a",
-			ServiceType:    "worker",
-			DeploymentMode: "systemd",
+			TargetID:        "worker-slot",
+			ServiceID:       "worker-a",
+			ServiceType:     "worker",
+			DeploymentMode:  "systemd",
+			LocalListenPort: json.RawMessage("8084"),
 		}},
 	})
 	if err != nil {

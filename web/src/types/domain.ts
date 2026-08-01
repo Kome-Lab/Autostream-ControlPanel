@@ -457,6 +457,7 @@ export type UpdaterSettingsTarget = {
   service_type: string;
   deployment_mode: string;
   database_name?: string;
+  local_listen_port?: number;
 };
 
 export type UpdaterSettings = {

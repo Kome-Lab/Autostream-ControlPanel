@@ -60,6 +60,13 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 			service.AppliedEndpoint == nil {
 			return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
 		}
+		localListenPort, localListenPortAvailable := store.PullUpdaterPolicyTargetLocalListenPort(
+			target,
+			service,
+		)
+		if target.DeploymentMode == updateagent.ModeSystemd && !localListenPortAvailable {
+			return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+		}
 		targets = append(targets, updateagent.HostAgentConfigurePolicyTarget{
 			ServiceID:             target.ServiceID,
 			ServiceType:           target.ServiceType,
@@ -69,6 +76,7 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 			AppliedConfigRevision: service.AppliedConfigRevision,
 			AppliedConfigSHA256:   service.AppliedConfigSHA256,
 			AppliedEndpointPort:   service.AppliedEndpoint.Port,
+			LocalListenPort:       localListenPort,
 		})
 	}
 	projection, err := updateagent.BuildHostAgentConfigurePolicy(

@@ -48,6 +48,7 @@ import {
   systemUpdateJobFromResponse,
   systemUpdateUpdaterPolicyState,
   normalizeUpdaterSettingsTargetDatabaseName,
+  normalizeUpdaterSettingsTargetLocalListenPort,
   systemUpdateProgress,
   systemUpdatePortReconfigureEligibility,
   systemUpdatePortReconfigureRequest,
@@ -59,6 +60,7 @@ import {
   systemUpdateTargetOperationEligibility,
   systemUpdateTargetBlockedReason,
   updaterSettingsTargetRequiresDatabase,
+  updaterSettingsTargetRequiresLocalListenPort,
   updaterSettingsTargetOptions,
   SystemUpdateRequestAmbiguousError,
   updaterHostBootstrapConfirmationContext,
@@ -1558,6 +1560,34 @@ test("changing a database owner target identity clears the previous database nam
   );
 });
 
+test("pull_v2 systemd local listener stays separate from the public HTTPS port", () => {
+  const observability: UpdaterSettingsTarget = {
+    target_id: "observability-main",
+    service_id: "observability-main",
+    host_id: "host-main",
+    service_type: "observability",
+    deployment_mode: "systemd",
+    local_listen_port: 8082,
+  };
+  assert.equal(updaterSettingsTargetRequiresLocalListenPort("pull_v2", observability), true);
+  assert.equal(
+    normalizeUpdaterSettingsTargetLocalListenPort("pull_v2", observability, "サービス 1"),
+    8082,
+  );
+  assert.throws(
+    () => normalizeUpdaterSettingsTargetLocalListenPort(
+      "pull_v2",
+      { ...observability, local_listen_port: 443 },
+      "サービス 1",
+    ),
+    /1024〜65535/,
+  );
+  assert.equal(
+    applyUpdaterSettingsTargetPatch("pull_v2", observability, { deployment_mode: "docker" }).local_listen_port,
+    undefined,
+  );
+});
+
 test("updater settings target options use registered supported services and preserve the current stale ID", () => {
   const registeredTargets: SystemUpdateTarget[] = [
     baseTarget,
@@ -1637,14 +1667,14 @@ test("first unused updater settings target skips duplicates and supports the syn
     deployment_mode: "systemd",
   };
 
-  assert.deepEqual(firstUnusedUpdaterSettingsTarget(registeredTargets, [worker], "host-selected"), {
+  assert.deepEqual(firstUnusedUpdaterSettingsTarget("pull_v2", registeredTargets, [worker], "host-selected"), {
     target_id: "control-panel",
     service_id: "control-panel",
     host_id: "host-selected",
     service_type: "control_panel",
     deployment_mode: "systemd",
   });
-  assert.equal(firstUnusedUpdaterSettingsTarget(registeredTargets, [
+  assert.equal(firstUnusedUpdaterSettingsTarget("pull_v2", registeredTargets, [
     worker,
     {
       target_id: "control-panel",
@@ -1654,6 +1684,10 @@ test("first unused updater settings target skips duplicates and supports the syn
       deployment_mode: "systemd",
     },
   ], "host-selected"), undefined);
+
+  const sshTarget = firstUnusedUpdaterSettingsTarget("ssh_v1", [baseTarget], [], "host-selected");
+  assert.equal(sshTarget?.service_type, "worker");
+  assert.equal(sshTarget?.local_listen_port, undefined);
 });
 
 test("selecting an updater settings target synchronizes both IDs and its derived service type", () => {
@@ -1675,6 +1709,7 @@ test("selecting an updater settings target synchronizes both IDs and its derived
     host_id: "host-main",
     service_type: "worker",
     deployment_mode: "systemd",
+    local_listen_port: 8084,
   });
   assert.equal(applyUpdaterSettingsTargetSelection("pull_v2", current, {
     target_id: "control-panel",
@@ -2145,7 +2180,7 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /updaterSettingsTargetRequiresDatabase\(settings\.transport_mode, target\)/);
   assert.match(settingsSource, /applyUpdaterSettingsTargetPatch\(/);
   assert.match(settingsSource, /updaterSettingsTargetOptions\(availableTargets, form\.targets, index\)/);
-  assert.match(settingsSource, /firstUnusedUpdaterSettingsTarget\(availableTargets, current\.targets, hostID\)/);
+  assert.match(settingsSource, /firstUnusedUpdaterSettingsTarget\(settings\.transport_mode, availableTargets, current\.targets, hostID\)/);
   assert.match(settingsSource, /applyUpdaterSettingsTargetSelection\(settings\.transport_mode, target/);
   assert.match(settingsSource, /label="サービス種別（自動）"[\s\S]*?readOnly/);
   assert.doesNotMatch(settingsSource, /onChange=\{\(event\) => updateTarget\(index, \{ target_id:/);

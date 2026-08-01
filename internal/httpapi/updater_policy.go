@@ -27,12 +27,13 @@ type updaterPolicyUpdateRequest struct {
 }
 
 type updaterPolicyTargetRequest struct {
-	TargetID       string          `json:"target_id"`
-	ServiceID      string          `json:"service_id"`
-	HostID         string          `json:"host_id"`
-	ServiceType    string          `json:"service_type"`
-	DeploymentMode string          `json:"deployment_mode"`
-	DatabaseName   json.RawMessage `json:"database_name,omitempty"`
+	TargetID        string          `json:"target_id"`
+	ServiceID       string          `json:"service_id"`
+	HostID          string          `json:"host_id"`
+	ServiceType     string          `json:"service_type"`
+	DeploymentMode  string          `json:"deployment_mode"`
+	DatabaseName    json.RawMessage `json:"database_name,omitempty"`
+	LocalListenPort json.RawMessage `json:"local_listen_port,omitempty"`
 }
 
 type activatePullUpdaterOwnershipRequest struct {
@@ -92,12 +93,13 @@ type updaterPolicyHostResponse struct {
 }
 
 type updaterPolicyTargetResponse struct {
-	TargetID       string `json:"target_id"`
-	ServiceID      string `json:"service_id"`
-	HostID         string `json:"host_id"`
-	ServiceType    string `json:"service_type"`
-	DeploymentMode string `json:"deployment_mode"`
-	DatabaseName   string `json:"database_name,omitempty"`
+	TargetID        string `json:"target_id"`
+	ServiceID       string `json:"service_id"`
+	HostID          string `json:"host_id"`
+	ServiceType     string `json:"service_type"`
+	DeploymentMode  string `json:"deployment_mode"`
+	DatabaseName    string `json:"database_name,omitempty"`
+	LocalListenPort int    `json:"local_listen_port,omitempty"`
 }
 
 type updaterPolicyResponse struct {
@@ -228,9 +230,18 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 			code = "invalid_updater_host_public_key"
 		} else if errors.Is(err, errInvalidUpdaterDatabaseName) {
 			code = "invalid_updater_database_name"
+		} else if errors.Is(err, errInvalidUpdaterLocalListenPort) {
+			code = "invalid_updater_local_listen_port"
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
+	}
+	if systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportPullV2 {
+		policy, err = s.canonicalizePullUpdaterLocalListenerBindings(r.Context(), policy)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_updater_target_endpoints_failed"})
+			return
+		}
 	}
 	if systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportSSHV1 &&
 		body.GitHubToken != nil &&
@@ -617,9 +628,10 @@ func (s *Server) serviceUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	errInvalidUpdaterHostPublicKey = errors.New("invalid updater host public key")
-	errInvalidUpdaterDatabaseName  = errors.New("invalid updater database name")
-	updaterDatabaseNamePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	errInvalidUpdaterHostPublicKey   = errors.New("invalid updater host public key")
+	errInvalidUpdaterDatabaseName    = errors.New("invalid updater database name")
+	errInvalidUpdaterLocalListenPort = errors.New("invalid updater local listen port")
+	updaterDatabaseNamePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 )
 
 func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterPolicyUpdateRequest) (store.UpdaterPolicy, error) {
@@ -673,6 +685,23 @@ func normalizedUpdaterPolicyTargets(
 			HostID:         request.HostID,
 			ServiceType:    request.ServiceType,
 			DeploymentMode: request.DeploymentMode,
+		}
+		requiresLocalListenPort := transportMode == store.SystemUpdateTransportPullV2 &&
+			strings.TrimSpace(request.DeploymentMode) == "systemd" &&
+			strings.TrimSpace(request.ServiceType) != "control_panel"
+		if !requiresLocalListenPort {
+			if request.LocalListenPort != nil {
+				return nil, errInvalidUpdaterLocalListenPort
+			}
+		} else {
+			if request.LocalListenPort == nil {
+				return nil, errInvalidUpdaterLocalListenPort
+			}
+			if err := json.Unmarshal(request.LocalListenPort, &target.LocalListenPort); err != nil ||
+				target.LocalListenPort < 1024 ||
+				target.LocalListenPort > 65535 {
+				return nil, errInvalidUpdaterLocalListenPort
+			}
 		}
 		requiresDatabase := transportMode == store.SystemUpdateTransportPullV2 &&
 			strings.TrimSpace(request.DeploymentMode) == "systemd" &&
@@ -766,7 +795,7 @@ func makeUpdaterPolicyResponse(policy store.UpdaterPolicy, tokenStatus *store.Se
 		targets = append(targets, updaterPolicyTargetResponse{
 			TargetID: target.TargetID, ServiceID: target.ServiceID, HostID: hostID,
 			ServiceType: target.ServiceType, DeploymentMode: target.DeploymentMode,
-			DatabaseName: target.DatabaseName,
+			DatabaseName: target.DatabaseName, LocalListenPort: target.LocalListenPort,
 		})
 	}
 	response := updaterPolicyResponse{
@@ -823,6 +852,20 @@ func (s *Server) enrichPullUpdaterPolicyResponse(
 	if err := addControlPanelSystemUpdateServiceForPolicy(servicesByID, policy); err != nil {
 		return err
 	}
+	targetsByID := make(map[string]store.UpdaterPolicyTarget, len(policy.Targets))
+	for _, target := range policy.Targets {
+		targetsByID[target.TargetID] = target
+	}
+	for index := range response.Targets {
+		target, targetExists := targetsByID[response.Targets[index].TargetID]
+		service, serviceExists := servicesByID[target.ServiceID]
+		if !targetExists || !serviceExists || service.ServiceType != target.ServiceType {
+			continue
+		}
+		if localListenPort, ok := store.PullUpdaterPolicyTargetLocalListenPort(target, service); ok {
+			response.Targets[index].LocalListenPort = localListenPort
+		}
+	}
 	reportedOwnershipEpoch, _ := capabilityInt64(agent.ReportedCapabilities["ownership_epoch"])
 	reportedProjectionRevision, _ := capabilityInt64(agent.ReportedCapabilities["policy_revision"])
 	ready := agent.OwnershipEpoch == 0 &&
@@ -850,6 +893,40 @@ func (s *Server) enrichPullUpdaterPolicyResponse(
 		ReportedProjectionRevision: reportedProjectionRevision,
 	}
 	return nil
+}
+
+func (s *Server) canonicalizePullUpdaterLocalListenerBindings(
+	ctx context.Context,
+	policy store.UpdaterPolicy,
+) (store.UpdaterPolicy, error) {
+	if policy.TransportMode != store.SystemUpdateTransportPullV2 {
+		return policy, nil
+	}
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return store.UpdaterPolicy{}, err
+	}
+	servicesByID := make(map[string]store.RegisteredService, len(services))
+	for _, service := range services {
+		servicesByID[service.ServiceID] = service
+	}
+	for index := range policy.Targets {
+		target := &policy.Targets[index]
+		if target.LocalListenPort == 0 {
+			continue
+		}
+		service, exists := servicesByID[target.ServiceID]
+		if !exists || service.ServiceType != target.ServiceType || service.AppliedEndpoint == nil {
+			continue
+		}
+		if target.LocalListenPort == service.AppliedEndpoint.Port {
+			// Matching advertised/local ports retain the legacy shared-port
+			// contract. Only a genuinely split listener needs a side-table row;
+			// this preserves existing atomic port reconfiguration for that case.
+			target.LocalListenPort = 0
+		}
+	}
+	return policy, nil
 }
 
 func makeLegacyUpdaterPolicyResponse(policy store.UpdaterPolicy) legacyUpdaterPolicyResponse {

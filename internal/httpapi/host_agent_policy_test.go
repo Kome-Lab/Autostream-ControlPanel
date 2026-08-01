@@ -68,6 +68,7 @@ func TestHostAgentPolicyUsesServerOwnedBindingAndRegisteredServiceEndpoints(t *t
 	policy.Hosts = nil
 	policy.Targets[0].ServiceID = "worker-01"
 	policy.Targets[0].HostID = "host-01"
+	policy.Targets[0].LocalListenPort = 18084
 	updates := store.NewMemorySystemUpdateStore()
 	for expectedEpoch := int64(0); expectedEpoch < 3; expectedEpoch++ {
 		if _, err := updates.SwitchSystemUpdateExecutionHost(
@@ -188,7 +189,9 @@ func TestHostAgentPolicyUsesServerOwnedBindingAndRegisteredServiceEndpoints(t *t
 	if len(refreshed.Targets) != 1 ||
 		refreshed.Targets[0].AppliedConfigRevision != 1 ||
 		refreshed.Targets[0].AppliedEndpoint == nil ||
-		refreshed.Targets[0].AppliedEndpoint.Port != 28084 {
+		refreshed.Targets[0].AppliedEndpoint.Port != 28084 ||
+		refreshed.Targets[0].LocalListenEndpoint == nil ||
+		refreshed.Targets[0].LocalListenEndpoint.Port != 18084 {
 		t.Fatalf("same policy revision did not refresh target config: %#v", refreshed.Targets)
 	}
 
@@ -201,11 +204,34 @@ func TestHostAgentPolicyUsesServerOwnedBindingAndRegisteredServiceEndpoints(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
+	publicHTTPSRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/services/host-agent/policy",
+		bytes.NewBufferString(`{"service_id":"host-agent-01","current_revision":1}`),
+	)
+	publicHTTPSRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
+	publicHTTPSResponse := httptest.NewRecorder()
+	handler.ServeHTTP(publicHTTPSResponse, publicHTTPSRequest)
+	if publicHTTPSResponse.Code != http.StatusOK {
+		t.Fatalf("public HTTPS policy status=%d body=%s", publicHTTPSResponse.Code, publicHTTPSResponse.Body.String())
+	}
+	var publicHTTPSPolicy hostAgentPolicyResponse
+	if err := json.NewDecoder(publicHTTPSResponse.Body).Decode(&publicHTTPSPolicy); err != nil {
+		t.Fatal(err)
+	}
+	if len(publicHTTPSPolicy.Targets) != 1 ||
+		publicHTTPSPolicy.Targets[0].AppliedEndpoint == nil ||
+		publicHTTPSPolicy.Targets[0].AppliedEndpoint.Port != 443 ||
+		publicHTTPSPolicy.Targets[0].LocalListenEndpoint == nil ||
+		publicHTTPSPolicy.Targets[0].LocalListenEndpoint.Port != 18084 {
+		t.Fatalf("public and local endpoints were conflated: %#v", publicHTTPSPolicy.Targets)
+	}
 	dockerPolicy := saved
 	dockerPolicy.Targets = append(
 		[]store.UpdaterPolicyTarget(nil), saved.Targets...,
 	)
 	dockerPolicy.Targets[0].DeploymentMode = "docker"
+	dockerPolicy.Targets[0].LocalListenPort = 0
 	savedDocker, err := policies.SavePullUpdaterPolicy(
 		t.Context(),
 		updates,

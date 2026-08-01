@@ -49,6 +49,11 @@ type HostAgentConfigurePolicyTarget struct {
 	AppliedConfigRevision int64
 	AppliedConfigSHA256   string
 	AppliedEndpointPort   int
+	// LocalListenPort is the root-owned loopback listener used by systemd.
+	// It is intentionally distinct from AppliedEndpointPort because the
+	// advertised service endpoint may terminate at a reverse proxy or tunnel
+	// on a privileged public port such as HTTPS 443.
+	LocalListenPort int
 }
 
 // BuildHostAgentConfigurePolicy expands a declarative pull policy into the
@@ -115,12 +120,22 @@ func buildHostAgentConfigureSystemdTarget(
 	source.ServiceType = strings.TrimSpace(source.ServiceType)
 	source.DeploymentMode = strings.TrimSpace(source.DeploymentMode)
 	source.AppliedConfigSHA256 = strings.ToLower(strings.TrimSpace(source.AppliedConfigSHA256))
+	localListenPort := source.LocalListenPort
+	if localListenPort == 0 {
+		// Policies saved before local listener bindings existed used the
+		// advertised port for both authorities. Preserve that exact behavior
+		// only for those already-stored policies; new saves require an explicit
+		// revision-bound LocalListenPort.
+		localListenPort = source.AppliedEndpointPort
+	}
 	if !identifierPattern.MatchString(source.ServiceID) ||
 		!validLocalExecutorServiceType(source.ServiceType) ||
 		source.EndpointRevision < 1 ||
 		source.AppliedConfigRevision < 1 ||
-		source.AppliedEndpointPort < 1024 ||
-		source.AppliedEndpointPort > 65535 {
+		source.AppliedEndpointPort < 1 ||
+		source.AppliedEndpointPort > 65535 ||
+		localListenPort < 1024 ||
+		localListenPort > 65535 {
 		return LocalExecutorTarget{}, errors.New("applied target state is incomplete")
 	}
 	if source.DeploymentMode != ModeSystemd {
@@ -139,7 +154,7 @@ func buildHostAgentConfigureSystemdTarget(
 	}
 	configSHA256, err := SystemdConfigurePortSidecarSHA256(
 		source.ServiceType,
-		source.AppliedEndpointPort,
+		localListenPort,
 		source.AppliedConfigRevision,
 	)
 	if err != nil {
@@ -159,7 +174,7 @@ func buildHostAgentConfigureSystemdTarget(
 		ConfigSHA256:     configSHA256,
 		LocalListen: LocalExecutorEndpoint{
 			Host: "127.0.0.1",
-			Port: source.AppliedEndpointPort,
+			Port: localListenPort,
 		},
 		Systemd: &SystemdTarget{
 			SystemctlPath: "/usr/bin/systemctl",

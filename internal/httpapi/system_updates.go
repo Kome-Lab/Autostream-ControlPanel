@@ -101,6 +101,7 @@ type systemUpdateAgentAssignment struct {
 	HostCheckedAt          *time.Time
 	HostCode               string
 	TargetServiceType      string
+	LocalListenPortBound   bool
 	PolicyManaged          bool
 	PolicyReady            bool
 	PolicyBlockedReason    string
@@ -1119,6 +1120,11 @@ func systemUpdatePortReconfigureBlockedReason(
 	if assignment.TargetServiceType != "" && assignment.TargetServiceType != service.ServiceType {
 		return "updater_policy_target_type_mismatch"
 	}
+	if assignment.DeploymentMode == "systemd" && assignment.LocalListenPortBound {
+		// The split local listener must not be rewritten together with the
+		// advertised endpoint by the legacy port-change transaction.
+		return "system_update_port_reconfigure_not_ready"
+	}
 	if !assignment.Available {
 		return "updater_offline"
 	}
@@ -1495,8 +1501,9 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 				CurrentVersion: approvedTarget.CurrentVersion, Available: systemUpdateAgentAvailable(agent, now),
 				HostID: approvedTarget.Host.HostID, HostName: approvedTarget.Host.Name, HostReachability: approvedTarget.Host.Reachability,
 				HostCheckedAt: approvedTarget.Host.CheckedAt, HostCode: approvedTarget.Host.Code,
-				TargetServiceType: approvedTarget.ServiceType, PolicyManaged: approvedTarget.PolicyManaged,
-				PolicyReady: approvedTarget.PolicyReady, PolicyBlockedReason: approvedTarget.PolicyBlockedReason,
+				TargetServiceType: approvedTarget.ServiceType, LocalListenPortBound: approvedTarget.LocalListenPortBound,
+				PolicyManaged: approvedTarget.PolicyManaged,
+				PolicyReady:   approvedTarget.PolicyReady, PolicyBlockedReason: approvedTarget.PolicyBlockedReason,
 				ReleaseTokenRequired:   approvedTarget.PolicyManaged && systemUpdateAgentRequiresReleaseToken(agent),
 				ReleaseTokenConfigured: releaseTokenConfigured,
 			}
@@ -1672,13 +1679,14 @@ func approvedSystemUpdateAgentTargets(agent store.RegisteredService) (map[string
 }
 
 type systemUpdateApprovedTarget struct {
-	DeploymentMode      string
-	CurrentVersion      string
-	ServiceType         string
-	Host                systemUpdateHostResponse
-	PolicyManaged       bool
-	PolicyReady         bool
-	PolicyBlockedReason string
+	DeploymentMode       string
+	CurrentVersion       string
+	ServiceType          string
+	LocalListenPortBound bool
+	Host                 systemUpdateHostResponse
+	PolicyManaged        bool
+	PolicyReady          bool
+	PolicyBlockedReason  string
 }
 
 func approvedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time) map[string]systemUpdateApprovedTarget {
@@ -1849,7 +1857,11 @@ func approvedPullSystemUpdateAgentTargetAssignments(
 				expectedConfigRevision = service.AppliedConfigRevision
 			}
 			expectedConfigSHA256 = service.AppliedConfigSHA256
-			if service.AppliedEndpoint != nil && service.AppliedEndpoint.Port > 0 {
+			if expectedDeploymentMode == "systemd" {
+				if localListenPort, ok := store.PullUpdaterPolicyTargetLocalListenPort(target, service); ok {
+					expectedPort = localListenPort
+				}
+			} else if service.AppliedEndpoint != nil && service.AppliedEndpoint.Port > 0 {
 				expectedPort = service.AppliedEndpoint.Port
 			}
 		}
@@ -1886,10 +1898,11 @@ func approvedPullSystemUpdateAgentTargetAssignments(
 			}
 		}
 		entry := systemUpdateApprovedTarget{
-			DeploymentMode: expectedDeploymentMode,
-			ServiceType:    expectedServiceType,
-			Host:           host,
-			PolicyManaged:  true,
+			DeploymentMode:       expectedDeploymentMode,
+			ServiceType:          expectedServiceType,
+			LocalListenPortBound: target.LocalListenPort != 0,
+			Host:                 host,
+			PolicyManaged:        true,
 		}
 		if serviceExists {
 			entry.CurrentVersion = strings.TrimSpace(service.ReportedVersion)

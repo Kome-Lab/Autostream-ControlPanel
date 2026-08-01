@@ -83,6 +83,11 @@ type UpdaterPolicyTarget struct {
 	// policy_json so an older strict decoder can still read the declarative
 	// policy after a Control Panel rollback.
 	DatabaseName string `json:"-"`
+	// LocalListenPort is stored in update_agent_target_local_listeners rather
+	// than policy_json so an older strict decoder can still read the
+	// declarative policy after a Control Panel rollback. Zero preserves the
+	// legacy contract that derives the systemd listener from AppliedEndpoint.
+	LocalListenPort int `json:"-"`
 }
 
 type UpdaterPolicyStore interface {
@@ -854,6 +859,9 @@ WHERE service_id = ?`,
 	if err := attachUpdaterTargetDatabases(ctx, s.db, &policy); err != nil {
 		return UpdaterPolicy{}, err
 	}
+	if err := attachUpdaterTargetLocalListeners(ctx, s.db, &policy); err != nil {
+		return UpdaterPolicy{}, err
+	}
 	return policy, nil
 }
 
@@ -922,6 +930,9 @@ ORDER BY service_id`,
 	}
 	for index := range policies {
 		if err := attachUpdaterTargetDatabases(ctx, s.db, &policies[index]); err != nil {
+			return nil, err
+		}
+		if err := attachUpdaterTargetLocalListeners(ctx, s.db, &policies[index]); err != nil {
 			return nil, err
 		}
 	}
@@ -1170,6 +1181,9 @@ FOR UPDATE`,
 	if err := replaceUpdaterTargetDatabases(ctx, tx, normalized); err != nil {
 		return UpdaterPolicy{}, err
 	}
+	if err := replaceUpdaterTargetLocalListeners(ctx, tx, normalized); err != nil {
+		return UpdaterPolicy{}, err
+	}
 	if !activePullOwner {
 		if err := tx.Commit(); err != nil {
 			return UpdaterPolicy{}, err
@@ -1259,6 +1273,9 @@ FOR UPDATE`,
 		return UpdaterPolicy{}, err
 	}
 	if err := attachUpdaterTargetDatabases(ctx, tx, &current); err != nil {
+		return UpdaterPolicy{}, err
+	}
+	if err := attachUpdaterTargetLocalListeners(ctx, tx, &current); err != nil {
 		return UpdaterPolicy{}, err
 	}
 	if current.TransportMode != SystemUpdateTransportPullV2 ||
@@ -1441,6 +1458,9 @@ FOR UPDATE`,
 		return ActivatePullUpdaterOwnershipResult{}, err
 	}
 	if err := attachUpdaterTargetDatabases(ctx, tx, &policy); err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if err := attachUpdaterTargetLocalListeners(ctx, tx, &policy); err != nil {
 		return ActivatePullUpdaterOwnershipResult{}, err
 	}
 	if !PullUpdaterPolicyDatabaseBindingsReady(policy) {
@@ -2229,6 +2249,137 @@ VALUES (?, ?, ?, ?, ?)`,
 	return nil
 }
 
+func attachUpdaterTargetLocalListeners(
+	ctx context.Context,
+	queryer updaterPolicyRowsQueryer,
+	policy *UpdaterPolicy,
+) error {
+	if policy == nil || queryer == nil {
+		return ErrInvalidSettings
+	}
+	rows, err := queryer.QueryContext(
+		ctx,
+		`SELECT p.revision AS current_policy_revision,
+       listener.target_id,
+       listener.binding_policy_revision,
+       listener.local_listen_port
+FROM update_agent_policies AS p
+LEFT JOIN update_agent_target_local_listeners AS listener
+  ON listener.updater_service_id = p.service_id
+WHERE p.service_id = ?
+ORDER BY listener.target_id`,
+		policy.UpdaterID,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	targetIndexes := make(map[string]int, len(policy.Targets))
+	for index := range policy.Targets {
+		targetIndexes[policy.Targets[index].TargetID] = index
+	}
+	listeners := make(map[int]int, len(policy.Targets))
+	snapshotFound := false
+	for rows.Next() {
+		var (
+			currentPolicyRevision int64
+			targetID              sql.NullString
+			bindingPolicyRevision sql.NullInt64
+			localListenPort       sql.NullInt64
+		)
+		if err := rows.Scan(
+			&currentPolicyRevision,
+			&targetID,
+			&bindingPolicyRevision,
+			&localListenPort,
+		); err != nil {
+			return err
+		}
+		snapshotFound = true
+		if currentPolicyRevision != policy.Revision {
+			return errUpdaterPolicySnapshotChanged
+		}
+		if !targetID.Valid && !bindingPolicyRevision.Valid && !localListenPort.Valid {
+			continue
+		}
+		if !targetID.Valid || !bindingPolicyRevision.Valid || !localListenPort.Valid {
+			return ErrInvalidSettings
+		}
+		if bindingPolicyRevision.Int64 != policy.Revision {
+			continue
+		}
+		index, exists := targetIndexes[targetID.String]
+		if !exists ||
+			localListenPort.Int64 < 1024 ||
+			localListenPort.Int64 > 65535 ||
+			!updaterPolicyTargetAllowsExplicitLocalListener(policy.Targets[index]) {
+			return ErrInvalidSettings
+		}
+		listeners[index] = int(localListenPort.Int64)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !snapshotFound {
+		return errUpdaterPolicySnapshotChanged
+	}
+	candidate := cloneUpdaterPolicy(*policy)
+	for index := range candidate.Targets {
+		candidate.Targets[index].LocalListenPort = listeners[index]
+	}
+	*policy = candidate
+	return nil
+}
+
+func replaceUpdaterTargetLocalListeners(
+	ctx context.Context,
+	execer updaterPolicyExecer,
+	policy UpdaterPolicy,
+) error {
+	if execer == nil ||
+		policy.TransportMode != SystemUpdateTransportPullV2 ||
+		policy.Revision < 1 {
+		return ErrInvalidSettings
+	}
+	for _, target := range policy.Targets {
+		if target.LocalListenPort == 0 {
+			continue
+		}
+		if target.LocalListenPort < 1024 ||
+			target.LocalListenPort > 65535 ||
+			!updaterPolicyTargetAllowsExplicitLocalListener(target) {
+			return ErrInvalidSettings
+		}
+	}
+	if _, err := execer.ExecContext(
+		ctx,
+		`DELETE FROM update_agent_target_local_listeners WHERE updater_service_id = ?`,
+		policy.UpdaterID,
+	); err != nil {
+		return err
+	}
+	for _, target := range policy.Targets {
+		if target.LocalListenPort == 0 {
+			continue
+		}
+		if _, err := execer.ExecContext(
+			ctx,
+			`INSERT INTO update_agent_target_local_listeners
+(updater_service_id, target_id, binding_policy_revision, local_listen_port, updated_at)
+VALUES (?, ?, ?, ?, ?)`,
+			policy.UpdaterID,
+			target.TargetID,
+			policy.Revision,
+			target.LocalListenPort,
+			policy.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func prepareUpdaterPolicySave(serviceID string, expectedRevision int64, input UpdaterPolicy) (UpdaterPolicy, []byte, error) {
 	if expectedRevision < 0 || expectedRevision == math.MaxInt64 {
 		return UpdaterPolicy{}, nil, ErrConflict
@@ -2316,6 +2467,41 @@ func updaterPolicyControlPanelTarget(target UpdaterPolicyTarget) bool {
 		target.ServiceID == "control-panel" &&
 		target.ServiceType == "control_panel" &&
 		target.DeploymentMode == "systemd"
+}
+
+func updaterPolicyTargetAllowsExplicitLocalListener(target UpdaterPolicyTarget) bool {
+	return target.DeploymentMode == "systemd" &&
+		!updaterPolicyControlPanelTarget(target)
+}
+
+// PullUpdaterPolicyTargetLocalListenPort resolves the local host listener used
+// by a systemd pull target. An explicit revision-bound listener wins. Zero
+// preserves the legacy AppliedEndpoint fallback; a present but invalid
+// override never silently falls back. The exact synthetic Control Panel target
+// cannot be overridden because its loopback listener is server-owned.
+func PullUpdaterPolicyTargetLocalListenPort(
+	target UpdaterPolicyTarget,
+	service RegisteredService,
+) (int, bool) {
+	if target.DeploymentMode != "systemd" {
+		return 0, false
+	}
+	if updaterPolicyControlPanelTarget(target) {
+		if target.LocalListenPort != 0 {
+			return 0, false
+		}
+	} else if target.LocalListenPort != 0 {
+		if target.LocalListenPort < 1024 || target.LocalListenPort > 65535 {
+			return 0, false
+		}
+		return target.LocalListenPort, true
+	}
+	if service.AppliedEndpoint == nil ||
+		service.AppliedEndpoint.Port < 1024 ||
+		service.AppliedEndpoint.Port > 65535 {
+		return 0, false
+	}
+	return service.AppliedEndpoint.Port, true
 }
 
 func normalizeDeactivatePullUpdaterOwnershipParams(
@@ -2518,6 +2704,17 @@ func registeredPullObserverReadyForActivation(
 		if !exists || targetService.ServiceType != target.ServiceType || targetService.AppliedEndpoint == nil {
 			return false
 		}
+		expectedReportedPort := targetService.AppliedEndpoint.Port
+		if target.DeploymentMode == "systemd" {
+			var listenerOK bool
+			expectedReportedPort, listenerOK = PullUpdaterPolicyTargetLocalListenPort(
+				target,
+				targetService,
+			)
+			if !listenerOK {
+				return false
+			}
+		}
 		expectedConfigRevision := targetService.AppliedConfigRevision
 		if expectedConfigRevision < 1 {
 			return false
@@ -2534,7 +2731,7 @@ func registeredPullObserverReadyForActivation(
 			!validSystemUpdateDigest(reportedConfigDigest) ||
 			(targetService.AppliedConfigSHA256 != "" &&
 				reportedConfigDigest != targetService.AppliedConfigSHA256) ||
-			reportedPorts[target.ServiceID] != int64(targetService.AppliedEndpoint.Port) ||
+			reportedPorts[target.ServiceID] != int64(expectedReportedPort) ||
 			!portDriftReported ||
 			portDrift {
 			return false
@@ -2587,7 +2784,11 @@ func pullActivationBaselineReservations(
 		port := service.AppliedEndpoint.Port
 		switch target.DeploymentMode {
 		case "systemd":
-			// The advertised endpoint is also the host listener for systemd.
+			var listenerOK bool
+			port, listenerOK = PullUpdaterPolicyTargetLocalListenPort(target, service)
+			if !listenerOK {
+				return nil, ErrSystemUpdateAgentNotReady
+			}
 		case "docker":
 			baseline, complete := systemUpdateDockerPortBaselineFromAgent(
 				observer,
@@ -2946,7 +3147,7 @@ func normalizeUpdaterPolicyWithDatabaseBindings(
 		target.HostID = strings.TrimSpace(target.HostID)
 		target.ServiceType = strings.TrimSpace(target.ServiceType)
 		target.DeploymentMode = strings.TrimSpace(target.DeploymentMode)
-		if target.DatabaseName != "" {
+		if target.DatabaseName != "" || target.LocalListenPort != 0 {
 			return UpdaterPolicy{}, ErrInvalidSettings
 		}
 		if !updaterPolicyIdentifierPattern.MatchString(target.TargetID) || targets[target.TargetID] ||
@@ -3017,6 +3218,12 @@ func normalizePullUpdaterPolicy(
 			(target.TargetID != "control-panel" ||
 				target.ServiceID != "control-panel" ||
 				target.DeploymentMode != "systemd") {
+			return UpdaterPolicy{}, ErrInvalidSettings
+		}
+		if target.LocalListenPort != 0 &&
+			(target.LocalListenPort < 1024 ||
+				target.LocalListenPort > 65535 ||
+				!updaterPolicyTargetAllowsExplicitLocalListener(*target)) {
 			return UpdaterPolicy{}, ErrInvalidSettings
 		}
 		switch {

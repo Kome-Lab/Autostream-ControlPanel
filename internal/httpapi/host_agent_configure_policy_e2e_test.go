@@ -44,9 +44,9 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 			ServiceType: "worker",
 			ServiceName: "Worker A",
 			Host:        "worker.example.com",
-			Port:        18081,
+			Port:        443,
 			SSLEnabled:  true,
-			PublicURL:   "https://worker.example.com:18081",
+			PublicURL:   "https://worker.example.com",
 			Version:     "v1.0.0",
 		},
 	)
@@ -88,11 +88,12 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 			PollIntervalSeconds:       15,
 			HeartbeatIntervalSeconds:  30,
 			Targets: []store.UpdaterPolicyTarget{{
-				TargetID:       worker.ServiceID,
-				ServiceID:      worker.ServiceID,
-				HostID:         "host-a",
-				ServiceType:    worker.ServiceType,
-				DeploymentMode: updateagent.ModeSystemd,
+				TargetID:        worker.ServiceID,
+				ServiceID:       worker.ServiceID,
+				HostID:          "host-a",
+				ServiceType:     worker.ServiceType,
+				DeploymentMode:  updateagent.ModeSystemd,
+				LocalListenPort: 18081,
 			}},
 		},
 	)
@@ -174,6 +175,13 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 		}) {
 		t.Fatalf("staged canonical policy = %#v", stagedPolicy)
 	}
+	if worker.AppliedEndpoint == nil ||
+		worker.AppliedEndpoint.Host != "worker.example.com" ||
+		worker.AppliedEndpoint.Port != 443 ||
+		!worker.AppliedEndpoint.SSLEnabled ||
+		worker.AppliedEndpoint.PublicURL != "https://worker.example.com" {
+		t.Fatalf("public endpoint was not preserved: %#v", worker.AppliedEndpoint)
+	}
 	stagedService, err := auth.GetService(t.Context(), "host-agent-a")
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +224,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 				AppliedConfigRevision: worker.AppliedConfigRevision,
 				AppliedConfigSHA256:   worker.AppliedConfigSHA256,
 				AppliedEndpointPort:   worker.AppliedEndpoint.Port,
+				LocalListenPort:       18081,
 			}},
 		},
 	)

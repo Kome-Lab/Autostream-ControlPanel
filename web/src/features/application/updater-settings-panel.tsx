@@ -27,6 +27,7 @@ import {
   firstUnusedUpdaterSettingsTarget,
   isUpdaterPolicyHostID,
   normalizeUpdaterSettingsTargetDatabaseName,
+  normalizeUpdaterSettingsTargetLocalListenPort,
   normalizePullUpdaterOwnershipActivationResponse,
   normalizePullUpdaterOwnershipDeactivationResponse,
   normalizeUpdaterSettingsResponse,
@@ -40,6 +41,7 @@ import {
   systemUpdateUpdaterPolicyState,
   updaterSettingsTargetOptions,
   updaterSettingsTargetRequiresDatabase,
+  updaterSettingsTargetRequiresLocalListenPort,
 } from "@/lib/system-updates";
 import type {
   PullUpdaterOwnershipActivationRequest,
@@ -501,7 +503,7 @@ function UpdaterSettingsForm({
   const nextTargetHostID = (hostOptions[0]?.value || "").trim();
   const canAddRegisteredTarget = Boolean(
     nextTargetHostID
-    && firstUnusedUpdaterSettingsTarget(availableTargets, form.targets, nextTargetHostID),
+    && firstUnusedUpdaterSettingsTarget(settings.transport_mode, availableTargets, form.targets, nextTargetHostID),
   );
 
   const saveSettings = useMutation({
@@ -847,7 +849,7 @@ function UpdaterSettingsForm({
                   : !canAddRegisteredTarget ? "追加できる未使用の登録サービスがありません。" : undefined}
                 onClick={() => setForm((current) => {
                   const hostID = String(pullMode ? executionHostID : current.hosts[0]?.host_id || "").trim();
-                  const target = firstUnusedUpdaterSettingsTarget(availableTargets, current.targets, hostID);
+                  const target = firstUnusedUpdaterSettingsTarget(settings.transport_mode, availableTargets, current.targets, hostID);
                   if (!hostID || !target) return current;
                   return { ...current, targets: [...current.targets, target] };
                 })}
@@ -930,6 +932,31 @@ function UpdaterSettingsForm({
                             placeholder={target.service_type === "control_panel"
                               ? "autostream_control_panel"
                               : "autostream_observability"}
+                          />
+                        </Field>
+                      </div>
+                    ) : null}
+                    {updaterSettingsTargetRequiresLocalListenPort(settings.transport_mode, target) ? (
+                      <div className="sm:col-span-2 lg:col-span-full">
+                        <Field
+                          label="ローカル待受ポート"
+                          htmlFor={`${formID}-target-${index}-local-listen-port`}
+                          hint="systemdサービスがこのホストの127.0.0.1で実際に待ち受けるポートです。Cloudflare Tunnelなどの公開HTTPSポート443とは分けて指定します。"
+                        >
+                          <Input
+                            id={`${formID}-target-${index}-local-listen-port`}
+                            type="number"
+                            min={1024}
+                            max={65535}
+                            value={target.local_listen_port ?? ""}
+                            onChange={(event) => updateTarget(index, {
+                              local_listen_port: event.target.value === ""
+                                ? undefined
+                                : Number(event.target.value),
+                            })}
+                            disabled={!canEdit}
+                            inputMode="numeric"
+                            placeholder={target.service_type === "observability" ? "8082" : "8084"}
                           />
                         </Field>
                       </div>
@@ -1195,6 +1222,12 @@ function normalizeTargetForSave(
     prefix,
   );
   if (databaseName) normalizedTarget.database_name = databaseName;
+  const localListenPort = normalizeUpdaterSettingsTargetLocalListenPort(
+    transportMode,
+    { ...normalizedTarget, local_listen_port: target.local_listen_port },
+    prefix,
+  );
+  if (localListenPort !== undefined) normalizedTarget.local_listen_port = localListenPort;
   return normalizedTarget;
 }
 
