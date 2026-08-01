@@ -465,6 +465,7 @@ function SystemUpdatesCard({
         {canRead && !isError && !isLoading ? (
           <UpdateAgentStatus
             updaters={updaters}
+            targets={targets}
             jobs={jobs}
             timezone={timezone}
             canEdit={canExecute}
@@ -549,12 +550,14 @@ function SystemUpdatesCard({
 
 function UpdateAgentStatus({
   updaters,
+  targets,
   jobs,
   timezone,
   canEdit,
   canManageSecrets,
 }: {
   updaters: SystemUpdateAgentStatus[];
+  targets: SystemUpdateTarget[];
   jobs: SystemUpdateJob[];
   timezone?: string;
   canEdit: boolean;
@@ -585,7 +588,7 @@ function UpdateAgentStatus({
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={policy.tone}>{policy.label}</Badge>
-                  <UpdaterSettingsPanel updater={updater} jobs={jobs} canEdit={canEdit} canManageSecrets={canManageSecrets} />
+                  <UpdaterSettingsPanel updater={updater} availableTargets={targets} jobs={jobs} canEdit={canEdit} canManageSecrets={canManageSecrets} />
                 </div>
               </div>
             );

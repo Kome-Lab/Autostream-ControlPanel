@@ -78,6 +78,233 @@ func TestNormalizedUpdaterPolicyRequestAllowsObserveOnlyEpochZero(t *testing.T) 
 	}
 }
 
+func TestNormalizedUpdaterPolicyRequestRejectsUnownedPullAgentOutsideInitialPendingBootstrap(t *testing.T) {
+	t.Parallel()
+
+	base := store.RegisteredService{
+		ServiceID:       "host-agent-unowned",
+		ServiceType:     "update_agent",
+		TransportMode:   store.SystemUpdateTransportPullV2,
+		ExecutionHostID: "host-a",
+		OwnershipEpoch:  0,
+	}
+	for name, agent := range map[string]store.RegisteredService{
+		"registered without observer report": func() store.RegisteredService {
+			candidate := base
+			candidate.Status = "registered"
+			return candidate
+		}(),
+		"pending after a capability report": func() store.RegisteredService {
+			candidate := base
+			candidate.Status = "pending"
+			candidate.ReportedCapabilities = map[string]any{"agent_protocol_version": 2}
+			return candidate
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := normalizedUpdaterPolicyRequest(agent, updaterPolicyUpdateRequest{
+				PollIntervalSeconds:      15,
+				HeartbeatIntervalSeconds: 30,
+				Targets: []updaterPolicyTargetRequest{{
+					TargetID:       "worker-a",
+					ServiceID:      "worker-a",
+					ServiceType:    "worker",
+					DeploymentMode: "systemd",
+				}},
+			})
+			if !errors.Is(err, store.ErrInvalidSettings) {
+				t.Fatalf("unowned pull agent policy error = %v, want ErrInvalidSettings", err)
+			}
+		})
+	}
+}
+
+func TestNewEndpointlessPullNodeInitialPolicyPreservesExecutionHostOwnership(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	for _, testCase := range []struct {
+		name               string
+		legacySSHOwnership bool
+		pullOwnerID        string
+	}{
+		{name: "unassigned execution host"},
+		{name: "legacy SSH-owned execution host", legacySSHOwnership: true},
+		{name: "same service already owns pull host", pullOwnerID: "host-agent-bootstrap"},
+		{name: "another service owns pull host", pullOwnerID: "other-host-agent"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(
+				store.User{Username: "pull-bootstrap-admin", Roles: []string{"super_admin"}},
+				"correct horse battery",
+				[]string{"api_tokens.create", "secrets.update", "system_updates.execute"},
+			); err != nil {
+				t.Fatal(err)
+			}
+			policies := store.NewMemoryUpdaterPolicyStore()
+			updates := store.NewMemorySystemUpdateStore()
+			if testCase.legacySSHOwnership {
+				if _, err := updates.SwitchSystemUpdateExecutionHost(
+					t.Context(),
+					"host-bootstrap",
+					0,
+					store.SystemUpdateTransportSSHV1,
+					"legacy-updater",
+					7,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase.pullOwnerID != "" {
+				if _, err := updates.SwitchSystemUpdateExecutionHost(
+					t.Context(),
+					"host-bootstrap",
+					0,
+					store.SystemUpdateTransportPullV2,
+					testCase.pullOwnerID,
+					0,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ownershipBefore, err := updates.GetSystemUpdateExecutionHost(
+				t.Context(),
+				"host-bootstrap",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := NewServer(
+				store.NewMemoryStreamStore(),
+				WithAuthStore(auth),
+				WithAuditStore(auth),
+				WithServiceRegistryStore(auth),
+				WithUpdaterPolicyStore(policies),
+				WithSystemUpdateStore(updates),
+			)
+			cookie, csrf := loginForTest(
+				t,
+				handler,
+				"pull-bootstrap-admin",
+				"correct horse battery",
+			)
+
+			createRequest := httptest.NewRequest(
+				http.MethodPost,
+				"/nodes/registration-tokens",
+				strings.NewReader(`{
+					"node_type":"update_agent",
+					"node_id":"host-agent-bootstrap",
+					"name":"Host Agent Bootstrap",
+					"transport_mode":"pull_v2",
+					"execution_host_id":"host-bootstrap"
+				}`),
+			)
+			createRequest.AddCookie(cookie)
+			createRequest.Header.Set("X-CSRF-Token", csrf)
+			createResponse := httptest.NewRecorder()
+			handler.ServeHTTP(createResponse, createRequest)
+			if createResponse.Code != http.StatusCreated {
+				t.Fatalf(
+					"create endpointless pull node = %d %s",
+					createResponse.Code,
+					createResponse.Body.String(),
+				)
+			}
+			pending, err := auth.GetService(t.Context(), "host-agent-bootstrap")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pending.Status != "pending" ||
+				pending.TransportMode != store.SystemUpdateTransportPullV2 ||
+				pending.ExecutionHostID != "host-bootstrap" ||
+				pending.OwnershipEpoch != 0 ||
+				len(pending.ReportedCapabilities) != 0 ||
+				pending.LastReportedAt != nil {
+				t.Fatalf("new endpointless pull node = %#v", pending)
+			}
+
+			policyPayload, err := json.Marshal(map[string]any{
+				"expected_revision":          0,
+				"poll_interval_seconds":      15,
+				"heartbeat_interval_seconds": 30,
+				"targets": []map[string]any{{
+					"target_id":       "control-panel",
+					"service_id":      "control-panel",
+					"service_type":    "control_panel",
+					"deployment_mode": "systemd",
+					"database_name":   "autostream-kometubu_panel",
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			policyRequest := httptest.NewRequest(
+				http.MethodPut,
+				"/system-updates/updaters/host-agent-bootstrap/settings",
+				bytes.NewReader(policyPayload),
+			)
+			policyRequest.AddCookie(cookie)
+			policyRequest.Header.Set("X-CSRF-Token", csrf)
+			policyResponse := httptest.NewRecorder()
+			handler.ServeHTTP(policyResponse, policyRequest)
+			wantStatus := http.StatusOK
+			if testCase.pullOwnerID != "" {
+				wantStatus = http.StatusConflict
+			}
+			if policyResponse.Code != wantStatus {
+				t.Fatalf(
+					"save initial pull policy before configure = %d %s; want %d",
+					policyResponse.Code,
+					policyResponse.Body.String(),
+					wantStatus,
+				)
+			}
+
+			ownershipAfter, err := updates.GetSystemUpdateExecutionHost(
+				t.Context(),
+				"host-bootstrap",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ownershipAfter != ownershipBefore {
+				t.Fatalf(
+					"initial policy save changed execution-host ownership: before=%#v after=%#v",
+					ownershipBefore,
+					ownershipAfter,
+				)
+			}
+			if testCase.pullOwnerID != "" {
+				if !strings.Contains(
+					policyResponse.Body.String(),
+					`"code":"system_update_ownership_conflict"`,
+				) {
+					t.Fatalf("active pull ownership error = %s", policyResponse.Body.String())
+				}
+				if _, err := policies.GetUpdaterPolicy(
+					t.Context(),
+					"host-agent-bootstrap",
+				); !errors.Is(err, store.ErrNotFound) {
+					t.Fatalf("rejected initial pull policy was persisted: %v", err)
+				}
+				return
+			}
+			stored, err := policies.GetUpdaterPolicy(t.Context(), "host-agent-bootstrap")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Revision != 1 ||
+				stored.TransportMode != store.SystemUpdateTransportPullV2 ||
+				stored.ExecutionHostID != "host-bootstrap" ||
+				len(stored.Targets) != 1 ||
+				stored.Targets[0].HostID != "host-bootstrap" ||
+				stored.Targets[0].DatabaseName != "autostream-kometubu_panel" {
+				t.Fatalf("initial pull policy = %#v", stored)
+			}
+		})
+	}
+}
+
 func TestNormalizedUpdaterPolicyRequestRejectsPullSSHAndLongLivedReleaseToken(t *testing.T) {
 	t.Parallel()
 

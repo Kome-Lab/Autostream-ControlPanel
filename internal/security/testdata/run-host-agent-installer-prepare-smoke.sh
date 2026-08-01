@@ -348,8 +348,10 @@ case "${1:-}" in
       [[ " $* " == *" --quiet "* ]] || printf '%s\n' active
       exit 0
     fi
+    # A real systemd host can report an unloaded unit as stdout "inactive"
+    # with exit status 4. Keep that exact pair in the root smoke fixture.
     [[ " $* " == *" --quiet "* ]] || printf '%s\n' inactive
-    exit 3
+    exit 4
     ;;
   is-enabled)
     if [[ ${unit} == autostream-host-self-update-recovery@?.timer ]]; then

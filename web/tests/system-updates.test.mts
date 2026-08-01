@@ -10,6 +10,7 @@ import {
 import {
   acquireSystemUpdateTargetRequestLock,
   activeUpdaterHostBootstrapStatus,
+  applyUpdaterSettingsTargetSelection,
   applyUpdaterSettingsTargetPatch,
   compareSystemUpdateVersions,
   isSystemUpdateEndpointRevisionConflict,
@@ -19,6 +20,7 @@ import {
   isUpdaterHostBootstrapBulkCandidate,
   isUpdaterHostBootstrapJobActive,
   isUpdaterPolicyHostID,
+  firstUnusedUpdaterSettingsTarget,
   normalizeUpdaterHostBootstrapJobsResponse,
   normalizeUpdaterSettingsResponse,
   normalizeSystemUpdatesResponse,
@@ -57,6 +59,7 @@ import {
   systemUpdateTargetOperationEligibility,
   systemUpdateTargetBlockedReason,
   updaterSettingsTargetRequiresDatabase,
+  updaterSettingsTargetOptions,
   SystemUpdateRequestAmbiguousError,
   updaterHostBootstrapConfirmationContext,
   updaterHostBootstrapEligibility,
@@ -1555,6 +1558,130 @@ test("changing a database owner target identity clears the previous database nam
   );
 });
 
+test("updater settings target options use registered supported services and preserve the current stale ID", () => {
+  const registeredTargets: SystemUpdateTarget[] = [
+    baseTarget,
+    {
+      ...baseTarget,
+      target_id: "control-panel",
+      target_type: "control_panel",
+      name: "Control Panel",
+    },
+    {
+      ...baseTarget,
+      target_id: "updater-main",
+      target_type: "update_agent",
+      name: "Host Agent",
+    },
+    {
+      ...baseTarget,
+      target_id: "future-main",
+      target_type: "future_service",
+      name: "Future Service",
+    },
+  ];
+  const configuredTargets: UpdaterSettingsTarget[] = [
+    {
+      target_id: "worker-main",
+      service_id: "worker-main",
+      host_id: "host-main",
+      service_type: "worker",
+      deployment_mode: "systemd",
+    },
+    {
+      target_id: "stale-observer",
+      service_id: "stale-observer",
+      host_id: "host-main",
+      service_type: "observability",
+      deployment_mode: "systemd",
+    },
+  ];
+
+  const staleOptions = updaterSettingsTargetOptions(registeredTargets, configuredTargets, 1);
+  assert.deepEqual(staleOptions.map((option) => option.value), ["control-panel", "stale-observer"]);
+  assert.match(staleOptions[0]?.label || "", /Control Panel.*control-panel/);
+  assert.equal(staleOptions[1]?.current, true);
+  assert.equal(staleOptions[1]?.stale, true);
+  assert.match(staleOptions[1]?.label || "", /現在の設定/);
+
+  const currentOptions = updaterSettingsTargetOptions(registeredTargets, configuredTargets, 0);
+  const currentWorker = currentOptions.find((option) => option.value === "worker-main");
+  assert.equal(currentWorker?.current, true);
+  assert.equal(currentWorker?.stale, false);
+  assert.match(currentWorker?.label || "", /Main Worker.*worker-main.*現在の設定/);
+  assert.equal(currentOptions.some((option) => option.value === "updater-main"), false);
+  assert.equal(currentOptions.some((option) => option.value === "future-main"), false);
+});
+
+test("first unused updater settings target skips duplicates and supports the synthetic control-panel target", () => {
+  const registeredTargets: SystemUpdateTarget[] = [
+    baseTarget,
+    {
+      ...baseTarget,
+      target_id: "control-panel",
+      target_type: "control_panel",
+      name: "Control Panel",
+    },
+    {
+      ...baseTarget,
+      target_id: "updater-main",
+      target_type: "update_agent",
+      name: "Host Agent",
+    },
+  ];
+  const worker: UpdaterSettingsTarget = {
+    target_id: "worker-main",
+    service_id: "worker-main",
+    host_id: "host-main",
+    service_type: "worker",
+    deployment_mode: "systemd",
+  };
+
+  assert.deepEqual(firstUnusedUpdaterSettingsTarget(registeredTargets, [worker], "host-selected"), {
+    target_id: "control-panel",
+    service_id: "control-panel",
+    host_id: "host-selected",
+    service_type: "control_panel",
+    deployment_mode: "systemd",
+  });
+  assert.equal(firstUnusedUpdaterSettingsTarget(registeredTargets, [
+    worker,
+    {
+      target_id: "control-panel",
+      service_id: "control-panel",
+      host_id: "host-main",
+      service_type: "control_panel",
+      deployment_mode: "systemd",
+    },
+  ], "host-selected"), undefined);
+});
+
+test("selecting an updater settings target synchronizes both IDs and its derived service type", () => {
+  const current: UpdaterSettingsTarget = {
+    target_id: "control-panel",
+    service_id: "control-panel",
+    host_id: "host-main",
+    service_type: "control_panel",
+    deployment_mode: "systemd",
+    database_name: "autostream_control_panel",
+  };
+
+  assert.deepEqual(applyUpdaterSettingsTargetSelection("pull_v2", current, {
+    target_id: "worker-main",
+    target_type: "worker",
+  }), {
+    target_id: "worker-main",
+    service_id: "worker-main",
+    host_id: "host-main",
+    service_type: "worker",
+    deployment_mode: "systemd",
+  });
+  assert.equal(applyUpdaterSettingsTargetSelection("pull_v2", current, {
+    target_id: "control-panel",
+    target_type: "control_panel",
+  }).database_name, "autostream_control_panel");
+});
+
 test("system update response exposes only the updater bootstrap encryption public key metadata", () => {
   const response = normalizeSystemUpdatesResponse({
     updaters: [{
@@ -1945,6 +2072,7 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.doesNotMatch(applicationSource, /disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100/);
   assert.match(buttonSource, /default: "bg-primary text-primary-foreground hover:bg-primary\/90 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"/);
   assert.match(applicationSource, /canEdit=\{canExecute\}/);
+  assert.match(applicationSource, /availableTargets=\{targets\}/);
   assert.match(applicationSource, /希望endpoint（未適用を含む）/);
   assert.match(applicationSource, /現在適用中のendpoint/);
   assert.match(applicationSource, /Node報告endpoint/);
@@ -2016,6 +2144,11 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /ユーザー名・パスワード・DSNは入力しません/);
   assert.match(settingsSource, /updaterSettingsTargetRequiresDatabase\(settings\.transport_mode, target\)/);
   assert.match(settingsSource, /applyUpdaterSettingsTargetPatch\(/);
+  assert.match(settingsSource, /updaterSettingsTargetOptions\(availableTargets, form\.targets, index\)/);
+  assert.match(settingsSource, /firstUnusedUpdaterSettingsTarget\(availableTargets, current\.targets, hostID\)/);
+  assert.match(settingsSource, /applyUpdaterSettingsTargetSelection\(settings\.transport_mode, target/);
+  assert.match(settingsSource, /label="サービス種別（自動）"[\s\S]*?readOnly/);
+  assert.doesNotMatch(settingsSource, /onChange=\{\(event\) => updateTarget\(index, \{ target_id:/);
   assert.match(settingsSource, /normalizeUpdaterSettingsTargetDatabaseName\(/);
   assert.match(settingsSource, /maxLength=\{64\}/);
   assert.match(settingsSource, /Host Agentのconfigureを再実行すると反映されます/);

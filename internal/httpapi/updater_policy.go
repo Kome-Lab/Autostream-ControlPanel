@@ -258,14 +258,25 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "system_update_execution_host_store_unavailable"})
 			return
 		}
+		pendingInitialPolicy := systemUpdateAgentPendingInitialPullPolicy(agent)
 		expectedOwnershipEpoch := agent.OwnershipEpoch
-		if agent.OwnershipEpoch == 0 && systemUpdateAgentObserveOnly(agent) {
+		if agent.OwnershipEpoch == 0 &&
+			(systemUpdateAgentObserveOnly(agent) ||
+				pendingInitialPolicy) {
 			currentOwnership, ownershipErr := executionHosts.GetSystemUpdateExecutionHost(
 				r.Context(),
 				agent.ExecutionHostID,
 			)
 			if ownershipErr != nil {
 				writeUpdaterPolicySaveError(w, ownershipErr)
+				return
+			}
+			if pendingInitialPolicy &&
+				currentOwnership.TransportMode != store.SystemUpdateTransportSSHV1 {
+				writeUpdaterPolicySaveError(
+					w,
+					store.ErrSystemUpdateAgentBindingMismatch,
+				)
 				return
 			}
 			expectedOwnershipEpoch = currentOwnership.OwnershipEpoch
@@ -618,7 +629,9 @@ func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterP
 	}
 	if transportMode == store.SystemUpdateTransportPullV2 {
 		if strings.TrimSpace(agent.ExecutionHostID) == "" ||
-			(agent.OwnershipEpoch < 1 && !systemUpdateAgentObserveOnly(agent)) ||
+			(agent.OwnershipEpoch < 1 &&
+				!systemUpdateAgentObserveOnly(agent) &&
+				!systemUpdateAgentPendingInitialPullPolicy(agent)) ||
 			body.GitHubToken != nil {
 			return store.UpdaterPolicy{}, store.ErrInvalidSettings
 		}
@@ -691,6 +704,16 @@ func normalizedUpdaterPolicyTargets(
 func systemUpdateAgentObserveOnly(agent store.RegisteredService) bool {
 	return capabilityBool(agent.Capabilities["observe_only"]) ||
 		capabilityBool(agent.ReportedCapabilities["observe_only"])
+}
+
+func systemUpdateAgentPendingInitialPullPolicy(agent store.RegisteredService) bool {
+	return systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportPullV2 &&
+		strings.TrimSpace(agent.ExecutionHostID) != "" &&
+		agent.OwnershipEpoch == 0 &&
+		strings.TrimSpace(agent.Status) == "pending" &&
+		agent.LastHeartbeatAt == nil &&
+		agent.LastReportedAt == nil &&
+		len(agent.ReportedCapabilities) == 0
 }
 
 func parseUpdaterED25519PublicKey(raw string) (ssh.PublicKey, error) {

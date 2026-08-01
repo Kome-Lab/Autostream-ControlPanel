@@ -637,7 +637,7 @@ unit_active_state() {
   fi
   case "${status}:${state}" in
     0:active) printf '%s\n' active ;;
-    3:inactive|4:unknown) printf '%s\n' inactive ;;
+    3:inactive|4:inactive|4:unknown) printf '%s\n' inactive ;;
     *) die "could not establish a stable active state for ${unit}" ;;
   esac
 }

@@ -22,7 +22,9 @@ import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-b
 import { useUpdaterSettings } from "@/features/queries";
 import { apiPost, apiPut } from "@/lib/api/client";
 import {
+  applyUpdaterSettingsTargetSelection,
   applyUpdaterSettingsTargetPatch,
+  firstUnusedUpdaterSettingsTarget,
   isUpdaterPolicyHostID,
   normalizeUpdaterSettingsTargetDatabaseName,
   normalizePullUpdaterOwnershipActivationResponse,
@@ -36,6 +38,7 @@ import {
   systemUpdateErrorMessage,
   systemUpdatePolicyErrorMessage,
   systemUpdateUpdaterPolicyState,
+  updaterSettingsTargetOptions,
   updaterSettingsTargetRequiresDatabase,
 } from "@/lib/system-updates";
 import type {
@@ -45,6 +48,7 @@ import type {
   PullUpdaterOwnershipDeactivationResponse,
   SystemUpdateAgentStatus,
   SystemUpdateJob,
+  SystemUpdateTarget,
   UpdaterSettings,
   UpdaterSettingsHost,
   UpdaterSettingsTarget,
@@ -53,6 +57,7 @@ import type {
 
 type UpdaterSettingsPanelProps = {
   updater: SystemUpdateAgentStatus;
+  availableTargets: SystemUpdateTarget[];
   jobs: SystemUpdateJob[];
   canEdit: boolean;
   canManageSecrets: boolean;
@@ -85,7 +90,7 @@ const deploymentModes = [
   { value: "docker", label: "Docker" },
 ] as const;
 
-export function UpdaterSettingsPanel({ updater, jobs, canEdit, canManageSecrets }: UpdaterSettingsPanelProps) {
+export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit, canManageSecrets }: UpdaterSettingsPanelProps) {
   const [open, setOpen] = useState(false);
   const [bootstrapCloseBlocked, setBootstrapCloseBlocked] = useState(false);
   const [ambiguousOwnershipRequest, setAmbiguousOwnershipRequest] = useState<PullUpdaterOwnershipActivationRequest | null>(null);
@@ -445,11 +450,12 @@ export function UpdaterSettingsPanel({ updater, jobs, canEdit, canManageSecrets 
           <UpdaterSettingsForm
             key={`${settingsData.updater_id}:${settingsData.transport_mode}`}
             updater={updater}
+            availableTargets={availableTargets}
             settings={settingsData}
-             canEdit={canEdit}
-             canManageSecrets={canManageSecrets}
-             ownershipOperationBlocked={ownershipMutationPending || ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous"}
-             onBootstrapCloseBlockedChange={setBootstrapCloseBlocked}
+            canEdit={canEdit}
+            canManageSecrets={canManageSecrets}
+            ownershipOperationBlocked={ownershipMutationPending || ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous"}
+            onBootstrapCloseBlockedChange={setBootstrapCloseBlocked}
           />
         ) : null}
       </DialogContent>
@@ -459,6 +465,7 @@ export function UpdaterSettingsPanel({ updater, jobs, canEdit, canManageSecrets 
 
 function UpdaterSettingsForm({
   updater,
+  availableTargets,
   settings,
   canEdit,
   canManageSecrets,
@@ -466,6 +473,7 @@ function UpdaterSettingsForm({
   onBootstrapCloseBlockedChange,
 }: {
   updater: SystemUpdateAgentStatus;
+  availableTargets: SystemUpdateTarget[];
   settings: UpdaterSettings;
   canEdit: boolean;
   canManageSecrets: boolean;
@@ -490,6 +498,11 @@ function UpdaterSettingsForm({
       value: host.host_id,
       label: host.name || host.host_id || "ID未入力",
     })), [executionHostID, form.hosts, pullMode]);
+  const nextTargetHostID = (hostOptions[0]?.value || "").trim();
+  const canAddRegisteredTarget = Boolean(
+    nextTargetHostID
+    && firstUnusedUpdaterSettingsTarget(availableTargets, form.targets, nextTargetHostID),
+  );
 
   const saveSettings = useMutation({
     mutationFn: async () => {
@@ -558,6 +571,18 @@ function UpdaterSettingsForm({
       ...current,
       targets: current.targets.map((target, targetIndex) => targetIndex === index
         ? applyUpdaterSettingsTargetPatch(settings.transport_mode, target, patch)
+        : target),
+    }));
+  };
+
+  const selectTarget = (index: number, targetID: string, serviceType: string) => {
+    setForm((current) => ({
+      ...current,
+      targets: current.targets.map((target, targetIndex) => targetIndex === index
+        ? applyUpdaterSettingsTargetSelection(settings.transport_mode, target, {
+          target_id: targetID,
+          target_type: serviceType,
+        })
         : target),
     }));
   };
@@ -816,8 +841,16 @@ function UpdaterSettingsForm({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={hostOptions.length === 0}
-                onClick={() => setForm((current) => ({ ...current, targets: [...current.targets, newTarget(current.targets.length, hostOptions[0]?.value || "")] }))}
+                disabled={!canAddRegisteredTarget}
+                title={!nextTargetHostID
+                  ? "先にホストを設定してください。"
+                  : !canAddRegisteredTarget ? "追加できる未使用の登録サービスがありません。" : undefined}
+                onClick={() => setForm((current) => {
+                  const hostID = String(pullMode ? executionHostID : current.hosts[0]?.host_id || "").trim();
+                  const target = firstUnusedUpdaterSettingsTarget(availableTargets, current.targets, hostID);
+                  if (!hostID || !target) return current;
+                  return { ...current, targets: [...current.targets, target] };
+                })}
               >
                 <Plus className="size-4" />
                 サービスを追加
@@ -829,70 +862,81 @@ function UpdaterSettingsForm({
             <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">更新対象サービスはまだありません。</div>
           ) : (
             <div className="space-y-3">
-              {form.targets.map((target, index) => (
-                <div key={index} className="grid gap-3 rounded-md border p-4 sm:grid-cols-2 lg:grid-cols-[1.2fr_1fr_1fr_1fr_auto] lg:items-end">
-                  <Field label="NodeサービスID" htmlFor={`${formID}-target-${index}-id`}>
-                    <Input
-                      id={`${formID}-target-${index}-id`}
-                      value={target.service_id || target.target_id}
-                      onChange={(event) => updateTarget(index, { target_id: event.target.value, service_id: event.target.value })}
-                      disabled={!canEdit}
-                      placeholder="worker-main"
-                    />
-                  </Field>
-                  <Field label={pullMode ? "実行ホスト（サーバー管理）" : "ホスト"} htmlFor={`${formID}-target-${index}-host`}>
-                    <Select value={target.host_id || executionHostID} onValueChange={(value) => updateTarget(index, { host_id: value })} disabled={pullMode || !canEdit || hostOptions.length === 0}>
-                      <SelectTrigger id={`${formID}-target-${index}-host`}><SelectValue placeholder="ホストを選択" /></SelectTrigger>
-                      <SelectContent>
-                        {hostOptions.map((host) => <SelectItem key={host.value} value={host.value}>{host.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="サービス種別" htmlFor={`${formID}-target-${index}-service`}>
-                    <Select value={target.service_type || "worker"} onValueChange={(value) => updateTarget(index, { service_type: value })} disabled={!canEdit}>
-                      <SelectTrigger id={`${formID}-target-${index}-service`}><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {selectOptionsWithCurrent(serviceTypes, target.service_type).map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="配備方式" htmlFor={`${formID}-target-${index}-mode`}>
-                    <Select value={target.deployment_mode || "systemd"} onValueChange={(value) => updateTarget(index, { deployment_mode: value })} disabled={!canEdit}>
-                      <SelectTrigger id={`${formID}-target-${index}-mode`}><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {selectOptionsWithCurrent(deploymentModes, target.deployment_mode).map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  {canEdit ? (
-                    <Button type="button" variant="ghost" size="icon-sm" onClick={() => setForm((current) => ({ ...current, targets: current.targets.filter((_, targetIndex) => targetIndex !== index) }))} aria-label={`サービス ${index + 1} を削除`}>
-                      <Trash2 className="size-4" />
-                    </Button>
-                  ) : null}
-                  {updaterSettingsTargetRequiresDatabase(settings.transport_mode, target) ? (
-                    <div className="sm:col-span-2 lg:col-span-full">
-                      <Field
-                        label="MariaDBデータベース名"
-                        htmlFor={`${formID}-target-${index}-database-name`}
-                        hint="このサービスが実際に使用しているデータベース名です。ユーザー名・パスワード・DSNは入力しません。"
+              {form.targets.map((target, index) => {
+                const targetOptions = updaterSettingsTargetOptions(availableTargets, form.targets, index);
+                const selectedTargetID = String(target.service_id || target.target_id || "").trim();
+                return (
+                  <div key={index} className="grid gap-3 rounded-md border p-4 sm:grid-cols-2 lg:grid-cols-[1.2fr_1fr_1fr_1fr_auto] lg:items-end">
+                    <Field label="NodeサービスID" htmlFor={`${formID}-target-${index}-id`}>
+                      <Select
+                        value={selectedTargetID}
+                        onValueChange={(value) => {
+                          const selected = targetOptions.find((option) => option.value === value);
+                          if (!selected || selected.stale) return;
+                          selectTarget(index, selected.value, selected.serviceType);
+                        }}
+                        disabled={!canEdit || !targetOptions.some((option) => !option.stale)}
                       >
-                        <Input
-                          id={`${formID}-target-${index}-database-name`}
-                          value={target.database_name || ""}
-                          onChange={(event) => updateTarget(index, { database_name: event.target.value })}
-                          disabled={!canEdit}
-                          maxLength={64}
-                          spellCheck={false}
-                          autoCapitalize="none"
-                          placeholder={target.service_type === "control_panel"
-                            ? "autostream_control_panel"
-                            : "autostream_observability"}
-                        />
-                      </Field>
-                    </div>
-                  ) : null}
-                </div>
-              ))}
+                        <SelectTrigger id={`${formID}-target-${index}-id`}><SelectValue placeholder="登録サービスを選択" /></SelectTrigger>
+                        <SelectContent>
+                          {targetOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label={pullMode ? "実行ホスト（サーバー管理）" : "ホスト"} htmlFor={`${formID}-target-${index}-host`}>
+                      <Select value={target.host_id || executionHostID} onValueChange={(value) => updateTarget(index, { host_id: value })} disabled={pullMode || !canEdit || hostOptions.length === 0}>
+                        <SelectTrigger id={`${formID}-target-${index}-host`}><SelectValue placeholder="ホストを選択" /></SelectTrigger>
+                        <SelectContent>
+                          {hostOptions.map((host) => <SelectItem key={host.value} value={host.value}>{host.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="サービス種別（自動）" htmlFor={`${formID}-target-${index}-service`}>
+                      <Input
+                        id={`${formID}-target-${index}-service`}
+                        value={serviceTypeLabel(target.service_type)}
+                        readOnly
+                        aria-readonly="true"
+                      />
+                    </Field>
+                    <Field label="配備方式" htmlFor={`${formID}-target-${index}-mode`}>
+                      <Select value={target.deployment_mode || "systemd"} onValueChange={(value) => updateTarget(index, { deployment_mode: value })} disabled={!canEdit}>
+                        <SelectTrigger id={`${formID}-target-${index}-mode`}><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {selectOptionsWithCurrent(deploymentModes, target.deployment_mode).map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    {canEdit ? (
+                      <Button type="button" variant="ghost" size="icon-sm" onClick={() => setForm((current) => ({ ...current, targets: current.targets.filter((_, targetIndex) => targetIndex !== index) }))} aria-label={`サービス ${index + 1} を削除`}>
+                        <Trash2 className="size-4" />
+                      </Button>
+                    ) : null}
+                    {updaterSettingsTargetRequiresDatabase(settings.transport_mode, target) ? (
+                      <div className="sm:col-span-2 lg:col-span-full">
+                        <Field
+                          label="MariaDBデータベース名"
+                          htmlFor={`${formID}-target-${index}-database-name`}
+                          hint="このサービスが実際に使用しているデータベース名です。ユーザー名・パスワード・DSNは入力しません。"
+                        >
+                          <Input
+                            id={`${formID}-target-${index}-database-name`}
+                            value={target.database_name || ""}
+                            onChange={(event) => updateTarget(index, { database_name: event.target.value })}
+                            disabled={!canEdit}
+                            maxLength={64}
+                            spellCheck={false}
+                            autoCapitalize="none"
+                            placeholder={target.service_type === "control_panel"
+                              ? "autostream_control_panel"
+                              : "autostream_observability"}
+                          />
+                        </Field>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>
@@ -1196,14 +1240,8 @@ function newHost(index: number): UpdaterSettingsHost {
   };
 }
 
-function newTarget(index: number, hostID: string): UpdaterSettingsTarget {
-  return {
-    target_id: `target-${index + 1}`,
-    service_id: `target-${index + 1}`,
-    host_id: hostID,
-    service_type: "worker",
-    deployment_mode: "systemd",
-  };
+function serviceTypeLabel(value: string) {
+  return serviceTypes.find((option) => option.value === value)?.label || value || "未設定";
 }
 
 function selectOptionsWithCurrent(

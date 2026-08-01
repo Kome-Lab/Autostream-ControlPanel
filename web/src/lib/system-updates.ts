@@ -76,7 +76,7 @@ const terminalBootstrapHostStatuses = new Set([
   "failed",
 ]);
 
-const standardBootstrapServiceTypes = new Set([
+const supportedUpdaterServiceTypes = new Set([
   "control_panel",
   "encoder_recorder",
   "observability",
@@ -141,6 +141,105 @@ export function applyUpdaterSettingsTargetPatch(
     delete nextTarget.database_name;
   }
   return nextTarget;
+}
+
+export type UpdaterSettingsTargetOption = {
+  value: string;
+  label: string;
+  serviceType: string;
+  current: boolean;
+  stale: boolean;
+};
+
+export function updaterSettingsTargetOptions(
+  availableTargets: SystemUpdateTarget[],
+  configuredTargets: UpdaterSettingsTarget[],
+  currentIndex: number,
+): UpdaterSettingsTargetOption[] {
+  const currentTarget = configuredTargets[currentIndex];
+  const currentID = updaterSettingsTargetID(currentTarget);
+  const usedByOtherTargets = new Set<string>();
+  configuredTargets.forEach((target, index) => {
+    if (index === currentIndex) return;
+    updaterSettingsTargetIDs(target).forEach((targetID) => usedByOtherTargets.add(targetID));
+  });
+
+  const options = selectableUpdaterSettingsTargets(availableTargets)
+    .filter((target) => target.target_id === currentID || !usedByOtherTargets.has(target.target_id))
+    .map((target): UpdaterSettingsTargetOption => {
+      const current = target.target_id === currentID;
+      const name = target.name.trim() || target.target_id;
+      return {
+        value: target.target_id,
+        label: `${name}（${target.target_id}）${current ? "（現在の設定）" : ""}`,
+        serviceType: target.target_type,
+        current,
+        stale: false,
+      };
+    });
+
+  if (currentID && !options.some((option) => option.value === currentID)) {
+    options.push({
+      value: currentID,
+      label: `現在の設定（登録対象に未検出）: ${currentID}`,
+      serviceType: currentTarget?.service_type.trim() || "",
+      current: true,
+      stale: true,
+    });
+  }
+  return options;
+}
+
+export function firstUnusedUpdaterSettingsTarget(
+  availableTargets: SystemUpdateTarget[],
+  configuredTargets: UpdaterSettingsTarget[],
+  hostID: string,
+): UpdaterSettingsTarget | undefined {
+  const usedTargetIDs = new Set(configuredTargets.flatMap(updaterSettingsTargetIDs));
+  const candidate = selectableUpdaterSettingsTargets(availableTargets)
+    .find((target) => !usedTargetIDs.has(target.target_id));
+  if (!candidate) return undefined;
+  return {
+    target_id: candidate.target_id,
+    service_id: candidate.target_id,
+    host_id: hostID,
+    service_type: candidate.target_type,
+    deployment_mode: "systemd",
+  };
+}
+
+export function applyUpdaterSettingsTargetSelection(
+  transportMode: UpdaterSettings["transport_mode"],
+  target: UpdaterSettingsTarget,
+  selectedTarget: Pick<SystemUpdateTarget, "target_id" | "target_type">,
+) {
+  const targetID = selectedTarget.target_id.trim();
+  const serviceType = selectedTarget.target_type.trim();
+  if (!targetID || !supportedUpdaterServiceTypes.has(serviceType)) return target;
+  return applyUpdaterSettingsTargetPatch(transportMode, target, {
+    target_id: targetID,
+    service_id: targetID,
+    service_type: serviceType,
+  });
+}
+
+function selectableUpdaterSettingsTargets(availableTargets: SystemUpdateTarget[]) {
+  const seenTargetIDs = new Set<string>();
+  return availableTargets.flatMap((target) => {
+    const targetID = target.target_id.trim();
+    const targetType = target.target_type.trim();
+    if (!targetID || !supportedUpdaterServiceTypes.has(targetType) || seenTargetIDs.has(targetID)) return [];
+    seenTargetIDs.add(targetID);
+    return [{ ...target, target_id: targetID, target_type: targetType }];
+  });
+}
+
+function updaterSettingsTargetID(target?: Pick<UpdaterSettingsTarget, "target_id" | "service_id">) {
+  return String(target?.service_id || target?.target_id || "").trim();
+}
+
+function updaterSettingsTargetIDs(target: Pick<UpdaterSettingsTarget, "target_id" | "service_id">) {
+  return [...new Set([target.target_id.trim(), target.service_id.trim()].filter(Boolean))];
 }
 
 export function isSystemUpdateJobActive(status?: string) {
@@ -1684,7 +1783,7 @@ function updaterHostBootstrapProfileSupported(hostID: string, targets: UpdaterSe
   const selected = targets.filter((target) => target.host_id.trim() === hostID.trim());
   return selected.length > 0 && selected.every((target) => (
     target.deployment_mode.trim() === "systemd"
-    && standardBootstrapServiceTypes.has(target.service_type.trim())
+    && supportedUpdaterServiceTypes.has(target.service_type.trim())
   ));
 }
 
