@@ -376,8 +376,11 @@ attestation storage, and cryptographically verifies it against Sigstore's
 public-good TUF trust root. Verification requires the Fulcio certificate,
 signed-certificate timestamp, transparency-log proof, observer timestamp,
 artifact digest, exact repository and release-workflow identity, tag ref,
-source commit, `push` event, GitHub-hosted runner, and matching SLSA v1
-statement. A missing or mismatched attestation fails before extraction or SSH.
+ source commit, `push` event, GitHub-hosted attestation-issuing publication
+ runner, and matching SLSA v1 statement. The artifact compilation and packaging
+ job is the separately trusted Blacksmith build boundary; this runner claim does
+ not prove that compilation was GitHub-hosted. A missing or mismatched
+ attestation fails before extraction or SSH.
 Release promotion should additionally run the independent commands shown above:
 `gh attestation verify`, `gh release verify`, and `gh release verify-asset`.
 

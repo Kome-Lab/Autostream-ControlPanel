@@ -29,6 +29,12 @@ gh attestation verify /tmp/autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz \
   --deny-self-hosted-runners
 ```
 
+`--deny-self-hosted-runners` constrains the job that issues this attestation.
+The expensive compilation, integration tests, and packaging run on the trusted
+Blacksmith build job; the GitHub-hosted publication job independently checks the
+downloaded artifact set and digests before attesting and publishing it. This
+flag does not claim that compilation ran on a GitHub-hosted runner.
+
 Transfer that one unchanged archive to the server. The server requires `flock`
 (from `util-linux`), `jq`, `sha256sum`, `tar`, and systemd. Copy and extract it
 only through the fixed root-owned artifact directory:

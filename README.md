@@ -42,6 +42,7 @@ npm run build
 
 - Docker / Compose: `Dockerfile`、`docker-compose.yml`
 - systemd unit: `systemd/autostream-control-panel.service.example`
+- [`v1.9.4` Blacksmith release の限定手動導入](docs/operations/v1.9.4-blacksmith-release-exception.md)
 - Detailed deployment and security documentation is maintained in the `autostream-docs` repository.
 
 ## Security
