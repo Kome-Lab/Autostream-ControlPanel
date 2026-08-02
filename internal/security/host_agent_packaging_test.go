@@ -526,17 +526,29 @@ func TestHostUpgradePrivilegedLockInteropRunsInRootCI(t *testing.T) {
 				step = step[:end+1]
 			}
 			for _, marker := range []string{
+				"getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent",
 				"sudo env",
 				"TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller",
 				"TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock",
 				"TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes",
 				`-json | tee "${result}"`,
-				"A root-owned updater test was skipped",
+				`expected_root_mode_skip="TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation"`,
+				`((.Test // "") | startswith("TestPreparedUpdaterConfig"))`,
+				`.Test != $expected_root_mode_skip`,
+				`.Test == $expected_root_mode_skip`,
+				"An unexpected root-owned updater test was skipped",
+				"Expected root-mode updater skip did not report",
 				"Root-owned updater test did not report pass",
 			} {
 				if !strings.Contains(step, marker) {
 					t.Fatalf("root-owned Host upgrade lock step is missing %q", marker)
 				}
+			}
+			if count := strings.Count(
+				step,
+				`--arg expected_root_mode_skip "${expected_root_mode_skip}"`,
+			); count != 2 {
+				t.Fatalf("root-owned Host upgrade lock step has %d expected-skip jq arguments, want 2", count)
 			}
 		})
 	}

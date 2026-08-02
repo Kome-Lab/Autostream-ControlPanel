@@ -22,7 +22,7 @@ permissions:
 jobs:
   release-host:
     name: Build Linux host artifacts
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
@@ -212,6 +212,7 @@ jobs:
             TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock
             TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes
           )
+          expected_root_mode_skip="TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation"
           result="${RUNNER_TEMP}/root-owned-updater-tests.json"
           sudo env \
             PATH="${PATH}" \
@@ -222,13 +223,28 @@ jobs:
               -count=1 \
               -json | tee "${result}"
           if jq -e \
-            'select(.Action == "skip" and
-               (((.Test // "") | startswith("TestPreparedUpdaterConfig")) or
-                (.Test == "TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller") or
-                (.Test == "TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock") or
-                (.Test == "TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes")))' \
+            --arg expected_root_mode_skip "${expected_root_mode_skip}" \
+            'select(
+              .Action == "skip" and
+              .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
+              .Test != $expected_root_mode_skip and
+              (((.Test // "") | startswith("TestPreparedUpdaterConfig")) or
+               (.Test == "TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller") or
+               (.Test == "TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock") or
+               (.Test == "TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes")))' \
             "${result}" > /dev/null; then
-            echo "A root-owned updater test was skipped" >&2
+            echo "An unexpected root-owned updater test was skipped" >&2
+            exit 1
+          fi
+          if ! jq -e \
+            --arg expected_root_mode_skip "${expected_root_mode_skip}" \
+            'select(
+              .Action == "skip" and
+              .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
+              .Test == $expected_root_mode_skip
+            )' \
+            "${result}" > /dev/null; then
+            echo "Expected root-mode updater skip did not report: ${expected_root_mode_skip}" >&2
             exit 1
           fi
           for test_prefix in "${root_tests[@]}"; do
@@ -944,7 +960,7 @@ jobs:
     name: Publish GitHub Release
     needs: release-host
     if: needs.release-host.outputs.push_release == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     concurrency:
       group: host-release-publish-${{ needs.release-host.outputs.version }}
       cancel-in-progress: false

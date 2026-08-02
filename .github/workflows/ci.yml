@@ -11,7 +11,7 @@ permissions:
 jobs:
   service-installer:
     name: Service installer migration
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check service installer integration test syntax
@@ -20,7 +20,7 @@ jobs:
         run: sudo bash release/test-install-autostream-control-panel-integration.sh
 
   go:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
@@ -142,6 +142,7 @@ jobs:
       - name: Test managed Host config and upgrade locks with root-owned Linux fixtures
         run: |
           getent group autostream-updater >/dev/null 2>&1 || sudo groupadd --system autostream-updater
+          getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent
           sudo install -d -o root -g root -m 0700 /root/autostream-updater-root-tests /root/.cache/go-build-autostream
           root_tests=(
             TestPreparedUpdaterConfig
@@ -150,6 +151,7 @@ jobs:
             TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock
             TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes
           )
+          expected_root_mode_skip="TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation"
           result="${RUNNER_TEMP}/root-owned-updater-tests.json"
           sudo env \
             PATH="${PATH}" \
@@ -160,14 +162,29 @@ jobs:
               -count=1 \
               -json | tee "${result}"
           if jq -e \
-            'select(.Action == "skip" and
+            --arg expected_root_mode_skip "${expected_root_mode_skip}" \
+            'select(
+              .Action == "skip" and
+              .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
+              .Test != $expected_root_mode_skip and
               (((.Test // "") | startswith("TestPreparedUpdaterConfig")) or
                ((.Test // "") | startswith("TestHostAgentConfigurationTransaction")) or
                (.Test == "TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller") or
                (.Test == "TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock") or
                (.Test == "TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes")))' \
             "${result}" > /dev/null; then
-            echo "A root-owned updater test was skipped" >&2
+            echo "An unexpected root-owned updater test was skipped" >&2
+            exit 1
+          fi
+          if ! jq -e \
+            --arg expected_root_mode_skip "${expected_root_mode_skip}" \
+            'select(
+              .Action == "skip" and
+              .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
+              .Test == $expected_root_mode_skip
+            )' \
+            "${result}" > /dev/null; then
+            echo "Expected root-mode updater skip did not report: ${expected_root_mode_skip}" >&2
             exit 1
           fi
           for test_prefix in "${root_tests[@]}"; do
@@ -236,7 +253,7 @@ jobs:
       - run: go build ./...
 
   web:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     defaults:
       run:
         working-directory: web
