@@ -186,6 +186,28 @@ func TestPullV2ReleaseGuidesDocumentDatabaseBackupBoundary(t *testing.T) {
 	}
 }
 
+func TestPullV2ReleaseGuidesDocumentManagedHostUpgrade(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "release", "README.install.md"),
+		filepath.Join("..", "..", "release", "README.host-agent.md"),
+		filepath.Join("..", "..", "release", "README.local-executor.md"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guide := strings.Join(strings.Fields(string(body)), " ")
+		for _, marker := range []string{
+			"install-autostream-host-agent --upgrade",
+			"Host Agent and Local Executor",
+		} {
+			if !strings.Contains(guide, marker) {
+				t.Fatalf("%s is missing managed Host upgrade marker %q", path, marker)
+			}
+		}
+	}
+}
+
 func TestPullV2ReleaseGuidesDocumentLegacyWriterRollbackDrain(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "release", "README.install.md"),

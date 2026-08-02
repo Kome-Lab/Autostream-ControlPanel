@@ -455,7 +455,9 @@ test ! -e /etc/systemd/system/autostream-local-executor.service
 test ! -e /etc/systemd/system/autostream-local-executor.socket
 test ! -e /etc/tmpfiles.d/autostream-local-executor.conf
 test ! -e /run/autostream-local-executor
-test ! -e /run/autostream-updater
+test "$(stat -c '%U:%G:%a' /run/autostream-updater)" = "root:root:700"
+test "$(stat -c '%U:%G:%a:%h' \
+  /run/autostream-updater/.autostream-runtime-host-setup.lock)" = "root:root:600:1"
 if [[ -e /var/lib/autostream-local-executor ]]; then
   printf '%s\n' 'post-start failure left fresh Local Executor state' >&2
   exit 1

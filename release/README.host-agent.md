@@ -29,9 +29,9 @@ gh attestation verify /tmp/autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz \
   --deny-self-hosted-runners
 ```
 
-Transfer that one unchanged archive to the server. The server requires `jq`,
-`sha256sum`, `tar`, and systemd. Copy and extract it only through the fixed
-root-owned artifact directory:
+Transfer that one unchanged archive to the server. The server requires `flock`
+(from `util-linux`), `jq`, `sha256sum`, `tar`, and systemd. Copy and extract it
+only through the fixed root-owned artifact directory:
 
 ```bash
 sudo install -d -o root -g root -m 0755 /opt/autostream/releases/artifacts
@@ -157,6 +157,63 @@ This separation guarantees that an unconfigured Host Agent cannot be enabled
 or started by the installer. The first successful heartbeat remains
 observe-only with ownership epoch zero. A separate Control Panel ownership
 activation is required before this host can claim update or port jobs.
+
+## Upgrade an existing managed Host runtime
+
+Verify and transfer the new Host Agent archive exactly as described above,
+leave the unchanged archive adjacent to its extracted directory, and run:
+
+```bash
+cd /opt/autostream/releases/artifacts/autostream-host-agent_vX.Y.Z_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade
+```
+
+`--upgrade` is only for an already configured, healthy managed A/B install. It
+upgrades the Host Agent and Local Executor as one version-matched pair while
+preserving `/etc/autostream-host-agent/identity.json` and
+`/etc/autostream-local-executor/policy.json`. The installed systemd and
+tmpfiles templates must be byte-identical to the new bundle; a release that
+needs unit changes requires a newer migration procedure. Before running it,
+confirm that the active Control Panel satisfies the bundle's
+`minimum_panel_version`; the offline host cannot independently prove a remote
+Panel version.
+
+The command rejects a downgrade, a mixed installed Agent/Executor pair,
+same-version content drift, an unsafe slot/link, or an in-progress Agent job,
+credential rotation, service update, port update, any self-update grant, or an
+unsafe/non-terminal update checkpoint. A grant, including terminal `applied` or
+`failed` state, is a
+read-only blocker and remains byte-for-byte unchanged; wait for the normal
+healthy-slot Local Executor to converge it before retrying. Terminal
+`succeeded` and `rolled_back` checkpoints are read-only non-blockers and remain
+byte-for-byte unchanged. Re-running the exact already-active release is an
+idempotent success only after the same durable blocker checks. Do not invoke
+the internal `manual-upgrade-host-runtime` Executor subcommand directly; the
+archive installer supplies its verified, credential-free artifact binding.
+
+During an accepted update the installer takes the shared Host setup and
+lifecycle locks, the legacy update-host installer lock, plus every fixed,
+policy-projected, and installed legacy helper target lock. It durably stages
+the inactive slot and records the activation
+fence before stopping the Agent, then switches `current` atomically. It verifies
+the new Executor and Agent with
+stable `MainPID`, exact `/proc/<pid>/exe`, version/commit/protocol identity, and
+the Executor watchdog handshake before committing. An activation failure
+switches back to the previous healthy slot and verifies both old processes. If
+rollback itself cannot finish, the durable `rolling_back` fence remains for the
+fixed recovery timers; the command does not report success.
+
+Before the durable activation fence, a normal error synchronously restores slot
+artifacts and removes invocation-created bootstrap state. A power loss in that
+small bootstrap window may leave a compatible stable state file for the old
+recovery binary. Once `activating` is durable, rollback deliberately follows the
+same schema-v2 contract as a Control Panel update: `failed_generation` and the
+failed inactive candidate may remain. Identity, policy, journals, target/port
+ledgers, and pre-existing checkpoints are not rewritten by rollback.
+
+The offline state binding proves which verified archive bytes the root operator
+selected, but it is not publisher authentication. Perform the GitHub artifact
+attestation check on the operator machine before transfer.
 
 ## Legacy one-step installation
 

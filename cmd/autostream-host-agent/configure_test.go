@@ -167,6 +167,44 @@ func TestRunHostAgentConfigureNeverAcceptsTokenInArgv(t *testing.T) {
 	}
 }
 
+func TestRunHostAgentConfigureRejectsBusySetupBeforePrepareOrToken(t *testing.T) {
+	prepared := &fakePreparedHostAgentConfig{}
+	dependencies := validHostAgentConfigureDependencies(prepared)
+	dependencies.AcquireRuntimeLocks = func() (func(), error) {
+		return func() {}, errors.New("busy")
+	}
+	serviceIdentityCalled := false
+	dependencies.ServiceIdentity = func() (updateagent.HostAgentConfigurePeerIdentity, error) {
+		serviceIdentityCalled = true
+		return updateagent.HostAgentConfigurePeerIdentity{UID: 1001, GID: 1002}, nil
+	}
+	prepareCalled := false
+	dependencies.Prepare = func(string, string) (preparedHostAgentConfig, error) {
+		prepareCalled = true
+		return prepared, nil
+	}
+	readToken := false
+	dependencies.ReadToken = func(context.Context) (string, error) {
+		readToken = true
+		return "configure-token", nil
+	}
+
+	err := runHostAgentConfigure(context.Background(), []string{
+		"--panel-url", "https://panel.example.com",
+		"--node", "host-agent-a",
+	}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "another Host runtime setup") ||
+		serviceIdentityCalled || prepareCalled || readToken {
+		t.Fatalf(
+			"error=%v serviceIdentity=%v prepare=%v readToken=%v",
+			err,
+			serviceIdentityCalled,
+			prepareCalled,
+			readToken,
+		)
+	}
+}
+
 func TestNormalizeHostAgentConfigureToken(t *testing.T) {
 	if token, err := normalizeHostAgentConfigureToken([]byte(" configure-token\r\n")); err != nil || token != "configure-token" {
 		t.Fatalf("token=%q error=%v", token, err)
@@ -181,6 +219,7 @@ func TestNormalizeHostAgentConfigureToken(t *testing.T) {
 
 func validHostAgentConfigureDependencies(prepared preparedHostAgentConfig) hostAgentConfigureDependencies {
 	return hostAgentConfigureDependencies{
+		AcquireRuntimeLocks: func() (func(), error) { return func() {}, nil },
 		Prepare: func(path, policyPath string) (preparedHostAgentConfig, error) {
 			if path != defaultHostAgentConfigPath ||
 				policyPath != updateagent.DefaultLocalExecutorPolicyPath {

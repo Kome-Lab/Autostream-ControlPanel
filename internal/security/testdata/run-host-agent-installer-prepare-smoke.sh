@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 
@@ -759,6 +760,40 @@ rmdir -- /opt/autostream/local-executor/ports
 rmdir -- /opt/autostream/local-executor
 rmdir -- /etc/autostream-local-executor
 
+install -d -o root -g root -m 0700 /run/autostream-updater
+exec 8<>/run/autostream-updater/.autostream-runtime-host-setup.lock
+flock -n 8
+set +e
+host_setup_lock_output="$(${PACKAGE_ROOT}/install/install-autostream-host-agent --prepare 2>&1)"
+host_setup_lock_status=$?
+set -e
+exec 8>&-
+if [[ ${host_setup_lock_status} -eq 0 ||
+  ${host_setup_lock_output} != *'another AutoStream installer is provisioning shared host state'* ]]; then
+  printf '%s\n' 'prepare mode did not fail closed on shared host-setup lock contention' >&2
+  printf '%s\n' "${host_setup_lock_output}" >&2
+  exit 1
+fi
+test "$(stat -c '%U:%G:%a' /run/autostream-updater)" = "root:root:700"
+test "$(stat -c '%U:%G:%a:%h' \
+  /run/autostream-updater/.autostream-runtime-host-setup.lock)" = "root:root:600:1"
+
+exec 9<>/run/autostream-updater/.autostream-host-lifecycle.lock
+flock -n 9
+set +e
+host_lifecycle_lock_output="$(${PACKAGE_ROOT}/install/install-autostream-host-agent --prepare 2>&1)"
+host_lifecycle_lock_status=$?
+set -e
+exec 9>&-
+if [[ ${host_lifecycle_lock_status} -eq 0 ||
+  ${host_lifecycle_lock_output} != *'another privileged Host lifecycle operation is active'* ]]; then
+  printf '%s\n' 'prepare mode did not fail closed on Host lifecycle lock contention' >&2
+  printf '%s\n' "${host_lifecycle_lock_output}" >&2
+  exit 1
+fi
+test "$(stat -c '%U:%G:%a:%h' \
+  /run/autostream-updater/.autostream-host-lifecycle.lock)" = "root:root:600:1"
+
 "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare
 
 test "$(stat -c '%U:%G:%a' /etc/autostream-host-agent)" = "root:autostream-host-agent:750"
@@ -813,6 +848,40 @@ install -o root -g root -m 0600 \
 prepared_executor_sha=$(sha256sum \
   /opt/autostream/host-agent/slots/a/bin/autostream-local-executor |
   awk '{print $1}')
+exec 8<>/run/autostream-updater/.autostream-runtime-host-setup.lock
+flock -n 8
+set +e
+local_setup_lock_output="$(
+  "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
+    --policy /root/autostream-local-executor-policy.json 2>&1
+)"
+local_setup_lock_status=$?
+set -e
+exec 8>&-
+if [[ ${local_setup_lock_status} -eq 0 ||
+  ${local_setup_lock_output} != *'another AutoStream installer is provisioning shared host state'* ]]; then
+  printf '%s\n' 'local executor installer did not fail closed on shared host-setup lock contention' >&2
+  printf '%s\n' "${local_setup_lock_output}" >&2
+  exit 1
+fi
+test ! -e /etc/autostream-local-executor/policy.json
+exec 9<>/run/autostream-updater/.autostream-host-lifecycle.lock
+flock -n 9
+set +e
+local_lifecycle_lock_output="$(
+  "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
+    --policy /root/autostream-local-executor-policy.json 2>&1
+)"
+local_lifecycle_lock_status=$?
+set -e
+exec 9>&-
+if [[ ${local_lifecycle_lock_status} -eq 0 ||
+  ${local_lifecycle_lock_output} != *'another privileged Host lifecycle operation is active'* ]]; then
+  printf '%s\n' 'local executor installer did not fail closed on Host lifecycle lock contention' >&2
+  printf '%s\n' "${local_lifecycle_lock_output}" >&2
+  exit 1
+fi
+test ! -e /etc/autostream-local-executor/policy.json
 touch /tmp/autostream-host-agent-fail-daemon-reload
 if "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   --policy /root/autostream-local-executor-policy.json; then
@@ -828,6 +897,49 @@ test "$(sha256sum /opt/autostream/host-agent/slots/a/bin/autostream-local-execut
 test ! -e /etc/autostream-local-executor/policy.json
 "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   --policy /root/autostream-local-executor-policy.json
+for uninstaller in \
+  "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor" \
+  "${PACKAGE_ROOT}/install/uninstall-autostream-host-agent"; do
+  exec 8<>/run/autostream-updater/.autostream-runtime-host-setup.lock
+  flock -n 8
+  set +e
+  uninstall_setup_lock_output="$(${uninstaller} 2>&1)"
+  uninstall_setup_lock_status=$?
+  set -e
+  exec 8>&-
+  if [[ ${uninstall_setup_lock_status} -eq 0 ||
+    ${uninstall_setup_lock_output} != *'another AutoStream installer is provisioning shared host state'* ]]; then
+    printf 'uninstaller %s did not fail closed on setup lock contention\n' "${uninstaller}" >&2
+    printf '%s\n' "${uninstall_setup_lock_output}" >&2
+    exit 1
+  fi
+
+  exec 9<>/run/autostream-updater/.autostream-host-lifecycle.lock
+  flock -n 9
+  lifecycle_lock_metadata="$(stat -c '%U:%G:%a:%h' \
+    /run/autostream-updater/.autostream-host-lifecycle.lock)"
+  lifecycle_lock_canonical="$(readlink -f \
+    /run/autostream-updater/.autostream-host-lifecycle.lock)"
+  if [[ ${lifecycle_lock_metadata} != "root:root:600:1" ||
+    ${lifecycle_lock_canonical} != "/run/autostream-updater/.autostream-host-lifecycle.lock" ]]; then
+    printf 'fixture lifecycle lock metadata=%s canonical=%s\n' \
+      "${lifecycle_lock_metadata}" "${lifecycle_lock_canonical}" >&2
+    exit 1
+  fi
+  set +e
+  uninstall_lifecycle_lock_output="$(${uninstaller} 2>&1)"
+  uninstall_lifecycle_lock_status=$?
+  set -e
+  exec 9>&-
+  if [[ ${uninstall_lifecycle_lock_status} -eq 0 ||
+    ${uninstall_lifecycle_lock_output} != *'another privileged Host lifecycle operation is active'* ]]; then
+    printf 'uninstaller %s did not fail closed on lifecycle lock contention\n' "${uninstaller}" >&2
+    printf '%s\n' "${uninstall_lifecycle_lock_output}" >&2
+    exit 1
+  fi
+done
+test -e /usr/local/bin/autostream-host-agent
+test -e /usr/local/libexec/autostream-local-executor
 test -L /usr/local/libexec/autostream-local-executor
 test "$(readlink /usr/local/libexec/autostream-local-executor)" = \
   "/opt/autostream/host-agent/current/bin/autostream-local-executor"

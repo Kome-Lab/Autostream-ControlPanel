@@ -18,6 +18,8 @@ readonly SOCKET_NAME="autostream-local-executor.socket"
 readonly HOST_AGENT_SERVICE_NAME="autostream-host-agent.service"
 readonly SOCKET_DIR="/run/autostream-local-executor"
 readonly UPDATER_RUNTIME_DIR="/run/autostream-updater"
+readonly SHARED_HOST_SETUP_LOCK="${UPDATER_RUNTIME_DIR}/.autostream-runtime-host-setup.lock"
+readonly HOST_LIFECYCLE_LOCK="${UPDATER_RUNTIME_DIR}/.autostream-host-lifecycle.lock"
 readonly STATE_DIR="/var/lib/autostream-local-executor"
 readonly DOCKER_CONFIG_DIR="${CONFIG_DIR}/docker"
 readonly DOCKER_CONFIG_FILE="${DOCKER_CONFIG_DIR}/config.json"
@@ -85,6 +87,116 @@ validate_root_parent_chain() {
   done
 }
 
+acquire_shared_host_setup_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  # The published lock path is permanent coordination state. Never unlink it:
+  # doing so while another process holds the old inode would split the lock.
+  validate_root_parent_chain "${UPDATER_RUNTIME_DIR}" "shared host-setup lock"
+  if [[ -e ${UPDATER_RUNTIME_DIR} || -L ${UPDATER_RUNTIME_DIR} ]]; then
+    [[ -d ${UPDATER_RUNTIME_DIR} &&
+      ! -L ${UPDATER_RUNTIME_DIR} &&
+      $(readlink -f -- "${UPDATER_RUNTIME_DIR}") == "${UPDATER_RUNTIME_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+      die "shared host-setup lock directory is unsafe"
+  else
+    install -d -o root -g root -m 0700 "${UPDATER_RUNTIME_DIR}" || \
+      die "could not create the shared host-setup lock directory"
+    [[ -d ${UPDATER_RUNTIME_DIR} &&
+      ! -L ${UPDATER_RUNTIME_DIR} &&
+      $(readlink -f -- "${UPDATER_RUNTIME_DIR}") == "${UPDATER_RUNTIME_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+      die "could not create a safe shared host-setup lock directory"
+    sync -f /run
+  fi
+  validate_root_parent_chain "${SHARED_HOST_SETUP_LOCK}" "shared host-setup lock"
+  directory_identity="$(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}")" || \
+    die "could not record the shared host-setup lock directory identity"
+
+  if [[ -e ${SHARED_HOST_SETUP_LOCK} || -L ${SHARED_HOST_SETUP_LOCK} ]]; then
+    [[ -f ${SHARED_HOST_SETUP_LOCK} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK}") == "${SHARED_HOST_SETUP_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" ]] || \
+      die "shared host-setup lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 8<>"${SHARED_HOST_SETUP_LOCK}" || die "could not open the shared host-setup lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)" || \
+    die "could not record the shared host-setup lock identity"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${UPDATER_RUNTIME_DIR}"
+  fi
+  flock -n 8 || die "another AutoStream installer is provisioning shared host state"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed after acquisition"
+}
+
+acquire_host_lifecycle_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  validate_root_parent_chain "${HOST_LIFECYCLE_LOCK}" "Host lifecycle lock"
+  [[ -d ${UPDATER_RUNTIME_DIR} &&
+    ! -L ${UPDATER_RUNTIME_DIR} &&
+    $(readlink -f -- "${UPDATER_RUNTIME_DIR}") == "${UPDATER_RUNTIME_DIR}" &&
+    $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+    die "Host lifecycle lock directory is unsafe"
+  directory_identity="$(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}")" || \
+    die "could not record the Host lifecycle lock directory identity"
+
+  if [[ -e ${HOST_LIFECYCLE_LOCK} || -L ${HOST_LIFECYCLE_LOCK} ]]; then
+    [[ -f ${HOST_LIFECYCLE_LOCK} &&
+      ! -L ${HOST_LIFECYCLE_LOCK} &&
+      $(readlink -f -- "${HOST_LIFECYCLE_LOCK}") == "${HOST_LIFECYCLE_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" ]] || \
+      die "Host lifecycle lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 9<>"${HOST_LIFECYCLE_LOCK}" || die "could not open the Host lifecycle lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)" || \
+    die "could not record the Host lifecycle lock identity"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${UPDATER_RUNTIME_DIR}"
+  fi
+  flock -n 9 || die "another privileged Host lifecycle operation is active"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed after acquisition"
+}
+
 policy_source=
 case "${1:-}" in
   --policy)
@@ -104,7 +216,7 @@ case "${1:-}" in
     ;;
 esac
 
-for command in awk basename chmod chown dirname find getent id install jq mkdir mktemp mv pwd readlink rm rmdir sha256sum sort stat systemctl systemd-tmpfiles tar uname uniq; do
+for command in awk basename chmod chown dirname find flock getent id install jq mkdir mktemp mv pwd readlink rm rmdir sha256sum sort stat sync systemctl systemd-tmpfiles tar uname uniq; do
   command -v "${command}" >/dev/null 2>&1 || die "required command ${command} is unavailable"
 done
 
@@ -114,16 +226,6 @@ done
 validate_root_parent_chain "${policy_source}"
 [[ $(stat -c '%U:%G:%a' -- "${policy_source}") == "root:root:600" ]] || \
   die "policy source must be root:root 0600"
-
-getent passwd "${AGENT_USER}" >/dev/null 2>&1 || \
-  die "${AGENT_USER} must be installed before the local executor"
-getent group "${AGENT_GROUP}" >/dev/null 2>&1 || \
-  die "${AGENT_GROUP} must be installed before the local executor"
-readonly agent_uid=$(id -u "${AGENT_USER}")
-readonly agent_gid=$(getent group "${AGENT_GROUP}" | awk -F: 'NR == 1 { print $3 }')
-[[ ${agent_uid} =~ ^[0-9]+$ && ${agent_uid} -ne 0 ]] || die "Host Agent UID is invalid"
-[[ ${agent_gid} =~ ^[0-9]+$ && ${agent_gid} -ne 0 ]] || die "Host Agent GID is invalid"
-[[ $(id -g "${AGENT_USER}") == "${agent_gid}" ]] || die "Host Agent primary group is invalid"
 
 readonly RELEASE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 ARTIFACT_ID="$(basename -- "${RELEASE_ROOT}")" || die "could not resolve the Host Agent release directory name"
@@ -414,6 +516,19 @@ verify_binary_identity() {
 
 verify_binary_identity "${HOST_BINARY_SOURCE}" "autostream-host-agent"
 verify_binary_identity "${BINARY_SOURCE}" "autostream-local-executor"
+
+acquire_shared_host_setup_lock
+acquire_host_lifecycle_lock
+
+getent passwd "${AGENT_USER}" >/dev/null 2>&1 || \
+  die "${AGENT_USER} must be installed before the local executor"
+getent group "${AGENT_GROUP}" >/dev/null 2>&1 || \
+  die "${AGENT_GROUP} must be installed before the local executor"
+readonly agent_uid=$(id -u "${AGENT_USER}")
+readonly agent_gid=$(getent group "${AGENT_GROUP}" | awk -F: 'NR == 1 { print $3 }')
+[[ ${agent_uid} =~ ^[0-9]+$ && ${agent_uid} -ne 0 ]] || die "Host Agent UID is invalid"
+[[ ${agent_gid} =~ ^[0-9]+$ && ${agent_gid} -ne 0 ]] || die "Host Agent GID is invalid"
+[[ $(id -g "${AGENT_USER}") == "${agent_gid}" ]] || die "Host Agent primary group is invalid"
 
 copy_verified_release_file() {
   local source=$1

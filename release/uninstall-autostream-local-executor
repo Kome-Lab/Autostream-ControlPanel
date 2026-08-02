@@ -21,6 +21,14 @@ readonly SELF_UPDATE_RECOVERY_TIMER_A="autostream-host-self-update-recovery@a.ti
 readonly SELF_UPDATE_RECOVERY_TIMER_B="autostream-host-self-update-recovery@b.timer"
 readonly SELF_UPDATE_RECOVERY_SERVICE_A="autostream-host-self-update-recovery@a.service"
 readonly SELF_UPDATE_RECOVERY_SERVICE_B="autostream-host-self-update-recovery@b.service"
+readonly PRIVILEGED_LOCK_DIR="/run/autostream-updater"
+readonly SHARED_HOST_SETUP_LOCK="${PRIVILEGED_LOCK_DIR}/.autostream-runtime-host-setup.lock"
+readonly HOST_LIFECYCLE_LOCK="${PRIVILEGED_LOCK_DIR}/.autostream-host-lifecycle.lock"
+
+die() {
+  printf 'uninstall-autostream-local-executor: %s\n' "$*" >&2
+  exit 1
+}
 
 purge=false
 case "${1:-}" in
@@ -46,12 +54,122 @@ esac
   printf '%s\n' 'uninstall-autostream-local-executor: must run as root' >&2
   exit 1
 }
-for command in find mktemp mountpoint mv readlink rm rmdir stat systemctl systemd-tmpfiles; do
+for command in dirname find flock install mktemp mountpoint mv readlink rm rmdir stat sync systemctl systemd-tmpfiles; do
   command -v "${command}" >/dev/null 2>&1 || {
     printf 'uninstall-autostream-local-executor: required command %s is unavailable\n' "${command}" >&2
     exit 1
   }
 done
+
+validate_lock_parent_chain() {
+  local path=$1
+  local current
+  local parent
+  local mode
+  current=$(dirname -- "${path}")
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || \
+      die "privileged lock parents must be non-symlink directories"
+    [[ $(stat -c '%U:%G' -- "${current}") == "root:root" ]] || \
+      die "privileged lock parents must be owned by root:root"
+    mode=$(stat -c '%a' -- "${current}")
+    (( (8#${mode} & 0022) == 0 )) || \
+      die "privileged lock parents must not be writable by group or other"
+    parent=$(dirname -- "${current}")
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+ensure_privileged_lock_path() {
+  local path=$1
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -f ${path} &&
+      ! -L ${path} &&
+      $(readlink -f -- "${path}") == "${path}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${path}") == "root:root:600:1" ]] || \
+      die "privileged lock path is unsafe: ${path}"
+  fi
+}
+
+validate_privileged_lock_fd() {
+  local path=$1
+  local fd=$2
+  local expected_directory_identity=$3
+  local expected_file_identity=$4
+  local fd_path="/proc/self/fd/${fd}"
+  [[ $(stat -c '%d:%i' -- "${PRIVILEGED_LOCK_DIR}") == "${expected_directory_identity}" &&
+    -f ${path} &&
+    ! -L ${path} &&
+    -f ${fd_path} &&
+    $(stat -c '%U:%G:%a:%h' -- "${path}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- "${fd_path}") == "root:root:600:1" &&
+    ${expected_file_identity} == "$(stat -c '%d:%i' -- "${path}")" &&
+    ${expected_file_identity} == "$(stat -Lc '%d:%i' -- "${fd_path}")" ]]
+}
+
+acquire_host_runtime_locks() {
+  local directory_identity
+  local setup_identity
+  local lifecycle_identity
+  local setup_created=false
+  local lifecycle_created=false
+
+  validate_lock_parent_chain "${PRIVILEGED_LOCK_DIR}"
+  if [[ -e ${PRIVILEGED_LOCK_DIR} || -L ${PRIVILEGED_LOCK_DIR} ]]; then
+    [[ -d ${PRIVILEGED_LOCK_DIR} &&
+      ! -L ${PRIVILEGED_LOCK_DIR} &&
+      $(readlink -f -- "${PRIVILEGED_LOCK_DIR}") == "${PRIVILEGED_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${PRIVILEGED_LOCK_DIR}") == "root:root:700" ]] || \
+      die "privileged lock directory is unsafe"
+  else
+    install -d -o root -g root -m 0700 "${PRIVILEGED_LOCK_DIR}" || \
+      die "could not create the privileged lock directory"
+    [[ -d ${PRIVILEGED_LOCK_DIR} &&
+      ! -L ${PRIVILEGED_LOCK_DIR} &&
+      $(readlink -f -- "${PRIVILEGED_LOCK_DIR}") == "${PRIVILEGED_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${PRIVILEGED_LOCK_DIR}") == "root:root:700" ]] || \
+      die "could not create a safe privileged lock directory"
+    sync -f /run
+  fi
+  validate_lock_parent_chain "${SHARED_HOST_SETUP_LOCK}"
+  directory_identity="$(stat -c '%d:%i' -- "${PRIVILEGED_LOCK_DIR}")" || \
+    die "could not record the privileged lock directory identity"
+
+  [[ -e ${SHARED_HOST_SETUP_LOCK} || -L ${SHARED_HOST_SETUP_LOCK} ]] || setup_created=true
+  ensure_privileged_lock_path "${SHARED_HOST_SETUP_LOCK}"
+  exec 8<>"${SHARED_HOST_SETUP_LOCK}" || die "could not open the shared host-setup lock"
+  setup_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)" || \
+    die "could not record the shared host-setup lock identity"
+  validate_privileged_lock_fd \
+    "${SHARED_HOST_SETUP_LOCK}" 8 "${directory_identity}" "${setup_identity}" || \
+    die "shared host-setup lock identity changed while being opened"
+  if [[ ${setup_created} == true ]]; then
+    sync -f "${PRIVILEGED_LOCK_DIR}"
+  fi
+  flock -n 8 || die "another AutoStream installer is provisioning shared host state"
+  validate_privileged_lock_fd \
+    "${SHARED_HOST_SETUP_LOCK}" 8 "${directory_identity}" "${setup_identity}" || \
+    die "shared host-setup lock identity changed after acquisition"
+
+  [[ -e ${HOST_LIFECYCLE_LOCK} || -L ${HOST_LIFECYCLE_LOCK} ]] || lifecycle_created=true
+  ensure_privileged_lock_path "${HOST_LIFECYCLE_LOCK}"
+  exec 9<>"${HOST_LIFECYCLE_LOCK}" || die "could not open the Host lifecycle lock"
+  lifecycle_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)" || \
+    die "could not record the Host lifecycle lock identity"
+  validate_privileged_lock_fd \
+    "${HOST_LIFECYCLE_LOCK}" 9 "${directory_identity}" "${lifecycle_identity}" || \
+    die "Host lifecycle lock identity changed while being opened"
+  if [[ ${lifecycle_created} == true ]]; then
+    sync -f "${PRIVILEGED_LOCK_DIR}"
+  fi
+  flock -n 9 || die "another privileged Host lifecycle operation is active"
+  validate_privileged_lock_fd \
+    "${HOST_LIFECYCLE_LOCK}" 9 "${directory_identity}" "${lifecycle_identity}" || \
+    die "Host lifecycle lock identity changed after acquisition"
+}
+
+acquire_host_runtime_locks
 
 verify_managed_file() {
   local path=$1

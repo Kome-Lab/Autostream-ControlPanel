@@ -136,6 +136,71 @@ func TestRunDelegatesFixedSlotSelfUpdateRecovery(t *testing.T) {
 	}
 }
 
+func TestRunDelegatesVerifiedBundleManualUpgrade(t *testing.T) {
+	output := &bytes.Buffer{}
+	var received updateagent.ManualHostUpgradeRequest
+	rootChecked := false
+	dependencies := localExecutorCLIDependencies{
+		Output: output,
+		LoadPolicy: func(string, bool) (updateagent.LocalExecutorPolicy, error) {
+			return updateagent.LocalExecutorPolicy{}, nil
+		},
+		ServeExecutor: func(context.Context, string) error { return nil },
+		RequireRoot: func() error {
+			rootChecked = true
+			return nil
+		},
+		UpgradeHostRuntime: func(
+			_ context.Context,
+			request updateagent.ManualHostUpgradeRequest,
+		) (updateagent.ManualHostUpgradeResult, error) {
+			received = request
+			return updateagent.ManualHostUpgradeResult{
+				PreviousSlot: updateagent.HostSelfUpdateSlotA,
+				ActiveSlot:   updateagent.HostSelfUpdateSlotB,
+				Version:      "v9.9.9",
+			}, nil
+		},
+	}
+	err := run([]string{
+		"manual-upgrade-host-runtime",
+		"--artifact-root", "/var/tmp/verified-host-agent",
+		"--archive-sha256", strings.Repeat("a", 64),
+		"--archive-size", "12345",
+	}, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rootChecked {
+		t.Fatal("manual upgrade did not require root")
+	}
+	if received.ArtifactRoot != "/var/tmp/verified-host-agent" ||
+		received.ArchiveSHA256 != strings.Repeat("a", 64) ||
+		received.ArchiveSize != 12345 {
+		t.Fatalf("manual upgrade request=%#v", received)
+	}
+	if got := output.String(); !strings.Contains(got, "v9.9.9") ||
+		!strings.Contains(got, "slots/a -> slots/b") {
+		t.Fatalf("manual upgrade output=%q", got)
+	}
+}
+
+func TestManualUpgradeCancellationIsNotSuppressed(t *testing.T) {
+	if suppressLocalExecutorCancellation(
+		[]string{"manual-upgrade-host-runtime"}, context.Canceled,
+	) {
+		t.Fatal("manual upgrade cancellation would be reported as success")
+	}
+	if !suppressLocalExecutorCancellation([]string{"run"}, context.Canceled) {
+		t.Fatal("normal server shutdown cancellation should remain quiet")
+	}
+	if !suppressLocalExecutorCancellation(
+		[]string{"recover-self-update"}, context.Canceled,
+	) {
+		t.Fatal("existing recovery cancellation behavior should remain quiet")
+	}
+}
+
 func TestRunEmergencyRuntimeCredentialRecoveryRequiresRootAndConfirmation(
 	t *testing.T,
 ) {

@@ -37,6 +37,9 @@ readonly HOST_RUNTIME_INITIAL_SLOT="${HOST_RUNTIME_SLOTS}/a"
 readonly HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"
 readonly HOST_RUNTIME_AGENT="${HOST_RUNTIME_INITIAL_SLOT}/bin/autostream-host-agent"
 readonly HOST_RUNTIME_EXECUTOR="${HOST_RUNTIME_INITIAL_SLOT}/bin/autostream-local-executor"
+readonly SHARED_HOST_SETUP_LOCK_DIR="/run/autostream-updater"
+readonly SHARED_HOST_SETUP_LOCK="${SHARED_HOST_SETUP_LOCK_DIR}/.autostream-runtime-host-setup.lock"
+readonly HOST_LIFECYCLE_LOCK="${SHARED_HOST_SETUP_LOCK_DIR}/.autostream-host-lifecycle.lock"
 readonly ARTIFACT_MANIFEST_NAME="artifact-manifest.json"
 readonly MAX_ARCHIVE_SIZE=268435456
 
@@ -45,6 +48,7 @@ usage() {
 Usage:
   install-autostream-host-agent --prepare
   install-autostream-host-agent --config PATH
+  install-autostream-host-agent --upgrade
 
 --prepare installs the service account, Host Agent, and the same-release local
 executor binary and units. It also prepares the root:root 0700 policy and port
@@ -57,6 +61,10 @@ command before explicitly enabling the Host Agent and executor socket.
 JSON file containing exactly panel_url, node_id, runtime_token, and
 service_name. The token is copied from that file and is never accepted through
 an argument or environment variable.
+
+--upgrade verifies the adjacent Host Agent archive, then atomically upgrades
+an existing healthy managed A/B Host Agent and Local Executor runtime together.
+It preserves the installed identity and Local Executor policy.
 EOF
 }
 
@@ -99,16 +107,21 @@ config_source=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prepare)
-      [[ -z ${install_mode} ]] || die "--prepare and --config are mutually exclusive"
+      [[ -z ${install_mode} ]] || die "--prepare, --config, and --upgrade are mutually exclusive"
       install_mode="prepare"
       shift
       ;;
     --config)
       [[ $# -ge 2 && -n $2 ]] || die "--config requires a path"
-      [[ -z ${install_mode} ]] || die "--prepare and --config are mutually exclusive"
+      [[ -z ${install_mode} ]] || die "--prepare, --config, and --upgrade are mutually exclusive"
       install_mode="configured"
       config_source=$2
       shift 2
+      ;;
+    --upgrade)
+      [[ -z ${install_mode} ]] || die "--prepare, --config, and --upgrade are mutually exclusive"
+      install_mode="upgrade"
+      shift
       ;;
     -h|--help)
       usage
@@ -122,9 +135,9 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n ${install_mode} ]] || {
   usage
-  die "--prepare or --config PATH is required"
+  die "--prepare, --config PATH, or --upgrade is required"
 }
-for command in awk basename chmod chown dd dirname find getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel usermod; do
+for command in awk basename chmod chown dd dirname find flock getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel usermod; do
   command -v "${command}" >/dev/null 2>&1 || die "required command is unavailable: ${command}"
 done
 if [[ ${install_mode} == "configured" ]]; then
@@ -181,6 +194,116 @@ validate_root_parent_chain() {
     [[ ${parent} == "${current}" ]] && break
     current=${parent}
   done
+}
+
+acquire_shared_host_setup_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  # The published lock path is permanent coordination state. Never unlink it:
+  # doing so while another process holds the old inode would split the lock.
+  validate_root_parent_chain "${SHARED_HOST_SETUP_LOCK_DIR}" "shared host-setup lock"
+  if [[ -e ${SHARED_HOST_SETUP_LOCK_DIR} || -L ${SHARED_HOST_SETUP_LOCK_DIR} ]]; then
+    [[ -d ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${SHARED_HOST_SETUP_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "root:root:700" ]] || \
+      die "shared host-setup lock directory is unsafe"
+  else
+    install -d -o root -g root -m 0700 "${SHARED_HOST_SETUP_LOCK_DIR}" || \
+      die "could not create the shared host-setup lock directory"
+    [[ -d ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${SHARED_HOST_SETUP_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "root:root:700" ]] || \
+      die "could not create a safe shared host-setup lock directory"
+    sync -f /run
+  fi
+  validate_root_parent_chain "${SHARED_HOST_SETUP_LOCK}" "shared host-setup lock"
+  directory_identity="$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}")" || \
+    die "could not record the shared host-setup lock directory identity"
+
+  if [[ -e ${SHARED_HOST_SETUP_LOCK} || -L ${SHARED_HOST_SETUP_LOCK} ]]; then
+    [[ -f ${SHARED_HOST_SETUP_LOCK} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK}") == "${SHARED_HOST_SETUP_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" ]] || \
+      die "shared host-setup lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 8<>"${SHARED_HOST_SETUP_LOCK}" || die "could not open the shared host-setup lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)" || \
+    die "could not record the shared host-setup lock identity"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${SHARED_HOST_SETUP_LOCK_DIR}"
+  fi
+  flock -n 8 || die "another AutoStream installer is provisioning shared host state"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed after acquisition"
+}
+
+acquire_host_lifecycle_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  validate_root_parent_chain "${HOST_LIFECYCLE_LOCK}" "Host lifecycle lock"
+  [[ -d ${SHARED_HOST_SETUP_LOCK_DIR} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK_DIR} &&
+    $(readlink -f -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${SHARED_HOST_SETUP_LOCK_DIR}" &&
+    $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "root:root:700" ]] || \
+    die "Host lifecycle lock directory is unsafe"
+  directory_identity="$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}")" || \
+    die "could not record the Host lifecycle lock directory identity"
+
+  if [[ -e ${HOST_LIFECYCLE_LOCK} || -L ${HOST_LIFECYCLE_LOCK} ]]; then
+    [[ -f ${HOST_LIFECYCLE_LOCK} &&
+      ! -L ${HOST_LIFECYCLE_LOCK} &&
+      $(readlink -f -- "${HOST_LIFECYCLE_LOCK}") == "${HOST_LIFECYCLE_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" ]] || \
+      die "Host lifecycle lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 9<>"${HOST_LIFECYCLE_LOCK}" || die "could not open the Host lifecycle lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)" || \
+    die "could not record the Host lifecycle lock identity"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${SHARED_HOST_SETUP_LOCK_DIR}"
+  fi
+  flock -n 9 || die "another privileged Host lifecycle operation is active"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed after acquisition"
 }
 
 validate_root_owned_release_source() {
@@ -474,6 +597,107 @@ verify_binary_identity() {
 
 verify_binary_identity "${BINARY_SOURCE}" "autostream-host-agent"
 verify_binary_identity "${LOCAL_EXECUTOR_BINARY_SOURCE}" "autostream-local-executor"
+
+manual_upgrade_candidate_pid=""
+manual_upgrade_wait_signal=""
+manual_upgrade_pending_signal=""
+
+manual_upgrade_candidate_is_child_job() {
+  local job_pid
+  while IFS= read -r job_pid; do
+    [[ ${job_pid} == "${manual_upgrade_candidate_pid}" ]] && return 0
+  done < <(jobs -p)
+  return 1
+}
+
+record_manual_upgrade_signal() {
+  local signal=$1
+  manual_upgrade_wait_signal=${signal}
+  manual_upgrade_pending_signal=${signal}
+}
+
+forward_manual_upgrade_signal() {
+  local signal=$1
+  manual_upgrade_wait_signal=${signal}
+  if [[ -n ${manual_upgrade_candidate_pid} ]] &&
+    manual_upgrade_candidate_is_child_job; then
+    manual_upgrade_pending_signal=""
+    kill -s "${signal}" -- "${manual_upgrade_candidate_pid}" 2>/dev/null || true
+  else
+    manual_upgrade_pending_signal=${signal}
+  fi
+}
+
+run_manual_upgrade_candidate() {
+  local candidate_status=1
+  local interrupted_status=0
+  local pending_signal=""
+
+  manual_upgrade_candidate_pid=""
+  manual_upgrade_wait_signal=""
+  manual_upgrade_pending_signal=""
+  # Before $! is available, record signals without guessing a PID. Switch to
+  # guarded forwarding only after Bash has registered the candidate child job.
+  trap 'record_manual_upgrade_signal INT' INT
+  trap 'record_manual_upgrade_signal TERM' TERM
+
+  "${LOCAL_EXECUTOR_BINARY_SOURCE}" manual-upgrade-host-runtime \
+    --artifact-root "${EXTRACTED_ROOT}" \
+    --archive-sha256 "${ARTIFACT_SHA256}" \
+    --archive-size "${ARTIFACT_SIZE}" &
+  manual_upgrade_candidate_pid=$!
+  trap 'forward_manual_upgrade_signal INT' INT
+  trap 'forward_manual_upgrade_signal TERM' TERM
+  if [[ -n ${manual_upgrade_pending_signal} ]]; then
+    pending_signal=${manual_upgrade_pending_signal}
+    forward_manual_upgrade_signal "${pending_signal}"
+  fi
+
+  while true; do
+    manual_upgrade_wait_signal=""
+    if wait "${manual_upgrade_candidate_pid}"; then
+      candidate_status=0
+    else
+      candidate_status=$?
+    fi
+    case "${manual_upgrade_wait_signal}" in
+      INT) interrupted_status=130 ;;
+      TERM) interrupted_status=143 ;;
+      "") interrupted_status=0 ;;
+      *) interrupted_status=1 ;;
+    esac
+    if [[ ${interrupted_status} -ne 0 &&
+      ${candidate_status} -eq ${interrupted_status} ]]; then
+      continue
+    fi
+    break
+  done
+
+  manual_upgrade_candidate_pid=""
+  manual_upgrade_pending_signal=""
+  manual_upgrade_wait_signal=""
+  # The candidate's durable final status is authoritative. Once it has been
+  # reaped, later wrapper-only signals must not turn a committed success into
+  # 130/143 while the wrapper reports the result and removes its private stage.
+  trap '' INT TERM
+  return "${candidate_status}"
+}
+
+if [[ ${install_mode} == "upgrade" ]]; then
+  manual_upgrade_status=0
+  run_manual_upgrade_candidate || manual_upgrade_status=$?
+  if [[ ${manual_upgrade_status} -ne 0 ]]; then
+    printf '%s\n' \
+      'install-autostream-host-agent: managed Host runtime upgrade failed' >&2
+    exit "${manual_upgrade_status}"
+  fi
+  printf '%s\n' "Verified Host Agent bundle archive SHA-256: ${ARTIFACT_SHA256}"
+  printf '%s\n' "Managed Host Agent and Local Executor runtime upgrade complete."
+  exit 0
+fi
+
+acquire_shared_host_setup_lock
+acquire_host_lifecycle_lock
 
 copy_verified_release_file() {
   local source=$1

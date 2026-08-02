@@ -33,6 +33,37 @@ func TestHostAgentIdentityExampleContainsOnlyDurableIdentity(t *testing.T) {
 	}
 }
 
+func TestHostAgentInstallerExposesManagedUpgradeMode(t *testing.T) {
+	payload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-host-agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(payload)
+	for _, marker := range []string{
+		`install-autostream-host-agent --upgrade`,
+		`--upgrade)`,
+		`install_mode="upgrade"`,
+		`--prepare, --config, and --upgrade are mutually exclusive`,
+		`--prepare, --config PATH, or --upgrade is required`,
+		`manual-upgrade-host-runtime`,
+		`--artifact-root "${EXTRACTED_ROOT}"`,
+		`--archive-sha256 "${ARTIFACT_SHA256}"`,
+		`--archive-size "${ARTIFACT_SIZE}"`,
+		`manual_upgrade_candidate_is_child_job`,
+		`record_manual_upgrade_signal`,
+		`forward_manual_upgrade_signal "${pending_signal}"`,
+		`trap '' INT TERM`,
+		`exit "${manual_upgrade_status}"`,
+	} {
+		if !strings.Contains(installer, marker) {
+			t.Fatalf("Host Agent installer upgrade CLI is missing %q", marker)
+		}
+	}
+	if strings.Count(installer, "manual_upgrade_candidate_is_child_job") < 2 {
+		t.Fatal("Host Agent installer must guard candidate signal forwarding with the child job identity")
+	}
+}
+
 func TestHostAgentSystemdUnitIsNonRootPortlessAndSandboxed(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join("..", "..", "systemd", "autostream-host-agent.service.example"))
 	if err != nil {
@@ -135,7 +166,7 @@ func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 		`(.database_schema == "none")`,
 		`verify_binary_identity "${BINARY_SOURCE}" "autostream-host-agent"`,
 		`verify_binary_identity "${LOCAL_EXECUTOR_BINARY_SOURCE}" "autostream-local-executor"`,
-		`for command in awk basename chmod chown dd dirname find getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel usermod; do`,
+		`for command in awk basename chmod chown dd dirname find flock getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel usermod; do`,
 		`HOST_RUNTIME_ROOT="/opt/autostream/host-agent"`,
 		`HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"`,
 		`create_symlink_with_journal`,
@@ -459,6 +490,174 @@ func TestHostReleaseAddsAttestedHostAgentAssetsWithoutRemovingLegacyAssets(t *te
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("host release workflow is missing %q", marker)
+		}
+	}
+}
+
+func TestHostUpgradePrivilegedLockInteropRunsInRootCI(t *testing.T) {
+	workflows := []struct {
+		name string
+		step string
+	}{
+		{
+			name: "ci.yml",
+			step: "Test managed Host config and upgrade locks with root-owned Linux fixtures",
+		},
+		{
+			name: "release-host.yml",
+			step: "Test updater config and Host upgrade locks with root-owned Linux fixtures",
+		},
+	}
+	for _, workflow := range workflows {
+		t.Run(workflow.name, func(t *testing.T) {
+			payload, err := os.ReadFile(filepath.Join(
+				"..", "..", ".github", "workflows", workflow.name,
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(payload)
+			start := strings.Index(text, "      - name: "+workflow.step)
+			if start < 0 {
+				t.Fatalf("root-owned Host upgrade lock step is missing")
+			}
+			step := text[start:]
+			if end := strings.Index(step[1:], "\n      - name:"); end >= 0 {
+				step = step[:end+1]
+			}
+			for _, marker := range []string{
+				"sudo env",
+				"TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller",
+				"TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock",
+				"TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes",
+				`-json | tee "${result}"`,
+				"A root-owned updater test was skipped",
+				"Root-owned updater test did not report pass",
+			} {
+				if !strings.Contains(step, marker) {
+					t.Fatalf("root-owned Host upgrade lock step is missing %q", marker)
+				}
+			}
+		})
+	}
+}
+
+func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
+	const pinnedUbuntu = "ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
+	smokes := []string{
+		"run-host-agent-installer-prepare-smoke.sh",
+		"run-host-agent-installer-upgrade-smoke.sh",
+	}
+	for _, workflowName := range []string{"ci.yml", "release-host.yml"} {
+		t.Run(workflowName, func(t *testing.T) {
+			payload, err := os.ReadFile(filepath.Join(
+				"..", "..", ".github", "workflows", workflowName,
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow := string(payload)
+			for _, smoke := range smokes {
+				marker := "/bin/bash /workspace/internal/security/testdata/" + smoke
+				markerIndex := strings.Index(workflow, marker)
+				if markerIndex < 0 {
+					t.Fatalf("%s no longer executes %s", workflowName, smoke)
+				}
+				stepStart := strings.LastIndex(workflow[:markerIndex], "\n      - name:")
+				if stepStart < 0 {
+					t.Fatalf("%s smoke %s is not in a named workflow step", workflowName, smoke)
+				}
+				step := workflow[stepStart:]
+				if stepEnd := strings.Index(step[1:], "\n      - name:"); stepEnd >= 0 {
+					step = step[:stepEnd+1]
+				}
+				for _, required := range []string{
+					"docker run --rm",
+					"--user 0:0",
+					"--network none",
+					pinnedUbuntu,
+					marker,
+				} {
+					if !strings.Contains(step, required) {
+						t.Fatalf("%s smoke %s is missing %q", workflowName, smoke, required)
+					}
+				}
+			}
+		})
+	}
+
+	ciPayload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := string(ciPayload)
+	for _, smoke := range smokes {
+		marker := "bash -n internal/security/testdata/" + smoke
+		if !strings.Contains(ci, marker) {
+			t.Fatalf("pull-request CI no longer syntax-checks %s", smoke)
+		}
+	}
+}
+
+func TestManualHostUpgradeGuidesUsePackagedReleaseRoot(t *testing.T) {
+	const (
+		archive = "autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz"
+		root    = "/opt/autostream/releases/artifacts/autostream-host-agent_vX.Y.Z_linux_amd64"
+	)
+	flow := strings.Join([]string{
+		"# Keep ../" + archive + " unchanged and adjacent.",
+		"cd " + root,
+		"sudo ./install/install-autostream-host-agent --upgrade",
+	}, "\n")
+	for _, guideName := range []string{"README.install.md", "README.local-executor.md"} {
+		t.Run(guideName, func(t *testing.T) {
+			payload, err := os.ReadFile(filepath.Join("..", "..", "release", guideName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			guide := string(payload)
+			if !strings.Contains(guide, flow) {
+				t.Fatalf("%s must keep the matching archive adjacent, enter the new concrete release root, and then run --upgrade", guideName)
+			}
+			if !strings.Contains(guide, "`README.md`") {
+				t.Fatalf("%s must reference the archive-contained README.md", guideName)
+			}
+			if strings.Contains(guide, "`README.host-agent.md`") {
+				t.Fatalf("%s references a source filename that is not packaged", guideName)
+			}
+			for _, dependency := range []string{"`flock`", "`util-linux`"} {
+				if !strings.Contains(guide, dependency) {
+					t.Fatalf("%s no longer documents Host installer dependency %s", guideName, dependency)
+				}
+			}
+		})
+	}
+
+	workflowPayload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release-host.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(workflowPayload)
+	for _, marker := range []string{
+		`host_agent_artifact="autostream-host-agent_${version}_linux_${arch}"`,
+		`cp release/README.host-agent.md "${host_agent_root}/README.md"`,
+		`cp release/README.local-executor.md "${host_agent_root}/README.local-executor.md"`,
+		`-e "s/vX\\.Y\\.Z/${version}/g" \`,
+		`-e "s/linux_amd64/linux_${arch}/g" \`,
+	} {
+		if !strings.Contains(workflow, marker) {
+			t.Fatalf("Host archive packaging no longer matches the documented upgrade flow: missing %q", marker)
+		}
+	}
+
+	hostGuidePayload, err := os.ReadFile(filepath.Join("..", "..", "release", "README.host-agent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostGuide := string(hostGuidePayload)
+	for _, dependency := range []string{"`flock`", "`util-linux`"} {
+		if !strings.Contains(hostGuide, dependency) {
+			t.Fatalf("Host Agent guide no longer documents installer dependency %s", dependency)
 		}
 	}
 }

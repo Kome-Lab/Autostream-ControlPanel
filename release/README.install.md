@@ -12,7 +12,7 @@ inputs and are not installed by this guide.
 
 - Linux amd64 or arm64 matching the archive name.
 - On the operator machine: `gh` for GitHub artifact-attestation verification.
-- On the server: `jq`, `sha256sum`, `tar`, systemd, and
+- On the server: `flock` (from `util-linux`), `jq`, `sha256sum`, `tar`, systemd, and
   `/usr/bin/mariadb-dump`. The installer creates the dedicated `autostream`
   account when it is missing.
 - One unchanged Control Panel `.tar.gz` from the immutable GitHub Release.
@@ -254,6 +254,23 @@ sudo ./install/install-autostream-local-executor \
   --policy /etc/autostream-local-executor/policy.json
 sudo systemctl enable --now autostream-host-agent.service
 ```
+
+For later Host runtime releases, verify and extract the new matching Host Agent
+archive, leave that unchanged archive adjacent to the newly extracted release
+directory, and enter that concrete new Host Agent release root before running
+the archive installer:
+
+```bash
+# Keep ../autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz unchanged and adjacent.
+cd /opt/autostream/releases/artifacts/autostream-host-agent_vX.Y.Z_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade
+```
+
+This mode preserves the installed identity and Local Executor policy, uses the
+fixed A/B slots, rejects active durable mutations and downgrades, and rolls back
+both processes together when activation proof fails. See the archive-contained
+`README.md` for the exact prerequisites and recovery semantics. Do not replace
+the Host Agent or Local Executor binary separately.
 
 Return to **Application Info > System Updates**, confirm the first observe-only
 heartbeat, review the projected targets and policy digest, then activate

@@ -24,18 +24,20 @@ type preparedHostAgentConfig interface {
 }
 
 type hostAgentConfigureDependencies struct {
-	Prepare           func(string, string) (preparedHostAgentConfig, error)
-	ServiceIdentity   func() (updateagent.HostAgentConfigurePeerIdentity, error)
-	ReadToken         func(context.Context) (string, error)
-	Stage             func(context.Context, string, string, string, updateagent.HostAgentConfigurePeerIdentity, time.Duration) (updateagent.UpdaterStagedConfiguration, error)
-	ValidateInstalled func(string, string, updateagent.UpdaterStagedConfiguration) error
-	Activate          func(context.Context, string, updateagent.UpdaterStagedConfiguration, updateagent.UpdaterRuntimeReport, time.Duration) (updateagent.UpdaterActivationResult, error)
-	Hostname          func() (string, error)
-	Output            io.Writer
+	AcquireRuntimeLocks func() (func(), error)
+	Prepare             func(string, string) (preparedHostAgentConfig, error)
+	ServiceIdentity     func() (updateagent.HostAgentConfigurePeerIdentity, error)
+	ReadToken           func(context.Context) (string, error)
+	Stage               func(context.Context, string, string, string, updateagent.HostAgentConfigurePeerIdentity, time.Duration) (updateagent.UpdaterStagedConfiguration, error)
+	ValidateInstalled   func(string, string, updateagent.UpdaterStagedConfiguration) error
+	Activate            func(context.Context, string, updateagent.UpdaterStagedConfiguration, updateagent.UpdaterRuntimeReport, time.Duration) (updateagent.UpdaterActivationResult, error)
+	Hostname            func() (string, error)
+	Output              io.Writer
 }
 
 func defaultHostAgentConfigureDependencies() hostAgentConfigureDependencies {
 	return hostAgentConfigureDependencies{
+		AcquireRuntimeLocks: updateagent.AcquireHostRuntimeSetupAndLifecycleLocks,
 		Prepare: func(identityPath, policyPath string) (preparedHostAgentConfig, error) {
 			return updateagent.PrepareHostAgentConfiguration(
 				identityPath,
@@ -92,7 +94,8 @@ func runHostAgentConfigure(ctx context.Context, args []string, dependencies host
 	if *timeout <= 0 || *timeout > 5*time.Minute {
 		return errors.New("--timeout must be greater than zero and at most 5m")
 	}
-	if dependencies.Prepare == nil || dependencies.ServiceIdentity == nil ||
+	if dependencies.AcquireRuntimeLocks == nil || dependencies.Prepare == nil ||
+		dependencies.ServiceIdentity == nil ||
 		dependencies.ReadToken == nil || dependencies.Stage == nil ||
 		dependencies.ValidateInstalled == nil || dependencies.Activate == nil ||
 		dependencies.Hostname == nil || dependencies.Output == nil {
@@ -102,6 +105,11 @@ func runHostAgentConfigure(ctx context.Context, args []string, dependencies host
 		return err
 	}
 
+	runtimeUnlock, err := dependencies.AcquireRuntimeLocks()
+	if err != nil {
+		return errors.New("another Host runtime setup or lifecycle operation is active")
+	}
+	defer runtimeUnlock()
 	peer, err := dependencies.ServiceIdentity()
 	if err != nil {
 		return err

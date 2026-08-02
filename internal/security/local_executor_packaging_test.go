@@ -39,6 +39,102 @@ func TestLocalExecutorPolicyExampleIsValidMutationPolicy(t *testing.T) {
 	}
 }
 
+func TestRuntimeInstallersSharePermanentHostSetupLock(t *testing.T) {
+	hostPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-host-agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-local-executor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostInstaller := string(hostPayload)
+	localInstaller := string(localPayload)
+	for name, installer := range map[string]string{
+		"Host Agent":     hostInstaller,
+		"Local Executor": localInstaller,
+	} {
+		for _, marker := range []string{
+			`.autostream-runtime-host-setup.lock`,
+			`.autostream-host-lifecycle.lock`,
+			`acquire_shared_host_setup_lock`,
+			`acquire_host_lifecycle_lock`,
+			`flock -n 8 || die "another AutoStream installer is provisioning shared host state"`,
+			`flock -n 9 || die "another privileged Host lifecycle operation is active"`,
+			`/proc/self/fd/8`,
+			`/proc/self/fd/9`,
+			`"root:root:700"`,
+			`"root:root:600:1"`,
+		} {
+			if !strings.Contains(installer, marker) {
+				t.Fatalf("%s installer shared setup lock is missing %q", name, marker)
+			}
+		}
+		commandLineStart := strings.Index(installer, "for command in ")
+		if commandLineStart < 0 {
+			t.Fatalf("%s installer required-command loop is missing", name)
+		}
+		commandLineEnd := strings.Index(installer[commandLineStart:], "; do")
+		if commandLineEnd < 0 ||
+			!strings.Contains(installer[commandLineStart:commandLineStart+commandLineEnd], " flock ") {
+			t.Fatalf("%s installer does not require flock", name)
+		}
+	}
+
+	hostUpgrade := strings.Index(hostInstaller, `if [[ ${install_mode} == "upgrade" ]]`)
+	hostSetupLock := strings.LastIndex(hostInstaller, "acquire_shared_host_setup_lock")
+	hostLifecycleLock := strings.LastIndex(hostInstaller, "acquire_host_lifecycle_lock")
+	hostPersistentMutation := strings.Index(hostInstaller, "\nprepare_agent_user_rollback_login ||")
+	if hostUpgrade < 0 || hostSetupLock < 0 || hostLifecycleLock < 0 ||
+		hostPersistentMutation < 0 || hostUpgrade >= hostSetupLock ||
+		hostSetupLock >= hostLifecycleLock || hostLifecycleLock >= hostPersistentMutation {
+		t.Fatal("Host Agent installer must bypass shell locks for --upgrade and acquire setup then lifecycle before prepare/config mutations")
+	}
+	localSetupLock := strings.LastIndex(localInstaller, "acquire_shared_host_setup_lock")
+	localLifecycleLock := strings.LastIndex(localInstaller, "acquire_host_lifecycle_lock")
+	localAgentIdentity := strings.LastIndex(localInstaller, `agent_uid=$(id -u "${AGENT_USER}")`)
+	localPersistentMutation := strings.Index(localInstaller, `ensure_root_directory "${CONFIG_DIR}" 0700`)
+	if localSetupLock < 0 || localLifecycleLock < 0 || localAgentIdentity < 0 ||
+		localPersistentMutation < 0 || localSetupLock >= localLifecycleLock ||
+		localLifecycleLock >= localAgentIdentity || localAgentIdentity >= localPersistentMutation {
+		t.Fatal("Local Executor installer must acquire setup then lifecycle and discover the Agent identity before managed directory mutations")
+	}
+}
+
+func TestRuntimeUninstallersUseCanonicalPermanentHostLocks(t *testing.T) {
+	for _, scriptName := range []string{
+		"uninstall-autostream-host-agent",
+		"uninstall-autostream-local-executor",
+	} {
+		payload, err := os.ReadFile(filepath.Join("..", "..", "release", scriptName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := string(payload)
+		for _, marker := range []string{
+			`.autostream-runtime-host-setup.lock`,
+			`.autostream-host-lifecycle.lock`,
+			`acquire_host_runtime_locks`,
+			`flock -n 8 || die "another AutoStream installer is provisioning shared host state"`,
+			`flock -n 9 || die "another privileged Host lifecycle operation is active"`,
+			`"root:root:700"`,
+			`"root:root:600:1"`,
+		} {
+			if !strings.Contains(script, marker) {
+				t.Fatalf("%s lock boundary is missing %q", scriptName, marker)
+			}
+		}
+		setupLock := strings.Index(script, "flock -n 8")
+		lifecycleLock := strings.Index(script, "flock -n 9")
+		lockCall := strings.LastIndex(script, "acquire_host_runtime_locks")
+		firstManagedPreflight := strings.Index(script, "\nverify_managed_file()")
+		if setupLock < 0 || lifecycleLock <= setupLock || lockCall <= lifecycleLock ||
+			firstManagedPreflight <= lockCall {
+			t.Fatalf("%s must acquire setup then lifecycle before managed-state preflight", scriptName)
+		}
+	}
+}
+
 func TestLocalExecutorSystemdUnitsUseRootSocketActivationWithoutTCP(t *testing.T) {
 	servicePayload, err := os.ReadFile(filepath.Join("..", "..", "systemd", "autostream-local-executor.service.example"))
 	if err != nil {
@@ -247,7 +343,7 @@ func TestLocalExecutorInstallersPreserveRootPolicyBoundary(t *testing.T) {
 		`rmdir -- /run/autostream-local-executor`,
 		`quarantine_file "${BINARY_DEST}"`,
 		`restore_quarantined_file "${binary_backup}" "${BINARY_DEST}"`,
-		`for command in find mktemp mountpoint mv readlink rm rmdir stat systemctl systemd-tmpfiles; do`,
+		`for command in dirname find flock install mktemp mountpoint mv readlink rm rmdir stat sync systemctl systemd-tmpfiles; do`,
 		`state directory contains a mount point; refusing removal`,
 		`freeze_host_runtime_producers`,
 		`systemctl disable --now "${HOST_AGENT_SERVICE_NAME}"`,

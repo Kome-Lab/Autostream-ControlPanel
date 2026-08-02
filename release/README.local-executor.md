@@ -155,6 +155,23 @@ exact healthy-slot `/proc/<pid>/exe`, and matching version and
 mutation/recovery protocol across a bounded stability interval before it
 restarts the Host Agent and clears `rolling_back`.
 
+An operator-managed offline Host runtime update uses the verified Host Agent
+archive entry point, not this component installer and not the internal root
+helper directly. Leave the unchanged archive adjacent to the newly extracted
+directory and enter that concrete new Host Agent release root first:
+
+```bash
+# Keep ../autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz unchanged and adjacent.
+cd /opt/autostream/releases/artifacts/autostream-host-agent_vX.Y.Z_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade
+```
+
+That command stages and activates the Host Agent and Local Executor together,
+preserves this policy, and reuses the same durable A/B rollback state. A
+standalone Local Executor replacement cannot establish the paired runtime,
+blocker, process-identity, and rollback proof required by this boundary.
+The archive-contained Host runtime guide is `README.md`.
+
 Self-update grant recovery uses only the root-owned hash, immutable binding,
 and consumed receipt; it never persists the raw grant. A reboot with stable
 old runtime plus prepared/consumed stage state fails that exact generation
@@ -284,7 +301,8 @@ The installer:
 
 - requires a regular `root:root 0600` policy source;
 - requires only the unchanged adjacent Host Agent `.tar.gz` as release input;
-- requires `jq`, `sha256sum`, and `tar` on the server;
+- requires `flock` (from `util-linux`), `jq`, `sha256sum`, and `tar` on the
+  server;
 - validates it with the packaged binary before replacing any live file;
 - requires its numeric Agent UID/GID to match the installed Host Agent;
 - installs the policy as

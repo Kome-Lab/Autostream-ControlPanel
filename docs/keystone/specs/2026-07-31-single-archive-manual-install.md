@@ -110,15 +110,18 @@ All six components set `rollback_compatible` to `true`.
    existing current release, public paths, unit, configuration, state, and
    running process. Existing state-directory presence, contents, ownership,
    and mode remain exact on failure.
-   The shared host-setup and per-target lock pathnames under
-   `/run/autostream-updater` are deliberate exceptions: they remain as
-   permanent root-owned serialization objects so cleanup cannot split mutual
-   exclusion across two inodes. A durable migration backup created by the
-   current attempt may also remain as recovery evidence. Any migration backup
-   that existed before the attempt retains its inode, ownership, mode,
-   metadata, and digest exactly. All other invocation-created accounts,
-   managed releases, and directories are rolled back when their identity can
-   be proven safely.
+   The shared host-setup, lifecycle, and per-target lock pathnames under
+   `/run/autostream-updater`, plus the legacy
+   `/run/autostream-update-host-install.lock`, are deliberate exceptions: they
+   remain as permanent root-owned serialization objects so cleanup cannot split
+   mutual exclusion across two inodes. Any existing Host self-update grant, including
+   terminal `applied` or `failed` state, remains byte-for-byte unchanged and
+   blocks the install until the normal healthy-slot Local Executor converges
+   it. A durable migration backup created by the current attempt may also
+   remain as recovery evidence. Any migration backup that existed before the
+   attempt retains its inode, ownership, mode, metadata, and digest exactly.
+   All other invocation-created accounts, managed releases, and directories
+   are rolled back when their identity can be proven safely.
 8. Host Agent and Local Executor entry points verify the same Host Agent bundle
    independently. Bootstrap provenance recording must not create a partial
    Host Agent self-update slot binding.
@@ -128,8 +131,28 @@ All six components set `rollback_compatible` to `true`.
    `install-autostream-local-executor --policy ...` is the operator's explicit
    authorization to enable its socket/service; legacy
    `install-autostream-host-agent --config ...` may enable the Agent. Existing
-   Host Agent deployments use the dedicated self-update path instead of
-   rerunning these bootstrap installers.
+   healthy managed A/B Host Agent deployments use
+   `install-autostream-host-agent --upgrade`; they do not rerun `--prepare`,
+   `--config`, or the Local Executor bootstrap installer.
+10. Host `--upgrade` preserves identity and policy, upgrades Agent and Executor
+    as one version-matched pair, rejects downgrade/mixed/runtime-mutation state,
+    fences both the shared setup/lifecycle locks and the legacy update-host
+    installer lock before target locks, and uses the existing durable A/B slot
+    and rollback state machine. Its
+    schema-v2 manual archive binding is an operator-selected content binding,
+    not publisher authentication; archive attestation remains an operator-side
+    prerequisite before transfer. Before the durable `activating` fence, a
+    returned failure restores slot artifacts and any invocation-created
+    bootstrap state synchronously; a power loss may leave only the compatible
+    stable bootstrap state needed by the old recovery binary. At and after that
+    fence, failure follows the existing schema-v2 recovery contract instead of
+    the general exact-state rule in item 7: `rolling_back`, `failed_generation`,
+    and the failed inactive candidate may remain until the fixed recovery timer
+    converges them. Identity, policy, Agent journal, credential/target/port
+    ledgers, and pre-existing Local Executor checkpoints are never rewritten by
+    that rollback. Valid terminal checkpoints (`succeeded` or `rolled_back`) are
+    read-only non-blockers; unsafe, invalid, or non-terminal checkpoints block
+    before staging and remain unchanged.
 
 ## Release and updater compatibility
 

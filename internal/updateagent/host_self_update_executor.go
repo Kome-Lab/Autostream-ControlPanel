@@ -51,6 +51,7 @@ type hostSelfUpdateExecutorRuntime struct {
 	waitExecutorStable  func(context.Context) error
 	watchdogStatus      func(context.Context) (HostSelfUpdateRuntimeStatus, error)
 	syncDir             func(string) error
+	writeState          func(string, []byte, os.FileMode) error
 	allowTestPaths      bool
 }
 
@@ -89,7 +90,8 @@ func defaultHostSelfUpdateExecutorRuntime() hostSelfUpdateExecutorRuntime {
 		watchdogStatus: (LocalExecutorClient{
 			SocketPath: LocalExecutorSocketPath,
 		}).HostSelfUpdateWatchdogStatus,
-		syncDir: syncDirectory,
+		syncDir:    syncDirectory,
+		writeState: writeAtomicFile,
 	}
 }
 
@@ -2436,7 +2438,11 @@ func (rt hostSelfUpdateExecutorRuntime) saveState(
 	if err != nil {
 		return errors.New("encode host self-update state")
 	}
-	if err := writeAtomicFile(
+	writer := rt.writeState
+	if writer == nil {
+		writer = writeAtomicFile
+	}
+	if err := writer(
 		rt.statePath, append(payload, '\n'), 0o600,
 	); err != nil {
 		return err
