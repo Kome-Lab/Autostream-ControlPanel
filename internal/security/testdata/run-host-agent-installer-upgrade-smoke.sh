@@ -148,6 +148,13 @@ case "${1:-}" in
       printf 'unexpected manual upgrade invocation: %s\n' "$*" >&2
       exit 92
     }
+    [[ $(stat -c '%U:%G:%a:%h' -- \
+      "${3}/systemd/autostream-host-self-update-recovery@.service") == \
+      root:root:644:1 ]] || {
+      printf '%s\n' \
+        'candidate Host recovery service was not normalized to root:root 0644 nlink 1' >&2
+      exit 95
+    }
     {
       printf 'artifact-root=%s\n' "$3"
       printf 'archive-sha256=%s\n' "$5"

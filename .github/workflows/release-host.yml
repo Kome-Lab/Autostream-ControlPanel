@@ -1122,9 +1122,10 @@ jobs:
           jq -S 'sort_by(.name)' <<< "${expected_assets}" > "${RUNNER_TEMP}/host-release-expected-assets.json"
 
           release_body_path="${RUNNER_TEMP}/host-release-body.md"
-          printf '%s\n\n%s' \
+          printf '%s\n\n%s\n\n%s' \
             "AutoStream Host Bridge ${RELEASE_VERSION}" \
-            "This immutable Bridge release retains the legacy ssh_v1 host-update assets while adding the pull_v2 Host Agent and Local Executor assets. Migrate one host at a time, keep SSH and port 8090 recovery assets retained during the bake period, and remove them only in a later release." \
+            "This release preserves restrictive private archive extraction while normalizing only the verified Host recovery service candidate to root:root 0644 before Local Executor validation. For the fail-closed v1.9.6 candidate-template rejection, install and verify the matching Control Panel ${RELEASE_VERSION}, then retry with the unmodified Host Agent ${RELEASE_VERSION} archive." \
+            "This immutable Bridge release retains the legacy ssh_v1 host-update assets and the pull_v2 Host Agent and Local Executor assets. Migrate one host at a time, keep SSH and port 8090 recovery assets during the bake period, and remove them only in a later release." \
             > "${release_body_path}"
           test -s "${release_body_path}"
           (
