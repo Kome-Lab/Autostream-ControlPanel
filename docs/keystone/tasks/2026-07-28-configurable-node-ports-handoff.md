@@ -144,3 +144,28 @@ current worktreeで、公開・fleet操作の前に閉じられるSlice 9のsour
 これはlocal Review Gateの証拠であり、Ship Gate完了ではない。commit、push、tag、release、deployは行っていない。公開immutable release、実systemd process kill/reboot、amd64/arm64 download、実Docker host、22/8090遮断E2E、authoritative fleet inventory、host単位移行、24時間以上のbake、別releaseでのlegacy撤去は未実施である。
 
 次のoperator actionは`autostream-docs/docs/runbooks/bridge-release-fleet-gate.md`に従う。release順はContracts、Control Panel/Host、Node 4、Docker、Docsで、observer導入後は非Control Panel systemd canary、Docker canary、non-control fleet、Control Panel host最後、bake、別legacy撤去releaseの順とする。各phaseでCLIが`PASS`しない場合は停止する。
+
+## v1.9.6 Host recovery unit follow-up（2026-08-03）
+
+Host runtimeの`--upgrade`には、`v1.9.6` follow-upとしてrecovery service
+templateだけを対象にしたforward-only migrationを追加した。canonical
+`FragmentPath`は
+`/etc/systemd/system/autostream-host-self-update-recovery@.service`で、legacy
+SHA-256
+`751c69c970407b4873d403971a192b33320d44b352aba58a9ab56c2fa1e1309c`から
+corrected SHA-256
+`d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd`への
+exactな遷移だけを許可する。既知の`10-executable-guard.conf`と
+`20-bootstrap-state-guard.conf`はexact digest/metadata/effective pathを確認後に
+削除し、最終状態は両instanceともcanonical fragment、空の`DropInPaths`、
+`NeedDaemonReload=no`とする。未知のbase/drop-in/overrideはmutation前にfail
+closedとする。
+
+durable stateがまだないbootstrapでは、legacy unitにより`failed`となった
+recovery instanceを`MainPID=0`のときだけcorrected unit収束後に
+`reset-failed`する。runtime activationが失敗してA/B slotをrollbackしても、
+corrected unitはlegacyへ戻さない。manifestの`rollback_compatible: true`は
+paired runtime/state protocolのrollback境界であり、このroot-owned unit
+migrationの逆変換を意味しない。Ship Gateでは`v1.9.6` tag、immutable
+Release、実systemd hostでのupgrade/reboot/rollback canaryをそれぞれ別の証拠
+として確認する。

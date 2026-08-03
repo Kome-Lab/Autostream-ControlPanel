@@ -23,6 +23,7 @@ const (
 	hostSelfUpdateExecutorSocketUnit    = "autostream-local-executor.socket"
 	hostSelfUpdateBinaryIdentityTimeout = 2 * time.Second
 	hostSelfUpdateDetachedVerifyTimeout = 3 * time.Second
+	hostSelfUpdateSystemdExecutorProbes = 8
 )
 
 type hostAgentReleaseDownloader interface {
@@ -2022,12 +2023,12 @@ func (rt hostSelfUpdateExecutorRuntime) verifyHealthyLocalExecutor(
 		info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("healthy Local Executor binary is unsafe")
 	}
-	firstPID, err := rt.healthyLocalExecutorPID(ctx, expected)
+	firstPID, err := rt.acquireHealthyLocalExecutorPID(ctx, expected)
 	if err != nil {
 		return err
 	}
 	if err := rt.waitExecutorStable(ctx); err != nil {
-		return errors.New("wait for healthy Local Executor stability")
+		return fmt.Errorf("wait for healthy Local Executor stability: %w", err)
 	}
 	secondPID, err := rt.healthyLocalExecutorPID(ctx, expected)
 	if err != nil {
@@ -2096,10 +2097,81 @@ func (rt hostSelfUpdateExecutorRuntime) verifyHealthyLocalExecutor(
 	return nil
 }
 
+func isHostRuntimeSystemdExecutor(executable string) bool {
+	switch filepath.Clean(executable) {
+	case "/usr/lib/systemd/systemd-executor",
+		"/lib/systemd/systemd-executor":
+		return true
+	default:
+		return false
+	}
+}
+
+func (rt hostSelfUpdateExecutorRuntime) acquireHealthyLocalExecutorPID(
+	ctx context.Context,
+	expected string,
+) (int, error) {
+	pinnedPID := 0
+	for probe := 0; probe < hostSelfUpdateSystemdExecutorProbes; probe++ {
+		pid, running, err := rt.healthyLocalExecutorProcess(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if pinnedPID == 0 {
+			pinnedPID = pid
+		} else if pid != pinnedPID {
+			return 0, errors.New(
+				"healthy Local Executor MainPID changed during systemd-executor transition",
+			)
+		}
+		if filepath.Clean(running) == filepath.Clean(expected) {
+			return pid, nil
+		}
+		if !isHostRuntimeSystemdExecutor(running) {
+			return 0, errors.New(
+				"Local Executor is not running the healthy slot binary",
+			)
+		}
+		if probe+1 == hostSelfUpdateSystemdExecutorProbes {
+			return 0, errors.New(
+				"healthy Local Executor remained in systemd-executor beyond the startup probe limit",
+			)
+		}
+		if err := rt.waitExecutorStable(ctx); err != nil {
+			return 0, fmt.Errorf(
+				"wait for healthy Local Executor systemd-executor transition: %w",
+				err,
+			)
+		}
+	}
+	return 0, errors.New("healthy Local Executor startup probe limit is invalid")
+}
+
 func (rt hostSelfUpdateExecutorRuntime) healthyLocalExecutorPID(
 	ctx context.Context,
 	expected string,
 ) (int, error) {
+	pid, running, err := rt.healthyLocalExecutorProcess(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if filepath.Clean(running) != filepath.Clean(expected) {
+		return 0, errors.New(
+			"Local Executor is not running the healthy slot binary",
+		)
+	}
+	return pid, nil
+}
+
+func (rt hostSelfUpdateExecutorRuntime) healthyLocalExecutorProcess(
+	ctx context.Context,
+) (int, string, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, "", fmt.Errorf(
+			"verify healthy Local Executor process: %w",
+			err,
+		)
+	}
 	for _, unit := range []string{
 		hostSelfUpdateExecutorSocketUnit,
 		hostSelfUpdateExecutorServiceUnit,
@@ -2113,7 +2185,7 @@ func (rt hostSelfUpdateExecutorRuntime) healthyLocalExecutorPID(
 			"--quiet",
 			unit,
 		); err != nil {
-			return 0, fmt.Errorf("%s is not active", unit)
+			return 0, "", fmt.Errorf("%s is not active", unit)
 		}
 	}
 	output, err := rt.runner.Run(
@@ -2127,22 +2199,17 @@ func (rt hostSelfUpdateExecutorRuntime) healthyLocalExecutorPID(
 		hostSelfUpdateExecutorServiceUnit,
 	)
 	if err != nil {
-		return 0, errors.New("read healthy Local Executor MainPID")
+		return 0, "", errors.New("read healthy Local Executor MainPID")
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(output))
 	if err != nil || pid <= 0 {
-		return 0, errors.New("healthy Local Executor has no MainPID")
+		return 0, "", errors.New("healthy Local Executor has no MainPID")
 	}
 	running, err := rt.resolveProcessExe(pid)
 	if err != nil {
-		return 0, errors.New("resolve healthy Local Executor executable")
+		return 0, "", errors.New("resolve healthy Local Executor executable")
 	}
-	if filepath.Clean(running) != filepath.Clean(expected) {
-		return 0, errors.New(
-			"Local Executor is not running the healthy slot binary",
-		)
-	}
-	return pid, nil
+	return pid, running, nil
 }
 
 func (rt hostSelfUpdateExecutorRuntime) switchCurrent(slot string) error {

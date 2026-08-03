@@ -1,7 +1,8 @@
 [Unit]
 Description=AutoStream Host Agent A/B self-update recovery for slot %i
 Documentation=https://github.com/Kome-Lab/Autostream-ControlPanel
-ConditionPathIsExecutable=/opt/autostream/host-agent/slots/%i/bin/autostream-local-executor
+ConditionPathExists=/var/lib/autostream-local-executor/host-self-update/state.json
+ConditionFileIsExecutable=/opt/autostream/host-agent/slots/%i/bin/autostream-local-executor
 After=local-fs.target
 
 [Service]

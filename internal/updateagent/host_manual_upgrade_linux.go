@@ -56,6 +56,7 @@ type manualHostUpgradeRuntime struct {
 	now                func() time.Time
 	waitStable         func(context.Context) error
 	resolveProcessExe  func(int) (string, error)
+	mkdirStateRoot     func(string, os.FileMode) error
 	acquireLocks       func() (func(), error)
 	acquireTargetLocks func(LocalExecutorPolicy, []Target) (func(), error)
 	fixedCheckpoints   []Target
@@ -82,6 +83,10 @@ type manualHostUpgradeSnapshot struct {
 	policy                    secureManualHostUpgradeFile
 	installedFiles            []secureManualHostUpgradeFile
 	publicLinks               []secureManualHostUpgradeLink
+	stateParent               secureManualHostUpgradeDirectory
+	stateRoot                 secureManualHostUpgradeDirectory
+	recoveryUnitConfig        *manualHostRecoveryUnitMigrationConfig
+	recoveryUnitFinal         bool
 	executorPolicy            LocalExecutorPolicy
 	legacyHelperConfig        HelperConfig
 	legacyHelperConfigFile    secureManualHostUpgradeFile
@@ -98,6 +103,14 @@ type secureManualHostUpgradeFile struct {
 	path   string
 	info   os.FileInfo
 	digest string
+}
+
+type secureManualHostUpgradeDirectory struct {
+	path    string
+	info    os.FileInfo
+	mode    os.FileMode
+	present bool
+	created bool
 }
 
 func defaultManualHostUpgradeRuntime() manualHostUpgradeRuntime {
@@ -175,7 +188,7 @@ func upgradeHostRuntimeWithRuntime(
 	}
 	defer unlock()
 
-	snapshot, err := validateManualHostUpgradeInstallation(input.ArtifactRoot, rt)
+	snapshot, err := validateManualHostUpgradeInstallation(ctx, input.ArtifactRoot, rt)
 	if err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
@@ -189,7 +202,12 @@ func upgradeHostRuntimeWithRuntime(
 		)
 	}
 	defer targetsUnlock()
-	if err := validateManualHostUpgradeServicePreconditions(ctx, rt); err != nil {
+	if err := validateManualHostUpgradeCoreServicePreconditions(ctx, rt); err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	if err := validateManualHostUpgradeRecoveryServicePreconditions(
+		ctx, rt, true,
+	); err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
 	currentSlot, err := rt.selfUpdate.readCurrentSlot()
@@ -211,12 +229,11 @@ func upgradeHostRuntimeWithRuntime(
 	); err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
-	if err := rt.selfUpdate.recoverHostSelfUpdateSlotArtifacts(); err != nil {
-		return ManualHostUpgradeResult{}, fmt.Errorf(
-			"recover interrupted Host runtime slot transition: %w", err,
-		)
-	}
-	if err := rejectManualHostUpgradeTransitionResidue(rt.selfUpdate); err != nil {
+	if err := validateManualHostUpgradeRecoveryServicePreconditions(
+		ctx,
+		rt,
+		!persisted && snapshot.recoveryUnitConfig != nil,
+	); err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
 	if err := inspectManualHostUpgradeDurableBlockers(
@@ -248,7 +265,8 @@ func upgradeHostRuntimeWithRuntime(
 			"installed Host Agent and Local Executor are a mixed runtime",
 		)
 	}
-	if request.AgentVersion == current.Agent.Version {
+	sameVersion := request.AgentVersion == current.Agent.Version
+	if sameVersion {
 		exact, exactErr := manualHostUpgradeAlreadyCurrent(
 			currentSlot, current, request, targetDigests, rt,
 		)
@@ -260,14 +278,7 @@ func upgradeHostRuntimeWithRuntime(
 				"same-version Host runtime content drift is not upgradeable",
 			)
 		}
-		return ManualHostUpgradeResult{
-			PreviousSlot:   currentSlot,
-			ActiveSlot:     currentSlot,
-			Version:        request.AgentVersion,
-			AlreadyCurrent: true,
-		}, nil
-	}
-	if !updateHostBootstrapSemverAtLeast(
+	} else if !updateHostBootstrapSemverAtLeast(
 		request.AgentVersion,
 		current.Agent.Version,
 	) {
@@ -275,7 +286,83 @@ func upgradeHostRuntimeWithRuntime(
 			"manual Host runtime downgrade is rejected",
 		)
 	}
-
+	if err := rt.selfUpdate.recoverHostSelfUpdateSlotArtifacts(); err != nil {
+		return ManualHostUpgradeResult{}, fmt.Errorf(
+			"recover interrupted Host runtime slot transition: %w", err,
+		)
+	}
+	if err := rejectManualHostUpgradeTransitionResidue(rt.selfUpdate); err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	if sameVersion {
+		if snapshot.recoveryUnitConfig != nil && !snapshot.recoveryUnitFinal {
+			if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+			recheckedArtifact, recheckErr := inspectManualHostUpgradeArtifact(
+				ctx, input, rt,
+			)
+			if recheckErr != nil || recheckedArtifact != artifact {
+				return ManualHostUpgradeResult{}, errors.New(
+					"verified Host runtime bundle changed before recovery unit migration",
+				)
+			}
+			if slot, readErr := rt.selfUpdate.readCurrentSlot(); readErr != nil ||
+				slot != currentSlot {
+				return ManualHostUpgradeResult{}, errors.New(
+					"managed Host runtime current slot changed before recovery unit migration",
+				)
+			}
+			snapshot, err = migrateManualHostUpgradeRecoveryUnit(ctx, snapshot)
+			if err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+			if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+		}
+		if !persisted && snapshot.recoveryUnitConfig != nil {
+			if err := normalizeManualHostUpgradeRecoveryServices(
+				ctx, snapshot, rt,
+			); err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+		}
+		if !persisted {
+			if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+			recheckedArtifact, err := inspectManualHostUpgradeArtifact(
+				ctx, input, rt,
+			)
+			if err != nil || recheckedArtifact != artifact {
+				return ManualHostUpgradeResult{}, errors.New(
+					"verified Host runtime bundle changed before bootstrap persistence",
+				)
+			}
+			if slot, readErr := rt.selfUpdate.readCurrentSlot(); readErr != nil ||
+				slot != currentSlot {
+				return ManualHostUpgradeResult{}, errors.New(
+					"managed Host runtime current slot changed before bootstrap persistence",
+				)
+			}
+			snapshot, err = persistManualHostUpgradeBootstrapState(
+				state, snapshot, rt,
+			)
+			if err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+		}
+		return ManualHostUpgradeResult{
+			PreviousSlot:   currentSlot,
+			ActiveSlot:     currentSlot,
+			Version:        request.AgentVersion,
+			AlreadyCurrent: true,
+		}, nil
+	}
 	if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
@@ -291,6 +378,32 @@ func upgradeHostRuntimeWithRuntime(
 			"managed Host runtime current slot changed before staging",
 		)
 	}
+	snapshot, err = migrateManualHostUpgradeRecoveryUnit(ctx, snapshot)
+	if err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	recheckedArtifact, err = inspectManualHostUpgradeArtifact(ctx, input, rt)
+	if err != nil || recheckedArtifact != artifact {
+		return ManualHostUpgradeResult{}, errors.New(
+			"verified Host runtime bundle changed after recovery unit migration",
+		)
+	}
+	if slot, readErr := rt.selfUpdate.readCurrentSlot(); readErr != nil ||
+		slot != currentSlot {
+		return ManualHostUpgradeResult{}, errors.New(
+			"managed Host runtime current slot changed after recovery unit migration",
+		)
+	}
+	if !persisted && snapshot.recoveryUnitConfig != nil {
+		if err := normalizeManualHostUpgradeRecoveryServices(
+			ctx, snapshot, rt,
+		); err != nil {
+			return ManualHostUpgradeResult{}, err
+		}
+	}
 
 	staged, err := StageHostSelfUpdate(
 		state, request, HostLifecycleBlockers{}, targetDigests,
@@ -300,27 +413,21 @@ func upgradeHostRuntimeWithRuntime(
 			"stage manual Host runtime state: %w", err,
 		)
 	}
-	statePersistedInitially := persisted
-	if !persisted {
-		if err := rt.selfUpdate.saveState(state); err != nil {
-			restoreErr := restoreManualHostUpgradeOriginalState(
-				state, statePersistedInitially, rt,
-			)
-			return ManualHostUpgradeResult{}, errors.Join(
-				fmt.Errorf("persist bootstrap Host runtime stable state: %w", err),
-				restoreErr,
-			)
-		}
-		persisted = true
-	}
 	_, err = manualHostUpgradeSlotExists(
 		staged.PendingSlot, rt,
 	)
 	if err != nil {
-		restoreErr := restoreManualHostUpgradeOriginalState(
-			state, statePersistedInitially, rt,
+		return ManualHostUpgradeResult{}, err
+	}
+	statePersistedInitially := persisted
+	if !persisted {
+		snapshot, err = persistManualHostUpgradeBootstrapState(
+			state, snapshot, rt,
 		)
-		return ManualHostUpgradeResult{}, errors.Join(err, restoreErr)
+		if err != nil {
+			return ManualHostUpgradeResult{}, err
+		}
+		persisted = true
 	}
 	abortBeforeFence := func(cause error) (ManualHostUpgradeResult, error) {
 		recoveryCtx, cancel := context.WithTimeout(
@@ -452,6 +559,9 @@ func prepareManualHostUpgradeRuntime(rt *manualHostUpgradeRuntime) error {
 	if rt.resolveProcessExe == nil {
 		rt.resolveProcessExe = rt.selfUpdate.resolveProcessExe
 	}
+	if rt.mkdirStateRoot == nil {
+		rt.mkdirStateRoot = os.Mkdir
+	}
 	if rt.acquireTargetLocks == nil && rt.allowTestPaths {
 		rt.acquireTargetLocks = func(LocalExecutorPolicy, []Target) (func(), error) {
 			return func() {}, nil
@@ -461,7 +571,7 @@ func prepareManualHostUpgradeRuntime(rt *manualHostUpgradeRuntime) error {
 		rt.fixedCheckpoints = manualHostUpgradeFixedSystemdCheckpointTargets()
 	}
 	if rt.acquireLocks == nil || rt.acquireTargetLocks == nil || rt.waitStable == nil ||
-		rt.resolveProcessExe == nil {
+		rt.resolveProcessExe == nil || rt.mkdirStateRoot == nil {
 		return errors.New("manual Host runtime upgrade dependencies are incomplete")
 	}
 	if rt.selfUpdate.verificationTimeout < 30*time.Second ||
@@ -861,6 +971,7 @@ func readManualHostBinaryIdentity(
 }
 
 func validateManualHostUpgradeInstallation(
+	ctx context.Context,
 	artifactRoot string,
 	rt manualHostUpgradeRuntime,
 ) (manualHostUpgradeSnapshot, error) {
@@ -968,6 +1079,8 @@ func validateManualHostUpgradeInstallation(
 		)},
 	}
 	installedFiles := make([]secureManualHostUpgradeFile, 0, len(unitPairs))
+	var recoveryUnitConfig *manualHostRecoveryUnitMigrationConfig
+	recoveryUnitFinal := false
 	for _, pair := range unitPairs {
 		installed, snapshotErr := snapshotManualHostUpgradeFile(pair[0])
 		if snapshotErr != nil {
@@ -976,7 +1089,36 @@ func validateManualHostUpgradeInstallation(
 			)
 		}
 		source, snapshotErr := snapshotManualHostUpgradeFile(pair[1])
-		if snapshotErr != nil || installed.digest != source.digest {
+		if snapshotErr != nil {
+			return manualHostUpgradeSnapshot{}, errors.New(
+				"manual Host runtime upgrade requires unchanged systemd unit templates",
+			)
+		}
+		if pair[0] == rt.paths.installedRecoveryService &&
+			source.digest == manualHostRecoveryUnitCorrectedDigest {
+			config := manualHostRecoveryUnitMigrationConfig{
+				CandidatePath:  pair[1],
+				InstalledPath:  pair[0],
+				Runner:         rt.runner,
+				AllowTestPaths: rt.allowTestPaths,
+				SyncDirectory:  rt.selfUpdate.syncDir,
+			}
+			if err := prepareManualHostRecoveryUnitMigrationConfig(&config); err != nil {
+				return manualHostUpgradeSnapshot{}, err
+			}
+			recoverySnapshot, inspectErr := inspectManualHostRecoveryUnitMigration(
+				ctx, config,
+			)
+			if inspectErr != nil {
+				return manualHostUpgradeSnapshot{}, inspectErr
+			}
+			recoveryUnitConfig = &config
+			recoveryUnitFinal =
+				recoverySnapshot.installed.digest == manualHostRecoveryUnitCorrectedDigest &&
+					!recoverySnapshot.dropInDir.present &&
+					len(recoverySnapshot.dropIns) == 0 &&
+					manualHostRecoveryUnitEffectiveIsFinal(recoverySnapshot.effective)
+		} else if installed.digest != source.digest {
 			return manualHostUpgradeSnapshot{}, errors.New(
 				"manual Host runtime upgrade requires unchanged systemd unit templates",
 			)
@@ -995,7 +1137,6 @@ func validateManualHostUpgradeInstallation(
 	}{
 		{rt.selfUpdate.installRoot, 0o755},
 		{rt.selfUpdate.slotsRoot, 0o755},
-		{rt.selfUpdate.stateRoot, 0o700},
 	} {
 		info, statErr := os.Lstat(directory.path)
 		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
@@ -1007,14 +1148,132 @@ func validateManualHostUpgradeInstallation(
 			)
 		}
 	}
+	stateParent, stateRoot, err := snapshotManualHostUpgradeStateLayout(rt)
+	if err != nil {
+		return manualHostUpgradeSnapshot{}, err
+	}
 	return manualHostUpgradeSnapshot{
 		identity: identity, policy: policy, executorPolicy: executorPolicy,
 		installedFiles:            installedFiles,
 		publicLinks:               publicLinks,
+		stateParent:               stateParent,
+		stateRoot:                 stateRoot,
+		recoveryUnitConfig:        recoveryUnitConfig,
+		recoveryUnitFinal:         recoveryUnitFinal,
 		legacyHelperConfig:        legacyHelperConfig,
 		legacyHelperConfigFile:    legacyHelperConfigFile,
 		legacyHelperConfigPresent: legacyHelperConfigPresent,
 	}, nil
+}
+
+func snapshotManualHostUpgradeStateLayout(
+	rt manualHostUpgradeRuntime,
+) (secureManualHostUpgradeDirectory, secureManualHostUpgradeDirectory, error) {
+	parentPath := filepath.Clean(rt.paths.localExecutorStateRoot)
+	stateRootPath := filepath.Clean(rt.selfUpdate.stateRoot)
+	if !filepath.IsAbs(parentPath) || !filepath.IsAbs(stateRootPath) ||
+		stateRootPath != filepath.Join(parentPath, "host-self-update") {
+		return secureManualHostUpgradeDirectory{},
+			secureManualHostUpgradeDirectory{},
+			errors.New("managed Host runtime state root is outside its exact parent")
+	}
+	parent, err := snapshotManualHostUpgradeDirectory(
+		parentPath, 0o700, rt.allowTestPaths,
+	)
+	if err != nil {
+		return secureManualHostUpgradeDirectory{},
+			secureManualHostUpgradeDirectory{},
+			errors.New("managed Host runtime state parent is unsafe")
+	}
+	stateRoot, err := snapshotManualHostUpgradeDirectory(
+		stateRootPath, 0o700, rt.allowTestPaths,
+	)
+	if errors.Is(err, os.ErrNotExist) {
+		return parent, secureManualHostUpgradeDirectory{
+			path: stateRootPath,
+			mode: 0o700,
+		}, nil
+	}
+	if err != nil {
+		return secureManualHostUpgradeDirectory{},
+			secureManualHostUpgradeDirectory{},
+			errors.New("managed Host runtime state root is unsafe")
+	}
+	return parent, stateRoot, nil
+}
+
+func migrateManualHostUpgradeRecoveryUnit(
+	ctx context.Context,
+	snapshot manualHostUpgradeSnapshot,
+) (manualHostUpgradeSnapshot, error) {
+	if snapshot.recoveryUnitConfig == nil || snapshot.recoveryUnitFinal {
+		return snapshot, nil
+	}
+	if err := migrateManualHostRecoveryUnitForward(
+		ctx, *snapshot.recoveryUnitConfig,
+	); err != nil {
+		return snapshot, err
+	}
+	installed, err := snapshotManualHostUpgradeFile(
+		snapshot.recoveryUnitConfig.InstalledPath,
+	)
+	if err != nil || installed.digest != manualHostRecoveryUnitCorrectedDigest {
+		return snapshot, errors.New(
+			"snapshot corrected Host recovery unit after migration",
+		)
+	}
+	replaced := false
+	for index := range snapshot.installedFiles {
+		if snapshot.installedFiles[index].path ==
+			snapshot.recoveryUnitConfig.InstalledPath {
+			snapshot.installedFiles[index] = installed
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		return snapshot, errors.New(
+			"Host recovery unit migration snapshot is incomplete",
+		)
+	}
+	snapshot.recoveryUnitFinal = true
+	return snapshot, nil
+}
+
+func snapshotManualHostUpgradeDirectory(
+	path string,
+	mode os.FileMode,
+	allowTestPaths bool,
+) (secureManualHostUpgradeDirectory, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return secureManualHostUpgradeDirectory{}, err
+	}
+	if err := validateManualHostUpgradeDirectoryInfo(
+		path, info, mode, allowTestPaths,
+	); err != nil {
+		return secureManualHostUpgradeDirectory{}, err
+	}
+	return secureManualHostUpgradeDirectory{
+		path: path, info: info, mode: mode, present: true,
+	}, nil
+}
+
+func validateManualHostUpgradeDirectoryInfo(
+	path string,
+	info os.FileInfo,
+	mode os.FileMode,
+	allowTestPaths bool,
+) error {
+	if info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != mode {
+		return errors.New("manual Host runtime directory mode or type is unsafe")
+	}
+	if !allowTestPaths &&
+		(!isRootOwner(info) || validateSecureRootPath(path, true) != nil) {
+		return errors.New("manual Host runtime directory ownership is unsafe")
+	}
+	return nil
 }
 
 func snapshotManualHostUpgradeFile(path string) (secureManualHostUpgradeFile, error) {
@@ -1089,7 +1348,52 @@ func verifyManualHostUpgradeSnapshot(
 		!errors.Is(err, os.ErrNotExist) {
 		return errors.New("legacy Host Agent identity appeared during upgrade")
 	}
+	if !manualHostUpgradeDirectoryMatches(
+		snapshot.stateParent, rt.allowTestPaths,
+	) {
+		return errors.New("managed Host runtime state parent changed during upgrade")
+	}
+	if snapshot.stateRoot.present {
+		if !manualHostUpgradeDirectoryMatches(
+			snapshot.stateRoot, rt.allowTestPaths,
+		) {
+			return errors.New("managed Host runtime state root changed during upgrade")
+		}
+	} else if _, err := os.Lstat(snapshot.stateRoot.path); err == nil ||
+		!errors.Is(err, os.ErrNotExist) {
+		return errors.New("managed Host runtime state root appeared during upgrade")
+	}
+	if snapshot.recoveryUnitConfig != nil {
+		current, err := inspectManualHostRecoveryUnitMigration(
+			ctx, *snapshot.recoveryUnitConfig,
+		)
+		if err != nil {
+			return err
+		}
+		if snapshot.recoveryUnitFinal &&
+			(current.installed.digest != manualHostRecoveryUnitCorrectedDigest ||
+				current.dropInDir.present ||
+				len(current.dropIns) != 0 ||
+				!manualHostRecoveryUnitEffectiveIsFinal(current.effective)) {
+			return errors.New("corrected Host recovery unit changed during upgrade")
+		}
+	}
 	return ctx.Err()
+}
+
+func manualHostUpgradeDirectoryMatches(
+	expected secureManualHostUpgradeDirectory,
+	allowTestPaths bool,
+) bool {
+	if !expected.present || expected.info == nil {
+		return false
+	}
+	current, err := os.Lstat(expected.path)
+	return err == nil && os.SameFile(expected.info, current) &&
+		expected.info.Mode() == current.Mode() &&
+		validateManualHostUpgradeDirectoryInfo(
+			expected.path, current, expected.mode, allowTestPaths,
+		) == nil
 }
 
 func manualHostUpgradeProtectedFileMatches(
@@ -1165,7 +1469,7 @@ func rejectManualHostUpgradeTransitionResidue(
 	return nil
 }
 
-func validateManualHostUpgradeServicePreconditions(
+func validateManualHostUpgradeCoreServicePreconditions(
 	ctx context.Context,
 	rt manualHostUpgradeRuntime,
 ) error {
@@ -1194,17 +1498,81 @@ func validateManualHostUpgradeServicePreconditions(
 			return err
 		}
 	}
-	for _, unit := range []string{
-		"autostream-host-self-update-recovery@a.service",
-		"autostream-host-self-update-recovery@b.service",
-	} {
-		if err := requireManualHostSystemdState(
-			ctx, rt.runner, "is-active", unit, "inactive",
-		); err != nil {
+	return nil
+}
+
+func validateManualHostUpgradeRecoveryServicePreconditions(
+	ctx context.Context,
+	rt manualHostUpgradeRuntime,
+	allowFailedBootstrap bool,
+) error {
+	for _, unit := range manualHostRecoveryUnitInstances {
+		state, pid, err := readManualHostUpgradeRecoveryServiceState(
+			ctx, rt.runner, unit,
+		)
+		if err != nil {
 			return err
+		}
+		if pid != 0 ||
+			(state != "inactive" && !(allowFailedBootstrap && state == "failed")) {
+			return fmt.Errorf("%s must be inactive and have no MainPID", unit)
 		}
 	}
 	return nil
+}
+
+func readManualHostUpgradeRecoveryServiceState(
+	ctx context.Context,
+	runner CommandRunner,
+	unit string,
+) (string, int, error) {
+	output, _ := runner.Run(
+		ctx, "/", nil, "/usr/bin/systemctl", "is-active", unit,
+	)
+	state := strings.TrimSpace(output)
+	if state == "" {
+		return "", 0, fmt.Errorf("read %s active state", unit)
+	}
+	pidOutput, err := runner.Run(
+		ctx, "/", nil, "/usr/bin/systemctl", "show",
+		"--property=MainPID", "--value", unit,
+	)
+	if err != nil {
+		return "", 0, fmt.Errorf("read %s MainPID", unit)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(pidOutput))
+	if err != nil || pid < 0 {
+		return "", 0, fmt.Errorf("%s MainPID is invalid", unit)
+	}
+	return state, pid, nil
+}
+
+func normalizeManualHostUpgradeRecoveryServices(
+	ctx context.Context,
+	snapshot manualHostUpgradeSnapshot,
+	rt manualHostUpgradeRuntime,
+) error {
+	if snapshot.recoveryUnitConfig == nil || !snapshot.recoveryUnitFinal {
+		return errors.New("corrected Host recovery unit is unavailable for bootstrap")
+	}
+	for _, unit := range manualHostRecoveryUnitInstances {
+		state, pid, err := readManualHostUpgradeRecoveryServiceState(
+			ctx, rt.runner, unit,
+		)
+		if err != nil || pid != 0 {
+			return fmt.Errorf("%s is not safely quiescent", unit)
+		}
+		if state == "failed" {
+			if _, err := rt.runner.Run(
+				ctx, "/", nil, "/usr/bin/systemctl", "reset-failed", unit,
+			); err != nil {
+				return fmt.Errorf("reset failed bootstrap recovery unit %s", unit)
+			}
+		} else if state != "inactive" {
+			return fmt.Errorf("%s is not inactive", unit)
+		}
+	}
+	return validateManualHostUpgradeRecoveryServicePreconditions(ctx, rt, false)
 }
 
 func requireManualHostSystemdState(
@@ -1260,9 +1628,173 @@ func manualHostUpgradeSlotExists(
 	return true, nil
 }
 
+func persistManualHostUpgradeBootstrapState(
+	state HostSelfUpdateState,
+	snapshot manualHostUpgradeSnapshot,
+	rt manualHostUpgradeRuntime,
+) (manualHostUpgradeSnapshot, error) {
+	updated, err := ensureManualHostUpgradeBootstrapStateRoot(snapshot, rt)
+	if err != nil {
+		return snapshot, err
+	}
+	if err := rt.selfUpdate.saveState(state); err != nil {
+		restoreErr := restoreManualHostUpgradeOriginalState(
+			state, false, updated, rt,
+		)
+		return snapshot, errors.Join(
+			fmt.Errorf("persist bootstrap Host runtime stable state: %w", err),
+			restoreErr,
+		)
+	}
+	return updated, nil
+}
+
+func ensureManualHostUpgradeBootstrapStateRoot(
+	snapshot manualHostUpgradeSnapshot,
+	rt manualHostUpgradeRuntime,
+) (manualHostUpgradeSnapshot, error) {
+	if snapshot.stateRoot.present {
+		if !manualHostUpgradeDirectoryMatches(
+			snapshot.stateParent, rt.allowTestPaths,
+		) || !manualHostUpgradeDirectoryMatches(
+			snapshot.stateRoot, rt.allowTestPaths,
+		) {
+			return snapshot, errors.New(
+				"managed Host runtime state layout changed before bootstrap persistence",
+			)
+		}
+		return snapshot, nil
+	}
+	if !manualHostUpgradeDirectoryMatches(
+		snapshot.stateParent, rt.allowTestPaths,
+	) {
+		return snapshot, errors.New(
+			"managed Host runtime state parent changed before bootstrap persistence",
+		)
+	}
+	if err := rt.mkdirStateRoot(snapshot.stateRoot.path, 0o700); err != nil {
+		return snapshot, fmt.Errorf(
+			"create bootstrap Host self-update state root: %w", err,
+		)
+	}
+	createdInfo, err := os.Lstat(snapshot.stateRoot.path)
+	if err != nil {
+		return snapshot, errors.New(
+			"inspect created bootstrap Host self-update state root",
+		)
+	}
+	snapshot.stateRoot.info = createdInfo
+	snapshot.stateRoot.present = true
+	snapshot.stateRoot.created = true
+	fail := func(cause error) (manualHostUpgradeSnapshot, error) {
+		cleanupErr := cleanupManualHostUpgradeCreatedStateRoot(snapshot, rt)
+		return snapshot, errors.Join(cause, cleanupErr)
+	}
+	if err := validateManualHostUpgradeDirectoryInfo(
+		snapshot.stateRoot.path,
+		createdInfo,
+		snapshot.stateRoot.mode,
+		rt.allowTestPaths,
+	); err != nil {
+		return fail(errors.New(
+			"created bootstrap Host self-update state root is unsafe",
+		))
+	}
+	if !manualHostUpgradeDirectoryMatches(
+		snapshot.stateParent, rt.allowTestPaths,
+	) {
+		return fail(errors.New(
+			"managed Host runtime state parent changed during root creation",
+		))
+	}
+	if err := syncManualHostUpgradeDirectory(
+		snapshot.stateRoot.path, rt,
+	); err != nil {
+		return fail(fmt.Errorf(
+			"sync bootstrap Host self-update state root: %w", err,
+		))
+	}
+	if err := syncManualHostUpgradeDirectory(
+		snapshot.stateParent.path, rt,
+	); err != nil {
+		return fail(fmt.Errorf(
+			"sync bootstrap Host self-update state parent: %w", err,
+		))
+	}
+	if !manualHostUpgradeDirectoryMatches(
+		snapshot.stateParent, rt.allowTestPaths,
+	) || !manualHostUpgradeDirectoryMatches(
+		snapshot.stateRoot, rt.allowTestPaths,
+	) {
+		return fail(errors.New(
+			"bootstrap Host self-update state layout changed after sync",
+		))
+	}
+	return snapshot, nil
+}
+
+func cleanupManualHostUpgradeCreatedStateRoot(
+	snapshot manualHostUpgradeSnapshot,
+	rt manualHostUpgradeRuntime,
+) error {
+	created := snapshot.stateRoot
+	if !created.created {
+		return nil
+	}
+	if !manualHostUpgradeDirectoryMatches(
+		snapshot.stateParent, rt.allowTestPaths,
+	) || !manualHostUpgradeDirectoryMatches(
+		created, rt.allowTestPaths,
+	) {
+		return errors.New(
+			"created bootstrap Host self-update state root is not safely removable",
+		)
+	}
+	entries, err := os.ReadDir(created.path)
+	if err != nil || len(entries) != 0 {
+		return errors.New(
+			"created bootstrap Host self-update state root is not empty",
+		)
+	}
+	if err := os.Remove(created.path); err != nil {
+		return errors.New("remove created bootstrap Host self-update state root")
+	}
+	if err := syncManualHostUpgradeDirectory(
+		snapshot.stateParent.path, rt,
+	); err != nil {
+		return fmt.Errorf(
+			"sync created bootstrap Host self-update state root removal: %w", err,
+		)
+	}
+	if _, err := os.Lstat(created.path); !errors.Is(err, os.ErrNotExist) {
+		return errors.New(
+			"created bootstrap Host self-update state root still exists",
+		)
+	}
+	if !manualHostUpgradeDirectoryMatches(
+		snapshot.stateParent, rt.allowTestPaths,
+	) {
+		return errors.New(
+			"managed Host runtime state parent changed during root removal",
+		)
+	}
+	return nil
+}
+
+func syncManualHostUpgradeDirectory(
+	path string,
+	rt manualHostUpgradeRuntime,
+) error {
+	if rt.selfUpdate.syncDir != nil {
+		return rt.selfUpdate.syncDir(path)
+	}
+	return syncDirectory(path)
+}
+
 func restoreManualHostUpgradeOriginalState(
 	state HostSelfUpdateState,
 	originallyPersisted bool,
+	snapshot manualHostUpgradeSnapshot,
 	rt manualHostUpgradeRuntime,
 ) error {
 	current, err := rt.selfUpdate.loadPersistedState()
@@ -1273,7 +1805,7 @@ func restoreManualHostUpgradeOriginalState(
 		return nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return cleanupManualHostUpgradeCreatedStateRoot(snapshot, rt)
 	}
 	if err != nil || current != state {
 		return errors.New("temporary Host self-update state is not safely removable")
@@ -1281,13 +1813,13 @@ func restoreManualHostUpgradeOriginalState(
 	if err := os.Remove(rt.selfUpdate.statePath); err != nil {
 		return errors.New("remove temporary bootstrap Host self-update state")
 	}
-	if err := syncDirectory(rt.selfUpdate.stateRoot); err != nil {
+	if err := syncManualHostUpgradeDirectory(rt.selfUpdate.stateRoot, rt); err != nil {
 		return errors.New("sync temporary bootstrap Host self-update state removal")
 	}
 	if _, err := os.Lstat(rt.selfUpdate.statePath); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("temporary bootstrap Host self-update state still exists")
 	}
-	return nil
+	return cleanupManualHostUpgradeCreatedStateRoot(snapshot, rt)
 }
 
 func recoverManualHostUpgradeBeforeFence(
@@ -1320,7 +1852,7 @@ func recoverManualHostUpgradeBeforeFence(
 		return err
 	}
 	return restoreManualHostUpgradeOriginalState(
-		state, originallyPersisted, rt,
+		state, originallyPersisted, snapshot, rt,
 	)
 }
 
@@ -1382,42 +1914,95 @@ func verifyManualHostUnitProcess(
 	unit, expectedPath, binaryName string,
 	rt manualHostUpgradeRuntime,
 ) (manualHostBinaryIdentity, error) {
-	if err := requireManualHostSystemdState(
-		ctx, rt.runner, "is-active", unit, "active",
-	); err != nil {
-		return manualHostBinaryIdentity{}, err
+	type processObservation struct {
+		pid        int
+		executable string
 	}
-	readPID := func() (int, error) {
+	readProcess := func() (processObservation, error) {
+		if err := ctx.Err(); err != nil {
+			return processObservation{}, fmt.Errorf(
+				"verify Host runtime process: %w",
+				err,
+			)
+		}
+		if err := requireManualHostSystemdState(
+			ctx, rt.runner, "is-active", unit, "active",
+		); err != nil {
+			return processObservation{}, err
+		}
 		output, err := rt.runner.Run(
 			ctx, "/", nil, "/usr/bin/systemctl", "show",
 			"--property=MainPID", "--value", unit,
 		)
 		if err != nil {
-			return 0, errors.New("read Host runtime MainPID")
+			return processObservation{}, errors.New("read Host runtime MainPID")
 		}
 		pid, err := strconv.Atoi(strings.TrimSpace(output))
 		if err != nil || pid <= 0 {
-			return 0, errors.New("Host runtime unit has no MainPID")
+			return processObservation{}, errors.New("Host runtime unit has no MainPID")
 		}
 		executable, err := rt.resolveProcessExe(pid)
-		if err != nil || filepath.Clean(executable) != filepath.Clean(expectedPath) {
-			return 0, errors.New("Host runtime unit is executing outside the selected slot")
+		if err != nil {
+			return processObservation{}, errors.New(
+				"resolve Host runtime unit executable",
+			)
 		}
-		return pid, nil
+		return processObservation{pid: pid, executable: executable}, nil
 	}
-	first, err := readPID()
+	expectedPath = filepath.Clean(expectedPath)
+	pinnedPID := 0
+	first := processObservation{}
+	for probe := 0; probe < hostSelfUpdateSystemdExecutorProbes; probe++ {
+		observed, err := readProcess()
+		if err != nil {
+			return manualHostBinaryIdentity{}, err
+		}
+		if pinnedPID == 0 {
+			pinnedPID = observed.pid
+		} else if observed.pid != pinnedPID {
+			return manualHostBinaryIdentity{}, errors.New(
+				"Host runtime MainPID changed during systemd-executor transition",
+			)
+		}
+		if filepath.Clean(observed.executable) == expectedPath {
+			first = observed
+			break
+		}
+		if !isHostRuntimeSystemdExecutor(observed.executable) {
+			return manualHostBinaryIdentity{}, errors.New(
+				"Host runtime unit is executing outside the selected slot",
+			)
+		}
+		if probe+1 == hostSelfUpdateSystemdExecutorProbes {
+			return manualHostBinaryIdentity{}, errors.New(
+				"Host runtime unit remained in systemd-executor beyond the startup probe limit",
+			)
+		}
+		if err := rt.waitStable(ctx); err != nil {
+			return manualHostBinaryIdentity{}, fmt.Errorf(
+				"wait for Host runtime systemd-executor transition: %w",
+				err,
+			)
+		}
+	}
+	if err := rt.waitStable(ctx); err != nil {
+		return manualHostBinaryIdentity{}, fmt.Errorf(
+			"wait for Host runtime process stability: %w",
+			err,
+		)
+	}
+	second, err := readProcess()
 	if err != nil {
 		return manualHostBinaryIdentity{}, err
 	}
-	if err := rt.waitStable(ctx); err != nil {
-		return manualHostBinaryIdentity{}, errors.New(
-			"wait for Host runtime process stability",
-		)
-	}
-	second, err := readPID()
-	if err != nil || first != second {
+	if first.pid != second.pid {
 		return manualHostBinaryIdentity{}, errors.New(
 			"Host runtime MainPID changed during stability verification",
+		)
+	}
+	if filepath.Clean(second.executable) != expectedPath {
+		return manualHostBinaryIdentity{}, errors.New(
+			"Host runtime unit is executing outside the selected slot",
 		)
 	}
 	return readManualHostBinaryIdentity(
@@ -2228,11 +2813,19 @@ func activateManualHostUpgrade(
 		"autostream-local-executor",
 		rt,
 	)
-	if err != nil || executor.Version != request.ExecutorVersion ||
+	if err != nil {
+		return fmt.Errorf(
+			"new Local Executor failed live binary verification: %w",
+			err,
+		)
+	}
+	if executor.Version != request.ExecutorVersion ||
 		executor.Commit != request.Commit ||
 		executor.MutationProtocol != request.MutationProtocolVersion ||
 		executor.RecoveryProtocol != request.RecoveryProtocolVersion {
-		return errors.New("new Local Executor failed live binary verification")
+		return errors.New(
+			"new Local Executor failed live binary verification: runtime identity mismatch",
+		)
 	}
 	if rt.selfUpdate.watchdogStatus == nil {
 		return errors.New("Local Executor watchdog verification is unavailable")
@@ -2259,9 +2852,17 @@ func activateManualHostUpgrade(
 		"autostream-host-agent",
 		rt,
 	)
-	if err != nil || agent.Version != request.AgentVersion ||
+	if err != nil {
+		return fmt.Errorf(
+			"new Host Agent failed live binary verification: %w",
+			err,
+		)
+	}
+	if agent.Version != request.AgentVersion ||
 		agent.Commit != request.Commit {
-		return errors.New("new Host Agent failed live binary verification")
+		return errors.New(
+			"new Host Agent failed live binary verification: runtime identity mismatch",
+		)
 	}
 	if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
 		return err

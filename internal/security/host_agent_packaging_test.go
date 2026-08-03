@@ -111,6 +111,27 @@ func TestHostAgentSystemdUnitIsNonRootPortlessAndSandboxed(t *testing.T) {
 	}
 }
 
+func TestHostSelfUpdateRecoveryUnitUsesSupportedBootstrapConditions(t *testing.T) {
+	payload, err := os.ReadFile(filepath.Join(
+		"..", "..", "systemd", "autostream-host-self-update-recovery@.service.example",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := string(payload)
+	const stateCondition = "ConditionPathExists=/var/lib/autostream-local-executor/host-self-update/state.json"
+	if !strings.Contains(unit, stateCondition) {
+		t.Fatalf("Host self-update recovery unit is missing bootstrap state condition %q", stateCondition)
+	}
+	const condition = "ConditionFileIsExecutable=/opt/autostream/host-agent/slots/%i/bin/autostream-local-executor"
+	if !strings.Contains(unit, condition) {
+		t.Fatalf("Host self-update recovery unit is missing supported executable condition %q", condition)
+	}
+	if strings.Contains(unit, "ConditionPathIsExecutable=") {
+		t.Fatal("Host self-update recovery unit contains unsupported ConditionPathIsExecutable directive")
+	}
+}
+
 func TestHostAgentInstallersPreserveIdentityBoundary(t *testing.T) {
 	installerPayload, err := os.ReadFile(filepath.Join("..", "..", "release", "install-autostream-host-agent"))
 	if err != nil {

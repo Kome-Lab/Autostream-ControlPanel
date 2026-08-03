@@ -48,25 +48,34 @@ type manualHostUpgradeLinuxFixture struct {
 }
 
 type manualHostUpgradeLinuxRunner struct {
-	currentLink               string
-	slotsRoot                 string
-	agentActive               bool
-	executorActive            bool
-	failTargetAgent           bool
-	targetAgentFailed         bool
-	stopAfterSideEffectErr    bool
-	stopCancel                context.CancelFunc
-	stopHook                  func() error
-	stopCalls                 int
-	blockPostStopRestart      bool
-	postStopRestartBlocked    bool
-	postStopRestartCanceled   bool
-	restartOrder              []string
-	restartContextCanceled    []bool
-	mainPIDReads              map[string]int
-	identityReads             map[string]int
-	agentRestartCount         int
-	agentIdentityAfterRestart int
+	currentLink                 string
+	slotsRoot                   string
+	agentActive                 bool
+	executorActive              bool
+	failTargetAgent             bool
+	targetAgentFailed           bool
+	stopAfterSideEffectErr      bool
+	stopCancel                  context.CancelFunc
+	stopHook                    func() error
+	stopCalls                   int
+	blockPostStopRestart        bool
+	postStopRestartBlocked      bool
+	postStopRestartCanceled     bool
+	restartOrder                []string
+	restartContextCanceled      []bool
+	mainPIDReads                map[string]int
+	mainPIDSequence             map[string][]int
+	identityReads               map[string]int
+	binaryIdentityHook          func(string) error
+	agentRestartCount           int
+	agentIdentityAfterRestart   int
+	recoveryUnitPath            string
+	recoveryEffectiveExtra      string
+	recoveryReloads             int
+	recoveryFailedUnits         map[string]bool
+	failRecoveryReset           bool
+	recoveryResetFailedAttempts int
+	recoveryResetFailedCalls    int
 }
 
 func (r *manualHostUpgradeLinuxRunner) Run(
@@ -92,7 +101,11 @@ func (r *manualHostUpgradeLinuxRunner) Run(
 		if len(args) != unitIndex+1 {
 			return "", errors.New("invalid systemctl is-active arguments")
 		}
-		active := r.unitActive(args[unitIndex])
+		unit := args[unitIndex]
+		if r.recoveryFailedUnits[unit] {
+			return "failed\n", errors.New("unit is failed")
+		}
+		active := r.unitActive(unit)
 		if active {
 			if quiet {
 				return "", nil
@@ -167,13 +180,64 @@ func (r *manualHostUpgradeLinuxRunner) Run(
 		default:
 			return "", errors.New("unexpected systemctl restart unit")
 		}
+	case "daemon-reload":
+		if len(args) != 1 {
+			return "", errors.New("invalid systemctl daemon-reload arguments")
+		}
+		r.recoveryReloads++
+		return "", nil
+	case "reset-failed":
+		if len(args) != 2 ||
+			(args[1] != manualHostRecoveryUnitInstances[0] &&
+				args[1] != manualHostRecoveryUnitInstances[1]) {
+			return "", errors.New("unexpected systemctl reset-failed arguments")
+		}
+		r.recoveryResetFailedAttempts++
+		if r.failRecoveryReset {
+			return "", errors.New("injected recovery reset-failed failure")
+		}
+		delete(r.recoveryFailedUnits, args[1])
+		r.recoveryResetFailedCalls++
+		return "", nil
 	case "show":
+		if len(args) == 5 && args[1] == "--property=FragmentPath" &&
+			args[2] == "--property=DropInPaths" &&
+			args[3] == "--property=NeedDaemonReload" &&
+			(args[4] == manualHostRecoveryUnitInstances[0] ||
+				args[4] == manualHostRecoveryUnitInstances[1]) {
+			dropIns := []string{}
+			entries, err := os.ReadDir(r.recoveryUnitPath + ".d")
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", err
+			}
+			for _, entry := range entries {
+				dropIns = append(
+					dropIns,
+					filepath.Join(r.recoveryUnitPath+".d", entry.Name()),
+				)
+			}
+			sort.Strings(dropIns)
+			if r.recoveryEffectiveExtra != "" {
+				dropIns = append(dropIns, r.recoveryEffectiveExtra)
+				sort.Strings(dropIns)
+			}
+			return "FragmentPath=" + r.recoveryUnitPath + "\n" +
+				"DropInPaths=" + strings.Join(dropIns, " ") + "\n" +
+				"NeedDaemonReload=no\n", nil
+		}
 		if len(args) != 4 || args[1] != "--property=MainPID" ||
 			args[2] != "--value" {
 			return "", errors.New("invalid systemctl show arguments")
 		}
 		unit := args[3]
 		r.mainPIDReads[unit]++
+		if sequence := r.mainPIDSequence[unit]; len(sequence) > 0 {
+			index := r.mainPIDReads[unit] - 1
+			if index >= len(sequence) {
+				index = len(sequence) - 1
+			}
+			return fmt.Sprintf("%d\n", sequence[index]), nil
+		}
 		switch unit {
 		case hostSelfUpdateServiceUnit:
 			if !r.agentActive {
@@ -185,6 +249,8 @@ func (r *manualHostUpgradeLinuxRunner) Run(
 				return "0\n", nil
 			}
 			return "3102\n", nil
+		case manualHostRecoveryUnitInstances[0], manualHostRecoveryUnitInstances[1]:
+			return "0\n", nil
 		default:
 			return "", errors.New("unexpected systemctl show unit")
 		}
@@ -235,6 +301,11 @@ func (r *manualHostUpgradeLinuxRunner) binaryIdentity(
 	if len(args) != 1 || args[0] != "--version" {
 		return "", errors.New("unexpected binary identity arguments")
 	}
+	if r.binaryIdentityHook != nil {
+		if err := r.binaryIdentityHook(name); err != nil {
+			return "", err
+		}
+	}
 	payload, err := os.ReadFile(name)
 	if err != nil {
 		return "", err
@@ -271,10 +342,250 @@ func (r *manualHostUpgradeLinuxRunner) binaryIdentity(
 	return output, nil
 }
 
+func TestVerifyManualHostUnitProcessWaitsForTransientSystemdExecutor(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	expected := filepath.Join(
+		fixture.runtime.selfUpdate.slotsRoot,
+		HostSelfUpdateSlotA,
+		"bin",
+		"autostream-local-executor",
+	)
+	var resolvedPIDs []int
+	fixture.runtime.resolveProcessExe = func(pid int) (string, error) {
+		resolvedPIDs = append(resolvedPIDs, pid)
+		if len(resolvedPIDs) == 1 {
+			return "/usr/lib/systemd/systemd-executor", nil
+		}
+		return expected, nil
+	}
+
+	identity, err := verifyManualHostUnitProcess(
+		context.Background(),
+		hostSelfUpdateExecutorServiceUnit,
+		expected,
+		"autostream-local-executor",
+		fixture.runtime,
+	)
+	if err != nil {
+		t.Fatalf("verifyManualHostUnitProcess: %v", err)
+	}
+	if identity.Version != manualHostUpgradeTestOldVersion {
+		t.Fatalf("identity version=%q", identity.Version)
+	}
+	if len(resolvedPIDs) != 3 || fixture.waitStableCalls != 2 ||
+		fixture.runner.mainPIDReads[hostSelfUpdateExecutorServiceUnit] != 3 ||
+		fixture.runner.identityReads["autostream-local-executor"] != 1 {
+		t.Fatalf("executable resolutions=%v, want transient plus stable pair", resolvedPIDs)
+	}
+	for _, pid := range resolvedPIDs {
+		if pid != 3102 {
+			t.Fatalf("resolved PIDs=%v, want one stable MainPID", resolvedPIDs)
+		}
+	}
+}
+
+func TestVerifyManualHostUnitProcessRejectsUntrustedSystemdExecutorPath(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	expected := filepath.Join(
+		fixture.runtime.selfUpdate.slotsRoot,
+		HostSelfUpdateSlotA,
+		"bin",
+		"autostream-local-executor",
+	)
+	resolves := 0
+	waits := 0
+	fixture.runtime.resolveProcessExe = func(int) (string, error) {
+		resolves++
+		return "/tmp/systemd-executor", nil
+	}
+	fixture.runtime.waitStable = func(context.Context) error {
+		waits++
+		return nil
+	}
+
+	_, err := verifyManualHostUnitProcess(
+		context.Background(),
+		hostSelfUpdateExecutorServiceUnit,
+		expected,
+		"autostream-local-executor",
+		fixture.runtime,
+	)
+	if err == nil || !strings.Contains(
+		err.Error(),
+		"executing outside the selected slot",
+	) {
+		t.Fatalf("untrusted systemd-executor path err=%v", err)
+	}
+	if resolves != 1 || waits != 0 ||
+		fixture.runner.identityReads["autostream-local-executor"] != 0 {
+		t.Fatalf(
+			"untrusted path resolves=%d waits=%d identity_reads=%d",
+			resolves,
+			waits,
+			fixture.runner.identityReads["autostream-local-executor"],
+		)
+	}
+}
+
+func TestVerifyManualHostUnitProcessBoundsPersistentSystemdExecutor(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	expected := filepath.Join(
+		fixture.runtime.selfUpdate.slotsRoot,
+		HostSelfUpdateSlotA,
+		"bin",
+		"autostream-local-executor",
+	)
+	resolves := 0
+	waits := 0
+	fixture.runtime.resolveProcessExe = func(int) (string, error) {
+		resolves++
+		return "/usr/lib/systemd/systemd-executor", nil
+	}
+	fixture.runtime.waitStable = func(context.Context) error {
+		waits++
+		return nil
+	}
+
+	_, err := verifyManualHostUnitProcess(
+		context.Background(),
+		hostSelfUpdateExecutorServiceUnit,
+		expected,
+		"autostream-local-executor",
+		fixture.runtime,
+	)
+	if err == nil || !strings.Contains(err.Error(), "startup probe limit") {
+		t.Fatalf("persistent systemd-executor err=%v", err)
+	}
+	if resolves != hostSelfUpdateSystemdExecutorProbes ||
+		waits != hostSelfUpdateSystemdExecutorProbes-1 ||
+		fixture.runner.identityReads["autostream-local-executor"] != 0 {
+		t.Fatalf(
+			"persistent helper resolves=%d waits=%d identity_reads=%d",
+			resolves,
+			waits,
+			fixture.runner.identityReads["autostream-local-executor"],
+		)
+	}
+}
+
+func TestVerifyManualHostUnitProcessHonorsCanceledTransitionWait(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	expected := filepath.Join(
+		fixture.runtime.selfUpdate.slotsRoot,
+		HostSelfUpdateSlotA,
+		"bin",
+		"autostream-local-executor",
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	waits := 0
+	fixture.runtime.resolveProcessExe = func(int) (string, error) {
+		return "/usr/lib/systemd/systemd-executor", nil
+	}
+	fixture.runtime.waitStable = func(context.Context) error {
+		waits++
+		cancel()
+		return ctx.Err()
+	}
+
+	_, err := verifyManualHostUnitProcess(
+		ctx,
+		hostSelfUpdateExecutorServiceUnit,
+		expected,
+		"autostream-local-executor",
+		fixture.runtime,
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled transition err=%v", err)
+	}
+	if waits != 1 ||
+		fixture.runner.identityReads["autostream-local-executor"] != 0 {
+		t.Fatalf(
+			"canceled transition waits=%d identity_reads=%d",
+			waits,
+			fixture.runner.identityReads["autostream-local-executor"],
+		)
+	}
+}
+
+func TestVerifyManualHostUnitProcessRejectsPIDChurn(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		transientFirst   bool
+		wantError        string
+		wantStableWaits  int
+		wantResolveCalls int
+	}{
+		{
+			name:             "during_systemd_executor_transition",
+			transientFirst:   true,
+			wantError:        "MainPID changed during systemd-executor transition",
+			wantStableWaits:  1,
+			wantResolveCalls: 2,
+		},
+		{
+			name:             "after_expected_executable",
+			wantError:        "MainPID changed during stability verification",
+			wantStableWaits:  1,
+			wantResolveCalls: 2,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newManualHostUpgradeLinuxFixture(t)
+			expected := filepath.Join(
+				fixture.runtime.selfUpdate.slotsRoot,
+				HostSelfUpdateSlotA,
+				"bin",
+				"autostream-local-executor",
+			)
+			fixture.runner.mainPIDSequence = map[string][]int{
+				hostSelfUpdateExecutorServiceUnit: {3102, 4102},
+			}
+			resolves := 0
+			fixture.runtime.resolveProcessExe = func(int) (string, error) {
+				resolves++
+				if test.transientFirst && resolves == 1 {
+					return "/usr/lib/systemd/systemd-executor", nil
+				}
+				return expected, nil
+			}
+
+			_, err := verifyManualHostUnitProcess(
+				context.Background(),
+				hostSelfUpdateExecutorServiceUnit,
+				expected,
+				"autostream-local-executor",
+				fixture.runtime,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("PID churn err=%v", err)
+			}
+			if resolves != test.wantResolveCalls ||
+				fixture.waitStableCalls != test.wantStableWaits ||
+				fixture.runner.identityReads["autostream-local-executor"] != 0 {
+				t.Fatalf(
+					"PID churn resolves=%d waits=%d identity_reads=%d",
+					resolves,
+					fixture.waitStableCalls,
+					fixture.runner.identityReads["autostream-local-executor"],
+				)
+			}
+		})
+	}
+}
+
 func TestManualHostUpgradeBootstrapsMissingSlotAndCommitsRuntimePair(
 	t *testing.T,
 ) {
 	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
 	identityBefore := snapshotManualHostUpgradeLinuxProtectedFile(
 		t, fixture.identityPath,
 	)
@@ -321,6 +632,11 @@ func TestManualHostUpgradeBootstrapsMissingSlotAndCommitsRuntimePair(
 		state.FailedGeneration != "" || state.PendingGeneration != "" {
 		t.Fatalf("persisted state=%+v", state)
 	}
+	stateRootInfo, err := os.Lstat(fixture.runtime.selfUpdate.stateRoot)
+	if err != nil || !stateRootInfo.IsDir() ||
+		stateRootInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("bootstrapped state root info=%v err=%v", stateRootInfo, err)
+	}
 	assertManualHostUpgradeLinuxSlotBinding(
 		t, fixture, HostSelfUpdateSlotB,
 	)
@@ -360,6 +676,7 @@ func TestManualHostUpgradeRollsBackWhenTargetAgentActivationFails(
 	t *testing.T,
 ) {
 	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
 	fixture.runner.failTargetAgent = true
 	identityBefore := snapshotManualHostUpgradeLinuxProtectedFile(
 		t, fixture.identityPath,
@@ -397,6 +714,10 @@ func TestManualHostUpgradeRollsBackWhenTargetAgentActivationFails(
 		state.PendingGeneration != "" || state.RollbackSlot != "" {
 		t.Fatalf("rollback state=%+v", state)
 	}
+	if info, statErr := os.Lstat(fixture.runtime.selfUpdate.stateRoot); statErr != nil ||
+		!info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("post-fence rollback removed bootstrap root: info=%v err=%v", info, statErr)
+	}
 	assertManualHostUpgradeLinuxSlotBinding(
 		t, fixture, HostSelfUpdateSlotB,
 	)
@@ -432,6 +753,7 @@ func TestManualHostUpgradeRollsBackWhenTargetAgentActivationFails(
 
 func TestManualHostUpgradeRejectsTamperedArtifactBeforeMutation(t *testing.T) {
 	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
 	tampered := filepath.Join(
 		fixture.artifactRoot,
 		"bin",
@@ -466,9 +788,194 @@ func TestManualHostUpgradeRejectsTamperedArtifactBeforeMutation(t *testing.T) {
 	if _, err := os.Lstat(fixture.runtime.selfUpdate.statePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("artifact rejection persisted state: %v", err)
 	}
+	if _, err := os.Lstat(fixture.runtime.selfUpdate.stateRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact rejection created state root: %v", err)
+	}
 	current, err := fixture.runtime.selfUpdate.readCurrentSlot()
 	if err != nil || current != HostSelfUpdateSlotA {
 		t.Fatalf("artifact rejection current slot=%q err=%v", current, err)
+	}
+}
+
+func TestManualHostUpgradeRejectsDurableBlockerBeforeCreatingStateRoot(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	writeManualHostUpgradeLinuxCheckpoint(t, fixture, "started")
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err == nil || !strings.Contains(err.Error(), "non-terminal") ||
+		result != (ManualHostUpgradeResult{}) {
+		t.Fatalf("blocked upgrade result=%+v err=%v", result, err)
+	}
+	if _, err := os.Lstat(fixture.runtime.selfUpdate.stateRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocker rejection created state root: %v", err)
+	}
+	assertManualHostUpgradeLinuxRejectedBeforeMutation(t, fixture)
+}
+
+func TestManualHostUpgradeRejectsUnsafeBootstrapStateLayout(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*manualHostUpgradeLinuxFixture) error
+	}{
+		{
+			name: "parent mode",
+			mutate: func(fixture *manualHostUpgradeLinuxFixture) error {
+				removeManualHostUpgradeLinuxStateRoot(t, fixture)
+				return os.Chmod(fixture.runtime.paths.localExecutorStateRoot, 0o755)
+			},
+		},
+		{
+			name: "root mode",
+			mutate: func(fixture *manualHostUpgradeLinuxFixture) error {
+				return os.Chmod(fixture.runtime.selfUpdate.stateRoot, 0o755)
+			},
+		},
+		{
+			name: "root symlink",
+			mutate: func(fixture *manualHostUpgradeLinuxFixture) error {
+				removeManualHostUpgradeLinuxStateRoot(t, fixture)
+				target := filepath.Join(fixture.root, "unsafe-state-root-target")
+				if err := os.Mkdir(target, 0o700); err != nil {
+					return err
+				}
+				return os.Symlink(target, fixture.runtime.selfUpdate.stateRoot)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newManualHostUpgradeLinuxFixture(t)
+			if err := test.mutate(fixture); err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := upgradeHostRuntimeWithRuntime(
+				context.Background(), fixture.request, fixture.runtime,
+			)
+			if err == nil || result != (ManualHostUpgradeResult{}) {
+				t.Fatalf("unsafe layout result=%+v err=%v", result, err)
+			}
+			if fixture.runner.stopCalls != 0 || len(fixture.runner.restartOrder) != 0 {
+				t.Fatalf("unsafe layout mutated services: stops=%d restarts=%v", fixture.runner.stopCalls, fixture.runner.restartOrder)
+			}
+		})
+	}
+}
+
+func TestManualHostUpgradeRejectsStateRootEEXISTRace(t *testing.T) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	mkdirCalls := 0
+	fixture.runtime.mkdirStateRoot = func(path string, mode os.FileMode) error {
+		mkdirCalls++
+		if err := os.Mkdir(path, mode); err != nil {
+			return err
+		}
+		return os.Mkdir(path, mode)
+	}
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if !errors.Is(err, fs.ErrExist) || result != (ManualHostUpgradeResult{}) {
+		t.Fatalf("EEXIST race result=%+v err=%v", result, err)
+	}
+	if mkdirCalls != 1 {
+		t.Fatalf("state root mkdir calls=%d want=1", mkdirCalls)
+	}
+	if _, err := os.Lstat(fixture.runtime.selfUpdate.stateRoot); err != nil {
+		t.Fatalf("racing state root was removed: %v", err)
+	}
+	assertManualHostUpgradeLinuxRejectedBeforeMutation(t, fixture)
+}
+
+func TestManualHostUpgradeSameVersionPersistsMissingBootstrapState(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	for _, binary := range []string{
+		"autostream-host-agent",
+		"autostream-local-executor",
+	} {
+		payload, err := os.ReadFile(filepath.Join(fixture.artifactRoot, "bin", binary))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(
+				fixture.runtime.selfUpdate.slotsRoot,
+				HostSelfUpdateSlotA,
+				"bin",
+				binary,
+			),
+			payload,
+			0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err != nil || !result.AlreadyCurrent ||
+		result.ActiveSlot != HostSelfUpdateSlotA ||
+		result.Version != manualHostUpgradeTestTargetVersion {
+		t.Fatalf("same-version bootstrap result=%+v err=%v", result, err)
+	}
+	state, err := fixture.runtime.selfUpdate.loadPersistedState()
+	if err != nil || state.Phase != HostSelfUpdatePhaseStable ||
+		state.ActiveSlot != HostSelfUpdateSlotA ||
+		state.HealthySlot != HostSelfUpdateSlotA ||
+		state.ActiveAgentVersion != manualHostUpgradeTestTargetVersion ||
+		state.ActiveExecutorVersion != manualHostUpgradeTestTargetVersion {
+		t.Fatalf("same-version bootstrap state=%+v err=%v", state, err)
+	}
+	if fixture.runner.stopCalls != 0 || len(fixture.runner.restartOrder) != 0 {
+		t.Fatalf("same-version bootstrap mutated services: stops=%d restarts=%v", fixture.runner.stopCalls, fixture.runner.restartOrder)
+	}
+}
+
+func TestManualHostUpgradeCleansCreatedStateRootWhenBootstrapFsyncFails(
+	t *testing.T,
+) {
+	for _, failAt := range []string{"child", "parent"} {
+		t.Run(failAt, func(t *testing.T) {
+			fixture := newManualHostUpgradeLinuxFixture(t)
+			removeManualHostUpgradeLinuxStateRoot(t, fixture)
+			injected := errors.New("injected bootstrap directory fsync failure")
+			failed := false
+			fixture.runtime.selfUpdate.syncDir = func(path string) error {
+				want := fixture.runtime.selfUpdate.stateRoot
+				if failAt == "parent" {
+					want = fixture.runtime.paths.localExecutorStateRoot
+				}
+				if !failed && filepath.Clean(path) == filepath.Clean(want) {
+					failed = true
+					return injected
+				}
+				return syncDirectory(path)
+			}
+
+			result, err := upgradeHostRuntimeWithRuntime(
+				context.Background(), fixture.request, fixture.runtime,
+			)
+			if !errors.Is(err, injected) || result != (ManualHostUpgradeResult{}) {
+				t.Fatalf("%s fsync result=%+v err=%v", failAt, result, err)
+			}
+			if !failed {
+				t.Fatalf("%s fsync injection was not reached", failAt)
+			}
+			if _, err := os.Lstat(fixture.runtime.selfUpdate.stateRoot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s fsync failure retained created root: %v", failAt, err)
+			}
+			assertManualHostUpgradeLinuxRejectedBeforeMutation(t, fixture)
+		})
 	}
 }
 
@@ -1066,15 +1573,34 @@ func TestManualHostUpgradeLoadsLegacyHelperTargetsBeforeLocking(t *testing.T) {
 }
 
 func TestManualHostUpgradeRecoversCandidateWhenBeginActivationFails(t *testing.T) {
-	fixture := newManualHostUpgradeLinuxFixture(t)
-	fixture.runtime.now = func() time.Time { return time.Time{} }
+	for _, preexisting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("preexisting=%v", preexisting), func(t *testing.T) {
+			fixture := newManualHostUpgradeLinuxFixture(t)
+			rootBefore, err := os.Lstat(fixture.runtime.selfUpdate.stateRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !preexisting {
+				removeManualHostUpgradeLinuxStateRoot(t, fixture)
+			}
+			fixture.runtime.now = func() time.Time { return time.Time{} }
 
-	if _, err := upgradeHostRuntimeWithRuntime(
-		context.Background(), fixture.request, fixture.runtime,
-	); err == nil || !strings.Contains(err.Error(), "activation clock") {
-		t.Fatalf("BeginActivation failure err=%v", err)
+			if _, err := upgradeHostRuntimeWithRuntime(
+				context.Background(), fixture.request, fixture.runtime,
+			); err == nil || !strings.Contains(err.Error(), "activation clock") {
+				t.Fatalf("BeginActivation failure err=%v", err)
+			}
+			assertManualHostUpgradeLinuxRejectedBeforeMutation(t, fixture)
+			after, err := os.Lstat(fixture.runtime.selfUpdate.stateRoot)
+			if preexisting {
+				if err != nil || !os.SameFile(rootBefore, after) {
+					t.Fatalf("preexisting state root changed: info=%v err=%v", after, err)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("created state root survived pre-fence failure: %v", err)
+			}
+		})
 	}
-	assertManualHostUpgradeLinuxRejectedBeforeMutation(t, fixture)
 }
 
 func TestManualHostUpgradeRollsBackAmbiguousActivationStateWrite(t *testing.T) {
@@ -1453,6 +1979,345 @@ func TestManualHostUpgradeCommitDeadlineExpiryRollsBackVerifiedRuntime(
 	assertManualHostUpgradeLinuxPublicLinks(t, fixture)
 }
 
+func TestManualHostUpgradeMigratesLegacyRecoveryUnitDuringBootstrap(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	fixture.runner.recoveryFailedUnits[manualHostRecoveryUnitInstances[0]] = true
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err != nil || result.ActiveSlot != HostSelfUpdateSlotB ||
+		result.PreviousSlot != HostSelfUpdateSlotA ||
+		result.Version != manualHostUpgradeTestTargetVersion ||
+		result.AlreadyCurrent {
+		t.Fatalf("legacy recovery migration result=%+v err=%v", result, err)
+	}
+	installed, err := os.ReadFile(fixture.runtime.paths.installedRecoveryService)
+	if err != nil || manualHostRecoveryUnitDigest(installed) !=
+		manualHostRecoveryUnitCorrectedDigest {
+		t.Fatalf("migrated recovery unit digest=%s err=%v", manualHostRecoveryUnitDigest(installed), err)
+	}
+	if _, err := os.Lstat(
+		fixture.runtime.paths.installedRecoveryService + ".d",
+	); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("known recovery drop-ins remained after upgrade: %v", err)
+	}
+	if fixture.runner.recoveryReloads != 2 ||
+		fixture.runner.recoveryResetFailedCalls != 1 {
+		t.Fatalf(
+			"recovery reloads=%d reset-failed=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedCalls,
+		)
+	}
+	state, err := fixture.runtime.selfUpdate.loadPersistedState()
+	if err != nil || state.Phase != HostSelfUpdatePhaseStable ||
+		state.ActiveSlot != HostSelfUpdateSlotB ||
+		state.HealthySlot != HostSelfUpdateSlotB {
+		t.Fatalf("migrated bootstrap state=%+v err=%v", state, err)
+	}
+}
+
+func TestManualHostUpgradeDoesNotMigrateRecoveryUnitBeforeBlockerChecks(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	writeManualHostUpgradeLinuxCheckpoint(t, fixture, "started")
+	transitionArtifact := filepath.Join(
+		fixture.runtime.selfUpdate.slotsRoot,
+		"."+HostSelfUpdateSlotB+"-111111111111.new",
+	)
+	manualHostUpgradeLinuxMkdir(t, transitionArtifact, 0o755)
+	transitionBefore, err := os.Lstat(transitionArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBefore := snapshotManualHostUpgradeLinuxProtectedFile(
+		t, fixture.runtime.paths.installedRecoveryService,
+	)
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err == nil || !strings.Contains(err.Error(), "non-terminal") ||
+		result != (ManualHostUpgradeResult{}) {
+		t.Fatalf("blocked recovery migration result=%+v err=%v", result, err)
+	}
+	assertManualHostUpgradeLinuxProtectedFileUnchanged(
+		t, fixture.runtime.paths.installedRecoveryService, legacyBefore,
+	)
+	if _, err := os.Lstat(
+		fixture.runtime.paths.installedRecoveryService + ".d",
+	); err != nil {
+		t.Fatalf("blocked recovery migration removed known drop-ins: %v", err)
+	}
+	if fixture.runner.recoveryReloads != 0 ||
+		fixture.runner.recoveryResetFailedCalls != 0 {
+		t.Fatalf(
+			"blocked recovery migration reloaded=%d reset-failed=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedCalls,
+		)
+	}
+	if _, err := os.Lstat(
+		fixture.runtime.selfUpdate.stateRoot,
+	); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked recovery migration created state root: %v", err)
+	}
+	transitionAfter, err := os.Lstat(transitionArtifact)
+	if err != nil || !os.SameFile(transitionBefore, transitionAfter) {
+		t.Fatalf("blocked recovery migration changed slot residue: info=%v err=%v", transitionAfter, err)
+	}
+}
+
+func TestManualHostUpgradeSameVersionMigratesLegacyRecoveryUnit(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	copyManualHostUpgradeArtifactBinariesToSlot(
+		t, fixture, HostSelfUpdateSlotA,
+	)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	fixture.runner.recoveryFailedUnits[manualHostRecoveryUnitInstances[0]] = true
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err != nil || !result.AlreadyCurrent ||
+		result.ActiveSlot != HostSelfUpdateSlotA ||
+		result.PreviousSlot != HostSelfUpdateSlotA ||
+		result.Version != manualHostUpgradeTestTargetVersion {
+		t.Fatalf("same-version recovery migration result=%+v err=%v", result, err)
+	}
+	assertManualHostUpgradeRecoveryUnitConverged(t, fixture)
+	if fixture.runner.stopCalls != 0 ||
+		len(fixture.runner.restartOrder) != 0 ||
+		fixture.runner.recoveryReloads != 2 ||
+		fixture.runner.recoveryResetFailedCalls != 1 {
+		t.Fatalf(
+			"same-version migration stops=%d restarts=%v reloads=%d reset-failed=%d",
+			fixture.runner.stopCalls,
+			fixture.runner.restartOrder,
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedCalls,
+		)
+	}
+	state, err := fixture.runtime.selfUpdate.loadPersistedState()
+	if err != nil || state.Phase != HostSelfUpdatePhaseStable ||
+		state.ActiveSlot != HostSelfUpdateSlotA ||
+		state.HealthySlot != HostSelfUpdateSlotA ||
+		state.ActiveAgentVersion != manualHostUpgradeTestTargetVersion ||
+		state.ActiveExecutorVersion != manualHostUpgradeTestTargetVersion {
+		t.Fatalf("same-version migration state=%+v err=%v", state, err)
+	}
+}
+
+func TestManualHostUpgradeKeepsCorrectedRecoveryUnitAcrossRollbackAndRetry(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	fixture.runner.recoveryFailedUnits[manualHostRecoveryUnitInstances[0]] = true
+	fixture.runner.failTargetAgent = true
+
+	first, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err == nil || !strings.Contains(err.Error(), "restart Host Agent") ||
+		first != (ManualHostUpgradeResult{}) {
+		t.Fatalf("migration rollback result=%+v err=%v", first, err)
+	}
+	current, err := fixture.runtime.selfUpdate.readCurrentSlot()
+	if err != nil || current != HostSelfUpdateSlotA {
+		t.Fatalf("migration rollback current=%q err=%v", current, err)
+	}
+	assertManualHostUpgradeRecoveryUnitConverged(t, fixture)
+	if fixture.runner.recoveryReloads != 2 ||
+		fixture.runner.recoveryResetFailedCalls != 1 {
+		t.Fatalf(
+			"migration rollback reloads=%d reset-failed=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedCalls,
+		)
+	}
+
+	fixture.runner.failTargetAgent = false
+	retry, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err != nil || retry.ActiveSlot != HostSelfUpdateSlotB ||
+		retry.PreviousSlot != HostSelfUpdateSlotA || retry.AlreadyCurrent {
+		t.Fatalf("migration retry result=%+v err=%v", retry, err)
+	}
+	assertManualHostUpgradeRecoveryUnitConverged(t, fixture)
+	if fixture.runner.recoveryReloads != 2 ||
+		fixture.runner.recoveryResetFailedCalls != 1 {
+		t.Fatalf(
+			"migration retry repeated unit mutation: reloads=%d reset-failed=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedCalls,
+		)
+	}
+}
+
+func TestManualHostUpgradeRetriesAfterBootstrapResetFailedFailure(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	fixture.runner.recoveryFailedUnits[manualHostRecoveryUnitInstances[0]] = true
+	fixture.runner.failRecoveryReset = true
+
+	first, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err == nil || !strings.Contains(err.Error(), "reset failed") ||
+		first != (ManualHostUpgradeResult{}) {
+		t.Fatalf("reset-failed injection result=%+v err=%v", first, err)
+	}
+	assertManualHostUpgradeRecoveryUnitConverged(t, fixture)
+	if fixture.runner.recoveryReloads != 2 ||
+		fixture.runner.recoveryResetFailedAttempts != 1 ||
+		fixture.runner.recoveryResetFailedCalls != 0 {
+		t.Fatalf(
+			"reset-failed first attempt reloads=%d attempts=%d successes=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedAttempts,
+			fixture.runner.recoveryResetFailedCalls,
+		)
+	}
+	if _, err := os.Lstat(
+		fixture.runtime.selfUpdate.stateRoot,
+	); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reset-failed injection created state root: %v", err)
+	}
+	current, err := fixture.runtime.selfUpdate.readCurrentSlot()
+	if err != nil || current != HostSelfUpdateSlotA {
+		t.Fatalf("reset-failed injection current=%q err=%v", current, err)
+	}
+
+	fixture.runner.failRecoveryReset = false
+	retry, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err != nil || retry.ActiveSlot != HostSelfUpdateSlotB ||
+		retry.PreviousSlot != HostSelfUpdateSlotA || retry.AlreadyCurrent {
+		t.Fatalf("reset-failed retry result=%+v err=%v", retry, err)
+	}
+	assertManualHostUpgradeRecoveryUnitConverged(t, fixture)
+	if fixture.runner.recoveryReloads != 2 ||
+		fixture.runner.recoveryResetFailedAttempts != 2 ||
+		fixture.runner.recoveryResetFailedCalls != 1 {
+		t.Fatalf(
+			"reset-failed retry reloads=%d attempts=%d successes=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedAttempts,
+			fixture.runner.recoveryResetFailedCalls,
+		)
+	}
+}
+
+func TestManualHostUpgradeRejectsDowngradeBeforeRecoveryMutation(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	copyManualHostUpgradeArtifactBinariesToSlot(
+		t, fixture, HostSelfUpdateSlotA,
+	)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	configureManualHostUpgradeDowngradeArtifact(t, fixture)
+	transitionArtifact := filepath.Join(
+		fixture.runtime.selfUpdate.slotsRoot,
+		"."+HostSelfUpdateSlotB+"-111111111111.new",
+	)
+	manualHostUpgradeLinuxMkdir(t, transitionArtifact, 0o755)
+	transitionBefore, err := os.Lstat(transitionArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBefore := snapshotManualHostUpgradeLinuxProtectedFile(
+		t, fixture.runtime.paths.installedRecoveryService,
+	)
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err == nil || !strings.Contains(err.Error(), "downgrade") ||
+		result != (ManualHostUpgradeResult{}) {
+		t.Fatalf("downgrade result=%+v err=%v", result, err)
+	}
+	assertManualHostUpgradeLinuxProtectedFileUnchanged(
+		t, fixture.runtime.paths.installedRecoveryService, legacyBefore,
+	)
+	transitionAfter, err := os.Lstat(transitionArtifact)
+	if err != nil || !os.SameFile(transitionBefore, transitionAfter) {
+		t.Fatalf("downgrade changed slot residue: info=%v err=%v", transitionAfter, err)
+	}
+	if fixture.runner.recoveryReloads != 0 ||
+		fixture.runner.recoveryResetFailedCalls != 0 ||
+		fixture.runner.stopCalls != 0 {
+		t.Fatalf(
+			"downgrade mutated runtime: reloads=%d reset-failed=%d stops=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedCalls,
+			fixture.runner.stopCalls,
+		)
+	}
+	if _, err := os.Lstat(
+		fixture.runtime.selfUpdate.stateRoot,
+	); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("downgrade created state root: %v", err)
+	}
+}
+
+func TestManualHostUpgradeRejectsUnknownRecoveryOverrideBeforeMutation(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	fixture.runner.recoveryEffectiveExtra = "/run/systemd/system/unknown.conf"
+	legacyBefore := snapshotManualHostUpgradeLinuxProtectedFile(
+		t, fixture.runtime.paths.installedRecoveryService,
+	)
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err == nil || !strings.Contains(err.Error(), "unknown effective") ||
+		result != (ManualHostUpgradeResult{}) {
+		t.Fatalf("unknown recovery override result=%+v err=%v", result, err)
+	}
+	assertManualHostUpgradeLinuxProtectedFileUnchanged(
+		t, fixture.runtime.paths.installedRecoveryService, legacyBefore,
+	)
+	if fixture.runner.recoveryReloads != 0 ||
+		fixture.runner.recoveryResetFailedCalls != 0 ||
+		fixture.runner.stopCalls != 0 {
+		t.Fatalf(
+			"unknown override mutated runtime: reloads=%d reset-failed=%d stops=%d",
+			fixture.runner.recoveryReloads,
+			fixture.runner.recoveryResetFailedCalls,
+			fixture.runner.stopCalls,
+		)
+	}
+	if _, err := os.Lstat(
+		fixture.runtime.selfUpdate.stateRoot,
+	); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unknown override created state root: %v", err)
+	}
+}
+
 func TestSameManualHostUpgradeArchiveContentAcceptsOnlineBindingIdentity(
 	t *testing.T,
 ) {
@@ -1592,8 +2457,23 @@ func writeManualHostUpgradeLinuxCheckpoint(
 		fixture.runtime.paths.localExecutorStateRoot,
 		".autostream-updater-fixture.checkpoint.json",
 	)
-	manualHostUpgradeLinuxWriteFile(t, path, append(payload, '\n'), 0o600)
+	if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return path
+}
+
+func removeManualHostUpgradeLinuxStateRoot(
+	t *testing.T,
+	fixture *manualHostUpgradeLinuxFixture,
+) {
+	t.Helper()
+	if err := os.Remove(fixture.runtime.selfUpdate.stateRoot); err != nil {
+		t.Fatalf("remove fixture Host self-update state root: %v", err)
+	}
 }
 
 func newManualHostUpgradeLinuxFixture(
@@ -1754,12 +2634,14 @@ func newManualHostUpgradeLinuxFixture(
 	}
 
 	fixture.runner = &manualHostUpgradeLinuxRunner{
-		currentLink:    currentLink,
-		slotsRoot:      slotsRoot,
-		agentActive:    true,
-		executorActive: true,
-		mainPIDReads:   make(map[string]int),
-		identityReads:  make(map[string]int),
+		currentLink:         currentLink,
+		slotsRoot:           slotsRoot,
+		agentActive:         true,
+		executorActive:      true,
+		mainPIDReads:        make(map[string]int),
+		identityReads:       make(map[string]int),
+		recoveryFailedUnits: make(map[string]bool),
+		recoveryUnitPath:    unitPaths.installedRecoveryService,
 	}
 	selfUpdate := hostSelfUpdateExecutorRuntime{
 		installRoot:         installRoot,
@@ -1869,6 +2751,124 @@ func newManualHostUpgradeLinuxFixture(
 	return fixture
 }
 
+func configureManualHostUpgradeLegacyRecoveryUnit(
+	t *testing.T,
+	fixture *manualHostUpgradeLinuxFixture,
+) {
+	t.Helper()
+	artifactPath := filepath.Join(
+		fixture.artifactRoot,
+		"systemd",
+		"autostream-host-self-update-recovery@.service",
+	)
+	manualHostUpgradeLinuxWriteFile(
+		t, artifactPath, correctedManualHostRecoveryUnitBytes(t), 0o644,
+	)
+	manualHostUpgradeLinuxWriteFile(
+		t,
+		fixture.runtime.paths.installedRecoveryService,
+		legacyManualHostRecoveryUnitBytes(t),
+		0o644,
+	)
+	dropInDirectory := fixture.runtime.paths.installedRecoveryService + ".d"
+	manualHostUpgradeLinuxMkdir(t, dropInDirectory, 0o755)
+	for name, payload := range map[string]string{
+		"10-executable-guard.conf":      "[Unit]\nConditionFileIsExecutable=/opt/autostream/host-agent/slots/%i/bin/autostream-local-executor\n",
+		"20-bootstrap-state-guard.conf": "[Unit]\nConditionPathExists=/var/lib/autostream-local-executor/host-self-update/state.json\n",
+	} {
+		manualHostUpgradeLinuxWriteFile(
+			t, filepath.Join(dropInDirectory, name), []byte(payload), 0o644,
+		)
+	}
+	manualHostUpgradeLinuxWriteChecksums(t, fixture.artifactRoot)
+}
+
+func copyManualHostUpgradeArtifactBinariesToSlot(
+	t *testing.T,
+	fixture *manualHostUpgradeLinuxFixture,
+	slot string,
+) {
+	t.Helper()
+	for _, binary := range []string{
+		"autostream-host-agent",
+		"autostream-local-executor",
+	} {
+		payload, err := os.ReadFile(filepath.Join(
+			fixture.artifactRoot, "bin", binary,
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		manualHostUpgradeLinuxWriteFile(
+			t,
+			filepath.Join(fixture.runtime.selfUpdate.slotsRoot, slot, "bin", binary),
+			payload,
+			0o755,
+		)
+	}
+}
+
+func configureManualHostUpgradeDowngradeArtifact(
+	t *testing.T,
+	fixture *manualHostUpgradeLinuxFixture,
+) {
+	t.Helper()
+	for _, binary := range []string{
+		"autostream-host-agent",
+		"autostream-local-executor",
+	} {
+		manualHostUpgradeLinuxWriteFile(
+			t,
+			filepath.Join(fixture.artifactRoot, "bin", binary),
+			[]byte("old:"+binary+"\n"),
+			0o755,
+		)
+	}
+	manifestPath := filepath.Join(fixture.artifactRoot, "artifact-manifest.json")
+	payload, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest manualHostArtifactManifest
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.SourceVersion = manualHostUpgradeTestOldVersion
+	manifest.Commit = manualHostUpgradeTestOldCommit
+	manifest.BuildDate = manualHostUpgradeTestOldBuildDate.Format(
+		"2006-01-02T15:04:05Z",
+	)
+	manifest.Archive.Root = "autostream-host-agent_" +
+		manualHostUpgradeTestOldVersion + "_linux_amd64"
+	manifest.Archive.Name = manifest.Archive.Root + ".tar.gz"
+	manifest.Compatibility.MinimumPanelVersion = manualHostUpgradeTestOldVersion
+	payload, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manualHostUpgradeLinuxWriteFile(
+		t, manifestPath, append(payload, '\n'), 0o644,
+	)
+	manualHostUpgradeLinuxWriteChecksums(t, fixture.artifactRoot)
+}
+
+func assertManualHostUpgradeRecoveryUnitConverged(
+	t *testing.T,
+	fixture *manualHostUpgradeLinuxFixture,
+) {
+	t.Helper()
+	installed, err := os.ReadFile(fixture.runtime.paths.installedRecoveryService)
+	if err != nil || manualHostRecoveryUnitDigest(installed) !=
+		manualHostRecoveryUnitCorrectedDigest {
+		t.Fatalf("recovery unit did not converge: err=%v", err)
+	}
+	if _, err := os.Lstat(
+		fixture.runtime.paths.installedRecoveryService + ".d",
+	); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovery drop-in directory remained: %v", err)
+	}
+}
+
 func manualHostUpgradeLinuxUnitPaths(root string) manualHostUpgradePaths {
 	return manualHostUpgradePaths{
 		installedAgentUnit: filepath.Join(
@@ -1913,7 +2913,12 @@ func manualHostUpgradeLinuxWriteFile(
 	mode fs.FileMode,
 ) {
 	t.Helper()
-	manualHostUpgradeLinuxMkdir(t, filepath.Dir(path), 0o755)
+	directory := filepath.Dir(path)
+	if _, err := os.Lstat(directory); errors.Is(err, os.ErrNotExist) {
+		manualHostUpgradeLinuxMkdir(t, directory, 0o755)
+	} else if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, payload, mode); err != nil {
 		t.Fatal(err)
 	}

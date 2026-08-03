@@ -177,12 +177,66 @@ sudo ./install/install-autostream-host-agent --upgrade
 `--upgrade` is only for an already configured, healthy managed A/B install. It
 upgrades the Host Agent and Local Executor as one version-matched pair while
 preserving `/etc/autostream-host-agent/identity.json` and
-`/etc/autostream-local-executor/policy.json`. The installed systemd and
-tmpfiles templates must be byte-identical to the new bundle; a release that
-needs unit changes requires a newer migration procedure. Before running it,
-confirm that the active Control Panel satisfies the bundle's
-`minimum_panel_version`; the offline host cannot independently prove a remote
-Panel version.
+`/etc/autostream-local-executor/policy.json`. Except for the narrowly bounded
+recovery-service migration below, the installed systemd and tmpfiles templates
+must be byte-identical to the new bundle. Before running it, confirm that the
+active Control Panel satisfies the bundle's `minimum_panel_version`; the
+offline host cannot independently prove a remote Panel version.
+
+### Forward-only recovery service migration
+
+The recovery service template is the only unit-change exception handled by
+`--upgrade`. The verified bundle must contain the corrected template with
+SHA-256
+`d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd`.
+The installed template at the canonical path
+`/etc/systemd/system/autostream-host-self-update-recovery@.service` must be
+either that exact corrected file or the one exact legacy file with SHA-256
+`751c69c970407b4873d403971a192b33320d44b352aba58a9ab56c2fa1e1309c`.
+Any other candidate or installed digest fails closed before unit mutation.
+
+For both `autostream-host-self-update-recovery@a.service` and `@b.service`,
+PID 1's effective `FragmentPath` must resolve to that canonical template. The
+optional transitional directory
+`/etc/systemd/system/autostream-host-self-update-recovery@.service.d` may be
+absent or contain only either or both of these exact, regular, single-link
+`root:root 0644` files under a `root:root 0755` directory:
+
+- `10-executable-guard.conf`, SHA-256
+  `264b1b3e55d6f4551af36daa2cc34d19baa162b21b0c724d0c62459eefe006fe`;
+- `20-bootstrap-state-guard.conf`, SHA-256
+  `1964442535eb9f85ce594cb54c880fd8b92338951e3e103fac1fd5b88c85bf10`.
+
+The effective `DropInPaths` must match exactly the known files present on disk.
+An unknown drop-in, fragment override, modified known file, unsafe metadata, or
+unexpected daemon-reload state fails closed without replacing the template.
+The retry-only exception is `NeedDaemonReload=yes` after the corrected template
+has already been installed; even then, every effective drop-in path must still
+be one of the two known paths.
+
+Only after the normal durable blocker checks pass does the installer atomically
+replace the exact legacy template, sync the file and parent directory, and run
+`systemctl daemon-reload`. It then removes the known transitional drop-ins,
+syncs their removal, reloads again, and requires both recovery instances to
+report the canonical `FragmentPath`, empty `DropInPaths`, and
+`NeedDaemonReload=no`. An already-corrected, fully converged installation is an
+idempotent no-op. If the first reload fails after replacement, the corrected
+template is retained and the known drop-ins remain for a later `--upgrade` retry
+to converge.
+
+When no durable Host self-update state exists, a recovery instance left in
+`failed` with `MainPID=0` by the legacy bootstrap may receive
+`systemctl reset-failed` only after the corrected unit has converged. A running
+instance, a nonzero PID, or any other unexpected state remains a blocker. This
+reset does not erase an existing self-update state or bypass any job, grant,
+rotation, or checkpoint check.
+
+This unit migration is forward-only. A later activation failure may switch the
+A/B runtime back to the previous healthy Agent and Executor, but it never
+restores the legacy recovery template or its transitional drop-ins. The
+artifact manifest's `rollback_compatible: true` describes that paired A/B
+runtime and state-protocol rollback; it does not promise byte-for-byte rollback
+of this root-owned unit migration or authorize a downgrade to an unknown unit.
 
 The command rejects a downgrade, a mixed installed Agent/Executor pair,
 same-version content drift, an unsafe slot/link, or an in-progress Agent job,
@@ -196,6 +250,9 @@ byte-for-byte unchanged. Re-running the exact already-active release is an
 idempotent success only after the same durable blocker checks. Do not invoke
 the internal `manual-upgrade-host-runtime` Executor subcommand directly; the
 archive installer supplies its verified, credential-free artifact binding.
+An exact same-version runtime may still perform the one-time forward-only
+recovery service migration above; different same-version binary content remains
+rejected.
 
 During an accepted update the installer takes the shared Host setup and
 lifecycle locks, the legacy update-host installer lock, plus every fixed,
@@ -263,6 +320,8 @@ Installed paths:
 /etc/systemd/system/autostream-host-agent.service
 /etc/systemd/system/autostream-local-executor.service
 /etc/systemd/system/autostream-local-executor.socket
+/etc/systemd/system/autostream-host-self-update-recovery@.service
+/etc/systemd/system/autostream-host-self-update-recovery@.timer
 /etc/tmpfiles.d/autostream-local-executor.conf
 /var/lib/autostream-host-agent/
 /var/lib/autostream-local-executor/
@@ -286,7 +345,18 @@ sudo stat -c '%U:%G:%a %n' \
   /usr/local/bin/autostream-host-agent \
   /etc/autostream-host-agent/identity.json \
   /etc/systemd/system/autostream-host-agent.service \
+  /etc/systemd/system/autostream-host-self-update-recovery@.service \
+  /etc/systemd/system/autostream-host-self-update-recovery@.timer \
   /var/lib/autostream-host-agent
+sudo sha256sum \
+  /etc/systemd/system/autostream-host-self-update-recovery@.service
+sudo systemctl show \
+  autostream-host-self-update-recovery@a.service \
+  autostream-host-self-update-recovery@b.service \
+  --no-pager \
+  --property=FragmentPath \
+  --property=DropInPaths \
+  --property=NeedDaemonReload
 sudo -u autostream-host-agent \
   /usr/local/bin/autostream-host-agent validate-config \
   --config /etc/autostream-host-agent/identity.json
@@ -301,7 +371,11 @@ The expected file identities are `root:root:755`,
 `root:autostream-host-agent:640`, `root:root:644`, and
 `autostream-host-agent:autostream-host-agent:700`. The Host Agent must not
 appear in the listening-socket output. `SocketBindDeny=any` also enforces that
-boundary at the systemd service level.
+boundary at the systemd service level. The recovery service checksum must be
+`d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd`.
+Both recovery instances must report
+`FragmentPath=/etc/systemd/system/autostream-host-self-update-recovery@.service`,
+an empty `DropInPaths=`, and `NeedDaemonReload=no`.
 
 ## Rotate the Runtime Token
 
