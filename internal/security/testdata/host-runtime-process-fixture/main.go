@@ -16,9 +16,13 @@ const (
 	execCommandPath  = "/opt/autostream/host-agent-smoke-fixtures/autostream-local-executor-command"
 )
 
-func fixtureVersion(name string) string {
+func isLegacyLiveRuntime() bool {
 	executable, err := os.Executable()
-	if err == nil && !strings.Contains(filepath.ToSlash(executable), "/slots/a/") {
+	return err == nil && strings.Contains(filepath.ToSlash(executable), "/slots/a/")
+}
+
+func fixtureVersion(name string) string {
+	if !isLegacyLiveRuntime() {
 		return "v1.9.11"
 	}
 	version := os.Getenv("AUTOSTREAM_RUNTIME_FIXTURE_VERSION")
@@ -67,6 +71,9 @@ func dispatchFixtureCommand(name string) {
 }
 
 func fixtureRecoveryProtocol() string {
+	if !isLegacyLiveRuntime() {
+		return "2"
+	}
 	protocol := os.Getenv("AUTOSTREAM_RUNTIME_FIXTURE_RECOVERY_PROTOCOL")
 	if protocol == "" {
 		return "2"
