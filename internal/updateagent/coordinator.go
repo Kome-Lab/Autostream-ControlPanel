@@ -851,14 +851,21 @@ func (w *centralHostWorker) pollOnce(ctx context.Context) error {
 		activeID = active.ID
 	}
 	job, clearActive, err := w.coordinator.Panel.ClaimHost(ctx, w.coordinator.Config.NodeID, w.host.HostID, activeID)
-	if err != nil || job == nil {
-		if err == nil && clearActive {
-			if active != nil {
-				_ = cleanupJobDirectory(w.stateDir(), active.ID)
-			}
-			return w.journal.ClearActive()
-		}
+	if err != nil {
 		return err
+	}
+	if clearActive {
+		if active == nil || job == nil || !sameRecoveredJobIntent(*active, *job) ||
+			!isTerminalUpdateStatus(job.Status) {
+			return errors.New("terminal host recovery proof does not match the active job")
+		}
+		if err := cleanupJobDirectory(w.stateDir(), active.ID); err != nil {
+			return fmt.Errorf("clean terminal host recovery job state: %w", err)
+		}
+		return w.journal.ClearActive()
+	}
+	if job == nil {
+		return nil
 	}
 	if active != nil && (active.ID != job.ID || !job.RecoveryRequired) {
 		return fmt.Errorf("refusing host %s claim %s while interrupted job %s awaits recovery", w.host.HostID, job.ID, active.ID)
@@ -996,7 +1003,7 @@ func (w *centralHostWorker) processRecovery(ctx context.Context, job UpdateJob, 
 	result, err := w.invokeMutation(ctx, job, remotePlan, "reconcile", "reconciling", 99)
 	if err != nil {
 		if remoteExecutionCode(err) == "stage_required" {
-			return w.terminal(ctx, job, "failed", "remote_stage_missing", "interrupted job has no remote staged or mutating state", ApplyResult{})
+			return w.terminal(ctx, job, "failed", "remote_stage_missing", "interrupted job has no durable mutation state to reconcile", ApplyResult{})
 		}
 		return fmt.Errorf("remote reconciliation remains pending: %w", err)
 	}
@@ -1410,12 +1417,6 @@ func (w *centralHostWorker) emit(ctx context.Context, job UpdateJob, status, cod
 	}
 	if err := w.flushReports(ctx); err != nil {
 		w.coordinator.Logf("host %s update report queued for retry: %v", w.host.HostID, err)
-		if IsFatalReportError(err) {
-			pending := w.journal.Pending()
-			if len(pending) > 0 {
-				_ = w.journal.Ack(pending[0].JobID, pending[0].Report.Sequence)
-			}
-		}
 		return report, err
 	}
 	return report, nil
@@ -1430,13 +1431,10 @@ func (w *centralHostWorker) flushReports(ctx context.Context) error {
 		item := pending[0]
 		if err := w.coordinator.Panel.Report(ctx, item.JobID, item.Report); err != nil {
 			if IsPermanentReportError(err) {
-				if ackErr := w.journal.Ack(item.JobID, item.Report.Sequence); ackErr != nil {
-					return ackErr
-				}
-				if isTerminalUpdateStatus(item.Report.Status) {
-					if cleanupErr := cleanupJobDirectory(w.stateDir(), item.JobID); cleanupErr != nil {
-						return cleanupErr
-					}
+				// A stale lease or sequence proves only that this report cursor is
+				// unusable. Preserve the active job for an exact recovery claim.
+				if dropErr := w.journal.DropJobReports(item.JobID); dropErr != nil {
+					return dropErr
 				}
 				return ErrLeaseLost
 			}
@@ -1448,6 +1446,9 @@ func (w *centralHostWorker) flushReports(ctx context.Context) error {
 		if isTerminalUpdateStatus(item.Report.Status) {
 			if err := cleanupJobDirectory(w.stateDir(), item.JobID); err != nil {
 				return fmt.Errorf("clean acknowledged host update state: %w", err)
+			}
+			if err := w.journal.ClearActive(); err != nil {
+				return err
 			}
 		}
 	}

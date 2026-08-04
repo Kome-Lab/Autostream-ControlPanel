@@ -20,9 +20,10 @@ const (
 // ManualHostUpgradeRequest carries only the provenance already verified by the
 // archive installer. Identity, policy, and credentials never cross argv.
 type ManualHostUpgradeRequest struct {
-	ArtifactRoot  string
-	ArchiveSHA256 string
-	ArchiveSize   int64
+	ArtifactRoot            string
+	ArchiveSHA256           string
+	ArchiveSize             int64
+	AgentStoppedForRecovery bool
 }
 
 type ManualHostUpgradeResult struct {
@@ -152,4 +153,12 @@ func UpgradeHostRuntimeFromVerifiedBundle(
 	request ManualHostUpgradeRequest,
 ) (ManualHostUpgradeResult, error) {
 	return upgradeHostRuntimeFromVerifiedBundle(ctx, request)
+}
+
+// InspectHostUpdateRecovery reports whether the protected Host Agent journal
+// contains an interrupted job that must be reconciled before a manual runtime
+// upgrade. The platform implementation performs a read-only, root-owned
+// inspection; it never clears the journal or any Local Executor ledger.
+func InspectHostUpdateRecovery() (bool, error) {
+	return inspectHostUpdateRecovery()
 }

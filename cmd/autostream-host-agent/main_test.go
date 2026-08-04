@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/updateagent"
 )
@@ -89,6 +90,89 @@ func TestHostAgentConfigureCommandDelegatesWithoutTokenArgument(t *testing.T) {
 	}
 }
 
+func TestRecoverUpdateRejectsRootBeforeLoadingIdentity(t *testing.T) {
+	dependencies := hostAgentTestDependencies(t)
+	dependencies.EffectiveUID = func() int { return 0 }
+	dependencies.LoadCanonicalIdentity = func(string, bool) (updateagent.Config, error) {
+		t.Fatal("root recovery loaded the Host Agent identity")
+		return updateagent.Config{}, nil
+	}
+	dependencies.Recover = func(context.Context, updateagent.Config) error {
+		t.Fatal("root recovery started the Host Pull Agent")
+		return nil
+	}
+
+	err := run([]string{"recover-update", "--config", defaultHostAgentConfigPath}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "non-root Host Agent service account") {
+		t.Fatalf("root recovery error = %v", err)
+	}
+}
+
+func TestRecoverUpdateRejectsDifferentNonRootAccount(t *testing.T) {
+	dependencies := hostAgentTestDependencies(t)
+	dependencies.EffectiveUID = func() int { return 1000 }
+	dependencies.LoadCanonicalIdentity = func(string, bool) (updateagent.Config, error) {
+		t.Fatal("foreign non-root account loaded the Host Agent identity")
+		return updateagent.Config{}, nil
+	}
+	err := run([]string{"recover-update", "--config", defaultHostAgentConfigPath}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "Host Agent service account") {
+		t.Fatalf("foreign account recovery error = %v", err)
+	}
+}
+
+func TestRecoverUpdateLoadsCanonicalIdentityWithBoundedContext(t *testing.T) {
+	dependencies := hostAgentTestDependencies(t)
+	dependencies.EffectiveUID = func() int { return 993 }
+	var loadedPath string
+	var requireRootOwned bool
+	var recovered updateagent.Config
+	dependencies.LoadCanonicalIdentity = func(path string, requireRoot bool) (updateagent.Config, error) {
+		loadedPath = path
+		requireRootOwned = requireRoot
+		return updateagent.Config{
+			PanelURL:     "https://panel.example.com",
+			NodeID:       "host-agent-a",
+			RuntimeToken: "runtime-token",
+			ServiceName:  "Host Agent A",
+		}, nil
+	}
+	dependencies.Recover = func(ctx context.Context, identity updateagent.Config) error {
+		recovered = identity
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("recovery context has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > hostAgentRecoverUpdateTimeout {
+			t.Fatalf("recovery deadline remaining = %s", remaining)
+		}
+		return nil
+	}
+
+	if err := run([]string{"recover-update", "--config", defaultHostAgentConfigPath}, dependencies); err != nil {
+		t.Fatal(err)
+	}
+	if loadedPath != defaultHostAgentConfigPath || !requireRootOwned {
+		t.Fatalf("load = path %q root-owned %v", loadedPath, requireRootOwned)
+	}
+	if recovered.NodeID != "host-agent-a" || recovered.RuntimeToken != "runtime-token" {
+		t.Fatalf("recovered identity = %#v", recovered)
+	}
+}
+
+func TestRecoverUpdateRejectsNonCanonicalIdentityPath(t *testing.T) {
+	dependencies := hostAgentTestDependencies(t)
+	dependencies.LoadCanonicalIdentity = func(string, bool) (updateagent.Config, error) {
+		t.Fatal("non-canonical recovery identity was loaded")
+		return updateagent.Config{}, nil
+	}
+	err := run([]string{"recover-update", "--config", "/etc/autostream/host-agent.json"}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "canonical Host Agent identity path") {
+		t.Fatalf("non-canonical recovery error = %v", err)
+	}
+}
+
 func TestHostAgentVersionDoesNotLoadIdentity(t *testing.T) {
 	dependencies := hostAgentTestDependencies(t)
 	dependencies.LoadIdentity = func(string, bool) (updateagent.Config, error) {
@@ -117,8 +201,24 @@ func hostAgentTestDependencies(t *testing.T) hostAgentCLIDependencies {
 				ServiceName:  "Host Agent A",
 			}, nil
 		},
-		Start:     func(context.Context, updateagent.Config) error { return nil },
-		Configure: func(context.Context, []string) error { return nil },
-		Output:    &bytes.Buffer{},
+		LoadCanonicalIdentity: func(path string, requireRoot bool) (updateagent.Config, error) {
+			if path != defaultHostAgentConfigPath || !requireRoot {
+				t.Fatalf("canonical load = path %q root-owned %v", path, requireRoot)
+			}
+			return updateagent.Config{
+				PanelURL:     "https://panel.example.com",
+				NodeID:       "host-agent-a",
+				RuntimeToken: "runtime-token",
+				ServiceName:  "Host Agent A",
+			}, nil
+		},
+		Start:        func(context.Context, updateagent.Config) error { return nil },
+		Recover:      func(context.Context, updateagent.Config) error { return nil },
+		Configure:    func(context.Context, []string) error { return nil },
+		EffectiveUID: func() int { return 993 },
+		ServiceAccountUID: func() (int, error) {
+			return 993, nil
+		},
+		Output: &bytes.Buffer{},
 	}
 }

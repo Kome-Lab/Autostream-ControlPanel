@@ -41,8 +41,11 @@ func TestHostAgentInstallerExposesManagedUpgradeMode(t *testing.T) {
 	installer := string(payload)
 	for _, marker := range []string{
 		`install-autostream-host-agent --upgrade`,
+		`install-autostream-host-agent --upgrade --recover-active-job`,
 		`--upgrade)`,
+		`--recover-active-job)`,
 		`install_mode="upgrade"`,
+		`die "--recover-active-job requires --upgrade"`,
 		`--prepare, --config, and --upgrade are mutually exclusive`,
 		`--prepare, --config PATH, or --upgrade is required`,
 		`manual-upgrade-host-runtime`,
@@ -54,6 +57,23 @@ func TestHostAgentInstallerExposesManagedUpgradeMode(t *testing.T) {
 		`forward_manual_upgrade_signal "${pending_signal}"`,
 		`trap '' INT TERM`,
 		`exit "${manual_upgrade_status}"`,
+		`inspect-host-update-recovery`,
+		`--unit="${ACTIVE_JOB_RECOVERY_GUARD_BASE}"`,
+		`--on-active="${ACTIVE_JOB_RECOVERY_GUARD_DELAY}"`,
+		`guard-restart-host-agent`,
+		`--expected-slot "${expected_slot}"`,
+		`ConditionPathExists=!${ACTIVE_JOB_RECOVERY_CLEAR_MARKER}`,
+		`ConditionFileIsExecutable=${active_job_recovery_guard_candidate_path}`,
+		`/run/autostream-host-agent-recovery.XXXXXXXX`,
+		`"${RUNUSER_PATH}" --user "${AGENT_USER}" --`,
+		`recover-update --config "${CONFIG_DEST}"`,
+		`candidate_command+=(--agent-stopped-for-recovery)`,
+		`active_job_recovery_service_is_managed`,
+		`active_job_recovery_live_pair_is_managed`,
+		`release_active_job_recovery_lifecycle_lock`,
+		`reacquire_active_job_recovery_lifecycle_lock`,
+		`"${ENV_PATH}" -i`,
+		`cleanup_active_job_recovery`,
 	} {
 		if !strings.Contains(installer, marker) {
 			t.Fatalf("Host Agent installer upgrade CLI is missing %q", marker)
@@ -61,6 +81,24 @@ func TestHostAgentInstallerExposesManagedUpgradeMode(t *testing.T) {
 	}
 	if strings.Count(installer, "manual_upgrade_candidate_is_child_job") < 2 {
 		t.Fatal("Host Agent installer must guard candidate signal forwarding with the child job identity")
+	}
+	recoveryStart := strings.Index(installer, "run_active_job_recovery_candidate()")
+	recoveryEnd := strings.Index(installer, "run_manual_upgrade_candidate()")
+	if recoveryStart < 0 || recoveryEnd <= recoveryStart {
+		t.Fatal("Host Agent installer recovery-only command boundary is unavailable")
+	}
+	recoveryCommand := installer[recoveryStart:recoveryEnd]
+	for _, forbidden := range []string{
+		"runtime_token",
+		"--runtime-token",
+		"--token",
+		"--job",
+		"Stage",
+		"Apply",
+	} {
+		if strings.Contains(recoveryCommand, forbidden) {
+			t.Fatalf("Host Agent recovery-only command contains forbidden argument or mutation %q", forbidden)
+		}
 	}
 }
 
@@ -607,6 +645,13 @@ func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 				t.Fatal(err)
 			}
 			workflow := string(payload)
+			blacksmithJobMarker := map[string]string{
+				"ci.yml":           "  go:\n    runs-on: blacksmith-32vcpu-ubuntu-2404",
+				"release-host.yml": "  release-host:\n    name: Build Linux host artifacts\n    runs-on: blacksmith-32vcpu-ubuntu-2404",
+			}[workflowName]
+			if !strings.Contains(workflow, blacksmithJobMarker) {
+				t.Fatalf("%s no longer runs the Host smoke build job on Blacksmith", workflowName)
+			}
 			for _, smoke := range smokes {
 				marker := "/bin/bash /workspace/internal/security/testdata/" + smoke
 				markerIndex := strings.Index(workflow, marker)
@@ -645,8 +690,76 @@ func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 						}
 					}
 				}
+				if smoke == "run-host-agent-installer-upgrade-smoke.sh" {
+					for _, required := range []string{
+						`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`,
+						`./internal/security/testdata/host-runtime-process-fixture`,
+						`-o "${smoke_dir}/host-runtime-process-fixture"`,
+						`source=${smoke_dir},target=/smoke,readonly`,
+						`/workspace \`,
+						`/smoke/host-runtime-process-fixture`,
+					} {
+						if !strings.Contains(step, required) {
+							t.Fatalf(
+								"%s smoke %s is missing native runtime fixture wiring %q",
+								workflowName, smoke, required,
+							)
+						}
+					}
+				}
 			}
 		})
+	}
+	fixturePath := filepath.Join(
+		"..", "..", "internal", "security", "testdata", "host-runtime-process-fixture", "main.go",
+	)
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		`AUTOSTREAM_RUNTIME_FIXTURE_VERSION`,
+		`AUTOSTREAM_RUNTIME_FIXTURE_AGENT_VERSION`,
+		`AUTOSTREAM_RUNTIME_FIXTURE_EXECUTOR_VERSION`,
+		`AUTOSTREAM_RUNTIME_FIXTURE_RECOVERY_PROTOCOL`,
+		`guard-restart-host-agent`,
+		`signal.Notify(terminated, syscall.SIGINT, syscall.SIGTERM)`,
+	} {
+		if !strings.Contains(string(fixture), required) {
+			t.Fatalf("native Host runtime process fixture is missing %q", required)
+		}
+	}
+	smokePayload, err := os.ReadFile(filepath.Join(
+		"..", "..", "internal", "security", "testdata", "run-host-agent-installer-upgrade-smoke.sh",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	smoke := string(smokePayload)
+	for _, required := range []string{
+		`[[ $# -eq 2 ]]`,
+		`readonly RUNTIME_PROCESS_FIXTURE=$2`,
+		`AUTOSTREAM_RUNTIME_FIXTURE_VERSION=v1.9.9`,
+		`AUTOSTREAM_RUNTIME_FIXTURE_VERSION=v1.9.10`,
+		`selected slot bin mode 0700`,
+		`Host Agent binary mode 0744`,
+		`Local Executor binary mode 0744`,
+		`Local Executor MainPID executable mismatch`,
+		`mixed v1.9.9/v1.9.10 identity`,
+		`Local Executor recovery protocol 1`,
+		`public Local Executor symlink drift`,
+		`partial A/B switch unexpectedly completed recovery upgrade`,
+		`readonly RECOVERY_CLEAR_MARKER=/var/lib/autostream-host-agent/journal.clear-active.pending.json`,
+		`ConditionPathExists=!${RECOVERY_CLEAR_MARKER}`,
+		`ConditionFileIsExecutable=`,
+		`guard-restart-host-agent`,
+		`guard-arm stop-agent recover-agent guard-helper start-agent`,
+		`assert_committed_runtime_pair_active`,
+		`the committed Host runtime pair is not the exact verified candidate bytes`,
+	} {
+		if !strings.Contains(smoke, required) {
+			t.Fatalf("Host installer upgrade smoke is missing recovery regression %q", required)
+		}
 	}
 
 	ciPayload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))

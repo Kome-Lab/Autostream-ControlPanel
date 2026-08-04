@@ -144,6 +144,68 @@ func TestMemorySystemUpdateStoreClaimReportLeaseTransitionAndRedaction(t *testin
 	}
 }
 
+func TestMemorySystemUpdateStoreReconcileProgressMovesOnlyToTerminal(t *testing.T) {
+	updates := NewMemorySystemUpdateStore()
+	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
+		TargetID: "worker-reconcile", TargetServiceType: "worker", DeploymentMode: "systemd",
+		AgentServiceID: "updater-01",
+		CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyMaintenance,
+		IdempotencyKey: "request-reconcile-progress", RequestedByUserID: "user-01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	claim, _, err := updates.ClaimSystemUpdateJob(
+		t.Context(), "updater-01", "", "", map[string]string{"worker-reconcile": "systemd"},
+		now, 2*time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := SystemUpdateReport{
+		AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken,
+		LeaseGeneration: claim.LeaseGeneration,
+	}
+	installing := base
+	installing.Sequence = 1
+	installing.Status = SystemUpdateStatusInstalling
+	installing.Progress = 65
+	if _, applied, err := updates.ReportSystemUpdateJob(
+		t.Context(), job.ID, installing, now.Add(time.Second), 15*time.Minute,
+	); err != nil || !applied {
+		t.Fatalf("installing report applied=%v err=%v", applied, err)
+	}
+	reconciling := base
+	reconciling.Sequence = 2
+	reconciling.Status = SystemUpdateStatusReconciling
+	reconciling.Progress = 99
+	if _, applied, err := updates.ReportSystemUpdateJob(
+		t.Context(), job.ID, reconciling, now.Add(2*time.Second), 15*time.Minute,
+	); err != nil || !applied {
+		t.Fatalf("reconciling report applied=%v err=%v", applied, err)
+	}
+	regressed := base
+	regressed.Sequence = 3
+	regressed.Status = SystemUpdateStatusHealthChecking
+	regressed.Progress = 90
+	if _, _, err := updates.ReportSystemUpdateJob(
+		t.Context(), job.ID, regressed, now.Add(3*time.Second), 15*time.Minute,
+	); !errors.Is(err, ErrSystemUpdateTransition) {
+		t.Fatalf("reconciling 99 -> health_checking 90 err=%v", err)
+	}
+	terminal := base
+	terminal.Sequence = 3
+	terminal.Status = SystemUpdateStatusSucceeded
+	terminal.Progress = 100
+	completed, applied, err := updates.ReportSystemUpdateJob(
+		t.Context(), job.ID, terminal, now.Add(4*time.Second), 15*time.Minute,
+	)
+	if err != nil || !applied || completed.Status != SystemUpdateStatusSucceeded || completed.Progress != 100 {
+		t.Fatalf("terminal report=%+v applied=%v err=%v", completed, applied, err)
+	}
+}
+
 func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testing.T) {
 	newClaim := func(key string, now time.Time) (*MemorySystemUpdateStore, SystemUpdateJob, SystemUpdateClaim) {
 		updates := NewMemorySystemUpdateStore()
@@ -613,28 +675,44 @@ func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *te
 	if err != nil || clearActive || recovered.Job.ID != activeJob.ID || recovered.Job.Status != SystemUpdateStatusReconciling || recovered.LeaseGeneration != initial.LeaseGeneration+1 || !recovered.RecoveryRequired {
 		t.Fatalf("active_job_id did not fence/recover same job: %#v clear=%v err=%v", recovered, clearActive, err)
 	}
-	if clear, err := updates.ShouldClearSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || clear {
-		t.Fatalf("executing active_job_id was marked for clear: clear=%v err=%v", clear, err)
+	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || clear || inspected.ID != activeJob.ID {
+		t.Fatalf("executing active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
 	if _, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: recovered.LeaseToken, LeaseGeneration: recovered.LeaseGeneration, Sequence: recovered.ReportSequence, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(2*time.Minute), 45*time.Minute); err != nil || !applied {
 		t.Fatalf("finish active recovery: applied=%v err=%v", applied, err)
 	}
-	if clear, err := updates.ShouldClearSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || !clear {
-		t.Fatalf("terminal active_job_id was not marked for clear: clear=%v err=%v", clear, err)
+	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || !clear ||
+		inspected.ID != activeJob.ID || inspected.AgentServiceID != "updater-01" ||
+		inspected.TargetID != activeJob.TargetID || inspected.TargetVersion != activeJob.TargetVersion ||
+		inspected.Status != SystemUpdateStatusSucceeded || inspected.Progress != 100 ||
+		inspected.LeaseGeneration != recovered.LeaseGeneration || inspected.Sequence != recovered.ReportSequence {
+		t.Fatalf("terminal active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
+	}
+	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-02", activeJob.ID); !errors.Is(err, ErrSystemUpdateOwnershipConflict) || clear || inspected.ID != "" {
+		t.Fatalf("wrong-agent active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
 	clearedClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", activeJob.ID, eligible, now.Add(3*time.Minute), 2*time.Minute)
-	if err != nil || !clearActive || clearedClaim.Job.ID != "" {
-		t.Fatalf("terminal active_job_id did not request durable clear: %#v clear=%v err=%v", clearedClaim, clearActive, err)
+	if !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive || clearedClaim.Job.ID != "" {
+		t.Fatalf("terminal active_job_id bypassed strict inspection: %#v clear=%v err=%v", clearedClaim, clearActive, err)
+	}
+	if wrongAgentClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-02", "", activeJob.ID, eligible, now.Add(3*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateOwnershipConflict) || clearActive || wrongAgentClaim.Job.ID != "" {
+		t.Fatalf("wrong-agent active_job_id claim = %#v clear=%v err=%v", wrongAgentClaim, clearActive, err)
 	}
 	queued, err := updates.GetActiveSystemUpdateJob(t.Context(), queuedJob.TargetID)
 	if err != nil || queued.Status != SystemUpdateStatusQueued {
 		t.Fatalf("terminal active clear claimed another job: %#v err=%v", queued, err)
 	}
-	if _, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "missing-job", nil, now.Add(4*time.Minute), 2*time.Minute); err != nil || !clearActive {
-		t.Fatalf("missing active_job_id clear = %v err=%v", clearActive, err)
+	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", queuedJob.ID); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clear || inspected.ID != "" {
+		t.Fatalf("nonterminal active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
-	if clear, err := updates.ShouldClearSystemUpdateActiveJob(t.Context(), "updater-01", "missing-job"); err != nil || !clear {
-		t.Fatalf("missing active_job_id was not marked for clear: clear=%v err=%v", clear, err)
+	if queuedClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", queuedJob.ID, eligible, now.Add(4*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive || queuedClaim.Job.ID != "" {
+		t.Fatalf("nonterminal active_job_id claim = %#v clear=%v err=%v", queuedClaim, clearActive, err)
+	}
+	if _, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "missing-job", nil, now.Add(4*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive {
+		t.Fatalf("missing active_job_id claim clear = %v err=%v", clearActive, err)
+	}
+	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", "missing-job"); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clear || inspected.ID != "" {
+		t.Fatalf("missing active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
 	next, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now.Add(5*time.Minute), 2*time.Minute)
 	if err != nil || next.Job.ID != queuedJob.ID {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestJobDirectorySurvivesPendingTerminalAndStartupCollectsAfterAck(t *testing.T) {
+func TestJobDirectorySurvivesPendingTerminalUntilCleanupAndActiveClear(t *testing.T) {
 	stateDir := t.TempDir()
 	journal, err := OpenJournal(stateDir)
 	if err != nil {
@@ -37,14 +37,23 @@ func TestJobDirectorySurvivesPendingTerminalAndStartupCollectsAfterAck(t *testin
 	if err := journal.Ack(job.ID, report.Sequence); err != nil {
 		t.Fatal(err)
 	}
+	if journal.Active() == nil {
+		t.Fatal("terminal report cursor ACK cleared active state before job cleanup")
+	}
+	if err := cleanupJobDirectory(stateDir, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.ClearActive(); err != nil {
+		t.Fatal(err)
+	}
 
-	// Simulate a crash after the durable ACK but before best-effort cleanup.
+	// Simulate a crash after cleanup and the durable active-cursor clear.
 	reopened, err := OpenJournal(stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reopened.Active() != nil || len(reopened.Pending()) != 0 {
-		t.Fatal("terminal ACK was not durable")
+		t.Fatal("terminal cleanup and active-cursor clear were not durable")
 	}
 	if err := garbageCollectJobDirectories(stateDir, reopened); err != nil {
 		t.Fatal(err)

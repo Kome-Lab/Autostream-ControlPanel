@@ -14,6 +14,7 @@ type hostPullExecutionTestPanel struct {
 	job          *UpdateJob
 	claimHostIDs []string
 	reports      []JobReport
+	reportErrors []error
 	grants       []MutationGrantRequest
 	grantErrors  []error
 }
@@ -36,6 +37,13 @@ func (p *hostPullExecutionTestPanel) ClaimHost(_ context.Context, _, hostID, _ s
 	return &copy, false, nil
 }
 func (p *hostPullExecutionTestPanel) Report(_ context.Context, _ string, report JobReport) error {
+	if len(p.reportErrors) > 0 {
+		err := p.reportErrors[0]
+		p.reportErrors = p.reportErrors[1:]
+		if err != nil {
+			return err
+		}
+	}
 	p.reports = append(p.reports, report)
 	return nil
 }
@@ -81,13 +89,19 @@ type hostPullExecutionTestExecutor struct {
 	applyFences     []LocalExecutorMutationFence
 	reconcileFences []LocalExecutorMutationFence
 	portFences      []LocalExecutorMutationFence
+	stageErr        error
 	applyErr        error
+	reconcileErr    error
+	reconcileResult *ApplyResult
 	portApplyErr    error
 	portReconResult *SystemdPortReconfigureResult
 }
 
 func (e *hostPullExecutionTestExecutor) Stage(_ context.Context, plan RemotePlan, _ LocalExecutorMutationFence) (RemoteStageResult, error) {
 	e.stageCalls++
+	if e.stageErr != nil {
+		return RemoteStageResult{}, e.stageErr
+	}
 	return RemoteStageResult{Status: "staged", SessionID: plan.SessionID, PlanSHA256: plan.PlanSHA256, ArtifactDigest: plan.ArtifactDigest}, nil
 }
 func (e *hostPullExecutionTestExecutor) Apply(_ context.Context, plan RemotePlan, fence LocalExecutorMutationFence, _ RemoteSecret) (ApplyResult, error) {
@@ -102,6 +116,16 @@ func (e *hostPullExecutionTestExecutor) Reconcile(_ context.Context, plan Remote
 	e.reconcileCalls++
 	e.reconcilePlans = append(e.reconcilePlans, plan)
 	e.reconcileFences = append(e.reconcileFences, fence)
+	if e.reconcileErr != nil {
+		return ApplyResult{}, e.reconcileErr
+	}
+	if e.reconcileResult != nil {
+		result := *e.reconcileResult
+		if result.ArtifactDigest == "" {
+			result.ArtifactDigest = plan.ResultArtifactDigest()
+		}
+		return result, nil
+	}
 	return ApplyResult{Status: "succeeded", ArtifactDigest: plan.ResultArtifactDigest()}, nil
 }
 
@@ -365,6 +389,18 @@ func TestHostPullExecutionClaimsServerOwnedHostAndCompletesThroughLocalExecutor(
 	if len(panel.reports) == 0 || panel.reports[len(panel.reports)-1].Status != "succeeded" {
 		t.Fatalf("reports=%+v", panel.reports)
 	}
+	foundHealthChecking := false
+	for _, report := range panel.reports {
+		if report.Status == "health_checking" && report.Progress == 90 {
+			foundHealthChecking = true
+		}
+		if report.Status == "reconciling" {
+			t.Fatalf("certain apply unexpectedly reconciled: %+v", panel.reports)
+		}
+	}
+	if !foundHealthChecking {
+		t.Fatalf("certain apply skipped health_checking/90: %+v", panel.reports)
+	}
 	if active := agent.Journal.Active(); active != nil {
 		t.Fatalf("terminal report left active job: %+v", active)
 	}
@@ -375,6 +411,46 @@ func TestHostPullExecutionClaimsServerOwnedHostAndCompletesThroughLocalExecutor(
 	if strings.Contains(string(payload), "ast_mutation_") ||
 		strings.Contains(string(payload), strings.Repeat("l", 48)) {
 		t.Fatalf("journal persisted a bearer secret: %s", payload)
+	}
+}
+
+func TestHostPullExecutionExplicitStageFailurePreservesPlanForRecovery(t *testing.T) {
+	for _, code := range []string{"stage_failed", "state_unavailable"} {
+		t.Run(code, func(t *testing.T) {
+			agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, false)
+			executor.stageErr = &LocalExecutorClientError{Code: code}
+
+			if err := agent.executeOnce(context.Background(), binding, policy); err == nil {
+				t.Fatal("explicit stage failure unexpectedly became terminal")
+			}
+			if executor.stageCalls != 1 || executor.applyCalls != 0 || executor.reconcileCalls != 0 {
+				t.Fatalf(
+					"executor calls stage=%d apply=%d reconcile=%d",
+					executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+				)
+			}
+			if len(panel.grants) != 0 {
+				t.Fatalf("stage failure issued grants before recovery: %+v", panel.grants)
+			}
+			if len(panel.reports) == 0 {
+				t.Fatal("stage failure emitted no reports")
+			}
+			last := panel.reports[len(panel.reports)-1]
+			if last.Status != "staging" || last.Progress != 55 {
+				t.Fatalf("last report=%+v", last)
+			}
+			for _, report := range panel.reports {
+				if isTerminalUpdateStatus(report.Status) {
+					t.Fatalf("stage failure emitted terminal report before reconcile: %+v", report)
+				}
+			}
+			if active := agent.Journal.Active(); active == nil || active.ID != panel.job.ID {
+				t.Fatalf("stage failure active job=%+v", active)
+			}
+			if plan := agent.Journal.ActivePlan(); plan == nil || plan.JobID != panel.job.ID {
+				t.Fatalf("stage failure active plan=%+v", plan)
+			}
+		})
 	}
 }
 
@@ -431,14 +507,198 @@ func TestHostPullExecutionUncertainApplyReconcilesWithoutReapplying(t *testing.T
 		panel.grants[1].Operation != "reconcile" {
 		t.Fatalf("grants=%+v", panel.grants)
 	}
-	foundReconciling := false
-	for _, report := range panel.reports {
+	reconcilingIndex := -1
+	previousProgress := -1
+	for index, report := range panel.reports {
+		if report.Progress < previousProgress {
+			t.Errorf(
+				"report progress decreased at index %d: previous=%d report=%+v",
+				index, previousProgress, report,
+			)
+		}
+		previousProgress = report.Progress
+		if report.Status == "health_checking" {
+			t.Errorf("uncertain apply emitted post-reconcile health_checking report: %+v", report)
+		}
 		if report.Status == "reconciling" {
-			foundReconciling = true
+			reconcilingIndex = index
 		}
 	}
-	if !foundReconciling {
+	if reconcilingIndex < 0 {
 		t.Fatalf("reports=%+v", panel.reports)
+	}
+	if reconcilingIndex+1 >= len(panel.reports) {
+		t.Fatalf("reconciling report was not followed by a terminal report: %+v", panel.reports)
+	}
+	reconciling := panel.reports[reconcilingIndex]
+	terminal := panel.reports[reconcilingIndex+1]
+	if reconciling.Progress != 99 || terminal.Status != "succeeded" || terminal.Progress != 100 {
+		t.Fatalf("reconciling=%+v terminal=%+v", reconciling, terminal)
+	}
+}
+
+func TestHostPullExecutionUncertainStagePreservesPlanAndRecoversWithoutRestaging(t *testing.T) {
+	agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, false)
+	executor.stageErr = errors.New("read local executor mutation response")
+
+	if err := agent.executeOnce(context.Background(), binding, policy); err == nil {
+		t.Fatal("uncertain stage result unexpectedly became terminal")
+	}
+	if executor.stageCalls != 1 || executor.applyCalls != 0 || executor.reconcileCalls != 0 {
+		t.Fatalf(
+			"first executor calls stage=%d apply=%d reconcile=%d",
+			executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+		)
+	}
+	if len(panel.grants) != 0 {
+		t.Fatalf("uncertain stage issued grants before recovery: %+v", panel.grants)
+	}
+	if len(panel.reports) == 0 {
+		t.Fatal("uncertain stage emitted no reports")
+	}
+	lastInitial := panel.reports[len(panel.reports)-1]
+	if lastInitial.Status != "staging" || lastInitial.Progress != 55 {
+		t.Fatalf("last initial report=%+v", lastInitial)
+	}
+	for _, report := range panel.reports {
+		if isTerminalUpdateStatus(report.Status) {
+			t.Fatalf("uncertain stage emitted terminal report: %+v", report)
+		}
+	}
+	if active := agent.Journal.Active(); active == nil || active.ID != panel.job.ID {
+		t.Fatalf("uncertain stage active job=%+v", active)
+	}
+	if plan := agent.Journal.ActivePlan(); plan == nil || plan.JobID != panel.job.ID {
+		t.Fatalf("uncertain stage active plan=%+v", plan)
+	}
+	executor.stageErr = nil
+	panel.job.RecoveryRequired = true
+	panel.job.LeaseGeneration++
+	panel.job.Status = "staging"
+	panel.job.Progress = 55
+	panel.job.Sequence = uint64(len(panel.reports))
+	panel.job.ReportSequence = panel.job.Sequence + 1
+	if err := agent.executeOnce(context.Background(), binding, policy); err != nil {
+		t.Fatalf("recovery executeOnce: %v", err)
+	}
+	if executor.stageCalls != 1 || executor.applyCalls != 0 || executor.reconcileCalls != 1 {
+		t.Fatalf(
+			"recovered executor calls stage=%d apply=%d reconcile=%d",
+			executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+		)
+	}
+	if len(panel.grants) != 1 || panel.grants[0].Operation != "reconcile" {
+		t.Fatalf("recovery grants=%+v", panel.grants)
+	}
+	if len(panel.reports) < 2 {
+		t.Fatalf("recovery reports=%+v", panel.reports)
+	}
+	reconciling := panel.reports[len(panel.reports)-2]
+	terminal := panel.reports[len(panel.reports)-1]
+	if reconciling.Status != "reconciling" ||
+		reconciling.Progress != 99 ||
+		terminal.Status != "succeeded" ||
+		terminal.Progress != 100 {
+		t.Fatalf("reconciling=%+v terminal=%+v", reconciling, terminal)
+	}
+	if active := agent.Journal.Active(); active != nil {
+		t.Fatalf("recovered uncertain stage left active job: %+v", active)
+	}
+}
+
+func TestHostPullPermanentStaleReportPreservesPlanForFreshRecovery(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		status    string
+		code      string
+		message   string
+		progress  int
+		errorCode string
+	}{
+		{
+			name: "reconciling", status: "reconciling",
+			message:  "inspecting interrupted host update state without reapplying",
+			progress: 99, errorCode: "system_update_lease_invalid",
+		},
+		{
+			name: "terminal", status: "failed", code: "remote_stage_missing",
+			message:  "interrupted job has no durable mutation state to reconcile",
+			progress: 100, errorCode: "system_update_sequence_stale",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, true)
+			interrupted := *panel.job
+			interrupted.RecoveryRequired = false
+			if err := agent.Journal.SetActive(&interrupted); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := agent.prepareExecutionPlan(context.Background(), policy, interrupted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := agent.Journal.SetActivePlan(plan); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := agent.Journal.Queue(
+				interrupted.ID, agent.Bootstrap.NodeID, interrupted.LeaseToken,
+				interrupted.LeaseGeneration, testCase.status, testCase.code,
+				testCase.message, testCase.progress, "", "",
+			); err != nil {
+				t.Fatal(err)
+			}
+			panel.reportErrors = []error{&PanelHTTPError{
+				Status: 409,
+				Code:   testCase.errorCode,
+			}}
+
+			if err := agent.flushExecutionReports(context.Background(), panel); !errors.Is(err, ErrLeaseLost) {
+				t.Fatalf("stale report error=%v", err)
+			}
+			if pending := agent.Journal.Pending(); len(pending) != 0 {
+				t.Fatalf("stale reports were not dropped: %+v", pending)
+			}
+			if active := agent.Journal.Active(); active == nil || active.ID != interrupted.ID {
+				t.Fatalf("stale report cleared active job: %+v", active)
+			}
+			if activePlan := agent.Journal.ActivePlan(); activePlan == nil ||
+				activePlan.JobID != interrupted.ID || activePlan.PlanSHA256 != plan.PlanSHA256 {
+				t.Fatalf("stale report cleared or changed active plan: %+v", activePlan)
+			}
+
+			panel.job.RecoveryRequired = true
+			panel.job.LeaseGeneration = interrupted.LeaseGeneration + 1
+			panel.job.LeaseToken = strings.Repeat("r", 48)
+			panel.job.Status = testCase.status
+			panel.job.Progress = testCase.progress
+			panel.job.Sequence = 7
+			panel.job.ReportSequence = 8
+			agent.Downloader = hostPullFailingDownloader{}
+
+			if err := agent.executeOnce(context.Background(), binding, policy); err != nil {
+				t.Fatalf("fresh recovery executeOnce: %v", err)
+			}
+			if executor.stageCalls != 0 || executor.applyCalls != 0 || executor.reconcileCalls != 1 {
+				t.Fatalf(
+					"fresh recovery calls stage=%d apply=%d reconcile=%d",
+					executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+				)
+			}
+			if len(panel.reports) != 2 ||
+				panel.reports[0].Status != "reconciling" || panel.reports[0].Progress != 99 ||
+				panel.reports[1].Status != "succeeded" || panel.reports[1].Progress != 100 {
+				t.Fatalf("fresh recovery reports=%+v", panel.reports)
+			}
+			if active := agent.Journal.Active(); active != nil {
+				t.Fatalf("fresh recovery left active job: %+v", active)
+			}
+			if activePlan := agent.Journal.ActivePlan(); activePlan != nil {
+				t.Fatalf("fresh recovery left active plan: %+v", activePlan)
+			}
+			if pending := agent.Journal.Pending(); len(pending) != 0 {
+				t.Fatalf("fresh recovery left pending reports: %+v", pending)
+			}
+		})
 	}
 }
 
@@ -490,6 +750,144 @@ func TestHostPullRecoveryOnlyReconcilesDurableExecutorState(t *testing.T) {
 		executor.reconcilePlans[0].LeaseGeneration != panel.job.LeaseGeneration ||
 		panel.grants[0].LeaseGeneration != panel.job.LeaseGeneration {
 		t.Fatalf("plan=%+v grant=%+v", executor.reconcilePlans, panel.grants)
+	}
+}
+
+func TestHostPullRecoveryWithoutExecutorStageTerminates(t *testing.T) {
+	agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, true)
+	interrupted := *panel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agent.prepareExecutionPlan(context.Background(), policy, interrupted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Journal.SetActivePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	panel.job.LeaseGeneration = interrupted.LeaseGeneration + 1
+	agent.Downloader = hostPullFailingDownloader{}
+	executor.reconcileErr = &LocalExecutorClientError{Code: "stage_required"}
+
+	if err := agent.executeOnce(context.Background(), binding, policy); err != nil {
+		t.Errorf("executeOnce: %v", err)
+	}
+	if executor.stageCalls != 0 || executor.applyCalls != 0 || executor.reconcileCalls != 1 {
+		t.Fatalf(
+			"executor calls stage=%d apply=%d reconcile=%d",
+			executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+		)
+	}
+	if len(panel.grants) != 1 || panel.grants[0].Operation != "reconcile" {
+		t.Fatalf("grants=%+v", panel.grants)
+	}
+	if len(executor.reconcilePlans) != 1 ||
+		executor.reconcilePlans[0].LeaseGeneration != panel.job.LeaseGeneration ||
+		panel.grants[0].LeaseGeneration != panel.job.LeaseGeneration {
+		t.Fatalf("plan=%+v grant=%+v", executor.reconcilePlans, panel.grants)
+	}
+	if len(panel.reports) != 2 {
+		t.Fatalf("reports=%+v", panel.reports)
+	}
+	reconciling := panel.reports[0]
+	terminal := panel.reports[1]
+	if reconciling.Status != "reconciling" ||
+		reconciling.Progress != 99 ||
+		reconciling.Message != "inspecting interrupted host update state without reapplying" {
+		t.Fatalf("reconciling report=%+v", reconciling)
+	}
+	if terminal.Status != "failed" ||
+		terminal.Progress != 100 ||
+		terminal.Code != "remote_stage_missing" ||
+		terminal.Message != "interrupted job has no durable mutation state to reconcile" {
+		t.Fatalf("terminal report=%+v", terminal)
+	}
+	if active := agent.Journal.Active(); active != nil {
+		t.Fatalf("stage-required recovery left active job: %+v", active)
+	}
+	if plan := agent.Journal.ActivePlan(); plan != nil {
+		t.Fatalf("stage-required recovery left active plan: %+v", plan)
+	}
+	if pending := agent.Journal.Pending(); len(pending) != 0 {
+		t.Fatalf("stage-required recovery left pending reports: %+v", pending)
+	}
+}
+
+func TestHostPullRecoveryReconcileResponseLossPreservesPlan(t *testing.T) {
+	agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, true)
+	interrupted := *panel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agent.prepareExecutionPlan(context.Background(), policy, interrupted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Journal.SetActivePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	panel.job.LeaseGeneration = interrupted.LeaseGeneration + 1
+	agent.Downloader = hostPullFailingDownloader{}
+	executor.reconcileErr = errors.New("read local executor mutation response")
+
+	if err := agent.executeOnce(context.Background(), binding, policy); err == nil {
+		t.Fatal("lost reconcile response unexpectedly became terminal")
+	}
+	if executor.stageCalls != 0 || executor.applyCalls != 0 || executor.reconcileCalls != 1 {
+		t.Fatalf(
+			"executor calls stage=%d apply=%d reconcile=%d",
+			executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+		)
+	}
+	if len(panel.reports) != 1 || panel.reports[0].Status != "reconciling" || panel.reports[0].Progress != 99 {
+		t.Fatalf("reports=%+v", panel.reports)
+	}
+	if active := agent.Journal.Active(); active == nil || active.ID != panel.job.ID {
+		t.Fatalf("lost reconcile response active job=%+v", active)
+	}
+	if activePlan := agent.Journal.ActivePlan(); activePlan == nil || activePlan.JobID != panel.job.ID {
+		t.Fatalf("lost reconcile response active plan=%+v", activePlan)
+	}
+}
+
+func TestHostPullRecoveryRolledBackTerminatesAtOneHundred(t *testing.T) {
+	agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, true)
+	interrupted := *panel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agent.prepareExecutionPlan(context.Background(), policy, interrupted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Journal.SetActivePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	panel.job.LeaseGeneration = interrupted.LeaseGeneration + 1
+	agent.Downloader = hostPullFailingDownloader{}
+	executor.reconcileResult = &ApplyResult{Status: "rolled_back", RolledBack: true}
+
+	if err := agent.executeOnce(context.Background(), binding, policy); err != nil {
+		t.Fatalf("executeOnce: %v", err)
+	}
+	if len(panel.reports) != 2 {
+		t.Fatalf("reports=%+v", panel.reports)
+	}
+	reconciling := panel.reports[0]
+	terminal := panel.reports[1]
+	if reconciling.Status != "reconciling" ||
+		reconciling.Progress != 99 ||
+		terminal.Status != "rolled_back" ||
+		terminal.Progress != 100 ||
+		terminal.Code != "post_update_verification_failed" {
+		t.Fatalf("reconciling=%+v terminal=%+v", reconciling, terminal)
+	}
+	if active := agent.Journal.Active(); active != nil {
+		t.Fatalf("rolled-back recovery left active job: %+v", active)
 	}
 }
 

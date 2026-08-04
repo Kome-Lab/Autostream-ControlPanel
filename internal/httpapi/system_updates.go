@@ -22,6 +22,7 @@ const systemUpdateClaimLeaseTTL = 2 * time.Minute
 const systemUpdateExecutionLeaseTTL = 45 * time.Minute
 const systemUpdateHostReachabilityTTL = 2 * time.Minute
 const systemUpdateHostClockSkew = 30 * time.Second
+const systemUpdateTerminalRecoveryProofMinimumAgentVersion = "v1.9.11"
 
 type systemUpdateTargetResponse struct {
 	TargetID                string                           `json:"target_id"`
@@ -112,6 +113,11 @@ type systemUpdateAgentAssignment struct {
 type systemUpdateClaimResponse struct {
 	store.SystemUpdateClaim
 	ReleaseToken string `json:"release_token,omitempty"`
+}
+
+type systemUpdateTerminalRecoveryResponse struct {
+	ClearActiveJobID bool                  `json:"clear_active_job_id"`
+	TerminalJob      store.SystemUpdateJob `json:"terminal_job"`
 }
 
 func (s *Server) listSystemUpdates(w http.ResponseWriter, r *http.Request) {
@@ -633,21 +639,19 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	eligibleTargets, err := s.systemUpdateTargetsForAgentHostClaim(r.Context(), agent, hostID, activeJobID != "")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "resolve_system_update_targets_failed"})
-		return
-	}
-	if len(eligibleTargets) == 0 {
-		if activeJobID == "" {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-	}
+	var activeJob *store.SystemUpdateJob
 	if activeJobID != "" {
-		clearActiveJob, err := s.systemUpdates.ShouldClearSystemUpdateActiveJob(r.Context(), agent.ServiceID, activeJobID)
+		terminalJob, clearActiveJob, err := s.systemUpdates.InspectSystemUpdateActiveJob(r.Context(), agent.ServiceID, activeJobID)
 		if errors.Is(err, store.ErrInvalidSystemUpdate) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+		if errors.Is(err, store.ErrSystemUpdateOwnershipConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_ownership_conflict"})
+			return
+		}
+		if errors.Is(err, store.ErrSystemUpdateRecoveryProofUnavailable) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_recovery_proof_unavailable"})
 			return
 		}
 		if err != nil {
@@ -655,10 +659,42 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if clearActiveJob {
+			if !systemUpdateTerminalRecoveryProofSupported(agent) {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"code": "system_update_terminal_proof_upgrade_required",
+				})
+				return
+			}
 			w.Header().Set("Cache-Control", "no-store")
-			writeJSON(w, http.StatusOK, map[string]bool{"clear_active_job_id": true})
+			writeJSON(w, http.StatusOK, systemUpdateTerminalRecoveryResponse{
+				ClearActiveJobID: true,
+				TerminalJob:      terminalJob,
+			})
 			return
 		}
+		activeJob = &terminalJob
+	}
+	var eligibleTargets map[string]string
+	if activeJob != nil && systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportPullV2 {
+		eligibleTargets, err = s.systemUpdatePullRecoveryEligibleTarget(r.Context(), agent, hostID, *activeJob)
+	} else {
+		eligibleTargets, err = s.systemUpdateTargetsForAgentHostClaim(r.Context(), agent, hostID, activeJobID != "")
+	}
+	if errors.Is(err, store.ErrSystemUpdateOwnershipConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_ownership_conflict"})
+		return
+	}
+	if errors.Is(err, store.ErrSystemUpdateActiveUnavailable) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_active_target_unavailable"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "resolve_system_update_targets_failed"})
+		return
+	}
+	if len(eligibleTargets) == 0 && activeJobID == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
 	releaseToken := ""
 	if systemUpdateAgentRequiresReleaseToken(agent) {
@@ -684,8 +720,7 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 	}
 	claim, clearActiveJob, err := s.systemUpdates.ClaimSystemUpdateJob(r.Context(), agent.ServiceID, hostID, activeJobID, eligibleTargets, now, systemUpdateClaimLeaseTTL)
 	if err == nil && clearActiveJob {
-		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]bool{"clear_active_job_id": true})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "claim_system_update_recovery_proof_missing"})
 		return
 	}
 	if errors.Is(err, store.ErrNotFound) {
@@ -699,6 +734,10 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 	}
 	if errors.Is(err, store.ErrSystemUpdateActiveUnavailable) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_active_target_unavailable"})
+		return
+	}
+	if errors.Is(err, store.ErrSystemUpdateRecoveryProofUnavailable) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_recovery_proof_unavailable"})
 		return
 	}
 	if errors.Is(err, store.ErrSystemUpdateOwnershipConflict) {
@@ -737,6 +776,19 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 		"active_job_present":        activeJobID != "",
 	})
 	writeOneTimeSecretJSON(w, http.StatusOK, systemUpdateClaimResponse{SystemUpdateClaim: claim, ReleaseToken: releaseToken})
+}
+
+func systemUpdateTerminalRecoveryProofSupported(
+	agent store.RegisteredService,
+) bool {
+	current := systemUpdateAgentVersion(agent)
+	if _, ok := parseSemanticVersion(current); !ok {
+		return false
+	}
+	return !versionIsNewer(
+		systemUpdateTerminalRecoveryProofMinimumAgentVersion,
+		current,
+	)
 }
 
 func (s *Server) serviceSystemUpdateReport(w http.ResponseWriter, r *http.Request) {
@@ -1530,6 +1582,122 @@ func (s *Server) systemUpdateEligibleTargetsForAgent(ctx context.Context, agent 
 
 func (s *Server) systemUpdateTargetsForAgentClaim(ctx context.Context, agent store.RegisteredService, allowBusyRecovery bool) (map[string]string, error) {
 	return s.systemUpdateTargetsForAgentHostClaim(ctx, agent, "", allowBusyRecovery)
+}
+
+// systemUpdatePullRecoveryEligibleTarget deliberately does not consume the
+// agent's reported target availability or executor-probe state. A target can
+// be unhealthy precisely because an Apply was interrupted. Recovery is
+// limited to the single durable job target and is instead fenced by the
+// server-owned agent, execution-host ownership and updater-policy snapshots.
+func (s *Server) systemUpdatePullRecoveryEligibleTarget(
+	ctx context.Context,
+	agent store.RegisteredService,
+	hostID string,
+	job store.SystemUpdateJob,
+) (map[string]string, error) {
+	hostID = strings.TrimSpace(hostID)
+	if systemUpdateAgentTransportMode(agent) != store.SystemUpdateTransportPullV2 ||
+		job.AgentServiceID != agent.ServiceID ||
+		job.ExecutionHostID != hostID ||
+		job.TransportMode != store.SystemUpdateTransportPullV2 ||
+		job.OwnershipEpoch < 1 ||
+		job.OwnershipEpoch != agent.OwnershipEpoch ||
+		job.PolicyRevision < 1 {
+		return nil, store.ErrSystemUpdateOwnershipConflict
+	}
+
+	ownershipStore, ok := s.systemUpdates.(store.SystemUpdateExecutionHostStore)
+	if !ok {
+		return nil, store.ErrSystemUpdateOwnershipConflict
+	}
+	ownership, err := ownershipStore.GetSystemUpdateExecutionHost(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	if ownership.ExecutionHostID != hostID ||
+		ownership.TransportMode != store.SystemUpdateTransportPullV2 ||
+		ownership.AgentServiceID != agent.ServiceID ||
+		ownership.OwnershipEpoch != job.OwnershipEpoch ||
+		ownership.PolicyRevision != job.PolicyRevision {
+		return nil, store.ErrSystemUpdateOwnershipConflict
+	}
+
+	policy, err := s.updaterPolicies.GetUpdaterPolicy(ctx, agent.ServiceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, store.ErrSystemUpdateActiveUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	if policy.UpdaterID != agent.ServiceID ||
+		policy.TransportMode != store.SystemUpdateTransportPullV2 ||
+		strings.TrimSpace(policy.ExecutionHostID) != hostID ||
+		policy.ProjectionRevision != job.PolicyRevision ||
+		policy.LocalExecutorPolicyRevision < 1 ||
+		!validUpdateManifestDigest(policy.LocalExecutorPolicySHA256) ||
+		!store.PullUpdaterPolicyDatabaseBindingsReady(policy) {
+		return nil, store.ErrSystemUpdateActiveUnavailable
+	}
+
+	deploymentMode := strings.ToLower(strings.TrimSpace(job.DeploymentMode))
+	if job.DeploymentMode != deploymentMode ||
+		(deploymentMode != "systemd" && deploymentMode != "docker") ||
+		!validSystemUpdateCapabilityIdentifier(job.TargetID) ||
+		!validSystemUpdateCapabilityIdentifier(job.TargetServiceType) {
+		return nil, store.ErrSystemUpdateActiveUnavailable
+	}
+	switch job.Operation {
+	case store.SystemUpdateOperationSoftwareUpdate:
+		if job.PortReconfigure != nil {
+			return nil, store.ErrSystemUpdateActiveUnavailable
+		}
+	case store.SystemUpdateOperationPortReconfigure:
+		if job.PortReconfigure == nil ||
+			job.PortReconfigure.ExpectedSourcePolicyRevision != policy.Revision ||
+			job.PortReconfigure.ExpectedUpdaterPolicyRevision != policy.ProjectionRevision ||
+			job.PortReconfigure.ExpectedExecutorPolicyRevision != policy.LocalExecutorPolicyRevision ||
+			job.PortReconfigure.ExpectedExecutorPolicySHA256 != policy.LocalExecutorPolicySHA256 {
+			return nil, store.ErrSystemUpdateActiveUnavailable
+		}
+	default:
+		return nil, store.ErrSystemUpdateActiveUnavailable
+	}
+
+	matchingTargets := 0
+	for _, target := range policy.Targets {
+		if strings.TrimSpace(target.ServiceID) != job.TargetID {
+			continue
+		}
+		matchingTargets++
+		if strings.TrimSpace(target.HostID) != hostID ||
+			strings.TrimSpace(target.ServiceType) != job.TargetServiceType ||
+			strings.ToLower(strings.TrimSpace(target.DeploymentMode)) != deploymentMode {
+			return nil, store.ErrSystemUpdateActiveUnavailable
+		}
+	}
+	if matchingTargets != 1 {
+		return nil, store.ErrSystemUpdateActiveUnavailable
+	}
+
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	servicesByID := make(map[string]store.RegisteredService, len(services)+1)
+	for _, service := range services {
+		servicesByID[service.ServiceID] = service
+	}
+	if err := addControlPanelSystemUpdateServiceForPolicy(servicesByID, policy); err != nil {
+		return nil, err
+	}
+	targetService, ok := servicesByID[job.TargetID]
+	if !ok ||
+		targetService.ServiceID != job.TargetID ||
+		targetService.ServiceType == "update_agent" ||
+		targetService.ServiceType != job.TargetServiceType {
+		return nil, store.ErrSystemUpdateActiveUnavailable
+	}
+	return map[string]string{job.TargetID: deploymentMode}, nil
 }
 
 func (s *Server) systemUpdateTargetsForAgentHostClaim(ctx context.Context, agent store.RegisteredService, hostID string, allowBusyRecovery bool) (map[string]string, error) {

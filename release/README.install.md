@@ -8,6 +8,31 @@ Executor over a private Unix socket. The standalone central
 `autostream-updater` and SSH `autostream-update-host` path are legacy migration
 inputs and are not installed by this guide.
 
+In `pull_v2`, a Stage error is not proof that the root-owned ledger is absent.
+The Host Agent preserves the immutable plan and the next lease generation uses
+reconcile only, without restaging or reapplying. A `stage_required` response
+means that the exact job has no durable mutation ledger or apply-authorized
+state. It does not claim that no staged directory existed: the root executor
+first safely removes only an exact orphan stage left before ledger commit and
+fsyncs its parent, or fails closed with `state_unavailable`. Only then may the
+Agent finish as `failed`/100 with `remote_stage_missing`; matching durable state
+is reconciled instead. After `reconciling`/99, progress moves directly to a
+terminal 100-percent result and never back to `health_checking`/90.
+
+A permanently stale lease or sequence drops only that unusable report cursor;
+the active job and plan remain for an exact recovery lease. The Panel never
+authorizes an active-cursor clear with a bare boolean: it returns a structured
+terminal job, which the Agent must match to the complete active immutable
+intent. A successful terminal report must also return the committed job body
+with matching job/Agent IDs, lease generation, sequence, status, progress,
+code, and result digests before the Agent acknowledges it. v1.9.9 and v1.9.10
+Agents predate this terminal-proof contract. Panel v1.9.11 returns
+`system_update_terminal_proof_upgrade_required` with HTTP 409 to a registered
+Agent older than v1.9.11 before terminal cursor recovery, so a legacy client
+cannot interpret the structured proof as a bare clear. Do not create a
+replacement job, cancel the nonterminal job, delete journals/ledgers, or invoke
+a manual restage/reapply while recovery is pending.
+
 ## Requirements
 
 - Linux amd64 or arm64 matching the archive name.
@@ -306,7 +331,52 @@ both processes together when activation proof fails. See the archive-contained
 `README.md` for the exact prerequisites and recovery semantics. Do not replace
 the Host Agent or Local Executor binary separately.
 
-v1.9.10 also fixes Host Agent startup on existing service hosts where
+### Recover an active v1.9.9 or v1.9.10 Host job while upgrading
+
+`--recover-active-job` is a bounded bridge only for an existing managed A/B
+runtime whose live Host Agent and Local Executor are an exact paired v1.9.9 or
+v1.9.10 release. Their version, commit, and build date must match; both public
+binary links and both systemd processes must resolve to that same current slot,
+and the live Executor must expose mutation and recovery protocol 2. It is not a
+generic recovery path for every pre-v1.9.11 release, a mixed-version pair, a
+standalone install, or an inactive or mismatched Executor. The old Agent must
+also begin enabled and active with a live MainPID. The Executor service and
+socket plus both fixed recovery timers must be active; the Agent, socket, and
+timers must be enabled.
+
+For such an exact pair with an active journal that normal `--upgrade` rejects,
+install and verify the Control Panel v1.9.11 release first. Then verify and
+extract the matching v1.9.11 Host archive and explicitly opt into the one-shot
+recovery path:
+
+```bash
+cd /opt/autostream/releases/artifacts/autostream-host-agent_v1.9.11_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade --recover-active-job
+```
+
+Use the matching `linux_arm64` archive and directory on arm64. This is the only
+supported active-job upgrade form; ordinary `--upgrade` still rejects an active
+job. It needs no Configure Token and must not rerun `configure`. The verified
+candidate runs once as `autostream-host-agent`, is bound to the journal's exact
+active job, and can only reconcile and report that job. It cannot claim a new
+job or invoke Stage or Apply. A bare cursor-clear response and any terminal
+proof or committed terminal report body that does not exactly match are
+rejected.
+
+The installer arms a transient systemd restart guard before stopping the old
+Agent. After the recovery-only candidate obtains strict terminal proof, the
+Agent stays intentionally stopped while the same command hands the pinned pair
+to the paired A/B upgrader. The Executor remains live, and the stopped on-disk
+Agent identity and live Executor identity must still match exactly. The guard
+is disarmed only after the resulting managed Agent is active and proved. If
+recovery or the paired upgrade fails, the installer restores and proves the
+exact previous pair and restarts the previous Agent; if it cannot reacquire the required
+locks or prove that result, the Agent remains stopped and the guard remains
+armed for console recovery. Do not delete or edit the Host Agent journal, Local
+Executor ledger, staged release, or update row before retrying. Do not create a
+replacement job, restage, reapply, or issue a new Configure Token.
+
+v1.9.10 and later include the Host Agent startup fix for service hosts where
 `/etc/autostream` correctly remains `root:root 0750`. The matched runtime
 securely loads the canonical `/etc/autostream-host-agent/identity.json`
 without requiring an ACL on the application-secret directory, while every
@@ -314,7 +384,7 @@ root-owned configure and Runtime Token mutation still rejects a reachable
 legacy `/etc/autostream/host-agent.json`. A v1.9.9 Agent already stopped by the
 permission failure cannot enter the intentionally healthy-only `--upgrade`
 path directly. Follow the archive-contained `README.md` for the bounded
-v1.9.9-only execute-only ACL recovery bridge, matched v1.9.10 upgrade, and
+v1.9.9-only execute-only ACL recovery bridge, matched current-release upgrade, and
 immediate post-upgrade removal of only that named entry. Never use
 `setfacl -b`, `chmod 0751`, a read ACL, or an application-group grant.
 

@@ -76,6 +76,7 @@ type HostPullAgentOptions struct {
 	SelfUpdateExecutor        HostSelfUpdateExecutor
 	SelfUpdateGrantIssuer     HostSelfUpdateGrantIssuer
 	LifecycleBlockers         func() HostLifecycleBlockers
+	RecoveryOnly              bool
 	Logf                      func(string, ...any)
 }
 
@@ -105,6 +106,7 @@ type HostPullAgent struct {
 	SelfUpdate                 *HostSelfUpdateController
 	SelfUpdateGrantIssuer      HostSelfUpdateGrantIssuer
 	LifecycleBlockers          func() HostLifecycleBlockers
+	RecoveryOnly               bool
 	Logf                       func(string, ...any)
 	executionRunning           atomic.Bool
 	rotationRunning            atomic.Bool
@@ -239,6 +241,7 @@ func NewHostPullAgent(bootstrap Config, options HostPullAgentOptions) (*HostPull
 		SelfUpdate:                selfUpdate,
 		SelfUpdateGrantIssuer:     options.SelfUpdateGrantIssuer,
 		LifecycleBlockers:         lifecycleBlockers,
+		RecoveryOnly:              options.RecoveryOnly,
 		Logf:                      logf,
 	}
 	if agent.ControlPlane == nil {
@@ -264,7 +267,64 @@ func NewHostPullAgent(bootstrap Config, options HostPullAgentOptions) (*HostPull
 			},
 		}
 	}
+	if agent.RecoveryOnly {
+		execution, ok := agent.ControlPlane.(HostPullExecutionControlPlane)
+		if !ok {
+			return nil, errors.New("recovery-only host pull agent requires an execution control plane")
+		}
+		agent.ControlPlane = recoveryOnlyHostPullControlPlane{
+			HostPullControlPlane: agent.ControlPlane,
+			execution:            execution,
+		}
+	}
 	return agent, nil
+}
+
+// recoveryOnlyHostPullControlPlane prevents the operator recovery command from
+// ever drifting into a normal claim. The underlying Panel client validates a
+// structured terminal proof before returning clearActive; executeOnce then
+// matches that proof to the durable active job before clearing the cursor.
+type recoveryOnlyHostPullControlPlane struct {
+	HostPullControlPlane
+	execution HostPullExecutionControlPlane
+}
+
+func (c recoveryOnlyHostPullControlPlane) ClaimHost(
+	ctx context.Context,
+	serviceID string,
+	hostID string,
+	activeJobID string,
+) (*UpdateJob, bool, error) {
+	if strings.TrimSpace(activeJobID) == "" {
+		return nil, false, errors.New("recovery-only claim requires an active job cursor")
+	}
+	job, clearActive, err := c.execution.ClaimHost(
+		ctx, serviceID, hostID, activeJobID,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if clearActive && (job == nil || job.ID != strings.TrimSpace(activeJobID) ||
+		!isTerminalUpdateStatus(job.Status)) {
+		return nil, false, errors.New("recovery-only claim received an unproven active cursor clear")
+	}
+	return job, clearActive, nil
+}
+
+func (c recoveryOnlyHostPullControlPlane) Report(
+	ctx context.Context,
+	jobID string,
+	report JobReport,
+) error {
+	return c.execution.Report(ctx, jobID, report)
+}
+
+func (c recoveryOnlyHostPullControlPlane) IssueMutationGrant(
+	ctx context.Context,
+	jobID string,
+	request MutationGrantRequest,
+) (MutationGrant, error) {
+	return c.execution.IssueMutationGrant(ctx, jobID, request)
 }
 
 // NewObserveOnlyHostAgent is retained as a source-compatible alias for the
@@ -286,9 +346,14 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 		return errors.New("open host pull agent journal returned nil")
 	}
 	a.Journal = journal
-	if err := a.recoverRuntimeTokenRotation(ctx); err != nil &&
-		ctx.Err() == nil {
-		a.Logf("host runtime token rotation recovery failed: %v", err)
+	if a.RecoveryOnly {
+		return a.runRecoveryOnly(ctx)
+	}
+	if !a.hasActiveRecovery() {
+		if err := a.recoverRuntimeTokenRotation(ctx); err != nil &&
+			ctx.Err() == nil {
+			a.Logf("host runtime token rotation recovery failed: %v", err)
+		}
 	}
 
 	var binding HostAgentBinding
@@ -297,16 +362,18 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 	var observationFailed bool
 
 	register := func() bool {
-		if recoveryErr := a.recoverRuntimeTokenRotation(ctx); recoveryErr != nil {
-			if ctx.Err() == nil {
-				a.Logf(
-					"host runtime token rotation recovery failed: %v",
-					recoveryErr,
-				)
+		if !a.hasActiveRecovery() {
+			if recoveryErr := a.recoverRuntimeTokenRotation(ctx); recoveryErr != nil {
+				if ctx.Err() == nil {
+					a.Logf(
+						"host runtime token rotation recovery failed: %v",
+						recoveryErr,
+					)
+				}
+				// Registration is read-only and remains useful while the local
+				// executor is unavailable. Reconciliation still fails closed before
+				// any runtime-token mutation is attempted.
 			}
-			// Registration is read-only and remains useful while the local
-			// executor is unavailable. Reconciliation still fails closed before
-			// any runtime-token mutation is attempted.
 		}
 		capabilities := a.capabilities(binding, policy, observations, observationFailed)
 		registered, registerErr := a.ControlPlane.RegisterHostAgent(ctx, a.currentIdentity(), capabilities)
@@ -341,7 +408,7 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 			return false
 		}
 		if !changed || next == nil {
-			if policy != nil {
+			if policy != nil && !a.hasActiveRecovery() {
 				if rotationErr := a.reconcileRuntimeTokenRotation(ctx, policy); rotationErr != nil {
 					if ctx.Err() == nil {
 						a.Logf(
@@ -362,6 +429,9 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 		}
 		policy = next
 		observations, observationFailed = a.observe(ctx, *policy)
+		if a.hasActiveRecovery() {
+			return true
+		}
 		if rotationErr := a.reconcileRuntimeTokenRotation(ctx, policy); rotationErr != nil {
 			if ctx.Err() == nil {
 				a.Logf(
@@ -399,14 +469,21 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 	registerRetry.record(now, register())
 	policyRetry.record(now, refreshPolicy())
 	heartbeatRetry.record(now, heartbeat())
-	a.startSelfUpdate(ctx, binding, policy)
-	a.startExecution(ctx, binding, policy, observations, observationFailed)
+	if a.hasActiveRecovery() {
+		a.startExecutionCycle(ctx, binding, policy, observations, observationFailed)
+	} else {
+		a.startSelfUpdate(ctx, binding, policy)
+		a.startExecutionCycle(ctx, binding, policy, observations, observationFailed)
+	}
 
 	pollTicker := time.NewTicker(hostAgentJitteredInterval(a.PollInterval, a.Bootstrap.NodeID, "policy-cadence"))
 	defer pollTicker.Stop()
 	heartbeatTicker := time.NewTicker(hostAgentJitteredInterval(a.HeartbeatInterval, a.Bootstrap.NodeID, "heartbeat-cadence"))
 	defer heartbeatTicker.Stop()
 	for {
+		if err := a.Journal.Err(); err != nil {
+			return fmt.Errorf("host pull agent journal requires restart: %w", err)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -415,8 +492,12 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 			if policyRetry.ready(now) {
 				policyRetry.record(now, refreshPolicy())
 			}
-			a.startSelfUpdate(ctx, binding, policy)
-			a.startExecution(ctx, binding, policy, observations, observationFailed)
+			if a.hasActiveRecovery() {
+				a.startExecutionCycle(ctx, binding, policy, observations, observationFailed)
+			} else {
+				a.startSelfUpdate(ctx, binding, policy)
+				a.startExecutionCycle(ctx, binding, policy, observations, observationFailed)
+			}
 		case <-heartbeatTicker.C:
 			now = time.Now()
 			if registerRetry.ready(now) {
@@ -425,9 +506,177 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 			if heartbeatRetry.ready(now) {
 				heartbeatRetry.record(now, heartbeat())
 			}
-			a.startSelfUpdate(ctx, binding, policy)
+			if !a.hasActiveRecovery() {
+				a.startSelfUpdate(ctx, binding, policy)
+			}
 		}
 	}
+}
+
+func (a *HostPullAgent) runRecoveryOnly(ctx context.Context) error {
+	if a == nil || a.Journal == nil {
+		return errors.New("host update recovery journal is unavailable")
+	}
+	if err := a.Journal.Err(); err != nil {
+		return fmt.Errorf("host update recovery journal requires restart: %w", err)
+	}
+	if !a.hasActiveRecovery() {
+		return nil
+	}
+	var lastErr error
+	for {
+		if err := a.Journal.Err(); err != nil {
+			return fmt.Errorf("host update recovery journal requires restart: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return fmt.Errorf("host update recovery did not converge: %v: %w", lastErr, err)
+			}
+			return err
+		}
+		if !a.hasActiveRecovery() {
+			return nil
+		}
+
+		binding, err := a.ControlPlane.RegisterHostAgent(
+			ctx,
+			a.currentIdentity(),
+			a.capabilities(HostAgentBinding{}, nil, nil, false),
+		)
+		if err == nil {
+			var policy *HostAgentPolicy
+			policy, _, err = a.ControlPlane.FetchHostAgentPolicy(
+				ctx, a.Bootstrap.NodeID, 0,
+			)
+			if err == nil && policy == nil {
+				err = errors.New("recovery-only policy is unavailable")
+			}
+			if err == nil && !a.recoveryExecutionReady(binding, policy) {
+				err = errors.New("recovery-only ownership policy is not ready")
+			}
+			var observations []HostTargetObservation
+			var observationFailed bool
+			if err == nil {
+				observations, observationFailed = a.observe(ctx, *policy)
+				err = a.ControlPlane.HeartbeatHostAgent(
+					ctx,
+					a.currentIdentity(),
+					"online",
+					a.capabilities(binding, policy, observations, observationFailed),
+				)
+				if err != nil {
+					err = fmt.Errorf("refresh recovery-only heartbeat: %w", err)
+				}
+			}
+			if err == nil {
+				err = ctx.Err()
+			}
+			if err == nil && a.hasActiveRecovery() {
+				err = a.executeOnce(ctx, binding, *policy)
+			}
+		}
+		if err != nil {
+			lastErr = err
+			if journalErr := a.Journal.Err(); journalErr != nil {
+				return fmt.Errorf(
+					"host update recovery journal commit failed: %w",
+					errors.Join(err, journalErr),
+				)
+			}
+			// executeOnce may have durably cleared ActiveJob and then failed to
+			// remove/fsync its clear fence. Recovery-only installation must not
+			// reinterpret that error as convergence merely because Active() is
+			// now nil in this process.
+			if !a.hasActiveRecovery() {
+				return fmt.Errorf("host update recovery failed while clearing active state: %w", err)
+			}
+			if ctx.Err() == nil {
+				a.Logf("host pull agent recovery-only attempt failed: %v", err)
+			}
+		}
+		if !a.hasActiveRecovery() {
+			return nil
+		}
+
+		timer := time.NewTimer(a.PollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+}
+
+func (a *HostPullAgent) hasActiveRecovery() bool {
+	return a != nil && a.Journal != nil && a.Journal.Active() != nil
+}
+
+func (a *HostPullAgent) recoveryExecutionReady(
+	binding HostAgentBinding,
+	policy *HostAgentPolicy,
+) bool {
+	if !a.hasActiveRecovery() || policy == nil ||
+		binding.ServiceID != a.Bootstrap.NodeID ||
+		binding.ServiceType != ServiceTypeUpdateAgent ||
+		binding.TransportMode != HostTransportPullV2 ||
+		binding.ExecutionHostID == "" ||
+		binding.OwnershipEpoch < 1 ||
+		policy.ServiceID != a.Bootstrap.NodeID ||
+		policy.TransportMode != HostTransportPullV2 ||
+		policy.ExecutionHostID != binding.ExecutionHostID ||
+		policy.OwnershipEpoch != binding.OwnershipEpoch ||
+		policy.Revision < 1 ||
+		policy.SourcePolicyRevision < 1 ||
+		policy.LocalExecutorPolicyRevision < 1 ||
+		!digestPattern.MatchString(policy.LocalExecutorPolicySHA256) {
+		return false
+	}
+	if _, ok := a.ControlPlane.(HostPullExecutionControlPlane); !ok {
+		return false
+	}
+	active := a.Journal.Active()
+	if active == nil {
+		return false
+	}
+	switch active.EffectiveOperation() {
+	case updateJobOperationSoftwareUpdate:
+		return a.Executor != nil
+	case updateJobOperationPortReconfigure:
+		return a.PortExecutor != nil
+	default:
+		return false
+	}
+}
+
+func (a *HostPullAgent) startExecutionCycle(
+	ctx context.Context,
+	binding HostAgentBinding,
+	policy *HostAgentPolicy,
+	observations []HostTargetObservation,
+	observationFailed bool,
+) {
+	if !a.hasActiveRecovery() {
+		a.startExecution(ctx, binding, policy, observations, observationFailed)
+		return
+	}
+	if !a.recoveryExecutionReady(binding, policy) ||
+		!a.executionRunning.CompareAndSwap(false, true) {
+		return
+	}
+	policySnapshot := *policy
+	policySnapshot.Targets = append(
+		[]HostAgentPolicyTarget(nil), policy.Targets...,
+	)
+	go func() {
+		defer a.executionRunning.Store(false)
+		if !a.hasActiveRecovery() {
+			return
+		}
+		if err := a.executeOnce(ctx, binding, policySnapshot); err != nil &&
+			ctx.Err() == nil {
+			a.Logf("host pull agent recovery poll failed: %v", err)
+		}
+	}()
 }
 
 func (a *HostPullAgent) currentIdentity() Config {

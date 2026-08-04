@@ -957,7 +957,7 @@ func TestSystemUpdateClaimRequiresReleaseTokenBeforeClaimMutation(t *testing.T) 
 	}
 }
 
-func TestSystemUpdateClaimClearsStaleCursorWithoutReleaseToken(t *testing.T) {
+func TestSystemUpdateClaimUsesTerminalProofWithoutReleaseToken(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	agentToken := registerUpdateAgentForPolicyTest(t, auth, "updater-01")
 	workerToken, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat"})
@@ -983,10 +983,11 @@ func TestSystemUpdateClaimClearsStaleCursorWithoutReleaseToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	agentVersion := "v1.9.10"
 	heartbeat := func(revision int64) {
 		t.Helper()
 		if _, err := auth.Heartbeat(t.Context(), agentToken, store.ServiceHeartbeat{
-			ServiceID: "updater-01", Status: "online", Version: "v1.0.0",
+			ServiceID: "updater-01", Status: "online", Version: agentVersion,
 			Capabilities: map[string]any{
 				"policy_revision":   revision,
 				"policy_status":     "applied",
@@ -1092,19 +1093,38 @@ func TestSystemUpdateClaimClearsStaleCursorWithoutReleaseToken(t *testing.T) {
 	if err != nil || !applied || completed.Status != store.SystemUpdateStatusSucceeded {
 		t.Fatalf("terminal report = %#v applied=%v err=%v", completed, applied, err)
 	}
+	legacyTerminalCursor := claim(
+		`{"service_id":"updater-01","host_id":"host-01","active_job_id":"` + job.ID + `"}`,
+	)
+	if legacyTerminalCursor.Code != http.StatusConflict ||
+		!strings.Contains(legacyTerminalCursor.Body.String(), `"code":"system_update_terminal_proof_upgrade_required"`) ||
+		strings.Contains(legacyTerminalCursor.Body.String(), "clear_active_job_id") {
+		t.Fatalf(
+			"legacy Agent terminal cursor status = %d body = %s",
+			legacyTerminalCursor.Code,
+			legacyTerminalCursor.Body.String(),
+		)
+	}
+	agentVersion = "v1.9.11"
+	heartbeat(policyWithoutToken.Revision)
 
 	terminalCursor := claim(
 		`{"service_id":"updater-01","host_id":"host-01","active_job_id":"` + job.ID + `"}`,
 	)
-	if terminalCursor.Code != http.StatusOK ||
-		strings.TrimSpace(terminalCursor.Body.String()) != `{"clear_active_job_id":true}` {
+	var terminalProof systemUpdateTerminalRecoveryResponse
+	if terminalCursor.Code != http.StatusOK || json.Unmarshal(terminalCursor.Body.Bytes(), &terminalProof) != nil ||
+		!terminalProof.ClearActiveJobID || terminalProof.TerminalJob.ID != completed.ID ||
+		terminalProof.TerminalJob.AgentServiceID != "updater-01" || terminalProof.TerminalJob.Status != store.SystemUpdateStatusSucceeded ||
+		terminalProof.TerminalJob.LeaseGeneration != completed.LeaseGeneration || terminalProof.TerminalJob.Sequence != completed.Sequence ||
+		strings.Contains(terminalCursor.Body.String(), "release_token") {
 		t.Fatalf("terminal cursor without token status = %d body = %s", terminalCursor.Code, terminalCursor.Body.String())
 	}
 	missingCursor := claim(
 		`{"service_id":"updater-01","host_id":"host-01","active_job_id":"missing-job"}`,
 	)
-	if missingCursor.Code != http.StatusOK ||
-		strings.TrimSpace(missingCursor.Body.String()) != `{"clear_active_job_id":true}` {
+	if missingCursor.Code != http.StatusConflict ||
+		!strings.Contains(missingCursor.Body.String(), `"code":"system_update_recovery_proof_unavailable"`) ||
+		strings.Contains(missingCursor.Body.String(), "clear_active_job_id") || strings.Contains(missingCursor.Body.String(), "terminal_job") {
 		t.Fatalf("missing cursor without token status = %d body = %s", missingCursor.Code, missingCursor.Body.String())
 	}
 

@@ -37,18 +37,19 @@ const (
 var systemUpdateJobVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$`)
 
 var (
-	ErrInvalidSystemUpdate                 = errors.New("invalid system update")
-	ErrSystemUpdateTargetActive            = errors.New("system update target already has an active job")
-	ErrSystemUpdateLeaseInvalid            = errors.New("system update lease is invalid or expired")
-	ErrSystemUpdateSequenceStale           = errors.New("system update report sequence is stale")
-	ErrSystemUpdateTransition              = errors.New("invalid system update status transition")
-	ErrSystemUpdateNotCancellable          = errors.New("system update job is not cancellable")
-	ErrSystemUpdateTakeoverForbidden       = errors.New("system update takeover requires explicit administrator reassignment")
-	ErrSystemUpdateActiveUnavailable       = errors.New("active system update target is no longer authorized for this updater")
-	ErrSystemUpdateAuthorizationState      = errors.New("system update is not in a mutation-authorizable state")
-	ErrSystemUpdateAuthorizationMismatch   = errors.New("system update authorization request does not match the job")
-	ErrSystemUpdateOwnershipConflict       = errors.New("system update execution host ownership conflicts with the job snapshot")
-	ErrSystemUpdatePortCoordinatorRequired = errors.New("port reconfiguration requires the transactional coordinator")
+	ErrInvalidSystemUpdate                  = errors.New("invalid system update")
+	ErrSystemUpdateTargetActive             = errors.New("system update target already has an active job")
+	ErrSystemUpdateLeaseInvalid             = errors.New("system update lease is invalid or expired")
+	ErrSystemUpdateSequenceStale            = errors.New("system update report sequence is stale")
+	ErrSystemUpdateTransition               = errors.New("invalid system update status transition")
+	ErrSystemUpdateNotCancellable           = errors.New("system update job is not cancellable")
+	ErrSystemUpdateTakeoverForbidden        = errors.New("system update takeover requires explicit administrator reassignment")
+	ErrSystemUpdateActiveUnavailable        = errors.New("active system update target is no longer authorized for this updater")
+	ErrSystemUpdateAuthorizationState       = errors.New("system update is not in a mutation-authorizable state")
+	ErrSystemUpdateAuthorizationMismatch    = errors.New("system update authorization request does not match the job")
+	ErrSystemUpdateOwnershipConflict        = errors.New("system update execution host ownership conflicts with the job snapshot")
+	ErrSystemUpdatePortCoordinatorRequired  = errors.New("port reconfiguration requires the transactional coordinator")
+	ErrSystemUpdateRecoveryProofUnavailable = errors.New("system update recovery terminal proof is unavailable")
 )
 
 type SystemUpdateJob struct {
@@ -142,7 +143,7 @@ type SystemUpdateStore interface {
 	ListSystemUpdateJobs(ctx context.Context, limit int) ([]SystemUpdateJob, error)
 	GetSystemUpdateJobByIdempotency(ctx context.Context, requestedByUserID, idempotencyKey string) (SystemUpdateJob, error)
 	GetActiveSystemUpdateJob(ctx context.Context, targetID string) (SystemUpdateJob, error)
-	ShouldClearSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (bool, error)
+	InspectSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (SystemUpdateJob, bool, error)
 	CreateSystemUpdateJob(ctx context.Context, params CreateSystemUpdateJobParams) (job SystemUpdateJob, created bool, err error)
 	CancelSystemUpdateJob(ctx context.Context, id, actorUserID string) (SystemUpdateJob, error)
 	ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (claim SystemUpdateClaim, clearActiveJob bool, err error)
@@ -181,20 +182,29 @@ func (s *MariaDBSystemUpdateStore) GetActiveSystemUpdateJob(ctx context.Context,
 	return s.getActiveSystemUpdateForTarget(ctx, targetID)
 }
 
-func (s *MariaDBSystemUpdateStore) ShouldClearSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (bool, error) {
+func (s *MariaDBSystemUpdateStore) InspectSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (SystemUpdateJob, bool, error) {
 	agentServiceID = strings.TrimSpace(agentServiceID)
 	activeJobID = strings.TrimSpace(activeJobID)
 	if agentServiceID == "" || activeJobID == "" || len(activeJobID) > 64 || containsControl(activeJobID) {
-		return false, ErrInvalidSystemUpdate
+		return SystemUpdateJob{}, false, ErrInvalidSystemUpdate
 	}
 	job, err := scanSystemUpdateJob(s.db.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ?`, activeJobID))
 	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
+		return SystemUpdateJob{}, false, ErrSystemUpdateRecoveryProofUnavailable
 	}
 	if err != nil {
-		return false, err
+		return SystemUpdateJob{}, false, err
 	}
-	return job.AgentServiceID != agentServiceID || !isExecutingSystemUpdateStatus(job.Status), nil
+	if job.AgentServiceID != agentServiceID {
+		return SystemUpdateJob{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	if isExecutingSystemUpdateStatus(job.Status) {
+		return job, false, nil
+	}
+	if !isTerminalSystemUpdateStatus(job.Status) {
+		return SystemUpdateJob{}, false, ErrSystemUpdateRecoveryProofUnavailable
+	}
+	return job, true, nil
 }
 
 type MariaDBSystemUpdateStore struct {
@@ -378,13 +388,16 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, age
 	if activeJobID != "" {
 		job, err = scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ? FOR UPDATE`, activeJobID))
 		if errors.Is(err, sql.ErrNoRows) {
-			return SystemUpdateClaim{}, true, nil
+			return SystemUpdateClaim{}, false, ErrSystemUpdateRecoveryProofUnavailable
 		}
 		if err != nil {
 			return SystemUpdateClaim{}, false, err
 		}
-		if job.AgentServiceID != agentServiceID || !isExecutingSystemUpdateStatus(job.Status) {
-			return SystemUpdateClaim{}, true, nil
+		if job.AgentServiceID != agentServiceID {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
+		}
+		if !isExecutingSystemUpdateStatus(job.Status) {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateRecoveryProofUnavailable
 		}
 		if job.ExecutionHostID != executionHostID {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateActiveUnavailable

@@ -9,20 +9,28 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"os/user"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/updateagent"
 	"github.com/example/autostream-control-panel/internal/version"
 )
 
 const defaultHostAgentConfigPath = updateagent.HostAgentIdentityPath
-const hostAgentUsage = "usage: autostream-host-agent run --config PATH | configure --panel-url URL --node ID [--config PATH] [--adopt-live-systemd-sidecar] | validate-config --config PATH | --version"
+const hostAgentRecoverUpdateTimeout = 2 * time.Minute
+const hostAgentUsage = "usage: autostream-host-agent run --config PATH | recover-update --config PATH | configure --panel-url URL --node ID [--config PATH] [--adopt-live-systemd-sidecar] | validate-config --config PATH | --version"
 
 type hostAgentCLIDependencies struct {
-	LoadIdentity func(string, bool) (updateagent.Config, error)
-	Start        func(context.Context, updateagent.Config) error
-	Configure    func(context.Context, []string) error
-	Output       io.Writer
+	LoadIdentity          func(string, bool) (updateagent.Config, error)
+	LoadCanonicalIdentity func(string, bool) (updateagent.Config, error)
+	Start                 func(context.Context, updateagent.Config) error
+	Recover               func(context.Context, updateagent.Config) error
+	Configure             func(context.Context, []string) error
+	EffectiveUID          func() int
+	ServiceAccountUID     func() (int, error)
+	Output                io.Writer
 }
 
 func main() {
@@ -34,7 +42,8 @@ func main() {
 
 func defaultHostAgentCLIDependencies() hostAgentCLIDependencies {
 	return hostAgentCLIDependencies{
-		LoadIdentity: updateagent.LoadHostAgentIdentity,
+		LoadIdentity:          updateagent.LoadHostAgentIdentity,
+		LoadCanonicalIdentity: updateagent.LoadManagedBootstrapConfig,
 		Start: func(ctx context.Context, identity updateagent.Config) error {
 			agent, err := updateagent.NewHostPullAgent(identity, updateagent.HostPullAgentOptions{
 				ObserveTargets: updateagent.NewLocalExecutorTargetObserver(updateagent.LocalExecutorClient{
@@ -46,15 +55,39 @@ func defaultHostAgentCLIDependencies() hostAgentCLIDependencies {
 			}
 			return agent.Run(ctx)
 		},
+		Recover: func(ctx context.Context, identity updateagent.Config) error {
+			agent, err := updateagent.NewHostPullAgent(identity, updateagent.HostPullAgentOptions{
+				RecoveryOnly: true,
+			})
+			if err != nil {
+				return err
+			}
+			return agent.Run(ctx)
+		},
 		Configure: func(ctx context.Context, args []string) error {
 			return runHostAgentConfigure(ctx, args, defaultHostAgentConfigureDependencies())
+		},
+		EffectiveUID: os.Geteuid,
+		ServiceAccountUID: func() (int, error) {
+			account, err := user.Lookup("autostream-host-agent")
+			if err != nil {
+				return 0, err
+			}
+			uid, err := strconv.Atoi(account.Uid)
+			if err != nil || uid <= 0 {
+				return 0, errors.New("Host Agent service account UID is invalid")
+			}
+			return uid, nil
 		},
 		Output: os.Stdout,
 	}
 }
 
 func run(args []string, dependencies hostAgentCLIDependencies) error {
-	if dependencies.LoadIdentity == nil || dependencies.Start == nil || dependencies.Configure == nil || dependencies.Output == nil {
+	if dependencies.LoadIdentity == nil || dependencies.LoadCanonicalIdentity == nil ||
+		dependencies.Start == nil || dependencies.Recover == nil ||
+		dependencies.Configure == nil || dependencies.EffectiveUID == nil ||
+		dependencies.ServiceAccountUID == nil || dependencies.Output == nil {
 		return errors.New("host agent CLI dependencies are incomplete")
 	}
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "version") {
@@ -80,6 +113,30 @@ func run(args []string, dependencies hostAgentCLIDependencies) error {
 		}
 		fmt.Fprintln(dependencies.Output, "host agent identity configuration valid")
 		return nil
+	case "recover-update":
+		serviceUID, err := dependencies.ServiceAccountUID()
+		if err != nil {
+			return fmt.Errorf("resolve Host Agent service account: %w", err)
+		}
+		if dependencies.EffectiveUID() != serviceUID {
+			return errors.New("recover-update must run as the non-root Host Agent service account")
+		}
+		configPath, err := parseHostAgentConfigFlag("recover-update", args[1:])
+		if err != nil {
+			return err
+		}
+		if configPath != defaultHostAgentConfigPath {
+			return errors.New("recover-update requires the canonical Host Agent identity path")
+		}
+		identity, err := dependencies.LoadCanonicalIdentity(configPath, true)
+		if err != nil {
+			return err
+		}
+		signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		ctx, cancel := context.WithTimeout(signalCtx, hostAgentRecoverUpdateTimeout)
+		defer cancel()
+		return dependencies.Recover(ctx, identity)
 	case "run":
 		configPath, err := parseHostAgentConfigFlag("run", args[1:])
 		if err != nil {

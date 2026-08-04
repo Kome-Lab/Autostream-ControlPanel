@@ -208,6 +208,78 @@ func TestPullV2ReleaseGuidesDocumentManagedHostUpgrade(t *testing.T) {
 	}
 }
 
+func TestPullV2ReleaseGuidesDocumentStageRecoveryBoundary(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "release", "README.install.md"),
+		filepath.Join("..", "..", "release", "README.host-agent.md"),
+		filepath.Join("..", "..", "release", "README.local-executor.md"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guide := strings.Join(strings.Fields(string(body)), " ")
+		for _, marker := range []string{
+			"Stage error",
+			"reconcile",
+			"without restaging or reapplying",
+			"stage_required",
+			"no durable mutation ledger or apply-authorized state",
+			"no staged directory existed",
+			"exact orphan stage",
+			"state_unavailable",
+			"remote_stage_missing",
+			"99",
+			"terminal 100",
+			"stale lease or sequence",
+			"report cursor",
+			"active job and plan",
+			"structured terminal job",
+			"terminal report",
+			"committed job",
+			"v1.9.9 and v1.9.10 Agents",
+			"system_update_terminal_proof_upgrade_required",
+			"registered Agent older than v1.9.11",
+		} {
+			if !strings.Contains(guide, marker) {
+				t.Fatalf("%s is missing Stage recovery marker %q", path, marker)
+			}
+		}
+		if strings.Contains(guide, "has no staged or mutating state") {
+			t.Fatalf("%s overstates stage_required as staged-directory absence", path)
+		}
+	}
+}
+
+func TestPullV2ReleaseGuidesDocumentExplicitV1911ActiveJobRecovery(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "release", "README.install.md"),
+		filepath.Join("..", "..", "release", "README.host-agent.md"),
+		filepath.Join("..", "..", "release", "README.local-executor.md"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guide := strings.Join(strings.Fields(string(body)), " ")
+		for _, marker := range []string{
+			"Control Panel v1.9.11",
+			"sudo ./install/install-autostream-host-agent --upgrade --recover-active-job",
+			"Configure Token",
+			"cannot claim a new job",
+			"Stage or Apply",
+			"guard",
+			"previous Agent",
+			"journal",
+			"ledger",
+		} {
+			if !strings.Contains(guide, marker) {
+				t.Fatalf("%s is missing active-job recovery marker %q", path, marker)
+			}
+		}
+	}
+}
+
 func TestPullV2ReleaseGuidesDocumentCanonicalIdentityPermissionBoundary(t *testing.T) {
 	hostAgentBody, err := os.ReadFile(filepath.Join(
 		"..", "..", "release", "README.host-agent.md",
@@ -222,8 +294,12 @@ func TestPullV2ReleaseGuidesDocumentCanonicalIdentityPermissionBoundary(t *testi
 		"an `EACCES` result for the legacy pathname",
 		"A missing canonical identity plus an inaccessible legacy path still fails closed",
 		"Runtime Token rotation performs the same checks before mutation",
-		"v1.9.10 removes the need for the temporary execute-only ACL workaround",
+		"v1.9.10 and later remove the need for the temporary execute-only ACL workaround",
 		"failed candidate must be able to restart v1.9.9",
+		"autostream-host-agent_vX.Y.Z_linux_amd64",
+		"autostream-host-agent vX.Y.Z",
+		"autostream-local-executor vX.Y.Z",
+		"grep -Fx 'autostream-local-executor vX.Y.Z'",
 		"grep -Fx 'directory root:root 750'",
 		"sudo apt-get install -y --no-install-recommends acl",
 		"grep -q '^default:user:autostream-host-agent:'",

@@ -163,6 +163,61 @@ func upgradeHostRuntimeFromVerifiedBundle(
 	)
 }
 
+func inspectHostUpdateRecovery() (bool, error) {
+	if os.Geteuid() != 0 {
+		return false, errors.New(
+			"Host update recovery inspection requires root",
+		)
+	}
+	rt := defaultManualHostUpgradeRuntime()
+	if err := validateManualHostUpgradeStateRoots(rt); err != nil {
+		return false, err
+	}
+	journal, err := readManualHostUpgradeJournal(rt)
+	if err != nil {
+		return false, err
+	}
+	return manualHostUpgradeJournalRecoveryActive(journal)
+}
+
+func manualHostUpgradeJournalRecoveryActive(
+	journal journalData,
+) (bool, error) {
+	if journal.ActiveJob == nil {
+		if journal.ActivePlan != nil || journal.ActivePortPlan != nil {
+			return false, errors.New(
+				"Host Agent journal has a plan without an active job",
+			)
+		}
+		return false, nil
+	}
+	if journal.ActiveJob.validateOperationUnion() != nil ||
+		(journal.ActivePlan != nil && journal.ActivePortPlan != nil) {
+		return false, errors.New("Host Agent recovery journal is invalid")
+	}
+	switch journal.ActiveJob.EffectiveOperation() {
+	case updateJobOperationSoftwareUpdate:
+		if journal.ActivePortPlan != nil || journal.ActivePlan == nil ||
+			journal.ActivePlan.JobID != journal.ActiveJob.ID ||
+			journal.ActivePlan.Validate() != nil {
+			return false, errors.New(
+				"Host Agent software recovery plan is invalid",
+			)
+		}
+	case updateJobOperationPortReconfigure:
+		if journal.ActivePlan != nil || journal.ActivePortPlan == nil ||
+			journal.ActivePortPlan.JobID != journal.ActiveJob.ID ||
+			journal.ActivePortPlan.Validate() != nil {
+			return false, errors.New(
+				"Host Agent port recovery plan is invalid",
+			)
+		}
+	default:
+		return false, errors.New("Host Agent recovery operation is invalid")
+	}
+	return true, nil
+}
+
 func upgradeHostRuntimeWithRuntime(
 	ctx context.Context,
 	input ManualHostUpgradeRequest,
@@ -202,7 +257,11 @@ func upgradeHostRuntimeWithRuntime(
 		)
 	}
 	defer targetsUnlock()
-	if err := validateManualHostUpgradeCoreServicePreconditions(ctx, rt); err != nil {
+	if err := validateManualHostUpgradeCoreServicePreconditions(
+		ctx,
+		rt,
+		input.AgentStoppedForRecovery,
+	); err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
 	if err := validateManualHostUpgradeRecoveryServicePreconditions(
@@ -216,7 +275,12 @@ func upgradeHostRuntimeWithRuntime(
 			"managed Host runtime current slot is invalid",
 		)
 	}
-	current, err := observeManualHostRuntime(ctx, currentSlot, rt)
+	current, err := observeManualHostRuntimeForUpgrade(
+		ctx,
+		currentSlot,
+		input.AgentStoppedForRecovery,
+		rt,
+	)
 	if err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
@@ -440,6 +504,7 @@ func upgradeHostRuntimeWithRuntime(
 			statePersistedInitially,
 			current,
 			snapshot,
+			input.AgentStoppedForRecovery,
 			rt,
 		)
 		return ManualHostUpgradeResult{}, errors.Join(cause, recoveryErr)
@@ -1472,9 +1537,29 @@ func rejectManualHostUpgradeTransitionResidue(
 func validateManualHostUpgradeCoreServicePreconditions(
 	ctx context.Context,
 	rt manualHostUpgradeRuntime,
+	agentStoppedForRecovery bool,
 ) error {
-	for _, unit := range []string{
+	if agentStoppedForRecovery {
+		state, pid, err := readManualHostUpgradeRecoveryServiceState(
+			ctx,
+			rt.runner,
+			hostSelfUpdateServiceUnit,
+		)
+		if err != nil || state != "inactive" || pid != 0 {
+			return errors.New(
+				"Host Agent stopped-recovery handoff is not safely quiescent",
+			)
+		}
+	} else if err := requireManualHostSystemdState(
+		ctx,
+		rt.runner,
+		"is-active",
 		hostSelfUpdateServiceUnit,
+		"active",
+	); err != nil {
+		return err
+	}
+	for _, unit := range []string{
 		hostSelfUpdateExecutorServiceUnit,
 		hostSelfUpdateExecutorSocketUnit,
 		"autostream-host-self-update-recovery@a.timer",
@@ -1828,6 +1913,7 @@ func recoverManualHostUpgradeBeforeFence(
 	originallyPersisted bool,
 	healthy manualHostRuntimeObservation,
 	snapshot manualHostUpgradeSnapshot,
+	agentStoppedForRecovery bool,
 	rt manualHostUpgradeRuntime,
 ) error {
 	currentState, err := rt.selfUpdate.loadPersistedState()
@@ -1844,7 +1930,12 @@ func recoverManualHostUpgradeBeforeFence(
 	if err != nil || currentSlot != healthy.Slot {
 		return errors.New("manual Host runtime current slot changed before recovery")
 	}
-	actual, err := observeManualHostRuntime(ctx, healthy.Slot, rt)
+	actual, err := observeManualHostRuntimeForUpgrade(
+		ctx,
+		healthy.Slot,
+		agentStoppedForRecovery,
+		rt,
+	)
 	if err != nil || actual != healthy {
 		return errors.New("healthy Host runtime changed during pre-activation recovery")
 	}
@@ -1872,19 +1963,35 @@ func observeManualHostRuntime(
 	slot string,
 	rt manualHostUpgradeRuntime,
 ) (manualHostRuntimeObservation, error) {
+	return observeManualHostRuntimeForUpgrade(ctx, slot, false, rt)
+}
+
+func observeManualHostRuntimeForUpgrade(
+	ctx context.Context,
+	slot string,
+	agentStoppedForRecovery bool,
+	rt manualHostUpgradeRuntime,
+) (manualHostRuntimeObservation, error) {
 	if err := rt.selfUpdate.validateHostSelfUpdateSlotTree(slot); err != nil {
 		return manualHostRuntimeObservation{}, errors.New(
 			"managed Host runtime active slot is unsafe",
 		)
 	}
 	root := filepath.Join(rt.selfUpdate.slotsRoot, slot, "bin")
-	agent, err := verifyManualHostUnitProcess(
-		ctx,
-		hostSelfUpdateServiceUnit,
-		filepath.Join(root, "autostream-host-agent"),
-		"autostream-host-agent",
-		rt,
-	)
+	agentPath := filepath.Join(root, "autostream-host-agent")
+	var agent manualHostBinaryIdentity
+	var err error
+	if agentStoppedForRecovery {
+		agent, err = verifyStoppedManualHostAgentIdentity(ctx, agentPath, rt)
+	} else {
+		agent, err = verifyManualHostUnitProcess(
+			ctx,
+			hostSelfUpdateServiceUnit,
+			agentPath,
+			"autostream-host-agent",
+			rt,
+		)
+	}
 	if err != nil {
 		return manualHostRuntimeObservation{}, err
 	}
@@ -1904,9 +2011,81 @@ func observeManualHostRuntime(
 			"installed Local Executor protocol identity is incompatible",
 		)
 	}
+	if agent.Version != executor.Version ||
+		agent.Commit != executor.Commit ||
+		!agent.BuildDate.Equal(executor.BuildDate) {
+		return manualHostRuntimeObservation{}, errors.New(
+			"installed Host Agent and Local Executor are a mixed runtime",
+		)
+	}
 	return manualHostRuntimeObservation{
 		Slot: slot, Agent: agent, Executor: executor,
 	}, nil
+}
+
+func verifyStoppedManualHostAgentIdentity(
+	ctx context.Context,
+	expectedPath string,
+	rt manualHostUpgradeRuntime,
+) (manualHostBinaryIdentity, error) {
+	readInfo := func() (os.FileInfo, error) {
+		info, err := os.Lstat(expectedPath)
+		if err != nil || !info.Mode().IsRegular() ||
+			info.Mode()&os.ModeSymlink != 0 ||
+			info.Mode().Perm() != 0o755 ||
+			(!rt.allowTestPaths && !isRootOwner(info)) {
+			return nil, errors.New("stopped Host Agent binary is unsafe")
+		}
+		return info, nil
+	}
+	sameInfo := func(first, second os.FileInfo) bool {
+		return os.SameFile(first, second) &&
+			first.Mode() == second.Mode() &&
+			first.Size() == second.Size() &&
+			first.ModTime().Equal(second.ModTime())
+	}
+
+	firstInfo, err := readInfo()
+	if err != nil {
+		return manualHostBinaryIdentity{}, err
+	}
+	first, err := readManualHostBinaryIdentity(
+		ctx,
+		expectedPath,
+		"autostream-host-agent",
+		rt.identityRunner,
+	)
+	if err != nil {
+		return manualHostBinaryIdentity{}, err
+	}
+	if err := rt.waitStable(ctx); err != nil {
+		return manualHostBinaryIdentity{}, fmt.Errorf(
+			"wait for stopped Host Agent identity stability: %w",
+			err,
+		)
+	}
+	secondInfo, err := readInfo()
+	if err != nil || !sameInfo(firstInfo, secondInfo) {
+		return manualHostBinaryIdentity{}, errors.New(
+			"stopped Host Agent binary changed during identity verification",
+		)
+	}
+	second, err := readManualHostBinaryIdentity(
+		ctx,
+		expectedPath,
+		"autostream-host-agent",
+		rt.identityRunner,
+	)
+	if err != nil {
+		return manualHostBinaryIdentity{}, err
+	}
+	finalInfo, err := readInfo()
+	if err != nil || !sameInfo(firstInfo, finalInfo) || first != second {
+		return manualHostBinaryIdentity{}, errors.New(
+			"stopped Host Agent identity changed during verification",
+		)
+	}
+	return first, nil
 }
 
 func verifyManualHostUnitProcess(

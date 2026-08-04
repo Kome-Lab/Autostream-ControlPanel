@@ -90,7 +90,7 @@ func TestStaleLeaseReportIsDroppedButInvalidTransitionIsFatal(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"system_update_lease_invalid"}`))
 	}))
 	agent := Agent{Config: Config{NodeID: "updater-1"}, Panel: PanelClient{BaseURL: server.URL, Token: "token", HTTP: server.Client()}, Journal: journal, Logf: func(string, ...any) {}}
-	if err := agent.flushReports(context.Background()); err != nil || len(journal.Pending()) != 0 {
+	if err := agent.flushReports(context.Background()); !errors.Is(err, ErrLeaseLost) || len(journal.Pending()) != 0 {
 		t.Fatalf("stale lease should be dropped: %v pending=%d", err, len(journal.Pending()))
 	}
 	server.Close()
@@ -108,7 +108,7 @@ func TestStaleLeaseReportIsDroppedButInvalidTransitionIsFatal(t *testing.T) {
 	}
 }
 
-func TestClaimReportSequenceIsUsedExactlyAndTerminalAckClearsActive(t *testing.T) {
+func TestClaimReportSequenceIsUsedExactlyAndTerminalAckPreservesActiveUntilCleanup(t *testing.T) {
 	journal, err := OpenJournal(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -127,8 +127,14 @@ func TestClaimReportSequenceIsUsedExactlyAndTerminalAckClearsActive(t *testing.T
 	if err := journal.Ack(job.ID, report.Sequence); err != nil {
 		t.Fatal(err)
 	}
+	if journal.Active() == nil {
+		t.Fatal("terminal report cursor ACK cleared ActiveJob before cleanup")
+	}
+	if err := journal.ClearActive(); err != nil {
+		t.Fatal(err)
+	}
 	if journal.Active() != nil {
-		t.Fatal("terminal acknowledgement must atomically clear ActiveJob")
+		t.Fatal("explicit terminal cleanup did not clear ActiveJob")
 	}
 }
 
@@ -137,7 +143,11 @@ func TestActiveExecutionStopsOnStaleLeaseReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = journal.Queue("job-active", "updater", "old", 1, "installing", "", "", 70, "", "")
+	active := &UpdateJob{ID: "job-active", AgentServiceID: "updater"}
+	if err := journal.SetActive(active); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = journal.Queue("job-active", "updater", "old", 1, "succeeded", "", "", 100, "", "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -151,5 +161,8 @@ func TestActiveExecutionStopsOnStaleLeaseReport(t *testing.T) {
 	}
 	if len(journal.Pending()) != 0 {
 		t.Fatal("permanently stale report was not dropped")
+	}
+	if got := journal.Active(); got == nil || got.ID != active.ID {
+		t.Fatalf("stale terminal report cleared active recovery state: %+v", got)
 	}
 }

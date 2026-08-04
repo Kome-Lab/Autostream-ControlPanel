@@ -15,3 +15,9 @@ func upgradeHostRuntimeFromVerifiedBundle(
 		"manual Host runtime upgrade is supported only on Linux",
 	)
 }
+
+func inspectHostUpdateRecovery() (bool, error) {
+	return false, errors.New(
+		"Host update recovery inspection is supported only on Linux",
+	)
+}

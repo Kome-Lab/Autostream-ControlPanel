@@ -16,6 +16,8 @@ import (
 	controlversion "github.com/example/autostream-control-panel/internal/version"
 )
 
+const remoteLegacyStageGenerationScanLimit uint64 = 256
+
 type remoteHelperRuntime struct {
 	runner                      CommandRunner
 	httpClient                  *http.Client
@@ -342,6 +344,78 @@ func cleanupRemoteTerminalStage(cfg HelperConfig, oldStage *remoteStage, current
 	}
 }
 
+func cleanupRemoteOrphanStage(cfg HelperConfig, plan RemotePlan) error {
+	stagesRoot := filepath.Clean(filepath.Join(cfg.StateDir, "stages"))
+	orphanRoots, err := remoteOrphanStageRoots(cfg, plan)
+	if err != nil {
+		return err
+	}
+	for _, orphanRoot := range orphanRoots {
+		if filepath.Dir(orphanRoot) != stagesRoot || !pathWithin(stagesRoot, orphanRoot) {
+			return errors.New("orphan remote stage path escaped state directory")
+		}
+		if _, err := os.Lstat(orphanRoot); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return errors.New("inspect orphan remote stage")
+		}
+		// A stage is not apply-authorized until its target ledger has been
+		// durably committed. A failed ledger persistence can therefore leave
+		// this exact immutable-intent directory behind. Remove only the
+		// root-controlled tree and fsync stagesRoot before reporting the
+		// absence of ledger-backed mutation state.
+		if err := removeStaleReleasePartial(stagesRoot, orphanRoot); err != nil {
+			return errors.New("remove orphan remote stage")
+		}
+	}
+	return nil
+}
+
+func remoteOrphanStageRoots(cfg HelperConfig, plan RemotePlan) ([]string, error) {
+	stableRoot, err := remoteStageRoot(cfg, plan)
+	if err != nil {
+		return nil, errors.New("derive stable remote stage path")
+	}
+	roots := []string{stableRoot}
+	seen := map[string]bool{stableRoot: true}
+	legacy := plan.ApplyPlan()
+	oldest := uint64(1)
+	if plan.LeaseGeneration > remoteLegacyStageGenerationScanLimit {
+		oldest = plan.LeaseGeneration - remoteLegacyStageGenerationScanLimit + 1
+	}
+	for generation := plan.LeaseGeneration; generation >= oldest; generation-- {
+		legacy.LeaseGeneration = generation
+		digest, err := MutationPlanSHA256(legacy)
+		if err != nil {
+			return nil, errors.New("derive legacy remote stage path")
+		}
+		root := filepath.Join(cfg.StateDir, "stages", remoteStableKey(plan.JobID, digest))
+		if !seen[root] {
+			roots = append(roots, root)
+			seen[root] = true
+		}
+		if generation == oldest {
+			break
+		}
+	}
+	return roots, nil
+}
+
+// remoteStageRoot is deliberately stable across lease generations. A fresh
+// recovery lease changes the grant-bound plan hash, but it must still identify
+// a stage committed immediately before ledger persistence failed. Canonical
+// generation one retains every immutable mutation field while removing only
+// the lease-generation variance from the root name.
+func remoteStageRoot(cfg HelperConfig, plan RemotePlan) (string, error) {
+	stable := plan.ApplyPlan()
+	stable.LeaseGeneration = 1
+	digest, err := MutationPlanSHA256(stable)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cfg.StateDir, "stages", remoteStableKey(plan.JobID, digest)), nil
+}
+
 func remoteStageResult(plan RemotePlan, stage remoteStage) RemoteStageResult {
 	return RemoteStageResult{
 		Status: "staged", SessionID: plan.SessionID, PlanSHA256: plan.PlanSHA256,
@@ -356,7 +430,10 @@ func prepareRemoteStage(ctx context.Context, cfg HelperConfig, target Target, pl
 	if err := gcAgedRemoteStagePartials(cfg, time.Now()); err != nil {
 		return remoteStage{}, err
 	}
-	stageRoot := filepath.Join(cfg.StateDir, "stages", remoteStableKey(plan.JobID, plan.PlanSHA256))
+	stageRoot, err := remoteStageRoot(cfg, plan)
+	if err != nil {
+		return remoteStage{}, errors.New("derive release stage path")
+	}
 	if !pathWithin(filepath.Join(cfg.StateDir, "stages"), stageRoot) {
 		return remoteStage{}, errors.New("stage path escaped state directory")
 	}
@@ -794,9 +871,26 @@ func commitRemoteSystemdMutation(ctx context.Context, target Target, plan ApplyP
 
 func remoteMutationRequest(ctx context.Context, cfg HelperConfig, target Target, plan RemotePlan, operation string, grant RemoteSecret, ledger *remoteMutationLedger, rt remoteHelperRuntime) RemoteRPCResponse {
 	if ledger == nil {
+		if operation == "reconcile" {
+			if err := cleanupRemoteOrphanStage(cfg, plan); err != nil {
+				return remoteFailure("state_unavailable")
+			}
+		}
 		return remoteFailure("stage_required")
 	}
 	if failure := remoteLedgerRequestFailure(*ledger, plan, operation); failure != "" {
+		// A new job can commit its stage and then fail while atomically replacing
+		// the previous job's terminal target ledger. In that state the terminal
+		// ledger remains authoritative for the previous job, while only the new
+		// job's exact stage roots are unledgered orphans. Reconcile may clean those
+		// roots before returning stage_required; apply and every non-terminal or
+		// conflicting ledger continue to fail without touching stage state.
+		if failure == "stage_required" && operation == "reconcile" &&
+			ledger.State == remoteLedgerTerminal && ledger.JobID != plan.JobID {
+			if err := cleanupRemoteOrphanStage(cfg, plan); err != nil {
+				return remoteFailure("state_unavailable")
+			}
+		}
 		return remoteFailure(failure)
 	}
 	if ledger.State == remoteLedgerTerminal {
@@ -985,7 +1079,7 @@ func remoteFailure(code string) RemoteRPCResponse {
 		"state_unavailable":            "durable host state is unavailable",
 		"state_invalid":                "durable host state requires operator review",
 		"stage_failed":                 "release staging failed",
-		"stage_required":               "the immutable release plan must be staged first",
+		"stage_required":               "no durable mutation ledger or apply-authorized state exists for the immutable release plan",
 		"stage_invalid":                "the staged release no longer matches the plan",
 		"plan_conflict":                "job identity was reused with a different plan",
 		"reconcile_required":           "host state is ambiguous and requires reconcile",

@@ -860,6 +860,415 @@ func TestStagedOnlyRecoveryBecomesTerminalWithoutGrantOrApply(t *testing.T) {
 	}
 }
 
+func TestReconcileWithoutLedgerRemovesExactOrphanStageBeforeStageRequired(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned stage policy")
+	}
+	cfg := validHelperTestConfig(t)
+	if err := ensureRemoteStateDirectories(cfg); err != nil {
+		t.Fatal(err)
+	}
+	plan := validRemotePlan()
+	stagesRoot := filepath.Join(cfg.StateDir, "stages")
+	orphanRoot := filepath.Join(stagesRoot, remoteStableKey(plan.JobID, plan.PlanSHA256))
+	if err := os.MkdirAll(filepath.Join(orphanRoot, "artifact"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanRoot, "artifact", "release.tar.gz"), []byte("committed before ledger persistence failed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedRoot := filepath.Join(stagesRoot, remoteStableKey("unrelated-job", plan.PlanSHA256))
+	if err := os.Mkdir(unrelatedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if ledger, err := loadRemoteMutationLedger(cfg, plan.TargetID); err != nil || ledger != nil {
+		t.Fatalf("fault fixture unexpectedly has a ledger: %#v, %v", ledger, err)
+	}
+
+	response := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], plan, "reconcile", NewRemoteSecret("unused-grant"), nil, remoteHelperRuntime{})
+	if response.Error == nil || response.Error.Code != "stage_required" {
+		t.Fatalf("orphan reconcile response = %#v", response)
+	}
+	if _, err := os.Lstat(orphanRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("exact orphan stage was not removed: %v", err)
+	}
+	if _, err := os.Lstat(unrelatedRoot); err != nil {
+		t.Fatalf("unrelated stage was removed: %v", err)
+	}
+}
+
+func TestReconcileFreshLeaseRemovesExactPriorGenerationOrphanStage(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned stage policy")
+	}
+	cfg := validHelperTestConfig(t)
+	if err := ensureRemoteStateDirectories(cfg); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := validRemotePlan()
+	interrupted.LeaseGeneration = 41
+	interrupted.PlanSHA256, _ = interrupted.ComputePlanSHA256()
+	recovery := interrupted
+	recovery.LeaseGeneration++
+	recovery.PlanSHA256, _ = recovery.ComputePlanSHA256()
+	stagesRoot := filepath.Join(cfg.StateDir, "stages")
+	orphanRoot := filepath.Join(stagesRoot, remoteStableKey(interrupted.JobID, interrupted.PlanSHA256))
+	if err := os.MkdirAll(filepath.Join(orphanRoot, "artifact"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanRoot, "artifact", "release.tar.gz"), []byte("old generation committed before ledger persistence failed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedRoot := filepath.Join(stagesRoot, remoteStableKey("unrelated-job", interrupted.PlanSHA256))
+	if err := os.Mkdir(unrelatedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreignIntent := interrupted
+	foreignIntent.TargetVersion = "v1.2.0"
+	foreignIntent.ExpectedVersion = foreignIntent.TargetVersion
+	foreignIntent.PlanSHA256, _ = foreignIntent.ComputePlanSHA256()
+	foreignIntentRoot := filepath.Join(stagesRoot, remoteStableKey(foreignIntent.JobID, foreignIntent.PlanSHA256))
+	if err := os.Mkdir(foreignIntentRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	response := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], recovery, "reconcile", NewRemoteSecret("unused-grant"), nil, remoteHelperRuntime{})
+	if response.Error == nil || response.Error.Code != "stage_required" {
+		t.Fatalf("fresh-lease orphan reconcile response = %#v", response)
+	}
+	if _, err := os.Lstat(orphanRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prior-generation orphan stage was not removed: %v", err)
+	}
+	if _, err := os.Lstat(unrelatedRoot); err != nil {
+		t.Fatalf("unrelated stage was removed: %v", err)
+	}
+	if _, err := os.Lstat(foreignIntentRoot); err != nil {
+		t.Fatalf("same-job foreign-intent stage was removed: %v", err)
+	}
+}
+
+func TestRemoteStageRootIsStableAcrossLeaseGenerationsAndBoundToIntent(t *testing.T) {
+	cfg := validHelperTestConfig(t)
+	first := validRemotePlan()
+	first.LeaseGeneration = 2
+	first.PlanSHA256, _ = first.ComputePlanSHA256()
+	later := first
+	later.LeaseGeneration = 400
+	later.PlanSHA256, _ = later.ComputePlanSHA256()
+	firstRoot, err := remoteStageRoot(cfg, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterRoot, err := remoteStageRoot(cfg, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRoot != laterRoot {
+		t.Fatalf("lease generation changed stage root: first=%q later=%q", firstRoot, laterRoot)
+	}
+	legacyGenerationOne := first
+	legacyGenerationOne.LeaseGeneration = 1
+	legacyGenerationOne.PlanSHA256, _ = legacyGenerationOne.ComputePlanSHA256()
+	wantCompatibleRoot := filepath.Join(
+		cfg.StateDir, "stages",
+		remoteStableKey(legacyGenerationOne.JobID, legacyGenerationOne.PlanSHA256),
+	)
+	if firstRoot != wantCompatibleRoot {
+		t.Fatalf("stable stage root lost generation-one layout compatibility: got=%q want=%q", firstRoot, wantCompatibleRoot)
+	}
+	different := later
+	different.TargetVersion = "v1.2.0"
+	different.ExpectedVersion = different.TargetVersion
+	different.PlanSHA256, _ = different.ComputePlanSHA256()
+	differentRoot, err := remoteStageRoot(cfg, different)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if differentRoot == firstRoot {
+		t.Fatalf("different immutable intent reused stage root: %q", firstRoot)
+	}
+}
+
+func TestRemoteOrphanStageCandidatesAreBoundedAndDirectChildren(t *testing.T) {
+	cfg := validHelperTestConfig(t)
+	plan := validRemotePlan()
+	plan.LeaseGeneration = 10_000
+	plan.PlanSHA256, _ = plan.ComputePlanSHA256()
+	roots, err := remoteOrphanStageRoots(cfg, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) == 0 || len(roots) > int(remoteLegacyStageGenerationScanLimit)+1 {
+		t.Fatalf("orphan candidate count = %d", len(roots))
+	}
+	stagesRoot := filepath.Join(cfg.StateDir, "stages")
+	seen := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		if seen[root] || filepath.Dir(root) != stagesRoot ||
+			!remotePlanHashPattern.MatchString(filepath.Base(root)) {
+			t.Fatalf("unsafe or duplicate orphan candidate: %q", root)
+		}
+		seen[root] = true
+	}
+}
+
+func TestReconcileWithoutLedgerRejectsUnsafeExactOrphanStage(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned stage policy")
+	}
+	cfg := validHelperTestConfig(t)
+	if err := ensureRemoteStateDirectories(cfg); err != nil {
+		t.Fatal(err)
+	}
+	plan := validRemotePlan()
+	orphanRoot := filepath.Join(cfg.StateDir, "stages", remoteStableKey(plan.JobID, plan.PlanSHA256))
+	if err := os.WriteFile(orphanRoot, []byte("unsafe non-directory orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], plan, "reconcile", NewRemoteSecret("unused-grant"), nil, remoteHelperRuntime{})
+	if response.Error == nil || response.Error.Code != "state_unavailable" {
+		t.Fatalf("unsafe orphan reconcile response = %#v", response)
+	}
+	if info, err := os.Lstat(orphanRoot); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("unsafe orphan was removed or changed: info=%#v err=%v", info, err)
+	}
+}
+
+func TestReconcileFreshLeaseRejectsUnsafePriorGenerationOrphanStage(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned stage policy")
+	}
+	cfg := validHelperTestConfig(t)
+	if err := ensureRemoteStateDirectories(cfg); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := validRemotePlan()
+	interrupted.LeaseGeneration = 7
+	interrupted.PlanSHA256, _ = interrupted.ComputePlanSHA256()
+	recovery := interrupted
+	recovery.LeaseGeneration++
+	recovery.PlanSHA256, _ = recovery.ComputePlanSHA256()
+	orphanRoot := filepath.Join(cfg.StateDir, "stages", remoteStableKey(interrupted.JobID, interrupted.PlanSHA256))
+	if err := os.WriteFile(orphanRoot, []byte("unsafe non-directory prior-generation orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], recovery, "reconcile", NewRemoteSecret("unused-grant"), nil, remoteHelperRuntime{})
+	if response.Error == nil || response.Error.Code != "state_unavailable" {
+		t.Fatalf("unsafe prior-generation orphan reconcile response = %#v", response)
+	}
+	if info, err := os.Lstat(orphanRoot); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("unsafe prior-generation orphan was removed or changed: info=%#v err=%v", info, err)
+	}
+}
+
+func TestTerminalLedgerPreventsOrphanCleanupAcrossLeaseGeneration(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned stage policy")
+	}
+	cfg := validHelperTestConfig(t)
+	if err := ensureRemoteStateDirectories(cfg); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := validRemotePlan()
+	interrupted.LeaseGeneration = 5
+	interrupted.PlanSHA256, _ = interrupted.ComputePlanSHA256()
+	recovery := interrupted
+	recovery.LeaseGeneration++
+	recovery.PlanSHA256, _ = recovery.ComputePlanSHA256()
+	orphanRoot := filepath.Join(cfg.StateDir, "stages", remoteStableKey(interrupted.JobID, interrupted.PlanSHA256))
+	if err := os.Mkdir(orphanRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result := ApplyResult{Status: "rolled_back", RolledBack: true, ArtifactDigest: interrupted.ResultArtifactDigest()}
+	ledger := remoteMutationLedger{
+		SchemaVersion: remoteLedgerSchemaVersion,
+		JobID:         interrupted.JobID, TargetID: interrupted.TargetID,
+		PlanSHA256: interrupted.PlanSHA256, SessionID: interrupted.SessionID,
+		LeaseGeneration: interrupted.LeaseGeneration, Intent: newRemoteMutationIntent(interrupted),
+		Operation: "reconcile", State: remoteLedgerTerminal,
+		Stage:  &remoteStage{RootDir: orphanRoot, ArtifactDigest: interrupted.ArtifactDigest},
+		Result: &result,
+	}
+	if err := saveRemoteMutationLedger(cfg, ledger); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := loadRemoteMutationLedger(cfg, recovery.TargetID)
+	if err != nil || persisted == nil {
+		t.Fatalf("terminal ledger load = %#v, %v", persisted, err)
+	}
+
+	response := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], recovery, "reconcile", NewRemoteSecret("unused-grant"), persisted, remoteHelperRuntime{})
+	if response.Result == nil || response.Result.Status != "rolled_back" {
+		t.Fatalf("terminal ledger response = %#v", response)
+	}
+	if _, err := os.Lstat(orphanRoot); err != nil {
+		t.Fatalf("terminal-ledger stage was removed: %v", err)
+	}
+}
+
+func TestReconcileCleansNewJobOrphanWhenPreviousTerminalLedgerRemains(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned stage policy")
+	}
+	cfg := validHelperTestConfig(t)
+	if err := ensureRemoteStateDirectories(cfg); err != nil {
+		t.Fatal(err)
+	}
+	previous := validRemotePlan()
+	previous.JobID = "job-previous-terminal"
+	previous.LeaseGeneration = 4
+	previous.SessionID = "session-previous-terminal"
+	previous.PlanSHA256, _ = previous.ComputePlanSHA256()
+	previousStageRoot, err := remoteStageRoot(cfg, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(previousStageRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previousResult := ApplyResult{
+		Status: "rolled_back", RolledBack: true,
+		ArtifactDigest: previous.ResultArtifactDigest(),
+	}
+	previousLedger := remoteMutationLedger{
+		SchemaVersion: remoteLedgerSchemaVersion,
+		JobID:         previous.JobID, TargetID: previous.TargetID,
+		PlanSHA256: previous.PlanSHA256, SessionID: previous.SessionID,
+		LeaseGeneration: previous.LeaseGeneration, Intent: newRemoteMutationIntent(previous),
+		Operation: "reconcile", State: remoteLedgerTerminal,
+		Stage:  &remoteStage{RootDir: previousStageRoot, ArtifactDigest: previous.ArtifactDigest},
+		Result: &previousResult,
+	}
+	if err := saveRemoteMutationLedger(cfg, previousLedger); err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath := remoteLedgerPath(cfg, previous.TargetID)
+	ledgerBefore, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := loadRemoteMutationLedger(cfg, previous.TargetID)
+	if err != nil || persisted == nil {
+		t.Fatalf("previous terminal ledger load = %#v, %v", persisted, err)
+	}
+
+	next := previous
+	next.JobID = "job-next-after-terminal"
+	next.TargetVersion = "v1.2.0"
+	next.ExpectedVersion = next.TargetVersion
+	next.LeaseGeneration = 9
+	next.SessionID = "session-next-after-terminal"
+	next.PlanSHA256, _ = next.ComputePlanSHA256()
+	stableOrphan, err := remoteStageRoot(cfg, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyOrphan := filepath.Join(cfg.StateDir, "stages", remoteStableKey(next.JobID, next.PlanSHA256))
+	for _, root := range []string{stableOrphan, legacyOrphan} {
+		if err := os.MkdirAll(filepath.Join(root, "artifact"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	applyResponse := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], next, "apply", NewRemoteSecret("unused-grant"), persisted, remoteHelperRuntime{})
+	if applyResponse.Error == nil || applyResponse.Error.Code != "stage_required" {
+		t.Fatalf("foreign-terminal apply response = %#v", applyResponse)
+	}
+	for _, root := range []string{stableOrphan, legacyOrphan} {
+		if _, err := os.Lstat(root); err != nil {
+			t.Fatalf("apply removed new-job orphan %q: %v", root, err)
+		}
+	}
+
+	reconcileResponse := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], next, "reconcile", NewRemoteSecret("unused-grant"), persisted, remoteHelperRuntime{})
+	if reconcileResponse.Error == nil || reconcileResponse.Error.Code != "stage_required" {
+		t.Fatalf("foreign-terminal reconcile response = %#v", reconcileResponse)
+	}
+	for _, root := range []string{stableOrphan, legacyOrphan} {
+		if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("reconcile did not remove new-job orphan %q: %v", root, err)
+		}
+	}
+	if _, err := os.Lstat(previousStageRoot); err != nil {
+		t.Fatalf("previous terminal stage was removed: %v", err)
+	}
+	ledgerAfter, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ledgerAfter, ledgerBefore) {
+		t.Fatal("previous terminal ledger changed while cleaning new-job orphan")
+	}
+}
+
+func TestReconcileRejectsUnsafeNewJobOrphanWhenPreviousTerminalLedgerRemains(t *testing.T) {
+	if RequireRemoteHelperRoot() != nil {
+		t.Skip("root-owned stage policy")
+	}
+	cfg := validHelperTestConfig(t)
+	if err := ensureRemoteStateDirectories(cfg); err != nil {
+		t.Fatal(err)
+	}
+	previous := validRemotePlan()
+	previous.JobID = "job-previous-safe"
+	previous.PlanSHA256, _ = previous.ComputePlanSHA256()
+	previousResult := ApplyResult{Status: "succeeded", ArtifactDigest: previous.ResultArtifactDigest()}
+	previousLedger := remoteMutationLedger{
+		SchemaVersion: remoteLedgerSchemaVersion,
+		JobID:         previous.JobID, TargetID: previous.TargetID,
+		PlanSHA256: previous.PlanSHA256, SessionID: previous.SessionID,
+		LeaseGeneration: previous.LeaseGeneration, Intent: newRemoteMutationIntent(previous),
+		Operation: "apply", State: remoteLedgerTerminal,
+		Stage: &remoteStage{
+			RootDir:        filepath.Join(cfg.StateDir, "stages", remoteStableKey("previous-safe-stage")),
+			ArtifactDigest: previous.ArtifactDigest,
+		},
+		Result: &previousResult,
+	}
+	if err := saveRemoteMutationLedger(cfg, previousLedger); err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath := remoteLedgerPath(cfg, previous.TargetID)
+	ledgerBefore, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := loadRemoteMutationLedger(cfg, previous.TargetID)
+	if err != nil || persisted == nil {
+		t.Fatalf("previous terminal ledger load = %#v, %v", persisted, err)
+	}
+
+	next := previous
+	next.JobID = "job-next-unsafe-orphan"
+	next.LeaseGeneration++
+	next.SessionID = "session-next-unsafe-orphan"
+	next.PlanSHA256, _ = next.ComputePlanSHA256()
+	unsafeOrphan, err := remoteStageRoot(cfg, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unsafeOrphan, []byte("unsafe committed-stage replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := remoteMutationRequest(context.Background(), cfg, cfg.Targets[0], next, "reconcile", NewRemoteSecret("unused-grant"), persisted, remoteHelperRuntime{})
+	if response.Error == nil || response.Error.Code != "state_unavailable" {
+		t.Fatalf("unsafe foreign-terminal reconcile response = %#v", response)
+	}
+	if info, err := os.Lstat(unsafeOrphan); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("unsafe new-job orphan was removed or changed: info=%#v err=%v", info, err)
+	}
+	ledgerAfter, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ledgerAfter, ledgerBefore) {
+		t.Fatal("previous terminal ledger changed after unsafe orphan rejection")
+	}
+}
+
 func TestStageReleaseTokenUsesFIFOAndNeverAppearsInStateFiles(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix FIFO")

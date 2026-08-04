@@ -135,10 +135,17 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 	if err != nil {
 		return err
 	}
-	if job == nil {
-		if clearActive {
-			return a.Journal.ClearActive()
+	if clearActive {
+		if active == nil || job == nil || !sameRecoveredJobIntent(*active, *job) ||
+			!isTerminalUpdateStatus(job.Status) {
+			return errors.New("terminal pull recovery proof does not match the active job")
 		}
+		if err := cleanupJobDirectory(a.StateDir, active.ID); err != nil {
+			return fmt.Errorf("clean terminal pull recovery job state: %w", err)
+		}
+		return a.Journal.ClearActive()
+	}
+	if job == nil {
 		return nil
 	}
 	if err := validateHostPullClaim(*job, a.Bootstrap.NodeID, binding, policy); err != nil {
@@ -298,6 +305,13 @@ func (a *HostPullAgent) processExecutionJob(
 		}
 		result, err := a.invokeExecutionMutation(ctx, panel, binding, policy, job, plan, "reconcile")
 		if err != nil {
+			if localExecutorErrorCode(err) == "stage_required" {
+				return terminal(
+					"failed", "remote_stage_missing",
+					"interrupted job has no durable mutation state to reconcile",
+					ApplyResult{},
+				)
+			}
 			return err
 		}
 		return a.finishExecutionResult(terminal, result)
@@ -330,7 +344,8 @@ func (a *HostPullAgent) processExecutionJob(
 	}
 	if _, err := a.Executor.Stage(ctx, plan, fence); err != nil {
 		// Stage is non-mutating. Preserve the active cursor because a lost UDS
-		// result may have committed a durable stage and recovery must settle it.
+		// result or an explicit failure after an uncertain ledger commit may have
+		// left durable state, so recovery must prove and settle it.
 		return err
 	}
 	if _, err := a.emitExecutionReport(ctx, panel, job, "installing", "", "root executor is applying the fixed target", 65, normalizeDigest(plan.ArtifactDigest), ""); err != nil {
@@ -345,11 +360,23 @@ func (a *HostPullAgent) processExecutionJob(
 		if err != nil {
 			return err
 		}
+		// Reconciling is reported at 99%, and the server accepts only a terminal
+		// transition from that state. Do not regress to health_checking/90 after
+		// the executor has already returned its durable verified result.
+		return a.finishExecutionResult(terminal, result)
 	}
 	if _, err := a.emitExecutionReport(ctx, panel, job, "health_checking", "", "root executor completed bounded health and version checks", 90, result.ArtifactDigest, result.PreviousDigest); err != nil {
 		return err
 	}
 	return a.finishExecutionResult(terminal, result)
+}
+
+func localExecutorErrorCode(err error) string {
+	var executorErr *LocalExecutorClientError
+	if errors.As(err, &executorErr) {
+		return strings.TrimSpace(executorErr.Code)
+	}
+	return ""
 }
 
 func (a *HostPullAgent) processPortReconfigurationJob(
@@ -874,6 +901,15 @@ func (a *HostPullAgent) flushExecutionReports(ctx context.Context, panel HostPul
 		}
 		item := pending[0]
 		if err := panel.Report(ctx, item.JobID, item.Report); err != nil {
+			if IsPermanentReportError(err) {
+				// A stale lease or sequence says only that this report cursor is no
+				// longer usable. Drop that cursor without running terminal cleanup or
+				// clearing the durable job and plan needed by the next recovery lease.
+				if dropErr := a.Journal.DropJobReports(item.JobID); dropErr != nil {
+					return dropErr
+				}
+				return ErrLeaseLost
+			}
 			return err
 		}
 		if err := a.Journal.Ack(item.JobID, item.Report.Sequence); err != nil {
@@ -881,6 +917,9 @@ func (a *HostPullAgent) flushExecutionReports(ctx context.Context, panel HostPul
 		}
 		if isTerminalUpdateStatus(item.Report.Status) {
 			if err := cleanupJobDirectory(a.StateDir, item.JobID); err != nil {
+				return err
+			}
+			if err := a.Journal.ClearActive(); err != nil {
 				return err
 			}
 		}

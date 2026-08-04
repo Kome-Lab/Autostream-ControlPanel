@@ -69,7 +69,7 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	if _, err := auth.RegisterService(t.Context(), agentToken, store.ServiceRegistration{ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater 01", PublicURL: "https://updater.example.com", Version: "v1.0.0", Capabilities: capabilities}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.Heartbeat(t.Context(), agentToken, store.ServiceHeartbeat{ServiceID: "updater-01", Status: "online", Version: "v1.0.0", Capabilities: capabilities}); err != nil {
+	if _, err := auth.Heartbeat(t.Context(), agentToken, store.ServiceHeartbeat{ServiceID: "updater-01", Status: "online", Version: "v1.9.11", Capabilities: capabilities}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithSystemUpdateStore(store.NewMemorySystemUpdateStore()))
@@ -133,7 +133,7 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 		t.Fatalf("idempotency client-field conflict = %d %s", conflictResponse.Code, conflictResponse.Body.String())
 	}
 	t.Setenv("AUTOSTREAM_WORKER_LATEST_VERSION", "")
-	if _, err := auth.Heartbeat(t.Context(), agentToken, store.ServiceHeartbeat{ServiceID: "updater-01", Status: "online", Version: "v1.0.0", Capabilities: capabilities}); err != nil {
+	if _, err := auth.Heartbeat(t.Context(), agentToken, store.ServiceHeartbeat{ServiceID: "updater-01", Status: "online", Version: "v1.9.11", Capabilities: capabilities}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,7 +222,14 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	clearActiveRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
 	clearActiveResponse := httptest.NewRecorder()
 	handler.ServeHTTP(clearActiveResponse, clearActiveRequest)
-	if clearActiveResponse.Code != http.StatusOK || strings.TrimSpace(clearActiveResponse.Body.String()) != `{"clear_active_job_id":true}` {
+	var terminalRecovery systemUpdateTerminalRecoveryResponse
+	if clearActiveResponse.Code != http.StatusOK || json.Unmarshal(clearActiveResponse.Body.Bytes(), &terminalRecovery) != nil ||
+		!terminalRecovery.ClearActiveJobID || terminalRecovery.TerminalJob.ID != completed.ID ||
+		terminalRecovery.TerminalJob.AgentServiceID != "updater-01" || terminalRecovery.TerminalJob.TargetID != completed.TargetID ||
+		terminalRecovery.TerminalJob.TargetVersion != completed.TargetVersion || terminalRecovery.TerminalJob.Status != store.SystemUpdateStatusSucceeded ||
+		terminalRecovery.TerminalJob.Progress != 100 || terminalRecovery.TerminalJob.LeaseGeneration != completed.LeaseGeneration ||
+		terminalRecovery.TerminalJob.Sequence != completed.Sequence || terminalRecovery.TerminalJob.CompletedAt == nil ||
+		clearActiveResponse.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("terminal active_job_id clear response = %d %s", clearActiveResponse.Code, clearActiveResponse.Body.String())
 	}
 	queuedAfterClear, err := handler.systemUpdates.GetActiveSystemUpdateJob(t.Context(), "worker-01")
@@ -259,6 +266,70 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	}
 	if createAudits != 1 || terminalAudits != 1 {
 		t.Fatalf("idempotent replay duplicated audit side effects: create=%d terminal=%d events=%#v", createAudits, terminalAudits, events)
+	}
+}
+
+func TestSystemUpdateClaimFailsClosedWithoutExactTerminalRecoveryProof(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	registerServiceInstance(t, auth, "worker-proof-queued", "worker")
+	registerServiceInstance(t, auth, "worker-proof-foreign", "worker")
+	capabilities := centralUpdateCapabilitiesForTest("host-proof", map[string]string{
+		"worker-proof-queued":  "systemd",
+		"worker-proof-foreign": "systemd",
+	})
+	token := registerSystemUpdateAgentForTest(t, auth, "updater-proof", capabilities)
+	updates := store.NewMemorySystemUpdateStore()
+	queued, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
+		TargetID: "worker-proof-queued", TargetServiceType: "worker", AgentServiceID: "updater-proof", ExecutionHostID: "host-proof",
+		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle,
+		IdempotencyKey: "terminal-proof-queued", RequestedByUserID: "admin-proof",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
+		TargetID: "worker-proof-foreign", TargetServiceType: "worker", AgentServiceID: "updater-other", ExecutionHostID: "host-proof",
+		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle,
+		IdempotencyKey: "terminal-proof-foreign", RequestedByUserID: "admin-proof",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithServiceRegistryStore(auth),
+		WithSystemUpdateStore(updates),
+	)
+
+	for _, test := range []struct {
+		name     string
+		activeID string
+		wantCode string
+	}{
+		{name: "missing job", activeID: "missing-job", wantCode: "system_update_recovery_proof_unavailable"},
+		{name: "nonterminal job", activeID: queued.ID, wantCode: "system_update_recovery_proof_unavailable"},
+		{name: "wrong agent", activeID: foreign.ID, wantCode: "system_update_ownership_conflict"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]string{
+				"service_id":    "updater-proof",
+				"host_id":       "host-proof",
+				"active_job_id": test.activeID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", bytes.NewReader(body))
+			request.Header.Set("Authorization", "Bearer "+token.RawToken)
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			var payload map[string]any
+			if response.Code != http.StatusConflict || json.Unmarshal(response.Body.Bytes(), &payload) != nil ||
+				payload["code"] != test.wantCode || payload["clear_active_job_id"] != nil || payload["terminal_job"] != nil {
+				t.Fatalf("claim without exact terminal proof = %d %s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

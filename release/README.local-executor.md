@@ -14,6 +14,32 @@ request carries only the immutable release plan, ownership epoch, policy
 revision, and (for state-changing apply/reconcile operations) a short-lived
 one-time mutation grant.
 
+A Stage response is not itself a durable-ledger absence proof. Any Stage error
+therefore leaves the Host Agent's immutable plan active so the next lease
+generation can call reconcile without restaging or reapplying. When this root
+executor returns `stage_required` during recovery, it has proved only that the
+exact job has no durable mutation ledger or apply-authorized state. It does not
+claim that no staged directory existed. An exact orphan stage left before
+ledger commit is safely removed and its parent fsynced first; unsafe or failed
+cleanup returns `state_unavailable`. The Agent may then report terminal
+`failed`/100 with `remote_stage_missing`. If matching state exists, reconcile
+settles it instead. A `reconciling`/99 report is nonterminal and may move only
+to a terminal 100-percent result.
+
+A stale lease or sequence drops only its rejected report cursor while the
+active job and plan stay durable. Clearing that cursor later requires the
+Panel's structured terminal job to match the exact active immutable intent; a
+bare clear is invalid. Likewise, a terminal report is acknowledged only after
+the HTTP response exactly proves the committed job/Agent IDs, lease generation,
+sequence, status, progress, code, and result digests. v1.9.9 and v1.9.10 Agents
+predate this terminal-proof contract. Panel v1.9.11 returns
+`system_update_terminal_proof_upgrade_required` with HTTP 409 to a registered
+Agent older than v1.9.11 before terminal cursor recovery, so a legacy client
+cannot interpret the structured proof as a bare clear. Do not delete this
+executor's ledger or invoke a manual restage/reapply to bypass recovery. A
+managed Host runtime `--upgrade` also rejects an active durable mutation unless
+the operator selects the explicit v1.9.11 recovery path below.
+
 Use only the same unchanged
 `autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz` whose GitHub archive
 attestation was verified as described in `README.md`. Keep that one archive
@@ -195,6 +221,40 @@ preserves this policy, and reuses the same durable A/B rollback state. A
 standalone Local Executor replacement cannot establish the paired runtime,
 blocker, process-identity, and rollback proof required by this boundary.
 The archive-contained Host runtime guide is `README.md`.
+
+This recovery option supports only an existing managed A/B runtime whose live
+Host Agent and Local Executor are an exact paired v1.9.9 or v1.9.10 release.
+Their version, commit, and build date must match; both public binary links and
+both systemd processes must resolve to the same current slot, and this live
+Executor must expose mutation and recovery protocol 2. The old Agent must begin
+enabled and active with a live MainPID. The Executor service and socket plus
+both fixed recovery timers must be active; the Agent, socket, and timers must
+be enabled. It does not support every older Agent, a mixed-version pair, a
+standalone install, or an inactive or mismatched Executor.
+
+For an exact active journal on that permitted pair, first install and verify
+Control Panel v1.9.11. Then use the verified matching Host archive and
+explicitly run:
+
+```bash
+cd /opt/autostream/releases/artifacts/autostream-host-agent_v1.9.11_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade --recover-active-job
+```
+
+Use `linux_arm64` on arm64. Ordinary `--upgrade` still rejects an active job;
+this is the only active-job form. It needs no Configure Token and runs no
+`configure`. The candidate Agent runs once as the service account, may only
+reconcile and report the journal's exact job, cannot claim a new job, and cannot
+invoke Stage or Apply. The installer arms a transient systemd guard before it
+stops the old Agent. Once exact recovery succeeds, the Agent remains
+intentionally stopped while the same command hands the pinned pair to the A/B
+upgrader; this live Executor and the stopped on-disk Agent must still match.
+The guard is disarmed only after an active managed Agent is proved. A failure
+reacquires the canonical locks, restores and proves the exact previous pair,
+and restarts the previous Agent; if that cannot be done safely, the Agent stays stopped
+and the guard stays armed. Do not delete or edit the Host Agent journal, this
+root ledger, staged release, or Panel job, and do not create a replacement job,
+restage, or reapply.
 
 Self-update grant recovery uses only the root-owned hash, immutable binding,
 and consumed receipt; it never persists the raw grant. A reboot with stable

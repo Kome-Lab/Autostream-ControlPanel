@@ -249,6 +249,13 @@ jobs:
               /smoke/autostream-host-agent
       - name: Test Host Agent manual upgrade installer delegation
         run: |
+          set -euo pipefail
+          smoke_dir="${RUNNER_TEMP}/host-agent-installer-upgrade"
+          mkdir -p "${smoke_dir}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" \
+              -o "${smoke_dir}/host-runtime-process-fixture" \
+              ./internal/security/testdata/host-runtime-process-fixture
           docker run --rm \
             --user 0:0 \
             --network none \
@@ -256,9 +263,11 @@ jobs:
             --memory 256m \
             --cpus 1 \
             --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+            --mount "type=bind,source=${smoke_dir},target=/smoke,readonly" \
             ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
             /bin/bash /workspace/internal/security/testdata/run-host-agent-installer-upgrade-smoke.sh \
-              /workspace
+              /workspace \
+              /smoke/host-runtime-process-fixture
       - name: Test backup script with root-owned Linux fixtures
         run: |
           docker run --rm \

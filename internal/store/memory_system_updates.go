@@ -191,22 +191,31 @@ func (s *MemorySystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id,
 	return publicMemorySystemUpdateJob(job), nil
 }
 
-func (s *MemorySystemUpdateStore) ShouldClearSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (bool, error) {
+func (s *MemorySystemUpdateStore) InspectSystemUpdateActiveJob(ctx context.Context, agentServiceID, activeJobID string) (SystemUpdateJob, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return SystemUpdateJob{}, false, err
 	}
 	agentServiceID = strings.TrimSpace(agentServiceID)
 	activeJobID = strings.TrimSpace(activeJobID)
 	if agentServiceID == "" || activeJobID == "" || len(activeJobID) > 64 || containsControl(activeJobID) {
-		return false, ErrInvalidSystemUpdate
+		return SystemUpdateJob{}, false, ErrInvalidSystemUpdate
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job, ok := s.jobs[activeJobID]
 	if !ok {
-		return true, nil
+		return SystemUpdateJob{}, false, ErrSystemUpdateRecoveryProofUnavailable
 	}
-	return job.AgentServiceID != agentServiceID || !isExecutingSystemUpdateStatus(job.Status), nil
+	if job.AgentServiceID != agentServiceID {
+		return SystemUpdateJob{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	if isExecutingSystemUpdateStatus(job.Status) {
+		return publicMemorySystemUpdateJob(job), false, nil
+	}
+	if !isTerminalSystemUpdateStatus(job.Status) {
+		return SystemUpdateJob{}, false, ErrSystemUpdateRecoveryProofUnavailable
+	}
+	return publicMemorySystemUpdateJob(job), true, nil
 }
 
 func (s *MemorySystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
@@ -234,8 +243,14 @@ func (s *MemorySystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agen
 	foreignExpired := false
 	if activeJobID != "" {
 		job, ok := s.jobs[activeJobID]
-		if !ok || job.AgentServiceID != agentServiceID || !isExecutingSystemUpdateStatus(job.Status) {
-			return SystemUpdateClaim{}, true, nil
+		if !ok {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateRecoveryProofUnavailable
+		}
+		if job.AgentServiceID != agentServiceID {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
+		}
+		if !isExecutingSystemUpdateStatus(job.Status) {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateRecoveryProofUnavailable
 		}
 		if job.ExecutionHostID != executionHostID {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateActiveUnavailable

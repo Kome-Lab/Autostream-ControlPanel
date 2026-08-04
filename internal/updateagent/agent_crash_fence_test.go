@@ -18,6 +18,29 @@ type scriptedHelperRunner struct {
 	run   func(args []string) (string, error)
 }
 
+func writeCommittedTerminalReport(
+	t *testing.T,
+	w http.ResponseWriter,
+	jobID string,
+	report JobReport,
+) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(UpdateJob{
+		ID:              jobID,
+		AgentServiceID:  report.ServiceID,
+		LeaseGeneration: report.LeaseGeneration,
+		Sequence:        report.Sequence,
+		Status:          report.Status,
+		Progress:        report.Progress,
+		Code:            report.Code,
+		ArtifactDigest:  report.ArtifactDigest,
+		PreviousDigest:  report.PreviousDigest,
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
 func (r *scriptedHelperRunner) Run(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 	call := append([]string{name}, args...)
 	r.mu.Lock()
@@ -124,7 +147,11 @@ func TestApplyErrorReconcilesUnderSameLeaseBeforeTerminal(t *testing.T) {
 			reportMu.Lock()
 			reports = append(reports, report)
 			reportMu.Unlock()
-			w.WriteHeader(http.StatusNoContent)
+			if isTerminalUpdateStatus(report.Status) {
+				writeCommittedTerminalReport(t, w, "job-apply-reconcile", report)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
 			return
 		}
 		http.NotFound(w, r)
@@ -179,7 +206,11 @@ func TestHelperAuthorizationRejectionFailsBeforeReconcile(t *testing.T) {
 			t.Error(err)
 		}
 		reports = append(reports, report)
-		w.WriteHeader(http.StatusNoContent)
+		if isTerminalUpdateStatus(report.Status) {
+			writeCommittedTerminalReport(t, w, "job-auth-rejected", report)
+		} else {
+			w.WriteHeader(http.StatusNoContent)
+		}
 	}))
 	defer server.Close()
 	journal, err := OpenJournal(t.TempDir())

@@ -176,7 +176,8 @@ func TestRunDelegatesVerifiedBundleManualUpgrade(t *testing.T) {
 	}
 	if received.ArtifactRoot != "/var/tmp/verified-host-agent" ||
 		received.ArchiveSHA256 != strings.Repeat("a", 64) ||
-		received.ArchiveSize != 12345 {
+		received.ArchiveSize != 12345 ||
+		received.AgentStoppedForRecovery {
 		t.Fatalf("manual upgrade request=%#v", received)
 	}
 	if got := output.String(); !strings.Contains(got, "v9.9.9") ||
@@ -185,11 +186,248 @@ func TestRunDelegatesVerifiedBundleManualUpgrade(t *testing.T) {
 	}
 }
 
-func TestManualUpgradeCancellationIsNotSuppressed(t *testing.T) {
+func TestRunPassesStoppedAgentRecoveryHandoffToManualUpgrade(t *testing.T) {
+	var received updateagent.ManualHostUpgradeRequest
+	dependencies := localExecutorCLIDependencies{
+		Output: &bytes.Buffer{},
+		LoadPolicy: func(string, bool) (updateagent.LocalExecutorPolicy, error) {
+			return updateagent.LocalExecutorPolicy{}, nil
+		},
+		ServeExecutor: func(context.Context, string) error { return nil },
+		RequireRoot:   func() error { return nil },
+		UpgradeHostRuntime: func(
+			_ context.Context,
+			request updateagent.ManualHostUpgradeRequest,
+		) (updateagent.ManualHostUpgradeResult, error) {
+			received = request
+			return updateagent.ManualHostUpgradeResult{
+				ActiveSlot: updateagent.HostSelfUpdateSlotA,
+				Version:    "v9.9.9",
+			}, nil
+		},
+	}
+	err := run([]string{
+		"manual-upgrade-host-runtime",
+		"--artifact-root", "/var/tmp/verified-host-agent",
+		"--archive-sha256", strings.Repeat("b", 64),
+		"--archive-size", "54321",
+		"--agent-stopped-for-recovery",
+	}, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !received.AgentStoppedForRecovery {
+		t.Fatalf("manual upgrade request=%#v", received)
+	}
+}
+
+func TestRunDelegatesExactHostAgentUpgradeGuard(t *testing.T) {
+	output := &bytes.Buffer{}
+	rootChecked := false
+	var received updateagent.HostAgentUpgradeGuardRequest
+	dependencies := localExecutorCLIDependencies{
+		Output: output,
+		LoadPolicy: func(string, bool) (updateagent.LocalExecutorPolicy, error) {
+			return updateagent.LocalExecutorPolicy{}, nil
+		},
+		ServeExecutor: func(context.Context, string) error { return nil },
+		RequireRoot: func() error {
+			rootChecked = true
+			return nil
+		},
+		GuardRestartHostAgent: func(
+			_ context.Context,
+			request updateagent.HostAgentUpgradeGuardRequest,
+		) error {
+			received = request
+			return nil
+		},
+	}
+	err := run([]string{
+		"guard-restart-host-agent",
+		"--expected-slot", "a",
+		"--agent-sha256", strings.Repeat("a", 64),
+		"--executor-sha256", strings.Repeat("b", 64),
+	}, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rootChecked {
+		t.Fatal("Host Agent upgrade guard did not require root")
+	}
+	if received != (updateagent.HostAgentUpgradeGuardRequest{
+		ExpectedSlot:   updateagent.HostSelfUpdateSlotA,
+		AgentSHA256:    strings.Repeat("a", 64),
+		ExecutorSHA256: strings.Repeat("b", 64),
+	}) {
+		t.Fatalf("guard request=%+v", received)
+	}
+	if !strings.Contains(output.String(), "exact pre-upgrade Host Agent restarted") {
+		t.Fatalf("guard output=%q", output.String())
+	}
+}
+
+func TestRunRejectsUnsafeHostAgentUpgradeGuardArgumentsBeforeRoot(t *testing.T) {
+	rootChecks := 0
+	guardCalls := 0
+	dependencies := localExecutorCLIDependencies{
+		Output: &bytes.Buffer{},
+		LoadPolicy: func(string, bool) (updateagent.LocalExecutorPolicy, error) {
+			return updateagent.LocalExecutorPolicy{}, nil
+		},
+		ServeExecutor: func(context.Context, string) error { return nil },
+		RequireRoot: func() error {
+			rootChecks++
+			return nil
+		},
+		GuardRestartHostAgent: func(
+			context.Context,
+			updateagent.HostAgentUpgradeGuardRequest,
+		) error {
+			guardCalls++
+			return nil
+		},
+	}
+	for _, args := range [][]string{
+		{"guard-restart-host-agent"},
+		{
+			"guard-restart-host-agent",
+			"--expected-slot", "c",
+			"--agent-sha256", strings.Repeat("a", 64),
+			"--executor-sha256", strings.Repeat("b", 64),
+		},
+		{
+			"guard-restart-host-agent",
+			"--expected-slot", "a",
+			"--agent-sha256", strings.Repeat("A", 64),
+			"--executor-sha256", strings.Repeat("b", 64),
+		},
+		{
+			"guard-restart-host-agent",
+			"--expected-slot", "a",
+			"--agent-sha256", strings.Repeat("a", 64),
+			"--executor-sha256", strings.Repeat("b", 64),
+			"unexpected",
+		},
+	} {
+		if err := run(args, dependencies); err == nil {
+			t.Fatalf("guard args %q unexpectedly accepted", args)
+		}
+	}
+	if rootChecks != 0 || guardCalls != 0 {
+		t.Fatalf("unsafe guard args root_checks=%d guard_calls=%d", rootChecks, guardCalls)
+	}
+}
+
+func TestRunInspectsHostUpdateRecoveryAsRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		active bool
+		want   string
+	}{
+		{name: "active", active: true, want: "active\n"},
+		{name: "inactive", active: false, want: "inactive\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := &bytes.Buffer{}
+			rootChecked := false
+			inspected := false
+			err := run(
+				[]string{"inspect-host-update-recovery"},
+				localExecutorCLIDependencies{
+					Output: output,
+					LoadPolicy: func(
+						string,
+						bool,
+					) (updateagent.LocalExecutorPolicy, error) {
+						return updateagent.LocalExecutorPolicy{}, nil
+					},
+					ServeExecutor: func(context.Context, string) error {
+						return nil
+					},
+					RequireRoot: func() error {
+						rootChecked = true
+						return nil
+					},
+					InspectHostUpdateRecovery: func() (bool, error) {
+						inspected = true
+						return tc.active, nil
+					},
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !rootChecked || !inspected {
+				t.Fatalf(
+					"root_checked=%v inspected=%v",
+					rootChecked,
+					inspected,
+				)
+			}
+			if got := output.String(); got != tc.want {
+				t.Fatalf("output=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunHostUpdateRecoveryInspectionFailsClosed(t *testing.T) {
+	base := func() localExecutorCLIDependencies {
+		return localExecutorCLIDependencies{
+			Output: &bytes.Buffer{},
+			LoadPolicy: func(
+				string,
+				bool,
+			) (updateagent.LocalExecutorPolicy, error) {
+				return updateagent.LocalExecutorPolicy{}, nil
+			},
+			ServeExecutor: func(context.Context, string) error { return nil },
+		}
+	}
+
+	dependencies := base()
+	inspected := false
+	dependencies.RequireRoot = func() error { return errors.New("not root") }
+	dependencies.InspectHostUpdateRecovery = func() (bool, error) {
+		inspected = true
+		return false, nil
+	}
+	err := run([]string{"inspect-host-update-recovery"}, dependencies)
+	if err == nil || err.Error() != "Host update recovery inspection requires root" {
+		t.Fatalf("non-root error=%v", err)
+	}
+	if inspected {
+		t.Fatal("non-root inspection reached the Host journal")
+	}
+
+	dependencies = base()
+	dependencies.RequireRoot = func() error { return nil }
+	dependencies.InspectHostUpdateRecovery = func() (bool, error) {
+		return false, errors.New("unsafe journal")
+	}
+	err = run([]string{"inspect-host-update-recovery"}, dependencies)
+	if err == nil || !strings.Contains(
+		err.Error(),
+		"inspect Host update recovery: unsafe journal",
+	) {
+		t.Fatalf("unsafe inspection error=%v", err)
+	}
+	if got := dependencies.Output.(*bytes.Buffer).String(); got != "" {
+		t.Fatalf("unsafe inspection output=%q", got)
+	}
+}
+
+func TestHostRuntimeMutationCancellationIsNotSuppressed(t *testing.T) {
 	if suppressLocalExecutorCancellation(
 		[]string{"manual-upgrade-host-runtime"}, context.Canceled,
 	) {
 		t.Fatal("manual upgrade cancellation would be reported as success")
+	}
+	if suppressLocalExecutorCancellation(
+		[]string{"guard-restart-host-agent"}, context.Canceled,
+	) {
+		t.Fatal("Host Agent recovery guard cancellation would be reported as success")
 	}
 	if !suppressLocalExecutorCancellation([]string{"run"}, context.Canceled) {
 		t.Fatal("normal server shutdown cancellation should remain quiet")

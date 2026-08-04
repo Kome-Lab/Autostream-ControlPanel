@@ -14,6 +14,33 @@ whose server-owned policy contains both targets. No SSH key, `known_hosts`,
 inbound updater port, or central updater daemon is part of this `pull_v2`
 boundary.
 
+For a claimed software update, every Stage error preserves the active immutable
+plan because a response failure or a root-ledger durability error can make the
+Stage result uncertain. The next lease generation performs reconcile only,
+without restaging or reapplying that job. A `stage_required` response means the
+exact job has no durable mutation ledger or apply-authorized state. It never
+claims that no staged directory existed: before returning it, the root executor
+safely removes only the exact orphan stage left before ledger commit and fsyncs
+the parent, or fails closed with `state_unavailable`. The Agent then reports
+terminal `failed` at 100 percent with code `remote_stage_missing`; matching
+durable executor state is reconciled instead. Once the job reports
+`reconciling` at 99 percent, its next accepted report is a terminal 100-percent
+result; progress never returns to `health_checking` at 90.
+
+A stale lease or sequence rejection drops only the unusable report cursor while
+retaining the active job and plan for exact recovery. The Panel must return a
+structured terminal job before the Agent clears an active cursor; a bare
+`clear_active_job_id` boolean is rejected, and the terminal job must match the
+active immutable intent. A terminal report is acknowledged only when its HTTP
+success body exactly matches the committed job/Agent IDs, lease generation,
+sequence, status, progress, code, and result digests. v1.9.9 and v1.9.10 Agents
+predate this terminal-proof contract. Panel v1.9.11 returns
+`system_update_terminal_proof_upgrade_required` with HTTP 409 to a registered
+Agent older than v1.9.11 before terminal cursor recovery, so a legacy client
+cannot interpret the structured proof as a bare clear. Do not create a
+replacement job, delete either journal/ledger, or manually restage/reapply
+while recovery is pending.
+
 ## Verify the release
 
 Download `autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz` on the operator
@@ -216,13 +243,13 @@ and requires the legacy secret to be unlinked. If unlink fails, it keeps the
 recoverable canonical identity but leaves the Agent stopped. New writes never
 target the legacy path.
 
-v1.9.10 removes the need for the temporary execute-only ACL workaround on
+v1.9.10 and later remove the need for the temporary execute-only ACL workaround on
 `/etc/autostream`. On every affected v1.9.9 host where that directory is
 `root:root 0750`, keep one bounded execute-only ACL bridge through the upgrade,
 even if the old Agent is currently active. `--upgrade` deliberately requires a
 healthy A/B runtime, and a failed candidate must be able to restart v1.9.9
 during rollback. Use the following block only after installing and verifying
-the v1.9.10 Control Panel and Host archive. It proves the installed Host Agent
+the matching current Control Panel and Host archive. It proves the installed Host Agent
 is exactly v1.9.9, the canonical identity is valid, both forms of the legacy
 pathname are absent, the parent is the expected non-symlink directory, and any
 pre-existing Host Agent ACL is exactly the known access-only `--x` bridge:
@@ -260,10 +287,12 @@ sudo -u autostream-host-agent \
   --config /etc/autostream-host-agent/identity.json
 sudo systemctl restart autostream-host-agent.service
 sudo systemctl is-active --quiet autostream-host-agent.service
-cd /opt/autostream/releases/artifacts/autostream-host-agent_v1.9.10_linux_amd64
+cd /opt/autostream/releases/artifacts/autostream-host-agent_vX.Y.Z_linux_amd64
 sudo ./install/install-autostream-host-agent --upgrade
 sudo /usr/local/bin/autostream-host-agent --version |
-  grep -Fx 'autostream-host-agent v1.9.10'
+  grep -Fx 'autostream-host-agent vX.Y.Z'
+sudo /usr/local/libexec/autostream-local-executor --version |
+  grep -Fx 'autostream-local-executor vX.Y.Z'
 ```
 
 If the directory is not the exact `root:root 0750` non-symlink above, or an
@@ -276,7 +305,9 @@ Agent:
 ```bash
 set -euo pipefail
 sudo /usr/local/bin/autostream-host-agent --version |
-  grep -Fx 'autostream-host-agent v1.9.10'
+  grep -Fx 'autostream-host-agent vX.Y.Z'
+sudo /usr/local/libexec/autostream-local-executor --version |
+  grep -Fx 'autostream-local-executor vX.Y.Z'
 sudo -u autostream-host-agent \
   /usr/local/bin/autostream-host-agent validate-config \
   --config /etc/autostream-host-agent/identity.json
@@ -303,7 +334,7 @@ sudo systemctl is-active --quiet autostream-host-agent.service
 Do not use `setfacl -b`: unrelated pre-existing ACLs belong to the operator.
 Do not use `chmod 0751`, add the Agent to an application group, or grant read
 permission. If the exact named entry was not added as this workaround, stop
-and review it instead of deleting it. On arm64, use the verified arm64 v1.9.10
+and review it instead of deleting it. On arm64, use the verified arm64 vX.Y.Z
 release directory instead of the amd64 path above.
 
 The Ubuntu `acl` package is needed only for this bounded v1.9.9 recovery and
@@ -359,6 +390,50 @@ recovery-service migration below, the installed systemd and tmpfiles templates
 must be byte-identical to the new bundle. Before running it, confirm that the
 active Control Panel satisfies the bundle's `minimum_panel_version`; the
 offline host cannot independently prove a remote Panel version.
+
+### Explicit active-job recovery for v1.9.11
+
+This recovery option is limited to an existing managed A/B runtime whose live
+Host Agent and Local Executor are an exact paired v1.9.9 or v1.9.10 release.
+Their version, commit, and build date must match; both public binary links and
+both systemd processes must resolve to the same current slot, and the live
+Executor must expose mutation and recovery protocol 2. The old Agent must begin
+enabled and active with a live MainPID. The Executor service and socket plus
+both fixed recovery timers must be active; the Agent, socket, and timers must
+be enabled. This is not a generic bridge for every Agent older than v1.9.11, a
+mixed-version pair, a standalone install, or an inactive or mismatched
+Executor.
+
+When that exact v1.9.9 or v1.9.10 pair has an active journal, it remains a
+blocker to ordinary `--upgrade`. Install and verify the Control Panel v1.9.11
+release first, then verify and extract the matching v1.9.11 Host archive and
+run only this explicit recovery form:
+
+```bash
+cd /opt/autostream/releases/artifacts/autostream-host-agent_v1.9.11_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade --recover-active-job
+```
+
+Use the matching `linux_arm64` archive and directory on arm64. There is no
+automatic recovery mode: normal `--upgrade` continues to reject an active job.
+Do not issue a Configure Token or rerun `configure`. The installer verifies the
+exact active journal, arms a transient systemd restart guard, stops the old
+Agent, and runs the verified candidate once as the existing
+`autostream-host-agent` account. That recovery-only process is bound to the
+journal's active job and may reconcile and report it; it cannot claim a new job
+or invoke Stage or Apply. The paired A/B upgrade begins only after strict
+terminal proof has safely cleared that exact active cursor. The Agent remains
+intentionally stopped during that handoff; the live Executor and the stopped
+on-disk Agent must still prove the pinned, exact pre-stop pair.
+
+The guard is disarmed only after an active managed Agent is proved. On any
+recovery or upgrade failure, the installer first reacquires the canonical
+setup and lifecycle locks, restores and proves the exact previous pair, and
+restarts the previous Agent. If it cannot reacquire those locks or prove that result,
+the Agent remains stopped and the guard remains armed. Do not delete or edit
+the Agent journal, root ledger, staged release, or Panel update row, and do not
+create a replacement job, restage, or reapply. Preserve those durable records
+and retry the same explicit command only after fixing the reported cause.
 
 ### Forward-only recovery service migration
 

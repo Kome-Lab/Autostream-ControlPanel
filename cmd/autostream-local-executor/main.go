@@ -18,16 +18,18 @@ import (
 )
 
 const defaultLocalExecutorPolicyPath = "/etc/autostream-local-executor/policy.json"
-const localExecutorUsage = "usage: autostream-local-executor run [--policy PATH] | manual-upgrade-host-runtime --artifact-root PATH --archive-sha256 SHA256 --archive-size BYTES | recover-self-update --recovery-slot a|b | recover-runtime-credential --rotation-id ID --confirm-emergency-revoked | validate-policy [--policy PATH] | version"
+const localExecutorUsage = "usage: autostream-local-executor run [--policy PATH] | inspect-host-update-recovery | manual-upgrade-host-runtime --artifact-root PATH --archive-sha256 SHA256 --archive-size BYTES [--agent-stopped-for-recovery] | guard-restart-host-agent --expected-slot a|b --agent-sha256 SHA256 --executor-sha256 SHA256 | recover-self-update --recovery-slot a|b | recover-runtime-credential --rotation-id ID --confirm-emergency-revoked | validate-policy [--policy PATH] | version"
 
 type localExecutorCLIDependencies struct {
-	LoadPolicy               func(string, bool) (updateagent.LocalExecutorPolicy, error)
-	ServeExecutor            func(context.Context, string) error
-	RecoverSelfUpdate        func(context.Context, string) error
-	RecoverRuntimeCredential func(string) error
-	UpgradeHostRuntime       func(context.Context, updateagent.ManualHostUpgradeRequest) (updateagent.ManualHostUpgradeResult, error)
-	RequireRoot              func() error
-	Output                   io.Writer
+	LoadPolicy                func(string, bool) (updateagent.LocalExecutorPolicy, error)
+	ServeExecutor             func(context.Context, string) error
+	RecoverSelfUpdate         func(context.Context, string) error
+	RecoverRuntimeCredential  func(string) error
+	InspectHostUpdateRecovery func() (bool, error)
+	UpgradeHostRuntime        func(context.Context, updateagent.ManualHostUpgradeRequest) (updateagent.ManualHostUpgradeResult, error)
+	GuardRestartHostAgent     func(context.Context, updateagent.HostAgentUpgradeGuardRequest) error
+	RequireRoot               func() error
+	Output                    io.Writer
 }
 
 func main() {
@@ -41,18 +43,22 @@ func main() {
 
 func suppressLocalExecutorCancellation(args []string, err error) bool {
 	return errors.Is(err, context.Canceled) &&
-		(len(args) == 0 || args[0] != "manual-upgrade-host-runtime")
+		(len(args) == 0 ||
+			(args[0] != "manual-upgrade-host-runtime" &&
+				args[0] != "guard-restart-host-agent"))
 }
 
 func defaultLocalExecutorCLIDependencies() localExecutorCLIDependencies {
 	return localExecutorCLIDependencies{
-		LoadPolicy:               updateagent.LoadLocalExecutorPolicy,
-		ServeExecutor:            updateagent.ServeLocalExecutor,
-		RecoverSelfUpdate:        updateagent.RecoverHostSelfUpdate,
-		RecoverRuntimeCredential: updateagent.RecoverRuntimeCredentialAfterEmergencyManualReconfigure,
-		UpgradeHostRuntime:       updateagent.UpgradeHostRuntimeFromVerifiedBundle,
-		RequireRoot:              updateagent.RequireRemoteHelperRoot,
-		Output:                   os.Stdout,
+		LoadPolicy:                updateagent.LoadLocalExecutorPolicy,
+		ServeExecutor:             updateagent.ServeLocalExecutor,
+		RecoverSelfUpdate:         updateagent.RecoverHostSelfUpdate,
+		RecoverRuntimeCredential:  updateagent.RecoverRuntimeCredentialAfterEmergencyManualReconfigure,
+		InspectHostUpdateRecovery: updateagent.InspectHostUpdateRecovery,
+		UpgradeHostRuntime:        updateagent.UpgradeHostRuntimeFromVerifiedBundle,
+		GuardRestartHostAgent:     updateagent.RestartHostAgentFromUpgradeGuard,
+		RequireRoot:               updateagent.RequireRemoteHelperRoot,
+		Output:                    os.Stdout,
 	}
 }
 
@@ -133,6 +139,50 @@ func run(args []string, dependencies localExecutorCLIDependencies) error {
 			result.ActiveSlot,
 		)
 		return nil
+	case "inspect-host-update-recovery":
+		if len(args) != 1 ||
+			dependencies.InspectHostUpdateRecovery == nil ||
+			dependencies.RequireRoot == nil {
+			return errors.New(
+				"Host update recovery inspection dependency is unavailable",
+			)
+		}
+		if err := dependencies.RequireRoot(); err != nil {
+			return errors.New("Host update recovery inspection requires root")
+		}
+		active, err := dependencies.InspectHostUpdateRecovery()
+		if err != nil {
+			return fmt.Errorf("inspect Host update recovery: %w", err)
+		}
+		if active {
+			fmt.Fprintln(dependencies.Output, "active")
+		} else {
+			fmt.Fprintln(dependencies.Output, "inactive")
+		}
+		return nil
+	case "guard-restart-host-agent":
+		if dependencies.GuardRestartHostAgent == nil ||
+			dependencies.RequireRoot == nil {
+			return errors.New(
+				"Host Agent installer recovery guard dependency is unavailable",
+			)
+		}
+		request, err := parseHostAgentUpgradeGuard(args[1:])
+		if err != nil {
+			return err
+		}
+		if err := dependencies.RequireRoot(); err != nil {
+			return errors.New("Host Agent installer recovery guard requires root")
+		}
+		ctx, stop := signal.NotifyContext(
+			context.Background(), os.Interrupt, syscall.SIGTERM,
+		)
+		defer stop()
+		if err := dependencies.GuardRestartHostAgent(ctx, request); err != nil {
+			return fmt.Errorf("Host Agent installer recovery guard rejected: %w", err)
+		}
+		fmt.Fprintln(dependencies.Output, "exact pre-upgrade Host Agent restarted")
+		return nil
 	case "recover-runtime-credential":
 		if dependencies.RecoverRuntimeCredential == nil ||
 			dependencies.RequireRoot == nil {
@@ -195,6 +245,11 @@ func parseManualHostUpgrade(
 	artifactRoot := flags.String("artifact-root", "", "verified Host Agent bundle root")
 	archiveSHA256 := flags.String("archive-sha256", "", "verified adjacent archive digest")
 	archiveSize := flags.Int64("archive-size", 0, "verified adjacent archive size")
+	agentStoppedForRecovery := flags.Bool(
+		"agent-stopped-for-recovery",
+		false,
+		"the verified installer stopped the Agent after candidate recovery",
+	)
 	if err := flags.Parse(args); err != nil {
 		return updateagent.ManualHostUpgradeRequest{}, errors.New(
 			"manual Host runtime upgrade arguments are invalid",
@@ -214,10 +269,57 @@ func parseManualHostUpgrade(
 		)
 	}
 	return updateagent.ManualHostUpgradeRequest{
-		ArtifactRoot:  *artifactRoot,
-		ArchiveSHA256: *archiveSHA256,
-		ArchiveSize:   *archiveSize,
+		ArtifactRoot:            *artifactRoot,
+		ArchiveSHA256:           *archiveSHA256,
+		ArchiveSize:             *archiveSize,
+		AgentStoppedForRecovery: *agentStoppedForRecovery,
 	}, nil
+}
+
+func parseHostAgentUpgradeGuard(
+	args []string,
+) (updateagent.HostAgentUpgradeGuardRequest, error) {
+	flags := flag.NewFlagSet("guard-restart-host-agent", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	expectedSlot := flags.String("expected-slot", "", "exact pre-upgrade A/B slot")
+	agentSHA256 := flags.String("agent-sha256", "", "exact pre-upgrade Agent digest")
+	executorSHA256 := flags.String(
+		"executor-sha256",
+		"",
+		"exact pre-upgrade Local Executor digest",
+	)
+	if err := flags.Parse(args); err != nil {
+		return updateagent.HostAgentUpgradeGuardRequest{}, errors.New(
+			"Host Agent installer recovery guard arguments are invalid",
+		)
+	}
+	if flags.NArg() != 0 ||
+		(*expectedSlot != updateagent.HostSelfUpdateSlotA &&
+			*expectedSlot != updateagent.HostSelfUpdateSlotB) ||
+		!isLowerHexSHA256(*agentSHA256) ||
+		!isLowerHexSHA256(*executorSHA256) {
+		return updateagent.HostAgentUpgradeGuardRequest{}, errors.New(
+			"Host Agent installer recovery guard requires exactly --expected-slot a|b, --agent-sha256, and --executor-sha256",
+		)
+	}
+	return updateagent.HostAgentUpgradeGuardRequest{
+		ExpectedSlot:   *expectedSlot,
+		AgentSHA256:    *agentSHA256,
+		ExecutorSHA256: *executorSHA256,
+	}, nil
+}
+
+func isLowerHexSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') &&
+			(character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func parseRuntimeCredentialRecovery(args []string) (string, error) {

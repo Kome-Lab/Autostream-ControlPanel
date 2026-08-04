@@ -60,7 +60,11 @@ func TestRecoveryRequiredInvokesOnlyReconcileAtMonotonicProgress(t *testing.T) {
 				t.Error(err)
 			}
 			reports = append(reports, report)
-			w.WriteHeader(http.StatusNoContent)
+			if isTerminalUpdateStatus(report.Status) {
+				writeCommittedTerminalReport(t, w, "job-recover", report)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
 			return
 		}
 		http.NotFound(w, r)
@@ -103,7 +107,16 @@ func TestPollOnceUsesActiveJobProtocolAndClearsWithoutAnotherClaim(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := &UpdateJob{ID: "job-active", LeaseToken: "old"}
+	active := &UpdateJob{
+		ID:             "job-active",
+		AgentServiceID: "updater-1",
+		TargetID:       "worker-01",
+		ServiceType:    "worker",
+		DeploymentMode: ModeSystemd,
+		CurrentVersion: "v1.0.0",
+		TargetVersion:  "v2.0.0",
+		LeaseToken:     "old",
+	}
 	if err := journal.SetActive(active); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +129,20 @@ func TestPollOnceUsesActiveJobProtocolAndClearsWithoutAnotherClaim(t *testing.T)
 			t.Errorf("active_job_id = %q", body["active_job_id"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"clear_active_job_id":true}`))
+		_, _ = w.Write([]byte(`{
+			"clear_active_job_id":true,
+			"terminal_job":{
+				"id":"job-active",
+				"updater_id":"updater-1",
+				"target_id":"worker-01",
+				"service_type":"worker",
+				"deployment_mode":"systemd",
+				"current_version":"v1.0.0",
+				"target_version":"v2.0.0",
+				"status":"failed",
+				"progress":100
+			}
+		}`))
 	}))
 	defer server.Close()
 	agent := Agent{Config: Config{NodeID: "updater-1"}, Panel: PanelClient{BaseURL: server.URL, Token: "token", HTTP: server.Client()}, Journal: journal, Logf: func(string, ...any) {}}

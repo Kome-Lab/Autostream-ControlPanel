@@ -116,11 +116,21 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 		activeID = active.ID
 	}
 	job, clearActive, err := a.Panel.Claim(ctx, a.Config.NodeID, activeID)
-	if err != nil || job == nil {
-		if err == nil && clearActive {
-			return a.Journal.ClearActive()
-		}
+	if err != nil {
 		return err
+	}
+	if clearActive {
+		if active == nil || job == nil || !sameRecoveredJobIntent(*active, *job) ||
+			!isTerminalUpdateStatus(job.Status) {
+			return errors.New("terminal recovery proof does not match the active job")
+		}
+		if err := cleanupJobDirectory(a.Config.StateDir, active.ID); err != nil {
+			return fmt.Errorf("clean terminal recovery job state: %w", err)
+		}
+		return a.Journal.ClearActive()
+	}
+	if job == nil {
+		return nil
 	}
 	if active != nil && (active.ID != job.ID || !job.RecoveryRequired) {
 		return fmt.Errorf("refusing claim %s while interrupted job %s awaits recovery", job.ID, active.ID)
@@ -487,12 +497,6 @@ func (a *Agent) emit(ctx context.Context, job UpdateJob, status, code, message s
 	}
 	if err := a.flushReports(ctx); err != nil {
 		a.Logf("update report queued for retry: %v", err)
-		if IsFatalReportError(err) {
-			pending := a.Journal.Pending()
-			if len(pending) > 0 {
-				_ = a.Journal.Ack(pending[0].JobID, pending[0].Report.Sequence)
-			}
-		}
 		return report, err
 	}
 	return report, nil
@@ -524,18 +528,13 @@ func (a *Agent) flushReports(ctx context.Context) error {
 		if err := a.Panel.Report(ctx, item.JobID, item.Report); err != nil {
 			if IsPermanentReportError(err) {
 				a.Logf("dropping permanently rejected stale update report: %v", err)
-				if ackErr := a.Journal.Ack(item.JobID, item.Report.Sequence); ackErr != nil {
-					return ackErr
+				// A stale lease or sequence is not terminal proof. Drop only the
+				// unusable report cursor and preserve ActiveJob so the next claim can
+				// obtain exact recovery evidence before clearing durable state.
+				if dropErr := a.Journal.DropJobReports(item.JobID); dropErr != nil {
+					return dropErr
 				}
-				if isTerminalUpdateStatus(item.Report.Status) {
-					if cleanupErr := cleanupJobDirectory(a.Config.StateDir, item.JobID); cleanupErr != nil {
-						return cleanupErr
-					}
-				}
-				if a.updating.Load() {
-					return ErrLeaseLost
-				}
-				continue
+				return ErrLeaseLost
 			}
 			return err
 		}
@@ -545,6 +544,9 @@ func (a *Agent) flushReports(ctx context.Context) error {
 		if isTerminalUpdateStatus(item.Report.Status) {
 			if err := cleanupJobDirectory(a.Config.StateDir, item.JobID); err != nil {
 				return fmt.Errorf("clean acknowledged update job state: %w", err)
+			}
+			if err := a.Journal.ClearActive(); err != nil {
+				return err
 			}
 		}
 	}

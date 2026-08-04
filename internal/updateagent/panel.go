@@ -38,6 +38,10 @@ type UpdateJob struct {
 	LeaseExpiresAt  string                           `json:"lease_expires_at,omitempty"`
 	Status          string                           `json:"status,omitempty"`
 	Progress        int                              `json:"progress,omitempty"`
+	Code            string                           `json:"code,omitempty"`
+	Message         string                           `json:"message,omitempty"`
+	ArtifactDigest  string                           `json:"artifact_digest,omitempty"`
+	PreviousDigest  string                           `json:"previous_digest,omitempty"`
 	Sequence        uint64                           `json:"sequence,omitempty"`
 	// ReportSequence is local-only. Claim responses define it as the exact
 	// sequence to use for the first report, while Sequence remains the last
@@ -147,6 +151,7 @@ type ClaimResponse struct {
 	RecoveryRequired bool         `json:"recovery_required,omitempty"`
 	LastStatus       string       `json:"last_status,omitempty"`
 	ClearActiveJobID bool         `json:"clear_active_job_id,omitempty"`
+	TerminalJob      *UpdateJob   `json:"terminal_job,omitempty"`
 	UpdateJob
 }
 
@@ -422,7 +427,19 @@ func (c PanelClient) ClaimHost(ctx context.Context, serviceID, hostID, activeJob
 		return nil, false, err
 	}
 	if response.ClearActiveJobID {
-		return nil, true, nil
+		terminal := response.TerminalJob
+		if strings.TrimSpace(activeJobID) == "" || terminal == nil ||
+			terminal.ID != strings.TrimSpace(activeJobID) ||
+			terminal.AgentServiceID != strings.TrimSpace(serviceID) ||
+			!isTerminalUpdateStatus(terminal.Status) ||
+			terminal.LeaseToken != "" || !terminal.ReleaseToken.Empty() ||
+			terminal.validateOperationUnion() != nil {
+			return nil, false, errors.New(
+				"claim response terminal recovery proof is invalid",
+			)
+		}
+		copy := *terminal
+		return &copy, true, nil
 	}
 	job := response.Job
 	if job == nil && response.UpdateJob.ID != "" {
@@ -460,7 +477,35 @@ func (c PanelClient) ClaimHost(ctx context.Context, serviceID, hostID, activeJob
 }
 
 func (c PanelClient) Report(ctx context.Context, jobID string, report JobReport) error {
-	return c.post(ctx, "/services/update-jobs/"+url.PathEscape(jobID)+"/report", report, nil)
+	if !isTerminalUpdateStatus(report.Status) {
+		return c.post(
+			ctx,
+			"/services/update-jobs/"+url.PathEscape(jobID)+"/report",
+			report,
+			nil,
+		)
+	}
+	var committed UpdateJob
+	if err := c.post(
+		ctx,
+		"/services/update-jobs/"+url.PathEscape(jobID)+"/report",
+		report,
+		&committed,
+	); err != nil {
+		return err
+	}
+	if committed.ID != strings.TrimSpace(jobID) ||
+		committed.AgentServiceID != strings.TrimSpace(report.ServiceID) ||
+		committed.LeaseGeneration != report.LeaseGeneration ||
+		committed.Sequence != report.Sequence ||
+		committed.Status != strings.TrimSpace(report.Status) ||
+		committed.Progress != report.Progress ||
+		committed.Code != strings.TrimSpace(report.Code) ||
+		canonicalReportDigest(committed.ArtifactDigest) != canonicalReportDigest(report.ArtifactDigest) ||
+		canonicalReportDigest(committed.PreviousDigest) != canonicalReportDigest(report.PreviousDigest) {
+		return errors.New("report response does not match the committed update job")
+	}
+	return nil
 }
 
 func (c PanelClient) Authorize(ctx context.Context, jobID string, body map[string]any) error {
@@ -512,6 +557,8 @@ func safePanelErrorCode(code string) string {
 		"system_update_lease_invalid",
 		"system_update_sequence_stale",
 		"system_update_transition_invalid",
+		"system_update_recovery_proof_unavailable",
+		"system_update_terminal_proof_upgrade_required",
 		"invalid_system_update_report",
 		"report_system_update_failed",
 		"system_update_authorization_state_invalid",

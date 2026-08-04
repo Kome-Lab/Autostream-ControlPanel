@@ -338,6 +338,13 @@ jobs:
 
       - name: Test Host Agent manual upgrade installer delegation
         run: |
+          set -euo pipefail
+          smoke_dir="${RUNNER_TEMP}/host-agent-installer-upgrade"
+          mkdir -p "${smoke_dir}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" \
+              -o "${smoke_dir}/host-runtime-process-fixture" \
+              ./internal/security/testdata/host-runtime-process-fixture
           docker run --rm \
             --user 0:0 \
             --network none \
@@ -345,9 +352,11 @@ jobs:
             --memory 256m \
             --cpus 1 \
             --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+            --mount "type=bind,source=${smoke_dir},target=/smoke,readonly" \
             ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
             /bin/bash /workspace/internal/security/testdata/run-host-agent-installer-upgrade-smoke.sh \
-              /workspace
+              /workspace \
+              /smoke/host-runtime-process-fixture
 
       - name: Test local executor installer boundary
         run: |
@@ -1153,8 +1162,8 @@ jobs:
           release_body_path="${RUNNER_TEMP}/host-release-body.md"
           printf '%s\n\n%s\n\n%s' \
             "AutoStream Host ${RELEASE_VERSION}" \
-            "This patch fixes Host Agent startup on existing service hosts where /etc/autostream correctly remains root:root 0750. The non-root Host Agent securely loads and validates the canonical /etc/autostream-host-agent/identity.json before probing the read-only legacy fallback, so an inaccessible legacy parent no longer requires an ACL workaround. A missing canonical identity with an inaccessible legacy path, a visible current and legacy pair, and unexpected filesystem errors still fail closed. Root-owned configure and Runtime Token rotation recheck that the legacy identity is absent before and after every durable identity mutation." \
-            "Install and verify the matching Control Panel ${RELEASE_VERSION} first, then upgrade the Host Agent and Local Executor together from the unmodified autostream-host-agent_${RELEASE_VERSION}_linux_amd64.tar.gz archive for amd64 hosts or the matching arm64 archive. The Host Agent systemd unit remains unchanged; existing identity and policy are preserved, so do not rerun configure solely for this fix or replace either runtime binary separately. On every affected v1.9.9 host with /etc/autostream root:root 0750, keep the exact access-only autostream-host-agent execute ACL through the matched upgrade, even when the old Agent is active, so candidate rollback can restart v1.9.9. First prove the canonical identity, both absent forms of the legacy path, the expected non-symlink parent, and any pre-existing Host Agent ACL; never add a default, read, group, or mode grant. After the v1.9.10 binary validates as the service user, remove only the exact named access ACL, validate again, and never use setfacl -b or chmod 0751." \
+            "This ${RELEASE_VERSION} patch makes interrupted pull_v2 updates converge without unsafe replay. Every Stage error retains the immutable active plan because a response or root-ledger durability result can be uncertain, and the next lease generation reconciles without restaging or reapplying. stage_required means only that the exact job has no durable mutation ledger or apply-authorized state: the root Executor first safely removes an exact orphan stage left before ledger commit and fsyncs its parent, or fails closed; it never claims that no staged directory existed. That proof ends failed at 100 percent with remote_stage_missing, while an uncertain apply at reconciling 99 proceeds directly to terminal 100. A stale lease or sequence drops only its rejected report cursor while active state is retained. An active cursor clears only from a structured terminal job matching the immutable intent, and a successful terminal report body must exactly match the committed job identity, lease generation, sequence, status, progress, code, and result digests. v1.9.9 and v1.9.10 Agents predate this terminal-proof contract. Panel v1.9.11 returns system_update_terminal_proof_upgrade_required with HTTP 409 to a registered Agent older than v1.9.11 before terminal cursor recovery, so a legacy client cannot interpret the structured proof as a bare clear." \
+            "Install and verify the matching Control Panel ${RELEASE_VERSION} first, then use the matching verified Host Agent and Local Executor archive. Normal --upgrade still rejects an active job. For an affected older Agent with an exact active journal, the only supported opt-in is sudo ./install/install-autostream-host-agent --upgrade --recover-active-job; it needs no Configure Token and never reruns configure. The verified candidate runs once as the service account, is bound to that active job, reconciles and reports only, and cannot claim a new job or invoke Stage or Apply. A transient systemd guard is armed before stopping the old Agent; any failure restores and proves the previous Agent or leaves the guard armed. Never delete or edit the Host journal, root ledger, staged release, or Panel job, and never create a replacement job, restage, or reapply. Existing identity and policy are preserved, and the runtime binaries must not be replaced separately." \
             > "${release_body_path}"
           test -s "${release_body_path}"
           (

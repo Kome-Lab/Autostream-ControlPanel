@@ -653,6 +653,341 @@ func TestObserveOnlyHostAgentBacksOffAfterPanelOutage(t *testing.T) {
 	}
 }
 
+func TestHostPullAgentRefreshesTargetReadinessBeforeActiveRecovery(t *testing.T) {
+	agent, originalPanel, executor, binding, policy := newHostPullExecutionHarness(t, true)
+	observation := configureHostPullRecoveryProbe(&policy)
+	interrupted := *originalPanel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agent.prepareExecutionPlan(context.Background(), policy, interrupted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Journal.SetActivePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	recovered := *originalPanel.job
+	recovered.RecoveryRequired = true
+	recovered.LeaseGeneration = interrupted.LeaseGeneration + 1
+	recovered.LeaseToken = strings.Repeat("r", 48)
+	recovered.ReportSequence = interrupted.ReportSequence + 1
+	policy.RuntimeTokenRotation = &HostAgentRuntimeTokenRotation{}
+	panel := &hostPullRecoveryLoopPanel{
+		binding:                     binding,
+		policy:                      policy,
+		job:                         &recovered,
+		requireHeartbeatBeforeClaim: true,
+		requireEligibleHeartbeat:    true,
+		terminalReported:            make(chan struct{}),
+	}
+	agent.ControlPlane = panel
+	agent.PollInterval = time.Hour
+	agent.HeartbeatInterval = time.Hour
+	var observationCalls atomic.Int32
+	agent.ObserveTargets = func(context.Context, HostAgentPolicy) ([]HostTargetObservation, error) {
+		observationCalls.Add(1)
+		return []HostTargetObservation{observation}, nil
+	}
+	var logMu sync.Mutex
+	var logs []string
+	agent.Logf = func(format string, args ...any) {
+		logMu.Lock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+		logMu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- agent.Run(ctx) }()
+	select {
+	case <-panel.terminalReported:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("interrupted update was not reconciled")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for agent.Journal.Active() != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if active := agent.Journal.Active(); active != nil {
+		cancel()
+		t.Fatalf("recovery left active cursor: %+v", active)
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if executor.stageCalls != 0 || executor.applyCalls != 0 || executor.reconcileCalls != 1 {
+		t.Fatalf(
+			"executor calls stage=%d apply=%d reconcile=%d",
+			executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+		)
+	}
+	if observationCalls.Load() != 2 {
+		t.Fatalf("active recovery performed %d target observations, want 2", observationCalls.Load())
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	for _, entry := range logs {
+		if strings.Contains(entry, "runtime token rotation") {
+			t.Fatalf("active recovery was delayed by runtime-token rotation: %q", entry)
+		}
+	}
+	if activeIDs := panel.activeJobIDs(); len(activeIDs) != 1 || activeIDs[0] != interrupted.ID {
+		t.Fatalf("recovery claim active_job_id values = %#v", activeIDs)
+	}
+	_, status, capabilities, events := panel.heartbeatSnapshot()
+	if status != "online" || !hostPullHeartbeatReportsEligiblePolicy(capabilities, policy) {
+		t.Fatalf("active recovery heartbeat capabilities = %#v", capabilities)
+	}
+	if len(events) < 4 || strings.Join(events[:4], ",") != "register,fetch,heartbeat,claim" {
+		t.Fatalf("active recovery control-plane order = %q", strings.Join(events, ","))
+	}
+}
+
+func TestHostPullRecoveryReadinessDoesNotEnableNewClaims(t *testing.T) {
+	agent, panel, _, binding, policy := newHostPullExecutionHarness(t, true)
+	interrupted := *panel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	policy.ObserveOnly = true
+	policy.RuntimeTokenRotation = &HostAgentRuntimeTokenRotation{}
+	if !agent.recoveryExecutionReady(binding, &policy) {
+		t.Fatal("active recovery was blocked by normal mutation readiness")
+	}
+	if agent.mutationReady(binding, &policy, nil, true) {
+		t.Fatal("normal claim bypassed target and runtime-token readiness")
+	}
+	if err := agent.Journal.ClearActive(); err != nil {
+		t.Fatal(err)
+	}
+	if agent.recoveryExecutionReady(binding, &policy) {
+		t.Fatal("recovery readiness remained true without an active cursor")
+	}
+	if agent.mutationReady(binding, &policy, nil, true) {
+		t.Fatal("new claim became ready after the recovery cursor cleared")
+	}
+}
+
+func TestRecoveryOnlyHostPullAgentReturnsWithoutClaimWhenCursorIsAbsent(t *testing.T) {
+	panel := &hostPullRecoveryLoopPanel{}
+	agent, err := NewHostPullAgent(
+		managedHostAgentBootstrap("https://panel.example.com"),
+		HostPullAgentOptions{
+			StateDir:     t.TempDir(),
+			ControlPlane: panel,
+			RecoveryOnly: true,
+			Logf:         func(string, ...any) {},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := agent.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if activeIDs := panel.activeJobIDs(); len(activeIDs) != 0 {
+		t.Fatalf("recovery-only agent claimed without a cursor: %#v", activeIDs)
+	}
+	if panel.registerCalls.Load() != 0 || panel.fetchCalls.Load() != 0 {
+		t.Fatalf(
+			"empty recovery contacted Panel: register=%d fetch=%d",
+			panel.registerCalls.Load(), panel.fetchCalls.Load(),
+		)
+	}
+}
+
+func TestRecoveryOnlyHostPullAgentPreservesCursorOnUnprovenClear(t *testing.T) {
+	agent, originalPanel, _, binding, policy := newHostPullExecutionHarness(t, true)
+	interrupted := *originalPanel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	panel := &hostPullRecoveryLoopPanel{
+		binding:     binding,
+		policy:      policy,
+		clearActive: true,
+	}
+	agent.ControlPlane = recoveryOnlyHostPullControlPlane{
+		HostPullControlPlane: agentControlPlane(panel),
+		execution:            panel,
+	}
+	agent.RecoveryOnly = true
+	agent.PollInterval = time.Millisecond
+	agent.Logf = func(string, ...any) {}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := agent.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("recovery-only unproven clear error = %v", err)
+	}
+	if active := agent.Journal.Active(); active == nil || active.ID != interrupted.ID {
+		t.Fatalf("unproven clear removed recovery cursor: %+v", active)
+	}
+	for _, activeID := range panel.activeJobIDs() {
+		if activeID != interrupted.ID {
+			t.Fatalf("recovery-only claim used active_job_id %q", activeID)
+		}
+	}
+}
+
+func TestRecoveryOnlyHostPullAgentRefreshesStaleHeartbeatBeforeClaim(t *testing.T) {
+	agent, originalPanel, executor, binding, policy := newHostPullExecutionHarness(t, true)
+	observation := configureHostPullRecoveryProbe(&policy)
+	interrupted := *originalPanel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agent.prepareExecutionPlan(context.Background(), policy, interrupted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Journal.SetActivePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	recovered := *originalPanel.job
+	recovered.RecoveryRequired = true
+	recovered.LeaseGeneration = interrupted.LeaseGeneration + 1
+	recovered.LeaseToken = strings.Repeat("r", 48)
+	recovered.ReportSequence = interrupted.ReportSequence + 1
+	panel := &hostPullRecoveryLoopPanel{
+		binding:                     binding,
+		policy:                      policy,
+		job:                         &recovered,
+		requireHeartbeatBeforeClaim: true,
+		requireEligibleHeartbeat:    true,
+		terminalReported:            make(chan struct{}),
+	}
+	agent.ControlPlane = recoveryOnlyHostPullControlPlane{
+		HostPullControlPlane: agentControlPlane(panel),
+		execution:            panel,
+	}
+	agent.RecoveryOnly = true
+	agent.AgentVersion = "v1.9.11"
+	agent.PollInterval = time.Millisecond
+	agent.Logf = func(string, ...any) {}
+	var observationCalls atomic.Int32
+	agent.ObserveTargets = func(context.Context, HostAgentPolicy) ([]HostTargetObservation, error) {
+		observationCalls.Add(1)
+		return []HostTargetObservation{observation}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	done := make(chan error, 1)
+	go func() { done <- agent.Run(ctx) }()
+	select {
+	case <-panel.terminalReported:
+	case <-ctx.Done():
+		cancel()
+		t.Fatal("stale-heartbeat recovery did not reach a terminal report")
+	}
+	deadline := time.Now().Add(time.Second)
+	for agent.Journal.Active() != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if active := agent.Journal.Active(); active != nil {
+		cancel()
+		t.Fatalf("stale-heartbeat recovery left active cursor: %+v", active)
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if executor.stageCalls != 0 || executor.applyCalls != 0 || executor.reconcileCalls != 1 {
+		t.Fatalf(
+			"executor calls stage=%d apply=%d reconcile=%d",
+			executor.stageCalls, executor.applyCalls, executor.reconcileCalls,
+		)
+	}
+	if observationCalls.Load() != 1 {
+		t.Fatalf("recovery-only mode performed %d target observations, want 1", observationCalls.Load())
+	}
+	if calls := panel.heartbeatCalls.Load(); calls != 1 {
+		t.Fatalf("recovery heartbeat calls = %d, want 1", calls)
+	}
+	identity, status, capabilities, events := panel.heartbeatSnapshot()
+	if identity.NodeID != agent.Bootstrap.NodeID ||
+		identity.RuntimeToken != agent.Bootstrap.RuntimeToken {
+		t.Fatalf("recovery heartbeat identity = %+v", identity)
+	}
+	if status != "online" {
+		t.Fatalf("recovery heartbeat status = %q, want online", status)
+	}
+	if capabilities["agent_version"] != "v1.9.11" ||
+		capabilities["agent_protocol_version"] != HostAgentProtocolVersion ||
+		capabilities["recovery_pending"] != true ||
+		!hostPullHeartbeatReportsEligiblePolicy(capabilities, policy) ||
+		capabilities["execution_host_id"] != binding.ExecutionHostID ||
+		capabilities["ownership_epoch"] != binding.OwnershipEpoch {
+		t.Fatalf("recovery heartbeat capabilities = %#v", capabilities)
+	}
+	if len(events) < 5 || strings.Join(events[:4], ",") != "register,fetch,heartbeat,claim" {
+		t.Fatalf("recovery control-plane order = %q", strings.Join(events, ","))
+	}
+	for _, event := range events[4:] {
+		if event != "report" {
+			t.Fatalf("recovery control-plane order = %q", strings.Join(events, ","))
+		}
+	}
+}
+
+func TestRecoveryOnlyHostPullAgentDoesNotClaimWhenHeartbeatFails(t *testing.T) {
+	agent, originalPanel, _, binding, policy := newHostPullExecutionHarness(t, true)
+	observation := configureHostPullRecoveryProbe(&policy)
+	interrupted := *originalPanel.job
+	interrupted.RecoveryRequired = false
+	if err := agent.Journal.SetActive(&interrupted); err != nil {
+		t.Fatal(err)
+	}
+	panel := &hostPullRecoveryLoopPanel{
+		binding:      binding,
+		policy:       policy,
+		job:          originalPanel.job,
+		heartbeatErr: errors.New("heartbeat unavailable"),
+	}
+	agent.ControlPlane = recoveryOnlyHostPullControlPlane{
+		HostPullControlPlane: agentControlPlane(panel),
+		execution:            panel,
+	}
+	agent.RecoveryOnly = true
+	agent.PollInterval = time.Millisecond
+	agent.Logf = func(string, ...any) {}
+	var observationCalls atomic.Int32
+	agent.ObserveTargets = func(context.Context, HostAgentPolicy) ([]HostTargetObservation, error) {
+		observationCalls.Add(1)
+		return []HostTargetObservation{observation}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := agent.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("recovery-only heartbeat failure error = %v", err)
+	}
+	if calls := panel.heartbeatCalls.Load(); calls == 0 {
+		t.Fatal("recovery-only mode did not attempt a heartbeat")
+	}
+	if activeIDs := panel.activeJobIDs(); len(activeIDs) != 0 {
+		t.Fatalf("recovery-only mode claimed after failed heartbeat: %#v", activeIDs)
+	}
+	if calls := panel.fetchCalls.Load(); calls == 0 {
+		t.Fatal("recovery-only mode did not fetch policy before heartbeat")
+	}
+	if observationCalls.Load() == 0 {
+		t.Fatal("recovery-only mode did not probe targets before heartbeat")
+	}
+	if active := agent.Journal.Active(); active == nil || active.ID != interrupted.ID {
+		t.Fatalf("failed heartbeat changed recovery cursor: %+v", active)
+	}
+}
+
 func TestHostAgentRetryCadenceIsDeterministicallyJitteredPerIdentity(t *testing.T) {
 	base := 30 * time.Second
 	a := hostAgentJitteredInterval(base, "host-agent-a", "heartbeat")
@@ -673,6 +1008,205 @@ func TestHostAgentRetryCadenceIsDeterministicallyJitteredPerIdentity(t *testing.
 type failingHostPullControlPlane struct {
 	registerCalls  atomic.Int32
 	heartbeatCalls atomic.Int32
+}
+
+type hostPullRecoveryLoopPanel struct {
+	binding HostAgentBinding
+	policy  HostAgentPolicy
+	job     *UpdateJob
+
+	registerCalls               atomic.Int32
+	heartbeatCalls              atomic.Int32
+	fetchCalls                  atomic.Int32
+	mu                          sync.Mutex
+	events                      []string
+	heartbeatIdentity           Config
+	heartbeatStatus             string
+	heartbeatCapabilities       map[string]any
+	heartbeatErr                error
+	heartbeatFresh              bool
+	heartbeatEligible           bool
+	requireHeartbeatBeforeClaim bool
+	requireEligibleHeartbeat    bool
+	claimActive                 []string
+	reports                     []JobReport
+	clearActive                 bool
+	terminalOnce                sync.Once
+	terminalReported            chan struct{}
+}
+
+func (p *hostPullRecoveryLoopPanel) RegisterHostAgent(context.Context, Config, map[string]any) (HostAgentBinding, error) {
+	p.registerCalls.Add(1)
+	p.mu.Lock()
+	p.events = append(p.events, "register")
+	p.heartbeatFresh = false
+	p.heartbeatEligible = false
+	p.mu.Unlock()
+	return p.binding, nil
+}
+
+func (p *hostPullRecoveryLoopPanel) HeartbeatHostAgent(_ context.Context, identity Config, status string, capabilities map[string]any) error {
+	p.heartbeatCalls.Add(1)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, "heartbeat")
+	p.heartbeatIdentity = identity
+	p.heartbeatStatus = status
+	p.heartbeatCapabilities = make(map[string]any, len(capabilities))
+	for key, value := range capabilities {
+		p.heartbeatCapabilities[key] = value
+	}
+	if p.heartbeatErr != nil {
+		return p.heartbeatErr
+	}
+	p.heartbeatFresh = true
+	p.heartbeatEligible = hostPullHeartbeatReportsEligiblePolicy(capabilities, p.policy)
+	return nil
+}
+
+func (p *hostPullRecoveryLoopPanel) FetchHostAgentPolicy(context.Context, string, int64) (*HostAgentPolicy, bool, error) {
+	p.fetchCalls.Add(1)
+	p.mu.Lock()
+	p.events = append(p.events, "fetch")
+	p.mu.Unlock()
+	copy := p.policy
+	copy.Targets = append([]HostAgentPolicyTarget(nil), p.policy.Targets...)
+	return &copy, true, nil
+}
+
+func (p *hostPullRecoveryLoopPanel) ClaimHost(_ context.Context, _, _, activeJobID string) (*UpdateJob, bool, error) {
+	p.mu.Lock()
+	p.events = append(p.events, "claim")
+	p.claimActive = append(p.claimActive, activeJobID)
+	if p.requireHeartbeatBeforeClaim && !p.heartbeatFresh {
+		p.mu.Unlock()
+		return nil, false, errors.New("updater_offline")
+	}
+	if p.requireEligibleHeartbeat && !p.heartbeatEligible {
+		p.mu.Unlock()
+		return nil, false, errors.New("system_update_active_target_unavailable")
+	}
+	clearActive := p.clearActive
+	var job *UpdateJob
+	if p.job != nil {
+		copy := *p.job
+		job = &copy
+	}
+	p.mu.Unlock()
+	return job, clearActive, nil
+}
+
+func (p *hostPullRecoveryLoopPanel) Report(_ context.Context, _ string, report JobReport) error {
+	p.mu.Lock()
+	p.events = append(p.events, "report")
+	p.reports = append(p.reports, report)
+	p.mu.Unlock()
+	if isTerminalUpdateStatus(report.Status) && p.terminalReported != nil {
+		p.terminalOnce.Do(func() { close(p.terminalReported) })
+	}
+	return nil
+}
+
+func (*hostPullRecoveryLoopPanel) IssueMutationGrant(context.Context, string, MutationGrantRequest) (MutationGrant, error) {
+	return MutationGrant{
+		Token:     "ast_mutation_" + strings.Repeat("a", 43),
+		ExpiresAt: "2099-01-01T00:00:00Z",
+	}, nil
+}
+
+func (p *hostPullRecoveryLoopPanel) activeJobIDs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.claimActive...)
+}
+
+func (p *hostPullRecoveryLoopPanel) heartbeatSnapshot() (Config, string, map[string]any, []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	capabilities := make(map[string]any, len(p.heartbeatCapabilities))
+	for key, value := range p.heartbeatCapabilities {
+		capabilities[key] = value
+	}
+	return p.heartbeatIdentity, p.heartbeatStatus, capabilities, append([]string(nil), p.events...)
+}
+
+func configureHostPullRecoveryProbe(policy *HostAgentPolicy) HostTargetObservation {
+	configSHA256 := "sha256:" + strings.Repeat("d", 64)
+	target := &policy.Targets[0]
+	target.AppliedConfigSHA256 = configSHA256
+	target.LocalListenEndpoint = &HostAgentEndpoint{
+		Host: "127.0.0.1", Port: 8084, PublicURL: "http://127.0.0.1:8084",
+	}
+	return HostTargetObservation{
+		ServiceID:              target.ServiceID,
+		Availability:           TargetAvailabilityAvailable,
+		AvailabilityCode:       "executor_verified",
+		ReportedPort:           target.LocalListenEndpoint.Port,
+		ReportedServiceType:    target.ServiceType,
+		ReportedDeploymentMode: target.DeploymentMode,
+		PolicyRevision:         policy.LocalExecutorPolicyRevision,
+		PolicySHA256:           policy.LocalExecutorPolicySHA256,
+		ConfigRevision:         target.appliedConfigRevision(),
+		ConfigSHA256:           configSHA256,
+	}
+}
+
+func hostPullHeartbeatReportsEligiblePolicy(capabilities map[string]any, policy HostAgentPolicy) bool {
+	if len(policy.Targets) != 1 ||
+		capabilities["host_agent"] != true ||
+		capabilities["observe_only"] != false ||
+		capabilities["update_executor"] != true ||
+		capabilities["mutation_enabled"] != true ||
+		capabilities["policy_revision"] != policy.Revision ||
+		capabilities["source_policy_revision"] != policy.SourcePolicyRevision ||
+		capabilities["local_executor_policy_revision"] != policy.LocalExecutorPolicyRevision ||
+		capabilities["policy_status"] != PolicyStatusApplied {
+		return false
+	}
+	target := policy.Targets[0]
+	availability, ok := capabilities["target_availability"].(map[string]string)
+	if !ok || availability[target.ServiceID] != TargetAvailabilityAvailable {
+		return false
+	}
+	availabilityCodes, ok := capabilities["target_availability_codes"].(map[string]string)
+	if !ok || availabilityCodes[target.ServiceID] != "executor_verified" {
+		return false
+	}
+	serviceTypes, ok := capabilities["reported_service_types"].(map[string]string)
+	if !ok || serviceTypes[target.ServiceID] != target.ServiceType {
+		return false
+	}
+	deploymentModes, ok := capabilities["reported_deployment_modes"].(map[string]string)
+	if !ok || deploymentModes[target.ServiceID] != target.DeploymentMode {
+		return false
+	}
+	policyRevisions, ok := capabilities["reported_executor_policy_revisions"].(map[string]int64)
+	if !ok || policyRevisions[target.ServiceID] != policy.LocalExecutorPolicyRevision {
+		return false
+	}
+	policyDigests, ok := capabilities["reported_executor_policy_sha256"].(map[string]string)
+	if !ok || policyDigests[target.ServiceID] != policy.LocalExecutorPolicySHA256 {
+		return false
+	}
+	configRevisions, ok := capabilities["reported_config_revisions"].(map[string]int64)
+	if !ok || configRevisions[target.ServiceID] != target.appliedConfigRevision() {
+		return false
+	}
+	configDigests, ok := capabilities["reported_config_sha256"].(map[string]string)
+	if !ok || configDigests[target.ServiceID] != target.AppliedConfigSHA256 {
+		return false
+	}
+	reportedPorts, ok := capabilities["reported_ports"].(map[string]int)
+	if !ok || target.LocalListenEndpoint == nil ||
+		reportedPorts[target.ServiceID] != target.LocalListenEndpoint.Port {
+		return false
+	}
+	portDrift, ok := capabilities["port_drift"].(map[string]bool)
+	return ok && !portDrift[target.ServiceID]
+}
+
+func agentControlPlane(panel *hostPullRecoveryLoopPanel) HostPullControlPlane {
+	return panel
 }
 
 func (f *failingHostPullControlPlane) RegisterHostAgent(context.Context, Config, map[string]any) (HostAgentBinding, error) {
