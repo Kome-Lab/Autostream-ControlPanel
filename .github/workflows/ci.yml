@@ -11,7 +11,7 @@ permissions:
 jobs:
   service-installer:
     name: Service installer migration
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check service installer integration test syntax
@@ -20,7 +20,7 @@ jobs:
         run: sudo bash release/test-install-autostream-control-panel-integration.sh
 
   go:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
