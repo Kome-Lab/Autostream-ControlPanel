@@ -547,8 +547,13 @@ func TestHostUpgradePrivilegedLockInteropRunsInRootCI(t *testing.T) {
 				step = step[:end+1]
 			}
 			for _, marker := range []string{
+				"set -euo pipefail",
 				"getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent",
-				"sudo env",
+				"GOTOOLCHAIN=local GOENV=off GOWORK=off GOPROXY=off",
+				"-mod=readonly",
+				"-trimpath",
+				"-exec='/usr/bin/sudo /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TMPDIR=/root/autostream-updater-root-tests'",
+				"./internal/updateagent",
 				"TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller",
 				"TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock",
 				"TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes",
@@ -563,6 +568,16 @@ func TestHostUpgradePrivilegedLockInteropRunsInRootCI(t *testing.T) {
 			} {
 				if !strings.Contains(step, marker) {
 					t.Fatalf("root-owned Host upgrade lock step is missing %q", marker)
+				}
+			}
+			for _, forbidden := range []string{
+				"GOCACHE=",
+				"GOMODCACHE=",
+				"GOSUMDB=off",
+				"go tool test2json",
+			} {
+				if strings.Contains(step, forbidden) {
+					t.Fatalf("root-owned Host upgrade lock step contains forbidden root build state %q", forbidden)
 				}
 			}
 			if count := strings.Count(
