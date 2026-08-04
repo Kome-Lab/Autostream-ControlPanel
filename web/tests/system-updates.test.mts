@@ -760,6 +760,79 @@ test("pull ownership activation uses only server-fenced settings and readiness f
   assert.throws(() => normalizePullUpdaterOwnershipActivationResponse({ ownership_epoch: 13 }), /invalid_pull_ownership_activation_response/);
 });
 
+test("wire normalization preserves pull ownership epoch zero without inventing a legacy epoch", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const response = normalizeSystemUpdatesResponse({
+    updaters: [
+      {
+        updater_id: "host-agent-main",
+        name: "Host Agent",
+        status: "online",
+        online: true,
+        version: "v2.0.0",
+        transport_mode: "pull_v2",
+        execution_host_id: "host-main",
+        ownership_epoch: 0,
+      },
+      {
+        updater_id: "updater-central",
+        name: "Central Updater",
+        status: "online",
+        online: true,
+        version: "v2.0.0",
+        transport_mode: "ssh_v1",
+      },
+    ],
+  });
+  const pullUpdater = response.updaters[0];
+  const legacyUpdater = response.updaters[1];
+  assert.equal(pullUpdater.ownership_epoch, 0);
+  assert.equal("ownership_epoch" in pullUpdater, true);
+  assert.equal(legacyUpdater.ownership_epoch, undefined);
+  assert.equal("ownership_epoch" in legacyUpdater, false);
+
+  const settings = normalizeUpdaterSettingsResponse({
+    updater_id: "host-agent-main",
+    revision: 9,
+    projection_revision: 4,
+    local_executor_policy_revision: 6,
+    local_executor_policy_sha256: digest,
+    transport_mode: "pull_v2",
+    execution_host_id: "host-main",
+    execution_host_ownership: {
+      transport_mode: "ssh_v1",
+      agent_service_id: "updater-central",
+      ownership_epoch: 12,
+      policy_revision: 8,
+    },
+    pull_activation: {
+      ready: true,
+      status: "online",
+      last_heartbeat_at: "2026-08-04T00:00:00Z",
+      observe_only: true,
+      update_executor: true,
+      mutation_enabled: false,
+      recovery_pending: false,
+      reported_ownership_epoch: 0,
+      reported_projection_revision: 4,
+    },
+    targets: [],
+  });
+  assert.deepEqual(
+    pullUpdaterOwnershipActivationEligibility({
+      updater: pullUpdater,
+      settings,
+      jobs: [],
+      requestState: "idle",
+    }),
+    { ready: true, reason: "" },
+  );
+  assert.equal(
+    pullUpdaterOwnershipActivationRequest(pullUpdater, settings).expected_ownership_epoch,
+    12,
+  );
+});
+
 test("pull ownership Bridge rollback is visible only for the exact active owner and validates the observer response", () => {
   const digest = `sha256:${"a".repeat(64)}`;
   const updater: SystemUpdateAgentStatus = {

@@ -252,6 +252,90 @@ func TestValidatePortExecutionResultBindsDockerMappingToImmutablePlan(t *testing
 	}
 }
 
+func TestHostPullExecutorReadinessAllowsOnlyLegacySystemdObserverBackfill(t *testing.T) {
+	agent, _, _, binding, policy := newHostPullExecutionHarness(t, false)
+	reportedDigest := "sha256:" + strings.Repeat("c", 64)
+	observation := HostTargetObservation{
+		ServiceID:      policy.Targets[0].ServiceID,
+		Availability:   TargetAvailabilityAvailable,
+		PolicyRevision: policy.LocalExecutorPolicyRevision,
+		PolicySHA256:   policy.LocalExecutorPolicySHA256,
+		ConfigRevision: policy.Targets[0].appliedConfigRevision(),
+		ConfigSHA256:   reportedDigest,
+	}
+
+	assertCapabilities := func(
+		t *testing.T,
+		binding HostAgentBinding,
+		policy HostAgentPolicy,
+		observation HostTargetObservation,
+		wantExecutor, wantMutation bool,
+	) {
+		t.Helper()
+		capabilities := agent.capabilities(
+			binding, &policy, []HostTargetObservation{observation}, false,
+		)
+		if capabilities["update_executor"] != wantExecutor ||
+			capabilities["mutation_enabled"] != wantMutation ||
+			capabilities["observe_only"] != !wantMutation {
+			t.Fatalf(
+				"capabilities=%+v, want update_executor=%t mutation_enabled=%t observe_only=%t",
+				capabilities, wantExecutor, wantMutation, !wantMutation,
+			)
+		}
+	}
+
+	observerBinding := binding
+	observerBinding.OwnershipEpoch = 0
+	observerPolicy := policy
+	observerPolicy.OwnershipEpoch = 0
+	observerPolicy.ObserveOnly = true
+	observerPolicy.Targets = append(
+		[]HostAgentPolicyTarget(nil), policy.Targets...,
+	)
+	observerPolicy.Targets[0].AppliedConfigSHA256 = ""
+	assertCapabilities(
+		t, observerBinding, observerPolicy, observation, true, false,
+	)
+
+	for name, mutate := range map[string]func(
+		*HostAgentBinding, *HostAgentPolicy, *HostTargetObservation,
+	){
+		"empty reported digest": func(_ *HostAgentBinding, _ *HostAgentPolicy, observation *HostTargetObservation) {
+			observation.ConfigSHA256 = ""
+		},
+		"invalid reported digest": func(_ *HostAgentBinding, _ *HostAgentPolicy, observation *HostTargetObservation) {
+			observation.ConfigSHA256 = "sha256:not-a-digest"
+		},
+		"explicit applied digest mismatch": func(_ *HostAgentBinding, policy *HostAgentPolicy, _ *HostTargetObservation) {
+			policy.Targets[0].AppliedConfigSHA256 = "sha256:" + strings.Repeat("d", 64)
+		},
+		"docker target without applied digest": func(_ *HostAgentBinding, policy *HostAgentPolicy, _ *HostTargetObservation) {
+			policy.Targets[0].DeploymentMode = ModeDocker
+		},
+		"active owner without applied digest": func(binding *HostAgentBinding, policy *HostAgentPolicy, _ *HostTargetObservation) {
+			binding.OwnershipEpoch = 1
+			policy.OwnershipEpoch = 1
+			policy.ObserveOnly = false
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidateBinding := observerBinding
+			candidatePolicy := observerPolicy
+			candidatePolicy.Targets = append(
+				[]HostAgentPolicyTarget(nil), observerPolicy.Targets...,
+			)
+			candidateObservation := observation
+			mutate(
+				&candidateBinding, &candidatePolicy, &candidateObservation,
+			)
+			assertCapabilities(
+				t, candidateBinding, candidatePolicy, candidateObservation, false, false,
+			)
+		})
+	}
+}
+
 func TestHostPullExecutionClaimsServerOwnedHostAndCompletesThroughLocalExecutor(t *testing.T) {
 	agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, false)
 	if err := agent.executeOnce(context.Background(), binding, policy); err != nil {

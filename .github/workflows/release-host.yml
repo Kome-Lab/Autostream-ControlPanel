@@ -353,6 +353,7 @@ jobs:
         working-directory: web
         run: |
           npm ci
+          npm run test:system-updates
           npm run build
 
       - name: Package linux artifacts
@@ -1128,9 +1129,9 @@ jobs:
 
           release_body_path="${RUNNER_TEMP}/host-release-body.md"
           printf '%s\n\n%s\n\n%s' \
-            "AutoStream Host Bridge ${RELEASE_VERSION}" \
-            "This release adds an explicit one-sidecar Host recovery mode for verified live systemd drift. The Host Agent keeps normal configure fail-closed, accepts no caller-selected target values, excludes Control Panel, and uses Linux atomic inode exchange only after the current root policy and the stable managed unit, process, listener, and HTTP identity prove the staged loopback target. Install and verify the matching Control Panel ${RELEASE_VERSION} and unmodified Host Agent ${RELEASE_VERSION} archive before using --adopt-live-systemd-sidecar with a fresh Configure Token." \
-            "This immutable Bridge release retains the legacy ssh_v1 host-update assets and the pull_v2 Host Agent and Local Executor assets. Migrate one host at a time, keep SSH and port 8090 recovery assets during the bake period, and remove them only in a later release." \
+            "AutoStream Host ${RELEASE_VERSION}" \
+            "This patch makes pull_v2 observer state unambiguous by serializing ownership_epoch: 0 explicitly in the System Updates API. For legacy systemd targets whose server-side applied_config_sha256 is NULL, observer probing now accepts only a syntactically valid sha256: digest with 64 lowercase hexadecimal characters while preserving the existing exact policy revision and digest, service identity, deployment mode, config revision, and loopback listener checks. Empty, invalid, or explicitly mismatched digests remain fail-closed; Docker targets do not receive this legacy fallback, and the active mutation path still requires the pinned digest." \
+            "Install and verify the matching Control Panel ${RELEASE_VERSION} first, then upgrade the Host Agent and Local Executor together from the unmodified autostream-host-agent_${RELEASE_VERSION}_linux_amd64.tar.gz archive for amd64 hosts or the matching arm64 archive. Wait for every required target to report executor_verified, then activate ownership; the ownership activation transaction persists the verified legacy config digest before the positive ownership epoch becomes active. Do not update the database manually, rerun configure solely for this migration, or replace either runtime binary separately." \
             > "${release_body_path}"
           test -s "${release_body_path}"
           (

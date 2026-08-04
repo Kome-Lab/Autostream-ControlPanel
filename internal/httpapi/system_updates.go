@@ -62,7 +62,7 @@ type systemUpdateAgentResponse struct {
 	Name                              string            `json:"name"`
 	TransportMode                     string            `json:"transport_mode"`
 	ExecutionHostID                   string            `json:"execution_host_id,omitempty"`
-	OwnershipEpoch                    int64             `json:"ownership_epoch,omitempty"`
+	OwnershipEpoch                    *int64            `json:"ownership_epoch,omitempty"`
 	Status                            string            `json:"status"`
 	Online                            bool              `json:"online"`
 	Version                           string            `json:"version"`
@@ -1445,7 +1445,8 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 		}
 		if transportMode == store.SystemUpdateTransportPullV2 {
 			updater.ExecutionHostID = strings.TrimSpace(agent.ExecutionHostID)
-			updater.OwnershipEpoch = agent.OwnershipEpoch
+			ownershipEpoch := agent.OwnershipEpoch
+			updater.OwnershipEpoch = &ownershipEpoch
 		}
 		updater.BootstrapEncryptionPublicKey, updater.BootstrapEncryptionKeyFingerprint = updateHostBootstrapEncryptionIdentity(agent)
 		var managedPolicy *store.UpdaterPolicy

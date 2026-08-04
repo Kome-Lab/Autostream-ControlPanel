@@ -112,7 +112,9 @@ func NewLocalExecutorTargetObserver(client LocalExecutorProbeClient) HostTargetO
 				probe.ServiceType != target.ServiceType ||
 				probe.DeploymentMode != target.DeploymentMode ||
 				probe.ConfigRevision != target.appliedConfigRevision() ||
-				probe.ConfigSHA256 != target.AppliedConfigSHA256 {
+				!localExecutorConfigDigestMatchesTarget(
+					policy, target, probe.ConfigSHA256,
+				) {
 				observation.Availability = TargetAvailabilityUnavailable
 				observation.AvailabilityCode = "executor_probe_mismatch"
 				observations = append(observations, observation)
@@ -179,6 +181,24 @@ func NewLocalExecutorTargetObserver(client LocalExecutorProbeClient) HostTargetO
 		}
 		return observations, nil
 	}
+}
+
+func localExecutorConfigDigestMatchesTarget(
+	policy HostAgentPolicy,
+	target HostAgentPolicyTarget,
+	reportedDigest string,
+) bool {
+	if !digestPattern.MatchString(reportedDigest) {
+		return false
+	}
+	if target.AppliedConfigSHA256 != "" {
+		return digestPattern.MatchString(target.AppliedConfigSHA256) &&
+			reportedDigest == target.AppliedConfigSHA256
+	}
+	return policy.TransportMode == HostTransportPullV2 &&
+		policy.ObserveOnly &&
+		policy.OwnershipEpoch == 0 &&
+		target.DeploymentMode == ModeSystemd
 }
 
 func hostAgentTargetHasProbeAuthority(target HostAgentPolicyTarget) bool {

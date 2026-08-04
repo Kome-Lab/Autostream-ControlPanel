@@ -41,13 +41,14 @@ func TestSystemUpdateAgentTopologyExposesTransportOwnershipIdentity(t *testing.T
 	pull := byID["updater-pull"]
 	if pull.TransportMode != store.SystemUpdateTransportPullV2 ||
 		pull.ExecutionHostID != "host-a" ||
-		pull.OwnershipEpoch != 3 {
+		pull.OwnershipEpoch == nil ||
+		*pull.OwnershipEpoch != 3 {
 		t.Fatalf("pull updater identity = %#v", pull)
 	}
 	ssh := byID["updater-ssh"]
 	if ssh.TransportMode != store.SystemUpdateTransportSSHV1 ||
 		ssh.ExecutionHostID != "" ||
-		ssh.OwnershipEpoch != 0 {
+		ssh.OwnershipEpoch != nil {
 		t.Fatalf("ssh updater identity = %#v", ssh)
 	}
 	encoded, err := json.Marshal(pull)
@@ -62,6 +63,39 @@ func TestSystemUpdateAgentTopologyExposesTransportOwnershipIdentity(t *testing.T
 		if !strings.Contains(string(encoded), field) {
 			t.Fatalf("pull updater response missing %s: %s", field, encoded)
 		}
+	}
+	encoded, err = json.Marshal(ssh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"ownership_epoch"`) {
+		t.Fatalf("ssh updater response unexpectedly includes ownership_epoch: %s", encoded)
+	}
+}
+
+func TestSystemUpdateAgentTopologySerializesPullObserverOwnershipEpochZero(t *testing.T) {
+	now := time.Now().UTC()
+	_, updaters, _ := systemUpdateAgentTopology([]store.RegisteredService{
+		{
+			ServiceID:       "updater-pull-observer",
+			ServiceType:     "update_agent",
+			TransportMode:   store.SystemUpdateTransportPullV2,
+			ExecutionHostID: "host-a",
+			OwnershipEpoch:  0,
+			Status:          "registered",
+			LastHeartbeatAt: &now,
+		},
+	}, now)
+	if len(updaters) != 1 {
+		t.Fatalf("updaters = %#v", updaters)
+	}
+
+	encoded, err := json.Marshal(map[string]any{"updaters": updaters})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"ownership_epoch":0`) {
+		t.Fatalf("pull observer response missing ownership_epoch 0: %s", encoded)
 	}
 }
 
@@ -94,7 +128,8 @@ func TestPullSystemUpdateTargetApprovalUsesServiceIdentityAndNoReleaseToken(t *t
 	if len(updaters) != 1 ||
 		updaters[0].TransportMode != store.SystemUpdateTransportPullV2 ||
 		updaters[0].ExecutionHostID != "host-a" ||
-		updaters[0].OwnershipEpoch != 1 {
+		updaters[0].OwnershipEpoch == nil ||
+		*updaters[0].OwnershipEpoch != 1 {
 		t.Fatalf("pull updater topology = %#v", updaters)
 	}
 	if len(hosts) != 1 || hosts[0].HostID != "host-a" || hosts[0].Reachability != "reachable" {
@@ -220,7 +255,8 @@ func TestPullObserverDoesNotReserveTargetsOrExecutionHost(t *testing.T) {
 	if len(updaters) != 1 ||
 		updaters[0].TransportMode != store.SystemUpdateTransportPullV2 ||
 		updaters[0].ExecutionHostID != "host-a" ||
-		updaters[0].OwnershipEpoch != 0 {
+		updaters[0].OwnershipEpoch == nil ||
+		*updaters[0].OwnershipEpoch != 0 {
 		t.Fatalf("observer updater topology = %#v", updaters)
 	}
 }

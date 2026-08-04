@@ -13,6 +13,7 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/updateagent"
 )
 
 func TestRuntimeTokenRotationHTTPKeepsCredentialOffAdminPathAndRotatesThroughDedicatedBearer(t *testing.T) {
@@ -1147,20 +1148,71 @@ func newRuntimeTokenRotationHTTPFixtureWithHeartbeatClock(
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownership, err := updates.SwitchSystemUpdateExecutionHost(
-		t.Context(),
-		"host-a",
-		0,
-		store.SystemUpdateTransportPullV2,
-		"host-agent-a",
-		savedPolicy.ProjectionRevision,
+	oldToken := registerRuntimeTokenRotationAgentForTest(
+		t, auth, "host-agent-a", "host-a", 0,
+	)
+	reportedConfigSHA256, err := updateagent.SystemdConfigurePortSidecarSHA256(
+		"worker",
+		18081,
+		1,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldToken := registerRuntimeTokenRotationAgentForTest(
-		t, auth, "host-agent-a", "host-a", ownership.OwnershipEpoch,
+	if _, err := auth.Heartbeat(t.Context(), oldToken, store.ServiceHeartbeat{
+		ServiceID: "host-agent-a",
+		Status:    "online",
+		Version:   "v2.0.0",
+		Capabilities: map[string]any{
+			"host_agent":                         true,
+			"observe_only":                       true,
+			"update_executor":                    true,
+			"mutation_enabled":                   false,
+			"recovery_pending":                   false,
+			"transport_mode":                     store.SystemUpdateTransportPullV2,
+			"agent_protocol_version":             "2",
+			"execution_host_id":                  "host-a",
+			"ownership_epoch":                    int64(0),
+			"source_policy_revision":             savedPolicy.Revision,
+			"policy_revision":                    savedPolicy.ProjectionRevision,
+			"policy_status":                      "applied",
+			"local_executor_policy_revision":     savedPolicy.LocalExecutorPolicyRevision,
+			"target_availability":                map[string]any{"worker-a": "available"},
+			"target_availability_codes":          map[string]any{"worker-a": "executor_verified"},
+			"reported_ports":                     map[string]any{"worker-a": int64(18081)},
+			"port_drift":                         map[string]any{"worker-a": false},
+			"reported_service_types":             map[string]any{"worker-a": "worker"},
+			"reported_deployment_modes":          map[string]any{"worker-a": "systemd"},
+			"reported_executor_policy_revisions": map[string]any{"worker-a": savedPolicy.LocalExecutorPolicyRevision},
+			"reported_executor_policy_sha256": map[string]any{
+				"worker-a": savedPolicy.LocalExecutorPolicySHA256,
+			},
+			"reported_config_revisions": map[string]any{"worker-a": int64(1)},
+			"reported_config_sha256": map[string]any{
+				"worker-a": reportedConfigSHA256,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activation, err := policies.ActivatePullUpdaterOwnership(
+		t.Context(),
+		auth,
+		updates,
+		store.ActivatePullUpdaterOwnershipParams{
+			ServiceID:                           "host-agent-a",
+			ExecutionHostID:                     "host-a",
+			ExpectedExecutionHostOwnershipEpoch: 0,
+			ExpectedSourcePolicyRevision:        savedPolicy.Revision,
+			ExpectedProjectionRevision:          savedPolicy.ProjectionRevision,
+			ExpectedLocalExecutorPolicyRevision: savedPolicy.LocalExecutorPolicyRevision,
+			ExpectedLocalExecutorPolicySHA256:   savedPolicy.LocalExecutorPolicySHA256,
+		},
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownership := activation.Ownership
 	wrongHostToken := registerRuntimeTokenRotationAgentForTest(
 		t, auth, "host-agent-b", "host-b", 1,
 	)

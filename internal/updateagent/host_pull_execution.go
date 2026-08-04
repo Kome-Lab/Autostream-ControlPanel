@@ -82,7 +82,9 @@ func (a *HostPullAgent) executorReady(
 			observation.PolicyRevision != policy.LocalExecutorPolicyRevision ||
 			observation.PolicySHA256 != policy.LocalExecutorPolicySHA256 ||
 			observation.ConfigRevision != target.appliedConfigRevision() ||
-			observation.ConfigSHA256 != target.AppliedConfigSHA256 {
+			!localExecutorConfigDigestMatchesTarget(
+				*policy, target, observation.ConfigSHA256,
+			) {
 			return false
 		}
 	}

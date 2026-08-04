@@ -1365,6 +1365,82 @@ func TestLocalExecutorHostObserverRequiresPinnedMatchingPolicy(t *testing.T) {
 		}
 	})
 
+	t.Run("legacy systemd target requires a valid reported config digest", func(t *testing.T) {
+		legacy := policy
+		legacy.OwnershipEpoch = 0
+		legacy.ObserveOnly = true
+		legacy.Targets = append([]HostAgentPolicyTarget(nil), policy.Targets...)
+		legacy.Targets[0].AppliedConfigSHA256 = ""
+
+		for _, testCase := range []struct {
+			name             string
+			reportedDigest   string
+			wantAvailability string
+			wantCode         string
+		}{
+			{
+				name:             "valid digest is accepted for backfill",
+				reportedDigest:   configDigest,
+				wantAvailability: TargetAvailabilityAvailable,
+				wantCode:         "executor_verified",
+			},
+			{
+				name:             "empty digest is rejected",
+				reportedDigest:   "",
+				wantAvailability: TargetAvailabilityUnavailable,
+				wantCode:         "executor_probe_mismatch",
+			},
+			{
+				name:             "invalid digest is rejected",
+				reportedDigest:   "sha256:not-a-digest",
+				wantAvailability: TargetAvailabilityUnavailable,
+				wantCode:         "executor_probe_mismatch",
+			},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				candidate := probe
+				candidate.ConfigSHA256 = testCase.reportedDigest
+				legacyClient := &fakeLocalExecutorProbeClient{
+					probes: map[string]LocalExecutorProbe{"worker-01": candidate},
+				}
+				legacyObserver := NewLocalExecutorTargetObserver(legacyClient)
+				observations, err := legacyObserver(context.Background(), legacy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(observations) != 1 ||
+					observations[0].Availability != testCase.wantAvailability ||
+					observations[0].AvailabilityCode != testCase.wantCode {
+					t.Fatalf("observations=%+v", observations)
+				}
+				if testCase.wantAvailability == TargetAvailabilityAvailable &&
+					observations[0].ConfigSHA256 != testCase.reportedDigest {
+					t.Fatalf("reported config digest was not preserved: %+v", observations)
+				}
+			})
+		}
+	})
+
+	t.Run("active systemd target without applied config digest fails closed", func(t *testing.T) {
+		active := policy
+		active.Targets = append([]HostAgentPolicyTarget(nil), policy.Targets...)
+		active.Targets[0].AppliedConfigSHA256 = ""
+		activeClient := &fakeLocalExecutorProbeClient{
+			probes: map[string]LocalExecutorProbe{"worker-01": probe},
+		}
+		observations, err := NewLocalExecutorTargetObserver(activeClient)(
+			context.Background(), active,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(observations) != 1 ||
+			observations[0].Availability != TargetAvailabilityUnavailable ||
+			observations[0].AvailabilityCode != "executor_probe_mismatch" {
+			t.Fatalf("observations=%+v", observations)
+		}
+	})
+
 	t.Run("digest mismatch fails closed", func(t *testing.T) {
 		mismatch := probe
 		mismatch.PolicySHA256 = "sha256:" + strings.Repeat("b", 64)

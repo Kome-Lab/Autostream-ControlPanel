@@ -93,7 +93,13 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 		"- name: Validate immutable release namespace and local asset set",
 		"workflow_dispatch may not overwrite or reuse it",
 		`host-release-body.md`,
-		"AutoStream Host Bridge ${RELEASE_VERSION}",
+		"AutoStream Host ${RELEASE_VERSION}",
+		"ownership_epoch: 0",
+		"applied_config_sha256 is NULL",
+		"Control Panel ${RELEASE_VERSION} first",
+		"Host Agent and Local Executor together",
+		"ownership activation transaction persists",
+		"rerun configure solely for this migration",
 		`host-release-body.sha256`,
 		"- name: Create unpublished staging release",
 		`-f body="$(< "${release_body_path}")"`,
@@ -203,6 +209,36 @@ func TestCIAndHostReleaseRunEveryMariaDBContractWithoutSkips(t *testing.T) {
 				`-run '^TestMariaDBUpdateAgentRegistrationSmoke$'`,
 			) {
 				t.Fatal("MariaDB release gate regressed to a single smoke test")
+			}
+		})
+	}
+}
+
+func TestCIAndHostReleaseRunSystemUpdatesWebRegressionBeforeBuild(t *testing.T) {
+	for _, workflowName := range []string{"ci.yml", "release-host.yml"} {
+		t.Run(workflowName, func(t *testing.T) {
+			workflowPath := filepath.Join(
+				"..",
+				"..",
+				".github",
+				"workflows",
+				workflowName,
+			)
+			payload, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow := string(payload)
+			installPosition := strings.Index(workflow, "npm ci")
+			regressionPosition := strings.Index(workflow, "npm run test:system-updates")
+			buildPosition := strings.Index(workflow, "npm run build")
+			if installPosition < 0 ||
+				regressionPosition <= installPosition ||
+				buildPosition <= regressionPosition {
+				t.Fatalf(
+					"%s must run the system updates Web regression after npm ci and before the production build",
+					workflowName,
+				)
 			}
 		})
 	}

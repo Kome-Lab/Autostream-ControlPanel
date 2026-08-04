@@ -58,6 +58,81 @@ func TestMariaDBActivatePullUpdaterOwnershipAndBaselineReservation(t *testing.T)
 	}
 }
 
+func TestMariaDBActivatePullUpdaterOwnershipBackfillsLegacyConfigDigestWithoutChangingRevision(
+	t *testing.T,
+) {
+	db, ctx := openMariaDBPullActivationTest(t)
+	fixture := newMariaDBPullActivationFixture(t, ctx, db, false)
+
+	var beforeRevision int64
+	var beforeDigest sql.NullString
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT applied_config_revision, applied_config_sha256
+FROM services
+WHERE service_id = ?`,
+		fixture.targetID,
+	).Scan(&beforeRevision, &beforeDigest); err != nil {
+		t.Fatal(err)
+	}
+	if beforeRevision < 1 || beforeDigest.Valid {
+		t.Fatalf(
+			"legacy target config state = revision %d digest %#v",
+			beforeRevision,
+			beforeDigest,
+		)
+	}
+
+	agent, err := fixture.auth.GetService(ctx, fixture.params.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportedConfigDigests, ok := agent.ReportedCapabilities["reported_config_sha256"].(map[string]any)
+	if !ok {
+		t.Fatalf("reported config digests = %#v", agent.ReportedCapabilities["reported_config_sha256"])
+	}
+	reportedConfigDigest, ok := reportedConfigDigests[fixture.targetID].(string)
+	if !ok || reportedConfigDigest != "sha256:"+strings.Repeat("c", 64) {
+		t.Fatalf("reported target config digest = %#v", reportedConfigDigests[fixture.targetID])
+	}
+
+	activated, err := fixture.policies.ActivatePullUpdaterOwnership(
+		ctx,
+		fixture.auth,
+		fixture.updates,
+		fixture.params,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var afterRevision int64
+	var afterDigest sql.NullString
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT applied_config_revision, applied_config_sha256
+FROM services
+WHERE service_id = ?`,
+		fixture.targetID,
+	).Scan(&afterRevision, &afterDigest); err != nil {
+		t.Fatal(err)
+	}
+	if afterRevision != beforeRevision ||
+		!afterDigest.Valid ||
+		afterDigest.String != reportedConfigDigest ||
+		activated.Ownership.TransportMode != store.SystemUpdateTransportPullV2 ||
+		activated.Ownership.AgentServiceID != fixture.params.ServiceID {
+		t.Fatalf(
+			"activation did not atomically backfill legacy target config: before_revision=%d after_revision=%d reported_digest=%q after_digest=%#v ownership=%#v",
+			beforeRevision,
+			afterRevision,
+			reportedConfigDigest,
+			afterDigest,
+			activated.Ownership,
+		)
+	}
+}
+
 func TestMariaDBActivatePullUpdaterOwnershipDoesNotPersistSyntheticControlPanelReservation(
 	t *testing.T,
 ) {
