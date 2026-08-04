@@ -203,9 +203,15 @@ func TestHostInstallerGuardRejectsUnsafeStateWithoutStarting(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				state.ActiveSlot = HostSelfUpdateSlotA
-				state.HealthySlot = HostSelfUpdateSlotA
-				state.Phase = HostSelfUpdatePhaseStaged
+				state, err = StageHostSelfUpdate(
+					state,
+					validHostSelfUpdateRequest(),
+					HostLifecycleBlockers{},
+					validHostSelfUpdateSlotDigests(),
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if err := fixture.runtime.selfUpdate.saveState(state); err != nil {
 					t.Fatal(err)
 				}
