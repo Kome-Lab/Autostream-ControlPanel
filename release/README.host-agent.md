@@ -196,13 +196,120 @@ converges because the sidecar is already byte-exact.
 
 `/etc/autostream-host-agent/identity.json` is the canonical identity. The
 legacy `/etc/autostream/host-agent.json` is a read-only runtime fallback only
-when the canonical file is absent. A managed legacy installation binds the
-source inode, metadata, and SHA-256 while installing the canonical file, then
-attempts a best-effort zero overwrite/sync and requires the legacy secret to be
-unlinked. If unlink fails, it keeps the recoverable canonical identity but
-leaves the Agent stopped. If both files exist, the Agent and installer fail
-closed instead of choosing one. New writes and Runtime Token rotation never
+when the canonical file is absent and reachable. The non-root Agent securely
+loads and validates the canonical identity before checking that fallback. On a
+normal application host, `/etc/autostream` remains `root:root 0750`; an
+`EACCES` result for the legacy pathname cannot influence an already validated
+canonical identity, so the Agent keeps using the canonical file without
+weakening the application-secret directory. A missing canonical identity plus
+an inaccessible legacy path still fails closed, as does any visible current
+and legacy pair or unexpected filesystem error.
+
+Every root-owned identity writer has the stronger view: configure checks that
+the legacy path is absent before the Configure Token is read, immediately
+before identity installation, and again after installation. Runtime Token
+rotation performs the same checks before mutation, immediately before the
+active identity replacement, and before reporting completion. A managed
+legacy installation binds the source inode, metadata, and SHA-256 while
+installing the canonical file, then attempts a best-effort zero overwrite/sync
+and requires the legacy secret to be unlinked. If unlink fails, it keeps the
+recoverable canonical identity but leaves the Agent stopped. New writes never
 target the legacy path.
+
+v1.9.10 removes the need for the temporary execute-only ACL workaround on
+`/etc/autostream`. On every affected v1.9.9 host where that directory is
+`root:root 0750`, keep one bounded execute-only ACL bridge through the upgrade,
+even if the old Agent is currently active. `--upgrade` deliberately requires a
+healthy A/B runtime, and a failed candidate must be able to restart v1.9.9
+during rollback. Use the following block only after installing and verifying
+the v1.9.10 Control Panel and Host archive. It proves the installed Host Agent
+is exactly v1.9.9, the canonical identity is valid, both forms of the legacy
+pathname are absent, the parent is the expected non-symlink directory, and any
+pre-existing Host Agent ACL is exactly the known access-only `--x` bridge:
+
+```bash
+set -euo pipefail
+sudo /usr/local/bin/autostream-host-agent --version |
+  grep -Fx 'autostream-host-agent v1.9.9'
+sudo /usr/local/bin/autostream-host-agent validate-config \
+  --config /etc/autostream-host-agent/identity.json
+sudo test ! -e /etc/autostream/host-agent.json
+sudo test ! -L /etc/autostream/host-agent.json
+sudo test -d /etc/autostream
+sudo test ! -L /etc/autostream
+sudo env LC_ALL=C stat -c '%F %U:%G %a' -- /etc/autostream |
+  grep -Fx 'directory root:root 750'
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends acl
+command -v getfacl
+command -v setfacl
+sudo getfacl -cp -- /etc/autostream
+! sudo getfacl -cp -- /etc/autostream |
+  grep -q '^default:user:autostream-host-agent:'
+if sudo getfacl -cp -- /etc/autostream |
+  grep -q '^user:autostream-host-agent:'; then
+  sudo getfacl -cp -- /etc/autostream |
+    grep -Fx 'user:autostream-host-agent:--x'
+else
+  sudo setfacl --modify 'u:autostream-host-agent:--x' -- /etc/autostream
+fi
+sudo getfacl -cp -- /etc/autostream |
+  grep -Fx 'user:autostream-host-agent:--x'
+sudo -u autostream-host-agent \
+  /usr/local/bin/autostream-host-agent validate-config \
+  --config /etc/autostream-host-agent/identity.json
+sudo systemctl restart autostream-host-agent.service
+sudo systemctl is-active --quiet autostream-host-agent.service
+cd /opt/autostream/releases/artifacts/autostream-host-agent_v1.9.10_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade
+sudo /usr/local/bin/autostream-host-agent --version |
+  grep -Fx 'autostream-host-agent v1.9.10'
+```
+
+If the directory is not the exact `root:root 0750` non-symlink above, or an
+unexpected access/default Host Agent ACL is present, stop instead of changing
+permissions. After the upgrade, verify the new binary as the service user,
+confirm that no legacy pathname including a dangling symlink exists, remove
+only the exact named access ACL, validate again without it, and restart the
+Agent:
+
+```bash
+set -euo pipefail
+sudo /usr/local/bin/autostream-host-agent --version |
+  grep -Fx 'autostream-host-agent v1.9.10'
+sudo -u autostream-host-agent \
+  /usr/local/bin/autostream-host-agent validate-config \
+  --config /etc/autostream-host-agent/identity.json
+sudo test ! -e /etc/autostream/host-agent.json
+sudo test ! -L /etc/autostream/host-agent.json
+sudo test -d /etc/autostream
+sudo test ! -L /etc/autostream
+sudo env LC_ALL=C stat -c '%F %U:%G %a' -- /etc/autostream |
+  grep -Fx 'directory root:root 750'
+! sudo getfacl -cp -- /etc/autostream |
+  grep -q '^default:user:autostream-host-agent:'
+sudo getfacl -cp -- /etc/autostream |
+  grep -Fx 'user:autostream-host-agent:--x'
+sudo setfacl --remove 'u:autostream-host-agent' -- /etc/autostream
+! sudo getfacl -cp -- /etc/autostream |
+  grep -Eq '^(default:)?user:autostream-host-agent:'
+sudo -u autostream-host-agent \
+  /usr/local/bin/autostream-host-agent validate-config \
+  --config /etc/autostream-host-agent/identity.json
+sudo systemctl restart autostream-host-agent.service
+sudo systemctl is-active --quiet autostream-host-agent.service
+```
+
+Do not use `setfacl -b`: unrelated pre-existing ACLs belong to the operator.
+Do not use `chmod 0751`, add the Agent to an application group, or grant read
+permission. If the exact named entry was not added as this workaround, stop
+and review it instead of deleting it. On arm64, use the verified arm64 v1.9.10
+release directory instead of the amd64 path above.
+
+The Ubuntu `acl` package is needed only for this bounded v1.9.9 recovery and
+cleanup; it is not a Host Agent runtime dependency. If package installation is
+not authorized or the repository cannot be reached, stop instead of weakening
+the directory mode manually.
 
 Activate the prepared root-owned boundary with the exact generated policy:
 

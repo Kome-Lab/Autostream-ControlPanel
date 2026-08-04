@@ -59,6 +59,9 @@ func (rt runtimeCredentialExecutorRuntime) recoverAfterEmergencyManualReconfigur
 			"runtime credential emergency recovery binding is invalid",
 		)
 	}
+	if err := rt.validateIdentityLayout(); err != nil {
+		return RuntimeCredentialStatus{}, err
+	}
 	current, exists, err := rt.loadStatus()
 	if err != nil || !exists ||
 		current.RotationID != rotationID ||
@@ -100,6 +103,9 @@ func (rt runtimeCredentialExecutorRuntime) recoverAfterEmergencyManualReconfigur
 				"runtime credential emergency recovery stage-bound file is invalid",
 			)
 		}
+	}
+	if err := rt.validateIdentityLayout(); err != nil {
+		return RuntimeCredentialStatus{}, err
 	}
 	active, activeBytes, _, err := rt.loadIdentity(
 		rt.activeIdentity,
@@ -170,6 +176,9 @@ func (rt runtimeCredentialExecutorRuntime) recoverAfterEmergencyManualReconfigur
 	// Persist the replacement digest before destroying an old staged slot.
 	// A crash after this point re-enters the idempotent branch above, which
 	// completes only the exact-digest staged cleanup.
+	if err := rt.validateIdentityLayout(); err != nil {
+		return RuntimeCredentialStatus{}, err
+	}
 	if err := rt.saveStatus(current); err != nil {
 		return RuntimeCredentialStatus{}, err
 	}
@@ -186,9 +195,15 @@ func (rt runtimeCredentialExecutorRuntime) finishEmergencyStagedCleanup(
 	agentGID uint32,
 	expectedDigest string,
 ) error {
-	return rt.wipeAndRemoveIdentity(
+	if err := rt.validateIdentityLayout(); err != nil {
+		return err
+	}
+	if err := rt.wipeAndRemoveIdentity(
 		rt.stagedIdentity,
 		agentGID,
 		expectedDigest,
-	)
+	); err != nil {
+		return err
+	}
+	return rt.validateIdentityLayout()
 }

@@ -120,6 +120,52 @@ func TestHostAgentConfigurationTransactionRestoresAdoptedSidecarWhenIdentityComm
 	}
 }
 
+func TestHostAgentConfigurationTransactionRollsBackWhenLegacyIdentityAppearsBeforeIdentityCommit(
+	t *testing.T,
+) {
+	fixture := newHostAgentAdoptionTransactionFixture(t)
+	defer fixture.transaction.Abort()
+	identityBefore, err := os.ReadFile(fixture.identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checks := 0
+	fixture.transaction.verifyIdentityLayout = func() error {
+		checks++
+		if checks == 2 {
+			return errors.New("legacy Host Agent identity appeared during configuration")
+		}
+		return nil
+	}
+	err = fixture.transaction.CommitContext(
+		context.Background(),
+		fixture.identity,
+		fixture.stagedPolicy,
+	)
+	if err == nil || !strings.Contains(err.Error(), "legacy Host Agent identity appeared") {
+		t.Fatalf("legacy identity race error = %v", err)
+	}
+	if checks != 2 {
+		t.Fatalf("identity layout checks = %d", checks)
+	}
+	body, info, existed, readErr := readRootSystemdPortSidecarOptional(
+		fixture.sidecarPath,
+	)
+	if readErr != nil || !existed || !bytes.Equal(body, fixture.oldSidecar) ||
+		!os.SameFile(info, fixture.oldSidecarInfo) {
+		t.Fatalf("old sidecar inode was not restored: body=%q info=%#v error=%v", body, info, readErr)
+	}
+	installedPolicy, readErr := os.ReadFile(fixture.policyPath)
+	if readErr != nil || !bytes.Equal(installedPolicy, fixture.oldPolicy.Policy) {
+		t.Fatalf("old policy was not restored: %q, %v", installedPolicy, readErr)
+	}
+	identityAfter, readErr := os.ReadFile(fixture.identityPath)
+	if readErr != nil || !bytes.Equal(identityAfter, identityBefore) {
+		t.Fatalf("identity changed after legacy race: %q, %v", identityAfter, readErr)
+	}
+}
+
 func TestHostAgentConfigurationTransactionDoesNotOverwriteSidecarChangedAfterLiveProof(
 	t *testing.T,
 ) {
@@ -684,10 +730,11 @@ func newHostAgentAdoptionTransactionFixtureWithConfigurationOptions(
 		return hostAgentAdoptionTestProof(), nil
 	}
 	fixture.transaction = &PreparedHostAgentConfiguration{
-		identity: preparedIdentity,
-		policy:   preparedPolicy,
-		sidecars: preparedSidecars,
-		options:  configurationOptions,
+		identity:             preparedIdentity,
+		policy:               preparedPolicy,
+		sidecars:             preparedSidecars,
+		options:              configurationOptions,
+		verifyIdentityLayout: func() error { return nil },
 	}
 	return fixture
 }
@@ -755,9 +802,10 @@ func TestHostAgentConfigurationTransactionRollsBackPolicyAndNewSidecars(
 		t.Fatal(err)
 	}
 	transaction := &PreparedHostAgentConfiguration{
-		identity: identity,
-		policy:   policy,
-		sidecars: sidecars,
+		identity:             identity,
+		policy:               policy,
+		sidecars:             sidecars,
+		verifyIdentityLayout: func() error { return nil },
 	}
 	defer transaction.Abort()
 
@@ -866,9 +914,10 @@ func TestHostAgentConfigurationTransactionPreservesPairWhenIdentityRenameReports
 		t.Fatal(err)
 	}
 	transaction := &PreparedHostAgentConfiguration{
-		identity: identity,
-		policy:   policy,
-		sidecars: sidecars,
+		identity:             identity,
+		policy:               policy,
+		sidecars:             sidecars,
+		verifyIdentityLayout: func() error { return nil },
 	}
 	defer transaction.Abort()
 

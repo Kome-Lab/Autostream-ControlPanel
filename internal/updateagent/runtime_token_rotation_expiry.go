@@ -25,7 +25,7 @@ func runRuntimeCredentialExpiryLoop(
 		}
 		defer unlock()
 		rt := defaultRuntimeCredentialExecutorRuntime()
-		_, _, _ = rt.loadAndReconcileStatus(policy.AgentGID)
+		_ = reconcileRuntimeCredentialExpiry(rt, policy.AgentGID)
 	}
 	reconcile()
 	ticker := time.NewTicker(interval)
@@ -38,4 +38,17 @@ func runRuntimeCredentialExpiryLoop(
 			reconcile()
 		}
 	}
+}
+
+func reconcileRuntimeCredentialExpiry(
+	rt runtimeCredentialExecutorRuntime,
+	agentGID uint32,
+) error {
+	if err := rt.validateIdentityLayout(); err != nil {
+		return err
+	}
+	if _, _, err := rt.loadAndReconcileStatus(agentGID); err != nil {
+		return err
+	}
+	return rt.validateIdentityLayout()
 }

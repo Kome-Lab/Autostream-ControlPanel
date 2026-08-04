@@ -208,6 +208,52 @@ func TestPullV2ReleaseGuidesDocumentManagedHostUpgrade(t *testing.T) {
 	}
 }
 
+func TestPullV2ReleaseGuidesDocumentCanonicalIdentityPermissionBoundary(t *testing.T) {
+	hostAgentBody, err := os.ReadFile(filepath.Join(
+		"..", "..", "release", "README.host-agent.md",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostAgent := strings.Join(strings.Fields(string(hostAgentBody)), " ")
+	for _, marker := range []string{
+		"`/etc/autostream` remains `root:root 0750`",
+		"securely loads and validates the canonical identity before checking that fallback",
+		"an `EACCES` result for the legacy pathname",
+		"A missing canonical identity plus an inaccessible legacy path still fails closed",
+		"Runtime Token rotation performs the same checks before mutation",
+		"v1.9.10 removes the need for the temporary execute-only ACL workaround",
+		"failed candidate must be able to restart v1.9.9",
+		"grep -Fx 'directory root:root 750'",
+		"sudo apt-get install -y --no-install-recommends acl",
+		"grep -q '^default:user:autostream-host-agent:'",
+		"grep -Fx 'user:autostream-host-agent:--x'",
+		"sudo setfacl --remove 'u:autostream-host-agent' -- /etc/autostream",
+		"Do not use `setfacl -b`",
+	} {
+		if !strings.Contains(hostAgent, marker) {
+			t.Fatalf("Host Agent guide is missing identity permission marker %q", marker)
+		}
+	}
+
+	localExecutorBody, err := os.ReadFile(filepath.Join(
+		"..", "..", "release", "README.local-executor.md",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localExecutor := strings.Join(strings.Fields(string(localExecutorBody)), " ")
+	for _, marker := range []string{
+		"requires the legacy `/etc/autostream/host-agent.json` identity to be absent before mutation",
+		"immediately before active-identity replacement",
+		"before successful completion",
+	} {
+		if !strings.Contains(localExecutor, marker) {
+			t.Fatalf("Local Executor guide is missing identity writer marker %q", marker)
+		}
+	}
+}
+
 func TestPullV2ReleaseGuidesDocumentLegacyWriterRollbackDrain(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "release", "README.install.md"),

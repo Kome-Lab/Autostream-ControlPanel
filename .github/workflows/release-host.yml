@@ -300,6 +300,27 @@ jobs:
               autostream_control_panel \
               autostream-kometubu_panel
 
+      - name: Test Host Agent canonical identity with private legacy parent
+        run: |
+          set -euo pipefail
+          smoke_dir="${RUNNER_TEMP}/host-agent-identity-permissions"
+          mkdir -p "${smoke_dir}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+              -o "${smoke_dir}/autostream-host-agent" \
+              ./cmd/autostream-host-agent
+          docker run --rm \
+            --user 0:0 \
+            --network none \
+            --pids-limit 128 \
+            --memory 256m \
+            --cpus 1 \
+            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+            --mount "type=bind,source=${smoke_dir},target=/smoke,readonly" \
+            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+            /bin/bash /workspace/internal/security/testdata/run-host-agent-identity-permissions-smoke.sh \
+              /smoke/autostream-host-agent
+
       - name: Test Host Agent prepare installer without an identity
         run: |
           docker run --rm \
@@ -309,9 +330,11 @@ jobs:
             --memory 256m \
             --cpus 1 \
             --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+            --mount "type=bind,source=${RUNNER_TEMP}/host-agent-identity-permissions,target=/smoke,readonly" \
             ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
             /bin/bash /workspace/internal/security/testdata/run-host-agent-installer-prepare-smoke.sh \
-              /workspace
+              /workspace \
+              /smoke/autostream-host-agent
 
       - name: Test Host Agent manual upgrade installer delegation
         run: |
@@ -1130,8 +1153,8 @@ jobs:
           release_body_path="${RUNNER_TEMP}/host-release-body.md"
           printf '%s\n\n%s\n\n%s' \
             "AutoStream Host ${RELEASE_VERSION}" \
-            "This patch makes pull_v2 observer state unambiguous by serializing ownership_epoch: 0 explicitly in the System Updates API. For legacy systemd targets whose server-side applied_config_sha256 is NULL, observer probing now accepts only a syntactically valid sha256: digest with 64 lowercase hexadecimal characters while preserving the existing exact policy revision and digest, service identity, deployment mode, config revision, and loopback listener checks. Empty, invalid, or explicitly mismatched digests remain fail-closed; Docker targets do not receive this legacy fallback, and the active mutation path still requires the pinned digest." \
-            "Install and verify the matching Control Panel ${RELEASE_VERSION} first, then upgrade the Host Agent and Local Executor together from the unmodified autostream-host-agent_${RELEASE_VERSION}_linux_amd64.tar.gz archive for amd64 hosts or the matching arm64 archive. Wait for every required target to report executor_verified, then activate ownership; the ownership activation transaction persists the verified legacy config digest before the positive ownership epoch becomes active. Do not update the database manually, rerun configure solely for this migration, or replace either runtime binary separately." \
+            "This patch fixes Host Agent startup on existing service hosts where /etc/autostream correctly remains root:root 0750. The non-root Host Agent securely loads and validates the canonical /etc/autostream-host-agent/identity.json before probing the read-only legacy fallback, so an inaccessible legacy parent no longer requires an ACL workaround. A missing canonical identity with an inaccessible legacy path, a visible current and legacy pair, and unexpected filesystem errors still fail closed. Root-owned configure and Runtime Token rotation recheck that the legacy identity is absent before and after every durable identity mutation." \
+            "Install and verify the matching Control Panel ${RELEASE_VERSION} first, then upgrade the Host Agent and Local Executor together from the unmodified autostream-host-agent_${RELEASE_VERSION}_linux_amd64.tar.gz archive for amd64 hosts or the matching arm64 archive. The Host Agent systemd unit remains unchanged; existing identity and policy are preserved, so do not rerun configure solely for this fix or replace either runtime binary separately. On every affected v1.9.9 host with /etc/autostream root:root 0750, keep the exact access-only autostream-host-agent execute ACL through the matched upgrade, even when the old Agent is active, so candidate rollback can restart v1.9.9. First prove the canonical identity, both absent forms of the legacy path, the expected non-symlink parent, and any pre-existing Host Agent ACL; never add a default, read, group, or mode grant. After the v1.9.10 binary validates as the service user, remove only the exact named access ACL, validate again, and never use setfacl -b or chmod 0751." \
             > "${release_body_path}"
           test -s "${release_body_path}"
           (

@@ -2071,6 +2071,10 @@ retire_legacy_identity() {
   [[ ${size} =~ ^[1-9][0-9]*$ && ${size} -le 65536 ]] || \
     die "legacy Host Agent identity has an unsafe size"
   blocks=$(( (size + 4095) / 4096 ))
+  # The canonical identity and installed release become the only recoverable
+  # state immediately before the first destructive legacy-secret write.
+  defer_cleanup_signals
+  installation_complete=true
   dd if=/dev/zero of="${LEGACY_CONFIG_DEST}" bs=4096 count="${blocks}" conv=notrunc status=none ||
     wipe_failed=true
   sync -d "${LEGACY_CONFIG_DEST}" >/dev/null 2>&1 || wipe_failed=true
@@ -2080,6 +2084,8 @@ retire_legacy_identity() {
   [[ ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
     die "legacy Host Agent identity survived retirement; the new identity remains installed and the service stays stopped"
   legacy_config_retired=true
+  resume_cleanup_signals || \
+    die "installation was interrupted while retiring the legacy Host Agent identity"
   if [[ ${wipe_failed} == true ]]; then
     printf '%s\n' 'install-autostream-host-agent: warning: legacy identity was unlinked, but its best-effort overwrite or sync was incomplete' >&2
   fi
@@ -2446,8 +2452,6 @@ if [[ ${install_mode} == "configured" ]]; then
   [[ $(stat -c '%U:%G:%a' -- "${CONFIG_DEST}") == "root:${AGENT_GROUP}:640" ]] || die "installed identity config failed verification"
   [[ $(sha256sum -- "${CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${config_stage_sha256}" ]] || \
     die "installed identity content changed during atomic replacement"
-  "${BINARY_DEST}" validate-config --config "${CONFIG_DEST}" || \
-    die "installed identity failed secure reread validation"
 fi
 if [[ ${install_mode} == "prepare" || ${binary_managed_link} == true ]]; then
   validate_managed_agent_link || die "installed managed Host Agent binary failed verification"
@@ -2487,18 +2491,19 @@ if [[ ${install_mode} == "prepare" ]]; then
 fi
 if [[ ${install_mode} == "configured" ]]; then
   runuser -u "${AGENT_USER}" -- test -r "${CONFIG_DEST}" || die "agent service user cannot read installed identity config"
+  validate_installed_agent_binary
 fi
 
 systemctl daemon-reload
 if [[ ${install_mode} == "configured" ]]; then
   if [[ ${legacy_config_existed} == true ]]; then
-    # From this point onward the new identity and installed unit are the
-    # recoverable state. Never roll them back after beginning destructive
-    # retirement of the legacy secret.
-    installation_complete=true
+    # Retirement keeps rollback available through its non-destructive checks,
+    # then commits the new identity and unit immediately before the first
+    # destructive write to the legacy secret.
     retire_legacy_identity
   fi
-  validate_installed_agent_binary
+  "${BINARY_DEST}" validate-config --config "${CONFIG_DEST}" || \
+    die "installed identity failed secure reread validation"
   agent_activation_attempted=true
   systemctl enable --now autostream-host-agent.service
   verify_unit_active "${UNIT_NAME}"

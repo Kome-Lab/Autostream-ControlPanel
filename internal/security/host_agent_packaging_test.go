@@ -100,6 +100,7 @@ func TestHostAgentSystemdUnitIsNonRootPortlessAndSandboxed(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"User=root",
+		"ExecStartPre=+",
 		"8090",
 		"ListenStream",
 		"Environment=AUTOSTREAM",
@@ -593,6 +594,7 @@ func TestHostUpgradePrivilegedLockInteropRunsInRootCI(t *testing.T) {
 func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 	const pinnedUbuntu = "ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
 	smokes := []string{
+		"run-host-agent-identity-permissions-smoke.sh",
 		"run-host-agent-installer-prepare-smoke.sh",
 		"run-host-agent-installer-upgrade-smoke.sh",
 	}
@@ -628,6 +630,19 @@ func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 				} {
 					if !strings.Contains(step, required) {
 						t.Fatalf("%s smoke %s is missing %q", workflowName, smoke, required)
+					}
+				}
+				if smoke == "run-host-agent-installer-prepare-smoke.sh" {
+					for _, required := range []string{
+						"target=/smoke,readonly",
+						"/smoke/autostream-host-agent",
+					} {
+						if !strings.Contains(step, required) {
+							t.Fatalf(
+								"%s smoke %s is missing real Host Agent input %q",
+								workflowName, smoke, required,
+							)
+						}
 					}
 				}
 			}

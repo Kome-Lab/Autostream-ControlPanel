@@ -74,10 +74,11 @@ type hostAgentLiveSystemdSidecarVerifier func(
 // inactive staged identity. If the identity rename has definitely not
 // happened, the policy and newly created sidecars are rolled back.
 type PreparedHostAgentConfiguration struct {
-	identity *PreparedUpdaterConfig
-	policy   *preparedLocalExecutorPolicy
-	sidecars *preparedSystemdPortSidecars
-	options  HostAgentConfigurationOptions
+	identity             *PreparedUpdaterConfig
+	policy               *preparedLocalExecutorPolicy
+	sidecars             *preparedSystemdPortSidecars
+	options              HostAgentConfigurationOptions
+	verifyIdentityLayout func() error
 }
 
 func PrepareHostAgentConfiguration(
@@ -95,6 +96,9 @@ func PrepareHostAgentConfigurationWithOptions(
 	identityPath, policyPath, installGroup string,
 	options HostAgentConfigurationOptions,
 ) (*PreparedHostAgentConfiguration, error) {
+	if err := validateHostAgentIdentityWriteLayout(identityPath, os.Lstat); err != nil {
+		return nil, err
+	}
 	identity, err := PrepareManagedIdentityConfig(identityPath, installGroup)
 	if err != nil {
 		return nil, err
@@ -118,6 +122,9 @@ func PrepareHostAgentConfigurationWithOptions(
 		policy:   policy,
 		sidecars: sidecars,
 		options:  options,
+		verifyIdentityLayout: func() error {
+			return validateHostAgentIdentityWriteLayout(identityPath, os.Lstat)
+		},
 	}, nil
 }
 
@@ -133,8 +140,12 @@ func (p *PreparedHostAgentConfiguration) CommitContext(
 	identity UpdaterConfigureIdentity,
 	projection ConfigurePolicyProjection,
 ) error {
-	if p == nil || p.identity == nil || p.policy == nil || p.sidecars == nil {
+	if p == nil || p.identity == nil || p.policy == nil || p.sidecars == nil ||
+		p.verifyIdentityLayout == nil {
 		return errors.New("Host Agent configuration transaction is not prepared")
+	}
+	if err := p.verifyIdentityLayout(); err != nil {
+		return fmt.Errorf("validate Host Agent identity layout before configuration: %w", err)
 	}
 	canonicalPolicy, err := configurePolicyProjectionPolicy(projection)
 	if err != nil {
@@ -164,6 +175,25 @@ func (p *PreparedHostAgentConfiguration) CommitContext(
 			)
 		}
 		return err
+	}
+	if err := p.verifyIdentityLayout(); err != nil {
+		layoutErr := fmt.Errorf(
+			"Host Agent identity layout changed before identity installation: %w",
+			err,
+		)
+		policyRollbackErr := p.policy.Rollback()
+		var sidecarRollbackErr error
+		if !p.policy.committed {
+			sidecarRollbackErr = p.sidecars.Rollback()
+		}
+		if policyRollbackErr != nil || sidecarRollbackErr != nil {
+			return fmt.Errorf(
+				"%v; rollback configuration: %w",
+				layoutErr,
+				errors.Join(policyRollbackErr, sidecarRollbackErr),
+			)
+		}
+		return layoutErr
 	}
 	if err := p.identity.Commit(identity); err != nil {
 		if !p.identity.committed {
@@ -216,6 +246,9 @@ func ValidateInstalledHostAgentConfiguration(
 	identityPath, policyPath string,
 	staged UpdaterStagedConfiguration,
 ) error {
+	if err := validateHostAgentIdentityWriteLayout(identityPath, os.Lstat); err != nil {
+		return fmt.Errorf("validate installed Host Agent identity layout: %w", err)
+	}
 	if err := ValidateInstalledUpdaterIdentity(identityPath, staged.Config); err != nil {
 		return err
 	}

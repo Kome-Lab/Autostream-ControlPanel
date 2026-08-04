@@ -9,12 +9,14 @@ export LC_ALL=C
   printf '%s\n' 'host agent installer prepare smoke requires root' >&2
   exit 1
 }
-[[ $# -eq 1 ]] || {
-  printf '%s\n' 'usage: run-host-agent-installer-prepare-smoke.sh REPOSITORY_ROOT' >&2
+[[ $# -eq 2 ]] || {
+  printf '%s\n' \
+    'usage: run-host-agent-installer-prepare-smoke.sh REPOSITORY_ROOT REAL_HOST_AGENT_BINARY' >&2
   exit 1
 }
 
 readonly REPOSITORY_ROOT=$1
+export AUTOSTREAM_REAL_HOST_AGENT_BINARY=$2
 readonly VERSION=v9.9.9
 readonly BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567
 readonly BUILD_DATE=2026-07-31T00:00:00Z
@@ -24,6 +26,12 @@ readonly ARCHIVE="/root/${ARTIFACT_ID}.tar.gz"
 readonly SYSTEMCTL_LOG=/tmp/autostream-host-agent-systemctl.log
 readonly BINARY_LOG=/tmp/autostream-host-agent-binary.log
 readonly LOCAL_EXECUTOR_BINARY_LOG=/tmp/autostream-local-executor-prepare-binary.log
+
+[[ -f ${AUTOSTREAM_REAL_HOST_AGENT_BINARY} &&
+  ! -L ${AUTOSTREAM_REAL_HOST_AGENT_BINARY} ]] || {
+  printf '%s\n' 'real Host Agent smoke binary must be a regular non-symlink file' >&2
+  exit 1
+}
 
 rm -rf -- "${PACKAGE_ROOT}"
 rm -f -- "${ARCHIVE}"
@@ -75,7 +83,7 @@ case "${1:-}" in
       'build_date: 2026-07-31T00:00:00Z'
     ;;
   validate-config)
-    test -f "${3:-}"
+    "${AUTOSTREAM_REAL_HOST_AGENT_BINARY:?}" "$@"
     ;;
   *)
     printf 'unexpected Host Agent invocation: %s\n' "$*" >&2
@@ -1052,6 +1060,39 @@ if [[ $(stat -c '%d:%i:%u:%g:%a' /var/lib/autostream-host-agent) != \
   printf '%s\n' 'post-start failure changed existing Host Agent state' >&2
   exit 1
 fi
+
+dd if=/dev/zero of=/etc/autostream/host-agent.json \
+  bs=65537 count=1 status=none
+chown root:autostream-host-agent /etc/autostream/host-agent.json
+chmod 0640 /etc/autostream/host-agent.json
+unsafe_legacy_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' \
+  /etc/autostream/host-agent.json)
+unsafe_legacy_sha=$(sha256sum /etc/autostream/host-agent.json |
+  awk 'NR == 1 { print $1 }')
+set +e
+unsafe_legacy_output="$(${PACKAGE_ROOT}/install/install-autostream-host-agent \
+  --config /root/autostream-host-agent.json 2>&1)"
+unsafe_legacy_status=$?
+set -e
+if [[ ${unsafe_legacy_status} -eq 0 ||
+  ${unsafe_legacy_output} != *'legacy Host Agent identity has an unsafe size'* ]]; then
+  printf '%s\n' 'configured install did not reject an oversized legacy identity before retirement' >&2
+  printf '%s\n' "${unsafe_legacy_output}" >&2
+  exit 1
+fi
+test ! -e /etc/autostream-host-agent/identity.json
+test -e /etc/autostream/host-agent.json
+if [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' /etc/autostream/host-agent.json) != \
+    "${unsafe_legacy_identity}" ||
+  $(sha256sum /etc/autostream/host-agent.json | awk 'NR == 1 { print $1 }') != \
+    "${unsafe_legacy_sha}" ||
+  $(managed_runtime_fingerprint) != "${managed_runtime_before}" ||
+  -e /tmp/autostream-host-agent-active ||
+  -e /tmp/autostream-host-agent-enabled ]]; then
+  printf '%s\n' 'pre-retirement legacy validation failure was not rolled back exactly' >&2
+  exit 1
+fi
+rm -f -- /etc/autostream/host-agent.json
 
 install -o root -g autostream-host-agent -m 0640 \
   "${REPOSITORY_ROOT}/release/autostream-host-agent.json.example" \

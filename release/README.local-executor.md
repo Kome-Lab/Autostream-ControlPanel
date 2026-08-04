@@ -253,6 +253,11 @@ message carries the raw token to the root boundary without logging or durable
 request storage. Rotation/recovery may read or atomically replace only the
 fixed canonical/staged identity paths under `/etc/autostream-host-agent`; no
 request can select another path, and generic operations cannot carry a token.
+Every production credential operation requires the legacy
+`/etc/autostream/host-agent.json` identity to be absent before mutation,
+immediately before active-identity replacement, and before successful
+completion. A visible legacy identity or an error proving its absence makes
+the root executor fail closed without accepting a caller-selected exception.
 Prepare the Docker credential before activating a Docker target:
 
 ```console

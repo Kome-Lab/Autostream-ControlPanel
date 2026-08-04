@@ -210,8 +210,29 @@ jobs:
             "${result}" > /dev/null
       - name: Check Host Agent installer smoke syntax
         run: |
+          bash -n internal/security/testdata/run-host-agent-identity-permissions-smoke.sh
           bash -n internal/security/testdata/run-host-agent-installer-prepare-smoke.sh
           bash -n internal/security/testdata/run-host-agent-installer-upgrade-smoke.sh
+      - name: Test Host Agent canonical identity with private legacy parent
+        run: |
+          set -euo pipefail
+          smoke_dir="${RUNNER_TEMP}/host-agent-identity-permissions"
+          mkdir -p "${smoke_dir}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+              -o "${smoke_dir}/autostream-host-agent" \
+              ./cmd/autostream-host-agent
+          docker run --rm \
+            --user 0:0 \
+            --network none \
+            --pids-limit 128 \
+            --memory 256m \
+            --cpus 1 \
+            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+            --mount "type=bind,source=${smoke_dir},target=/smoke,readonly" \
+            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+            /bin/bash /workspace/internal/security/testdata/run-host-agent-identity-permissions-smoke.sh \
+              /smoke/autostream-host-agent
       - name: Test Host Agent prepare installer without an identity
         run: |
           docker run --rm \
@@ -221,9 +242,11 @@ jobs:
             --memory 256m \
             --cpus 1 \
             --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+            --mount "type=bind,source=${RUNNER_TEMP}/host-agent-identity-permissions,target=/smoke,readonly" \
             ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
             /bin/bash /workspace/internal/security/testdata/run-host-agent-installer-prepare-smoke.sh \
-              /workspace
+              /workspace \
+              /smoke/autostream-host-agent
       - name: Test Host Agent manual upgrade installer delegation
         run: |
           docker run --rm \

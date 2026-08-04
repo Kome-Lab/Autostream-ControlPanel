@@ -306,6 +306,18 @@ both processes together when activation proof fails. See the archive-contained
 `README.md` for the exact prerequisites and recovery semantics. Do not replace
 the Host Agent or Local Executor binary separately.
 
+v1.9.10 also fixes Host Agent startup on existing service hosts where
+`/etc/autostream` correctly remains `root:root 0750`. The matched runtime
+securely loads the canonical `/etc/autostream-host-agent/identity.json`
+without requiring an ACL on the application-secret directory, while every
+root-owned configure and Runtime Token mutation still rejects a reachable
+legacy `/etc/autostream/host-agent.json`. A v1.9.9 Agent already stopped by the
+permission failure cannot enter the intentionally healthy-only `--upgrade`
+path directly. Follow the archive-contained `README.md` for the bounded
+v1.9.9-only execute-only ACL recovery bridge, matched v1.9.10 upgrade, and
+immediate post-upgrade removal of only that named entry. Never use
+`setfacl -b`, `chmod 0751`, a read ACL, or an application-group grant.
+
 Return to **Application Info > System Updates**, confirm the first observe-only
 heartbeat, review the projected targets and policy digest, then activate
 ownership. Only a positive ownership epoch with a matching policy digest can

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,6 +17,121 @@ const (
 	testOldRuntimeToken = "old-runtime-token-secret"
 	testNewRuntimeToken = "new-runtime-token-secret"
 )
+
+func TestRuntimeCredentialExecutorRejectsLegacyIdentityBeforeMutation(t *testing.T) {
+	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
+	policy, rt, request, activeBefore := newRuntimeCredentialExecutorFixture(t, now)
+	rt.verifyIdentityLayout = func() error {
+		return errors.New("legacy Host Agent identity already exists")
+	}
+
+	response := handleLocalExecutorRuntimeCredential(
+		context.Background(), policy, request, rt,
+	)
+	if response.Error == nil || response.Error.Code != "state_invalid" {
+		t.Fatalf("runtime credential response = %#v", response)
+	}
+	activeAfter, err := os.ReadFile(rt.activeIdentity)
+	if err != nil || !bytes.Equal(activeAfter, activeBefore) {
+		t.Fatalf("active identity changed: %q, %v", activeAfter, err)
+	}
+	if _, err := os.Lstat(rt.stagedIdentity); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged identity appeared: %v", err)
+	}
+	if _, exists, err := rt.loadStatus(); err != nil || exists {
+		t.Fatalf("runtime credential state changed: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestRuntimeCredentialExecutorRechecksLegacyIdentityAfterPanelActivationBeforeActiveWrite(
+	t *testing.T,
+) {
+	now := time.Date(2026, 8, 4, 8, 15, 0, 0, time.UTC)
+	policy, rt, request, activeBefore := newRuntimeCredentialExecutorFixture(t, now)
+	rt.acknowledgeStage = func(
+		context.Context, string, string, int64, string, *http.Client,
+	) (HostAgentRuntimeTokenRotation, error) {
+		return testRuntimeTokenRotation(
+			"local_staged", 3, now, now.Add(time.Second),
+		), nil
+	}
+	requireRuntimeCredentialPhase(
+		t,
+		handleLocalExecutorRuntimeCredential(
+			context.Background(), policy, request, rt,
+		),
+		RuntimeCredentialPhaseLocalStaged,
+		3,
+	)
+	proof := request
+	proof.Operation = "runtime_credential_proof_ready"
+	proof.RuntimeCredential = cloneRuntimeCredentialMutation(
+		request.RuntimeCredential,
+		4,
+		"",
+	)
+	requireRuntimeCredentialPhase(
+		t,
+		handleLocalExecutorRuntimeCredential(
+			context.Background(), policy, proof, rt,
+		),
+		RuntimeCredentialPhaseProofReady,
+		4,
+	)
+
+	legacyAppeared := false
+	rt.verifyIdentityLayout = func() error {
+		if legacyAppeared {
+			return errors.New("legacy Host Agent identity appeared")
+		}
+		return nil
+	}
+	rt.activate = func(
+		context.Context, string, string, int64, string, *http.Client,
+	) (HostAgentRuntimeTokenRotation, error) {
+		legacyAppeared = true
+		return testRuntimeTokenRotation(
+			"activated", 5, now, now.Add(time.Second),
+		), nil
+	}
+	activate := proof
+	activate.Operation = "runtime_credential_activate"
+	response := handleLocalExecutorRuntimeCredential(
+		context.Background(), policy, activate, rt,
+	)
+	if response.Error == nil || response.Error.Code != "state_invalid" {
+		t.Fatalf("runtime credential response = %#v", response)
+	}
+	activeAfter, err := os.ReadFile(rt.activeIdentity)
+	if err != nil || !bytes.Equal(activeAfter, activeBefore) {
+		t.Fatalf("active identity changed after legacy race: %q, %v", activeAfter, err)
+	}
+}
+
+func TestEmergencyRuntimeCredentialRecoveryRejectsLegacyIdentityBeforeMutation(t *testing.T) {
+	now := time.Date(2026, 8, 4, 8, 30, 0, 0, time.UTC)
+	policy, rt, _, activeBefore := newRuntimeCredentialExecutorFixture(t, now)
+	checks := 0
+	rt.verifyIdentityLayout = func() error {
+		checks++
+		return errors.New("legacy Host Agent identity already exists")
+	}
+
+	_, err := rt.recoverAfterEmergencyManualReconfigure(policy, "rotation-a")
+	if err == nil || !strings.Contains(err.Error(), "legacy Host Agent identity") {
+		t.Fatalf("emergency recovery error = %v", err)
+	}
+	if checks != 1 {
+		t.Fatalf("identity layout checks = %d", checks)
+	}
+	activeAfter, readErr := os.ReadFile(rt.activeIdentity)
+	if readErr != nil || !bytes.Equal(activeAfter, activeBefore) {
+		t.Fatalf("active identity changed: %q, %v", activeAfter, readErr)
+	}
+	if _, exists, loadErr := rt.loadStatus(); loadErr != nil || exists {
+		t.Fatalf("runtime credential state changed: exists=%v err=%v", exists, loadErr)
+	}
+}
 
 func TestRuntimeCredentialExecutorActivationResponseLossRecoversWithoutSecretLeak(
 	t *testing.T,

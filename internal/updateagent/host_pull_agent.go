@@ -180,7 +180,7 @@ func NewHostPullAgent(bootstrap Config, options HostPullAgentOptions) (*HostPull
 	}
 	loadRuntimeIdentity := options.LoadRuntimeIdentity
 	if loadRuntimeIdentity == nil {
-		loadRuntimeIdentity = LoadManagedBootstrapConfig
+		loadRuntimeIdentity = LoadHostAgentIdentity
 	}
 	claimIDGenerator := options.NewRuntimeTokenClaimID
 	if claimIDGenerator == nil {

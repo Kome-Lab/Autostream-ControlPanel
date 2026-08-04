@@ -25,18 +25,19 @@ const (
 )
 
 type runtimeCredentialExecutorRuntime struct {
-	identityDir         string
-	activeIdentity      string
-	stagedIdentity      string
-	wipingIdentity      string
-	statePath           string
-	httpClient          *http.Client
-	now                 func() time.Time
-	executorVersion     string
-	allowTestPaths      bool
-	writeStagedIdentity func(string, []byte, uint32, bool) error
-	acknowledgeStage    func(context.Context, string, string, int64, string, *http.Client) (HostAgentRuntimeTokenRotation, error)
-	activate            func(context.Context, string, string, int64, string, *http.Client) (HostAgentRuntimeTokenRotation, error)
+	identityDir          string
+	activeIdentity       string
+	stagedIdentity       string
+	wipingIdentity       string
+	statePath            string
+	httpClient           *http.Client
+	now                  func() time.Time
+	executorVersion      string
+	allowTestPaths       bool
+	verifyIdentityLayout func() error
+	writeStagedIdentity  func(string, []byte, uint32, bool) error
+	acknowledgeStage     func(context.Context, string, string, int64, string, *http.Client) (HostAgentRuntimeTokenRotation, error)
+	activate             func(context.Context, string, string, int64, string, *http.Client) (HostAgentRuntimeTokenRotation, error)
 }
 
 type runtimeCredentialStateFile struct {
@@ -49,13 +50,19 @@ type runtimeCredentialStateFile struct {
 
 func defaultRuntimeCredentialExecutorRuntime() runtimeCredentialExecutorRuntime {
 	return runtimeCredentialExecutorRuntime{
-		identityDir:      HostAgentIdentityDir,
-		activeIdentity:   HostAgentIdentityPath,
-		stagedIdentity:   HostAgentStagedIdentityPath,
-		wipingIdentity:   HostAgentWipingIdentityPath,
-		statePath:        RuntimeCredentialStatePath,
-		now:              time.Now,
-		executorVersion:  controlversion.Current(),
+		identityDir:     HostAgentIdentityDir,
+		activeIdentity:  HostAgentIdentityPath,
+		stagedIdentity:  HostAgentStagedIdentityPath,
+		wipingIdentity:  HostAgentWipingIdentityPath,
+		statePath:       RuntimeCredentialStatePath,
+		now:             time.Now,
+		executorVersion: controlversion.Current(),
+		verifyIdentityLayout: func() error {
+			return validateHostAgentIdentityWriteLayout(
+				HostAgentIdentityPath,
+				os.Lstat,
+			)
+		},
 		acknowledgeStage: AcknowledgeRuntimeTokenRotationLocalStage,
 		activate:         ActivateRuntimeTokenRotationAtPanel,
 	}
@@ -84,6 +91,11 @@ func handleLocalExecutorRuntimeCredential(
 	if err := rt.validatePaths(); err != nil {
 		return localExecutorFailureForVersion(
 			LocalExecutorMutationProtocolVersion, "state_unavailable",
+		)
+	}
+	if err := rt.validateIdentityLayout(); err != nil {
+		return localExecutorFailureForVersion(
+			LocalExecutorMutationProtocolVersion, "state_invalid",
 		)
 	}
 	status, exists, err := rt.loadAndReconcileStatus(policy.AgentGID)
@@ -159,6 +171,9 @@ func handleLocalExecutorRuntimeCredential(
 	default:
 		err = errors.New("unsupported runtime credential operation")
 	}
+	if err == nil {
+		err = rt.validateIdentityLayout()
+	}
 	if err != nil {
 		code := "state_invalid"
 		var panelErr *PanelHTTPError
@@ -215,6 +230,16 @@ func (rt runtimeCredentialExecutorRuntime) validatePaths() error {
 		return errors.New("runtime credential paths are not fixed production paths")
 	}
 	return nil
+}
+
+func (rt runtimeCredentialExecutorRuntime) validateIdentityLayout() error {
+	if rt.verifyIdentityLayout != nil {
+		return rt.verifyIdentityLayout()
+	}
+	if rt.allowTestPaths {
+		return nil
+	}
+	return validateHostAgentIdentityWriteLayout(rt.activeIdentity, os.Lstat)
 }
 
 func (rt runtimeCredentialExecutorRuntime) currentTime() time.Time {
@@ -617,9 +642,15 @@ func (rt runtimeCredentialExecutorRuntime) activateCredential(
 	); err != nil {
 		return RuntimeCredentialStatus{}, err
 	}
+	if err := rt.validateIdentityLayout(); err != nil {
+		return RuntimeCredentialStatus{}, err
+	}
 	if err := rt.writeIdentityAtomic(
 		rt.activeIdentity, stagedBytes, policy.AgentGID, true,
 	); err != nil {
+		return RuntimeCredentialStatus{}, err
+	}
+	if err := rt.validateIdentityLayout(); err != nil {
 		return RuntimeCredentialStatus{}, err
 	}
 	_, activeBytes, _, err := rt.loadIdentity(
