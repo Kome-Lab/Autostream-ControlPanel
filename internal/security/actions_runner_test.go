@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	controlPanelCIRunner           = "blacksmith-16vcpu-ubuntu-2404"
-	controlPanelReleaseBuildRunner = "blacksmith-16vcpu-ubuntu-2404"
-	controlPanelPublishRunner      = "ubuntu-24.04"
+	controlPanelStandardRunner = "blacksmith-16vcpu-ubuntu-2404"
+	controlPanelLargeRunner    = "blacksmith-32vcpu-ubuntu-2404"
+	controlPanelPublishRunner  = "ubuntu-24.04"
 )
 
 func TestControlPanelActionsUseScopedLinuxRunners(t *testing.T) {
@@ -23,15 +23,15 @@ func TestControlPanelActionsUseScopedLinuxRunners(t *testing.T) {
 		{
 			name: "ci.yml",
 			requiredRunners: map[string]string{
-				"service-installer": controlPanelCIRunner,
-				"go":                controlPanelCIRunner,
-				"web":               controlPanelCIRunner,
+				"service-installer": controlPanelLargeRunner,
+				"go":                controlPanelLargeRunner,
+				"web":               controlPanelStandardRunner,
 			},
 		},
 		{
 			name: "release-host.yml",
 			requiredRunners: map[string]string{
-				"release-host":    controlPanelReleaseBuildRunner,
+				"release-host":    controlPanelLargeRunner,
 				"publish-release": controlPanelPublishRunner,
 			},
 		},
@@ -55,14 +55,14 @@ func TestControlPanelActionsUseScopedLinuxRunners(t *testing.T) {
 func TestControlPanelRunnerValidationAllowsNonLinuxJobs(t *testing.T) {
 	workflow := `jobs:
   linux:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: blacksmith-32vcpu-ubuntu-2404
   windows:
     runs-on: windows-latest
   macos:
     runs-on: macos-latest
 `
 	if err := validateControlPanelWorkflowRunners(
-		workflow, map[string]string{"linux": controlPanelCIRunner},
+		workflow, map[string]string{"linux": controlPanelLargeRunner},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -81,18 +81,18 @@ func TestControlPanelRunnerValidationRejectsMissingAndLegacyLinuxJobs(t *testing
   windows:
     runs-on: windows-latest
 `,
-			requiredRunners: map[string]string{"linux": controlPanelCIRunner},
+			requiredRunners: map[string]string{"linux": controlPanelLargeRunner},
 			wantError:       `required job "linux" does not declare a scalar runs-on`,
 		},
 		{
 			name: "legacy runner on additional Linux job",
 			workflow: `jobs:
   linux:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: blacksmith-32vcpu-ubuntu-2404
   legacy-linux:
     runs-on: ubuntu-24.04
 `,
-			requiredRunners: map[string]string{"linux": controlPanelCIRunner},
+			requiredRunners: map[string]string{"linux": controlPanelLargeRunner},
 			wantError:       `job "legacy-linux" uses unscoped Linux runner "ubuntu-24.04"`,
 		},
 	}
@@ -167,11 +167,16 @@ func TestControlPanelActionlintRecognizesBlacksmithRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := string(payload)
-	if strings.Count(config, controlPanelCIRunner) != 1 {
-		t.Fatalf(
-			"actionlint config must declare exact Blacksmith runner %q once",
-			controlPanelCIRunner,
-		)
+	for _, runner := range []string{
+		controlPanelStandardRunner,
+		controlPanelLargeRunner,
+	} {
+		if strings.Count(config, runner) != 1 {
+			t.Fatalf(
+				"actionlint config must declare exact Blacksmith runner %q once",
+				runner,
+			)
+		}
 	}
 }
 
