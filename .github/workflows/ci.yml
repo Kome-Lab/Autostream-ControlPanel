@@ -141,9 +141,10 @@ jobs:
             "${result}" > /dev/null
       - name: Test managed Host config and upgrade locks with root-owned Linux fixtures
         run: |
+          set -euo pipefail
           getent group autostream-updater >/dev/null 2>&1 || sudo groupadd --system autostream-updater
           getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent
-          sudo install -d -o root -g root -m 0700 /root/autostream-updater-root-tests /root/.cache/go-build-autostream
+          sudo install -d -o root -g root -m 0700 /root/autostream-updater-root-tests
           root_tests=(
             TestPreparedUpdaterConfig
             TestHostAgentConfigurationTransaction
@@ -153,14 +154,16 @@ jobs:
           )
           expected_root_mode_skip="TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation"
           result="${RUNNER_TEMP}/root-owned-updater-tests.json"
-          sudo env \
-            PATH="${PATH}" \
-            GOCACHE="/root/.cache/go-build-autostream" \
-            TMPDIR="/root/autostream-updater-root-tests" \
-            go test ./internal/updateagent \
-              -run '^(TestPreparedUpdaterConfig|TestHostAgentConfigurationTransaction|TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller|TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock|TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes)' \
-              -count=1 \
-              -json | tee "${result}"
+          GOTOOLCHAIN=local GOENV=off GOWORK=off GOPROXY=off \
+            go test \
+            -mod=readonly \
+            -trimpath \
+            -exec='/usr/bin/sudo /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TMPDIR=/root/autostream-updater-root-tests' \
+            ./internal/updateagent \
+            -run '^(TestPreparedUpdaterConfig|TestHostAgentConfigurationTransaction|TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller|TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock|TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes)' \
+            -count=1 \
+            -timeout=10m \
+            -json | tee "${result}"
           if jq -e \
             --arg expected_root_mode_skip "${expected_root_mode_skip}" \
             'select(
