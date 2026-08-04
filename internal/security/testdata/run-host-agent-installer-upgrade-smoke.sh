@@ -1841,7 +1841,12 @@ assert_recovery_preflight_rejected_without_stop() {
   assert_no_completion "${output}"
   grep -Fq -- \
     '--recover-active-job requires an exact permitted live Host Agent and Local Executor A/B pair' \
-    <<<"${output}"
+    <<<"${output}" || {
+    printf 'unexpected recovery preflight rejection: %s\n' "${label}" >&2
+    awk '/^install-autostream-host-agent:/ { last = $0 } END { if (last != "") print last }' \
+      <<<"${output}" >&2
+    exit 1
+  }
   [[ ! -s ${RECOVERY_SEQUENCE_LOG} ]] || {
     printf 'unsafe live pair reached stop or guard operation: %s\n' "${label}" >&2
     exit 1
