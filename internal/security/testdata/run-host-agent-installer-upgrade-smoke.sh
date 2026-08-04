@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
 
 umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
