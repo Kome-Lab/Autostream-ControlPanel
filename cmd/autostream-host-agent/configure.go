@@ -19,13 +19,14 @@ import (
 const hostAgentInstallGroup = "autostream-host-agent"
 
 type preparedHostAgentConfig interface {
-	Commit(updateagent.UpdaterConfigureIdentity, updateagent.ConfigurePolicyProjection) error
+	CommitContext(context.Context, updateagent.UpdaterConfigureIdentity, updateagent.ConfigurePolicyProjection) error
 	Abort()
 }
 
 type hostAgentConfigureDependencies struct {
 	AcquireRuntimeLocks func() (func(), error)
-	Prepare             func(string, string) (preparedHostAgentConfig, error)
+	AcquireTargetLocks  func() (func(), error)
+	Prepare             func(string, string, updateagent.HostAgentConfigurationOptions) (preparedHostAgentConfig, error)
 	ServiceIdentity     func() (updateagent.HostAgentConfigurePeerIdentity, error)
 	ReadToken           func(context.Context) (string, error)
 	Stage               func(context.Context, string, string, string, updateagent.HostAgentConfigurePeerIdentity, time.Duration) (updateagent.UpdaterStagedConfiguration, error)
@@ -38,11 +39,13 @@ type hostAgentConfigureDependencies struct {
 func defaultHostAgentConfigureDependencies() hostAgentConfigureDependencies {
 	return hostAgentConfigureDependencies{
 		AcquireRuntimeLocks: updateagent.AcquireHostRuntimeSetupAndLifecycleLocks,
-		Prepare: func(identityPath, policyPath string) (preparedHostAgentConfig, error) {
-			return updateagent.PrepareHostAgentConfiguration(
+		AcquireTargetLocks:  updateagent.AcquireHostConfigurationTargetLocks,
+		Prepare: func(identityPath, policyPath string, options updateagent.HostAgentConfigurationOptions) (preparedHostAgentConfig, error) {
+			return updateagent.PrepareHostAgentConfigurationWithOptions(
 				identityPath,
 				policyPath,
 				hostAgentInstallGroup,
+				options,
 			)
 		},
 		ServiceIdentity: func() (updateagent.HostAgentConfigurePeerIdentity, error) {
@@ -79,11 +82,16 @@ func runHostAgentConfigure(ctx context.Context, args []string, dependencies host
 	nodeID := flags.String("node", "", "registered Host Agent service ID")
 	configPath := flags.String("config", defaultHostAgentConfigPath, "root-owned Host Agent identity configuration")
 	timeout := flags.Duration("timeout", 30*time.Second, "Control Panel configure request timeout")
+	adoptLiveSystemdSidecar := flags.Bool(
+		"adopt-live-systemd-sidecar",
+		false,
+		"adopt one verified live systemd port sidecar during drift recovery",
+	)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("configure accepts only --panel-url, --node, --config, and --timeout")
+		return errors.New("configure accepts only --panel-url, --node, --config, --timeout, and --adopt-live-systemd-sidecar")
 	}
 	if strings.TrimSpace(*panelURL) == "" {
 		return errors.New("--panel-url is required")
@@ -94,7 +102,8 @@ func runHostAgentConfigure(ctx context.Context, args []string, dependencies host
 	if *timeout <= 0 || *timeout > 5*time.Minute {
 		return errors.New("--timeout must be greater than zero and at most 5m")
 	}
-	if dependencies.AcquireRuntimeLocks == nil || dependencies.Prepare == nil ||
+	if dependencies.AcquireRuntimeLocks == nil || dependencies.AcquireTargetLocks == nil ||
+		dependencies.Prepare == nil ||
 		dependencies.ServiceIdentity == nil ||
 		dependencies.ReadToken == nil || dependencies.Stage == nil ||
 		dependencies.ValidateInstalled == nil || dependencies.Activate == nil ||
@@ -110,6 +119,13 @@ func runHostAgentConfigure(ctx context.Context, args []string, dependencies host
 		return errors.New("another Host runtime setup or lifecycle operation is active")
 	}
 	defer runtimeUnlock()
+	if *adoptLiveSystemdSidecar {
+		targetUnlock, err := dependencies.AcquireTargetLocks()
+		if err != nil {
+			return errors.New("another managed service target operation is active")
+		}
+		defer targetUnlock()
+	}
 	peer, err := dependencies.ServiceIdentity()
 	if err != nil {
 		return err
@@ -120,6 +136,9 @@ func runHostAgentConfigure(ctx context.Context, args []string, dependencies host
 	prepared, err := dependencies.Prepare(
 		*configPath,
 		updateagent.DefaultLocalExecutorPolicyPath,
+		updateagent.HostAgentConfigurationOptions{
+			AdoptLiveSystemdSidecar: *adoptLiveSystemdSidecar,
+		},
 	)
 	if err != nil {
 		return err
@@ -158,7 +177,10 @@ func runHostAgentConfigure(ctx context.Context, args []string, dependencies host
 	if staged.LocalExecutorPolicy == nil {
 		return errors.New("Host Agent configuration stage omitted the Local Executor policy")
 	}
-	if err := prepared.Commit(staged.Config, *staged.LocalExecutorPolicy); err != nil {
+	if err := prepared.CommitContext(ctx, staged.Config, *staged.LocalExecutorPolicy); err != nil {
+		if updateagent.HostAgentConfigurationInstalled(err) {
+			return fmt.Errorf("Host Agent identity was installed but post-install finalization failed; do not restart autostream-host-agent and issue a new Configure Token: %w", err)
+		}
 		return fmt.Errorf("Host Agent configuration was staged but installation failed; do not restart autostream-host-agent and issue a new Configure Token: %w", err)
 	}
 	postCommitError := func(operation string, err error) error {

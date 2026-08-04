@@ -219,6 +219,7 @@ jobs:
           sudo install -d -o root -g root -m 0700 /root/autostream-updater-root-tests /root/.cache/go-build-autostream
           root_tests=(
             TestPreparedUpdaterConfig
+            TestHostAgentConfigurationTransaction
             TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller
             TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock
             TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes
@@ -230,7 +231,7 @@ jobs:
             GOCACHE="/root/.cache/go-build-autostream" \
             TMPDIR="/root/autostream-updater-root-tests" \
             go test ./internal/updateagent \
-              -run '^(TestPreparedUpdaterConfig|TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller|TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock|TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes)' \
+              -run '^(TestPreparedUpdaterConfig|TestHostAgentConfigurationTransaction|TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller|TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock|TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes)' \
               -count=1 \
               -json | tee "${result}"
           if jq -e \
@@ -240,6 +241,7 @@ jobs:
               .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
               .Test != $expected_root_mode_skip and
               (((.Test // "") | startswith("TestPreparedUpdaterConfig")) or
+               ((.Test // "") | startswith("TestHostAgentConfigurationTransaction")) or
                (.Test == "TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller") or
                (.Test == "TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock") or
                (.Test == "TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes")))' \
@@ -1124,7 +1126,7 @@ jobs:
           release_body_path="${RUNNER_TEMP}/host-release-body.md"
           printf '%s\n\n%s\n\n%s' \
             "AutoStream Host Bridge ${RELEASE_VERSION}" \
-            "This release preserves restrictive private archive extraction while normalizing only the verified Host recovery service candidate to root:root 0644 before Local Executor validation. For the fail-closed v1.9.6 candidate-template rejection, install and verify the matching Control Panel ${RELEASE_VERSION}, then retry with the unmodified Host Agent ${RELEASE_VERSION} archive." \
+            "This release adds an explicit one-sidecar Host recovery mode for verified live systemd drift. The Host Agent keeps normal configure fail-closed, accepts no caller-selected target values, excludes Control Panel, and uses Linux atomic inode exchange only after the current root policy and the stable managed unit, process, listener, and HTTP identity prove the staged loopback target. Install and verify the matching Control Panel ${RELEASE_VERSION} and unmodified Host Agent ${RELEASE_VERSION} archive before using --adopt-live-systemd-sidecar with a fresh Configure Token." \
             "This immutable Bridge release retains the legacy ssh_v1 host-update assets and the pull_v2 Host Agent and Local Executor assets. Migrate one host at a time, keep SSH and port 8090 recovery assets during the bake period, and remove them only in a later release." \
             > "${release_body_path}"
           test -s "${release_body_path}"

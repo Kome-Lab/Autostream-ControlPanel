@@ -116,13 +116,83 @@ Configuration atomically installs:
 
 Each sidecar contains exactly the service-specific bind variable and
 `AUTOSTREAM_CONFIG_REVISION`, terminated by LF. An existing sidecar must match
-the canonical bytes; configure never overwrites a different file. Policy,
-sidecars, and identity are re-read and digest/revision-bound before activation.
+the canonical bytes; normal configure never overwrites a different file.
+Policy, sidecars, and identity are re-read and digest/revision-bound before activation.
 The possible initial systemd sidecars are fixed to Control Panel, Worker,
 Encoder Recorder, Discord Bot, and Observability. Control Panel receives an
 initial canonical sidecar but remains ineligible for runtime port changes.
 The four-field identity still does not receive or persist a host ID, ownership
 epoch, target policy, GitHub token, SSH setting, or local command.
+
+### Recover one verified live systemd sidecar
+
+`--adopt-live-systemd-sidecar` is a narrow, explicit recovery mode for a host
+where exactly one existing sidecar still matches the current root policy but a
+service is already running on the staged policy's different loopback port. Do
+not use it for initial installation, ordinary port changes, hand-edited files,
+multiple mismatches, or Control Panel itself. A missing sidecar is never the
+adoption candidate and remains governed by normal create-if-absent behavior
+for the other managed targets. Explicit adoption still requires exactly one
+differing existing sidecar.
+
+A v1.9.7 binary does not provide this recovery flag. On a managed v1.9.7 host,
+first verify and extract the version-matched v1.9.8 Host Agent archive, leave
+its unchanged archive adjacent to the extracted directory, and run the managed
+Host bridge upgrade:
+
+```bash
+cd /opt/autostream/releases/artifacts/autostream-host-agent_v1.9.8_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade
+```
+
+That installer upgrades the Host Agent and Local Executor as one matched pair
+and performs their bounded installer-controlled restarts. Those restarts must
+finish successfully to install the new flag. After the upgrade succeeds, do
+not delete or edit the sidecar and do not manually restart the Host Agent or
+the affected target service until explicit adoption Configure finishes.
+
+Only after that upgrade succeeds, issue a fresh Configure Token for the same
+Panel URL and Node, then add only the boolean recovery flag to the generated
+command. Enter the token only at the protected TTY/stdin prompt; it is never
+accepted in argv or an environment variable:
+
+```bash
+sudo /usr/local/bin/autostream-host-agent configure \
+  --panel-url https://control.example.com \
+  --node registered-update-agent-service-id \
+  --config /etc/autostream-host-agent/identity.json \
+  --adopt-live-systemd-sidecar
+```
+
+The command accepts no caller-selected service, path, port, revision, digest,
+or force value. Before changing a canonical pathname it requires the current
+managed identity and policy to bind the same Panel, Node, host, Agent UID/GID,
+and fixed target profile; all three policy revisions must strictly advance;
+the endpoint and config revisions must be unchanged; and the only target
+change may be its loopback port and locally derived sidecar SHA-256. Exactly
+one existing sidecar must be the canonical bytes for the current policy.
+Worker, Encoder Recorder, Discord Bot, and Observability are eligible;
+Control Panel is not.
+
+Recovery also refuses any active or applied port ledger. On Linux it verifies
+the fixed unit ID and final `EnvironmentFile`, managed release checksums and
+executable, stable MainPID/start time/cgroup, listener ownership on the staged
+port, the unused old port, and direct no-proxy `/health` and
+`/updater/version` identity/version/config revision. It performs no restart or
+daemon reload. Only after that proof does it atomically exchange the one
+root-owned `0600` sidecar, fsync the directory, and repeat the same live proof.
+The exact old inode is retained until policy and identity installation
+succeeds, then removed with another durability fence. A known pre-identity
+failure exchanges the old inode back; an ambiguous result is preserved and
+reported rather than overwritten or blindly rolled back.
+
+If recovery fails after staging, the Configure Token is consumed. Leave both
+services in their reported state, do not restart the Host Agent, inspect the
+error, issue a new Configure Token, and retry only after the unsafe or
+concurrent condition has been removed. A crash after the sidecar exchange can
+leave the verified live sidecar with the prior policy; Local Executor mutation
+then fails closed, and a fresh normal configure for the same staged target
+converges because the sidecar is already byte-exact.
 
 `/etc/autostream-host-agent/identity.json` is the canonical identity. The
 legacy `/etc/autostream/host-agent.json` is a read-only runtime fallback only

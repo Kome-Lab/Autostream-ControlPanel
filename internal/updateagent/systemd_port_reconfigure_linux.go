@@ -272,21 +272,26 @@ func (r *linuxSystemdPortRuntime) Verify(
 		policy.Validate() != nil {
 		return "", errors.New("systemd port verification target is invalid")
 	}
-	verifier := linuxLocalTargetVerifier{runner: r.runner}
-	before, err := verifier.Observe(ctx, policy, target)
-	if err != nil || validateLocalProcessObservation(target, before) != nil {
-		return "", errors.New("systemd port process verification failed")
+	observation, err := verifyStableLocalTarget(
+		ctx,
+		policy,
+		target,
+		linuxLocalTargetVerifier{runner: r.runner},
+		r.httpClient,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, errStableLocalTargetProcessVerification):
+			return "", errors.New("systemd port process verification failed")
+		case errors.Is(err, errStableLocalTargetEndpointVerification):
+			return "", errors.New("systemd port endpoint verification failed")
+		case errors.Is(err, errStableLocalTargetProcessChanged):
+			return "", errors.New("systemd port process changed during verification")
+		default:
+			return "", err
+		}
 	}
-	if err := verifyLocalExecutorHTTP(ctx, target, before.CurrentVersion, r.httpClient); err != nil {
-		return "", errors.New("systemd port endpoint verification failed")
-	}
-	after, err := verifier.Observe(ctx, policy, target)
-	if err != nil ||
-		validateLocalProcessObservation(target, after) != nil ||
-		!sameLocalProcessObservation(before, after) {
-		return "", errors.New("systemd port process changed during verification")
-	}
-	return after.CurrentVersion, nil
+	return observation.CurrentVersion, nil
 }
 
 func (*linuxSystemdPortRuntime) CrashPoint(string) error {

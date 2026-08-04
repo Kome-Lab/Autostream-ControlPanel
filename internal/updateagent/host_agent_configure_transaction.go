@@ -2,6 +2,7 @@ package updateagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,15 +10,63 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
-	DefaultLocalExecutorPolicyPath      = "/etc/autostream-local-executor/policy.json"
-	defaultSystemdPortSidecarDirectory  = "/opt/autostream/local-executor/ports"
-	systemdPortSidecarConfigureMaxBytes = 1 << 10
+	DefaultLocalExecutorPolicyPath       = "/etc/autostream-local-executor/policy.json"
+	defaultSystemdPortSidecarDirectory   = "/opt/autostream/local-executor/ports"
+	systemdPortSidecarConfigureMaxBytes  = 1 << 10
+	hostAgentSidecarRollbackProofTimeout = 15 * time.Second
 )
+
+// HostAgentConfigurationOptions contains the single narrow recovery authority
+// that may be granted by an operator. No caller-controlled service, path,
+// port, revision, or digest is accepted; those values remain bound to the
+// current and staged root policies.
+type HostAgentConfigurationOptions struct {
+	AdoptLiveSystemdSidecar bool
+}
+
+type hostAgentConfigurationInstalledError struct {
+	cause error
+}
+
+func (e hostAgentConfigurationInstalledError) Error() string {
+	return e.cause.Error()
+}
+
+func (e hostAgentConfigurationInstalledError) Unwrap() error {
+	return e.cause
+}
+
+// HostAgentConfigurationInstalled reports an error that happened only after
+// the sidecar, policy, and identity tuple was installed. Callers must preserve
+// that tuple and classify the failure as post-install rather than retrying or
+// rolling it back as an uncommitted transaction.
+func HostAgentConfigurationInstalled(err error) bool {
+	var installed hostAgentConfigurationInstalledError
+	return errors.As(err, &installed)
+}
+
+type hostAgentLiveSystemdSidecarProof struct {
+	Observation          LocalProcessObservation
+	MainPIDStartTime     uint64
+	ListenerPIDStartTime uint64
+	SystemdUnitID        string
+	EnvironmentFiles     string
+}
+
+type hostAgentLiveSystemdSidecarVerifier func(
+	context.Context,
+	LocalExecutorPolicy,
+	LocalExecutorPolicy,
+	LocalExecutorTarget,
+	LocalExecutorTarget,
+) (hostAgentLiveSystemdSidecarProof, error)
 
 // PreparedHostAgentConfiguration preflights both root-owned destinations
 // before a one-time Configure Token is read. Commit initializes only missing
@@ -28,10 +77,23 @@ type PreparedHostAgentConfiguration struct {
 	identity *PreparedUpdaterConfig
 	policy   *preparedLocalExecutorPolicy
 	sidecars *preparedSystemdPortSidecars
+	options  HostAgentConfigurationOptions
 }
 
 func PrepareHostAgentConfiguration(
 	identityPath, policyPath, installGroup string,
+) (*PreparedHostAgentConfiguration, error) {
+	return PrepareHostAgentConfigurationWithOptions(
+		identityPath,
+		policyPath,
+		installGroup,
+		HostAgentConfigurationOptions{},
+	)
+}
+
+func PrepareHostAgentConfigurationWithOptions(
+	identityPath, policyPath, installGroup string,
+	options HostAgentConfigurationOptions,
 ) (*PreparedHostAgentConfiguration, error) {
 	identity, err := PrepareManagedIdentityConfig(identityPath, installGroup)
 	if err != nil {
@@ -42,7 +104,10 @@ func PrepareHostAgentConfiguration(
 		identity.Abort()
 		return nil, err
 	}
-	sidecars, err := prepareSystemdPortSidecars(defaultSystemdPortSidecarDirectory)
+	sidecars, err := prepareSystemdPortSidecarsWithOptions(
+		defaultSystemdPortSidecarDirectory,
+		options,
+	)
 	if err != nil {
 		policy.Abort()
 		identity.Abort()
@@ -52,10 +117,19 @@ func PrepareHostAgentConfiguration(
 		identity: identity,
 		policy:   policy,
 		sidecars: sidecars,
+		options:  options,
 	}, nil
 }
 
 func (p *PreparedHostAgentConfiguration) Commit(
+	identity UpdaterConfigureIdentity,
+	projection ConfigurePolicyProjection,
+) error {
+	return p.CommitContext(context.Background(), identity, projection)
+}
+
+func (p *PreparedHostAgentConfiguration) CommitContext(
+	ctx context.Context,
 	identity UpdaterConfigureIdentity,
 	projection ConfigurePolicyProjection,
 ) error {
@@ -66,7 +140,14 @@ func (p *PreparedHostAgentConfiguration) Commit(
 	if err != nil {
 		return err
 	}
-	if err := p.sidecars.Commit(canonicalPolicy); err != nil {
+	if err := p.sidecars.CommitContext(
+		ctx,
+		canonicalPolicy,
+		identity,
+		p.identity.existing,
+		p.policy.existing,
+		p.options,
+	); err != nil {
 		return err
 	}
 	if err := p.policy.Commit(projection); err != nil {
@@ -99,7 +180,19 @@ func (p *PreparedHostAgentConfiguration) Commit(
 				)
 			}
 		}
+		if p.identity.committed {
+			return hostAgentConfigurationInstalledError{cause: fmt.Errorf(
+				"Host Agent identity, policy, and systemd sidecars were installed but identity commit reported an error: %w",
+				err,
+			)}
+		}
 		return err
+	}
+	if err := p.sidecars.Finalize(); err != nil {
+		return hostAgentConfigurationInstalledError{cause: fmt.Errorf(
+			"Host Agent identity and policy were installed but adopted systemd sidecar cleanup failed: %w",
+			err,
+		)}
 	}
 	return nil
 }
@@ -281,9 +374,31 @@ type preparedSystemdPortSidecar struct {
 }
 
 type preparedSystemdPortSidecars struct {
-	parent    string
-	entries   map[string]*preparedSystemdPortSidecar
-	committed bool
+	parent                  string
+	entries                 map[string]*preparedSystemdPortSidecar
+	replacementTempPath     string
+	replacementTemp         *os.File
+	replacementTempInfo     os.FileInfo
+	replacementBody         []byte
+	replacedEntry           *preparedSystemdPortSidecar
+	replaced                bool
+	replacementAmbiguous    bool
+	finalized               bool
+	exchange                func(string, string) error
+	syncParent              func(string) error
+	replacementPairVerifier func(*preparedSystemdPortSidecar, bool) bool
+	verifyLive              hostAgentLiveSystemdSidecarVerifier
+	rollbackAuthority       *hostAgentSystemdSidecarRollbackAuthority
+	committed               bool
+}
+
+type hostAgentSystemdSidecarRollbackAuthority struct {
+	verify        hostAgentLiveSystemdSidecarVerifier
+	currentPolicy LocalExecutorPolicy
+	stagedPolicy  LocalExecutorPolicy
+	currentTarget LocalExecutorTarget
+	stagedTarget  LocalExecutorTarget
+	acceptedProof hostAgentLiveSystemdSidecarProof
 }
 
 func canonicalSystemdPortSidecarPaths(parent string) ([]string, error) {
@@ -335,6 +450,16 @@ func joinSystemdSidecarPath(parent, name string) string {
 func prepareSystemdPortSidecars(
 	parent string,
 ) (*preparedSystemdPortSidecars, error) {
+	return prepareSystemdPortSidecarsWithOptions(
+		parent,
+		HostAgentConfigurationOptions{},
+	)
+}
+
+func prepareSystemdPortSidecarsWithOptions(
+	parent string,
+	options HostAgentConfigurationOptions,
+) (*preparedSystemdPortSidecars, error) {
 	if err := validateSystemdPortSidecarDirectory(parent); err != nil {
 		return nil, err
 	}
@@ -343,9 +468,13 @@ func prepareSystemdPortSidecars(
 		return nil, err
 	}
 	prepared := &preparedSystemdPortSidecars{
-		parent:  parent,
-		entries: make(map[string]*preparedSystemdPortSidecar, len(paths)),
+		parent:     parent,
+		entries:    make(map[string]*preparedSystemdPortSidecar, len(paths)),
+		exchange:   exchangeHostAgentSystemdSidecar,
+		syncParent: syncDirectory,
+		verifyLive: verifyHostAgentLiveSystemdSidecar,
 	}
+	prepared.replacementPairVerifier = prepared.replacementPairMatchesOnDisk
 	failed := true
 	defer func() {
 		if failed {
@@ -389,6 +518,15 @@ func prepareSystemdPortSidecars(
 			}
 		}
 	}
+	if options.AdoptLiveSystemdSidecar {
+		prepared.replacementTemp,
+			prepared.replacementTempPath,
+			prepared.replacementTempInfo,
+			err = prepareHostAgentSystemdSidecarExchange(parent)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := prepared.verifyDestinations(); err != nil {
 		return nil, err
 	}
@@ -402,8 +540,36 @@ func prepareSystemdPortSidecars(
 func (p *preparedSystemdPortSidecars) Commit(
 	policy LocalExecutorPolicy,
 ) error {
+	return p.CommitContext(
+		context.Background(),
+		policy,
+		UpdaterConfigureIdentity{},
+		nil,
+		nil,
+		HostAgentConfigurationOptions{},
+	)
+}
+
+type hostAgentSystemdSidecarAdoption struct {
+	plan          initialSystemdPortSidecarPlan
+	currentPolicy LocalExecutorPolicy
+	currentTarget LocalExecutorTarget
+	stagedTarget  LocalExecutorTarget
+}
+
+func (p *preparedSystemdPortSidecars) CommitContext(
+	ctx context.Context,
+	policy LocalExecutorPolicy,
+	identity UpdaterConfigureIdentity,
+	currentIdentityBytes []byte,
+	currentPolicyBytes []byte,
+	options HostAgentConfigurationOptions,
+) error {
 	if p == nil || p.committed {
 		return errors.New("initial systemd port sidecar update is not prepared")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	plans, err := initialSystemdPortSidecarPlans(policy, p.parent)
 	if err != nil {
@@ -419,7 +585,28 @@ func (p *preparedSystemdPortSidecars) Commit(
 			Body:    append([]byte(nil), entry.existing...),
 		}
 	}
-	if err := validateInitialSystemdPortSidecarSnapshots(plans, snapshots); err != nil {
+	var adoption *hostAgentSystemdSidecarAdoption
+	if options.AdoptLiveSystemdSidecar {
+		adoption, err = authorizeHostAgentSystemdSidecarAdoption(
+			policy,
+			identity,
+			currentIdentityBytes,
+			currentPolicyBytes,
+			plans,
+			snapshots,
+			p.parent,
+		)
+		if err != nil {
+			return err
+		}
+		if p.replacementTemp == nil || p.replacementTempPath == "" ||
+			p.replacementTempInfo == nil || p.exchange == nil || p.verifyLive == nil {
+			return errors.New("live systemd sidecar adoption was not preflighted")
+		}
+	} else if err := validateInitialSystemdPortSidecarSnapshots(
+		plans,
+		snapshots,
+	); err != nil {
 		return err
 	}
 	for _, plan := range plans {
@@ -434,8 +621,44 @@ func (p *preparedSystemdPortSidecars) Commit(
 			return err
 		}
 	}
+	if adoption != nil {
+		if err := p.prepareReplacementBody(adoption.plan.Body); err != nil {
+			return err
+		}
+	}
 	if err := p.verifyDestinations(); err != nil {
 		return err
+	}
+	var liveProof hostAgentLiveSystemdSidecarProof
+	if adoption != nil {
+		liveProof, err = p.verifyLive(
+			ctx,
+			adoption.currentPolicy,
+			policy,
+			adoption.currentTarget,
+			adoption.stagedTarget,
+		)
+		if err != nil {
+			return fmt.Errorf("verify live systemd sidecar target before adoption: %w", err)
+		}
+		if err := p.verifyDestinations(); err != nil {
+			return err
+		}
+		p.rollbackAuthority = &hostAgentSystemdSidecarRollbackAuthority{
+			verify:        p.verifyLive,
+			currentPolicy: adoption.currentPolicy,
+			stagedPolicy:  policy,
+			currentTarget: adoption.currentTarget,
+			stagedTarget:  adoption.stagedTarget,
+			acceptedProof: liveProof,
+		}
+		entry, ok := p.entries[adoption.plan.Path]
+		if !ok || !entry.existed {
+			return errors.New("live systemd sidecar adoption destination was not preflighted")
+		}
+		if err := p.exchangeReplacement(entry); err != nil {
+			return err
+		}
 	}
 	for _, plan := range plans {
 		entry := p.entries[plan.Path]
@@ -454,7 +677,7 @@ func (p *preparedSystemdPortSidecars) Commit(
 			return err
 		}
 	}
-	if err := syncDirectory(p.parent); err != nil {
+	if err := p.syncParentDirectory(); err != nil {
 		rollbackErr := p.Rollback()
 		if rollbackErr != nil {
 			return fmt.Errorf(
@@ -476,8 +699,187 @@ func (p *preparedSystemdPortSidecars) Commit(
 		}
 		return err
 	}
+	if adoption != nil {
+		postProof, verifyErr := p.verifyLive(
+			ctx,
+			adoption.currentPolicy,
+			policy,
+			adoption.currentTarget,
+			adoption.stagedTarget,
+		)
+		if verifyErr != nil || postProof != liveProof {
+			// A changed process may already have consumed the newly exchanged
+			// sidecar. Restoring the old inode would then manufacture a second
+			// unverified restart target. Preserve the complete staged sidecar
+			// and its exact root-only backup for explicit recovery instead of
+			// performing a blind rollback.
+			preserveErr := errors.New("live systemd sidecar target changed after adoption; preserved the adopted sidecar and rollback inode for recovery")
+			if verifyErr != nil {
+				preserveErr = fmt.Errorf(
+					"verify live systemd sidecar target after adoption: %v; preserved the adopted sidecar and rollback inode for recovery",
+					verifyErr,
+				)
+			}
+			return errors.Join(preserveErr, p.rollbackCreatedSidecars())
+		}
+		p.rollbackAuthority.acceptedProof = postProof
+	}
 	p.committed = true
 	return nil
+}
+
+func authorizeHostAgentSystemdSidecarAdoption(
+	stagedPolicy LocalExecutorPolicy,
+	stagedIdentity UpdaterConfigureIdentity,
+	currentIdentityBytes []byte,
+	currentPolicyBytes []byte,
+	plans []initialSystemdPortSidecarPlan,
+	snapshots map[string]initialSystemdPortSidecarSnapshot,
+	parent string,
+) (*hostAgentSystemdSidecarAdoption, error) {
+	if validateUpdaterConfigureIdentity(
+		stagedIdentity,
+		stagedIdentity.NodeID,
+		"",
+	) != nil ||
+		stagedIdentity.ServiceType != ServiceTypeUpdateAgent ||
+		stagedIdentity.TransportMode != HostTransportPullV2 ||
+		stagedIdentity.API != (APIConfig{}) {
+		return nil, errors.New("live systemd sidecar staged identity is invalid")
+	}
+	currentIdentity, err := decodeManagedHostAgentIdentity(currentIdentityBytes)
+	if err != nil ||
+		!sameConfiguredPanelURL(currentIdentity.PanelURL, stagedIdentity.PanelURL) ||
+		currentIdentity.NodeID != stagedIdentity.NodeID {
+		return nil, errors.New("live systemd sidecar identity binding changed")
+	}
+	currentPolicy, err := decodeCanonicalLocalExecutorPolicy(currentPolicyBytes)
+	if err != nil {
+		return nil, errors.New("live systemd sidecar current policy is unavailable")
+	}
+	if currentPolicy.SchemaVersion != LocalExecutorMutationPolicySchemaVersion ||
+		currentPolicy.ProtocolVersion != LocalExecutorMutationProtocolVersion ||
+		currentPolicy.Mutation == nil || stagedPolicy.Mutation == nil ||
+		currentPolicy.HostID != stagedPolicy.HostID ||
+		currentPolicy.AgentUID != stagedPolicy.AgentUID ||
+		currentPolicy.AgentGID != stagedPolicy.AgentGID ||
+		currentPolicy.SocketPath != stagedPolicy.SocketPath ||
+		!sameConfiguredPanelURL(
+			currentPolicy.Mutation.PanelURL,
+			stagedPolicy.Mutation.PanelURL,
+		) ||
+		!sameConfiguredPanelURL(
+			stagedPolicy.Mutation.PanelURL,
+			stagedIdentity.PanelURL,
+		) ||
+		stagedPolicy.SourcePolicyRevision <= currentPolicy.SourcePolicyRevision ||
+		stagedPolicy.ProjectionRevision <= currentPolicy.ProjectionRevision ||
+		stagedPolicy.PolicyRevision <= currentPolicy.PolicyRevision {
+		return nil, errors.New("live systemd sidecar policy authority did not strictly advance")
+	}
+	mismatches := make([]initialSystemdPortSidecarPlan, 0, 1)
+	for _, plan := range plans {
+		snapshot, ok := snapshots[plan.Path]
+		if !ok {
+			return nil, errors.New("canonical systemd port sidecar was not preflighted")
+		}
+		if snapshot.Existed && !bytes.Equal(snapshot.Body, plan.Body) {
+			mismatches = append(mismatches, plan)
+		}
+	}
+	if len(mismatches) != 1 {
+		return nil, errors.New("live systemd sidecar adoption requires exactly one existing mismatch")
+	}
+	plan := mismatches[0]
+	stagedTarget, ok := stagedPolicy.Target(plan.ServiceID)
+	if !ok || stagedTarget.DeploymentMode != ModeSystemd ||
+		stagedTarget.Systemd == nil ||
+		!validSystemdPortServiceType(stagedTarget.ServiceType) {
+		return nil, errors.New("live systemd sidecar target is not eligible")
+	}
+	currentTarget, ok := currentPolicy.Target(plan.ServiceID)
+	if !ok || currentTarget.DeploymentMode != ModeSystemd ||
+		currentTarget.Systemd == nil ||
+		currentTarget.ServiceID != stagedTarget.ServiceID ||
+		currentTarget.ServiceType != stagedTarget.ServiceType ||
+		currentTarget.DatabaseName != stagedTarget.DatabaseName ||
+		currentTarget.EndpointRevision != stagedTarget.EndpointRevision ||
+		currentTarget.ConfigRevision != stagedTarget.ConfigRevision ||
+		currentTarget.LocalListen.Host != stagedTarget.LocalListen.Host ||
+		currentTarget.LocalListen.Port == stagedTarget.LocalListen.Port ||
+		!reflect.DeepEqual(currentTarget.Systemd, stagedTarget.Systemd) {
+		return nil, errors.New("live systemd sidecar target changed beyond its loopback port")
+	}
+	adapter, err := systemdPortAdapterFor(
+		stagedTarget.ServiceType,
+		stagedTarget.Systemd.Unit,
+	)
+	if err != nil || filepath.Base(adapter.SidecarPath) != filepath.Base(plan.Path) {
+		return nil, errors.New("live systemd sidecar target adapter is invalid")
+	}
+	currentPlans, err := initialSystemdPortSidecarPlans(currentPolicy, parent)
+	if err != nil {
+		return nil, errors.New("derive live systemd sidecar current policy")
+	}
+	var currentPlan *initialSystemdPortSidecarPlan
+	for index := range currentPlans {
+		if currentPlans[index].Path == plan.Path &&
+			currentPlans[index].ServiceID == plan.ServiceID {
+			currentPlan = &currentPlans[index]
+			break
+		}
+	}
+	snapshot := snapshots[plan.Path]
+	if currentPlan == nil || !snapshot.Existed ||
+		!bytes.Equal(snapshot.Body, currentPlan.Body) ||
+		currentTarget.ConfigSHA256 != currentPlan.SHA256 ||
+		stagedTarget.ConfigSHA256 != plan.SHA256 {
+		return nil, errors.New("existing systemd sidecar is not canonical for the current root policy")
+	}
+	return &hostAgentSystemdSidecarAdoption{
+		plan:          plan,
+		currentPolicy: currentPolicy,
+		currentTarget: currentTarget,
+		stagedTarget:  stagedTarget,
+	}, nil
+}
+
+func decodeManagedHostAgentIdentity(data []byte) (Config, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return Config{}, errors.New("managed Host Agent identity is missing")
+	}
+	var identity Config
+	if err := json.Unmarshal(data, &identity); err != nil ||
+		identity.Validate() != nil || !identity.IsManagedBootstrap() {
+		return Config{}, errors.New("managed Host Agent identity is invalid")
+	}
+	return identity, nil
+}
+
+func decodeCanonicalLocalExecutorPolicy(data []byte) (LocalExecutorPolicy, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return LocalExecutorPolicy{}, errors.New("Local Executor policy is missing")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var policy LocalExecutorPolicy
+	if err := decoder.Decode(&policy); err != nil {
+		return LocalExecutorPolicy{}, errors.New("decode Local Executor policy")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return LocalExecutorPolicy{}, errors.New("Local Executor policy contains trailing data")
+	}
+	projection, err := BuildConfigurePolicyProjection(policy)
+	if err != nil || !bytes.Equal(data, projection.Policy) {
+		return LocalExecutorPolicy{}, errors.New("Local Executor policy is not canonical")
+	}
+	return policy, nil
+}
+
+func sameConfiguredPanelURL(left, right string) bool {
+	return strings.TrimRight(strings.TrimSpace(left), "/") ==
+		strings.TrimRight(strings.TrimSpace(right), "/")
 }
 
 func validateInitialSystemdPortSidecarSnapshots(
@@ -528,6 +930,171 @@ func (e *preparedSystemdPortSidecar) prepareBody(body []byte) error {
 	return e.verifyTemporaryFile()
 }
 
+func (p *preparedSystemdPortSidecars) prepareReplacementBody(body []byte) error {
+	if p == nil || p.replacementTemp == nil || p.replacementTempPath == "" ||
+		p.replacementTempInfo == nil || p.replaced || len(body) == 0 ||
+		len(body) > systemdPortSidecarConfigureMaxBytes {
+		return errors.New("systemd sidecar adoption file is unavailable")
+	}
+	if err := p.verifyReplacementTemporaryFile(); err != nil {
+		return err
+	}
+	if err := p.replacementTemp.Truncate(0); err != nil {
+		return errors.New("truncate systemd sidecar adoption file")
+	}
+	if _, err := p.replacementTemp.Seek(0, io.SeekStart); err != nil {
+		return errors.New("rewind systemd sidecar adoption file")
+	}
+	if _, err := p.replacementTemp.Write(body); err != nil {
+		return errors.New("write systemd sidecar adoption file")
+	}
+	if err := p.replacementTemp.Chown(0, 0); err != nil {
+		return errors.New("restore systemd sidecar adoption file ownership")
+	}
+	if err := p.replacementTemp.Chmod(0o600); err != nil {
+		return errors.New("restore systemd sidecar adoption file mode")
+	}
+	if err := p.replacementTemp.Sync(); err != nil {
+		return errors.New("sync systemd sidecar adoption file")
+	}
+	p.replacementBody = append([]byte(nil), body...)
+	return p.verifyReplacementTemporaryFile()
+}
+
+func (p *preparedSystemdPortSidecars) exchangeReplacement(
+	entry *preparedSystemdPortSidecar,
+) error {
+	if p == nil || entry == nil || !entry.existed || p.replaced ||
+		len(p.replacementBody) == 0 || p.exchange == nil {
+		return errors.New("systemd sidecar adoption is not ready")
+	}
+	if err := p.verifyDestinations(); err != nil {
+		return err
+	}
+	exchangeErr := p.exchange(p.replacementTempPath, entry.path)
+	if exchangeErr == nil {
+		// A successful RENAME_EXCHANGE changes both pathnames atomically. Record
+		// that transition before any fallible post-exchange read so Abort can
+		// never unlink or forget the only exact rollback inode.
+		p.replaced = true
+		p.replacedEntry = entry
+		if !p.replacementPairMatches(entry, true) {
+			return p.preserveAmbiguousReplacement(
+				entry,
+				errors.New("live systemd sidecar exchange succeeded but its result could not be verified; preserved the adopted sidecar and rollback inode for recovery"),
+			)
+		}
+	} else {
+		oldPair := p.replacementPairMatches(entry, false)
+		newPair := p.replacementPairMatches(entry, true)
+		if oldPair {
+			return fmt.Errorf("exchange live systemd sidecar: %w", exchangeErr)
+		}
+		if !newPair {
+			return p.preserveAmbiguousReplacement(
+				entry,
+				errors.New("live systemd sidecar exchange result is uncertain; preserved the adopted sidecar and rollback inode for recovery"),
+			)
+		}
+		p.replaced = true
+		p.replacedEntry = entry
+	}
+	if err := p.syncParentDirectory(); err != nil {
+		rollbackErr := p.Rollback()
+		if rollbackErr != nil {
+			return fmt.Errorf(
+				"sync adopted systemd sidecar directory: %v; rollback sidecar: %w",
+				err,
+				rollbackErr,
+			)
+		}
+		return errors.New("sync adopted systemd sidecar directory")
+	}
+	if err := p.verifyDestinations(); err != nil {
+		rollbackErr := p.Rollback()
+		if rollbackErr != nil {
+			return fmt.Errorf(
+				"verify adopted systemd sidecar: %v; rollback sidecar: %w",
+				err,
+				rollbackErr,
+			)
+		}
+		return err
+	}
+	if exchangeErr != nil {
+		rollbackErr := p.Rollback()
+		if rollbackErr != nil {
+			return fmt.Errorf(
+				"systemd sidecar exchange reported an error after a provable swap: %v; rollback sidecar: %w",
+				exchangeErr,
+				rollbackErr,
+			)
+		}
+		return errors.New("systemd sidecar exchange reported an error after a provable swap")
+	}
+	return nil
+}
+
+func (p *preparedSystemdPortSidecars) preserveAmbiguousReplacement(
+	entry *preparedSystemdPortSidecar,
+	cause error,
+) error {
+	p.replaced = true
+	p.replacedEntry = entry
+	p.replacementAmbiguous = true
+	if err := p.syncParentDirectory(); err != nil {
+		return errors.Join(
+			cause,
+			errors.New("sync ambiguous systemd sidecar exchange for recovery"),
+		)
+	}
+	return cause
+}
+
+func (p *preparedSystemdPortSidecars) replacementPairMatches(
+	entry *preparedSystemdPortSidecar,
+	swapped bool,
+) bool {
+	if p == nil || p.replacementPairVerifier == nil {
+		return false
+	}
+	return p.replacementPairVerifier(entry, swapped)
+}
+
+func (p *preparedSystemdPortSidecars) replacementPairMatchesOnDisk(
+	entry *preparedSystemdPortSidecar,
+	swapped bool,
+) bool {
+	if p == nil || entry == nil || entry.existingInfo == nil ||
+		p.replacementTempInfo == nil || p.replacementTempPath == "" {
+		return false
+	}
+	destinationBody, destinationInfo, destinationExists, destinationErr :=
+		readRootSystemdPortSidecarOptional(entry.path)
+	temporaryBody, temporaryInfo, temporaryExists, temporaryErr :=
+		readRootSystemdPortSidecarOptional(p.replacementTempPath)
+	if destinationErr != nil || temporaryErr != nil ||
+		!destinationExists || !temporaryExists ||
+		destinationInfo.Mode()&os.ModeSymlink != 0 ||
+		temporaryInfo.Mode()&os.ModeSymlink != 0 ||
+		!destinationInfo.Mode().IsRegular() || !temporaryInfo.Mode().IsRegular() ||
+		destinationInfo.Mode().Perm() != 0o600 || temporaryInfo.Mode().Perm() != 0o600 ||
+		!updaterConfigHasInstallOwner(destinationInfo, 0) ||
+		!updaterConfigHasInstallOwner(temporaryInfo, 0) {
+		return false
+	}
+	if swapped {
+		return os.SameFile(destinationInfo, p.replacementTempInfo) &&
+			os.SameFile(temporaryInfo, entry.existingInfo) &&
+			bytes.Equal(destinationBody, p.replacementBody) &&
+			bytes.Equal(temporaryBody, entry.existing)
+	}
+	return os.SameFile(destinationInfo, entry.existingInfo) &&
+		os.SameFile(temporaryInfo, p.replacementTempInfo) &&
+		bytes.Equal(destinationBody, entry.existing) &&
+		bytes.Equal(temporaryBody, p.replacementBody)
+}
+
 func (e *preparedSystemdPortSidecar) installNoReplace() error {
 	if e == nil || e.existed || e.created || len(e.installedBody) == 0 {
 		return errors.New("initial systemd port sidecar is not ready for installation")
@@ -569,6 +1136,93 @@ func (e *preparedSystemdPortSidecar) installNoReplace() error {
 }
 
 func (p *preparedSystemdPortSidecars) Rollback() error {
+	if p == nil {
+		return nil
+	}
+	rollbackErr := p.rollbackCreatedSidecars()
+	if p.replaced {
+		_, replacementErr := p.rollbackReplacement()
+		rollbackErr = errors.Join(rollbackErr, replacementErr)
+	}
+	if rollbackErr == nil {
+		p.committed = false
+	}
+	return rollbackErr
+}
+
+func (p *preparedSystemdPortSidecars) rollbackReplacement() (bool, error) {
+	if p == nil || !p.replaced {
+		return false, nil
+	}
+	entry := p.replacedEntry
+	if p.replacementAmbiguous {
+		return false, errors.New("systemd sidecar exchange state is ambiguous; preserved the adopted sidecar and rollback inode for recovery")
+	}
+	if entry == nil || !p.replacementPairMatches(entry, true) {
+		return false, errors.New("adopted systemd sidecar changed before rollback; preserved the adopted sidecar and rollback inode for recovery")
+	}
+	if err := p.verifyLiveReplacementRollback(); err != nil {
+		return false, errors.Join(
+			err,
+			errors.New("preserved the adopted sidecar and rollback inode for recovery"),
+		)
+	}
+	// Recheck the inode/body pair after the potentially slow live proof. The
+	// proof alone never authorizes exchanging pathnames that changed while it
+	// was collected.
+	if !p.replacementPairMatches(entry, true) {
+		return false, errors.New("adopted systemd sidecar changed after rollback proof; preserved the adopted sidecar and rollback inode for recovery")
+	}
+	exchangeErr := p.exchange(p.replacementTempPath, entry.path)
+	if exchangeErr == nil {
+		// RENAME_EXCHANGE succeeded, so the path roles changed even if every
+		// subsequent read fails. Record the conservative state and durability
+		// fence before attempting the post-exchange CAS observation.
+		p.replacementAmbiguous = true
+		syncErr := p.syncParentDirectory()
+		if !p.replacementPairMatches(entry, false) {
+			return false, errors.Join(
+				errors.New("adopted systemd sidecar rollback result is unsafe; preserved both systemd sidecar pathnames for recovery"),
+				syncErr,
+			)
+		}
+		if syncErr != nil {
+			return false, errors.Join(
+				errors.New("adopted systemd sidecar rollback was not durably fenced; preserved both systemd sidecar pathnames for recovery"),
+				syncErr,
+			)
+		}
+		p.replacementAmbiguous = false
+		p.replaced = false
+		p.replacedEntry = nil
+		p.rollbackAuthority = nil
+		return true, nil
+	}
+	oldPair := p.replacementPairMatches(entry, false)
+	newPair := p.replacementPairMatches(entry, true)
+	if newPair {
+		return false, fmt.Errorf(
+			"adopted systemd sidecar rollback reported an error without changing the recovery pair: %w",
+			exchangeErr,
+		)
+	}
+	p.replacementAmbiguous = true
+	syncErr := p.syncParentDirectory()
+	if oldPair {
+		return false, errors.Join(
+			fmt.Errorf("adopted systemd sidecar rollback reported an error after exchanging the recovery pair: %w", exchangeErr),
+			errors.New("preserved both systemd sidecar pathnames for recovery"),
+			syncErr,
+		)
+	}
+	return false, errors.Join(
+		fmt.Errorf("adopted systemd sidecar rollback result is uncertain: %w", exchangeErr),
+		errors.New("preserved both systemd sidecar pathnames for recovery"),
+		syncErr,
+	)
+}
+
+func (p *preparedSystemdPortSidecars) rollbackCreatedSidecars() error {
 	if p == nil {
 		return nil
 	}
@@ -614,17 +1268,79 @@ func (p *preparedSystemdPortSidecars) Rollback() error {
 		removed = true
 	}
 	if removed {
-		if err := syncDirectory(p.parent); err != nil {
+		if err := p.syncParentDirectory(); err != nil {
 			rollbackErr = errors.Join(
 				rollbackErr,
 				errors.New("sync systemd port sidecar directory during rollback"),
 			)
 		}
 	}
-	if rollbackErr == nil {
-		p.committed = false
-	}
 	return rollbackErr
+}
+
+func (p *preparedSystemdPortSidecars) verifyLiveReplacementRollback() error {
+	if p == nil || p.rollbackAuthority == nil || p.rollbackAuthority.verify == nil {
+		return errors.New("live systemd sidecar rollback proof is unavailable")
+	}
+	authority := p.rollbackAuthority
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		hostAgentSidecarRollbackProofTimeout,
+	)
+	defer cancel()
+	proof, err := authority.verify(
+		ctx,
+		authority.currentPolicy,
+		authority.stagedPolicy,
+		authority.currentTarget,
+		authority.stagedTarget,
+	)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+			err = errors.Join(err, ctxErr)
+		}
+		return fmt.Errorf("verify live systemd sidecar target before rollback: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("verify live systemd sidecar target before rollback: %w", err)
+	}
+	if proof != authority.acceptedProof {
+		return errors.New("live systemd sidecar target changed before rollback")
+	}
+	return nil
+}
+
+func (p *preparedSystemdPortSidecars) Finalize() error {
+	if p == nil || p.finalized || !p.replaced {
+		return nil
+	}
+	entry := p.replacedEntry
+	if !p.committed || entry == nil || !p.replacementPairMatches(entry, true) {
+		return errors.New("adopted systemd sidecar backup changed before cleanup")
+	}
+	backup, backupInfo, existed, err := readRootSystemdPortSidecarOptional(
+		p.replacementTempPath,
+	)
+	if err != nil || !existed || !os.SameFile(backupInfo, entry.existingInfo) ||
+		!bytes.Equal(backup, entry.existing) {
+		return errors.New("adopted systemd sidecar backup is unsafe")
+	}
+	if p.replacementTemp != nil {
+		if err := p.replacementTemp.Close(); err != nil {
+			p.replacementTemp = nil
+			return errors.New("close adopted systemd sidecar destination")
+		}
+		p.replacementTemp = nil
+	}
+	if err := os.Remove(p.replacementTempPath); err != nil {
+		return errors.New("remove adopted systemd sidecar backup")
+	}
+	p.replacementTempPath = ""
+	p.finalized = true
+	if err := p.syncParentDirectory(); err != nil {
+		return errors.New("sync systemd sidecar directory after backup cleanup")
+	}
+	return nil
 }
 
 func (p *preparedSystemdPortSidecars) Abort() {
@@ -641,6 +1357,26 @@ func (p *preparedSystemdPortSidecars) Abort() {
 			entry.tempPath = ""
 		}
 	}
+	if p.replacementTemp != nil {
+		_ = p.replacementTemp.Close()
+		p.replacementTemp = nil
+	}
+	if p.replacementTempPath != "" && !p.replaced {
+		if info, err := os.Lstat(p.replacementTempPath); err == nil &&
+			p.replacementTempInfo != nil &&
+			os.SameFile(info, p.replacementTempInfo) {
+			_ = os.Remove(p.replacementTempPath)
+			_ = p.syncParentDirectory()
+		}
+		p.replacementTempPath = ""
+	}
+}
+
+func (p *preparedSystemdPortSidecars) syncParentDirectory() error {
+	if p == nil || p.syncParent == nil {
+		return errors.New("systemd port sidecar directory sync is unavailable")
+	}
+	return p.syncParent(p.parent)
 }
 
 func (p *preparedSystemdPortSidecars) verifyDestinations() error {
@@ -651,6 +1387,23 @@ func (p *preparedSystemdPortSidecars) verifyDestinations() error {
 		return err
 	}
 	for _, entry := range p.entries {
+		if p.replaced && entry == p.replacedEntry {
+			body, info, existed, err := readRootSystemdPortSidecarOptional(entry.path)
+			if err != nil || !existed ||
+				!os.SameFile(info, p.replacementTempInfo) ||
+				!bytes.Equal(body, p.replacementBody) {
+				return errors.New("adopted systemd sidecar changed after exchange")
+			}
+			backup, backupInfo, backupExists, err := readRootSystemdPortSidecarOptional(
+				p.replacementTempPath,
+			)
+			if err != nil || !backupExists ||
+				!os.SameFile(backupInfo, entry.existingInfo) ||
+				!bytes.Equal(backup, entry.existing) {
+				return errors.New("adopted systemd sidecar backup changed after exchange")
+			}
+			continue
+		}
 		body, info, existed, err := readRootSystemdPortSidecarOptional(entry.path)
 		if err != nil {
 			return err
@@ -678,6 +1431,31 @@ func (p *preparedSystemdPortSidecars) verifyDestinations() error {
 			!bytes.Equal(body, entry.existing) {
 			return errors.New("existing systemd port sidecar changed after preflight")
 		}
+	}
+	if p.replacementTempPath != "" && !p.replaced {
+		if err := p.verifyReplacementTemporaryFile(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *preparedSystemdPortSidecars) verifyReplacementTemporaryFile() error {
+	if p == nil || p.replacementTemp == nil || p.replacementTempPath == "" ||
+		p.replacementTempInfo == nil || p.replaced {
+		return errors.New("systemd sidecar adoption file is unavailable")
+	}
+	pathInfo, err := os.Lstat(p.replacementTempPath)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 ||
+		!pathInfo.Mode().IsRegular() ||
+		pathInfo.Mode().Perm() != 0o600 ||
+		!updaterConfigHasInstallOwner(pathInfo, 0) {
+		return errors.New("systemd sidecar adoption file changed after preflight")
+	}
+	openedInfo, err := p.replacementTemp.Stat()
+	if err != nil || !os.SameFile(pathInfo, openedInfo) ||
+		!os.SameFile(p.replacementTempInfo, openedInfo) {
+		return errors.New("systemd sidecar adoption file changed after preflight")
 	}
 	return nil
 }

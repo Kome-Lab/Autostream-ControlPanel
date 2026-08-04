@@ -16,6 +16,14 @@ var manualHostUpgradeFixedSystemdServiceTypes = []string{
 	"worker",
 }
 
+// AcquireHostConfigurationTargetLocks fences every fixed managed service
+// target while an explicitly authorized Host configuration recovery observes
+// and adopts one live systemd sidecar. The caller must already hold the Host
+// setup and lifecycle locks.
+func AcquireHostConfigurationTargetLocks() (func(), error) {
+	return acquireManualHostUpgradeTargetLocks(LocalExecutorPolicy{}, nil)
+}
+
 // acquireManualHostUpgradeTargetLocks fences both pull_v2 and legacy ssh_v1
 // target mutations while the Host runtime is replaced. Callers must already
 // hold the setup and Host lifecycle locks so every updater observes the common

@@ -192,6 +192,47 @@ func handleLocalExecutorRequestWithSystemdState(
 	return response
 }
 
+var (
+	errStableLocalTargetProcessVerification  = errors.New("local target process verification failed")
+	errStableLocalTargetEndpointVerification = errors.New("local target endpoint verification failed")
+	errStableLocalTargetProcessChanged       = errors.New("local target process changed during verification")
+)
+
+// verifyStableLocalTarget binds a direct HTTP identity probe to the exact
+// managed process, listener, cgroup, and version observed on both sides of the
+// request. Callers that mutate adjacent durable state can retain the returned
+// observation and require it to remain byte-for-byte stable afterwards.
+func verifyStableLocalTarget(
+	ctx context.Context,
+	policy LocalExecutorPolicy,
+	target LocalExecutorTarget,
+	verifier localTargetVerifier,
+	httpClient *http.Client,
+) (LocalProcessObservation, error) {
+	if verifier == nil || policy.Validate() != nil || target.validate() != nil {
+		return LocalProcessObservation{}, errors.New("local target verification authority is invalid")
+	}
+	before, err := verifier.Observe(ctx, policy, target)
+	if err != nil || validateLocalProcessObservation(target, before) != nil {
+		return LocalProcessObservation{}, errStableLocalTargetProcessVerification
+	}
+	if err := verifyLocalExecutorHTTP(
+		ctx,
+		target,
+		before.CurrentVersion,
+		httpClient,
+	); err != nil {
+		return LocalProcessObservation{}, errStableLocalTargetEndpointVerification
+	}
+	after, err := verifier.Observe(ctx, policy, target)
+	if err != nil ||
+		validateLocalProcessObservation(target, after) != nil ||
+		!sameLocalProcessObservation(before, after) {
+		return LocalProcessObservation{}, errStableLocalTargetProcessChanged
+	}
+	return after, nil
+}
+
 func validateLocalProcessObservation(target LocalExecutorTarget, observation LocalProcessObservation) error {
 	if observation.ServiceID != target.ServiceID ||
 		observation.ServiceType != target.ServiceType ||

@@ -7,6 +7,265 @@ import (
 	"testing"
 )
 
+func TestAuthorizeHostAgentSystemdSidecarAdoptionRequiresOneCanonicalCurrentMismatch(
+	t *testing.T,
+) {
+	current, staged, identity, identityBytes, plans, snapshots :=
+		configureAdoptionAuthorityFixture(t)
+
+	adoption, err := authorizeHostAgentSystemdSidecarAdoption(
+		staged,
+		identity,
+		identityBytes,
+		mustConfigureProjection(t, current).Policy,
+		plans,
+		snapshots,
+		defaultSystemdPortSidecarDirectory,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adoption.plan.ServiceID != "observability-a" ||
+		adoption.currentTarget.LocalListen.Port != 18080 ||
+		adoption.stagedTarget.LocalListen.Port != 18084 ||
+		adoption.stagedTarget.ConfigRevision != 14 {
+		t.Fatalf("adoption = %#v", adoption)
+	}
+
+	for _, plan := range plans {
+		snapshots[plan.Path] = initialSystemdPortSidecarSnapshot{
+			Existed: true,
+			Body:    append([]byte(nil), plan.Body...),
+		}
+	}
+	if _, err := authorizeHostAgentSystemdSidecarAdoption(
+		staged,
+		identity,
+		identityBytes,
+		mustConfigureProjection(t, current).Policy,
+		plans,
+		snapshots,
+		defaultSystemdPortSidecarDirectory,
+	); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("zero mismatch error = %v", err)
+	}
+}
+
+func TestAuthorizeHostAgentSystemdSidecarAdoptionRejectsArbitraryDriftAndBroadChanges(
+	t *testing.T,
+) {
+	current, staged, identity, identityBytes, plans, snapshots :=
+		configureAdoptionAuthorityFixture(t)
+	currentProjection := mustConfigureProjection(t, current)
+
+	t.Run("arbitrary current sidecar drift", func(t *testing.T) {
+		changed := cloneInitialSidecarSnapshots(snapshots)
+		changed[plans[0].Path] = initialSystemdPortSidecarSnapshot{
+			Existed: true,
+			Body:    []byte("OBSERVABILITY_BIND_ADDR=127.0.0.1:19999\nAUTOSTREAM_CONFIG_REVISION=14\n"),
+		}
+		if _, err := authorizeHostAgentSystemdSidecarAdoption(
+			staged, identity, identityBytes, currentProjection.Policy,
+			plans, changed, defaultSystemdPortSidecarDirectory,
+		); err == nil || !strings.Contains(err.Error(), "not canonical") {
+			t.Fatalf("arbitrary drift error = %v", err)
+		}
+	})
+
+	t.Run("policy lineage reuse", func(t *testing.T) {
+		reused := staged
+		reused.SourcePolicyRevision = current.SourcePolicyRevision
+		if _, err := authorizeHostAgentSystemdSidecarAdoption(
+			reused, identity, identityBytes, currentProjection.Policy,
+			plans, snapshots, defaultSystemdPortSidecarDirectory,
+		); err == nil || !strings.Contains(err.Error(), "strictly advance") {
+			t.Fatalf("lineage error = %v", err)
+		}
+	})
+
+	t.Run("config revision change", func(t *testing.T) {
+		changed := staged
+		changed.Targets = append([]LocalExecutorTarget(nil), staged.Targets...)
+		changed.Targets[0].ConfigRevision++
+		setConfigureTargetPort(t, &changed.Targets[0], changed.Targets[0].LocalListen.Port)
+		changedPlans, err := initialSystemdPortSidecarPlans(
+			changed,
+			defaultSystemdPortSidecarDirectory,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := authorizeHostAgentSystemdSidecarAdoption(
+			changed, identity, identityBytes, currentProjection.Policy,
+			changedPlans, snapshots, defaultSystemdPortSidecarDirectory,
+		); err == nil || !strings.Contains(err.Error(), "beyond its loopback port") {
+			t.Fatalf("config revision error = %v", err)
+		}
+	})
+
+	t.Run("control panel", func(t *testing.T) {
+		controlCurrent, controlStaged := configureAdoptionControlPanelPolicies(t)
+		controlPlans, err := initialSystemdPortSidecarPlans(
+			controlStaged,
+			defaultSystemdPortSidecarDirectory,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		currentPlans, err := initialSystemdPortSidecarPlans(
+			controlCurrent,
+			defaultSystemdPortSidecarDirectory,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		controlSnapshots := map[string]initialSystemdPortSidecarSnapshot{
+			controlPlans[0].Path: {Existed: true, Body: currentPlans[0].Body},
+		}
+		if _, err := authorizeHostAgentSystemdSidecarAdoption(
+			controlStaged,
+			identity,
+			identityBytes,
+			mustConfigureProjection(t, controlCurrent).Policy,
+			controlPlans,
+			controlSnapshots,
+			defaultSystemdPortSidecarDirectory,
+		); err == nil || !strings.Contains(err.Error(), "not eligible") {
+			t.Fatalf("control Panel error = %v", err)
+		}
+	})
+}
+
+func configureAdoptionAuthorityFixture(
+	t *testing.T,
+) (
+	LocalExecutorPolicy,
+	LocalExecutorPolicy,
+	UpdaterConfigureIdentity,
+	[]byte,
+	[]initialSystemdPortSidecarPlan,
+	map[string]initialSystemdPortSidecarSnapshot,
+) {
+	t.Helper()
+	fixture := configureTransactionPolicyFixture(t)
+	staged := fixture
+	staged.SourcePolicyRevision = 6
+	staged.ProjectionRevision = 6
+	staged.PolicyRevision = 6
+	staged.Targets = []LocalExecutorTarget{fixture.Targets[4]}
+	current := staged
+	current.SourcePolicyRevision = 4
+	current.ProjectionRevision = 4
+	current.PolicyRevision = 4
+	current.Targets = append([]LocalExecutorTarget(nil), staged.Targets...)
+	setConfigureTargetPort(t, &current.Targets[0], 18080)
+	identity := UpdaterConfigureIdentity{
+		PanelURL:      "https://panel.example.com",
+		NodeID:        "host-agent-a",
+		RuntimeToken:  "new-runtime-token",
+		ServiceName:   "Host Agent A",
+		ServiceType:   ServiceTypeUpdateAgent,
+		TransportMode: HostTransportPullV2,
+	}
+	identityBytes, err := mergeUpdaterConfiguredIdentity(
+		nil,
+		UpdaterConfigureIdentity{
+			PanelURL:     identity.PanelURL,
+			NodeID:       identity.NodeID,
+			RuntimeToken: "old-runtime-token",
+			ServiceName:  identity.ServiceName,
+			ServiceType:  ServiceTypeUpdateAgent,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := initialSystemdPortSidecarPlans(
+		staged,
+		defaultSystemdPortSidecarDirectory,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentPlans, err := initialSystemdPortSidecarPlans(
+		current,
+		defaultSystemdPortSidecarDirectory,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshots := map[string]initialSystemdPortSidecarSnapshot{
+		plans[0].Path: {Existed: true, Body: currentPlans[0].Body},
+	}
+	return current, staged, identity, identityBytes, plans, snapshots
+}
+
+func configureAdoptionControlPanelPolicies(
+	t *testing.T,
+) (LocalExecutorPolicy, LocalExecutorPolicy) {
+	t.Helper()
+	fixture := configureTransactionPolicyFixture(t)
+	staged := fixture
+	staged.SourcePolicyRevision = 6
+	staged.ProjectionRevision = 6
+	staged.PolicyRevision = 6
+	staged.Targets = []LocalExecutorTarget{fixture.Targets[0]}
+	current := staged
+	current.SourcePolicyRevision = 4
+	current.ProjectionRevision = 4
+	current.PolicyRevision = 4
+	current.Targets = append([]LocalExecutorTarget(nil), staged.Targets...)
+	setConfigureTargetPort(t, &current.Targets[0], 17080)
+	return current, staged
+}
+
+func setConfigureTargetPort(
+	t *testing.T,
+	target *LocalExecutorTarget,
+	port int,
+) {
+	t.Helper()
+	adapter, err := hostAgentConfigureSystemdPortAdapterFor(
+		target.ServiceType,
+		target.Systemd.Unit,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.LocalListen.Port = port
+	target.ConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
+		adapter.BindVariable,
+		target.LocalListen.Host,
+		port,
+		target.ConfigRevision,
+	))
+}
+
+func mustConfigureProjection(
+	t *testing.T,
+	policy LocalExecutorPolicy,
+) ConfigurePolicyProjection {
+	t.Helper()
+	projection, err := BuildConfigurePolicyProjection(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return projection
+}
+
+func cloneInitialSidecarSnapshots(
+	source map[string]initialSystemdPortSidecarSnapshot,
+) map[string]initialSystemdPortSidecarSnapshot {
+	clone := make(map[string]initialSystemdPortSidecarSnapshot, len(source))
+	for path, snapshot := range source {
+		clone[path] = initialSystemdPortSidecarSnapshot{
+			Existed: snapshot.Existed,
+			Body:    append([]byte(nil), snapshot.Body...),
+		}
+	}
+	return clone
+}
+
 func TestInitialSystemdPortSidecarPlansUseFiveFixedRootPathsAndExactTwoLines(
 	t *testing.T,
 ) {

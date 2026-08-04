@@ -16,7 +16,7 @@ import (
 )
 
 const defaultHostAgentConfigPath = updateagent.HostAgentIdentityPath
-const hostAgentUsage = "usage: autostream-host-agent run --config PATH | configure --panel-url URL --node ID [--config PATH] | validate-config --config PATH | --version"
+const hostAgentUsage = "usage: autostream-host-agent run --config PATH | configure --panel-url URL --node ID [--config PATH] [--adopt-live-systemd-sidecar] | validate-config --config PATH | --version"
 
 type hostAgentCLIDependencies struct {
 	LoadIdentity func(string, bool) (updateagent.Config, error)

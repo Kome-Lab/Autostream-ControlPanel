@@ -252,6 +252,34 @@ sidecars. It refuses incomplete applied target state and never accepts target
 paths, systemd units, backup commands, DB credentials, or Runtime Tokens in
 argv.
 
+If normal configure on v1.9.7 reports that one existing systemd sidecar
+differs, preserve that sidecar and the live service state. First verify and
+extract the version-matched v1.9.8 Host Agent archive, leave the unchanged
+archive adjacent, and install the Host bridge that provides the recovery flag:
+
+```bash
+cd /opt/autostream/releases/artifacts/autostream-host-agent_v1.9.8_linux_amd64
+sudo ./install/install-autostream-host-agent --upgrade
+```
+
+The installer upgrades the Host Agent and Local Executor together and performs
+their bounded installer-controlled restarts. After that upgrade succeeds, do
+not delete/edit the sidecar and do not manually restart the Host Agent or the
+affected target service until explicit adoption Configure finishes. The
+v1.9.8-or-later Host Agent supports this narrow recovery only when that file is
+the exact canonical sidecar for the current root policy and the live eligible
+service is already running on the staged port with the same config and
+endpoint revisions. A missing sidecar is never the adoption candidate and
+remains governed by normal create-if-absent behavior for the other managed
+targets; explicit adoption still requires exactly one differing existing
+sidecar. Only then issue a fresh Configure Token for the same Node, enter it
+through the protected TTY/stdin prompt (never argv or an environment variable),
+and rerun the generated command with the single boolean
+`--adopt-live-systemd-sidecar` flag. The command rejects Control Panel,
+multiple mismatches, caller-selected target values, port-ledger state, or any
+failure to prove the managed unit/process/listener/HTTP identity before and
+after the atomic exchange. It never restarts a service.
+
 Activate the exact generated root policy from the same extracted Host Agent
 release, then enable the Agent:
 

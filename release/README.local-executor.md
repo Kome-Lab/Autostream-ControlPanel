@@ -105,10 +105,34 @@ Systemd sidecars are created only at these fixed paths:
 Each is an exact two-line file: the service-specific bind variable followed by
 `AUTOSTREAM_CONFIG_REVISION`. The directory is `root:root 0700`; files are
 `root:root 0600`. Configure creates a missing canonical sidecar, preserves an
-identical one, and refuses to overwrite any differing file. A later failure
+identical one, and normally refuses to overwrite any differing file. A later failure
 rolls back newly installed sidecars/policy when the outcome is known; an
 uncertain identity commit is left as a consistent pair and reported for
 operator recovery.
+
+The explicit Host Agent `configure --adopt-live-systemd-sidecar` recovery mode
+is available in v1.9.8 and later. A managed v1.9.7 host must first run the
+version-matched v1.9.8 `install-autostream-host-agent --upgrade` bridge so the
+installer upgrades and performs its bounded restarts of the Host Agent and
+Local Executor as one pair. After that upgrade succeeds, do not manually
+restart the Host Agent or affected target service until explicit adoption
+Configure finishes. Issue a fresh Configure Token only then and enter it at
+the protected TTY/stdin prompt, never through argv or an environment variable.
+
+Recovery may replace exactly one differing existing sidecar only when it is
+still the canonical bytes for the current root policy and the already-running
+eligible systemd service is proved to match the staged loopback port, service
+identity, config revision, managed executable, unit/cgroup/listener ownership,
+and HTTP version before and after an atomic Linux inode exchange. Current and
+staged Panel/host/Agent/profile authority must match, policy lineage must
+strictly advance, endpoint/config revisions must be unchanged, the old port
+must be unused, and no port ledger or applied overlay may exist. It accepts no
+target or filesystem value in argv, excludes Control Panel, and performs no
+service restart. A missing sidecar is never the adoption candidate and remains
+governed by normal create-if-absent behavior for the other managed targets;
+explicit adoption still requires exactly one differing existing sidecar.
+Hand-edited or ambiguous differing sidecars, and multiple differing existing
+sidecars, remain rejected.
 
 The example policy remains a schema reference and an expert recovery aid. Do
 not hand-edit the live policy to bypass the server projection. Without a

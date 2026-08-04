@@ -14,13 +14,16 @@ import (
 type fakePreparedHostAgentConfig struct {
 	committedIdentity   *updateagent.UpdaterConfigureIdentity
 	committedProjection *updateagent.ConfigurePolicyProjection
+	commitContext       context.Context
 	aborted             bool
 }
 
-func (f *fakePreparedHostAgentConfig) Commit(
+func (f *fakePreparedHostAgentConfig) CommitContext(
+	ctx context.Context,
 	identity updateagent.UpdaterConfigureIdentity,
 	projection updateagent.ConfigurePolicyProjection,
 ) error {
+	f.commitContext = ctx
 	copy := identity
 	projectionCopy := projection
 	f.committedIdentity = &copy
@@ -38,6 +41,10 @@ func TestRunHostAgentConfigureStagesWritesValidatesAndActivates(t *testing.T) {
 	var validatedPath string
 	var activated bool
 	dependencies := validHostAgentConfigureDependencies(prepared)
+	dependencies.AcquireTargetLocks = func() (func(), error) {
+		t.Fatal("normal configure acquired recovery-only target locks")
+		return func() {}, nil
+	}
 	dependencies.Stage = func(_ context.Context, panelURL, nodeID, token string, peer updateagent.HostAgentConfigurePeerIdentity, timeout time.Duration) (updateagent.UpdaterStagedConfiguration, error) {
 		if panelURL != "https://panel.example.com" || nodeID != "host-agent-a" || timeout != 45*time.Second {
 			t.Fatalf("stage request = %q %q %s", panelURL, nodeID, timeout)
@@ -91,6 +98,52 @@ func TestRunHostAgentConfigureStagesWritesValidatesAndActivates(t *testing.T) {
 	}
 	if output := dependencies.Output.(*bytes.Buffer).String(); !strings.Contains(output, defaultHostAgentConfigPath) {
 		t.Fatalf("output = %q", output)
+	}
+}
+
+func TestRunHostAgentConfigureAcceptsExplicitLiveSystemdSidecarAdoption(t *testing.T) {
+	prepared := &fakePreparedHostAgentConfig{}
+	dependencies := validHostAgentConfigureDependencies(prepared)
+	var options updateagent.HostAgentConfigurationOptions
+	var targetLocked, targetUnlocked bool
+	dependencies.AcquireTargetLocks = func() (func(), error) {
+		targetLocked = true
+		return func() { targetUnlocked = true }, nil
+	}
+	dependencies.ReadToken = func(context.Context) (string, error) {
+		if !targetLocked || targetUnlocked {
+			t.Fatal("Configure Token was read outside the recovery target lock")
+		}
+		return "configure-token", nil
+	}
+	dependencies.Prepare = func(path, policyPath string, got updateagent.HostAgentConfigurationOptions) (preparedHostAgentConfig, error) {
+		if path != defaultHostAgentConfigPath || policyPath != updateagent.DefaultLocalExecutorPolicyPath {
+			return nil, errors.New("unexpected configuration path")
+		}
+		options = got
+		return prepared, nil
+	}
+
+	err := runHostAgentConfigure(context.Background(), []string{
+		"--panel-url", "https://panel.example.com",
+		"--node", "host-agent-a",
+		"--adopt-live-systemd-sidecar",
+	}, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.committedIdentity == nil || prepared.committedProjection == nil {
+		t.Fatalf(
+			"configuration was not committed: %#v / %#v",
+			prepared.committedIdentity,
+			prepared.committedProjection,
+		)
+	}
+	if !options.AdoptLiveSystemdSidecar {
+		t.Fatal("live systemd sidecar adoption was not explicitly authorized")
+	}
+	if !targetLocked || !targetUnlocked {
+		t.Fatalf("target lock lifecycle locked=%v unlocked=%v", targetLocked, targetUnlocked)
 	}
 }
 
@@ -179,7 +232,7 @@ func TestRunHostAgentConfigureRejectsBusySetupBeforePrepareOrToken(t *testing.T)
 		return updateagent.HostAgentConfigurePeerIdentity{UID: 1001, GID: 1002}, nil
 	}
 	prepareCalled := false
-	dependencies.Prepare = func(string, string) (preparedHostAgentConfig, error) {
+	dependencies.Prepare = func(string, string, updateagent.HostAgentConfigurationOptions) (preparedHostAgentConfig, error) {
 		prepareCalled = true
 		return prepared, nil
 	}
@@ -205,6 +258,45 @@ func TestRunHostAgentConfigureRejectsBusySetupBeforePrepareOrToken(t *testing.T)
 	}
 }
 
+func TestRunHostAgentConfigureRejectsBusyAdoptionTargetBeforePrepareOrToken(
+	t *testing.T,
+) {
+	prepared := &fakePreparedHostAgentConfig{}
+	dependencies := validHostAgentConfigureDependencies(prepared)
+	dependencies.AcquireTargetLocks = func() (func(), error) {
+		return func() {}, errors.New("busy")
+	}
+	prepareCalled := false
+	dependencies.Prepare = func(
+		string,
+		string,
+		updateagent.HostAgentConfigurationOptions,
+	) (preparedHostAgentConfig, error) {
+		prepareCalled = true
+		return prepared, nil
+	}
+	readToken := false
+	dependencies.ReadToken = func(context.Context) (string, error) {
+		readToken = true
+		return "configure-token", nil
+	}
+
+	err := runHostAgentConfigure(context.Background(), []string{
+		"--panel-url", "https://panel.example.com",
+		"--node", "host-agent-a",
+		"--adopt-live-systemd-sidecar",
+	}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "managed service target") ||
+		prepareCalled || readToken {
+		t.Fatalf(
+			"error=%v prepare=%v readToken=%v",
+			err,
+			prepareCalled,
+			readToken,
+		)
+	}
+}
+
 func TestNormalizeHostAgentConfigureToken(t *testing.T) {
 	if token, err := normalizeHostAgentConfigureToken([]byte(" configure-token\r\n")); err != nil || token != "configure-token" {
 		t.Fatalf("token=%q error=%v", token, err)
@@ -220,10 +312,14 @@ func TestNormalizeHostAgentConfigureToken(t *testing.T) {
 func validHostAgentConfigureDependencies(prepared preparedHostAgentConfig) hostAgentConfigureDependencies {
 	return hostAgentConfigureDependencies{
 		AcquireRuntimeLocks: func() (func(), error) { return func() {}, nil },
-		Prepare: func(path, policyPath string) (preparedHostAgentConfig, error) {
+		AcquireTargetLocks:  func() (func(), error) { return func() {}, nil },
+		Prepare: func(path, policyPath string, options updateagent.HostAgentConfigurationOptions) (preparedHostAgentConfig, error) {
 			if path != defaultHostAgentConfigPath ||
 				policyPath != updateagent.DefaultLocalExecutorPolicyPath {
 				return nil, errors.New("unexpected configuration path")
+			}
+			if options.AdoptLiveSystemdSidecar {
+				return nil, errors.New("unexpected live sidecar adoption")
 			}
 			return prepared, nil
 		},
