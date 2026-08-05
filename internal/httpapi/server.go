@@ -1791,6 +1791,14 @@ func (s *Server) mfaVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	// A login challenge is explicit in the request body.  Prefer it over a
+	// possibly stale session cookie so that re-login/MFA verification does not
+	// get misclassified as an authenticated enrollment request and rejected by
+	// the old session's CSRF token.
+	if strings.TrimSpace(body.ChallengeToken) != "" {
+		s.mfaVerifyLoginChallenge(w, r, body.ChallengeToken, body.Code)
+		return
+	}
 	if current, ok := s.authenticate(r); ok {
 		if isUnsafeMethod(r.Method) && !security.VerifyTokenHash(r.Header.Get("X-CSRF-Token"), current.Session.CSRFTokenHash) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "csrf_failed"})
@@ -1799,7 +1807,7 @@ func (s *Server) mfaVerify(w http.ResponseWriter, r *http.Request) {
 		s.mfaVerifyEnrollment(w, r, current, body.Code)
 		return
 	}
-	s.mfaVerifyLoginChallenge(w, r, body.ChallengeToken, body.Code)
+	s.mfaVerifyLoginChallenge(w, r, "", body.Code)
 }
 
 func (s *Server) mfaVerifyEnrollment(w http.ResponseWriter, r *http.Request, current currentUser, code string) {

@@ -9208,6 +9208,10 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 
 	loginBody.ChallengeToken = loginMFAChallengeForTest(t, handler)
 	challengeReq = httptest.NewRequest(http.MethodPost, "/auth/mfa/verify", bytes.NewBufferString(`{"challenge_token":"`+loginBody.ChallengeToken+`","code":"`+challengeCode+`"}`))
+	// A stale authenticated session must not turn an explicit login challenge
+	// into an enrollment request that requires the old session's CSRF token.
+	challengeReq.AddCookie(cookie)
+	challengeReq.Header.Set("X-CSRF-Token", "stale-session-csrf-token")
 	challengeRes = httptest.NewRecorder()
 	handler.ServeHTTP(challengeRes, challengeReq)
 	if challengeRes.Code != http.StatusOK || !strings.Contains(challengeRes.Body.String(), "csrf_token") {

@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TurnstileWidget } from "@/components/auth/turnstile-widget";
-import { APIError, apiGet, apiPost, setCSRFToken } from "@/lib/api/client";
+import { APIError, apiGet, apiPost, clearCSRFToken, setCSRFToken } from "@/lib/api/client";
 import { safePostLoginPath } from "@/lib/auth/post-login-redirect";
 import { passkeyAssertionCredentialToJSON, passkeysSupported, publicKeyRequestOptionsFromJSON } from "@/lib/passkeys";
 import { useI18n } from "@/components/admin/i18n-provider";
@@ -66,6 +66,7 @@ export function LoginCard() {
     try {
       const body = await apiPost<LoginResponse>("/auth/login", { username, password, turnstile_token: turnstileToken });
       if (body.mfa_required && body.challenge_token) {
+        clearCSRFToken();
         setMFAChallengeToken(body.challenge_token);
         setMessage("2FAコードを入力してください。");
         return;
@@ -132,6 +133,7 @@ export function LoginCard() {
         credential: passkeyAssertionCredentialToJSON(credential),
       });
       if (result.mfa_required && result.challenge_token) {
+        clearCSRFToken();
         setMFAChallengeToken(result.challenge_token);
         setMessage("2FAコードを入力してください。");
         return;
