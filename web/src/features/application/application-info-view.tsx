@@ -66,6 +66,12 @@ type Confirmation = { kind: "target"; target: SystemUpdateTarget } | { kind: "ba
 type Feedback = { tone: "success" | "error"; message: string };
 type SystemUpdateOperation = { target: SystemUpdateTarget; idempotencyKey: string };
 type PortReconfigureOperation = { request: SystemUpdatePortReconfigureCreateRequest };
+type RegisteredServiceOperation = {
+  target?: SystemUpdateTarget;
+  updater?: SystemUpdateAgentStatus;
+  latestJob?: SystemUpdateJob;
+  requestState: SystemUpdateRequestState;
+};
 
 export function ApplicationInfoView() {
   const currentUser = useCurrentUser();
@@ -715,12 +721,25 @@ function RegisteredServicesCard({
           : nodesError ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>登録済みNodeの情報を取得できませんでした。通信状態とControl Panelのログを確認してください。</span><Button variant="outline" size="sm" onClick={onRefresh}>再試行</Button></div>
             : nodesLoading ? <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">読み込み中</div>
               : nodeRows.length === 0 ? <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeがありません。Node登録ページで作成したNodeがある場合は、ページを更新してください。</div>
-                : <>
-                    <div className="overflow-x-auto rounded-md border">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>サービス</TableHead><TableHead>種別 / バージョン</TableHead><TableHead>状態</TableHead><TableHead className="min-w-80">Endpoint / ポート変更</TableHead>
+                 : <>
+                     <div className="grid gap-3 xl:hidden">
+                       {nodeRows.map((node) => (
+                         <RegisteredServiceMobileCard
+                           key={node.service_id || node.id}
+                           node={node}
+                           operation={nodeOperation(node)}
+                           timezone={timezone}
+                           appVersion={appVersion}
+                           canExecute={canExecuteSystemUpdates}
+                           onRequest={onPortReconfigure}
+                         />
+                       ))}
+                     </div>
+                     <div className="hidden overflow-x-auto rounded-md border xl:block">
+                       <Table className="min-w-[980px]">
+                         <TableHeader>
+                           <TableRow>
+                             <TableHead>サービス</TableHead><TableHead>種別 / バージョン</TableHead><TableHead>状態</TableHead><TableHead className="min-w-80">Endpoint / ポート変更</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -758,11 +777,11 @@ function RegisteredServicesCard({
                               </TableRow>
                             );
                           })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                    <p className="mt-3 text-xs text-muted-foreground">「現在適用中」が実際の接続先です。「希望」は未適用の値を含み、Node報告と異なる場合があります。</p>
-                  </>}
+                         </TableBody>
+                       </Table>
+                     </div>
+                     <p className="mt-3 text-xs text-muted-foreground">「現在適用中」が実際の接続先です。「希望」は未適用の値を含み、Node報告と異なる場合があります。</p>
+                   </>}
       </CardContent>
     </Card>
   );
@@ -779,6 +798,60 @@ function mergeNodeRow(registered: WorkerNode, health: WorkerNode): WorkerNode {
   return { ...registered, ...health, service_id: registered.service_id || health.service_id, id: registered.id || health.id, service_type: registered.service_type || health.service_type, service_name: registered.service_name || health.service_name, description: registered.description || health.description, reported_version: health.reported_version || registered.reported_version, reported_commit: health.reported_commit || registered.reported_commit, reported_build_date: health.reported_build_date || registered.reported_build_date, version: health.version || registered.version, status: health.status || registered.status, health_status: health.health_status || registered.health_status };
 }
 
+function RegisteredServiceMobileCard({
+  node,
+  operation,
+  timezone,
+  appVersion,
+  canExecute,
+  onRequest,
+}: {
+  node: WorkerNode;
+  operation: RegisteredServiceOperation;
+  timezone?: string;
+  appVersion?: AppVersion;
+  canExecute: boolean;
+  onRequest: (request: SystemUpdatePortReconfigureCreateRequest) => Promise<void>;
+}) {
+  return (
+    <article className="min-w-0 overflow-hidden rounded-md border bg-background/60 p-3">
+      <div className="min-w-0">
+        <div className="break-words font-medium">{node.service_name || node.service_id || "-"}</div>
+        <div className="mt-1 break-all font-mono text-xs text-muted-foreground">{node.service_id || node.id}</div>
+      </div>
+      <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
+        <div className="min-w-0">
+          <div className="text-xs text-muted-foreground">種別 / バージョン</div>
+          <div className="mt-1 break-words">{serviceTypeLabel(node.service_type)}</div>
+          <div className="mt-1 break-words">{node.reported_version || node.version || "未報告"}</div>
+          <div className="mt-1 break-all font-mono text-xs text-muted-foreground"><GitCommit className="mr-1 inline-block size-3.5" />{shortCommit(node.reported_commit)}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{formatOptionalDate(node.reported_build_date, timezone)}</div>
+        </div>
+        <div className="min-w-0 space-y-2">
+          <div className="text-xs text-muted-foreground">状態</div>
+          <StatusBadge status={node.health_status || node.status || "-"} />
+          <div><UpdateStatusBadge state={nodeUpdateState(node, serviceUpdateForNode(node, appVersion))} /></div>
+        </div>
+      </div>
+      <div className="mt-3 min-w-0 rounded-md border bg-muted/10 p-3">
+        <div className="text-xs font-medium">Endpoint / ポート変更</div>
+        <div className="mt-2 min-w-0">
+          <ServiceEndpointSummary node={node} />
+          <PortReconfigureControl
+            node={node}
+            target={operation.target}
+            updater={operation.updater}
+            latestJob={operation.latestJob}
+            requestState={operation.requestState}
+            canExecute={canExecute}
+            onRequest={onRequest}
+          />
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function nodeIdentity(node: WorkerNode) { return node.service_id || node.id || ""; }
 
 function InfoItem({ label, value, monospace = false }: { label: string; value: ReactNode; monospace?: boolean }) {
@@ -791,7 +864,7 @@ function ServiceEndpointSummary({ node }: { node: WorkerNode }) {
     return (
       <div className="space-y-1 text-xs">
         <div className="font-medium">Host Agent（受信ポートなし）</div>
-        <div className="text-muted-foreground">実行ホスト: {state.executionHostID || "未割り当て"} · Ownership epoch: {state.ownershipEpoch ?? 0}</div>
+        <div className="break-words text-muted-foreground">実行ホスト: {state.executionHostID || "未割り当て"} · Ownership epoch: {state.ownershipEpoch ?? 0}</div>
       </div>
     );
   }
