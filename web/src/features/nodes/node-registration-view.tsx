@@ -197,6 +197,8 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
   const createError = nodeRegistrationErrorMessage(createToken.error);
   const actionError = nodeRegistrationErrorMessage(updateNode.error || deleteNode.error || loadConfiguration.error || regenerateConfigureToken.error || rotateRuntimeToken.error);
   const registeredRows = registeredNodes.data || [];
+  const operationalRegisteredRows = registeredRows.filter((node) => node.service_type !== "update_agent");
+  const updaterRegisteredRows = registeredRows.filter((node) => node.service_type === "update_agent");
 
   const handleTypeChange = (value: string) => {
     setNodeType(value);
@@ -245,10 +247,13 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
       cell: ({ row }) => {
         const nodeID = nodeIdentity(row.original);
         return (
-          <div className="min-w-56">
-            <div className="flex items-center gap-2">
-              <div className="font-medium">{nodeDisplayName(row.original)}</div>
-              <Button variant="outline" size="icon-sm" aria-label="Node IDをコピー" onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
+          <div className="min-w-52">
+            <div className="flex items-start gap-2">
+              <div className="min-w-0">
+                <div className="break-words font-medium">{nodeDisplayName(row.original)}</div>
+                <div className="mt-1 break-all font-mono text-xs text-muted-foreground">{nodeID}</div>
+              </div>
+              <Button variant="outline" size="icon-sm" aria-label="Node IDをコピー" title="Node IDをコピー" onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
                 {copied === `node-id-${nodeID}` ? <Check className="size-4" /> : <Copy className="size-4" />}
               </Button>
             </div>
@@ -259,7 +264,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
     {
       accessorKey: "service_type",
       header: t("nodeType"),
-      cell: ({ row }) => nodeTypeLabel(row.original.service_type),
+      cell: ({ row }) => <NodeTypeSummary node={row.original} />,
     },
     {
       id: "endpoint",
@@ -274,41 +279,19 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
       ),
     },
     {
-      accessorKey: "status",
-      header: t("status"),
-      cell: ({ row }) => <StatusBadge status={row.original.health_status || row.original.status} showDetail />,
-    },
-    {
-      id: "registration",
-      header: "登録状態",
-      cell: ({ row }) => (
-        <div className="text-sm">
-          <div>{row.original.last_heartbeat_at ? "接続済み" : "接続待ち"}</div>
-          <div className="text-xs text-muted-foreground">{row.original.configure_token_used_at ? "Configure済み" : "Configure未実行"}</div>
-        </div>
-      ),
+      id: "status",
+      header: "状態 / 登録",
+      cell: ({ row }) => <NodeStatusSummary node={row.original} />,
     },
     {
       id: "reported",
-      header: "報告情報",
-      cell: ({ row }) => (
-        <div className="text-sm">
-          <div>Version {row.original.reported_version || row.original.version || "-"}</div>
-          <div className="text-xs text-muted-foreground">
-            {nodeReportedPlatform(row.original)}
-          </div>
-        </div>
-      ),
-    },
-    {
-      id: "metrics",
-      header: "Metrics",
-      cell: ({ row }) => <NodeMetricsSummary node={row.original} />,
+      header: "報告 / 負荷",
+      cell: ({ row }) => <NodeReportSummary node={row.original} />,
     },
     {
       id: "heartbeat",
-      header: "Heartbeat",
-      cell: ({ row }) => formatHeartbeat(row.original, timezone),
+      header: "最終Heartbeat",
+      cell: ({ row }) => <span className="whitespace-nowrap text-sm">{formatHeartbeat(row.original, timezone)}</span>,
     },
     {
       id: "actions",
@@ -344,13 +327,15 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             ? "UpdaterのRuntime Token再生成には system_updates.execute 権限が必要です。"
             : "Runtime Token再生成には api_tokens.create と api_tokens.revoke 権限が必要です。";
         return (
-          <div className="flex min-w-52 flex-wrap items-center gap-2">
-            <Button variant="outline" size="icon-sm" aria-label="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
+          <div className="flex min-w-64 flex-wrap items-center gap-1.5">
+            <Button variant="outline" size="sm" className="px-2" aria-label="Configurationを表示" title="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
               <FileCode2 />
+              <span>設定</span>
             </Button>
             <RoleGuard allowed={canRegenerateConfigureToken} message={configureTokenPermissionMessage}>
-              <Button variant="outline" size="icon-sm" aria-label="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} {...guardedButtonProps(canRegenerateConfigureToken)} disabled={!canRegenerateConfigureToken || regenerateConfigureToken.isPending}>
+              <Button variant="outline" size="sm" className="px-2" aria-label="Configure Tokenを再生成" title="Configure Tokenを再生成" onClick={() => regenerateConfigureToken.mutate(nodeID)} {...guardedButtonProps(canRegenerateConfigureToken)} disabled={!canRegenerateConfigureToken || regenerateConfigureToken.isPending}>
                 <KeyRound />
+                <span>初期化</span>
               </Button>
             </RoleGuard>
             <RoleGuard allowed={canManageNodeTokens} message={runtimeTokenPermissionMessage}>
@@ -364,18 +349,21 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                 onConfirm={() => rotateRuntimeToken.mutate(nodeID)}
                 actionLabel="再生成"
               >
-                <Button variant="outline" size="icon-sm" aria-label="Runtime Tokenを再生成" {...guardedButtonProps(canManageNodeTokens)} disabled={!canManageNodeTokens || rotateRuntimeToken.isPending}>
+                <Button variant="outline" size="sm" className="px-2" aria-label="Runtime Tokenを再生成" title="Runtime Tokenを再生成" {...guardedButtonProps(canManageNodeTokens)} disabled={!canManageNodeTokens || rotateRuntimeToken.isPending}>
                   <RotateCw />
+                  <span>Token</span>
                 </Button>
               </DangerConfirm>
             </RoleGuard>
-            <Button variant="outline" size="icon-sm" aria-label="Nodeを編集" onClick={() => openEditNode(node)} disabled={!allowed}>
+            <Button variant="outline" size="sm" className="px-2" aria-label="Nodeを編集" title="Nodeを編集" onClick={() => openEditNode(node)} disabled={!allowed}>
               <Pencil />
+              <span>編集</span>
             </Button>
             <RoleGuard allowed={canDeleteNode}>
               <DangerConfirm title={`${node.service_name} を削除しますか`} description="Node登録、割り当て、Runtime Tokenを無効化します。この操作は取り消せません。" onConfirm={() => deleteNode.mutate(nodeID)} actionLabel="削除">
-                <Button variant="destructive" size="icon-sm" aria-label="Nodeを削除" {...guardedButtonProps(canDeleteNode)} disabled={!canDeleteNode || deleteNode.isPending}>
+                <Button variant="destructive" size="sm" className="px-2" aria-label="Nodeを削除" title="Nodeを削除" {...guardedButtonProps(canDeleteNode)} disabled={!canDeleteNode || deleteNode.isPending}>
                   <Trash2 />
+                  <span>削除</span>
                 </Button>
               </DangerConfirm>
             </RoleGuard>
@@ -673,7 +661,23 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             </div>
           ) : null}
           <div className="text-sm text-muted-foreground">登録済み: {registeredRows.length} Node</div>
-          <DataTable columns={registeredColumns} data={registeredRows} filterPlaceholder="Node名、種別、状態で検索" getRowId={(row) => row.service_id || row.id} />
+          <div className="grid gap-4">
+            <RegisteredNodeGroup
+              title="Nodeサービス"
+              description="Worker、Encoder / Recorder、Discord BOT、Observabilityの登録・稼働情報"
+              rows={operationalRegisteredRows}
+              columns={registeredColumns}
+            />
+            {updaterRegisteredRows.length > 0 ? (
+              <RegisteredNodeGroup
+                title="Updater / Host Agent"
+                description="ホスト単位の更新専用。通常のNodeサービスとは別の管理経路です。"
+                rows={updaterRegisteredRows}
+                columns={registeredColumns}
+                filterPlaceholder="Updater名、Host ID、状態で検索"
+              />
+            ) : null}
+          </div>
         </CardContent>
       </Card>
       ) : null}
@@ -751,6 +755,9 @@ function NodeEndpointStateView({
   onCopy: (key: string, value?: string) => Promise<void>;
 }) {
   const state = nodeEndpointState(node);
+  if (node.service_type === "update_agent") {
+    return <UpdaterTransportStateView node={node} state={state} compact={compact} />;
+  }
   if (state.kind === "pull_v2") {
     return (
       <div
@@ -808,6 +815,48 @@ function NodeEndpointStateView({
   );
 }
 
+function UpdaterTransportStateView({
+  node,
+  state,
+  compact = false,
+}: {
+  node: WorkerNode;
+  state: ReturnType<typeof nodeEndpointState>;
+  compact?: boolean;
+}) {
+  const transportMode = state.transportMode || "未報告";
+  const isPull = transportMode === "pull_v2";
+  const managementEndpoint = state.applied.url || state.desired.url || state.reported.url;
+  return (
+    <div
+      className={compact
+        ? "grid min-w-56 gap-1 text-xs"
+        : "grid min-w-0 gap-2 rounded-md border bg-muted/40 p-3 text-sm"}
+      role="group"
+      aria-label={`${node.service_name || node.service_id || node.id} のUpdater transport情報`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary">Updater / Host Agent</Badge>
+        <span className="font-medium">
+          {isPull ? "受信ポートなし（Outbound HTTPS）" : "管理経路: SSH（legacy）"}
+        </span>
+      </div>
+      <div className="text-muted-foreground">transport_mode: {transportMode}</div>
+      {isPull ? (
+        <>
+          <div className="break-all text-muted-foreground">execution_host_id: {state.executionHostID || "未報告"}</div>
+          <div className="text-muted-foreground">ownership_epoch: {state.ownershipEpoch ?? "未報告"}</div>
+        </>
+      ) : (
+        <div className="break-all text-muted-foreground">
+          管理endpoint: {managementEndpoint || "未報告"}
+        </div>
+      )}
+      {!compact ? <div className="text-xs text-muted-foreground">通常のNode endpointではなく、ホスト単位の更新経路です。</div> : null}
+    </div>
+  );
+}
+
 function NodeEndpointSnapshotRow({
   label,
   snapshot,
@@ -842,7 +891,86 @@ function NodeEndpointSnapshotRow({
 }
 
 function nodeTypeLabel(type?: string) {
+  if (type === "update_agent") return "Updater（Host Agent）";
   return nodeTypes.find((item) => item.value === type)?.label || type || "-";
+}
+
+function NodeTypeSummary({ node }: { node: WorkerNode }) {
+  const updater = node.service_type === "update_agent";
+  return (
+    <div className="min-w-0 max-w-64 space-y-1 text-sm">
+      <Badge variant={updater ? "secondary" : "outline"}>{nodeTypeLabel(node.service_type)}</Badge>
+      <div className="break-words text-xs text-muted-foreground">
+        {updater ? "ホスト単位の更新専用。通常のNode通信とは別の管理経路です。" : node.description || "Nodeサービス"}
+      </div>
+    </div>
+  );
+}
+
+function NodeStatusSummary({ node }: { node: WorkerNode }) {
+  return (
+    <div className="min-w-0 max-w-48 space-y-1.5 text-sm">
+      <StatusBadge status={node.health_status || node.status} showDetail />
+      <div className="text-xs font-medium">{node.last_heartbeat_at ? "接続済み" : "接続待ち"}</div>
+      <div className="text-xs text-muted-foreground">{node.configure_token_used_at ? "Configure済み" : "Configure未実行"}</div>
+    </div>
+  );
+}
+
+function NodeReportSummary({ node }: { node: WorkerNode }) {
+  if (node.service_type === "update_agent") {
+    return (
+      <div className="min-w-0 max-w-64 space-y-1 text-sm">
+        <div className="font-medium">Host Agent報告</div>
+        <div className="text-xs text-muted-foreground">{node.reported_version || node.version || "未報告"}</div>
+        <div className="text-xs text-muted-foreground">更新実行状態はシステム情報で確認</div>
+      </div>
+    );
+  }
+  return (
+    <div className="min-w-0 max-w-56 space-y-1 text-sm">
+      <div>Version {node.reported_version || node.version || "未報告"}</div>
+      <div className="text-xs text-muted-foreground">{nodeReportedPlatform(node)}</div>
+      <NodeMetricsSummary node={node} />
+    </div>
+  );
+}
+
+function RegisteredNodeGroup({
+  title,
+  description,
+  rows,
+  columns,
+  filterPlaceholder = "Node名、種別、状態で検索",
+}: {
+  title: string;
+  description: string;
+  rows: WorkerNode[];
+  columns: ColumnDef<WorkerNode>[];
+  filterPlaceholder?: string;
+}) {
+  return (
+    <section className="min-w-0 rounded-lg border bg-muted/10 p-3 sm:p-4" aria-label={title}>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="font-medium">{title}</h3>
+          <p className="mt-1 break-words text-xs text-muted-foreground">{description}</p>
+        </div>
+        <Badge variant="outline">{rows.length}件</Badge>
+      </div>
+      {rows.length > 0 ? (
+        <DataTable
+          columns={columns}
+          data={rows}
+          filterPlaceholder={filterPlaceholder}
+          getRowId={(row) => row.service_id || row.id}
+          minTableWidthClass="min-w-[960px]"
+        />
+      ) : (
+        <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">対象のNodeは登録されていません。</div>
+      )}
+    </section>
+  );
 }
 
 function nodeIdentity(node: WorkerNode) {

@@ -7987,6 +7987,9 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "services.runtime_config.read", ResourceType: "service", ResourceID: "enc-01", Result: "success", Metadata: map[string]any{"assignment_count": 1}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "services.register", ResourceType: "service", ResourceID: "updater-01", Result: "success", Metadata: map[string]any{"service_type": "update_agent"}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "streams.start", ResourceType: "stream", ResourceID: "stream-01", Result: "failure", Metadata: map[string]any{"missing_service_types": []string{"worker"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -8028,7 +8031,7 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if err := json.NewDecoder(runtimeReadRes.Body).Decode(&runtimeReads); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtimeReads) != 1 || runtimeReads[0].Action != "services.runtime_config.read" {
+	if len(runtimeReads) != 2 || runtimeReads[0].Action != "services.register" || runtimeReads[1].Action != "services.runtime_config.read" {
 		t.Fatalf("unexpected runtime read audit events: %#v", runtimeReads)
 	}
 	operationsReq := httptest.NewRequest(http.MethodGet, "/audit-logs?exclude_action_group=service_runtime_reads", nil)
@@ -8046,7 +8049,7 @@ func TestAuditLogsListAndExport(t *testing.T) {
 		t.Fatal("operations audit unexpectedly returned no events")
 	}
 	for _, event := range operations {
-		if event.Action == "services.runtime_config.read" {
+		if event.Action == "services.runtime_config.read" || event.Action == "services.register" {
 			t.Fatalf("operations audit included runtime read event: %#v", operations)
 		}
 	}

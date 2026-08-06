@@ -44,9 +44,9 @@ export function DataTable<TData, TValue>({
   });
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <div className="relative max-w-sm flex-1">
+    <div className="min-w-0 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-0 max-w-sm flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input
             value={(table.getState().globalFilter as string) ?? ""}
@@ -60,7 +60,7 @@ export function DataTable<TData, TValue>({
           {locale === "ja" ? `${table.getFilteredRowModel().rows.length} / ${data.length} 件` : `${table.getFilteredRowModel().rows.length} of ${data.length} rows`}
         </span>
       </div>
-      <div className="overflow-hidden rounded-md border bg-card">
+      <div className="min-w-0 overflow-hidden rounded-md border bg-card">
         <Table className={minTableWidthClass}>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (

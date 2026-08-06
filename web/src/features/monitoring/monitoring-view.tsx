@@ -10,6 +10,7 @@ import { MetricCard } from "@/components/admin/metric-card";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { useAppSettings, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import { isServiceAvailable } from "@/lib/service-health";
 import type { Stream, WorkerNode } from "@/types/domain";
 
 type MonitoringRow = Record<string, unknown>;
@@ -27,7 +28,7 @@ export function MonitoringView() {
   const entityLabels = useMemo(() => buildEntityLabels(serviceRows, streamRows), [serviceRows, streamRows]);
   const incidentRows = incidents.data || [];
   const diagnosticRows = diagnostics.data || [];
-  const online = serviceRows.filter((service) => service.status === "online").length;
+  const online = serviceRows.filter(isAvailableService).length;
   const unhealthy = serviceRows.filter((service) => ["offline", "warning", "unconfigured"].includes(service.health_status || service.status)).length;
   const openIncidents = incidentRows.filter((row) => !["resolved", "closed"].includes(rowString(row, "status"))).length;
   const warningDiagnostics = diagnosticRows.filter((row) => !["pass", "ok", "success"].includes(rowString(row, "status"))).length;
@@ -271,6 +272,8 @@ function serviceTypeLabel(type: string) {
   };
   return labels[type] || type || "-";
 }
+
+const isAvailableService = isServiceAvailable;
 
 function diagnosticLabel(value: string) {
   const labels: Record<string, string> = {

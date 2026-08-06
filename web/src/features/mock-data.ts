@@ -19,6 +19,7 @@ export const mockCurrentUser: CurrentUser = {
     "workers.read",
     "workers.restart",
     "workers.assign",
+    "service_health.read",
     "audit_logs.read",
     "audit_logs.export",
     "api_tokens.create",
@@ -424,6 +425,17 @@ export const mockAuditLogs: AuditLog[] = [
     resource_type: "service",
     resource_id: "encoder-field",
   },
+  {
+    id: "audit-006",
+    timestamp: "2026-07-02T08:59:45+09:00",
+    action: "services.register",
+    actor_username: "updater-central",
+    actor_ip: "192.0.2.31",
+    user_agent: "AutoStream Host Agent",
+    result: "success",
+    resource_type: "service",
+    resource_id: "updater-central",
+  },
 ];
 
 export function mockWorkerMetrics(): MetricSnapshot[] {
@@ -757,8 +769,8 @@ export function mockGet(path: string): unknown {
     const actionGroup = String(params.get("action_group") || "").trim();
     const excludedActionGroup = String(params.get("exclude_action_group") || "").trim();
     return mockAuditLogs.filter((event) => {
-      if (actionGroup === "service_runtime_reads" && event.action !== "services.runtime_config.read") return false;
-      if (excludedActionGroup === "service_runtime_reads" && event.action === "services.runtime_config.read") return false;
+      if (actionGroup === "service_runtime_reads" && !["services.register", "services.runtime_config.read"].includes(event.action)) return false;
+      if (excludedActionGroup === "service_runtime_reads" && ["services.register", "services.runtime_config.read"].includes(event.action)) return false;
       if (result && String(event.result || "").toLowerCase() !== result) return false;
       if (!search) return true;
       return [event.id, event.action, event.actor_username, event.actor_ip, event.user_agent, event.result, event.resource_type, event.resource_id]

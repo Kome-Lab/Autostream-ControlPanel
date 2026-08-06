@@ -22,9 +22,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge, statusDescriptor } from "@/components/admin/status-badge";
 import { useCurrentUser, useServiceHealth, useStreams } from "@/features/queries";
 import { hasPermission } from "@/lib/auth/permissions";
+import { isServiceAvailable } from "@/lib/service-health";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
 import { cn } from "@/lib/utils";
-import type { CurrentUser, Stream, WorkerNode } from "@/types/domain";
+import type { CurrentUser, Stream } from "@/types/domain";
 
 export function DashboardView() {
   const currentUser = useCurrentUser();
@@ -376,7 +377,7 @@ function compareStreams(left: Stream, right: Stream) {
 }
 
 function isFinished(status?: string) { return ["completed", "stopped"].includes(String(status || "").toLowerCase()); }
-function isAvailableService(service: WorkerNode) { const status = String(service.status || "").toLowerCase(); const health = String(service.health_status || "").toLowerCase(); return status === "online" && (!health || ["healthy", "ok", "online"].includes(health)); }
+const isAvailableService = isServiceAvailable;
 function isSuperAdmin(currentUser?: CurrentUser) { return currentUser?.user.roles?.includes("super_admin") === true; }
 
 function assignedNodeLabels(stream: Stream, labels: Map<string, string>, servicesByStream: Map<string, string[]>) {

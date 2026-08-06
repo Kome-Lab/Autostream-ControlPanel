@@ -53,6 +53,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
 import { APIError, apiGet, apiPost, clearCSRFToken } from "@/lib/api/client";
 import { hasAnyPermission, hasPermission } from "@/lib/auth/permissions";
+import { isServiceAvailable } from "@/lib/service-health";
 import { loginPathForLocation } from "@/lib/auth/post-login-redirect";
 import {
   createNavigationSectionsState,
@@ -98,7 +99,7 @@ const navSections: NavSection[] = [
   {
     key: "navProfiles",
     items: [
-      navItem("/admin/workers/", "workers", ServerCog, ["workers.read"], "WorkerとEncoderの割り当て・操作", "Assign and operate Workers and Encoders"),
+      navItem("/admin/workers/", "workers", ServerCog, ["workers.read", "service_health.read", "api_tokens.create"], "Worker・EncoderとNodeサービスの状態・操作", "Operate Workers, Encoders, and Node services"),
       navItem("/admin/encoder/", "encoder", Gauge, ["encoder_profiles.read"], "配信品質の標準設定", "Standardize encoding quality"),
       navItem("/admin/discord/", "discord", MessageCircle, ["discord_configs.read"], "配信起動に使うDiscord BOT", "Configure Discord bots used for stream automation"),
       navItem("/admin/youtube/", "youtube", Video, ["youtube_outputs.read"], "YouTube出力と公開設定", "Configure YouTube outputs and visibility"),
@@ -548,8 +549,4 @@ function isActivePath(pathname: string, href: string) {
   return pathname === href || (href !== "/admin/" && pathname.startsWith(href));
 }
 
-function isAvailableService(row: { status?: string; health_status?: string }) {
-  const status = String(row.status || "").toLowerCase();
-  const health = String(row.health_status || "").toLowerCase();
-  return status === "online" && (!health || ["healthy", "ok", "online"].includes(health));
-}
+const isAvailableService = isServiceAvailable;

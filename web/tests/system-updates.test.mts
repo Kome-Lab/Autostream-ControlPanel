@@ -2177,8 +2177,10 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(applicationSource, /lg:grid-cols-2 \[&>\*:only-child\]:col-span-full/);
   assert.match(applicationSource, /CardHeader className="min-w-0 gap-3 sm:flex-row sm:items-start sm:justify-between"/);
   assert.match(applicationSource, /className="h-auto max-w-full whitespace-normal text-left sm:h-8 sm:whitespace-nowrap"/);
-  assert.match(applicationSource, /className="grid gap-3 xl:hidden"/);
-  assert.match(applicationSource, /className="hidden overflow-x-auto rounded-md border xl:block"/);
+  assert.match(applicationSource, /className="grid gap-4 2xl:hidden"/);
+  assert.match(applicationSource, /className="hidden overflow-x-auto rounded-md border 2xl:block"/);
+  assert.match(applicationSource, /title="Updater \/ Host Agent"/);
+  assert.match(applicationSource, /Nodeサービスは登録されていません/);
   assert.match(applicationSource, /function RegisteredServiceMobileCard/);
   assert.doesNotMatch(applicationSource, /disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100/);
   assert.match(buttonSource, /default: "bg-primary text-primary-foreground hover:bg-primary\/90 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"/);

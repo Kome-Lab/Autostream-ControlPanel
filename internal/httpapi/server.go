@@ -11452,7 +11452,10 @@ func safeCSVCell(value string) string {
 var auditActionGroups = map[string][]string{
 	"service_assignment":    {"services.assign", "services.unassign", "workers.assign", "workers.unassign"},
 	"service_runtime":       {"services.register", "services.heartbeat", "archive.artifacts.reported", "nodes.registration_token.create"},
-	"service_runtime_reads": {"services.runtime_config.read"},
+	// Service registration is an agent-to-panel report, not a human operation.
+	// Keep it with runtime configuration reads so the operations view does not
+	// fill up with periodic Host Agent/Node registration traffic.
+	"service_runtime_reads": {"services.register", "services.runtime_config.read"},
 	"stream_lifecycle":      {"streams.create", "streams.start", "streams.stop", "streams.mark_failed", "streams.retry_upload"},
 	"security":              {"auth.login", "auth.logout", "auth.change_password", "users.create", "users.update", "users.disable", "users.lock", "users.unlock", "users.reset_password", "users.force_password_change", "roles.create", "roles.update", "roles.delete"},
 	"secrets":               {"secrets.update", "security.settings.update", "api_tokens.create", "api_tokens.revoke", "api_tokens.rotate"},

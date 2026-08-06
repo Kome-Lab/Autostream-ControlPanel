@@ -102,11 +102,12 @@ export function useStreams(enabled = true) {
   });
 }
 
-export function useWorkers() {
+export function useWorkers(enabled = true) {
   return useQuery({
     queryKey: ["workers"],
     queryFn: () => apiGet<WorkerNode[]>("/workers"),
     refetchInterval: 10_000,
+    enabled,
   });
 }
 

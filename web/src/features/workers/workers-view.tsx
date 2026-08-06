@@ -13,7 +13,8 @@ import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { apiGet, apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
-import { useCurrentUser, useWorkers } from "@/features/queries";
+import { isServiceAvailable } from "@/lib/service-health";
+import { useCurrentUser, useNodes, useServiceHealth, useWorkers } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import type { WorkerNode } from "@/types/domain";
 import { formatNodeMetricPercent, formatWorkerHeartbeat } from "./node-operational-display";
@@ -28,8 +29,13 @@ type NodeConfigurationResponse = {
 
 export function WorkersView() {
   const { t } = useI18n();
-  const workers = useWorkers();
   const currentUser = useCurrentUser();
+  const canReadWorkers = hasPermission(currentUser.data, "workers.read");
+  const workers = useWorkers(canReadWorkers);
+  const canReadRegisteredNodes = hasPermission(currentUser.data, "api_tokens.create");
+  const canReadServiceHealth = hasPermission(currentUser.data, "service_health.read");
+  const registeredNodes = useNodes(canReadRegisteredNodes);
+  const serviceHealth = useServiceHealth(canReadServiceHealth);
   const queryClient = useQueryClient();
   const canRestart = hasPermission(currentUser.data, "workers.restart");
   const [configuration, setConfiguration] = useState<NodeConfigurationResponse | null>(null);
@@ -47,10 +53,10 @@ export function WorkersView() {
     onSuccess: (data) => setConfiguration(data),
   });
 
-  const rows = workers.data || [];
-  const online = rows.filter((node) => node.status === "online").length;
+  const rows = mergeOperationalNodes(workers.data || [], registeredNodes.data || [], serviceHealth.data || []);
+  const online = rows.filter(isNodeOnline).length;
   const activeJobs = rows.reduce((sum, node) => sum + Number(node.metrics?.active_jobs || node.metrics?.runningJobs || 0), 0);
-  const warning = rows.filter((node) => ["degraded", "warning", "offline"].includes(node.status) || ["warning", "offline"].includes(node.health_status || "")).length;
+  const warning = rows.filter((node) => !isNodeOnline(node)).length;
 
   const copyValue = async (key: string, value?: string) => {
     if (!value) return;
@@ -77,7 +83,7 @@ export function WorkersView() {
         );
       },
     },
-    { accessorKey: "service_type", header: t("nodeType") },
+    { accessorKey: "service_type", header: t("nodeType"), cell: ({ row }) => serviceTypeLabel(row.original.service_type) },
     {
       id: "endpoint",
       header: "接続先",
@@ -136,16 +142,18 @@ export function WorkersView() {
         const nodeID = row.original.service_id || row.original.id;
         return (
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon-sm" aria-label="Configuration" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
+            <Button variant="outline" size="sm" aria-label="Configurationを表示" title="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
               <FileCode2 />
+              <span>設定</span>
             </Button>
-            <RoleGuard allowed={canRestart}>
-              <DangerConfirm title={`${row.original.service_name} を再起動しますか`} onConfirm={() => restart.mutate(nodeID)} actionLabel={t("restart")}>
-                <Button variant="outline" size="icon-sm" aria-label={t("restart")} {...guardedButtonProps(canRestart)}>
+            {row.original.service_type === "worker" ? <RoleGuard allowed={canRestart}>
+               <DangerConfirm title={`${row.original.service_name} を再起動しますか`} onConfirm={() => restart.mutate(nodeID)} actionLabel={t("restart")}>
+                <Button variant="outline" size="sm" aria-label={t("restart")} title={t("restart")} {...guardedButtonProps(canRestart)}>
                   <RotateCw />
+                  <span>再起動</span>
                 </Button>
               </DangerConfirm>
-            </RoleGuard>
+            </RoleGuard> : null}
           </div>
         );
       },
@@ -176,12 +184,18 @@ export function WorkersView() {
         </Card>
       ) : null}
 
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("workers")}</CardTitle>
+          <p className="text-sm text-muted-foreground">Worker、Encoder / Recorder、Discord BOT、Observabilityの運用状態をまとめて確認します。</p>
         </CardHeader>
         <CardContent>
-          <DataTable columns={columns} data={rows} filterPlaceholder="Node名、種類、状態で絞り込み" getRowId={(row) => row.service_id || row.id} />
+          {registeredNodes.isError || serviceHealth.isError ? (
+            <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100" role="status">
+              一部のNode情報を取得できませんでした。登録済みNodeまたはサービス稼働ページの権限と接続状態を確認してください。
+            </div>
+          ) : null}
+          <DataTable columns={columns} data={rows} filterPlaceholder="Node名、種類、状態で絞り込み" getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
         </CardContent>
       </Card>
     </div>
@@ -191,6 +205,51 @@ export function WorkersView() {
 function capabilityCount(node: WorkerNode) {
   const capabilities = node.reported_capabilities && Object.keys(node.reported_capabilities).length > 0 ? node.reported_capabilities : node.capabilities;
   return Object.keys(capabilities ?? {}).length;
+}
+
+const operationalNodeTypes = new Set(["worker", "encoder_recorder", "discord_bot", "observability"]);
+
+function mergeOperationalNodes(...sources: WorkerNode[][]) {
+  const merged = new Map<string, WorkerNode>();
+  for (const source of sources) {
+    for (const node of source) {
+      if (!operationalNodeTypes.has(node.service_type)) continue;
+      const id = node.service_id || node.id;
+      if (!id) continue;
+      const current = merged.get(id);
+      merged.set(id, current ? {
+        ...current,
+        ...node,
+        service_id: current.service_id || node.service_id,
+        id: current.id || node.id,
+        service_type: current.service_type || node.service_type,
+        service_name: current.service_name || node.service_name,
+        reported_version: node.reported_version || current.reported_version,
+        reported_commit: node.reported_commit || current.reported_commit,
+        reported_build_date: node.reported_build_date || current.reported_build_date,
+        status: node.status || current.status,
+        health_status: node.health_status || current.health_status,
+      } : node);
+    }
+  }
+  return Array.from(merged.values()).sort((a, b) => {
+    const type = serviceTypeLabel(a.service_type).localeCompare(serviceTypeLabel(b.service_type), "ja");
+    return type || (a.service_name || a.service_id || a.id).localeCompare(b.service_name || b.service_id || b.id, "ja");
+  });
+}
+
+function isNodeOnline(node: WorkerNode) {
+  return isServiceAvailable(node);
+}
+
+function serviceTypeLabel(type?: string) {
+  const labels: Record<string, string> = {
+    worker: "Worker",
+    encoder_recorder: "Encoder / Recorder",
+    discord_bot: "Discord BOT",
+    observability: "Observability",
+  };
+  return labels[type || ""] || type || "Node";
 }
 
 function nodeDisplayName(node: WorkerNode) {

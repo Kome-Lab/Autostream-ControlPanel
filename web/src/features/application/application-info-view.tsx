@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Activity, Download, GitCommit, History, LoaderCircle, RefreshCcw, ServerCog, ShieldAlert, XCircle } from "lucide-react";
 import { StatusBadge } from "@/components/admin/status-badge";
@@ -713,6 +713,8 @@ function RegisteredServicesCard({
       requestState,
     };
   };
+  const operationalRows = nodeRows.filter((node) => node.service_type !== "update_agent");
+  const updaterRows = nodeRows.filter((node) => node.service_type === "update_agent");
   return (
     <Card className="min-w-0">
       <CardHeader><CardTitle className="flex items-center gap-2"><ServerCog className="size-5" />登録済みサービス</CardTitle><CardDescription>報告バージョンと、希望・適用・Node報告のendpointを区別して表示します。</CardDescription></CardHeader>
@@ -722,20 +724,45 @@ function RegisteredServicesCard({
             : nodesLoading ? <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">読み込み中</div>
               : nodeRows.length === 0 ? <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">登録済みNodeがありません。Node登録ページで作成したNodeがある場合は、ページを更新してください。</div>
                  : <>
-                     <div className="grid gap-3 xl:hidden">
-                       {nodeRows.map((node) => (
-                         <RegisteredServiceMobileCard
-                           key={node.service_id || node.id}
-                           node={node}
-                           operation={nodeOperation(node)}
-                           timezone={timezone}
-                           appVersion={appVersion}
-                           canExecute={canExecuteSystemUpdates}
-                           onRequest={onPortReconfigure}
-                         />
-                       ))}
-                     </div>
-                     <div className="hidden overflow-x-auto rounded-md border xl:block">
+                      <div className="grid gap-4 2xl:hidden">
+                        <div className="space-y-2">
+                          <SectionLabel title="Nodeサービス" description="Worker、Encoder / Recorder、その他のサービス" />
+                          {operationalRows.length > 0 ? (
+                            <div className="grid gap-3">
+                              {operationalRows.map((node) => (
+                                <RegisteredServiceMobileCard
+                                  key={node.service_id || node.id}
+                                  node={node}
+                                  operation={nodeOperation(node)}
+                                  timezone={timezone}
+                                  appVersion={appVersion}
+                                  canExecute={canExecuteSystemUpdates}
+                                  onRequest={onPortReconfigure}
+                                />
+                              ))}
+                            </div>
+                          ) : <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">Nodeサービスは登録されていません。</div>}
+                        </div>
+                        {updaterRows.length > 0 ? (
+                          <div className="space-y-2">
+                            <SectionLabel title="Updater / Host Agent" description="ホスト単位の更新専用。通常のNode endpointとは別に管理します。" />
+                            <div className="grid gap-3">
+                              {updaterRows.map((node) => (
+                                <RegisteredServiceMobileCard
+                                  key={node.service_id || node.id}
+                                  node={node}
+                                  operation={nodeOperation(node)}
+                                  timezone={timezone}
+                                  appVersion={appVersion}
+                                  canExecute={canExecuteSystemUpdates}
+                                  onRequest={onPortReconfigure}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                     <div className="hidden overflow-x-auto rounded-md border 2xl:block">
                        <Table className="min-w-[980px]">
                          <TableHeader>
                            <TableRow>
@@ -743,11 +770,19 @@ function RegisteredServicesCard({
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {nodeRows.map((node) => {
-                            const operation = nodeOperation(node);
-                            return (
-                              <TableRow key={node.service_id || node.id}>
-                                <TableCell>
+                           {nodeRows.map((node, index) => {
+                             const operation = nodeOperation(node);
+                             return (
+                               <Fragment key={node.service_id || node.id}>
+                               {(index === 0 || (nodeRows[index - 1]?.service_type === "update_agent") !== (node.service_type === "update_agent")) ? (
+                                 <TableRow className="bg-muted/25 hover:bg-muted/25">
+                                   <TableCell colSpan={4}>
+                                     <SectionLabel title={node.service_type === "update_agent" ? "Updater / Host Agent" : "Nodeサービス"} description={node.service_type === "update_agent" ? "ホスト単位の更新専用" : "Worker、Encoder / Recorder、その他のサービス"} />
+                                   </TableCell>
+                                 </TableRow>
+                               ) : null}
+                               <TableRow>
+                                 <TableCell>
                                   <div className="font-medium">{node.service_name || node.service_id || "-"}</div>
                                   <div className="mt-1 font-mono text-xs text-muted-foreground">{node.service_id || node.id}</div>
                                 </TableCell>
@@ -774,9 +809,10 @@ function RegisteredServicesCard({
                                     onRequest={onPortReconfigure}
                                   />
                                 </TableCell>
-                              </TableRow>
-                            );
-                          })}
+                               </TableRow>
+                               </Fragment>
+                             );
+                           })}
                          </TableBody>
                        </Table>
                      </div>
@@ -858,8 +894,20 @@ function InfoItem({ label, value, monospace = false }: { label: string; value: R
   return <div className="rounded-md border bg-muted/20 px-3 py-2"><div className="text-xs text-muted-foreground">{label}</div><div className={monospace ? "font-mono text-sm" : "text-sm"}>{value}</div></div>;
 }
 
+function SectionLabel({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="rounded-md border bg-muted/20 px-3 py-2">
+      <div className="text-sm font-medium">{title}</div>
+      <div className="mt-0.5 text-xs text-muted-foreground">{description}</div>
+    </div>
+  );
+}
+
 function ServiceEndpointSummary({ node }: { node: WorkerNode }) {
   const state = nodeEndpointState(node);
+  if (node.service_type === "update_agent") {
+    return <UpdaterTransportSummary node={node} state={state} />;
+  }
   if (state.kind === "pull_v2") {
     return (
       <div className="space-y-1 text-xs">
@@ -878,6 +926,36 @@ function ServiceEndpointSummary({ node }: { node: WorkerNode }) {
         <span className="text-muted-foreground">Endpoint revision: {state.revision ?? "未報告"}</span>
       </div>
       <p className="text-muted-foreground">{state.status.detail}</p>
+    </div>
+  );
+}
+
+function UpdaterTransportSummary({
+  node,
+  state,
+}: {
+  node: WorkerNode;
+  state: ReturnType<typeof nodeEndpointState>;
+}) {
+  const transportMode = state.transportMode || "未報告";
+  const isPull = transportMode === "pull_v2";
+  const managementEndpoint = state.applied.url || state.desired.url || state.reported.url;
+  return (
+    <div className="space-y-1.5 text-xs" aria-label={`${node.service_name || node.service_id || node.id} のUpdater transport状態`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary">Updater / Host Agent</Badge>
+        <span className="font-medium">{isPull ? "受信ポートなし（Outbound HTTPS）" : "SSH（legacy）"}</span>
+      </div>
+      <div className="text-muted-foreground">transport_mode: {transportMode}</div>
+      {isPull ? (
+        <>
+          <div className="break-words text-muted-foreground">実行ホスト: {state.executionHostID || "未割り当て"}</div>
+          <div className="text-muted-foreground">Ownership epoch: {state.ownershipEpoch ?? "未報告"}</div>
+        </>
+      ) : (
+        <div className="break-all text-muted-foreground">管理endpoint: {managementEndpoint || "未報告"}</div>
+      )}
+      <div className="text-muted-foreground">通常のNode endpointとは別の更新管理経路</div>
     </div>
   );
 }

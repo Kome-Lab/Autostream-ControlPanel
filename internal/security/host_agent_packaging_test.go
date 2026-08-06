@@ -551,6 +551,9 @@ func TestHostReleaseAddsAttestedHostAgentAssetsWithoutRemovingLegacyAssets(t *te
 		`(length == 18)`,
 		`(.assets | length == 18)`,
 		`-e "s/vX\\.Y\\.Z/${version}/g" \`,
+		"cmp -s \\",
+		`Host Agent artifact contains a different Local Executor unit template`,
+		`Host Agent artifact contains a different self-update recovery unit template`,
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("host release workflow is missing %q", marker)

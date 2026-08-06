@@ -539,6 +539,18 @@ jobs:
             cp systemd/autostream-local-executor.tmpfiles.example "${host_agent_root}/systemd/autostream-local-executor.tmpfiles"
             cp systemd/autostream-host-self-update-recovery@.service.example "${host_agent_root}/systemd/autostream-host-self-update-recovery@.service"
             cp systemd/autostream-host-self-update-recovery@.timer.example "${host_agent_root}/systemd/autostream-host-self-update-recovery@.timer"
+            cmp -s \
+              systemd/autostream-local-executor.service.example \
+              "${host_agent_root}/systemd/autostream-local-executor.service" || {
+              echo "Host Agent artifact contains a different Local Executor unit template" >&2
+              exit 1
+            }
+            cmp -s \
+              systemd/autostream-host-self-update-recovery@.service.example \
+              "${host_agent_root}/systemd/autostream-host-self-update-recovery@.service" || {
+              echo "Host Agent artifact contains a different self-update recovery unit template" >&2
+              exit 1
+            }
             chmod 0755 \
               "${host_agent_root}/install/install-autostream-host-agent" \
               "${host_agent_root}/install/uninstall-autostream-host-agent" \

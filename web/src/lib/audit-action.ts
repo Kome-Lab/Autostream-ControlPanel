@@ -86,6 +86,8 @@ const auditActionLabels: Record<string, string> = {
   "security.settings.update": "セキュリティ設定を更新",
   "services.assign": "Nodeを割り当て",
   "services.delete": "Nodeを削除",
+  "services.register": "Nodeが登録情報を報告",
+  "services.heartbeat": "NodeがHeartbeatを報告",
   "services.runtime_config.read": "Nodeが実行設定を参照",
   "services.runtime_config.preview": "Node実行設定をプレビュー",
   "services.unassign": "Nodeの割り当てを解除",

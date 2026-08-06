@@ -16,6 +16,7 @@ const statusMap: Record<string, { label: string; detail: string; className: stri
   recording_started: { label: "録画開始", detail: "録画処理を開始", className: "border-violet-300 bg-violet-50 text-violet-800 dark:border-violet-700 dark:bg-violet-950/60 dark:text-violet-200" },
   recording_completed: { label: "録画完了", detail: "録画データを確認できます", className: "border-violet-300 bg-violet-50 text-violet-800 dark:border-violet-700 dark:bg-violet-950/60 dark:text-violet-200" },
   online: { label: "オンライン", detail: "Nodeに接続中", className: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-200" },
+  assigned: { label: "割当済み", detail: "配信枠に割り当て済み。稼働状態はHeartbeatで確認します", className: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-700 dark:bg-sky-950/60 dark:text-sky-200" },
   pass: { label: "正常", detail: "診断結果は正常です", className: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-200" },
   ok: { label: "正常", detail: "確認項目に問題はありません", className: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-200" },
   healthy: { label: "正常", detail: "Nodeの監視は正常", className: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-200" },
