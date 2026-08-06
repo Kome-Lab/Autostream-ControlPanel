@@ -17,20 +17,9 @@ getent passwd nobody >/dev/null 2>&1 || die "the nobody account is required"
 # the same inheritance contract.
 readonly smoke_command="$(cat <<'EOF'
 set -euo pipefail
-cap_eff="$(
-  /usr/bin/grep -m 1 "^CapEff:" /proc/self/status |
-    /usr/bin/cut -f2
-)"
-case "${cap_eff}" in
-  ""|*[!0123456789abcdefABCDEF]*)
-    echo "invalid CapEff=${cap_eff@Q}" >&2
-    exit 1
-    ;;
-esac
-if (( (16#${cap_eff} & 0x80) == 0 )); then
-  echo "CAP_SETUID is missing from CapEff=${cap_eff}" >&2
-  exit 1
-fi
+/usr/bin/grep -E '^(CapEff|CapPrm|CapBnd|NoNewPrivs):' "/proc/$$/status" >&2 || true
+# This is the actual capability test: runuser must complete its setgid/setuid
+# transition under the same root sandbox used by the Local Executor.
 exec /usr/sbin/runuser -u nobody -- /usr/bin/true
 EOF
 )"
