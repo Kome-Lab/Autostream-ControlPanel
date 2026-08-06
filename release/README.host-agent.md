@@ -25,7 +25,12 @@ the parent, or fails closed with `state_unavailable`. The Agent then reports
 terminal `failed` at 100 percent with code `remote_stage_missing`; matching
 durable executor state is reconciled instead. Once the job reports
 `reconciling` at 99 percent, its next accepted report is a terminal 100-percent
-result; progress never returns to `health_checking` at 90.
+result; progress never returns to `health_checking` at 90. When the preceding
+stage response is a verified candidate smoke execution failure or candidate
+version-output mismatch and recovery proves that no durable stage exists, the
+terminal code is preserved as `remote_stage_smoke_execution_failed` or
+`remote_stage_version_mismatch` instead of being collapsed into the generic
+missing-stage code.
 
 A stale lease or sequence rejection drops only the unusable report cursor while
 retaining the active job and plan for exact recovery. The Panel must return a

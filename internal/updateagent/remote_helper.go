@@ -618,8 +618,11 @@ func preflightRemoteSystemdStage(ctx context.Context, target Target, plan Remote
 	smokeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	output, smokeErr := runner.Run(smokeCtx, resolved, nil, systemd.RunuserPath, "-u", systemd.SmokeUser, "--", smokeBinary, "--version")
 	cancel()
-	if smokeErr != nil || !versionMatches(output, plan.TargetVersion) {
-		return errors.New("staged systemd binary smoke check failed")
+	if smokeErr != nil {
+		return errors.New("staged systemd binary smoke execution failed")
+	}
+	if !versionMatches(output, plan.TargetVersion) {
+		return errors.New("staged systemd binary version output mismatch")
 	}
 	previous, previousDigest, previousVersion, err := currentRelease(systemd.CurrentLink, systemd.ReleaseRoot)
 	if err != nil || previous == "" {
@@ -1119,6 +1122,10 @@ func remoteStageFailureMessage(err error) string {
 		{"staged systemd artifact path is invalid", "staged release path validation failed"},
 		{"staged systemd artifact checksum verification failed", "staged release checksum verification failed"},
 		{"staged systemd artifact is incomplete", "staged release is incomplete"},
+		{"staged systemd binary smoke execution failed", "candidate binary smoke execution failed"},
+		{"staged systemd binary version output mismatch", "candidate binary version output mismatch"},
+		// Keep the pre-v1.9.15 category readable when a newer Host Agent
+		// reconciles a stage failure produced by an older helper.
 		{"staged systemd binary smoke check failed", "candidate binary smoke check failed"},
 		{"managed systemd release bootstrap is required", "managed current release is unavailable"},
 		{"managed target current version does not match the immutable plan", "current version does not match the update plan"},

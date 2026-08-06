@@ -31,11 +31,19 @@ type remoteDockerBaselineRunner struct {
 	targetRepo  string
 }
 
-type remoteSmokeCaptureRunner struct{ calls []commandCall }
+type remoteSmokeCaptureRunner struct {
+	calls  []commandCall
+	output string
+	err    error
+}
 
 func (r *remoteSmokeCaptureRunner) Run(_ context.Context, dir string, env []string, name string, args ...string) (string, error) {
 	r.calls = append(r.calls, commandCall{dir: dir, env: append([]string(nil), env...), name: name, args: append([]string(nil), args...)})
-	return "autostream-worker v1.1.0\n", nil
+	output := r.output
+	if output == "" {
+		output = "autostream-worker v1.1.0\n"
+	}
+	return output, r.err
 }
 
 func (r *remoteDockerBaselineRunner) Run(_ context.Context, dir string, env []string, name string, args ...string) (string, error) {
@@ -339,6 +347,50 @@ func TestRemoteSystemdSmokeUsesArtifactRelativeBinaryUnderRootOnlyState(t *testi
 				t.Fatalf("smoke preflight weakened root-only state path %s: mode=%v", path, info.Mode().Perm())
 			}
 		}
+	}
+}
+
+func TestRemoteSystemdSmokeFailureCategoriesAreDistinct(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		runner    remoteSmokeCaptureRunner
+		wantError string
+	}{
+		{
+			name:      "execution",
+			runner:    remoteSmokeCaptureRunner{err: errors.New("runuser failed")},
+			wantError: "staged systemd binary smoke execution failed",
+		},
+		{
+			name:      "version mismatch",
+			runner:    remoteSmokeCaptureRunner{output: "autostream-worker v9.9.9\n"},
+			wantError: "staged systemd binary version output mismatch",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validHelperTestConfig(t)
+			artifactRoot := filepath.Join(cfg.StateDir, "stages", "category", "artifact")
+			binary := filepath.Join(artifactRoot, "bin", "worker")
+			if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(binary, []byte("verified-binary"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := hashFile(binary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(artifactRoot, "checksums.txt"), []byte(digest+"  bin/worker\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stage := remoteStage{}
+			plan := validRemotePlan()
+			err = preflightRemoteSystemdStage(context.Background(), cfg.Targets[0], plan, artifactRoot, &stage, &test.runner)
+			if err == nil || err.Error() != test.wantError {
+				t.Fatalf("preflight error=%v want=%q", err, test.wantError)
+			}
+		})
 	}
 }
 

@@ -24,7 +24,12 @@ ledger commit is safely removed and its parent fsynced first; unsafe or failed
 cleanup returns `state_unavailable`. The Agent may then report terminal
 `failed`/100 with `remote_stage_missing`. If matching state exists, reconcile
 settles it instead. A `reconciling`/99 report is nonterminal and may move only
-to a terminal 100-percent result.
+to a terminal 100-percent result. A verified candidate smoke execution failure
+or candidate version-output mismatch is retained by the Host Agent journal and
+is reported as `remote_stage_smoke_execution_failed` or
+`remote_stage_version_mismatch` when recovery proves that no durable stage
+exists; unrelated or legacy failures keep the generic
+`remote_stage_missing` result.
 
 A stale lease or sequence drops only its rejected report cursor while the
 active job and plan stay durable. Clearing that cursor later requires the

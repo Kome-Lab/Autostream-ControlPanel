@@ -56,7 +56,9 @@ func TestRemoteStageFailureMessageUsesSafeDiagnosticCategories(t *testing.T) {
 		err     string
 		message string
 	}{
-		{name: "smoke", err: "staged systemd binary smoke check failed", message: "candidate binary smoke check failed"},
+		{name: "smoke execution", err: "staged systemd binary smoke execution failed", message: "candidate binary smoke execution failed"},
+		{name: "version mismatch", err: "staged systemd binary version output mismatch", message: "candidate binary version output mismatch"},
+		{name: "legacy smoke", err: "staged systemd binary smoke check failed", message: "candidate binary smoke check failed"},
 		{name: "backup", err: "backup configured systemd target", message: "configured target backup failed"},
 		{name: "health", err: "previous systemd release is not healthy", message: "current service health or process verification failed"},
 		{name: "unknown", err: "release server leaked /private/path and token", message: "release staging failed"},

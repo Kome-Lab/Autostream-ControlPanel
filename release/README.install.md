@@ -17,7 +17,12 @@ first safely removes only an exact orphan stage left before ledger commit and
 fsyncs its parent, or fails closed with `state_unavailable`. Only then may the
 Agent finish as `failed`/100 with `remote_stage_missing`; matching durable state
 is reconciled instead. After `reconciling`/99, progress moves directly to a
-terminal 100-percent result and never back to `health_checking`/90.
+terminal 100-percent result and never back to `health_checking`/90. Verified
+candidate smoke execution failures and candidate version-output mismatches are
+recorded in the Host Agent journal and surface as
+`remote_stage_smoke_execution_failed` or `remote_stage_version_mismatch` when
+recovery proves that no durable stage exists; unrelated or legacy failures
+remain `remote_stage_missing`.
 
 A permanently stale lease or sequence drops only that unusable report cursor;
 the active job and plan remain for an exact recovery lease. The Panel never

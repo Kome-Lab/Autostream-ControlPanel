@@ -59,14 +59,27 @@ func TestLocalExecutorResponseFromRemotePreservesSafeFailureMessage(t *testing.T
 		Version: LocalExecutorMutationProtocolVersion,
 		Error: &RemoteRPCFailure{
 			Code:    "stage_failed",
-			Message: "candidate binary smoke check failed",
+			Message: "candidate binary smoke execution failed",
 		},
 	})
 	if err := response.Validate(); err != nil {
 		t.Fatalf("response.Validate: %v", err)
 	}
-	if response.Error == nil || response.Error.Code != "stage_failed" || response.Error.Message != "candidate binary smoke check failed" {
+	if response.Error == nil || response.Error.Code != "stage_failed" || response.Error.Message != "candidate binary smoke execution failed" {
 		t.Fatalf("response=%+v", response)
+	}
+	versionMismatch := localExecutorResponseFromRemote(RemoteRPCResponse{
+		Version: LocalExecutorMutationProtocolVersion,
+		Error: &RemoteRPCFailure{
+			Code:    "stage_failed",
+			Message: "candidate binary version output mismatch",
+		},
+	})
+	if err := versionMismatch.Validate(); err != nil {
+		t.Fatalf("versionMismatch.Validate: %v", err)
+	}
+	if versionMismatch.Error == nil || versionMismatch.Error.Code != "stage_failed" || versionMismatch.Error.Message != "candidate binary version output mismatch" {
+		t.Fatalf("versionMismatch=%+v", versionMismatch)
 	}
 }
 

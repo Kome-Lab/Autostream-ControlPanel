@@ -454,6 +454,41 @@ func TestHostPullExecutionExplicitStageFailurePreservesPlanForRecovery(t *testin
 	}
 }
 
+func TestHostPullExecutionRecordsPreciseStageFailureForRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		message string
+		code    string
+	}{
+		{
+			name:    "smoke execution",
+			message: stageFailureMessageSmokeExecution,
+			code:    stageFailureCodeSmokeExecution,
+		},
+		{
+			name:    "version mismatch",
+			message: stageFailureMessageVersionMismatch,
+			code:    stageFailureCodeVersionMismatch,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, false)
+			executor.stageErr = &LocalExecutorClientError{Code: "stage_failed", Message: test.message}
+
+			if err := agent.executeOnce(context.Background(), binding, policy); err == nil {
+				t.Fatal("stage failure unexpectedly completed")
+			}
+			failure := agent.Journal.ActiveStageFailure()
+			if failure == nil || failure.JobID != panel.job.ID || failure.Code != test.code || failure.Message != test.message {
+				t.Fatalf("recorded failure=%+v", failure)
+			}
+			if active := agent.Journal.Active(); active == nil || active.ID != panel.job.ID {
+				t.Fatalf("active job=%+v", active)
+			}
+		})
+	}
+}
+
 func TestHostPullJournalRejectsTamperedDurablePlan(t *testing.T) {
 	agent, panel, _, _, policy := newHostPullExecutionHarness(t, false)
 	job := *panel.job
@@ -812,6 +847,71 @@ func TestHostPullRecoveryWithoutExecutorStageTerminates(t *testing.T) {
 	}
 	if pending := agent.Journal.Pending(); len(pending) != 0 {
 		t.Fatalf("stage-required recovery left pending reports: %+v", pending)
+	}
+}
+
+func TestHostPullRecoveryReportsRecordedStageFailureCategory(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		failure    stageFailureRecord
+		reportCode string
+	}{
+		{
+			name: "smoke execution",
+			failure: stageFailureRecord{
+				Code:    stageFailureCodeSmokeExecution,
+				Message: stageFailureMessageSmokeExecution,
+			},
+			reportCode: stageFailureReportCodeSmokeExecution,
+		},
+		{
+			name: "version mismatch",
+			failure: stageFailureRecord{
+				Code:    stageFailureCodeVersionMismatch,
+				Message: stageFailureMessageVersionMismatch,
+			},
+			reportCode: stageFailureReportCodeVersionMismatch,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, true)
+			interrupted := *panel.job
+			interrupted.RecoveryRequired = false
+			if err := agent.Journal.SetActive(&interrupted); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := agent.prepareExecutionPlan(context.Background(), policy, interrupted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := agent.Journal.SetActivePlan(plan); err != nil {
+				t.Fatal(err)
+			}
+			test.failure.JobID = interrupted.ID
+			if err := agent.Journal.SetActiveStageFailure(test.failure); err != nil {
+				t.Fatal(err)
+			}
+			panel.job.LeaseGeneration = interrupted.LeaseGeneration + 1
+			agent.Downloader = hostPullFailingDownloader{}
+			executor.reconcileErr = &LocalExecutorClientError{Code: "stage_required"}
+
+			if err := agent.executeOnce(context.Background(), binding, policy); err != nil {
+				t.Fatalf("executeOnce: %v", err)
+			}
+			if len(panel.reports) != 2 {
+				t.Fatalf("reports=%+v", panel.reports)
+			}
+			terminal := panel.reports[1]
+			if terminal.Status != "failed" || terminal.Progress != 100 || terminal.Code != test.reportCode || terminal.Message != test.failure.Message {
+				t.Fatalf("terminal report=%+v", terminal)
+			}
+			if active := agent.Journal.Active(); active != nil {
+				t.Fatalf("active job survived precise stage failure terminalization: %+v", active)
+			}
+			if failure := agent.Journal.ActiveStageFailure(); failure != nil {
+				t.Fatalf("stage failure survived precise terminalization: %+v", failure)
+			}
+		})
 	}
 }
 

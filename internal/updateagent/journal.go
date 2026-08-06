@@ -24,12 +24,13 @@ type PendingReport struct {
 }
 
 type journalData struct {
-	ActiveJob        *UpdateJob                  `json:"active_job,omitempty"`
-	ActivePlan       *RemotePlan                 `json:"active_plan,omitempty"`
-	ActivePortPlan   *SystemdPortReconfigurePlan `json:"active_port_plan,omitempty"`
-	NextSeq          uint64                      `json:"next_sequence"`
-	Pending          []PendingReport             `json:"pending_reports,omitempty"`
-	DeployedVersions map[string]string           `json:"deployed_versions,omitempty"`
+	ActiveJob          *UpdateJob                  `json:"active_job,omitempty"`
+	ActivePlan         *RemotePlan                 `json:"active_plan,omitempty"`
+	ActivePortPlan     *SystemdPortReconfigurePlan `json:"active_port_plan,omitempty"`
+	ActiveStageFailure *stageFailureRecord         `json:"active_stage_failure,omitempty"`
+	NextSeq            uint64                      `json:"next_sequence"`
+	Pending            []PendingReport             `json:"pending_reports,omitempty"`
+	DeployedVersions   map[string]string           `json:"deployed_versions,omitempty"`
 }
 
 // journalActiveClearMarker is a credential-free durable backup of the exact
@@ -146,6 +147,14 @@ func validateJournalData(data journalData) error {
 			return errors.New("update journal active plan binding is invalid")
 		}
 	}
+	if data.ActiveStageFailure != nil {
+		if data.ActiveJob == nil || data.ActiveStageFailure.JobID != data.ActiveJob.ID {
+			return errors.New("update journal active stage failure binding is invalid")
+		}
+		if err := data.ActiveStageFailure.validate(); err != nil {
+			return fmt.Errorf("update journal active stage failure is invalid: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -194,6 +203,7 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 		j.data.ActiveJob.EffectiveOperation() != copy.EffectiveOperation() {
 		j.data.ActivePlan = nil
 		j.data.ActivePortPlan = nil
+		j.data.ActiveStageFailure = nil
 	}
 	j.data.ActiveJob = &copy
 	j.data.NextSeq = job.ReportSequence
@@ -274,6 +284,33 @@ func (j *Journal) Active() *UpdateJob {
 		portCopy.Docker = cloneDockerPortMutationGrantBinding(j.data.ActiveJob.PortReconfigure.Docker)
 		copy.PortReconfigure = &portCopy
 	}
+	return &copy
+}
+
+func (j *Journal) SetActiveStageFailure(failure stageFailureRecord) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if err := j.checkMutableLocked(); err != nil {
+		return err
+	}
+	if j.data.ActiveJob == nil || failure.JobID != j.data.ActiveJob.ID {
+		return errors.New("active stage failure does not match the journal job")
+	}
+	if err := failure.validate(); err != nil {
+		return err
+	}
+	copy := failure
+	j.data.ActiveStageFailure = &copy
+	return j.saveLocked()
+}
+
+func (j *Journal) ActiveStageFailure() *stageFailureRecord {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.data.ActiveStageFailure == nil {
+		return nil
+	}
+	copy := *j.data.ActiveStageFailure
 	return &copy
 }
 
@@ -387,6 +424,7 @@ func (j *Journal) ClearActive() error {
 	next.ActiveJob = nil
 	next.ActivePlan = nil
 	next.ActivePortPlan = nil
+	next.ActiveStageFailure = nil
 	if err := j.saveDataLocked(next); err != nil {
 		// Keep the exact previous state in memory. The durable marker makes a
 		// fresh process resolve whether the rename became visible before the

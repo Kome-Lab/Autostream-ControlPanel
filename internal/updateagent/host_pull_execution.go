@@ -306,6 +306,12 @@ func (a *HostPullAgent) processExecutionJob(
 		result, err := a.invokeExecutionMutation(ctx, panel, binding, policy, job, plan, "reconcile")
 		if err != nil {
 			if localExecutorErrorCode(err) == "stage_required" {
+				if failure := a.Journal.ActiveStageFailure(); failure != nil && failure.JobID == job.ID {
+					return terminal(
+						"failed", failure.reportCode(), failure.Message,
+						ApplyResult{},
+					)
+				}
 				return terminal(
 					"failed", "remote_stage_missing",
 					"interrupted job has no durable mutation state to reconcile",
@@ -343,6 +349,11 @@ func (a *HostPullAgent) processExecutionJob(
 		ExecutorPolicyRevision:  policy.LocalExecutorPolicyRevision,
 	}
 	if _, err := a.Executor.Stage(ctx, plan, fence); err != nil {
+		if failure, ok := stageFailureFromLocalExecutorError(job.ID, err); ok {
+			if journalErr := a.Journal.SetActiveStageFailure(failure); journalErr != nil {
+				return journalErr
+			}
+		}
 		// Stage is non-mutating. Preserve the active cursor because a lost UDS
 		// result or an explicit failure after an uncertain ledger commit may have
 		// left durable state, so recovery must prove and settle it.
