@@ -15,6 +15,28 @@ getent passwd nobody >/dev/null 2>&1 || die "the nobody account is required"
 # setting User=root can remove CAP_SETUID from the effective set of this
 # sandboxed root unit.  The source template is separately checked to retain
 # the same inheritance contract.
+readonly smoke_command="$(cat <<'EOF'
+set -euo pipefail
+cap_eff="$(
+  /usr/bin/grep -m 1 "^CapEff:" /proc/self/status |
+    /usr/bin/cut -f2
+)"
+case "${cap_eff}" in
+  ""|*[!0123456789abcdefABCDEF]*)
+    echo "invalid CapEff=${cap_eff@Q}" >&2
+    exit 1
+    ;;
+esac
+if (( (16#${cap_eff} & 0x80) == 0 )); then
+  echo "CAP_SETUID is missing from CapEff=${cap_eff}" >&2
+  exit 1
+fi
+exec /usr/sbin/runuser -u nobody -- /usr/bin/true
+EOF
+)"
+
+/usr/bin/bash -n -c "${smoke_command}"
+
 systemd-run \
   --quiet \
   --wait \
@@ -43,16 +65,4 @@ systemd-run \
   --property=AmbientCapabilities= \
   --property='RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' \
   --property=SocketBindDeny=any \
-  /usr/bin/bash -c '
-    set -euo pipefail
-    cap_eff="$(awk '\''$1 == "CapEff:" { print $2; exit }'\'' /proc/self/status)"
-    [[ ${cap_eff} =~ ^[0-9A-Fa-f]+$ ]] || {
-      echo "invalid CapEff=${cap_eff@Q}" >&2
-      exit 1
-    }
-    (( (16#${cap_eff} & 0x80) != 0 )) || {
-      echo "CAP_SETUID is missing from CapEff=${cap_eff}" >&2
-      exit 1
-    }
-    exec /usr/sbin/runuser -u nobody -- /usr/bin/true
-  '
+  /usr/bin/bash -c "${smoke_command}"
