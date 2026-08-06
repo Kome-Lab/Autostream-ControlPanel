@@ -645,12 +645,12 @@ func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 				t.Fatal(err)
 			}
 			workflow := string(payload)
-			blacksmithJobMarker := map[string]string{
-				"ci.yml":           "  go:\n    runs-on: blacksmith-32vcpu-ubuntu-2404",
-				"release-host.yml": "  release-host:\n    name: Build Linux host artifacts\n    runs-on: blacksmith-32vcpu-ubuntu-2404",
+			standardRunnerJobMarker := map[string]string{
+				"ci.yml":           "  go:\n    runs-on: ubuntu-24.04",
+				"release-host.yml": "  release-host:\n    name: Build Linux host artifacts\n    runs-on: ubuntu-24.04",
 			}[workflowName]
-			if !strings.Contains(workflow, blacksmithJobMarker) {
-				t.Fatalf("%s no longer runs the Host smoke build job on Blacksmith", workflowName)
+			if !strings.Contains(workflow, standardRunnerJobMarker) {
+				t.Fatalf("%s no longer runs the Host smoke build job on GitHub-hosted ubuntu-24.04", workflowName)
 			}
 			for _, smoke := range smokes {
 				marker := "/bin/bash /workspace/internal/security/testdata/" + smoke

@@ -205,8 +205,8 @@ func TestV194ReleaseExceptionRunbookIsPinnedAndDoesNotRelaxDefaultPolicy(t *test
 		}
 		for _, marker := range []string{
 			"constrains the job that issues this attestation",
-			"trusted\nBlacksmith build job",
-			"does not claim that compilation ran on a GitHub-hosted runner",
+			"GitHub-hosted standard runners",
+			"runner.environment` is `github-hosted",
 		} {
 			if !strings.Contains(string(payload), marker) {
 				t.Fatalf("default release guide %s is missing trust-boundary marker %q", guide, marker)
@@ -218,9 +218,9 @@ func TestV194ReleaseExceptionRunbookIsPinnedAndDoesNotRelaxDefaultPolicy(t *test
 		t.Fatal(err)
 	}
 	for _, marker := range []string{
-		"GitHub-hosted attestation-issuing publication",
-		"separately trusted Blacksmith build boundary",
-		"does\n not prove that compilation was GitHub-hosted",
+		"GitHub-hosted build and publication runners",
+		"standard `ubuntu-24.04` GitHub-hosted runners",
+		"runner.environment` is `github-hosted",
 	} {
 		if !strings.Contains(string(bootstrapGuide), marker) {
 			t.Fatalf("bootstrap guide is missing trust-boundary marker %q", marker)

@@ -62,10 +62,11 @@ gh attestation verify /tmp/autostream-host-agent_vX.Y.Z_linux_amd64.tar.gz \
 ```
 
 `--deny-self-hosted-runners` constrains the job that issues this attestation.
-The expensive compilation, integration tests, and packaging run on the trusted
-Blacksmith build job; the GitHub-hosted publication job independently checks the
-downloaded artifact set and digests before attesting and publishing it. This
-flag does not claim that compilation ran on a GitHub-hosted runner.
+The build and publication jobs both use GitHub-hosted standard runners
+(`ubuntu-24.04`), and their workflow guards fail closed unless
+`runner.environment` is `github-hosted`. The publication job independently
+checks the downloaded artifact set and digests before attesting and publishing
+it.
 
 Transfer that one unchanged archive to the server. The server requires `flock`
 (from `util-linux`), `jq`, `sha256sum`, `tar`, and systemd. Copy and extract it
@@ -440,10 +441,11 @@ the Agent journal, root ledger, staged release, or Panel update row, and do not
 create a replacement job, restage, or reapply. Preserve those durable records
 and retry the same explicit command only after fixing the reported cause.
 
-### Forward-only recovery service migration
+### Forward-only systemd unit migrations
 
-The recovery service template is the only unit-change exception handled by
-`--upgrade`. The verified bundle must contain the corrected template with
+The recovery service template and the Local Executor service template are the
+only unit-change exceptions handled by `--upgrade`. The verified bundle must
+contain the corrected recovery template with
 SHA-256
 `d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd`.
 The installed template at the canonical path
@@ -495,6 +497,21 @@ artifact manifest's `rollback_compatible: true` describes that paired A/B
 runtime and state-protocol rollback; it does not promise byte-for-byte rollback
 of this root-owned unit migration or authorize a downgrade to an unknown unit.
 
+The v1.9.17 Local Executor service migration is also forward-only. The verified
+bundle must contain the corrected service template with SHA-256
+`eab31390eacea5f8d0cc5da2666142df4322e50863cba01fb3127bea64362dac`. The
+installed `/etc/systemd/system/autostream-local-executor.service` must be either
+that exact corrected file or the v1.9.16 legacy template with SHA-256
+`3d2e6157df4c99d0feb6a3567ae6b7bb54bab2e37bd7adaa8de5a1b00ec4f4b5`. PID 1's
+effective `FragmentPath` must be the canonical path, `DropInPaths` must be
+empty, and `NeedDaemonReload` must be `yes` or `no`; any other fragment,
+drop-in, digest, or unsafe metadata fails closed. The installer atomically
+replaces only the known legacy file, syncs the parent directory, runs
+`systemctl daemon-reload`, and requires the corrected template to converge.
+It then restarts and verifies the Local Executor before continuing the A/B
+runtime activation. An already-corrected, converged service is an idempotent
+no-op.
+
 The command rejects a downgrade, a mixed installed Agent/Executor pair,
 same-version content drift, an unsafe slot/link, or an in-progress Agent job,
 credential rotation, service update, port update, any self-update grant, or an
@@ -508,8 +525,8 @@ idempotent success only after the same durable blocker checks. Do not invoke
 the internal `manual-upgrade-host-runtime` Executor subcommand directly; the
 archive installer supplies its verified, credential-free artifact binding.
 An exact same-version runtime may still perform the one-time forward-only
-recovery service migration above; different same-version binary content remains
-rejected.
+recovery or Local Executor service migration above; different same-version
+binary content remains rejected.
 
 During an accepted update the installer takes the shared Host setup and
 lifecycle locks, the legacy update-host installer lock, plus every fixed,

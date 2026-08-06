@@ -67,10 +67,11 @@ gh attestation verify /tmp/autostream-control-panel_vX.Y.Z_linux_amd64.tar.gz \
 ```
 
 `--deny-self-hosted-runners` constrains the job that issues this attestation.
-The expensive compilation, integration tests, and packaging run on the trusted
-Blacksmith build job; the GitHub-hosted publication job independently checks the
-downloaded artifact set and digests before attesting and publishing it. This
-flag does not claim that compilation ran on a GitHub-hosted runner.
+The build and publication jobs both use GitHub-hosted standard runners
+(`ubuntu-24.04`), and their workflow guards fail closed unless
+`runner.environment` is `github-hosted`. The publication job independently
+checks the downloaded artifact set and digests before attesting and publishing
+it.
 
 サーバーへ転送する release asset は、この `.tar.gz` 1 個だけです。Upload
 it to `/tmp`, then copy it into the fixed root-owned artifact directory,

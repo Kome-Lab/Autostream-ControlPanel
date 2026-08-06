@@ -10,12 +10,11 @@ import (
 )
 
 const (
-	controlPanelStandardRunner = "blacksmith-16vcpu-ubuntu-2404"
-	controlPanelLargeRunner    = "blacksmith-32vcpu-ubuntu-2404"
-	controlPanelPublishRunner  = "ubuntu-24.04"
+	controlPanelLinuxRunner   = "ubuntu-24.04"
+	controlPanelPublishRunner = "ubuntu-24.04"
 )
 
-func TestControlPanelActionsUseScopedLinuxRunners(t *testing.T) {
+func TestControlPanelActionsUseGitHubHostedLinuxRunners(t *testing.T) {
 	workflows := []struct {
 		name            string
 		requiredRunners map[string]string
@@ -23,15 +22,15 @@ func TestControlPanelActionsUseScopedLinuxRunners(t *testing.T) {
 		{
 			name: "ci.yml",
 			requiredRunners: map[string]string{
-				"service-installer": controlPanelLargeRunner,
-				"go":                controlPanelLargeRunner,
-				"web":               controlPanelStandardRunner,
+				"service-installer": controlPanelLinuxRunner,
+				"go":                controlPanelLinuxRunner,
+				"web":               controlPanelLinuxRunner,
 			},
 		},
 		{
 			name: "release-host.yml",
 			requiredRunners: map[string]string{
-				"release-host":    controlPanelLargeRunner,
+				"release-host":    controlPanelLinuxRunner,
 				"publish-release": controlPanelPublishRunner,
 			},
 		},
@@ -55,20 +54,20 @@ func TestControlPanelActionsUseScopedLinuxRunners(t *testing.T) {
 func TestControlPanelRunnerValidationAllowsNonLinuxJobs(t *testing.T) {
 	workflow := `jobs:
   linux:
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
   windows:
     runs-on: windows-latest
   macos:
     runs-on: macos-latest
 `
 	if err := validateControlPanelWorkflowRunners(
-		workflow, map[string]string{"linux": controlPanelLargeRunner},
+		workflow, map[string]string{"linux": controlPanelLinuxRunner},
 	); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestControlPanelRunnerValidationRejectsMissingAndLegacyLinuxJobs(t *testing.T) {
+func TestControlPanelRunnerValidationRejectsMissingAndNonStandardLinuxJobs(t *testing.T) {
 	tests := []struct {
 		name            string
 		workflow        string
@@ -81,19 +80,19 @@ func TestControlPanelRunnerValidationRejectsMissingAndLegacyLinuxJobs(t *testing
   windows:
     runs-on: windows-latest
 `,
-			requiredRunners: map[string]string{"linux": controlPanelLargeRunner},
+			requiredRunners: map[string]string{"linux": controlPanelLinuxRunner},
 			wantError:       `required job "linux" does not declare a scalar runs-on`,
 		},
 		{
-			name: "legacy runner on additional Linux job",
+			name: "non-standard runner on additional Linux job",
 			workflow: `jobs:
   linux:
-    runs-on: blacksmith-32vcpu-ubuntu-2404
-  legacy-linux:
     runs-on: ubuntu-24.04
+  legacy-linux:
+    runs-on: blacksmith-32vcpu-ubuntu-2404
 `,
-			requiredRunners: map[string]string{"linux": controlPanelLargeRunner},
-			wantError:       `job "legacy-linux" uses unscoped Linux runner "ubuntu-24.04"`,
+			requiredRunners: map[string]string{"linux": controlPanelLinuxRunner},
+			wantError:       `job "legacy-linux" uses non-standard Linux runner "blacksmith-32vcpu-ubuntu-2404"`,
 		},
 	}
 	for _, test := range tests {
@@ -123,8 +122,8 @@ func TestControlPanelReleaseJobsUseSeparatedRunnerGuards(t *testing.T) {
 	}{
 		{
 			job:         "release-host",
-			name:        "Require Blacksmith self-hosted build runner",
-			environment: "self-hosted",
+			name:        "Require GitHub-hosted build runner",
+			environment: "github-hosted",
 		},
 		{
 			job:         "publish-release",
@@ -159,7 +158,7 @@ func TestControlPanelReleaseJobsUseSeparatedRunnerGuards(t *testing.T) {
 	}
 }
 
-func TestControlPanelActionlintRecognizesBlacksmithRunner(t *testing.T) {
+func TestControlPanelActionlintHasNoSelfHostedRunnerLabels(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join(
 		"..", "..", ".github", "actionlint.yaml",
 	))
@@ -167,16 +166,9 @@ func TestControlPanelActionlintRecognizesBlacksmithRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := string(payload)
-	for _, runner := range []string{
-		controlPanelStandardRunner,
-		controlPanelLargeRunner,
-	} {
-		if strings.Count(config, runner) != 1 {
-			t.Fatalf(
-				"actionlint config must declare exact Blacksmith runner %q once",
-				runner,
-			)
-		}
+	configLower := strings.ToLower(config)
+	if strings.Contains(configLower, "blacksmith") || strings.Contains(configLower, "self-hosted") {
+		t.Fatal("actionlint config must not declare Blacksmith or self-hosted runner labels")
 	}
 }
 
@@ -207,9 +199,9 @@ func validateControlPanelWorkflowRunners(
 	sort.Strings(jobs)
 	for _, job := range jobs {
 		runner := runners[job]
-		if _, ok := requiredRunners[job]; isLinuxRunnerLabel(runner) && !ok {
+		if isLinuxRunnerLabel(runner) && runner != controlPanelLinuxRunner {
 			return fmt.Errorf(
-				"job %q uses unscoped Linux runner %q",
+				"job %q uses non-standard Linux runner %q",
 				job, runner,
 			)
 		}

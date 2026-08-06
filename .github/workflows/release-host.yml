@@ -22,7 +22,7 @@ permissions:
 jobs:
   release-host:
     name: Build Linux host artifacts
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
@@ -50,14 +50,14 @@ jobs:
       # Keep this compatibility floor fixed; do not raise it for every release.
       MINIMUM_AGENT_VERSION: v1.7.0
     steps:
-      - name: Require Blacksmith self-hosted build runner
+      - name: Require GitHub-hosted build runner
         shell: bash
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           set -euo pipefail
-          if [[ "${RUNNER_ENVIRONMENT}" != "self-hosted" ]]; then
-            echo "Release builds require the configured Blacksmith self-hosted runner; got ${RUNNER_ENVIRONMENT}." >&2
+          if [[ "${RUNNER_ENVIRONMENT}" != "github-hosted" ]]; then
+            echo "Release builds require a GitHub-hosted runner; got ${RUNNER_ENVIRONMENT}." >&2
             exit 1
           fi
 

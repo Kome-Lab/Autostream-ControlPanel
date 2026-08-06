@@ -87,6 +87,8 @@ type manualHostUpgradeSnapshot struct {
 	stateRoot                 secureManualHostUpgradeDirectory
 	recoveryUnitConfig        *manualHostRecoveryUnitMigrationConfig
 	recoveryUnitFinal         bool
+	executorUnitConfig        *manualHostExecutorUnitMigrationConfig
+	executorUnitFinal         bool
 	executorPolicy            LocalExecutorPolicy
 	legacyHelperConfig        HelperConfig
 	legacyHelperConfigFile    secureManualHostUpgradeFile
@@ -362,6 +364,8 @@ func upgradeHostRuntimeWithRuntime(
 		return ManualHostUpgradeResult{}, err
 	}
 	if sameVersion {
+		executorUnitNeedsRestart := snapshot.executorUnitConfig != nil &&
+			!snapshot.executorUnitFinal
 		if snapshot.recoveryUnitConfig != nil && !snapshot.recoveryUnitFinal {
 			if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
 				return ManualHostUpgradeResult{}, err
@@ -385,6 +389,43 @@ func upgradeHostRuntimeWithRuntime(
 				return ManualHostUpgradeResult{}, err
 			}
 			if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+		}
+		if snapshot.executorUnitConfig != nil && !snapshot.executorUnitFinal {
+			if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+			recheckedArtifact, recheckErr := inspectManualHostUpgradeArtifact(
+				ctx, input, rt,
+			)
+			if recheckErr != nil || recheckedArtifact != artifact {
+				return ManualHostUpgradeResult{}, errors.New(
+					"verified Host runtime bundle changed before Local Executor unit migration",
+				)
+			}
+			if slot, readErr := rt.selfUpdate.readCurrentSlot(); readErr != nil ||
+				slot != currentSlot {
+				return ManualHostUpgradeResult{}, errors.New(
+					"managed Host runtime current slot changed before Local Executor unit migration",
+				)
+			}
+			snapshot, err = migrateManualHostUpgradeExecutorUnit(ctx, snapshot)
+			if err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+			if executorUnitNeedsRestart {
+				if err := restartManualHostUpgradeLocalExecutor(ctx, currentSlot, current.Executor, rt); err != nil {
+					return ManualHostUpgradeResult{}, err
+				}
+				executorUnitNeedsRestart = false
+			}
+			if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+				return ManualHostUpgradeResult{}, err
+			}
+		}
+		if executorUnitNeedsRestart {
+			if err := restartManualHostUpgradeLocalExecutor(ctx, currentSlot, current.Executor, rt); err != nil {
 				return ManualHostUpgradeResult{}, err
 			}
 		}
@@ -459,6 +500,25 @@ func upgradeHostRuntimeWithRuntime(
 		slot != currentSlot {
 		return ManualHostUpgradeResult{}, errors.New(
 			"managed Host runtime current slot changed after recovery unit migration",
+		)
+	}
+	snapshot, err = migrateManualHostUpgradeExecutorUnit(ctx, snapshot)
+	if err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	if err := verifyManualHostUpgradeSnapshot(ctx, snapshot, rt); err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	recheckedArtifact, err = inspectManualHostUpgradeArtifact(ctx, input, rt)
+	if err != nil || recheckedArtifact != artifact {
+		return ManualHostUpgradeResult{}, errors.New(
+			"verified Host runtime bundle changed after Local Executor unit migration",
+		)
+	}
+	if slot, readErr := rt.selfUpdate.readCurrentSlot(); readErr != nil ||
+		slot != currentSlot {
+		return ManualHostUpgradeResult{}, errors.New(
+			"managed Host runtime current slot changed after Local Executor unit migration",
 		)
 	}
 	if !persisted && snapshot.recoveryUnitConfig != nil {
@@ -1146,6 +1206,8 @@ func validateManualHostUpgradeInstallation(
 	installedFiles := make([]secureManualHostUpgradeFile, 0, len(unitPairs))
 	var recoveryUnitConfig *manualHostRecoveryUnitMigrationConfig
 	recoveryUnitFinal := false
+	var executorUnitConfig *manualHostExecutorUnitMigrationConfig
+	executorUnitFinal := false
 	for _, pair := range unitPairs {
 		installed, snapshotErr := snapshotManualHostUpgradeFile(pair[0])
 		if snapshotErr != nil {
@@ -1159,7 +1221,27 @@ func validateManualHostUpgradeInstallation(
 				"manual Host runtime upgrade requires unchanged systemd unit templates",
 			)
 		}
-		if pair[0] == rt.paths.installedRecoveryService &&
+		if pair[0] == rt.paths.installedExecutorUnit &&
+			source.digest == manualHostExecutorUnitCorrectedDigest {
+			config := manualHostExecutorUnitMigrationConfig{
+				CandidatePath:  pair[1],
+				InstalledPath:  pair[0],
+				Runner:         rt.runner,
+				AllowTestPaths: rt.allowTestPaths,
+				SyncDirectory:  rt.selfUpdate.syncDir,
+			}
+			if err := prepareManualHostExecutorUnitMigrationConfig(&config); err != nil {
+				return manualHostUpgradeSnapshot{}, err
+			}
+			executorSnapshot, inspectErr := inspectManualHostExecutorUnitMigration(
+				ctx, config,
+			)
+			if inspectErr != nil {
+				return manualHostUpgradeSnapshot{}, inspectErr
+			}
+			executorUnitConfig = &config
+			executorUnitFinal = manualHostExecutorUnitMigrationIsFinal(executorSnapshot)
+		} else if pair[0] == rt.paths.installedRecoveryService &&
 			source.digest == manualHostRecoveryUnitCorrectedDigest {
 			config := manualHostRecoveryUnitMigrationConfig{
 				CandidatePath:  pair[1],
@@ -1225,6 +1307,8 @@ func validateManualHostUpgradeInstallation(
 		stateRoot:                 stateRoot,
 		recoveryUnitConfig:        recoveryUnitConfig,
 		recoveryUnitFinal:         recoveryUnitFinal,
+		executorUnitConfig:        executorUnitConfig,
+		executorUnitFinal:         executorUnitFinal,
 		legacyHelperConfig:        legacyHelperConfig,
 		legacyHelperConfigFile:    legacyHelperConfigFile,
 		legacyHelperConfigPresent: legacyHelperConfigPresent,
@@ -1303,6 +1387,71 @@ func migrateManualHostUpgradeRecoveryUnit(
 	}
 	snapshot.recoveryUnitFinal = true
 	return snapshot, nil
+}
+
+func migrateManualHostUpgradeExecutorUnit(
+	ctx context.Context,
+	snapshot manualHostUpgradeSnapshot,
+) (manualHostUpgradeSnapshot, error) {
+	if snapshot.executorUnitConfig == nil || snapshot.executorUnitFinal {
+		return snapshot, nil
+	}
+	if err := migrateManualHostExecutorUnitForward(
+		ctx, *snapshot.executorUnitConfig,
+	); err != nil {
+		return snapshot, err
+	}
+	installed, err := snapshotManualHostUpgradeFile(
+		snapshot.executorUnitConfig.InstalledPath,
+	)
+	if err != nil || installed.digest != manualHostExecutorUnitCorrectedDigest {
+		return snapshot, errors.New(
+			"snapshot corrected Local Executor unit after migration",
+		)
+	}
+	replaced := false
+	for index := range snapshot.installedFiles {
+		if snapshot.installedFiles[index].path ==
+			snapshot.executorUnitConfig.InstalledPath {
+			snapshot.installedFiles[index] = installed
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		return snapshot, errors.New(
+			"Local Executor unit migration snapshot is incomplete",
+		)
+	}
+	snapshot.executorUnitFinal = true
+	return snapshot, nil
+}
+
+func restartManualHostUpgradeLocalExecutor(
+	ctx context.Context,
+	slot string,
+	expected manualHostBinaryIdentity,
+	rt manualHostUpgradeRuntime,
+) error {
+	if err := rt.selfUpdate.restartLocalExecutor(ctx); err != nil {
+		return errors.New("restart Local Executor after unit migration")
+	}
+	actual, err := verifyManualHostUnitProcess(
+		ctx,
+		hostSelfUpdateExecutorServiceUnit,
+		filepath.Join(
+			rt.selfUpdate.slotsRoot,
+			slot,
+			"bin",
+			"autostream-local-executor",
+		),
+		"autostream-local-executor",
+		rt,
+	)
+	if err != nil || actual != expected {
+		return errors.New("Local Executor identity after unit migration is invalid")
+	}
+	return nil
 }
 
 func snapshotManualHostUpgradeDirectory(
@@ -1441,6 +1590,18 @@ func verifyManualHostUpgradeSnapshot(
 				len(current.dropIns) != 0 ||
 				!manualHostRecoveryUnitEffectiveIsFinal(current.effective)) {
 			return errors.New("corrected Host recovery unit changed during upgrade")
+		}
+	}
+	if snapshot.executorUnitConfig != nil {
+		current, err := inspectManualHostExecutorUnitMigration(
+			ctx, *snapshot.executorUnitConfig,
+		)
+		if err != nil {
+			return err
+		}
+		if snapshot.executorUnitFinal &&
+			!manualHostExecutorUnitMigrationIsFinal(current) {
+			return errors.New("corrected Local Executor unit changed during upgrade")
 		}
 	}
 	return ctx.Err()

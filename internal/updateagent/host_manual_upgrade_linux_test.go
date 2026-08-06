@@ -72,6 +72,7 @@ type manualHostUpgradeLinuxRunner struct {
 	inactiveUnits               map[string]bool
 	disabledUnits               map[string]bool
 	recoveryUnitPath            string
+	executorUnitPath            string
 	recoveryEffectiveExtra      string
 	recoveryReloads             int
 	recoveryFailedUnits         map[string]bool
@@ -205,6 +206,13 @@ func (r *manualHostUpgradeLinuxRunner) Run(
 		r.recoveryResetFailedCalls++
 		return "", nil
 	case "show":
+		if len(args) == 5 && args[1] == "--property=FragmentPath" &&
+			args[2] == "--property=DropInPaths" &&
+			args[3] == "--property=NeedDaemonReload" &&
+			args[4] == hostSelfUpdateExecutorServiceUnit {
+			return "FragmentPath=" + r.executorUnitPath + "\n" +
+				"DropInPaths=\nNeedDaemonReload=no\n", nil
+		}
 		if len(args) == 5 && args[1] == "--property=FragmentPath" &&
 			args[2] == "--property=DropInPaths" &&
 			args[3] == "--property=NeedDaemonReload" &&
@@ -2481,6 +2489,67 @@ func TestManualHostUpgradeMigratesLegacyRecoveryUnitDuringBootstrap(
 	}
 }
 
+func TestManualHostUpgradeMigratesLegacyExecutorUnitDuringBootstrap(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyExecutorUnit(t, fixture)
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err != nil || result.ActiveSlot != HostSelfUpdateSlotB ||
+		result.PreviousSlot != HostSelfUpdateSlotA ||
+		result.Version != manualHostUpgradeTestTargetVersion ||
+		result.AlreadyCurrent {
+		t.Fatalf("legacy executor migration result=%+v err=%v", result, err)
+	}
+	installed, err := os.ReadFile(fixture.runtime.paths.installedExecutorUnit)
+	if err != nil || manualHostExecutorUnitTestDigest(installed) !=
+		manualHostExecutorUnitCorrectedDigest {
+		t.Fatalf("migrated executor unit digest=%s err=%v", manualHostExecutorUnitTestDigest(installed), err)
+	}
+	if fixture.runner.recoveryReloads != 1 {
+		t.Fatalf("executor unit daemon-reload calls=%d, want 1", fixture.runner.recoveryReloads)
+	}
+	if fmt.Sprint(fixture.runner.restartOrder) !=
+		fmt.Sprint([]string{
+			hostSelfUpdateExecutorServiceUnit,
+			hostSelfUpdateServiceUnit,
+		}) {
+		t.Fatalf("executor migration restart order=%v", fixture.runner.restartOrder)
+	}
+}
+
+func TestManualHostUpgradeSameVersionMigratesLegacyExecutorUnit(
+	t *testing.T,
+) {
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	copyManualHostUpgradeArtifactBinariesToSlot(
+		t, fixture, HostSelfUpdateSlotA,
+	)
+	removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	configureManualHostUpgradeLegacyExecutorUnit(t, fixture)
+
+	result, err := upgradeHostRuntimeWithRuntime(
+		context.Background(), fixture.request, fixture.runtime,
+	)
+	if err != nil || !result.AlreadyCurrent ||
+		result.ActiveSlot != HostSelfUpdateSlotA ||
+		result.PreviousSlot != HostSelfUpdateSlotA ||
+		result.Version != manualHostUpgradeTestTargetVersion {
+		t.Fatalf("same-version executor migration result=%+v err=%v", result, err)
+	}
+	assertManualHostExecutorUnitCorrected(t, manualHostExecutorUnitFixture{
+		installedPath: fixture.runtime.paths.installedExecutorUnit,
+	})
+	if fmt.Sprint(fixture.runner.restartOrder) !=
+		fmt.Sprint([]string{hostSelfUpdateExecutorServiceUnit}) {
+		t.Fatalf("same-version executor migration restart order=%v", fixture.runner.restartOrder)
+	}
+}
+
 func TestManualHostUpgradeDoesNotMigrateRecoveryUnitBeforeBlockerChecks(
 	t *testing.T,
 ) {
@@ -3103,6 +3172,7 @@ func newManualHostUpgradeLinuxFixture(
 		disabledUnits:       make(map[string]bool),
 		recoveryFailedUnits: make(map[string]bool),
 		recoveryUnitPath:    unitPaths.installedRecoveryService,
+		executorUnitPath:    unitPaths.installedExecutorUnit,
 	}
 	selfUpdate := hostSelfUpdateExecutorRuntime{
 		installRoot:         installRoot,
@@ -3241,6 +3311,24 @@ func configureManualHostUpgradeLegacyRecoveryUnit(
 			t, filepath.Join(dropInDirectory, name), []byte(payload), 0o644,
 		)
 	}
+	manualHostUpgradeLinuxWriteChecksums(t, fixture.artifactRoot)
+}
+
+func configureManualHostUpgradeLegacyExecutorUnit(
+	t *testing.T,
+	fixture *manualHostUpgradeLinuxFixture,
+) {
+	t.Helper()
+	corrected, legacy := manualHostExecutorUnitTemplateBytes(t)
+	artifactPath := filepath.Join(
+		fixture.artifactRoot,
+		"systemd",
+		"autostream-local-executor.service",
+	)
+	manualHostUpgradeLinuxWriteFile(t, artifactPath, corrected, 0o644)
+	manualHostUpgradeLinuxWriteFile(
+		t, fixture.runtime.paths.installedExecutorUnit, legacy, 0o644,
+	)
 	manualHostUpgradeLinuxWriteChecksums(t, fixture.artifactRoot)
 }
 
