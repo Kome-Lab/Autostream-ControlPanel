@@ -67,6 +67,7 @@ readonly RECOVERY_BLOCK_READY=/var/lib/autostream-host-agent/installer-recovery.
 readonly RECOVERY_SEQUENCE_LOG=/var/lib/autostream-host-agent/installer-recovery-sequence.log
 readonly RECOVERY_EXECUTOR_TRIGGER=/var/lib/autostream-host-agent/installer-executor-trigger
 readonly RECOVERY_EXECUTOR_RESPONSE=/var/lib/autostream-host-agent/installer-executor-response
+readonly RECOVERY_EXECUTOR_RESPONSE_STAGE="${RECOVERY_EXECUTOR_RESPONSE}.new"
 readonly RECOVERY_FAIL_WITH_LIFECYCLE_LOCK_MARKER=/var/lib/autostream-host-agent/installer-recovery.fail-with-lifecycle-lock
 readonly RECOVERY_LIFECYCLE_HOLD_TRIGGER=/var/lib/autostream-host-agent/installer-lifecycle-hold-trigger
 readonly RECOVERY_LIFECYCLE_HOLD_READY=/var/lib/autostream-host-agent/installer-lifecycle-hold-ready
@@ -121,6 +122,7 @@ for path in \
   "${SIGNAL_OUTPUT}" \
   "${SYSTEMCTL_LOG}" \
   "${SYSTEMD_RUN_LOG}" \
+  "${RECOVERY_EXECUTOR_RESPONSE_STAGE}" \
   "${SERVICE_PID_FILE}" \
   "${EXECUTOR_PID_FILE}" \
   "${GUARD_LOADED_MARKER}" \
@@ -199,6 +201,7 @@ readonly RECOVERY_BLOCK_READY=/var/lib/autostream-host-agent/installer-recovery.
 readonly RECOVERY_SEQUENCE_LOG=/var/lib/autostream-host-agent/installer-recovery-sequence.log
 readonly RECOVERY_EXECUTOR_TRIGGER=/var/lib/autostream-host-agent/installer-executor-trigger
 readonly RECOVERY_EXECUTOR_RESPONSE=/var/lib/autostream-host-agent/installer-executor-response
+readonly RECOVERY_EXECUTOR_RESPONSE_STAGE="${RECOVERY_EXECUTOR_RESPONSE}.new"
 readonly RECOVERY_FAIL_WITH_LIFECYCLE_LOCK_MARKER=/var/lib/autostream-host-agent/installer-recovery.fail-with-lifecycle-lock
 readonly RECOVERY_LIFECYCLE_HOLD_TRIGGER=/var/lib/autostream-host-agent/installer-lifecycle-hold-trigger
 readonly RECOVERY_LIFECYCLE_HOLD_READY=/var/lib/autostream-host-agent/installer-lifecycle-hold-ready
@@ -1003,10 +1006,16 @@ local_executor_lock_daemon() {
       fi
       exec 6>&-
       rm -f -- "${RECOVERY_EXECUTOR_TRIGGER}"
-      printf '%s\n' "${response}" > "${RECOVERY_EXECUTOR_RESPONSE}"
+      # Publish only after ownership and mode are ready; the fake Host Agent
+      # runs unprivileged and must never observe a root-owned response inode.
+      rm -f -- "${RECOVERY_EXECUTOR_RESPONSE_STAGE}"
+      printf '%s\n' "${response}" > "${RECOVERY_EXECUTOR_RESPONSE_STAGE}"
       chown autostream-host-agent:autostream-host-agent \
+        "${RECOVERY_EXECUTOR_RESPONSE_STAGE}"
+      chmod 0600 "${RECOVERY_EXECUTOR_RESPONSE_STAGE}"
+      mv -T -- \
+        "${RECOVERY_EXECUTOR_RESPONSE_STAGE}" \
         "${RECOVERY_EXECUTOR_RESPONSE}"
-      chmod 0600 "${RECOVERY_EXECUTOR_RESPONSE}"
     fi
     sleep 0.01
   done
@@ -1436,6 +1445,7 @@ reset_recovery_fixture() {
     "${RECOVERY_FAIL_WITH_LIFECYCLE_LOCK_MARKER}" \
     "${RECOVERY_EXECUTOR_TRIGGER}" \
     "${RECOVERY_EXECUTOR_RESPONSE}" \
+    "${RECOVERY_EXECUTOR_RESPONSE_STAGE}" \
     "${RECOVERY_LIFECYCLE_HOLD_TRIGGER}" \
     "${RECOVERY_LIFECYCLE_HOLD_READY}" \
     "${RECOVERY_LIFECYCLE_HOLD_RELEASE}" \

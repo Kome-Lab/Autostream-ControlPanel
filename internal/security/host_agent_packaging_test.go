@@ -763,6 +763,9 @@ func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 		`guard-arm stop-agent recover-agent guard-helper start-agent`,
 		`assert_committed_runtime_pair_active`,
 		`the committed Host runtime pair is not the exact verified candidate bytes`,
+		`readonly RECOVERY_EXECUTOR_RESPONSE_STAGE="${RECOVERY_EXECUTOR_RESPONSE}.new"`,
+		`chmod 0600 "${RECOVERY_EXECUTOR_RESPONSE_STAGE}"`,
+		`mv -T --`,
 	} {
 		if !strings.Contains(smoke, required) {
 			t.Fatalf("Host installer upgrade smoke is missing recovery regression %q", required)
