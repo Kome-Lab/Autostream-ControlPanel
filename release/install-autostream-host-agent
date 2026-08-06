@@ -1861,18 +1861,24 @@ inspect_active_job_recovery_state() {
 if [[ ${install_mode} == "upgrade" ]]; then
   # The private bundle is extracted under umask 077 with
   # --no-same-permissions, so archive files declared as 0644 arrive as 0600.
-  # The candidate Executor deliberately requires the recovery template to be
-  # root:root 0644 with one link before it can migrate the installed unit.
-  # Normalize only that verified, non-executable template inside the root-only
-  # staging directory; keep every other staged file under the restrictive
-  # extraction mask.
-  chmod 0644 -- "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" || \
-    die "could not normalize the verified Host recovery service candidate"
-  [[ -f ${SELF_UPDATE_RECOVERY_SERVICE_SOURCE} &&
-    ! -L ${SELF_UPDATE_RECOVERY_SERVICE_SOURCE} &&
-    $(stat -c '%U:%G:%a:%h' -- "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}") == \
-      root:root:644:1 ]] || \
-    die "verified Host recovery service candidate metadata is unsafe"
+  # The candidate Executor deliberately requires both migration templates to
+  # be root:root 0644 with one link before it can inspect or migrate the
+  # installed units. Normalize only these verified, non-executable templates
+  # inside the root-only staging directory; keep every other staged file under
+  # the restrictive extraction mask.
+  chmod 0644 -- \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" || \
+    die "could not normalize the verified systemd unit candidates"
+  for verified_unit_candidate in \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}"; do
+    [[ -f ${verified_unit_candidate} &&
+      ! -L ${verified_unit_candidate} &&
+      $(stat -c '%U:%G:%a:%h' -- "${verified_unit_candidate}") == \
+        root:root:644:1 ]] || \
+      die "verified systemd unit candidate metadata is unsafe: ${verified_unit_candidate}"
+  done
 
   if [[ ${recover_active_job} == true ]]; then
     validate_active_job_recovery_executable \

@@ -58,6 +58,10 @@ func TestHostAgentInstallerExposesManagedUpgradeMode(t *testing.T) {
 		`trap '' INT TERM`,
 		`exit "${manual_upgrade_status}"`,
 		`inspect-host-update-recovery`,
+		`chmod 0644 -- \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}"`,
+		`verified systemd unit candidate metadata is unsafe`,
 		`--unit="${ACTIVE_JOB_RECOVERY_GUARD_BASE}"`,
 		`--on-active="${ACTIVE_JOB_RECOVERY_GUARD_DELAY}"`,
 		`guard-restart-host-agent`,
