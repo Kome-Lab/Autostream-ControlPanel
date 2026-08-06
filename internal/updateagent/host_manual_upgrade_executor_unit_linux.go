@@ -134,6 +134,11 @@ func inspectManualHostExecutorUnitMigration(
 	if err != nil {
 		return manualHostExecutorUnitMigrationSnapshot{}, err
 	}
+	if len(dropInPaths) != 0 {
+		return manualHostExecutorUnitMigrationSnapshot{}, errors.New(
+			"effective Local Executor unit has an unexpected drop-in",
+		)
+	}
 	return manualHostExecutorUnitMigrationSnapshot{
 		candidate:        candidate,
 		installed:        installed,
