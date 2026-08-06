@@ -50,13 +50,18 @@ type LocalExecutorClient struct {
 }
 
 type LocalExecutorClientError struct {
-	Code string
+	Code    string
+	Message string
 }
 
 func (e *LocalExecutorClientError) Error() string {
 	code := strings.TrimSpace(e.Code)
 	if !validLocalExecutorFailureCode(code) {
 		code = "internal_error"
+	}
+	message := strings.TrimSpace(e.Message)
+	if safeRemoteMessage(message) {
+		return "local executor request failed: " + code + ": " + message
 	}
 	return "local executor request failed: " + code
 }

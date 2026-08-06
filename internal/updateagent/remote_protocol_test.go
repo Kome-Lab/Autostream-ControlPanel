@@ -3,6 +3,7 @@ package updateagent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -46,6 +47,33 @@ func TestRemoteRPCMutationRoundTripAndSecretRedaction(t *testing.T) {
 	decoded, err = DecodeRemoteRPCRequest(bytes.NewReader(payload.Bytes()))
 	if err != nil || decoded.ReleaseToken.Reveal() != "release-secret" || !decoded.MutationGrant.Empty() {
 		t.Fatalf("decoded stage request = %#v, %v", decoded, err)
+	}
+}
+
+func TestRemoteStageFailureMessageUsesSafeDiagnosticCategories(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     string
+		message string
+	}{
+		{name: "smoke", err: "staged systemd binary smoke check failed", message: "candidate binary smoke check failed"},
+		{name: "backup", err: "backup configured systemd target", message: "configured target backup failed"},
+		{name: "health", err: "previous systemd release is not healthy", message: "current service health or process verification failed"},
+		{name: "unknown", err: "release server leaked /private/path and token", message: "release staging failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := remoteFailureWithMessage("stage_failed", remoteStageFailureMessage(errors.New(test.err)))
+			if response.Error == nil || response.Error.Code != "stage_failed" || response.Error.Message != test.message {
+				t.Fatalf("response=%+v", response)
+			}
+			if err := response.Validate(); err != nil {
+				t.Fatalf("response.Validate: %v", err)
+			}
+			if strings.Contains(response.Error.Message, "private") || strings.Contains(response.Error.Message, "token") {
+				t.Fatalf("diagnostic leaked raw error: %q", response.Error.Message)
+			}
+		})
 	}
 }
 

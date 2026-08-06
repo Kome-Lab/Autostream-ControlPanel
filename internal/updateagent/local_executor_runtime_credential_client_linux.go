@@ -222,7 +222,7 @@ func (c LocalExecutorClient) executeRuntimeCredentialRequest(
 	}
 	if response.Error != nil {
 		return LocalExecutorResponse{}, &LocalExecutorClientError{
-			Code: response.Error.Code,
+			Code: response.Error.Code, Message: response.Error.Message,
 		}
 	}
 	return response, nil

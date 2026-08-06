@@ -291,7 +291,7 @@ func remoteStageRequest(ctx context.Context, cfg HelperConfig, target Target, pl
 		if ledger.JobID == plan.JobID && ledger.PlanSHA256 == plan.PlanSHA256 {
 			if ledger.State == remoteLedgerStaged && validateRemoteStage(cfg, target, plan, ledger.Stage) == nil {
 				if err := verifyRemotePlanCurrentVersion(target, plan); err != nil {
-					return remoteFailure("stage_failed")
+					return remoteFailureWithMessage("stage_failed", remoteStageFailureMessage(err))
 				}
 				stage := remoteStageResult(plan, *ledger.Stage)
 				return RemoteRPCResponse{Version: RemoteProtocolVersion, Stage: &stage}
@@ -308,7 +308,7 @@ func remoteStageRequest(ctx context.Context, cfg HelperConfig, target Target, pl
 	}
 	stage, err := prepareRemoteStage(ctx, cfg, target, plan, releaseToken, rt)
 	if err != nil {
-		return remoteFailure("stage_failed")
+		return remoteFailureWithMessage("stage_failed", remoteStageFailureMessage(err))
 	}
 	record := remoteMutationLedger{
 		SchemaVersion: remoteLedgerSchemaVersion, JobID: plan.JobID, TargetID: plan.TargetID,
@@ -1093,6 +1093,46 @@ func remoteFailure(code string) RemoteRPCResponse {
 		code, message = "internal_error", "remote helper could not complete the request"
 	}
 	return RemoteRPCResponse{Version: RemoteProtocolVersion, Error: &RemoteRPCFailure{Code: code, Message: message}}
+}
+
+// remoteFailureWithMessage preserves only an already-sanitized, fixed-contract
+// message. It is used for diagnostics where the generic failure code alone is
+// insufficient, while keeping raw command output, paths, and credentials out
+// of the RPC response.
+func remoteFailureWithMessage(code, message string) RemoteRPCResponse {
+	response := remoteFailure(code)
+	if response.Error != nil && safeRemoteMessage(message) {
+		response.Error.Message = message
+	}
+	return response
+}
+
+func remoteStageFailureMessage(err error) string {
+	if err == nil {
+		return "release staging failed"
+	}
+	for _, failure := range []struct {
+		marker  string
+		message string
+	}{
+		{"systemd release digest mismatch", "release artifact digest mismatch"},
+		{"staged systemd artifact path is invalid", "staged release path validation failed"},
+		{"staged systemd artifact checksum verification failed", "staged release checksum verification failed"},
+		{"staged systemd artifact is incomplete", "staged release is incomplete"},
+		{"staged systemd binary smoke check failed", "candidate binary smoke check failed"},
+		{"managed systemd release bootstrap is required", "managed current release is unavailable"},
+		{"managed target current version does not match the immutable plan", "current version does not match the update plan"},
+		{"backup configured systemd target", "configured target backup failed"},
+		{"previous systemd release is not rollback-safe", "current release rollback check failed"},
+		{"previous systemd release is incomplete", "current release is incomplete"},
+		{"previous systemd release is not healthy", "current service health or process verification failed"},
+		{"systemd release path is invalid", "new release path validation failed"},
+	} {
+		if strings.Contains(err.Error(), failure.marker) {
+			return failure.message
+		}
+	}
+	return "release staging failed"
 }
 
 func (r remoteHelperRuntime) String() string {

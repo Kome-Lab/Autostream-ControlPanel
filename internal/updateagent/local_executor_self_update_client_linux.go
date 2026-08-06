@@ -165,7 +165,7 @@ func (c LocalExecutorClient) executeHostSelfUpdateRequest(
 		return HostSelfUpdateRuntimeStatus{}, errors.New("read local executor host self-update response")
 	}
 	if response.Error != nil {
-		return HostSelfUpdateRuntimeStatus{}, &LocalExecutorClientError{Code: response.Error.Code}
+		return HostSelfUpdateRuntimeStatus{}, &LocalExecutorClientError{Code: response.Error.Code, Message: response.Error.Message}
 	}
 	if response.HostSelfUpdate == nil {
 		return HostSelfUpdateRuntimeStatus{}, errors.New("local executor host self-update response is missing")

@@ -58,7 +58,7 @@ func (c LocalExecutorClient) Probe(ctx context.Context, serviceID string) (Local
 		return LocalExecutorProbe{}, errors.New("read local executor probe")
 	}
 	if response.Error != nil {
-		return LocalExecutorProbe{}, &LocalExecutorClientError{Code: response.Error.Code}
+		return LocalExecutorProbe{}, &LocalExecutorClientError{Code: response.Error.Code, Message: response.Error.Message}
 	}
 	return *response.Probe, nil
 }
@@ -167,7 +167,7 @@ func (c LocalExecutorClient) executeMutation(ctx context.Context, operation stri
 		return LocalExecutorResponse{}, errors.New("read local executor mutation response")
 	}
 	if response.Error != nil {
-		return LocalExecutorResponse{}, &LocalExecutorClientError{Code: response.Error.Code}
+		return LocalExecutorResponse{}, &LocalExecutorClientError{Code: response.Error.Code, Message: response.Error.Message}
 	}
 	return response, nil
 }
@@ -229,7 +229,7 @@ func (c LocalExecutorClient) executePortMutation(
 		return SystemdPortReconfigureResult{}, errors.New("read local executor port mutation response")
 	}
 	if response.Error != nil {
-		return SystemdPortReconfigureResult{}, &LocalExecutorClientError{Code: response.Error.Code}
+		return SystemdPortReconfigureResult{}, &LocalExecutorClientError{Code: response.Error.Code, Message: response.Error.Message}
 	}
 	if response.PortResult == nil ||
 		response.SessionID != plan.SessionID ||

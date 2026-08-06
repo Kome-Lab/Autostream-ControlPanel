@@ -142,7 +142,11 @@ func handleLocalExecutorMutation(
 
 func localExecutorResponseFromRemote(remote RemoteRPCResponse) LocalExecutorResponse {
 	if remote.Error != nil {
-		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, remote.Error.Code)
+		response := localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, remote.Error.Code)
+		if response.Error != nil && response.Error.Code == remote.Error.Code && safeRemoteMessage(remote.Error.Message) {
+			response.Error.Message = remote.Error.Message
+		}
+		return response
 	}
 	response := LocalExecutorResponse{
 		Version: LocalExecutorMutationProtocolVersion,

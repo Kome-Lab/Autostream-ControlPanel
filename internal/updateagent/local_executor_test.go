@@ -54,6 +54,22 @@ func TestLocalExecutorRequestIsProbeOnlyAndStrict(t *testing.T) {
 	}
 }
 
+func TestLocalExecutorResponseFromRemotePreservesSafeFailureMessage(t *testing.T) {
+	response := localExecutorResponseFromRemote(RemoteRPCResponse{
+		Version: LocalExecutorMutationProtocolVersion,
+		Error: &RemoteRPCFailure{
+			Code:    "stage_failed",
+			Message: "candidate binary smoke check failed",
+		},
+	})
+	if err := response.Validate(); err != nil {
+		t.Fatalf("response.Validate: %v", err)
+	}
+	if response.Error == nil || response.Error.Code != "stage_failed" || response.Error.Message != "candidate binary smoke check failed" {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
 func TestLocalExecutorMutationProtocolCarriesOnlyBoundedPlanAndEphemeralGrant(t *testing.T) {
 	plan := validRemotePlan()
 	request := LocalExecutorRequest{
