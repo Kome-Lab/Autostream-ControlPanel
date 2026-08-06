@@ -18,6 +18,10 @@ jobs:
         run: bash -n release/test-install-autostream-control-panel-integration.sh
       - name: Test fresh install, legacy migration, idempotence, and rollback
         run: sudo bash release/test-install-autostream-control-panel-integration.sh
+      - name: Check Local Executor systemd sandbox smoke syntax
+        run: bash -n internal/security/testdata/run-local-executor-systemd-sandbox-smoke.sh
+      - name: Test Local Executor systemd sandbox capabilities
+        run: sudo bash internal/security/testdata/run-local-executor-systemd-sandbox-smoke.sh
 
   go:
     runs-on: blacksmith-32vcpu-ubuntu-2404

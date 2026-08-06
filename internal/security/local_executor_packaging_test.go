@@ -152,8 +152,6 @@ func TestLocalExecutorSystemdUnitsUseRootSocketActivationWithoutTCP(t *testing.T
 	socket := string(socketPayload)
 	tmpfiles := string(tmpfilesPayload)
 	for _, marker := range []string{
-		"User=root",
-		"Group=root",
 		"ExecStart=/usr/local/libexec/autostream-local-executor run --policy /etc/autostream-local-executor/policy.json",
 		"Requires=autostream-local-executor.socket",
 		"UMask=0077",
@@ -183,6 +181,15 @@ func TestLocalExecutorSystemdUnitsUseRootSocketActivationWithoutTCP(t *testing.T
 	} {
 		if !strings.Contains(service, marker) {
 			t.Fatalf("local executor service is missing %q", marker)
+		}
+	}
+	for _, line := range strings.Split(service, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "User=") || strings.HasPrefix(line, "Group=") {
+			t.Fatalf("local executor service must inherit the system manager root identity, found %q", line)
 		}
 	}
 	if strings.Contains(service, "ReadWritePaths=/var/lib/autostream-local-executor /opt/autostream") ||

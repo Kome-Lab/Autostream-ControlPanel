@@ -80,6 +80,12 @@ jobs:
       - name: Test service installer migration and rollback
         run: sudo bash release/test-install-autostream-control-panel-integration.sh
 
+      - name: Test Local Executor systemd sandbox capabilities
+        run: |
+          set -euo pipefail
+          bash -n internal/security/testdata/run-local-executor-systemd-sandbox-smoke.sh
+          sudo bash internal/security/testdata/run-local-executor-systemd-sandbox-smoke.sh
+
       - name: Resolve release metadata
         id: meta
         shell: bash

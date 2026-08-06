@@ -6,8 +6,10 @@ After=autostream-local-executor.socket systemd-tmpfiles-setup.service
 
 [Service]
 Type=simple
-User=root
-Group=root
+# Inherit the system manager's root identity. An explicit User=root/Group=root
+# can remove CAP_SETUID from the effective set on systemd 255, while this
+# policy-bounded executor needs it only to run candidate smoke checks via
+# /usr/sbin/runuser.
 ExecStart=/usr/local/libexec/autostream-local-executor run --policy /etc/autostream-local-executor/policy.json
 Restart=on-failure
 RestartSec=5s
