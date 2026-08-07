@@ -38,6 +38,8 @@ type Stream struct {
 	ArchiveFileName           string     `json:"archive_file_name,omitempty"`
 	YouTubeOutputID           string     `json:"youtube_output_id,omitempty"`
 	EncoderInputURL           string     `json:"encoder_input_url,omitempty"`
+	AssignedWorkerID          string     `json:"assigned_worker_id,omitempty"`
+	AssignedEncoderID         string     `json:"assigned_encoder_id,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
 }
@@ -116,6 +118,7 @@ type StreamStore interface {
 	ListStreams(ctx context.Context) ([]Stream, error)
 	CreateStream(ctx context.Context, name string) (Stream, error)
 	GetStream(ctx context.Context, id string) (Stream, error)
+	DeleteStream(ctx context.Context, id string) error
 	UpdateStreamSettings(ctx context.Context, id string, settings StreamSettings) (Stream, error)
 	UpdateStreamStatus(ctx context.Context, id, status string) (Stream, error)
 	RetryArchiveUpload(ctx context.Context, id, actorUserID string) (StreamLog, error)
@@ -209,6 +212,48 @@ func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stre
 	stream := Stream{ID: newUUID(), Name: name, Status: "created", CreatedAt: now, UpdatedAt: now}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO streams (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, stream.ID, stream.Name, stream.Status, stream.CreatedAt, stream.UpdatedAt)
 	return stream, err
+}
+
+func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`DELETE FROM runtime_secret_leases WHERE stream_id = ?`,
+		`DELETE FROM service_remediation_executions WHERE stream_id = ?`,
+		`DELETE FROM service_stream_events WHERE stream_id = ?`,
+		`DELETE FROM stream_artifact_shares WHERE stream_id = ?`,
+		`DELETE FROM stream_artifacts WHERE stream_id = ?`,
+		`DELETE FROM stream_logs WHERE stream_id = ?`,
+		`DELETE FROM stream_youtube_runtimes WHERE stream_id = ?`,
+		`DELETE FROM stream_service_assignments WHERE stream_id = ?`,
+		`DELETE FROM stream_settings WHERE stream_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM streams WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s MariaDBStreamStore) GetStream(ctx context.Context, id string) (Stream, error) {

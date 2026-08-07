@@ -1158,6 +1158,8 @@ export function mockPost(path: string, body?: unknown): unknown {
       id,
       name: request.name || "新規配信枠",
       status: "created",
+      assigned_worker_id: (request as Partial<Stream> & { worker_service_id?: string }).worker_service_id || request.assigned_worker_id,
+      assigned_encoder_id: (request as Partial<Stream> & { encoder_service_id?: string }).encoder_service_id || request.assigned_encoder_id,
       discord_config_id: request.discord_config_id,
       discord_guild_id: request.discord_guild_id,
       discord_voice_channel_id: request.discord_voice_channel_id,
@@ -1561,6 +1563,19 @@ export async function mockPutBinary(path: string, body: Blob): Promise<unknown> 
 
 export function mockDelete(path: string): unknown {
   const normalizedPath = stripQuery(path);
+  const streamDelete = normalizedPath.match(/^\/streams\/([^/]+)$/);
+  if (streamDelete) {
+    const streamID = decodeURIComponent(streamDelete[1]);
+    const index = mockStreams.findIndex((stream) => stream.id === streamID);
+    if (index < 0) throw new Error("not_found");
+    mockStreams.splice(index, 1);
+    delete mockStreamArtifacts[streamID];
+    for (const key of Object.keys(mockArchiveShares)) {
+      if (key.startsWith(`${streamID}/`)) delete mockArchiveShares[key];
+    }
+    saveMockArchiveShares();
+    return { status: "deleted", stream_id: streamID };
+  }
   const artifactShareDelete = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares\/([^/]+)$/);
   if (artifactShareDelete) {
     loadMockArchiveShares();
@@ -1615,6 +1630,7 @@ export function mockPathExists(path: string) {
   if (/^\/system-updates\/[^/]+\/cancel$/.test(normalizedPath)) return true;
   if (/^\/streams\/[^/]+\/artifacts(?:\/[^/]+)?(?:\/download)?$/.test(normalizedPath)) return true;
   if (/^\/streams\/[^/]+\/artifacts\/[^/]+\/shares(?:\/[^/]+)?$/.test(normalizedPath)) return true;
+  if (/^\/streams\/[^/]+$/.test(normalizedPath)) return true;
   if (/^\/archive-shares\/[^/]+(?:\/download)?$/.test(normalizedPath)) return true;
   if (/^\/nodes\/[^/]+\/configuration$/.test(normalizedPath)) return true;
   if (/^\/nodes\/[^/]+$/.test(normalizedPath)) return true;

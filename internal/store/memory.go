@@ -74,6 +74,27 @@ func (s *MemoryStreamStore) GetStream(ctx context.Context, id string) (Stream, e
 	return stream, nil
 }
 
+func (s *MemoryStreamStore) DeleteStream(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.streams[id]; !ok {
+		return ErrNotFound
+	}
+	delete(s.streams, id)
+	delete(s.logs, id)
+	delete(s.youtubeRuntimes, id)
+	for artifactID, artifact := range s.artifactShares {
+		if artifact.StreamID == id {
+			delete(s.artifactShares, artifactID)
+		}
+	}
+	delete(s.artifacts, id)
+	return nil
+}
+
 func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string, settings StreamSettings) (Stream, error) {
 	if err := ctx.Err(); err != nil {
 		return Stream{}, err

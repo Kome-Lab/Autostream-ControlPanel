@@ -497,6 +497,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /streams", s.requirePermission("streams.read", s.listStreams))
 	s.mux.HandleFunc("POST /streams", s.requirePermission("streams.create", s.createStream))
 	s.mux.HandleFunc("GET /streams/{id}", s.requirePermission("streams.read", s.getStream))
+	s.mux.HandleFunc("DELETE /streams/{id}", s.requirePermission("streams.delete", s.deleteStream))
 	s.mux.HandleFunc("GET /streams/{id}/external-e2e-config", s.requirePermission("streams.read", s.externalE2EConfig))
 	s.mux.HandleFunc("PUT /streams/{id}/settings", s.requirePermission("streams.update", s.updateStreamSettings))
 	s.mux.HandleFunc("POST /streams/{id}/start-readiness", s.requirePermission("streams.start", s.startReadiness))
@@ -8022,6 +8023,11 @@ func (s *Server) listStreams(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_streams_failed"})
 		return
 	}
+	items, err = s.streamsWithAssignedNodes(r.Context(), items)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
 	writeJSON(w, http.StatusOK, items)
 }
 
@@ -8100,6 +8106,11 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
+	stream, err = s.streamWithAssignedNodes(r.Context(), stream)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
 	writeJSON(w, http.StatusCreated, stream)
 }
@@ -8114,7 +8125,110 @@ func (s *Server) getStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
 		return
 	}
+	stream, err = s.streamWithAssignedNodes(r.Context(), stream)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
 	writeJSON(w, http.StatusOK, stream)
+}
+
+func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
+	streamID := strings.TrimSpace(r.PathValue("id"))
+	current := currentFromContext(r.Context())
+	auditFailure := func(reason string) {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.delete", ResourceType: "stream", ResourceID: streamID, Result: "failure", Metadata: map[string]any{"reason": reason}})
+	}
+	stream, err := s.streams.GetStream(r.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		auditFailure("not_found")
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		auditFailure("get_stream_failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	if isActiveStreamStatus(stream.Status) {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.delete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_active", "status": stream.Status}})
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_active", "status": stream.Status})
+		return
+	}
+	if s.services != nil {
+		assignments, err := s.services.ListStreamAssignments(r.Context(), stream.ID)
+		if err != nil {
+			auditFailure("list_stream_assignments_failed")
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+			return
+		}
+		seen := make(map[string]struct{}, len(assignments))
+		for _, assignment := range assignments {
+			serviceID := strings.TrimSpace(assignment.ServiceID)
+			if serviceID == "" {
+				continue
+			}
+			if _, ok := seen[serviceID]; ok {
+				continue
+			}
+			seen[serviceID] = struct{}{}
+			if _, err := s.services.UnassignServiceFromStream(r.Context(), serviceID, currentFromContext(r.Context()).User.ID); err != nil {
+				auditFailure("unassign_stream_service_failed")
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "unassign_stream_service_failed"})
+				return
+			}
+		}
+	}
+	if err := s.streams.DeleteStream(r.Context(), stream.ID); errors.Is(err, store.ErrNotFound) {
+		auditFailure("not_found")
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	} else if err != nil {
+		auditFailure("delete_stream_failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_stream_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.delete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"name": stream.Name, "status": stream.Status}})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "stream_id": stream.ID})
+}
+
+func (s *Server) streamsWithAssignedNodes(ctx context.Context, streams []store.Stream) ([]store.Stream, error) {
+	for index := range streams {
+		stream, err := s.streamWithAssignedNodes(ctx, streams[index])
+		if err != nil {
+			return nil, err
+		}
+		streams[index] = stream
+	}
+	return streams, nil
+}
+
+func (s *Server) streamWithAssignedNodes(ctx context.Context, stream store.Stream) (store.Stream, error) {
+	stream.AssignedWorkerID = ""
+	stream.AssignedEncoderID = ""
+	if s.services == nil {
+		return stream, nil
+	}
+	assignments, err := s.services.ListStreamAssignments(ctx, stream.ID)
+	if err != nil {
+		return store.Stream{}, err
+	}
+	for _, assignment := range assignments {
+		if normalizeAssignmentRole(assignment.AssignmentRole) != "primary" {
+			continue
+		}
+		switch strings.TrimSpace(assignment.ServiceType) {
+		case "worker":
+			if stream.AssignedWorkerID == "" {
+				stream.AssignedWorkerID = strings.TrimSpace(assignment.ServiceID)
+			}
+		case "encoder_recorder":
+			if stream.AssignedEncoderID == "" {
+				stream.AssignedEncoderID = strings.TrimSpace(assignment.ServiceID)
+			}
+		}
+	}
+	return stream, nil
 }
 
 type externalE2EConfigResponse struct {
@@ -8399,6 +8513,11 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if code, status := s.applyStreamServiceAssignments(r, stream.ID, body, current); code != "" {
 		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	stream, err = s.streamWithAssignedNodes(r.Context(), stream)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_settings", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
@@ -11450,8 +11569,8 @@ func safeCSVCell(value string) string {
 }
 
 var auditActionGroups = map[string][]string{
-	"service_assignment":    {"services.assign", "services.unassign", "workers.assign", "workers.unassign"},
-	"service_runtime":       {"services.register", "services.heartbeat", "archive.artifacts.reported", "nodes.registration_token.create"},
+	"service_assignment": {"services.assign", "services.unassign", "workers.assign", "workers.unassign"},
+	"service_runtime":    {"services.register", "services.heartbeat", "archive.artifacts.reported", "nodes.registration_token.create"},
 	// Service registration is an agent-to-panel report, not a human operation.
 	// Keep it with runtime configuration reads so the operations view does not
 	// fill up with periodic Host Agent/Node registration traffic.

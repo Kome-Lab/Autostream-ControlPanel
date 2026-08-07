@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertCircle, Check, Copy, Eye, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Video } from "lucide-react";
+import { AlertCircle, Check, Copy, Eye, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,7 +16,7 @@ import { DataTable } from "@/components/tables/data-table";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
-import { APIError, apiPost } from "@/lib/api/client";
+import { APIError, apiDelete, apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
   oauthAccountDisplayName as oauthAccountLabel,
@@ -59,10 +59,11 @@ export function StreamsView() {
     return () => window.removeEventListener("hashchange", syncFromHash);
   }, []);
 
-  const actionMutation = useMutation<unknown, Error, { path: string; streamName: string; actionLabel: string }>({
-    mutationFn: ({ path }) => apiPost(path),
+  const actionMutation = useMutation<unknown, Error, { path: string; streamName: string; streamID?: string; actionLabel: string; method?: "POST" | "DELETE" }>({
+    mutationFn: ({ path, method }) => method === "DELETE" ? apiDelete(path) : apiPost(path),
     onMutate: () => setActionNotice(null),
     onSuccess: async (_, action) => {
+      if (action.method === "DELETE" && action.streamID) setCreatedStreams((current) => current.filter((stream) => stream.id !== action.streamID));
       await queryClient.invalidateQueries({ queryKey: ["streams"] });
       setActionNotice({ tone: "success", message: `${action.streamName}の${action.actionLabel}を受け付けました。状態が更新されるまでしばらくお待ちください。` });
     },
@@ -75,6 +76,7 @@ export function StreamsView() {
   const canStart = can("streams.start");
   const canStop = can("streams.stop");
   const canUpdate = can("streams.update");
+  const canDelete = can("streams.delete");
   const streamRows = useMemo(
     () => [...createdStreams, ...(streams.data || []).filter((stream) => !createdStreams.some((created) => created.id === stream.id))],
     [createdStreams, streams.data],
@@ -152,6 +154,18 @@ export function StreamsView() {
               </Button>
             </DangerConfirm>
           </RoleGuard>
+          {streamStatusAllowsDelete(row.original.status) ? <RoleGuard allowed={canDelete}>
+            <DangerConfirm
+              title={`${row.original.name} を削除しますか`}
+              description="配信枠、保存済み設定、担当Nodeの割り当て、関連ログを削除します。この操作は元に戻せません。"
+              onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}`, streamName: row.original.name, streamID: row.original.id, actionLabel: "削除", method: "DELETE" })}
+              actionLabel="配信枠を削除"
+            >
+              <Button variant="destructive" size="icon-sm" aria-label="配信枠を削除" {...guardedButtonProps(canDelete)} disabled={!canDelete || actionMutation.isPending}>
+                <Trash2 />
+              </Button>
+            </DangerConfirm>
+          </RoleGuard> : null}
         </div>
       ),
     },
@@ -248,7 +262,7 @@ export function StreamsView() {
           <CardDescription>VC待機中・配信中・要対応の状態を確認し、必要な操作を実行できます。</CardDescription>
         </CardHeader>
         <CardContent>
-          <DataTable columns={columns} data={streamRows} filterPlaceholder="配信名・状態・VC・URL・録画保存先で絞り込み" getRowId={(row) => row.id} minTableWidthClass="min-w-[1240px]" />
+          <DataTable columns={columns} data={streamRows} filterPlaceholder="配信名・状態・VC・URL・録画保存先で絞り込み" getRowId={(row) => row.id} responsive />
         </CardContent>
       </Card>
 
@@ -721,6 +735,10 @@ function streamStatusAllowsStart(status: Stream["status"]) {
 
 function streamStatusAllowsStop(status: Stream["status"]) {
   return ["starting", "live", "failed"].includes(String(status).toLowerCase());
+}
+
+function streamStatusAllowsDelete(status: Stream["status"]) {
+  return !["starting", "live", "stopping"].includes(String(status).toLowerCase());
 }
 
 function formatDateTime(value?: string, timezone?: string) {
