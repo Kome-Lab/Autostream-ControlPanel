@@ -519,7 +519,6 @@ func TestHostReleaseIncludesLocalExecutorAsPartOfHostAgentBundle(t *testing.T) {
 	workflow := string(payload)
 	for _, marker := range []string{
 		`-o "${host_agent_root}/bin/autostream-local-executor" ./cmd/autostream-local-executor`,
-		`run-local-executor-installer-smoke.sh`,
 		`release/autostream-local-executor-policy.json.example`,
 		`release/install-autostream-local-executor`,
 		`release/uninstall-autostream-local-executor`,
@@ -557,5 +556,12 @@ func TestHostReleaseIncludesLocalExecutorAsPartOfHostAgentBundle(t *testing.T) {
 		if !strings.Contains(smoke, marker) {
 			t.Fatalf("Local Executor root smoke is missing archive validation marker %q", marker)
 		}
+	}
+	ciPayload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ciPayload), "/bin/bash /workspace/internal/security/testdata/run-local-executor-installer-smoke.sh") {
+		t.Fatal("CI must execute the Local Executor installer smoke")
 	}
 }

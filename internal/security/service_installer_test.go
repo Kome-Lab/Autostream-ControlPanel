@@ -433,8 +433,6 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	}
 	workflow := string(workflowBytes)
 	for _, marker := range []string{
-		`bash -n release/install-autostream-control-panel`,
-		`sudo bash release/test-install-autostream-control-panel-integration.sh`,
 		`cp release/install-autostream-control-panel "${root}/install-autostream-control-panel"`,
 		`chmod 0755 "${root}/install-autostream-control-panel"`,
 		`-o "${root}/bin/autostream-updater" ./cmd/autostream-updater`,

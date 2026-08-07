@@ -125,8 +125,8 @@ func TestControlPanelInstallGuidePassesConfiguredDatabaseName(t *testing.T) {
 	}
 }
 
-func TestControlPanelWorkflowsRunRootBackupSmoke(t *testing.T) {
-	for _, workflow := range []string{"ci.yml", "release-host.yml"} {
+func TestControlPanelCIRunsRootBackupSmoke(t *testing.T) {
+	for _, workflow := range []string{"ci.yml"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", workflow))
 		if err != nil {
 			t.Fatal(err)

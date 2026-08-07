@@ -7,6 +7,41 @@ import (
 	"testing"
 )
 
+func TestHostReleaseDelegatesHeavyVerificationToExactCommitCI(t *testing.T) {
+	payload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release-host.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(payload)
+	for _, marker := range []string{
+		"Require successful CI for exact release commit",
+		"actions: read",
+		`repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&per_page=100`,
+		`.status == "completed" and .conclusion == "success"`,
+		"No successful ci.yml run exists for release commit",
+	} {
+		if !strings.Contains(workflow, marker) {
+			t.Fatalf("release workflow is missing exact-commit CI delegation marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"go test ./...",
+		"npm run test:system-updates",
+		"run-backup-script-root-smoke.sh",
+		"run-host-agent-identity-permissions-smoke.sh",
+		"run-host-agent-installer-prepare-smoke.sh",
+		"run-host-agent-installer-upgrade-smoke.sh",
+		"run-local-executor-installer-smoke.sh",
+		"Test production Docker port reconfiguration daemon boundary",
+		"go test ./internal/store -list '^TestMariaDB'",
+		"sudo bash release/test-install-autostream-control-panel-integration.sh",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Fatalf("release workflow still duplicates CI verification %q", forbidden)
+		}
+	}
+}
+
 func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 	workflowPath := filepath.Join("..", "..", ".github", "workflows", "release-host.yml")
 	payload, err := os.ReadFile(workflowPath)
@@ -193,8 +228,8 @@ func TestHostReleaseStagesVerifiesAndThenPublishes(t *testing.T) {
 	}
 }
 
-func TestCIAndHostReleaseRunEveryMariaDBContractWithoutSkips(t *testing.T) {
-	for _, workflowName := range []string{"ci.yml", "release-host.yml"} {
+func TestCIRunsEveryMariaDBContractWithoutSkips(t *testing.T) {
+	for _, workflowName := range []string{"ci.yml"} {
 		t.Run(workflowName, func(t *testing.T) {
 			workflowPath := filepath.Join(
 				"..",
@@ -234,8 +269,8 @@ func TestCIAndHostReleaseRunEveryMariaDBContractWithoutSkips(t *testing.T) {
 	}
 }
 
-func TestCIAndHostReleaseRunSystemUpdatesWebRegressionBeforeBuild(t *testing.T) {
-	for _, workflowName := range []string{"ci.yml", "release-host.yml"} {
+func TestCIRunsSystemUpdatesWebRegressionBeforeBuild(t *testing.T) {
+	for _, workflowName := range []string{"ci.yml"} {
 		t.Run(workflowName, func(t *testing.T) {
 			workflowPath := filepath.Join(
 				"..",

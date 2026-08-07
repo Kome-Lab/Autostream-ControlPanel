@@ -493,7 +493,7 @@ func TestHostAgentInstallerJournalsSignalSensitiveMutations(t *testing.T) {
 	}
 }
 
-func TestHostAgentReleaseSmokePurgesNonEmptyAndEmptyWipeTombstones(t *testing.T) {
+func TestHostAgentRootSmokePurgesNonEmptyAndEmptyWipeTombstones(t *testing.T) {
 	smokePayload, err := os.ReadFile(filepath.Join(
 		"..", "..", "internal", "security", "testdata",
 		"run-host-agent-installer-prepare-smoke.sh",
@@ -520,13 +520,6 @@ func TestHostAgentReleaseSmokePurgesNonEmptyAndEmptyWipeTombstones(t *testing.T)
 		t.Fatal("Host Agent root smoke must execute separate non-empty and zero-byte tombstone purge cycles")
 	}
 
-	workflowPayload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release-host.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(workflowPayload), "run-host-agent-installer-prepare-smoke.sh") {
-		t.Fatal("Host Release must execute the Host Agent installer/uninstaller root smoke")
-	}
 }
 
 func TestHostReleaseAddsAttestedHostAgentAssetsWithoutRemovingLegacyAssets(t *testing.T) {
@@ -562,165 +555,110 @@ func TestHostReleaseAddsAttestedHostAgentAssetsWithoutRemovingLegacyAssets(t *te
 }
 
 func TestHostUpgradePrivilegedLockInteropRunsInRootCI(t *testing.T) {
-	workflows := []struct {
-		name string
-		step string
-	}{
-		{
-			name: "ci.yml",
-			step: "Test managed Host config and upgrade locks with root-owned Linux fixtures",
-		},
-		{
-			name: "release-host.yml",
-			step: "Test updater config and Host upgrade locks with root-owned Linux fixtures",
-		},
+	payload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, workflow := range workflows {
-		t.Run(workflow.name, func(t *testing.T) {
-			payload, err := os.ReadFile(filepath.Join(
-				"..", "..", ".github", "workflows", workflow.name,
-			))
-			if err != nil {
-				t.Fatal(err)
-			}
-			text := string(payload)
-			start := strings.Index(text, "      - name: "+workflow.step)
-			if start < 0 {
-				t.Fatalf("root-owned Host upgrade lock step is missing")
-			}
-			step := text[start:]
-			if end := strings.Index(step[1:], "\n      - name:"); end >= 0 {
-				step = step[:end+1]
-			}
-			for _, marker := range []string{
-				"set -euo pipefail",
-				"getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent",
-				"GOTOOLCHAIN=local GOENV=off GOWORK=off GOPROXY=off",
-				"-mod=readonly",
-				"-trimpath",
-				"-exec='/usr/bin/sudo /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TMPDIR=/root/autostream-updater-root-tests'",
-				"./internal/updateagent",
-				"TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller",
-				"TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock",
-				"TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes",
-				`-json | tee "${result}"`,
-				`expected_root_mode_skip="TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation"`,
-				`((.Test // "") | startswith("TestPreparedUpdaterConfig"))`,
-				`.Test != $expected_root_mode_skip`,
-				`.Test == $expected_root_mode_skip`,
-				"An unexpected root-owned updater test was skipped",
-				"Expected root-mode updater skip did not report",
-				"Root-owned updater test did not report pass",
-			} {
-				if !strings.Contains(step, marker) {
-					t.Fatalf("root-owned Host upgrade lock step is missing %q", marker)
-				}
-			}
-			for _, forbidden := range []string{
-				"GOCACHE=",
-				"GOMODCACHE=",
-				"GOSUMDB=off",
-				"go tool test2json",
-			} {
-				if strings.Contains(step, forbidden) {
-					t.Fatalf("root-owned Host upgrade lock step contains forbidden root build state %q", forbidden)
-				}
-			}
-			if count := strings.Count(
-				step,
-				`--arg expected_root_mode_skip "${expected_root_mode_skip}"`,
-			); count != 2 {
-				t.Fatalf("root-owned Host upgrade lock step has %d expected-skip jq arguments, want 2", count)
-			}
-		})
+	text := string(payload)
+	start := strings.Index(text, "      - name: Test managed Host config and upgrade locks with root-owned Linux fixtures")
+	if start < 0 {
+		t.Fatal("root-owned Host upgrade lock step is missing from CI")
+	}
+	step := text[start:]
+	if end := strings.Index(step[1:], "\n      - name:"); end >= 0 {
+		step = step[:end+1]
+	}
+	for _, marker := range []string{
+		"set -euo pipefail",
+		"getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent",
+		"GOTOOLCHAIN=local GOENV=off GOWORK=off GOPROXY=off",
+		"-mod=readonly",
+		"-trimpath",
+		"-exec='/usr/bin/sudo /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TMPDIR=/root/autostream-updater-root-tests'",
+		"./internal/updateagent",
+		"TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller",
+		"TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock",
+		"TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes",
+		`-json | tee "${result}"`,
+		`expected_root_mode_skip="TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation"`,
+		`((.Test // "") | startswith("TestPreparedUpdaterConfig"))`,
+		`.Test != $expected_root_mode_skip`,
+		`.Test == $expected_root_mode_skip`,
+		"An unexpected root-owned updater test was skipped",
+		"Expected root-mode updater skip did not report",
+		"Root-owned updater test did not report pass",
+	} {
+		if !strings.Contains(step, marker) {
+			t.Fatalf("root-owned Host upgrade lock step is missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{"GOCACHE=", "GOMODCACHE=", "GOSUMDB=off", "go tool test2json"} {
+		if strings.Contains(step, forbidden) {
+			t.Fatalf("root-owned Host upgrade lock step contains forbidden root build state %q", forbidden)
+		}
+	}
+	if count := strings.Count(step, `--arg expected_root_mode_skip "${expected_root_mode_skip}"`); count != 2 {
+		t.Fatalf("root-owned Host upgrade lock step has %d expected-skip jq arguments, want 2", count)
 	}
 }
 
-func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
+func TestHostInstallerSmokesRunOfflineInPullRequestCI(t *testing.T) {
 	const pinnedUbuntu = "ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
 	smokes := []string{
 		"run-host-agent-identity-permissions-smoke.sh",
 		"run-host-agent-installer-prepare-smoke.sh",
 		"run-host-agent-installer-upgrade-smoke.sh",
 	}
-	for _, workflowName := range []string{"ci.yml", "release-host.yml"} {
-		t.Run(workflowName, func(t *testing.T) {
-			payload, err := os.ReadFile(filepath.Join(
-				"..", "..", ".github", "workflows", workflowName,
-			))
-			if err != nil {
-				t.Fatal(err)
-			}
-			workflow := string(payload)
-			standardRunnerJobMarker := map[string]string{
-				"ci.yml":           "  go:\n    runs-on: ubuntu-24.04",
-				"release-host.yml": "  release-host:\n    name: Build Linux host artifacts\n    runs-on: ubuntu-24.04",
-			}[workflowName]
-			if !strings.Contains(workflow, standardRunnerJobMarker) {
-				t.Fatalf("%s no longer runs the Host smoke build job on GitHub-hosted ubuntu-24.04", workflowName)
-			}
-			for _, smoke := range smokes {
-				marker := "/bin/bash /workspace/internal/security/testdata/" + smoke
-				markerIndex := strings.Index(workflow, marker)
-				if markerIndex < 0 {
-					t.Fatalf("%s no longer executes %s", workflowName, smoke)
-				}
-				stepStart := strings.LastIndex(workflow[:markerIndex], "\n      - name:")
-				if stepStart < 0 {
-					t.Fatalf("%s smoke %s is not in a named workflow step", workflowName, smoke)
-				}
-				step := workflow[stepStart:]
-				if stepEnd := strings.Index(step[1:], "\n      - name:"); stepEnd >= 0 {
-					step = step[:stepEnd+1]
-				}
-				for _, required := range []string{
-					"docker run --rm",
-					"--user 0:0",
-					"--network none",
-					pinnedUbuntu,
-					marker,
-				} {
-					if !strings.Contains(step, required) {
-						t.Fatalf("%s smoke %s is missing %q", workflowName, smoke, required)
-					}
-				}
-				if smoke == "run-host-agent-installer-prepare-smoke.sh" {
-					for _, required := range []string{
-						"target=/smoke,readonly",
-						"/smoke/autostream-host-agent",
-					} {
-						if !strings.Contains(step, required) {
-							t.Fatalf(
-								"%s smoke %s is missing real Host Agent input %q",
-								workflowName, smoke, required,
-							)
-						}
-					}
-				}
-				if smoke == "run-host-agent-installer-upgrade-smoke.sh" {
-					for _, required := range []string{
-						`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`,
-						`./internal/security/testdata/host-runtime-process-fixture`,
-						`-o "${smoke_dir}/host-runtime-process-fixture"`,
-						`source=${smoke_dir},target=/smoke,readonly`,
-						`/workspace \`,
-						`/smoke/host-runtime-process-fixture`,
-					} {
-						if !strings.Contains(step, required) {
-							t.Fatalf(
-								"%s smoke %s is missing native runtime fixture wiring %q",
-								workflowName, smoke, required,
-							)
-						}
-					}
-				}
-			}
-		})
+	payload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	fixturePath := filepath.Join(
-		"..", "..", "internal", "security", "testdata", "host-runtime-process-fixture", "main.go",
-	)
-	fixture, err := os.ReadFile(fixturePath)
+	workflow := string(payload)
+	if !strings.Contains(workflow, "  go:\n    runs-on: ubuntu-24.04") {
+		t.Fatal("CI no longer runs the Host smoke build job on GitHub-hosted ubuntu-24.04")
+	}
+	for _, smoke := range smokes {
+		marker := "/bin/bash /workspace/internal/security/testdata/" + smoke
+		markerIndex := strings.Index(workflow, marker)
+		if markerIndex < 0 {
+			t.Fatalf("CI no longer executes %s", smoke)
+		}
+		stepStart := strings.LastIndex(workflow[:markerIndex], "\n      - name:")
+		if stepStart < 0 {
+			t.Fatalf("CI smoke %s is not in a named workflow step", smoke)
+		}
+		step := workflow[stepStart:]
+		if stepEnd := strings.Index(step[1:], "\n      - name:"); stepEnd >= 0 {
+			step = step[:stepEnd+1]
+		}
+		for _, required := range []string{"docker run --rm", "--user 0:0", "--network none", pinnedUbuntu, marker} {
+			if !strings.Contains(step, required) {
+				t.Fatalf("CI smoke %s is missing %q", smoke, required)
+			}
+		}
+		if smoke == "run-host-agent-installer-prepare-smoke.sh" {
+			for _, required := range []string{"target=/smoke,readonly", "/smoke/autostream-host-agent"} {
+				if !strings.Contains(step, required) {
+					t.Fatalf("CI smoke %s is missing real Host Agent input %q", smoke, required)
+				}
+			}
+		}
+		if smoke == "run-host-agent-installer-upgrade-smoke.sh" {
+			for _, required := range []string{
+				`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`,
+				`./internal/security/testdata/host-runtime-process-fixture`,
+				`-o "${smoke_dir}/host-runtime-process-fixture"`,
+				`source=${smoke_dir},target=/smoke,readonly`,
+				`/workspace \`,
+				`/smoke/host-runtime-process-fixture`,
+			} {
+				if !strings.Contains(step, required) {
+					t.Fatalf("CI smoke %s is missing native runtime fixture wiring %q", smoke, required)
+				}
+			}
+		}
+	}
+	fixturePayload, err := os.ReadFile(filepath.Join("..", "..", "internal", "security", "testdata", "host-runtime-process-fixture", "main.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,17 +670,14 @@ func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 		`guard-restart-host-agent`,
 		`signal.Notify(terminated, syscall.SIGINT, syscall.SIGTERM)`,
 	} {
-		if !strings.Contains(string(fixture), required) {
+		if !strings.Contains(string(fixturePayload), required) {
 			t.Fatalf("native Host runtime process fixture is missing %q", required)
 		}
 	}
-	smokePayload, err := os.ReadFile(filepath.Join(
-		"..", "..", "internal", "security", "testdata", "run-host-agent-installer-upgrade-smoke.sh",
-	))
+	smokePayload, err := os.ReadFile(filepath.Join("..", "..", "internal", "security", "testdata", "run-host-agent-installer-upgrade-smoke.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	smoke := string(smokePayload)
 	for _, required := range []string{
 		`[[ $# -eq 2 ]]`,
 		`readonly RUNTIME_PROCESS_FIXTURE=$2`,
@@ -767,20 +702,8 @@ func TestHostInstallerSmokesRunOfflineInPullRequestAndReleaseCI(t *testing.T) {
 		`chmod 0600 "${RECOVERY_EXECUTOR_RESPONSE_STAGE}"`,
 		`mv -T --`,
 	} {
-		if !strings.Contains(smoke, required) {
+		if !strings.Contains(string(smokePayload), required) {
 			t.Fatalf("Host installer upgrade smoke is missing recovery regression %q", required)
-		}
-	}
-
-	ciPayload, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ci := string(ciPayload)
-	for _, smoke := range smokes {
-		marker := "bash -n internal/security/testdata/" + smoke
-		if !strings.Contains(ci, marker) {
-			t.Fatalf("pull-request CI no longer syntax-checks %s", smoke)
 		}
 	}
 }
