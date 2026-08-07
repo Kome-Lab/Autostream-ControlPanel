@@ -38,3 +38,12 @@ func TestYouTubeRuntimeSaveErrorCode(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamYouTubeRuntimeCompleteLastErrorUsesEmptyStringWhenUnset(t *testing.T) {
+	if got := streamYouTubeRuntimeCompleteLastError("   "); got != "" {
+		t.Fatalf("streamYouTubeRuntimeCompleteLastError(unset) = %q, want empty string", got)
+	}
+	if got := streamYouTubeRuntimeCompleteLastError(" youtube transition failed "); got != "youtube transition failed" {
+		t.Fatalf("streamYouTubeRuntimeCompleteLastError(value) = %q", got)
+	}
+}
