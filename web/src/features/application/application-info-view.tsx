@@ -347,7 +347,7 @@ export function ApplicationInfoView() {
         onCancel={(job) => { clearTerminalSelfUpdate(); setFeedback(null); cancelUpdate.mutate(job); }}
       />
 
-      <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
+      <div className="grid min-w-0 gap-4">
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Activity className="size-5" />Control Panel</CardTitle>

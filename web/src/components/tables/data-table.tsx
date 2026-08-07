@@ -21,6 +21,7 @@ type DataTableProps<TData, TValue> = {
   filterPlaceholder?: string;
   getRowId?: (row: TData) => string;
   minTableWidthClass?: string;
+  responsive?: boolean;
 };
 
 export function DataTable<TData, TValue>({
@@ -29,6 +30,7 @@ export function DataTable<TData, TValue>({
   filterPlaceholder,
   getRowId,
   minTableWidthClass = "min-w-[1180px]",
+  responsive = false,
 }: DataTableProps<TData, TValue>) {
   const { locale, t } = useI18n();
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -60,6 +62,36 @@ export function DataTable<TData, TValue>({
           {locale === "ja" ? `${table.getFilteredRowModel().rows.length} / ${data.length} 件` : `${table.getFilteredRowModel().rows.length} of ${data.length} rows`}
         </span>
       </div>
+      {responsive ? (
+        <div className="grid min-w-0 gap-3">
+          {table.getRowModel().rows.length ? (
+            table.getRowModel().rows.map((row) => (
+              <article key={row.id} className="min-w-0 rounded-md border bg-card p-3 sm:p-4">
+                <dl className="grid min-w-0 gap-x-4 gap-y-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {row.getVisibleCells().map((cell) => {
+                    const header = table.getFlatHeaders().find((candidate) => candidate.column.id === cell.column.id);
+                    const wide = cell.column.id === "endpoint" || cell.column.id === "actions";
+                    return (
+                      <div key={cell.id} className={`min-w-0 ${wide ? "sm:col-span-2 xl:col-span-3" : ""}`}>
+                        <dt className="text-xs font-medium text-muted-foreground">
+                          {header && !header.isPlaceholder ? flexRender(header.column.columnDef.header, header.getContext()) : null}
+                        </dt>
+                        <dd className="mt-1 min-w-0 break-words">
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </dd>
+                      </div>
+                    );
+                  })}
+                </dl>
+              </article>
+            ))
+          ) : (
+            <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+              {locale === "ja" ? "該当するデータがありません" : "No results."}
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="min-w-0 overflow-hidden rounded-md border bg-card">
         <Table className={minTableWidthClass}>
           <TableHeader>
@@ -92,6 +124,7 @@ export function DataTable<TData, TValue>({
           </TableBody>
         </Table>
       </div>
+      )}
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">
           {locale === "ja" ? `${table.getState().pagination.pageIndex + 1} / ${table.getPageCount() || 1} ページ` : `Page ${table.getState().pagination.pageIndex + 1} of ${table.getPageCount() || 1}`}

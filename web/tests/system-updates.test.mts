@@ -2746,3 +2746,13 @@ test("updater node description identifies its portless per-host responsibility",
   assert.doesNotMatch(source, /port_reconfigure/);
   assert.doesNotMatch(source, /表示されたコマンドを中央Updaterホストで/);
 });
+
+test("registered node lists use responsive cards instead of forced-width tables", () => {
+  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+  const tableSource = readFileSync(new URL("../src/components/tables/data-table.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /<DataTable[\s\S]*?responsive\s*\/>/);
+  assert.doesNotMatch(source, /minTableWidthClass="min-w-\[960px\]"/);
+  assert.match(tableSource, /responsive\?: boolean/);
+  assert.match(tableSource, /cell\.column\.id === "endpoint" \|\| cell\.column\.id === "actions"/);
+});

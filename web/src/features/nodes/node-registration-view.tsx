@@ -247,7 +247,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
       cell: ({ row }) => {
         const nodeID = nodeIdentity(row.original);
         return (
-          <div className="min-w-52">
+          <div className="min-w-0">
             <div className="flex items-start gap-2">
               <div className="min-w-0">
                 <div className="break-words font-medium">{nodeDisplayName(row.original)}</div>
@@ -327,7 +327,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
             ? "UpdaterのRuntime Token再生成には system_updates.execute 権限が必要です。"
             : "Runtime Token再生成には api_tokens.create と api_tokens.revoke 権限が必要です。";
         return (
-          <div className="flex min-w-64 flex-wrap items-center gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <Button variant="outline" size="sm" className="px-2" aria-label="Configurationを表示" title="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
               <FileCode2 />
               <span>設定</span>
@@ -762,7 +762,7 @@ function NodeEndpointStateView({
     return (
       <div
         className={compact
-          ? "grid min-w-56 gap-1 text-xs"
+          ? "grid min-w-0 gap-1 text-xs"
           : "grid min-w-0 gap-2 rounded-md border bg-muted/40 p-3 text-sm"}
         role="group"
         aria-label="Host Pull Agent transport情報"
@@ -785,7 +785,7 @@ function NodeEndpointStateView({
   return (
     <div
       className={compact
-        ? "grid min-w-64 max-w-96 gap-1.5 text-xs"
+        ? "grid min-w-0 max-w-96 gap-1.5 text-xs"
         : "grid min-w-0 gap-2 rounded-md border bg-muted/40 p-3 text-sm"}
       role="group"
       aria-label="Node endpoint migration状態"
@@ -830,7 +830,7 @@ function UpdaterTransportStateView({
   return (
     <div
       className={compact
-        ? "grid min-w-56 gap-1 text-xs"
+        ? "grid min-w-0 gap-1 text-xs"
         : "grid min-w-0 gap-2 rounded-md border bg-muted/40 p-3 text-sm"}
       role="group"
       aria-label={`${node.service_name || node.service_id || node.id} のUpdater transport情報`}
@@ -964,7 +964,7 @@ function RegisteredNodeGroup({
           data={rows}
           filterPlaceholder={filterPlaceholder}
           getRowId={(row) => row.service_id || row.id}
-          minTableWidthClass="min-w-[960px]"
+          responsive
         />
       ) : (
         <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">対象のNodeは登録されていません。</div>
@@ -1042,7 +1042,7 @@ function NodeMetricsSummary({ node }: { node: WorkerNode }) {
     const goroutines = metricValue(metrics, ["observability.goroutines"]);
     const heap = metricValue(metrics, ["observability.heap_alloc_bytes", "observability.heap_sys_bytes"]);
     return (
-      <div className="min-w-36 text-sm">
+      <div className="min-w-0 text-sm">
         <div className="flex items-center gap-1.5">
           <Activity className="size-3.5 text-muted-foreground" />
           {entries.length > 0 ? `${entries.length}項目` : "未受信"}
@@ -1057,7 +1057,7 @@ function NodeMetricsSummary({ node }: { node: WorkerNode }) {
   const cpu = metricValue(metrics, ["cpu_percent", "cpuUsage", "process.cpu_percent"]);
   const memory = metricValue(metrics, ["memory_percent", "memoryUsage", "process.memory_percent"]);
   return (
-    <div className="min-w-36 text-sm">
+    <div className="min-w-0 text-sm">
       <div className="flex items-center gap-1.5">
         <Activity className="size-3.5 text-muted-foreground" />
         {entries.length > 0 ? `${entries.length}項目` : "未受信"}
