@@ -67,7 +67,14 @@ export function StreamsView() {
       await queryClient.invalidateQueries({ queryKey: ["streams"] });
       setActionNotice({ tone: "success", message: `${action.streamName}の${action.actionLabel}を受け付けました。状態が更新されるまでしばらくお待ちください。` });
     },
-    onError: (error, action) => setActionNotice({ tone: "error", message: streamActionErrorMessage(error, action.actionLabel) }),
+    onError: (error, action) => {
+      // A failed start/stop can still have advanced the server-side stream
+      // state before returning its conflict. Refresh the row before showing
+      // the next action so a stale `created`/`ready` value does not cause a
+      // second request against an already-starting stream.
+      void queryClient.invalidateQueries({ queryKey: ["streams"] });
+      setActionNotice({ tone: "error", message: streamActionErrorMessage(error, action.actionLabel) });
+    },
   });
 
   const superAdmin = currentUser.data?.user.roles?.includes("super_admin") === true;
@@ -725,7 +732,16 @@ function streamActionErrorMessage(error: unknown, actionLabel: string) {
     if (error.detailCode === "database_write_failed") return `${actionLabel}を完了できませんでした。配信ランタイム情報を保存できませんでした。Panelログを確認してください。`;
     if (error.status === 403) return `${actionLabel}を実行する権限がありません。管理者に操作権限を確認してください。`;
     if (error.status === 404) return `対象の配信枠が見つかりません。一覧を更新してからもう一度確認してください。`;
-    if (error.status === 409) return `${actionLabel}できない状態です。配信状態を更新し、開始中・停止中の処理が終わってから再試行してください。`;
+    if (error.status === 409) {
+      const conflictMessages: Record<string, string> = {
+        stream_status_not_startable: `${actionLabel}できません。配信枠は現在「開始可能ではない状態」です。現在の状態を更新して確認してください。(code: stream_status_not_startable)`,
+        stream_status_not_stoppable: `${actionLabel}できません。配信枠は現在「停止可能ではない状態」です。現在の状態を更新して確認してください。(code: stream_status_not_stoppable)`,
+        service_update_in_progress: `${actionLabel}できません。担当Nodeの更新処理が完了するまで待ってください。(code: service_update_in_progress)`,
+        missing_stream_assignments: `${actionLabel}できません。配信枠に必要なNode割り当てが不足しています。(code: missing_stream_assignments)`,
+        stream_start_not_ready: `${actionLabel}できません。開始前チェックに失敗しています。(code: stream_start_not_ready)`,
+      };
+      return conflictMessages[error.code || ""] || `${actionLabel}できない状態です。配信状態を更新し、開始中・停止中の処理が終わってから再試行してください。(code: ${error.code || "conflict"})`;
+    }
     if (error.status >= 500) return `${actionLabel}を完了できませんでした。担当Nodeの接続状態を確認し、配信ログを確認してから再試行してください。`;
   }
   return `${actionLabel}を完了できませんでした。通信状態と配信ログを確認してから再試行してください。`;

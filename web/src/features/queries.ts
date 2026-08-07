@@ -99,6 +99,12 @@ export function useStreams(enabled = true) {
     queryKey: ["streams"],
     queryFn: () => apiGet<Stream[]>("/streams"),
     enabled,
+    // Stream lifecycle transitions happen in the service dispatch path, so
+    // keep the list in sync while a start/stop request is settling instead
+    // of leaving the operator with a stale status until a manual reload.
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
 }
 
