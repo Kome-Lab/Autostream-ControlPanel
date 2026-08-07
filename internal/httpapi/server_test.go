@@ -6894,6 +6894,62 @@ func TestServiceRuntimeSecretResolveReleasesLeaseWhenSecretIsMissing(t *testing.
 	}
 }
 
+func TestServiceRuntimeSecretResolveAllowsLiveAPIDryRunStreamSecret(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	secrets := store.NewMemorySecretStore()
+	stream, err := streams.CreateStream(t.Context(), "dry-run runtime secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "encoder_recorder", []string{"service.register", "service.config.read", "service.secret.resolve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID: "encoder-dry-run", ServiceType: "encoder_recorder", ServiceName: "Encoder Dry Run",
+		PublicURL: "https://encoder-dry-run.example.com", Version: "0.1.0", Capabilities: map[string]any{},
+	})
+	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-dry-run", stream.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "dry-run output", map[string]any{
+		"mode": "live_api_dry_run",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID}); err != nil {
+		t.Fatal(err)
+	}
+	secretName := "youtube_stream_key_runtime_dry_run"
+	if _, err := secrets.UpdateSecret(t.Context(), secretName, "raw-dry-run-stream-key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.SaveStreamYouTubeRuntime(t.Context(), store.StreamYouTubeRuntime{
+		StreamID: stream.ID, YouTubeOutput: youtube.ID, Mode: "live_api_dry_run", StreamKeySecretName: secretName,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithAuditStore(auth))
+	body := `{"service_id":"encoder-dry-run","stream_id":"` + stream.ID + `","secret_name":"` + secretName + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("dry-run runtime secret resolve status = %d body = %s", res.Code, res.Body.String())
+	}
+	var resolved serviceRuntimeSecretResolveResponse
+	if err := json.NewDecoder(res.Body).Decode(&resolved); err != nil {
+		t.Fatal(err)
+	}
+	if resolved.SecretName != secretName || resolved.Value != "raw-dry-run-stream-key" || resolved.ExpiresInSec <= 0 {
+		t.Fatalf("unexpected dry-run runtime secret: %#v", resolved)
+	}
+}
+
 func TestServiceRuntimeSecretResolveAllowsAssignedArchiveDestinationSecrets(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()

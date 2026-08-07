@@ -7059,7 +7059,7 @@ func (s *Server) runtimeYouTubeStreamSecretAllowed(ctx context.Context, service 
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(runtime.StreamKeySecretName) != secretName || runtime.Mode != "live_api" {
+	if strings.TrimSpace(runtime.StreamKeySecretName) != secretName || (runtime.Mode != "live_api" && runtime.Mode != "live_api_dry_run") {
 		return false, nil
 	}
 	if strings.TrimSpace(runtime.YouTubeOutput) == "" {
