@@ -2222,7 +2222,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path.startsWith("/profiles/")) return ["name", "profile_summary", "updated_at", "created_at"];
   if (resource.path === "/discord/configs") return ["name", "bot_summary", "updated_at"];
   if (resource.path === "/integrations/oauth-providers") return ["name", "provider_type", "enabled", "client_secret_configured", "updated_at"];
-  if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_usage", "account_summary", "updated_at"];
+  if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_usage", "account_summary", "refresh_token_updated_at", "updated_at"];
   if (resource.path === "/youtube/outputs") return ["name", "output_summary", "updated_at"];
   if (resource.path === "/archive/destinations") return ["name", "destination_summary", "updated_at"];
   if (resource.path === "/secrets/status") return ["secret_label", "secret_scope", "secret_status", "secret_hint", "updated_at"];
@@ -2250,6 +2250,9 @@ function isInternalReferenceColumn(key: string) {
 }
 
 function formatResourceCell(resource: ResourceDefinition, value: unknown, key = "", timezone?: string): ReactNode {
+  if (resource.path === "/integrations/oauth-accounts" && key === "refresh_token_updated_at" && (value === undefined || value === null || value === "")) {
+    return <span className="text-muted-foreground">未記録</span>;
+  }
   if (resource.path === "/observability/notification-channels" && key === "type" && typeof value === "string") {
     return notificationChannelTypeLabel(value);
   }
@@ -2449,6 +2452,7 @@ const columnLabels: Record<string, string> = {
   oauth_account_display_name: "表示名",
   account_purpose: "利用可能な用途",
   account_usage: "利用可能な用途",
+  refresh_token_updated_at: "Refresh Token最終更新",
   provider_type: "プロバイダ",
   type: "種別",
   status: "状態",

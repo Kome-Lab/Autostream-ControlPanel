@@ -721,6 +721,8 @@ function streamCreateErrorMessage(error: unknown) {
 
 function streamActionErrorMessage(error: unknown, actionLabel: string) {
   if (error instanceof APIError) {
+    if (error.detailCode === "database_connection_transient") return `${actionLabel}を完了できませんでした。Control PanelとMariaDBの一時的な接続切断が発生しました。少し待ってから再試行してください。`;
+    if (error.detailCode === "database_write_failed") return `${actionLabel}を完了できませんでした。配信ランタイム情報を保存できませんでした。Panelログを確認してください。`;
     if (error.status === 403) return `${actionLabel}を実行する権限がありません。管理者に操作権限を確認してください。`;
     if (error.status === 404) return `対象の配信枠が見つかりません。一覧を更新してからもう一度確認してください。`;
     if (error.status === 409) return `${actionLabel}できない状態です。配信状態を更新し、開始中・停止中の処理が終わってから再試行してください。`;

@@ -69,10 +69,14 @@ consumers together.
 - Every host release archive contains its executable installer before
   `artifact-manifest.json` and `checksums.txt` are generated.
 - Every systemd example uses the canonical public binary.
-- Static installer contract tests pass in all five repositories.
-- Bash syntax is checked by CI and the release workflow.
-- Ubuntu CI and the release workflow execute fresh-install, legacy-migration,
-  idempotence, no-auto-restart, and failure-rollback scenarios.
+- Static installer contract tests pass in all five repositories' CI workflows.
+- Bash syntax and Ubuntu fresh-install, legacy-migration, idempotence,
+  no-auto-restart, and failure-rollback scenarios are executed by CI for the
+  exact commit that is released.
+- Each release workflow requires a successful `ci.yml` run for its exact
+  `GITHUB_SHA`, then limits its own checks to archive verification, packaging,
+  checksums, manifests, and provenance. It does not repeat the source and
+  system integration test matrix.
 - Existing environments remain unchanged and legacy public paths are retained
   in install backups.
 - Local Executor release/current validation remains unchanged and all existing

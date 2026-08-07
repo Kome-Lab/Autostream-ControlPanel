@@ -9322,8 +9322,27 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.saveYouTubeRuntime(r.Context(), stream.ID, body.YouTubeRuntime); err != nil {
+		current := currentFromContext(r.Context())
+		errorCode := store.YouTubeRuntimeSaveErrorCode(err)
+		log.Printf("stream start runtime save failed: stream_id=%s error_code=%s error_type=%T", stream.ID, errorCode, err)
+		s.writeAudit(r, store.AuditEvent{
+			ActorUserID:   current.User.ID,
+			ActorUsername: current.User.Username,
+			Action:        "streams.start",
+			ResourceType:  "stream",
+			ResourceID:    stream.ID,
+			Result:        "failure",
+			Metadata: map[string]any{
+				"reason":            "save_youtube_runtime_failed",
+				"error_code":        errorCode,
+				"youtube_output_id": body.YouTubeOutputID,
+			},
+		})
 		s.clearYouTubeRuntimeSecretFromMap(r.Context(), body.YouTubeRuntime)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "save_youtube_runtime_failed"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"code":        "save_youtube_runtime_failed",
+			"detail_code": errorCode,
+		})
 		return
 	}
 	if _, err := s.streams.UpdateStreamStatus(r.Context(), stream.ID, "starting"); err != nil {

@@ -5,13 +5,15 @@ const csrfStorageKey = "autostream.csrf_token";
 export class APIError extends Error {
   status: number;
   code?: string;
+  detailCode?: string;
   responseContentType?: string;
 
-  constructor(message: string, status: number, code?: string, responseContentType?: string) {
+  constructor(message: string, status: number, code?: string, responseContentType?: string, detailCode?: string) {
     super(message);
     this.name = "APIError";
     this.status = status;
     this.code = code;
+    this.detailCode = detailCode;
     this.responseContentType = responseContentType;
   }
 }
@@ -145,7 +147,7 @@ async function readJSONResponse<T>(response: Response, path: string): Promise<T>
     throw new APIError("API response JSON could not be parsed.", response.status, "invalid_json_response", contentType);
   }
   if (!response.ok) {
-    throw new APIError(data?.code || "API request failed.", response.status, data?.code);
+    throw new APIError(data?.code || "API request failed.", response.status, data?.code, contentType, data?.detail_code);
   }
   if (data?.csrf_token) setCSRFToken(data.csrf_token);
   return data as T;

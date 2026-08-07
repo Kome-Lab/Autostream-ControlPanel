@@ -23,22 +23,8 @@ jobs:
   release-host:
     name: Build Linux host artifacts
     runs-on: ubuntu-24.04
-    services:
-      mariadb:
-        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
-        env:
-          MARIADB_DATABASE: autostream_ci
-          MARIADB_USER: autostream_ci
-          MARIADB_PASSWORD: autostream-ci-password
-          MARIADB_ROOT_PASSWORD: autostream-ci-root-password
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "healthcheck.sh --connect --innodb_initialized"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     permissions:
+      actions: read
       contents: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
@@ -63,6 +49,26 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Require successful CI for exact release commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ci_runs="${RUNNER_TEMP}/release-ci-runs.json"
+          gh api \
+            --header 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+            > "${ci_runs}"
+          if ! jq -e \
+            --arg sha "${GITHUB_SHA}" \
+            'any(.workflow_runs[]?; .head_sha == $sha and .status == "completed" and .conclusion == "success")' \
+            "${ci_runs}" > /dev/null; then
+            echo "No successful ci.yml run exists for release commit ${GITHUB_SHA}. Run CI for this exact ref before retrying the release." >&2
+            exit 1
+          fi
+          echo "Verified successful ci.yml run for ${GITHUB_SHA}."
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -73,18 +79,6 @@ jobs:
           node-version: 26
           cache: npm
           cache-dependency-path: web/package-lock.json
-
-      - name: Check service installer syntax
-        run: bash -n release/install-autostream-control-panel
-
-      - name: Test service installer migration and rollback
-        run: sudo bash release/test-install-autostream-control-panel-integration.sh
-
-      - name: Test Local Executor systemd sandbox capabilities
-        run: |
-          set -euo pipefail
-          bash -n internal/security/testdata/run-local-executor-systemd-sandbox-smoke.sh
-          sudo bash internal/security/testdata/run-local-executor-systemd-sandbox-smoke.sh
 
       - name: Resolve release metadata
         id: meta
@@ -119,264 +113,6 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "push_release=${push_release}" >> "${GITHUB_OUTPUT}"
 
-      - name: Test
-        run: go test ./...
-
-      - name: Test production Docker port reconfiguration daemon boundary
-        shell: bash
-        env:
-          AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE: "1"
-        run: |
-          set -euo pipefail
-          smoke_binary="${RUNNER_TEMP}/updateagent-docker-port.test"
-          smoke_fixture="${RUNNER_TEMP}/docker-port-fixture"
-          smoke_tmp="${RUNNER_TEMP}/docker-port-root-tmp"
-          smoke_cache="${RUNNER_TEMP}/docker-port-root-gocache"
-          CGO_ENABLED=0 GOOS=linux \
-            go build -trimpath -ldflags="-s -w" \
-              -o "${smoke_fixture}" \
-              ./internal/updateagent/testdata/docker-port-fixture
-          go test -c ./internal/updateagent -o "${smoke_binary}"
-          sudo install -d -o root -g root -m 0700 "${smoke_tmp}" "${smoke_cache}"
-          cleanup_docker_port_smoke() {
-            set +e
-            smoke_owner="${smoke_tmp}/.docker-port-smoke-owner"
-            if sudo test -f "${smoke_owner}" &&
-              sudo grep -qx 'github-actions-docker-port-smoke' "${smoke_owner}"; then
-              sudo /usr/bin/docker ps -aq \
-                --filter label=com.docker.compose.project=autostream |
-                xargs -r sudo /usr/bin/docker rm -f
-              sudo /usr/bin/docker ps -aq \
-                --filter label=com.kome-lab.autostream.test=docker-port-smoke |
-                xargs -r sudo /usr/bin/docker rm -f
-              sudo /usr/bin/docker network rm autostream_default >/dev/null 2>&1 || true
-              sudo /usr/bin/docker image ls -q \
-                --filter label=com.kome-lab.autostream.test=docker-port-smoke |
-                xargs -r sudo /usr/bin/docker image rm -f
-              sudo rm -f \
-                /run/autostream-updater/.autostream-host-lifecycle.lock \
-                /run/autostream-updater/.autostream-updater-f7868912f69c.lock \
-                "${smoke_owner}"
-            fi
-          }
-          trap cleanup_docker_port_smoke EXIT
-          sudo --preserve-env=AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE \
-            /usr/bin/unshare --mount --propagation private \
-            /usr/bin/env \
-              AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE_MOUNT_NS=1 \
-              AUTOSTREAM_DOCKER_PORT_FIXTURE_BINARY="${smoke_fixture}" \
-              HOME=/root \
-              PATH="${PATH}" \
-              GOCACHE="${smoke_cache}" \
-              TMPDIR="${smoke_tmp}" \
-              "${smoke_binary}" \
-                -test.run '^TestDockerPortDaemonSmoke$' \
-                -test.count=1 \
-                -test.timeout=8m \
-                -test.v
-
-      - name: Test all MariaDB persistence contracts
-        shell: bash
-        env:
-          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
-        run: |
-          set -euo pipefail
-          mapfile -t mariadb_tests < <(
-            go test ./internal/store -list '^TestMariaDB' |
-              LC_ALL=C grep '^TestMariaDB'
-          )
-          if [[ "${#mariadb_tests[@]}" -eq 0 ]]; then
-            echo "No TestMariaDB integration tests were discovered" >&2
-            exit 1
-          fi
-          printf 'Discovered MariaDB integration test: %s\n' "${mariadb_tests[@]}"
-          result="${RUNNER_TEMP}/mariadb-store-tests.json"
-          go test ./internal/store \
-            -run '^TestMariaDB' \
-            -count=1 \
-            -json | tee "${result}"
-          if jq -e \
-            'select(.Action == "skip" and ((.Test // "") | startswith("TestMariaDB")))' \
-            "${result}" > /dev/null; then
-            echo "A MariaDB integration test was skipped" >&2
-            exit 1
-          fi
-          for test_name in "${mariadb_tests[@]}"; do
-            if ! jq -e \
-              --arg test_name "${test_name}" \
-              'select(
-                .Action == "pass" and
-                .Package == "github.com/example/autostream-control-panel/internal/store" and
-                .Test == $test_name
-              )' \
-              "${result}" > /dev/null; then
-              echo "MariaDB integration test did not report pass: ${test_name}" >&2
-              exit 1
-            fi
-          done
-          jq -e \
-            'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/store" and ((.Test // "") == ""))' \
-            "${result}" > /dev/null
-
-      - name: Test updater config and Host upgrade locks with root-owned Linux fixtures
-        run: |
-          set -euo pipefail
-          getent group autostream-updater >/dev/null 2>&1 || sudo groupadd --system autostream-updater
-          getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent
-          sudo install -d -o root -g root -m 0700 /root/autostream-updater-root-tests
-          root_tests=(
-            TestPreparedUpdaterConfig
-            TestHostAgentConfigurationTransaction
-            TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller
-            TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock
-            TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes
-          )
-          expected_root_mode_skip="TestPreparedUpdaterConfigInitializationRejectsNonRootBeforeFilesystemMutation"
-          result="${RUNNER_TEMP}/root-owned-updater-tests.json"
-          GOTOOLCHAIN=local GOENV=off GOWORK=off GOPROXY=off \
-            go test \
-            -mod=readonly \
-            -trimpath \
-            -exec='/usr/bin/sudo /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TMPDIR=/root/autostream-updater-root-tests' \
-            ./internal/updateagent \
-            -run '^(TestPreparedUpdaterConfig|TestHostAgentConfigurationTransaction|TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller|TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock|TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes)' \
-            -count=1 \
-            -timeout=10m \
-            -json | tee "${result}"
-          if jq -e \
-            --arg expected_root_mode_skip "${expected_root_mode_skip}" \
-            'select(
-              .Action == "skip" and
-              .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
-              .Test != $expected_root_mode_skip and
-              (((.Test // "") | startswith("TestPreparedUpdaterConfig")) or
-               ((.Test // "") | startswith("TestHostAgentConfigurationTransaction")) or
-               (.Test == "TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller") or
-               (.Test == "TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock") or
-               (.Test == "TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes")))' \
-            "${result}" > /dev/null; then
-            echo "An unexpected root-owned updater test was skipped" >&2
-            exit 1
-          fi
-          if ! jq -e \
-            --arg expected_root_mode_skip "${expected_root_mode_skip}" \
-            'select(
-              .Action == "skip" and
-              .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
-              .Test == $expected_root_mode_skip
-            )' \
-            "${result}" > /dev/null; then
-            echo "Expected root-mode updater skip did not report: ${expected_root_mode_skip}" >&2
-            exit 1
-          fi
-          for test_prefix in "${root_tests[@]}"; do
-            if ! jq -e \
-              --arg test_prefix "${test_prefix}" \
-              'select(
-                .Action == "pass" and
-                .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
-                ((.Test // "") | startswith($test_prefix))
-              )' \
-              "${result}" > /dev/null; then
-              echo "Root-owned updater test did not report pass: ${test_prefix}" >&2
-              exit 1
-            fi
-          done
-          jq -e \
-            'select(.Action == "pass" and
-              .Package == "github.com/example/autostream-control-panel/internal/updateagent" and
-              ((.Test // "") == ""))' \
-            "${result}" > /dev/null
-
-      - name: Test backup script with root-owned Linux fixtures
-        run: |
-          docker run --rm \
-            --user 0:0 \
-            --network none \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --pids-limit 128 \
-            --memory 256m \
-            --cpus 1 \
-            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
-            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
-            /bin/bash /workspace/internal/security/testdata/run-backup-script-root-smoke.sh \
-              /workspace/release/autostream-backup-control-panel.example \
-              /var/backups/autostream/control-panel \
-              autostream_control_panel \
-              autostream-kometubu_panel
-
-      - name: Test Host Agent canonical identity with private legacy parent
-        run: |
-          set -euo pipefail
-          smoke_dir="${RUNNER_TEMP}/host-agent-identity-permissions"
-          mkdir -p "${smoke_dir}"
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -trimpath \
-              -o "${smoke_dir}/autostream-host-agent" \
-              ./cmd/autostream-host-agent
-          docker run --rm \
-            --user 0:0 \
-            --network none \
-            --pids-limit 128 \
-            --memory 256m \
-            --cpus 1 \
-            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
-            --mount "type=bind,source=${smoke_dir},target=/smoke,readonly" \
-            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
-            /bin/bash /workspace/internal/security/testdata/run-host-agent-identity-permissions-smoke.sh \
-              /smoke/autostream-host-agent
-
-      - name: Test Host Agent prepare installer without an identity
-        run: |
-          docker run --rm \
-            --user 0:0 \
-            --network none \
-            --pids-limit 128 \
-            --memory 256m \
-            --cpus 1 \
-            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
-            --mount "type=bind,source=${RUNNER_TEMP}/host-agent-identity-permissions,target=/smoke,readonly" \
-            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
-            /bin/bash /workspace/internal/security/testdata/run-host-agent-installer-prepare-smoke.sh \
-              /workspace \
-              /smoke/autostream-host-agent
-
-      - name: Test Host Agent manual upgrade installer delegation
-        run: |
-          set -euo pipefail
-          smoke_dir="${RUNNER_TEMP}/host-agent-installer-upgrade"
-          mkdir -p "${smoke_dir}"
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -trimpath -ldflags="-s -w" \
-              -o "${smoke_dir}/host-runtime-process-fixture" \
-              ./internal/security/testdata/host-runtime-process-fixture
-          docker run --rm \
-            --user 0:0 \
-            --network none \
-            --pids-limit 128 \
-            --memory 256m \
-            --cpus 1 \
-            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
-            --mount "type=bind,source=${smoke_dir},target=/smoke,readonly" \
-            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
-            /bin/bash /workspace/internal/security/testdata/run-host-agent-installer-upgrade-smoke.sh \
-              /workspace \
-              /smoke/host-runtime-process-fixture
-
-      - name: Test local executor installer boundary
-        run: |
-          docker run --rm \
-            --user 0:0 \
-            --network none \
-            --pids-limit 128 \
-            --memory 256m \
-            --cpus 1 \
-            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
-            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
-            /bin/bash /workspace/internal/security/testdata/run-local-executor-installer-smoke.sh \
-              /workspace
-
       - name: Validate release archive verifier syntax
         shell: bash
         run: |
@@ -391,7 +127,6 @@ jobs:
         working-directory: web
         run: |
           npm ci
-          npm run test:system-updates
           npm run build
 
       - name: Package linux artifacts

@@ -1330,7 +1330,7 @@ func TestOAuthAccountConnectionCallbackStoresRefreshTokenWithoutLeak(t *testing.
 	if err := json.NewDecoder(res.Body).Decode(&account); err != nil {
 		t.Fatal(err)
 	}
-	if !account.RefreshTokenConfigured || account.TokenFingerprint == "" || account.Email != "archive@example.com" {
+	if !account.RefreshTokenConfigured || account.TokenFingerprint == "" || account.RefreshTokenUpdatedAt == "" || account.Email != "archive@example.com" {
 		t.Fatalf("unexpected public account response: %#v", account)
 	}
 	if account.AccountPurpose != store.OAuthAccountPurposeYouTube {
@@ -3166,6 +3166,59 @@ func TestStartStreamPreparesYouTubeLiveAPIDryRunWithoutSecretLeak(t *testing.T) 
 	}
 	if _, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("youtube runtime should be cleared after stop, got err=%v", err)
+	}
+}
+
+func TestStartStreamAuditsYouTubeRuntimeSaveFailure(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "runtime save failure stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "runtime save failure discord", "discord_bot-01", "guild-youtube", "voice-youtube", "")
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "runtime-save-failure-output", map[string]any{
+		"mode":     "live_api_dry_run",
+		"rtmp_url": "rtmps://youtube.example.com/live2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	dispatcher := &fakeServiceDispatcher{}
+	failingStore := &failingYouTubeRuntimeStreamStore{
+		MemoryStreamStore: streams,
+		err:               errors.New("write tcp: connection reset by peer"),
+	}
+	handler := NewServer(failingStore, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), `"detail_code":"database_connection_transient"`) {
+		t.Fatalf("runtime save failure response = %d %s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "connection reset by peer") {
+		t.Fatalf("raw database error leaked in response: %s", res.Body.String())
+	}
+	auditJSON := toJSONForTest(t, auth.AuditEvents())
+	if !strings.Contains(auditJSON, `"reason":"save_youtube_runtime_failed"`) || !strings.Contains(auditJSON, `"error_code":"database_connection_transient"`) || strings.Contains(auditJSON, "connection reset by peer") {
+		t.Fatalf("runtime save failure audit missing or leaked raw error: %s", auditJSON)
+	}
+	updated, err := failingStore.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "created" {
+		t.Fatalf("stream status changed after runtime save failure: %s", updated.Status)
 	}
 }
 
@@ -14445,6 +14498,15 @@ type fakeServiceDispatcher struct {
 	failWorkerEventSend      bool
 	failArchiveAction        bool
 	dispatchFailureError     string
+}
+
+type failingYouTubeRuntimeStreamStore struct {
+	*store.MemoryStreamStore
+	err error
+}
+
+func (s *failingYouTubeRuntimeStreamStore) SaveStreamYouTubeRuntime(context.Context, store.StreamYouTubeRuntime) error {
+	return s.err
 }
 
 type previewFakeDispatcher struct {

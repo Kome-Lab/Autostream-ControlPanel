@@ -3,6 +3,7 @@ package store
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOAuthAccountDisplayNameDoesNotExposeEmailAsPrimaryLabel(t *testing.T) {
@@ -21,6 +22,39 @@ func TestOAuthAccountDisplayNameDoesNotExposeEmailAsPrimaryLabel(t *testing.T) {
 	}
 	if account.DisplayName == "archive@example.com" || !strings.HasPrefix(account.DisplayName, "Googleアカウント (") {
 		t.Fatalf("display name should be a distinct provider fallback instead of email: %#v", account)
+	}
+	if account.RefreshTokenUpdatedAt == "" {
+		t.Fatal("refresh token update timestamp should be exposed for connected accounts")
+	}
+	if _, err := time.Parse(time.RFC3339, account.RefreshTokenUpdatedAt); err != nil {
+		t.Fatalf("refresh token update timestamp is not RFC3339: %q", account.RefreshTokenUpdatedAt)
+	}
+}
+
+func TestOAuthAccountMetadataUpdateKeepsRefreshTokenUpdatedAt(t *testing.T) {
+	integrations := NewMemoryIntegrationStore()
+	account, err := integrations.CreateOAuthAccount(t.Context(), OAuthAccount{
+		ProviderID:   "google-main",
+		ProviderType: "google",
+		AccountLabel: "Archive Account",
+		Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+		RefreshToken: "raw-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := integrations.UpdateOAuthAccount(t.Context(), OAuthAccount{
+		ID:           account.ID,
+		ProviderID:   account.ProviderID,
+		ProviderType: account.ProviderType,
+		AccountLabel: "Renamed Archive Account",
+		Scopes:       account.Scopes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RefreshTokenUpdatedAt != account.RefreshTokenUpdatedAt {
+		t.Fatalf("metadata update changed refresh token timestamp: before=%q after=%q", account.RefreshTokenUpdatedAt, updated.RefreshTokenUpdatedAt)
 	}
 }
 

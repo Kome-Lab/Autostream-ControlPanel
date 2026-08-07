@@ -44,6 +44,7 @@ type OAuthAccount struct {
 	RefreshToken           string   `json:"-"`
 	RefreshTokenConfigured bool     `json:"refresh_token_configured"`
 	TokenFingerprint       string   `json:"token_fingerprint,omitempty"`
+	RefreshTokenUpdatedAt  string   `json:"refresh_token_updated_at"`
 	CreatedAt              string   `json:"created_at"`
 	UpdatedAt              string   `json:"updated_at"`
 }
@@ -236,6 +237,7 @@ func (s *MemoryIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 	account.RefreshTokenConfigured = account.RefreshToken != ""
 	if account.RefreshToken != "" {
 		account.TokenFingerprint = security.SecretFingerprint(account.RefreshToken)
+		account.RefreshTokenUpdatedAt = now
 	}
 	s.mu.Lock()
 	s.accounts[account.ID] = account
@@ -289,9 +291,11 @@ func (s *MemoryIntegrationStore) UpdateOAuthAccount(ctx context.Context, account
 		account.RefreshToken = existing.RefreshToken
 		account.RefreshTokenConfigured = existing.RefreshTokenConfigured
 		account.TokenFingerprint = existing.TokenFingerprint
+		account.RefreshTokenUpdatedAt = existing.RefreshTokenUpdatedAt
 	} else {
 		account.RefreshTokenConfigured = true
 		account.TokenFingerprint = security.SecretFingerprint(account.RefreshToken)
+		account.RefreshTokenUpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	account.CreatedAt = existing.CreatedAt
 	account.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -574,7 +578,7 @@ func (s MariaDBIntegrationStore) DeleteOAuthProvider(ctx context.Context, id str
 }
 
 func (s MariaDBIntegrationStore) ListOAuthAccounts(ctx context.Context) ([]OAuthAccount, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.refresh_token_updated_at, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -613,13 +617,20 @@ func (s MariaDBIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 	if err != nil {
 		return OAuthAccount{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_accounts (id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, created_at, updated_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)`, account.ID, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, now, now)
+	var refreshTokenUpdatedAt any
+	if configured {
+		refreshTokenUpdatedAt = now
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_accounts (id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, refresh_token_updated_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?, ?)`, account.ID, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, refreshTokenUpdatedAt, now, now)
 	if err != nil {
 		return OAuthAccount{}, err
 	}
 	account.RefreshToken = ""
 	account.RefreshTokenConfigured = configured
 	account.TokenFingerprint = fingerprint
+	if configured {
+		account.RefreshTokenUpdatedAt = now.Format(time.RFC3339)
+	}
 	account.CreatedAt = now.Format(time.RFC3339)
 	account.UpdatedAt = now.Format(time.RFC3339)
 	if provider, providerErr := s.GetOAuthProvider(ctx, account.ProviderID); providerErr == nil {
@@ -629,7 +640,7 @@ func (s MariaDBIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 }
 
 func (s MariaDBIntegrationStore) GetOAuthAccount(ctx context.Context, id string) (OAuthAccount, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id WHERE a.id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.refresh_token_updated_at, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id WHERE a.id = ?`, id)
 	account, err := scanOAuthAccount(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OAuthAccount{}, ErrNotFound
@@ -641,12 +652,13 @@ func (s MariaDBIntegrationStore) GetOAuthAccount(ctx context.Context, id string)
 }
 
 func (s MariaDBIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context, id string) (OAuthAccount, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, created_at, updated_at FROM oauth_accounts WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, refresh_token_updated_at, created_at, updated_at FROM oauth_accounts WHERE id = ?`, id)
 	var account OAuthAccount
 	var scopes string
 	var subject, email, refreshCiphertext, refreshNonce, tokenFingerprint sql.NullString
+	var refreshTokenUpdatedAt sql.NullTime
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &refreshNonce, &tokenFingerprint, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &refreshNonce, &tokenFingerprint, &refreshTokenUpdatedAt, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return OAuthAccount{}, ErrNotFound
 	} else if err != nil {
 		return OAuthAccount{}, err
@@ -665,6 +677,9 @@ func (s MariaDBIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context,
 	account.Subject = subject.String
 	account.Email = email.String
 	account.TokenFingerprint = tokenFingerprint.String
+	if refreshTokenUpdatedAt.Valid {
+		account.RefreshTokenUpdatedAt = refreshTokenUpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
 	_ = json.Unmarshal([]byte(scopes), &account.Scopes)
 	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
 	account.CreatedAt = createdAt.UTC().Format(time.RFC3339)
@@ -688,7 +703,7 @@ func (s MariaDBIntegrationStore) UpdateOAuthAccount(ctx context.Context, account
 			return OAuthAccount{}, err
 		}
 		fingerprint := security.SecretFingerprint(account.RefreshToken)
-		result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET provider_id = ?, provider_type = ?, account_label = ?, subject = NULLIF(?, ''), email = NULLIF(?, ''), scopes = ?, refresh_token_ciphertext = ?, refresh_token_nonce = ?, token_fingerprint = ?, updated_at = ? WHERE id = ?`, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, now, account.ID)
+		result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET provider_id = ?, provider_type = ?, account_label = ?, subject = NULLIF(?, ''), email = NULLIF(?, ''), scopes = ?, refresh_token_ciphertext = ?, refresh_token_nonce = ?, token_fingerprint = ?, refresh_token_updated_at = ?, updated_at = ? WHERE id = ?`, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, now, now, account.ID)
 		if err != nil {
 			return OAuthAccount{}, err
 		}
@@ -852,14 +867,18 @@ func scanOAuthAccount(row scanner) (OAuthAccount, error) {
 	var account OAuthAccount
 	var scopes string
 	var subject, email, tokenFingerprint, refreshCiphertext, providerName sql.NullString
+	var refreshTokenUpdatedAt sql.NullTime
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &tokenFingerprint, &createdAt, &updatedAt, &providerName); err != nil {
+	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &tokenFingerprint, &refreshTokenUpdatedAt, &createdAt, &updatedAt, &providerName); err != nil {
 		return OAuthAccount{}, err
 	}
 	account.ProviderName = providerName.String
 	account.Subject = subject.String
 	account.Email = email.String
 	account.TokenFingerprint = tokenFingerprint.String
+	if refreshTokenUpdatedAt.Valid {
+		account.RefreshTokenUpdatedAt = refreshTokenUpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
 	account.RefreshTokenConfigured = refreshCiphertext.Valid && refreshCiphertext.String != ""
 	_ = json.Unmarshal([]byte(scopes), &account.Scopes)
 	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
