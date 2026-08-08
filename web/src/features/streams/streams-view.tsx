@@ -147,6 +147,18 @@ export function StreamsView() {
               </Button>
             </DangerConfirm>
           </RoleGuard> : null}
+          {streamStatusAllowsForceStop(row.original.status) ? <RoleGuard allowed={canStop}>
+            <DangerConfirm
+              title={`${row.original.name} を強制停止しますか`}
+              description="通常の停止処理が応答しない場合に、担当Nodeへ停止を要求して枠を失敗状態へ収束させます。録画やアーカイブが途中の場合は未完了として扱われます。"
+              onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/force-stop`, streamName: row.original.name, actionLabel: "強制停止" })}
+              actionLabel="強制停止"
+            >
+              <Button variant="destructive" size="icon-sm" aria-label="強制停止" {...guardedButtonProps(canStop)} disabled={!canStop || actionMutation.isPending}>
+                <AlertCircle />
+              </Button>
+            </DangerConfirm>
+          </RoleGuard> : null}
           <RoleGuard allowed={canUpdate}>
             <DangerConfirm title={`${row.original.name} の開始準備を再確認しますか`} description="担当Node、Discord、出力先、録画設定をもう一度確認します。現在の配信は停止しません。" onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start-readiness`, streamName: row.original.name, actionLabel: "開始準備の確認" })} actionLabel="準備を再確認">
               <Button variant="outline" size="icon-sm" aria-label="開始準備を再確認" {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
@@ -183,7 +195,7 @@ export function StreamsView() {
       header: "配信経路",
       cell: ({ row }) => (
         <div className="min-w-56 max-w-80 text-sm">
-          <div className="flex items-center gap-1.5"><RadioTower className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate" title={safeDisplayURL(row.original.encoder_input_url || row.original.input_source)}>{safeDisplayURL(row.original.encoder_input_url || row.original.input_source) || "入力未設定"}</span></div>
+          <div className="flex items-center gap-1.5"><RadioTower className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate" title={streamInputPresentation(row.original)}>{streamInputPresentation(row.original)}</span></div>
           <div className="mt-1 flex items-center gap-1.5 text-muted-foreground"><Video className="size-3.5 shrink-0" /><span className="truncate">{optionLabel(youtubeOutputLabels, row.original.youtube_output_id) || row.original.output_target || "出力未設定"}</span></div>
         </div>
       ),
@@ -336,7 +348,7 @@ function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutpu
         <DialogHeader><DialogTitle>{stream.name}</DialogTitle><DialogDescription>配信前の確認と、配信中・終了後の状況確認に使う情報です。</DialogDescription></DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
           <DetailGroup title="状態"><div className="flex flex-wrap items-center gap-2"><StatusBadge status={stream.status} /><span className={cn("inline-flex rounded-md border px-2 py-1 text-xs font-medium", recording.className)}>{recording.label}</span></div><p className="mt-2 text-xs text-muted-foreground">{recording.detail}</p></DetailGroup>
-          <DetailGroup title="配信経路"><DetailLine label="入力URL" value={safeDisplayURL(stream.encoder_input_url || stream.input_source) || "未設定"} mono /><DetailLine label="YouTube出力" value={optionLabel(youtubeOutputLabels, stream.youtube_output_id) || stream.output_target || "未設定"} /></DetailGroup>
+          <DetailGroup title="配信経路"><DetailLine label="入力URL" value={streamInputPresentation(stream)} mono /><DetailLine label="YouTube出力" value={optionLabel(youtubeOutputLabels, stream.youtube_output_id) || stream.output_target || "未設定"} /></DetailGroup>
           <DetailGroup title="録画保存"><DetailLine label="設定" value={optionLabel(archiveProfileLabels, stream.archive_profile_id) || "未設定"} /><DetailLine label="保存先" value={optionLabel(archiveDestinationLabels, stream.archive_drive_destination_id) || optionLabel(archiveAccountLabels, stream.archive_oauth_account_id) || "未設定"} /><DetailLine label="ファイル名" value={stream.archive_file_name || "自動命名"} /><DetailLine label="フォルダー" value={stream.archive_folder_id_configured ? stream.archive_masked_folder_id || "設定済み" : "未設定"} /></DetailGroup>
           <DetailGroup title="自動開始"><DetailLine label="方式" value={stream.auto_start_trigger === "discord_voice_join" ? "Discord VC参加で自動開始" : "手動開始"} /><DetailLine label="BOT" value={optionLabel(discordLabels, stream.discord_config_id) || "未設定"} /><DetailLine label="VC" value={stream.discord_voice_channel_id || "未設定"} /><DetailLine label="Chat" value={stream.discord_text_channel_id || "未設定"} /></DetailGroup>
           <DetailGroup title="担当Node・映像設定"><DetailLine label="Worker" value={stream.assigned_worker_id || "未割当"} /><DetailLine label="Encoder" value={stream.assigned_encoder_id || "未割当"} /><DetailLine label="Watermark" value={optionLabel(overlayProfileLabels, stream.overlay_profile_id) || "OFF"} /></DetailGroup>
@@ -660,6 +672,13 @@ function compactList(values: Array<string | undefined>) {
   return values.map((value) => value?.trim() || "").filter(Boolean);
 }
 
+function streamInputPresentation(stream: Stream) {
+  const configured = safeDisplayURL(stream.encoder_input_url || stream.input_source);
+  if (configured) return configured;
+  if (stream.assigned_encoder_id) return "Node側で開始時に自動生成";
+  return "入力未設定";
+}
+
 function normalizeRows(data: unknown): ResourceRow[] {
   if (!data) return [];
   if (Array.isArray(data)) return data.filter(isRecord);
@@ -736,6 +755,7 @@ function streamActionErrorMessage(error: unknown, actionLabel: string) {
       const conflictMessages: Record<string, string> = {
         stream_status_not_startable: `${actionLabel}できません。配信枠は現在「開始可能ではない状態」です。現在の状態を更新して確認してください。(code: stream_status_not_startable)`,
         stream_status_not_stoppable: `${actionLabel}できません。配信枠は現在「停止可能ではない状態」です。現在の状態を更新して確認してください。(code: stream_status_not_stoppable)`,
+        stream_status_not_force_stoppable: `${actionLabel}できません。配信枠は強制停止の対象外です。現在の状態を更新して確認してください。(code: stream_status_not_force_stoppable)`,
         service_update_in_progress: `${actionLabel}できません。担当Nodeの更新処理が完了するまで待ってください。(code: service_update_in_progress)`,
         missing_stream_assignments: `${actionLabel}できません。配信枠に必要なNode割り当てが不足しています。(code: missing_stream_assignments)`,
         stream_start_not_ready: `${actionLabel}できません。開始前チェックに失敗しています。(code: stream_start_not_ready)`,
@@ -753,6 +773,10 @@ function streamStatusAllowsStart(status: Stream["status"]) {
 
 function streamStatusAllowsStop(status: Stream["status"]) {
   return ["starting", "live", "failed"].includes(String(status).toLowerCase());
+}
+
+function streamStatusAllowsForceStop(status: Stream["status"]) {
+  return ["starting", "live", "stopping", "failed"].includes(String(status).toLowerCase());
 }
 
 function streamStatusAllowsDelete(status: Stream["status"]) {

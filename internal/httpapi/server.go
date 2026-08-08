@@ -503,6 +503,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /streams/{id}/start-readiness", s.requirePermission("streams.start", s.startReadiness))
 	s.mux.HandleFunc("POST /streams/{id}/start", s.requirePermission("streams.start", s.startStream))
 	s.mux.HandleFunc("POST /streams/{id}/stop", s.requirePermission("streams.stop", s.stopStream))
+	s.mux.HandleFunc("POST /streams/{id}/force-stop", s.requirePermission("streams.stop", s.forceStopStream))
 	s.mux.HandleFunc("POST /streams/{id}/youtube/complete", s.requirePermission("streams.stop", s.completeYouTubeStream))
 	s.mux.HandleFunc("POST /streams/{id}/mark-failed", s.requirePermission("streams.update", s.markStreamFailed))
 	s.mux.HandleFunc("POST /streams/{id}/retry-upload", s.requirePermission("streams.retry_upload", s.retryUpload))
@@ -9220,6 +9221,15 @@ func isManuallyStoppableStreamStatus(status string) bool {
 	}
 }
 
+func isForceStoppableStreamStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "starting", "live", "stopping", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	var body servicecall.StartRequest
 	if r.Body != nil {
@@ -10525,7 +10535,131 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 		current := currentFromContext(r.Context())
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
 	}
+	s.ensureAutoStartWaitingStream(r, stream, assignments)
 	s.transitionWithDispatch(w, r, stream.ID, "completed", "streams.stop", results)
+}
+
+// forceStopStream is the escape hatch for a stream whose normal stop
+// lifecycle is stuck. It deliberately converges the Panel state to failed
+// after a best-effort dispatch so operators can recover the next waiting VC
+// stream without leaving an eternal starting/live row.
+func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
+	streamID := strings.TrimSpace(r.PathValue("id"))
+	stream, err := s.streams.GetStream(r.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	if !isForceStoppableStreamStatus(stream.Status) {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_force_stoppable", "status": stream.Status})
+		return
+	}
+	assignments, err := s.streamAssignments(r.Context(), stream.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
+	results := sanitizeDispatchResults(s.dispatcher.Stop(r.Context(), stream, primaryStreamAssignments(assignments)))
+	if _, err := s.streams.UpdateStreamStatus(r.Context(), stream.ID, "failed"); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	metadata := map[string]any{"dispatch": results, "previous_status": stream.Status}
+	if hasDispatchFailure(results) {
+		metadata["dispatch_warning"] = "one or more services did not acknowledge force stop"
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.force_stop", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+	if _, err := s.completeYouTubeRuntime(r.Context(), stream.ID, true); err != nil {
+		metadata["youtube_complete_warning"] = "youtube runtime completion failed"
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "force_stop_completion_failed"}})
+	}
+	rearmed := s.ensureAutoStartWaitingStream(r, stream, assignments)
+	updated, _ := s.streams.GetStream(r.Context(), stream.ID)
+	response := map[string]any{"stream": updated, "dispatch": results, "forced": true}
+	if rearmed.ID != "" {
+		response["waiting_stream"] = rearmed
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) ensureAutoStartWaitingStream(r *http.Request, completed store.Stream, assignments []store.RegisteredService) store.Stream {
+	if !strings.EqualFold(strings.TrimSpace(completed.AutoStartTrigger), autoStartTriggerDiscordVoiceJoin) {
+		return store.Stream{}
+	}
+	streams, err := s.streams.ListStreams(r.Context())
+	if err != nil {
+		return store.Stream{}
+	}
+	for _, candidate := range streams {
+		if candidate.ID == completed.ID || !isAutoStartableStreamStatus(candidate.Status) {
+			continue
+		}
+		if candidate.AutoStartTrigger == completed.AutoStartTrigger &&
+			candidate.DiscordConfigID == completed.DiscordConfigID &&
+			candidate.DiscordGuildID == completed.DiscordGuildID &&
+			candidate.DiscordVoiceID == completed.DiscordVoiceID {
+			return candidate
+		}
+	}
+	name := strings.TrimSpace(completed.Name)
+	for strings.HasSuffix(name, "（待機）") {
+		name = strings.TrimSpace(strings.TrimSuffix(name, "（待機）"))
+	}
+	if name == "" {
+		name = "配信枠"
+	}
+	waiting, err := s.streams.CreateStream(r.Context(), name+"（待機）")
+	if err != nil {
+		return store.Stream{}
+	}
+	settings := store.StreamSettings{
+		DiscordConfigID:           completed.DiscordConfigID,
+		DiscordGuildID:            completed.DiscordGuildID,
+		DiscordVoiceID:            completed.DiscordVoiceID,
+		DiscordTextID:             completed.DiscordTextID,
+		AutoStartTrigger:          completed.AutoStartTrigger,
+		EncoderProfileID:          completed.EncoderProfileID,
+		CaptionProfileID:          completed.CaptionProfileID,
+		OverlayProfileID:          completed.OverlayProfileID,
+		ArchiveProfileID:          completed.ArchiveProfileID,
+		ArchiveDriveDestinationID: completed.ArchiveDriveDestinationID,
+		ArchiveOAuthAccountID:     completed.ArchiveOAuthAccountID,
+		ArchiveSharedDrive:        completed.ArchiveSharedDrive,
+		ArchiveSharedDriveID:      completed.ArchiveSharedDriveID,
+		ArchiveFileName:           completed.ArchiveFileName,
+		YouTubeOutputID:           completed.YouTubeOutputID,
+		EncoderInputURL:           completed.EncoderInputURL,
+	}
+	waiting, err = s.streams.UpdateStreamSettings(r.Context(), waiting.ID, settings)
+	if err != nil {
+		_ = s.streams.DeleteStream(r.Context(), waiting.ID)
+		return store.Stream{}
+	}
+	if s.services != nil {
+		actorID := currentFromContext(r.Context()).User.ID
+		assignedServiceIDs := make([]string, 0, len(assignments))
+		for _, assignment := range assignments {
+			if strings.TrimSpace(assignment.ServiceID) == "" {
+				continue
+			}
+			if _, err := s.services.AssignServiceToStreamWithRole(r.Context(), assignment.ServiceID, waiting.ID, actorID, normalizeAssignmentRole(assignment.AssignmentRole)); err != nil {
+				for _, assignedServiceID := range assignedServiceIDs {
+					_, _ = s.services.UnassignServiceFromStream(r.Context(), assignedServiceID, actorID)
+				}
+				_ = s.streams.DeleteStream(r.Context(), waiting.ID)
+				return store.Stream{}
+			}
+			assignedServiceIDs = append(assignedServiceIDs, assignment.ServiceID)
+		}
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.rearm", ResourceType: "stream", ResourceID: completed.ID, Result: "success", Metadata: map[string]any{"waiting_stream_id": waiting.ID, "trigger": completed.AutoStartTrigger}})
+	return waiting
 }
 
 func (s *Server) completeYouTubeStream(w http.ResponseWriter, r *http.Request) {
@@ -10854,6 +10988,14 @@ func (s *Server) writeStreamPreviewAsset(w http.ResponseWriter, r *http.Request,
 	if !validStreamPreviewAssetName(name) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stream_preview_asset"})
 		return
+	}
+	if public {
+		// Network preview links are bearer URLs intended for an external player.
+		// HLS.js fetches both the playlist and its relative segments from the
+		// browser, so the public capability endpoint must opt into cross-origin
+		// reads without relying on session credentials.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Type")
 	}
 	stream, assignments, ok := s.prepareActiveStreamPreview(w, r, streamID, public)
 	if !ok {
@@ -14313,10 +14455,12 @@ func (s *Server) notifyAdminAuditEvent(event store.AuditEvent) {
 		"severity":       adminAuditNotificationSeverity(redacted),
 		"status":         strings.TrimSpace(redacted.Result),
 		"action":         strings.TrimSpace(redacted.Action),
+		"service_id":     adminAuditNotificationServiceID(redacted),
 		"resource_type":  strings.TrimSpace(redacted.ResourceType),
 		"resource_id":    strings.TrimSpace(redacted.ResourceID),
 		"actor_username": strings.TrimSpace(redacted.ActorUsername),
 		"summary":        adminAuditNotificationSummary(redacted),
+		"details":        adminAuditNotificationDetails(redacted),
 		"timestamp":      redacted.Timestamp.UTC().Format(time.RFC3339),
 	}
 	go func() {
@@ -14379,6 +14523,133 @@ func adminAuditNotificationSummary(event store.AuditEvent) string {
 		result = "recorded"
 	}
 	return "管理イベント: " + action + " / " + result
+}
+
+func adminAuditNotificationServiceID(event store.AuditEvent) string {
+	for _, key := range []string{"service_id", "target_service_id", "agent_service_id"} {
+		if value := adminAuditMetadataString(event.Metadata, key); value != "" && value != "<redacted>" && !strings.EqualFold(value, "observability") {
+			return value
+		}
+	}
+	// target_id is only a service identifier for update/runtime operations. For
+	// stream, OAuth, and user operations it is commonly a resource or job ID;
+	// treating every target_id as a service produced misleading service labels.
+	if adminAuditMetadataIndicatesService(event.Metadata) {
+		if value := adminAuditMetadataString(event.Metadata, "target_id"); value != "" && value != "<redacted>" {
+			return value
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(event.ResourceType), "service") && strings.TrimSpace(event.ResourceID) != "" && strings.TrimSpace(event.ResourceID) != "<redacted>" {
+		return strings.TrimSpace(event.ResourceID)
+	}
+	return "control-panel"
+}
+
+func adminAuditMetadataIndicatesService(metadata map[string]any) bool {
+	if strings.TrimSpace(adminAuditMetadataString(metadata, "target_service_type")) != "" {
+		return true
+	}
+	serviceType := strings.ToLower(strings.TrimSpace(adminAuditMetadataString(metadata, "service_type")))
+	switch serviceType {
+	case "control_panel", "worker", "encoder_recorder", "discord_bot", "observability", "updater", "host_agent":
+		return true
+	}
+	return false
+}
+
+func adminAuditNotificationDetails(event store.AuditEvent) string {
+	labels := map[string]string{
+		"reason":                "理由",
+		"code":                  "コード",
+		"target_id":             "対象ID",
+		"stream_id":             "配信枠ID",
+		"service_id":            "サービスID",
+		"target_service_type":   "対象種別",
+		"service_type":          "サービス種別",
+		"assignment_role":       "割当ロール",
+		"source":                "発生元",
+		"provider_type":         "プロバイダ種別",
+		"event_type":            "イベント種別",
+		"operation":             "操作",
+		"deployment_mode":       "配置方式",
+		"transport_mode":        "転送方式",
+		"current_version":       "現行バージョン",
+		"target_version":        "更新先バージョン",
+		"progress":              "進捗",
+		"status":                "状態",
+		"update_status":         "更新状態",
+		"trigger":               "トリガー",
+		"strategy":              "方式",
+		"job_id":                "ジョブID",
+		"update_job_id":         "更新ジョブID",
+		"port_result":           "ポート結果",
+		"old_port":              "旧ポート",
+		"new_port":              "新ポート",
+		"status_code":           "HTTPステータス",
+		"missing_service_types": "不足サービス種別",
+		"readiness_issues":      "開始前チェック",
+		"youtube_output_id":     "YouTube出力ID",
+		"archive_profile_id":    "アーカイブプロファイルID",
+		"discord_config_id":     "Discord設定ID",
+		"artifact_id":           "録画ファイルID",
+		"artifact_name":         "録画ファイル名",
+		"share_id":              "共有リンクID",
+		"previous_status":       "直前の状態",
+		"current_status":        "現在の状態",
+		"waiting_stream_id":     "待機枠ID",
+		"completed":             "完了処理",
+		"skipped":               "スキップ",
+		"dispatch":              "配信結果",
+	}
+	keys := []string{
+		"reason", "code", "target_id", "stream_id", "service_id", "target_service_type", "service_type", "assignment_role", "source", "provider_type", "event_type", "operation", "deployment_mode", "transport_mode",
+		"current_version", "target_version", "progress", "status", "update_status", "trigger", "strategy", "job_id", "update_job_id",
+		"port_result", "old_port", "new_port", "status_code", "missing_service_types", "readiness_issues", "youtube_output_id", "archive_profile_id", "discord_config_id",
+		"artifact_id", "artifact_name", "share_id", "previous_status", "current_status", "waiting_stream_id", "completed", "skipped", "dispatch",
+	}
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := adminAuditMetadataString(event.Metadata, key)
+		if value == "" || value == "<redacted>" {
+			continue
+		}
+		label := labels[key]
+		if label == "" {
+			label = key
+		}
+		parts = append(parts, label+": "+value)
+	}
+	return truncateAdminAuditNotificationText(strings.Join(parts, " / "), 2400)
+}
+
+func adminAuditMetadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func truncateAdminAuditNotificationText(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes-1]) + "…"
 }
 
 func (s *Server) writeServiceAudit(r *http.Request, token store.ServiceToken, action, resourceType, resourceID, result string, metadata map[string]any) {

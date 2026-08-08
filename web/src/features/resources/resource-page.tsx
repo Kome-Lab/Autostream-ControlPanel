@@ -86,7 +86,7 @@ export function ResourcePanel({ resource, currentUser }: { resource: ResourceDef
     return <ServiceHealthResourcePanel resource={resource} access={access} />;
   }
 
-  return <GenericResourcePanel resource={resource} access={access} />;
+  return <GenericResourcePanel resource={resource} access={access} currentUser={currentUser} />;
 }
 
 type ResourceAccess = {
@@ -143,7 +143,7 @@ function QueryErrorNotice({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function GenericResourcePanel({ resource, access }: { resource: ResourceDefinition; access: ResourceAccess }) {
+function GenericResourcePanel({ resource, access, currentUser }: { resource: ResourceDefinition; access: ResourceAccess; currentUser: Parameters<typeof hasPermission>[0] }) {
   const queryClient = useQueryClient();
   const query = useResourceData<unknown>(resource.path, access.read);
   const appSettings = useAppSettings();
@@ -152,6 +152,15 @@ function GenericResourcePanel({ resource, access }: { resource: ResourceDefiniti
   const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
   const showTable = resource.form !== "security-settings";
   const [deleteMessage, setDeleteMessage] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
+  const actionMutation = useMutation<unknown, Error, { path: string; label: string }>({
+    mutationFn: async ({ path }) => apiPost(path),
+    onSuccess: async (_, action) => {
+      setActionMessage(`${action.label}を実行しました。`);
+      await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+    },
+    onError: (error) => setActionMessage(resourceWriteErrorMessage(resource, error, "更新")),
+  });
   const deleteMutation = useMutation<unknown, Error, ResourceRow>({
     mutationFn: async (row) => apiDelete(deletePathForResource(resource, row)),
     onSuccess: async () => {
@@ -182,6 +191,7 @@ function GenericResourcePanel({ resource, access }: { resource: ResourceDefiniti
         {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} disabled={!access.update} /> : null}
         {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} allowed={access.create} permission={resource.permissions?.create} /> : null}
         {deleteMessage ? <p className="text-sm text-muted-foreground">{deleteMessage}</p> : null}
+        {actionMessage ? <p className="text-sm text-muted-foreground">{actionMessage}</p> : null}
         {showTable ? (
           query.isLoading ? (
             <Skeleton className="h-48 w-full" />
@@ -195,6 +205,12 @@ function GenericResourcePanel({ resource, access }: { resource: ResourceDefiniti
               canEdit={access.update}
               canDelete={access.delete}
               canTest={access.test}
+              currentUser={currentUser}
+              actionPending={actionMutation.isPending}
+              onAction={(path, label) => {
+                setActionMessage("");
+                actionMutation.mutate({ path, label });
+              }}
               onDelete={(row) => {
                 setDeleteMessage("");
                 deleteMutation.mutate(row);
@@ -331,7 +347,7 @@ function ServiceHealthResourcePanel({ resource, access }: { resource: ResourceDe
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} onDelete={() => undefined} />}
+        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} actionPending={false} onAction={() => undefined} onDelete={() => undefined} />}
       </CardContent>
     </Card>
   );
@@ -1826,6 +1842,9 @@ function ResourceTable({
   canEdit,
   canDelete,
   canTest,
+  currentUser,
+  actionPending,
+  onAction,
   onDelete,
 }: {
   rows: ResourceRow[];
@@ -1836,6 +1855,9 @@ function ResourceTable({
   canEdit: boolean;
   canDelete: boolean;
   canTest: boolean;
+  currentUser: Parameters<typeof hasPermission>[0];
+  actionPending: boolean;
+  onAction: (path: string, label: string) => void;
   onDelete: (row: ResourceRow) => void;
 }) {
   const [copiedID, setCopiedID] = useState("");
@@ -1863,8 +1885,9 @@ function ResourceTable({
   const showDelete = Boolean(resource.deletable);
   const showEdit = resourceCanEdit(resource);
   const showTest = Boolean(resource.permissions?.test);
+  const observabilityResource = resource.path === "/observability/incidents" || resource.path === "/observability/diagnostics" || resource.path === "/observability/remediation-actions";
   const showIDCopy = rows.some((row) => resourceRowID(row));
-  const showActions = showDelete || showEdit || showTest || showIDCopy;
+  const showActions = showDelete || showEdit || showTest || showIDCopy || observabilityResource;
   const copyRowID = async (id: string) => {
     if (!id || typeof navigator === "undefined" || !navigator.clipboard) return;
     try {
@@ -1913,6 +1936,19 @@ function ResourceTable({
                         {testMutation.isPending && testNotice?.id === resourceRowID(row) ? "送信中" : "テスト送信"}
                       </Button>
                     ) : null}
+                    {observabilityActionButtons(resource, row, currentUser).map((action) => (
+                      <Button
+                        key={action.key}
+                        variant={action.emphasis ? "default" : "outline"}
+                        size="sm"
+                        disabled={action.disabled || actionPending}
+                        title={action.disabled ? action.permissionText : undefined}
+                        onClick={() => onAction(action.path, action.label)}
+                      >
+                        {actionPending ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                        {action.label}
+                      </Button>
+                    ))}
                     {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onDelete={onDelete} /> : null}
                   </div>
                   {testNotice?.id === resourceRowID(row) ? (
@@ -1936,6 +1972,83 @@ function CopyResourceIDButton({ id, copied, onCopy }: { id: string; copied: bool
       {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
     </Button>
   );
+}
+
+type ObservabilityAction = {
+  key: string;
+  label: string;
+  path: string;
+  disabled: boolean;
+  permissionText?: string;
+  emphasis?: boolean;
+};
+
+function observabilityActionButtons(resource: ResourceDefinition, row: ResourceRow, currentUser: Parameters<typeof hasPermission>[0]): ObservabilityAction[] {
+  const isSuperAdmin = currentUser?.user.roles?.includes("super_admin") === true;
+  const allowed = (permission: string) => isSuperAdmin || hasPermission(currentUser, permission);
+  const status = rowString(row, ["status"]).trim().toLowerCase();
+  if (resource.path === "/observability/incidents") {
+    const id = rowString(row, ["id"]);
+    if (!id || ["resolved", "closed", "ignored"].includes(status)) return [];
+    const actions: ObservabilityAction[] = [];
+    if (status !== "acknowledged") {
+      actions.push({
+        key: "acknowledge",
+        label: "確認済みにする",
+        path: `/observability/incidents/${encodeURIComponent(id)}/acknowledge`,
+        disabled: !allowed("incidents.acknowledge"),
+        permissionText: requiredPermissionText("incidents.acknowledge"),
+      });
+    }
+    actions.push({
+      key: "resolve",
+      label: "解決済みにする",
+      path: `/observability/incidents/${encodeURIComponent(id)}/resolve`,
+      disabled: !allowed("incidents.resolve"),
+      permissionText: requiredPermissionText("incidents.resolve"),
+      emphasis: true,
+    });
+    return actions;
+  }
+  if (resource.path === "/observability/diagnostics") {
+    const incidentID = rowString(row, ["incident_id"]);
+    if (!incidentID || ["resolved", "closed", "ignored", "pass", "ok", "success"].includes(status)) return [];
+    return [{
+      key: "diagnostic-resolve",
+      label: "対応済みにする",
+      path: `/observability/incidents/${encodeURIComponent(incidentID)}/resolve`,
+      disabled: !allowed("incidents.resolve"),
+      permissionText: requiredPermissionText("incidents.resolve"),
+      emphasis: true,
+    }];
+  }
+  if (resource.path === "/observability/remediation-actions") {
+    const id = rowString(row, ["id"]);
+    if (!id || ["executed", "skipped", "blocked", "failed", "cancelled"].includes(status)) return [];
+    const requiresApproval = rowBoolean(row, ["requires_approval"], false);
+    const safeAuto = rowBoolean(row, ["safe_auto"], false);
+    if (status === "pending_approval" || (status === "suggested" && requiresApproval)) {
+      return [{
+        key: "approve",
+        label: "承認",
+        path: `/observability/remediation-actions/${encodeURIComponent(id)}/approve`,
+        disabled: !allowed("remediation.approve"),
+        permissionText: requiredPermissionText("remediation.approve"),
+        emphasis: true,
+      }];
+    }
+    if (status === "approved" || (status === "suggested" && safeAuto)) {
+      return [{
+        key: "execute",
+        label: "実行",
+        path: `/observability/remediation-actions/${encodeURIComponent(id)}/execute`,
+        disabled: !allowed("remediation.execute"),
+        permissionText: requiredPermissionText("remediation.execute"),
+        emphasis: true,
+      }];
+    }
+  }
+  return [];
 }
 
 function EditResourceButton({ resource, row, disabled }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean }) {
@@ -2250,6 +2363,12 @@ function isInternalReferenceColumn(key: string) {
 }
 
 function formatResourceCell(resource: ResourceDefinition, value: unknown, key = "", timezone?: string): ReactNode {
+  if (key === "status" && (resource.path === "/observability/incidents" || resource.path === "/observability/diagnostics" || resource.path === "/observability/remediation-actions") && typeof value === "string") {
+    return observabilityStatusLabel(value);
+  }
+  if (key === "action" && resource.path === "/observability/remediation-actions" && typeof value === "string") {
+    return observabilityActionLabel(value);
+  }
   if (resource.path === "/integrations/oauth-accounts" && key === "refresh_token_updated_at" && (value === undefined || value === null || value === "")) {
     return <span className="text-muted-foreground">未記録</span>;
   }
@@ -2260,6 +2379,40 @@ function formatResourceCell(resource: ResourceDefinition, value: unknown, key = 
     return <span className="whitespace-pre-line text-sm leading-relaxed">{value}</span>;
   }
   return formatCell(value, key, timezone);
+}
+
+function observabilityStatusLabel(value: string) {
+  const labels: Record<string, string> = {
+    open: "未対応",
+    acknowledged: "確認済み",
+    resolved: "解決済み",
+    closed: "終了",
+    ignored: "対象外",
+    suggested: "提案",
+    pending_approval: "承認待ち",
+    approved: "承認済み",
+    executed: "実行済み",
+    blocked: "保留",
+    failed: "失敗",
+    skipped: "スキップ",
+  };
+  return labels[value.trim().toLowerCase()] || value;
+}
+
+function observabilityActionLabel(value: string) {
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const labels: Record<string, string> = {
+    restart_encoder: "Encoder / Recorderを再起動",
+    restart_encoder_recorder: "Encoder / Recorderを再起動",
+    restart_worker: "Workerを再起動",
+    rerun_diagnostics: "診断を再実行",
+    refresh_service_status: "サービス状態を更新",
+    retry_package_remux: "アーカイブ変換を再試行",
+    retry_gdrive_upload: "Driveアップロードを再試行",
+    switch_worker: "Workerを切り替え",
+    clear_stale_warning: "古い警告を解除",
+  };
+  return labels[normalized] || value;
 }
 
 function formatCell(value: unknown, key = "", timezone?: string): ReactNode {

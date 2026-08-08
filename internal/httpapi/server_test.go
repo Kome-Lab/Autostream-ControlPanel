@@ -323,6 +323,21 @@ func TestAdminAuditNotificationSummaryUsesRedactedEvent(t *testing.T) {
 	}
 }
 
+func TestAdminAuditNotificationServiceIDDoesNotTreatEveryTargetAsService(t *testing.T) {
+	if got := adminAuditNotificationServiceID(store.AuditEvent{Action: "streams.start", Metadata: map[string]any{"service_id": "observability"}}); got != "control-panel" {
+		t.Fatalf("receiver service was mislabeled as the source: %q", got)
+	}
+	if got := adminAuditNotificationServiceID(store.AuditEvent{Action: "streams.start", Metadata: map[string]any{"target_id": "stream-01"}}); got != "control-panel" {
+		t.Fatalf("stream target was mislabeled as a service: %q", got)
+	}
+	if got := adminAuditNotificationServiceID(store.AuditEvent{Action: "system_updates.failed", Metadata: map[string]any{"target_id": "worker-01", "target_service_type": "worker"}}); got != "worker-01" {
+		t.Fatalf("system update target service was lost: %q", got)
+	}
+	if got := adminAuditNotificationServiceID(store.AuditEvent{Action: "services.runtime_config.read", ResourceType: "service", ResourceID: "encoder-01"}); got != "encoder-01" {
+		t.Fatalf("service resource was not used as notification source: %q", got)
+	}
+}
+
 func TestAdminAuditNotificationUsesStrictRedactedPayload(t *testing.T) {
 	type receivedRequest struct {
 		body          []byte
@@ -333,10 +348,12 @@ func TestAdminAuditNotificationUsesStrictRedactedPayload(t *testing.T) {
 			Severity      string `json:"severity"`
 			Status        string `json:"status"`
 			Action        string `json:"action"`
+			ServiceID     string `json:"service_id"`
 			ResourceType  string `json:"resource_type"`
 			ResourceID    string `json:"resource_id"`
 			ActorUsername string `json:"actor_username"`
 			Summary       string `json:"summary"`
+			Details       string `json:"details"`
 			Timestamp     string `json:"timestamp"`
 		}
 	}
@@ -390,7 +407,7 @@ func TestAdminAuditNotificationUsesStrictRedactedPayload(t *testing.T) {
 	if got.authorization != "Bearer "+token.RawToken {
 		t.Fatalf("notification authorization = %q", got.authorization)
 	}
-	if got.payload.EventType != "admin.audit" || got.payload.Action != "secrets.update" || got.payload.Status != "success" || got.payload.ActorUsername != "ops" {
+	if got.payload.EventType != "admin.audit" || got.payload.Action != "secrets.update" || got.payload.Status != "success" || got.payload.ActorUsername != "ops" || got.payload.ServiceID != "control-panel" {
 		t.Fatalf("unexpected admin audit notification: %#v", got.payload)
 	}
 	if got.payload.ResourceID != "<redacted>" {
@@ -403,7 +420,7 @@ func TestAdminAuditNotificationUsesStrictRedactedPayload(t *testing.T) {
 	if err := json.Unmarshal(got.body, &fields); err != nil {
 		t.Fatal(err)
 	}
-	wantFields := []string{"event_type", "severity", "status", "action", "resource_type", "resource_id", "actor_username", "summary", "timestamp"}
+	wantFields := []string{"event_type", "severity", "status", "action", "service_id", "resource_type", "resource_id", "actor_username", "summary", "details", "timestamp"}
 	if len(fields) != len(wantFields) {
 		t.Fatalf("notification payload fields = %#v, want exactly %#v", fields, wantFields)
 	}
@@ -5312,6 +5329,9 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 	handler.ServeHTTP(publicRes, publicReq)
 	if publicRes.Code != http.StatusOK || dispatcher.calls != 1 {
 		t.Fatalf("public preview status=%d body=%s calls=%d", publicRes.Code, publicRes.Body.String(), dispatcher.calls)
+	}
+	if got := publicRes.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("public preview CORS header = %q", got)
 	}
 
 	tamperedPath := strings.Replace(parsed.Path, "ast_ingest_v1.", "ast_ingest_v1.X", 1)

@@ -22,30 +22,98 @@ export function StreamPreview({ stream }: { stream: Stream }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("connecting");
   const [previewLink, setPreviewLink] = useState<PreviewLink | null>(null);
+  const [previewLinkError, setPreviewLinkError] = useState<unknown>(null);
+  const [playbackFallback, setPlaybackFallback] = useState(false);
+  const [playbackError, setPlaybackError] = useState("");
+  const [retryNonce, setRetryNonce] = useState(0);
   const [copied, setCopied] = useState(false);
   const playlistURL = `/streams/${encodeURIComponent(stream.id)}/preview/index.m3u8`;
+  const playbackURL = !playbackFallback && previewLink?.url ? previewLink.url : playlistURL;
   const issueLink = useMutation({
     mutationFn: () => apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`),
     onSuccess: (value) => {
       const resolvedURL = resolveStreamPreviewURL(value.url, window.location.origin);
       setPreviewLink(resolvedURL ? { ...value, url: resolvedURL } : null);
+      setPreviewLinkError(null);
+      setPlaybackFallback(false);
+      setPlaybackError("");
       setCopied(false);
     },
+    onError: (error) => setPreviewLinkError(error),
   });
+
+  // Browser playback must use the same signed route as the external preview
+  // link. The authenticated relative route is useful as a fallback, but it
+  // is not reliable for HLS segment requests in every browser/proxy setup.
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let attempts = 0;
+    const requestLink = () => {
+      void apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`)
+        .then((value) => {
+          if (cancelled) return;
+          const resolvedURL = resolveStreamPreviewURL(value.url, window.location.origin);
+          if (!resolvedURL) {
+            setPreviewLinkError(new Error("preview link URL is invalid"));
+            return;
+          }
+          setPreviewLink({ ...value, url: resolvedURL });
+          setPreviewLinkError(null);
+          setPlaybackError("");
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          if (attempts < 4 && isTransientPreviewLinkError(error)) {
+            attempts += 1;
+            retryTimer = window.setTimeout(requestLink, attempts * 1_500);
+            return;
+          }
+          setPreviewLinkError(error);
+        });
+    };
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      setPreviewLink(null);
+      setPreviewLinkError(null);
+      setPlaybackFallback(false);
+      setPlaybackError("");
+      setCopied(false);
+      setPlaybackState("connecting");
+      requestLink();
+    });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+    };
+  }, [stream.id, retryNonce]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     setPlaybackState("connecting");
-    setPreviewLink(null);
     let retryTimer: number | undefined;
+    let networkRetries = 0;
+    let mediaRetries = 0;
 
     const markReady = () => setPlaybackState("ready");
-    const markNativeError = () => setPlaybackState("retrying");
+    const markNativeError = () => {
+      setPlaybackError("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
+      setPlaybackState("error");
+    };
+    const fallBackOrFail = () => {
+      if (previewLink?.url && !playbackFallback) {
+        setPlaybackFallback(true);
+        setPlaybackState("connecting");
+        return;
+      }
+      setPlaybackError("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
+      setPlaybackState("error");
+    };
     video.addEventListener("playing", markReady);
 
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = playlistURL;
+      video.src = playbackURL;
       video.addEventListener("loadedmetadata", markReady);
       video.addEventListener("error", markNativeError);
       void video.play().catch(() => undefined);
@@ -74,7 +142,7 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       fragLoadingRetryDelay: 1_000,
     });
     hls.attachMedia(video);
-    hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(playlistURL));
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(playbackURL));
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       setPlaybackState("ready");
       void video.play().catch(() => undefined);
@@ -82,17 +150,27 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (!data.fatal) return;
       if (data.type === ErrorTypes.NETWORK_ERROR) {
+        if (networkRetries >= 4) {
+          fallBackOrFail();
+          return;
+        }
+        networkRetries += 1;
         setPlaybackState("retrying");
         window.clearTimeout(retryTimer);
-        retryTimer = window.setTimeout(() => hls.loadSource(playlistURL), 2_000);
+        retryTimer = window.setTimeout(() => hls.loadSource(playbackURL), 2_000);
         return;
       }
       if (data.type === ErrorTypes.MEDIA_ERROR) {
+        if (mediaRetries >= 2) {
+          fallBackOrFail();
+          return;
+        }
+        mediaRetries += 1;
         setPlaybackState("retrying");
         hls.recoverMediaError();
         return;
       }
-      setPlaybackState("error");
+      fallBackOrFail();
     });
 
     return () => {
@@ -102,7 +180,7 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       video.removeAttribute("src");
       video.load();
     };
-  }, [playlistURL]);
+  }, [playbackURL, playbackFallback, previewLink, retryNonce]);
 
   const copyPreviewLink = async () => {
     if (!previewLink?.url || !navigator.clipboard) return;
@@ -136,22 +214,32 @@ export function StreamPreview({ stream }: { stream: Stream }) {
             </Button>
           </div>
         ) : null}
+        <Button type="button" variant="ghost" size="sm" onClick={() => setRetryNonce((value) => value + 1)} disabled={issueLink.isPending}>
+          再試行
+        </Button>
       </div>
       {previewLink ? <p className="text-xs text-muted-foreground">有効期限: {new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}
-      {issueLink.isError ? <p className="text-sm text-destructive">{previewLinkErrorMessage(issueLink.error)}</p> : null}
+      {previewLinkError && !previewLink ? <p className="text-sm text-destructive">{previewLinkErrorMessage(previewLinkError)}</p> : null}
+      {playbackError ? <p className="text-sm text-destructive">{playbackError}</p> : null}
     </section>
   );
 }
 
 function PreviewStatus({ state }: { state: PlaybackState }) {
   if (state === "ready") return <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">再生中</span>;
-  if (state === "error") return <span className="text-xs font-medium text-destructive">再生非対応</span>;
+  if (state === "error") return <span className="text-xs font-medium text-destructive">再生失敗</span>;
   return (
     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
       <LoaderCircle className="size-3 animate-spin" />
       {state === "retrying" ? "再接続中" : "準備中"}
     </span>
   );
+}
+
+function isTransientPreviewLinkError(error: unknown) {
+  if (!(error instanceof APIError)) return true;
+  if (error.status === 401 || error.status === 403 || error.status === 404) return false;
+  return error.status === 409 || error.status === 425 || error.status === 429 || error.status >= 500;
 }
 
 function previewLinkErrorMessage(error: unknown) {

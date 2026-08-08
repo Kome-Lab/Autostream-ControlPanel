@@ -124,3 +124,61 @@ func TestDeleteStreamReleasesAssignmentsAndRejectsActiveStream(t *testing.T) {
 		t.Fatalf("active stream lookup error = %v", err)
 	}
 }
+
+func TestForceStopRearmsDiscordVoiceStream(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "Dev_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		DiscordConfigID: "discord-config-01", DiscordGuildID: "guild-01", DiscordVoiceID: "voice-01", AutoStartTrigger: "discord_voice_join", YouTubeOutputID: "youtube-output-01",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(&fakeServiceDispatcher{}))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/force-stop", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("force stop status = %d body = %s", res.Code, res.Body.String())
+	}
+	updated, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "failed" {
+		t.Fatalf("force stop status = %q", updated.Status)
+	}
+	items, err := streams.ListStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waiting store.Stream
+	for _, item := range items {
+		if item.ID != stream.ID && item.Status == "created" && item.AutoStartTrigger == "discord_voice_join" {
+			waiting = item
+		}
+	}
+	if waiting.ID == "" || waiting.Name != "Dev_1（待機）" {
+		t.Fatalf("waiting stream was not created: %#v", items)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), waiting.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 3 {
+		t.Fatalf("waiting stream assignments = %d, want 3", len(assignments))
+	}
+}

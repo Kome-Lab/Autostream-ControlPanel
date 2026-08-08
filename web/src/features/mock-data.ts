@@ -708,12 +708,12 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "inc-2", severity: "info", status: "resolved", title: "YouTube API dry-run retry", service_id: "worker-main", updated_at: "2026-07-02T07:50:00+09:00" },
   ],
   "/observability/diagnostics": [
-    { id: "diag-1", check: "audio_status", status: "pass", target: "stream-cable-morning", updated_at: baseTime },
-    { id: "diag-2", check: "encoder_preflight", status: "warning", target: "encoder-field", updated_at: "2026-07-02T08:58:00+09:00" },
+    { id: "diag-1", incident_id: "inc-1", check: "audio_status", status: "open", target: "stream-cable-morning", updated_at: baseTime },
+    { id: "diag-2", incident_id: "inc-2", check: "encoder_preflight", status: "acknowledged", target: "encoder-field", updated_at: "2026-07-02T08:58:00+09:00" },
   ],
   "/observability/remediation-actions": [
-    { id: "rem-1", status: "pending_approval", action: "restart_encoder", target: "encoder-field", created_at: baseTime },
-    { id: "rem-2", status: "executed", action: "switch_worker", target: "worker-standby", created_at: "2026-07-02T08:30:00+09:00" },
+    { id: "rem-1", incident_id: "inc-1", status: "pending_approval", action: "restart_encoder", target: "encoder-field", safe_auto: false, requires_approval: true, created_at: baseTime },
+    { id: "rem-2", incident_id: "inc-2", status: "executed", action: "switch_worker", target: "worker-standby", safe_auto: true, requires_approval: false, created_at: "2026-07-02T08:30:00+09:00" },
   ],
   "/observability/notification-deliveries": [
     { id: "ntf-1", event_type: "incident.opened", status: "success", channel: "discord", incident_id: "inc-1", created_at: baseTime },
@@ -843,6 +843,35 @@ export function mockGet(path: string): unknown {
 
 export function mockPost(path: string, body?: unknown): unknown {
   const normalizedPath = stripQuery(path);
+  const incidentAction = normalizedPath.match(/^\/observability\/incidents\/([^/]+)\/(acknowledge|resolve)$/);
+  if (incidentAction) {
+    const incidentID = decodeURIComponent(incidentAction[1]);
+    const status = incidentAction[2] === "acknowledge" ? "acknowledged" : "resolved";
+    const incidents = mockResourceData["/observability/incidents"] as Array<Record<string, unknown>>;
+    const incident = incidents.find((row) => row.id === incidentID);
+    if (!incident) throw new Error("not_found");
+    incident.status = status;
+    incident.updated_at = new Date().toISOString();
+    const diagnostics = mockResourceData["/observability/diagnostics"] as Array<Record<string, unknown>>;
+    for (const diagnostic of diagnostics) {
+      if (diagnostic.incident_id === incidentID) {
+        diagnostic.status = status;
+        diagnostic.updated_at = incident.updated_at;
+      }
+    }
+    return structuredClone(incident);
+  }
+  const remediationAction = normalizedPath.match(/^\/observability\/remediation-actions\/([^/]+)\/(approve|execute)$/);
+  if (remediationAction) {
+    const actionID = decodeURIComponent(remediationAction[1]);
+    const status = remediationAction[2] === "approve" ? "approved" : "executed";
+    const actions = mockResourceData["/observability/remediation-actions"] as Array<Record<string, unknown>>;
+    const action = actions.find((row) => row.id === actionID);
+    if (!action) throw new Error("not_found");
+    action.status = status;
+    action.updated_at = new Date().toISOString();
+    return structuredClone(action);
+  }
   const updaterBootstrapJobs = normalizedPath.match(/^\/system-updates\/updaters\/([^/]+)\/bootstrap-jobs$/);
   if (updaterBootstrapJobs) {
     const updaterID = decodeURIComponent(updaterBootstrapJobs[1]);
