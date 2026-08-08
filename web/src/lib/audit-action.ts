@@ -44,6 +44,7 @@ const auditActionLabels: Record<string, string> = {
   "integrations.drive_destination.delete": "Drive保存先を削除",
   "integrations.drive_destination.update": "Drive保存先を更新",
   "integrations.oauth_account.connect": "OAuth接続アカウントを接続",
+  "integrations.oauth_account.relink": "OAuth接続アカウントを再連携",
   "integrations.oauth_account.create": "OAuth接続アカウントを作成",
   "integrations.oauth_account.delete": "OAuth接続アカウントを削除",
   "integrations.oauth_account.update": "OAuth接続アカウントを更新",

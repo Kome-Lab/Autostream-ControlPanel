@@ -121,6 +121,19 @@ func TestOAuthLoginStatePurposeMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestOAuthLoginStateTargetAccountMigrationIsIdempotent(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/062_oauth_login_state_target_account.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range splitSQLStatements(string(body)) {
+		normalized := strings.ToUpper(stmt)
+		if strings.Contains(normalized, "ADD COLUMN TARGET_ACCOUNT_ID") && !strings.Contains(normalized, "ADD COLUMN IF NOT EXISTS TARGET_ACCOUNT_ID") {
+			t.Fatalf("oauth login state target account migration must tolerate partially upgraded oauth_login_states tables:\n%s", stmt)
+		}
+	}
+}
+
 func TestUserAvatarMigrationUsesBoundedBinaryStorageAndUserCascade(t *testing.T) {
 	body, err := embeddedMigrations.ReadFile("migrations/037_user_avatars.sql")
 	if err != nil {

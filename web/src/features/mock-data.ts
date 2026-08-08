@@ -1223,7 +1223,7 @@ export function mockPost(path: string, body?: unknown): unknown {
     return { status: "sent", target: maskMockEmail(to) };
   }
   if (stripQuery(path) === "/integrations/oauth-accounts/start") {
-    const request = body as Partial<{ provider_id: string; account_label: string; account_purpose: string; redirect_after: string }>;
+    const request = body as Partial<{ provider_id: string; oauth_account_id: string; account_label: string; account_purpose: string; redirect_after: string }>;
     const providers = mockResourceData["/integrations/oauth-providers"] as Array<{ id: string; provider_type: string; name: string; enabled: boolean; redirect_uri: string }>;
     return {
       provider: providers.find((provider) => provider.id === request.provider_id) || providers[0],
@@ -1233,6 +1233,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       expires_at: baseTime,
       account_label: request.account_label || "Googleアカウント",
       account_purpose: request.account_purpose || "drive_youtube",
+      relink: Boolean(request.oauth_account_id),
     };
   }
   if (stripQuery(path) === "/nodes/registration-tokens") {

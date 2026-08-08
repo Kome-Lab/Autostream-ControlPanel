@@ -1362,6 +1362,98 @@ func TestOAuthAccountConnectionCallbackStoresRefreshTokenWithoutLeak(t *testing.
 	}
 }
 
+func TestOAuthAccountRelinkPreservesAccountIDAndReferences(t *testing.T) {
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"integrations.create", "integrations.read", "integrations.update"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google YouTube",
+		Enabled:      true,
+		ClientID:     "google-client-id",
+		ClientSecret: "raw-google-client-secret",
+		RedirectURI:  "https://control.example.com/integrations/oauth-accounts/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: provider.ProviderType,
+		AccountLabel: "配信用YouTube",
+		Subject:      "google-subject-01",
+		Email:        "old@example.com",
+		Scopes:       []string{"openid", "email", "profile", "https://www.googleapis.com/auth/youtube.force-ssl"},
+		RefreshToken: "old-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector := fakeOAuthConnector{account: oauthlogin.ConnectedAccount{
+		Identity:     oauthlogin.Identity{ProviderID: provider.ID, ProviderType: provider.ProviderType, Subject: existing.Subject, Email: "new@example.com"},
+		RefreshToken: "new-refresh-token",
+		Scopes:       []string{"openid", "email", "profile", "https://www.googleapis.com/auth/youtube.force-ssl"},
+	}}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithIntegrationStore(integrations), WithOAuthLoginStore(store.NewMemoryOAuthLoginStore()), WithOAuthConnector(connector))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	startReq := httptest.NewRequest(http.MethodPost, "/integrations/oauth-accounts/start", bytes.NewBufferString(fmt.Sprintf(`{"provider_id":%q,"oauth_account_id":%q,"account_purpose":"youtube","redirect_after":"/admin/integrations/"}`, provider.ID, existing.ID)))
+	startReq.AddCookie(cookie)
+	startReq.Header.Set("X-CSRF-Token", csrf)
+	startRes := httptest.NewRecorder()
+	handler.ServeHTTP(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("oauth relink start status = %d body = %s", startRes.Code, startRes.Body.String())
+	}
+	var startBody struct {
+		State  string `json:"state"`
+		Relink bool   `json:"relink"`
+	}
+	if err := json.NewDecoder(startRes.Body).Decode(&startBody); err != nil {
+		t.Fatal(err)
+	}
+	if startBody.State == "" || !startBody.Relink {
+		t.Fatalf("oauth relink start did not bind target account: %#v", startBody)
+	}
+
+	callbackReq := httptest.NewRequest(http.MethodPost, "/integrations/oauth-accounts/callback", bytes.NewBufferString(fmt.Sprintf(`{"provider_id":%q,"state":%q,"code":"callback-code"}`, provider.ID, startBody.State)))
+	callbackReq.AddCookie(cookie)
+	callbackReq.AddCookie(findCookieForTest(t, startRes.Result().Cookies(), oauthStateCookieName))
+	callbackReq.Header.Set("X-CSRF-Token", csrf)
+	callbackRes := httptest.NewRecorder()
+	handler.ServeHTTP(callbackRes, callbackReq)
+	if callbackRes.Code != http.StatusOK {
+		t.Fatalf("oauth relink callback status = %d body = %s", callbackRes.Code, callbackRes.Body.String())
+	}
+	var relinked store.OAuthAccount
+	if err := json.NewDecoder(callbackRes.Body).Decode(&relinked); err != nil {
+		t.Fatal(err)
+	}
+	if relinked.ID != existing.ID || relinked.AccountLabel != existing.AccountLabel || relinked.Email != "new@example.com" {
+		t.Fatalf("oauth relink changed account identity or label: before=%#v after=%#v", existing, relinked)
+	}
+	accounts, err := integrations.ListOAuthAccounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].ID != existing.ID {
+		t.Fatalf("oauth relink should preserve one referenced account: %#v", accounts)
+	}
+	dispatch, err := integrations.GetOAuthAccountForDispatch(t.Context(), existing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatch.RefreshToken != "new-refresh-token" {
+		t.Fatalf("oauth relink did not replace encrypted refresh token: %#v", dispatch)
+	}
+	if !strings.Contains(toJSONForTest(t, auth.AuditEvents()), `"action":"integrations.oauth_account.relink"`) {
+		t.Fatal("oauth relink audit event was not recorded")
+	}
+}
+
 func TestOAuthAccountRedirectCallbackSuppressesCodeCachingAndReferrers(t *testing.T) {
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://control.example.com")
 	auth := store.NewMemoryAuthStore()

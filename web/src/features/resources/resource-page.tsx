@@ -1923,6 +1923,7 @@ function ResourceTable({
                   <div className="flex justify-end gap-1">
                     {showIDCopy ? <CopyResourceIDButton id={resourceRowID(row)} copied={copiedID === resourceRowID(row)} onCopy={copyRowID} /> : null}
                     {showEdit ? <EditResourceButton resource={resource} row={row} disabled={!canEdit} /> : null}
+                    {resource.path === "/integrations/oauth-accounts" ? <OAuthAccountRelinkButton row={row} disabled={!canEdit} /> : null}
                     {showTest ? (
                       <Button
                         variant="outline"
@@ -1971,6 +1972,50 @@ function CopyResourceIDButton({ id, copied, onCopy }: { id: string; copied: bool
     <Button variant="outline" size="icon-sm" disabled={!id} aria-label="IDをコピー" onClick={() => void onCopy(id)}>
       {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
     </Button>
+  );
+}
+
+function OAuthAccountRelinkButton({ row, disabled }: { row: ResourceRow; disabled: boolean }) {
+  const [message, setMessage] = useState("");
+  const accountID = resourceRowID(row);
+  const providerID = rowString(row, ["provider_id"]);
+  const accountPurpose = rowString(row, ["account_purpose"]) || "drive_youtube";
+  const mutation = useMutation<unknown, Error, void>({
+    mutationFn: async () => {
+      if (!accountID || !providerID) throw new Error("oauth account provider is required");
+      return apiPost("/integrations/oauth-accounts/start", {
+        provider_id: providerID,
+        oauth_account_id: accountID,
+        account_purpose: accountPurpose,
+        redirect_after: "/admin/integrations/",
+      });
+    },
+    onMutate: () => setMessage(""),
+    onSuccess: (data) => {
+      const authorizationURL = isRecord(data) && typeof data.authorization_url === "string" ? data.authorization_url : "";
+      if (authorizationURL && typeof window !== "undefined") {
+        window.location.assign(authorizationURL);
+        return;
+      }
+      setMessage("OAuth認可URLを取得できませんでした。プロバイダ設定を確認してください。");
+    },
+    onError: (error) => setMessage(oauthAccountRelinkErrorMessage(error)),
+  });
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button
+        variant="outline"
+        size="icon-sm"
+        disabled={!accountID || !providerID || disabled || mutation.isPending}
+        title={disabled ? requiredPermissionText("integrations.update") : "OAuthアカウントを再連携"}
+        aria-label={`${resourceRowLabel(row)} を再連携`}
+        onClick={() => mutation.mutate()}
+      >
+        {mutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCcw className="size-4" />}
+      </Button>
+      {message ? <span className="max-w-48 text-left text-xs text-destructive">{message}</span> : null}
+    </div>
   );
 }
 
@@ -2136,6 +2181,23 @@ function resourceWriteErrorMessage(resource: ResourceDefinition, error: Error, a
     if (messages[error.code || ""]) return messages[error.code || ""];
   }
   return fallback;
+}
+
+function oauthAccountRelinkErrorMessage(error: Error) {
+  if (!(error instanceof APIError)) return "再連携を開始できませんでした。通信状態を確認して再試行してください。";
+  const messages: Record<string, string> = {
+    csrf_failed: "ログイン状態が古くなっています。画面を再読み込みしてから再試行してください。",
+    oauth_account_not_found: "OAuthアカウントが見つかりません。画面を更新してください。",
+    oauth_account_provider_mismatch: "対象アカウントとOAuthプロバイダが一致しません。画面を更新してください。",
+    oauth_account_identity_mismatch: "別のGoogleアカウントが選択されました。元のアカウントを選んで再試行してください。",
+    oauth_refresh_token_missing: "Googleから更新トークンを取得できませんでした。認可画面でアカウントを選び直してください。",
+    oauth_provider_unavailable: "OAuthプロバイダが無効または未設定です。プロバイダ設定を確認してください。",
+    oauth_connected_account_scope_required: "接続用途に必要な権限が許可されませんでした。認可画面で必要な権限を許可してください。",
+    oauth_connected_account_redirect_uri_unavailable: "OAuthコールバックURLが設定されていません。プロバイダ設定を確認してください。",
+    secret_encryption_key_required: "Control Panelのシークレット暗号化キーが未設定です。設定を確認してください。",
+    forbidden: "OAuthアカウントを更新する権限がありません。",
+  };
+  return messages[error.code || ""] || "再連携を開始できませんでした。OAuthプロバイダ設定とログイン状態を確認してください。";
 }
 
 function notificationChannelTestRequestError(error: Error): NotificationChannelTestFeedback {

@@ -462,9 +462,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /integrations/oauth-providers/{id}", s.requirePermission("integrations.update", s.updateOAuthProvider))
 	s.mux.HandleFunc("DELETE /integrations/oauth-providers/{id}", s.requirePermission("integrations.delete", s.deleteOAuthProvider))
 	s.mux.HandleFunc("GET /integrations/oauth-accounts", s.requirePermission("integrations.read", s.listOAuthAccounts))
-	s.mux.HandleFunc("POST /integrations/oauth-accounts/start", s.requirePermission("integrations.create", s.startOAuthAccountConnection))
-	s.mux.HandleFunc("GET /integrations/oauth-accounts/callback", s.requirePermission("integrations.create", s.oauthAccountRedirectCallback))
-	s.mux.HandleFunc("POST /integrations/oauth-accounts/callback", s.requirePermission("integrations.create", s.oauthAccountCallback))
+	s.mux.HandleFunc("POST /integrations/oauth-accounts/start", s.requireAnyPermission([]string{"integrations.create", "integrations.update"}, s.startOAuthAccountConnection))
+	s.mux.HandleFunc("GET /integrations/oauth-accounts/callback", s.requireAnyPermission([]string{"integrations.create", "integrations.update"}, s.oauthAccountRedirectCallback))
+	s.mux.HandleFunc("POST /integrations/oauth-accounts/callback", s.requireAnyPermission([]string{"integrations.create", "integrations.update"}, s.oauthAccountCallback))
 	s.mux.HandleFunc("POST /integrations/oauth-accounts", s.requirePermission("integrations.create", s.createOAuthAccount))
 	s.mux.HandleFunc("GET /integrations/oauth-accounts/{id}", s.requirePermission("integrations.read", s.getOAuthAccount))
 	s.mux.HandleFunc("PUT /integrations/oauth-accounts/{id}", s.requirePermission("integrations.update", s.updateOAuthAccount))
@@ -982,7 +982,7 @@ func (s *Server) oauthLoginRedirectCallback(w http.ResponseWriter, r *http.Reque
 		Code:       r.URL.Query().Get("code"),
 	}
 	if s.isConnectedAccountOAuthRedirect(r, body.State) {
-		s.requirePermission("integrations.create", s.oauthAccountRedirectCallback)(w, r)
+		s.requireAnyPermission([]string{"integrations.create", "integrations.update"}, s.oauthAccountRedirectCallback)(w, r)
 		return
 	}
 	s.finishOAuthLogin(w, r, body, true)
@@ -3657,6 +3657,7 @@ type oauthAccountRequest struct {
 
 type oauthAccountStartRequest struct {
 	ProviderID     string `json:"provider_id"`
+	OAuthAccountID string `json:"oauth_account_id"`
 	AccountLabel   string `json:"account_label"`
 	AccountPurpose string `json:"account_purpose"`
 	RedirectAfter  string `json:"redirect_after"`
@@ -3843,6 +3844,35 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	targetAccountID := strings.TrimSpace(body.OAuthAccountID)
+	if targetAccountID != "" {
+		account, err := s.integrations.GetOAuthAccount(r.Context(), targetAccountID)
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "oauth_account_not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_oauth_account_failed"})
+			return
+		}
+		if strings.TrimSpace(body.ProviderID) == "" {
+			body.ProviderID = account.ProviderID
+		} else if strings.TrimSpace(body.ProviderID) != account.ProviderID {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_account_provider_mismatch"})
+			return
+		}
+		if strings.TrimSpace(body.AccountPurpose) == "" {
+			body.AccountPurpose = account.AccountPurpose
+		}
+	}
+	requiredPermission := "integrations.create"
+	if targetAccountID != "" {
+		requiredPermission = "integrations.update"
+	}
+	if !security.HasPermission(currentFromContext(r.Context()).Permissions, requiredPermission) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
+		return
+	}
 	provider, err := s.integrations.GetOAuthProvider(r.Context(), body.ProviderID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "oauth_provider_not_found"})
@@ -3872,6 +3902,7 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		Purpose:         "connected_account",
 		RedirectAfter:   safeRedirectAfter(body.RedirectAfter),
 		AccountLabel:    strings.TrimSpace(body.AccountLabel),
+		TargetAccountID: targetAccountID,
 		RequestedScopes: requestedScopes,
 	}, 10*time.Minute)
 	if err != nil {
@@ -3893,6 +3924,7 @@ func (s *Server) startOAuthAccountConnection(w http.ResponseWriter, r *http.Requ
 		"expires_at":        state.ExpiresAt,
 		"account_label":     strings.TrimSpace(body.AccountLabel),
 		"account_purpose":   store.OAuthAccountPurposeFromScopes(state.RequestedScopes),
+		"relink":            targetAccountID != "",
 		"scopes":            state.RequestedScopes,
 	})
 }
@@ -3952,6 +3984,19 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_oauth_state"})
 		return
 	}
+	requiredPermission := "integrations.create"
+	if strings.TrimSpace(state.TargetAccountID) != "" {
+		requiredPermission = "integrations.update"
+	}
+	if !security.HasPermission(currentFromContext(r.Context()).Permissions, requiredPermission) {
+		auditAction := "integrations.oauth_account.connect"
+		if strings.TrimSpace(state.TargetAccountID) != "" {
+			auditAction = "integrations.oauth_account.relink"
+		}
+		s.writeAudit(r, store.AuditEvent{Action: auditAction, ResourceType: "oauth_state", Result: "failure", Metadata: map[string]any{"reason": "permission_denied", "target_account_id_bound": strings.TrimSpace(state.TargetAccountID) != ""}})
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
+		return
+	}
 	provider, err := s.integrations.GetOAuthProviderForDispatch(r.Context(), state.ProviderID)
 	if errors.Is(err, store.ErrNotFound) || !provider.Enabled || strings.TrimSpace(provider.ClientSecret) == "" {
 		s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.connect", ResourceType: "oauth_provider", ResourceID: state.ProviderID, Result: "failure", Metadata: map[string]any{"reason": "provider_unavailable"}})
@@ -3995,22 +4040,63 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_connected_account_scope_required"})
 		return
 	}
-	label := strings.TrimSpace(body.AccountLabel)
-	if label == "" {
-		label = strings.TrimSpace(state.AccountLabel)
+	targetAccountID := strings.TrimSpace(state.TargetAccountID)
+	relinked := targetAccountID != ""
+	var account store.OAuthAccount
+	if relinked {
+		existing, getErr := s.integrations.GetOAuthAccount(r.Context(), targetAccountID)
+		if errors.Is(getErr, store.ErrNotFound) {
+			s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.relink", ResourceType: "oauth_account", ResourceID: targetAccountID, Result: "failure", Metadata: map[string]any{"reason": "oauth_account_not_found"}})
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "oauth_account_not_found"})
+			return
+		}
+		if getErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_oauth_account_failed"})
+			return
+		}
+		if existing.ProviderID != provider.ID || !strings.EqualFold(existing.ProviderType, provider.ProviderType) {
+			s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.relink", ResourceType: "oauth_account", ResourceID: existing.ID, Result: "failure", Metadata: map[string]any{"reason": "oauth_account_provider_mismatch"}})
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_account_provider_mismatch"})
+			return
+		}
+		if strings.TrimSpace(existing.Subject) != "" && existing.Subject != connected.Identity.Subject {
+			s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.relink", ResourceType: "oauth_account", ResourceID: existing.ID, Result: "failure", Metadata: map[string]any{"reason": "oauth_account_identity_mismatch", "provider_type": existing.ProviderType}})
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_account_identity_mismatch"})
+			return
+		}
+		if strings.TrimSpace(connected.RefreshToken) == "" {
+			s.writeAudit(r, store.AuditEvent{Action: "integrations.oauth_account.relink", ResourceType: "oauth_account", ResourceID: existing.ID, Result: "failure", Metadata: map[string]any{"reason": "oauth_refresh_token_missing"}})
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "oauth_refresh_token_missing"})
+			return
+		}
+		account, err = s.integrations.UpdateOAuthAccount(r.Context(), store.OAuthAccount{
+			ID:           existing.ID,
+			ProviderID:   existing.ProviderID,
+			ProviderType: existing.ProviderType,
+			AccountLabel: existing.AccountLabel,
+			Subject:      connected.Identity.Subject,
+			Email:        connected.Identity.Email,
+			Scopes:       scopes,
+			RefreshToken: connected.RefreshToken,
+		})
+	} else {
+		label := strings.TrimSpace(body.AccountLabel)
+		if label == "" {
+			label = strings.TrimSpace(state.AccountLabel)
+		}
+		if label == "" || strings.EqualFold(label, strings.TrimSpace(connected.Identity.Email)) {
+			label = defaultOAuthAccountLabel(provider)
+		}
+		account, err = s.integrations.CreateOAuthAccount(r.Context(), store.OAuthAccount{
+			ProviderID:   provider.ID,
+			ProviderType: provider.ProviderType,
+			AccountLabel: label,
+			Subject:      connected.Identity.Subject,
+			Email:        connected.Identity.Email,
+			Scopes:       scopes,
+			RefreshToken: connected.RefreshToken,
+		})
 	}
-	if label == "" || strings.EqualFold(label, strings.TrimSpace(connected.Identity.Email)) {
-		label = defaultOAuthAccountLabel(provider)
-	}
-	account, err := s.integrations.CreateOAuthAccount(r.Context(), store.OAuthAccount{
-		ProviderID:   provider.ID,
-		ProviderType: provider.ProviderType,
-		AccountLabel: label,
-		Subject:      connected.Identity.Subject,
-		Email:        connected.Identity.Email,
-		Scopes:       scopes,
-		RefreshToken: connected.RefreshToken,
-	})
 	if errors.Is(err, store.ErrSecretKeyRequired) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "secret_encryption_key_required"})
 		return
@@ -4020,13 +4106,21 @@ func (s *Server) finishOAuthAccountConnection(w http.ResponseWriter, r *http.Req
 		return
 	}
 	current := currentFromContext(r.Context())
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "integrations.oauth_account.connect", ResourceType: "oauth_account", ResourceID: account.ID, Result: "success", Metadata: map[string]any{"provider_type": account.ProviderType, "account_purpose": account.AccountPurpose, "refresh_token_configured": account.RefreshTokenConfigured}})
+	auditAction := "integrations.oauth_account.connect"
+	if relinked {
+		auditAction = "integrations.oauth_account.relink"
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: auditAction, ResourceType: "oauth_account", ResourceID: account.ID, Result: "success", Metadata: map[string]any{"provider_type": account.ProviderType, "account_purpose": account.AccountPurpose, "refresh_token_configured": account.RefreshTokenConfigured, "relinked": relinked}})
 	if redirectOnSuccess {
 		target := safeRedirectAfter(state.RedirectAfter)
 		if target == "" {
 			target = "/"
 		}
 		http.Redirect(w, r, target, http.StatusSeeOther)
+		return
+	}
+	if relinked {
+		writeJSON(w, http.StatusOK, account)
 		return
 	}
 	writeJSON(w, http.StatusCreated, account)

@@ -153,7 +153,7 @@ export const resourcePages = {
       {
         title: "YouTube・Drive接続",
         path: "/integrations/oauth-accounts",
-        description: "YouTubeやDrive操作に使う接続済みアカウントです。",
+        description: "YouTubeやDrive操作に使う接続済みアカウントです。既存の参照を維持したまま、一覧の再連携ボタンから認証をやり直せます。",
         form: "oauth-account-connect",
         deletable: true,
         permissions: { read: "integrations.read", create: "integrations.create", update: "integrations.update", delete: "integrations.delete" },
