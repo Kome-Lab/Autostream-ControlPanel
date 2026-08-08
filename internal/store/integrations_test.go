@@ -58,6 +58,41 @@ func TestOAuthAccountMetadataUpdateKeepsRefreshTokenUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestOAuthAccountTokenRefreshRecordsAccessRefreshWithoutStoringAccessToken(t *testing.T) {
+	integrations := NewMemoryIntegrationStore()
+	account, err := integrations.CreateOAuthAccount(t.Context(), OAuthAccount{
+		ProviderID:   "google-main",
+		ProviderType: "google",
+		AccountLabel: "YouTube Account",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RefreshToken: "raw-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshedAt := time.Date(2026, time.August, 8, 8, 0, 0, 0, time.UTC)
+	updated, err := integrations.RecordOAuthAccountTokenRefresh(t.Context(), account.ID, "rotated-refresh-token", refreshedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AccessTokenRefreshedAt != refreshedAt.Format(time.RFC3339) {
+		t.Fatalf("access token refresh time = %q, want %q", updated.AccessTokenRefreshedAt, refreshedAt.Format(time.RFC3339))
+	}
+	if updated.RefreshTokenUpdatedAt != refreshedAt.Format(time.RFC3339) {
+		t.Fatalf("rotated refresh token time = %q, want %q", updated.RefreshTokenUpdatedAt, refreshedAt.Format(time.RFC3339))
+	}
+	dispatch, err := integrations.GetOAuthAccountForDispatch(t.Context(), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatch.RefreshToken != "rotated-refresh-token" {
+		t.Fatalf("rotated refresh token was not retained for dispatch: %#v", dispatch)
+	}
+	if strings.Contains(updated.DisplayName, "rotated-refresh-token") || updated.RefreshToken != "" {
+		t.Fatalf("public account leaked refresh token: %#v", updated)
+	}
+}
+
 func TestOAuthAccountDisplayNameUsesConfiguredAccountLabel(t *testing.T) {
 	integrations := NewMemoryIntegrationStore()
 	provider, err := integrations.CreateOAuthProvider(t.Context(), OAuthProvider{

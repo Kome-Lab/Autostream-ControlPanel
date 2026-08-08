@@ -83,6 +83,7 @@ func main() {
 		errCh <- err
 	}()
 	go srv.RunYouTubeCompletionRetryLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_COMPLETE_RETRY_INTERVAL", time.Minute))
+	go srv.RunOAuthTokenRefreshLoop(runCtx, durationFromEnv("AUTOSTREAM_OAUTH_TOKEN_REFRESH_INTERVAL", 45*time.Minute))
 	select {
 	case err := <-errCh:
 		if err != nil {

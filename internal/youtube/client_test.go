@@ -123,6 +123,27 @@ func TestLiveAPIClientCompleteUsesOAuthAndTransition(t *testing.T) {
 	}
 }
 
+func TestLiveAPIClientRefreshAccessTokenUsesProviderRefreshToken(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{}
+	httpClient := &http.Client{Transport: transport}
+	client := LiveAPIClient{HTTPClient: httpClient}
+
+	token, err := client.RefreshAccessToken(context.Background(), OAuthCredentials{
+		ClientID:     "youtube-client-id",
+		ClientSecret: "youtube-client-secret",
+		RefreshToken: "youtube-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.AccessToken != "ya29.fake-youtube-access-token" || token.RefreshToken != "youtube-refresh-token" {
+		t.Fatalf("unexpected refreshed token: %#v", token)
+	}
+	if transport.tokenRefreshes != 1 {
+		t.Fatalf("expected one OAuth refresh, got %d", transport.tokenRefreshes)
+	}
+}
+
 type fakeYouTubeRoundTripper struct {
 	tokenRefreshes      int
 	steps               []string

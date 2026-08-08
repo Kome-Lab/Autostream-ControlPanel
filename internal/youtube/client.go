@@ -152,14 +152,18 @@ func (c LiveAPIClient) Complete(ctx context.Context, req CompleteRequest) error 
 	return err
 }
 
-func (c LiveAPIClient) service(ctx context.Context, creds OAuthCredentials) (*youtubeapi.Service, error) {
-	oauthConfig := oauth2.Config{
-		ClientID:     creds.ClientID,
-		ClientSecret: creds.ClientSecret,
-		Endpoint:     google.Endpoint,
-		Scopes:       []string{youtubeapi.YoutubeScope},
+// RefreshAccessToken obtains a fresh short-lived access token from the
+// provider. The returned access token must remain in memory only; callers may
+// persist the rotated refresh token, but never the access token itself.
+func (c LiveAPIClient) RefreshAccessToken(ctx context.Context, creds OAuthCredentials) (*oauth2.Token, error) {
+	if err := validateCredentials(creds); err != nil {
+		return nil, err
 	}
-	tokenSource := oauthConfig.TokenSource(ctx, &oauth2.Token{RefreshToken: creds.RefreshToken})
+	return c.tokenSource(ctx, creds).Token()
+}
+
+func (c LiveAPIClient) service(ctx context.Context, creds OAuthCredentials) (*youtubeapi.Service, error) {
+	tokenSource := c.tokenSource(ctx, creds)
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = oauth2.NewClient(ctx, tokenSource)
@@ -167,6 +171,19 @@ func (c LiveAPIClient) service(ctx context.Context, creds OAuthCredentials) (*yo
 		httpClient = &http.Client{Transport: &oauth2.Transport{Source: tokenSource, Base: httpClient.Transport}, Timeout: httpClient.Timeout}
 	}
 	return youtubeapi.NewService(ctx, option.WithHTTPClient(httpClient))
+}
+
+func (c LiveAPIClient) tokenSource(ctx context.Context, creds OAuthCredentials) oauth2.TokenSource {
+	if c.HTTPClient != nil && ctx.Value(oauth2.HTTPClient) == nil {
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, c.HTTPClient)
+	}
+	oauthConfig := oauth2.Config{
+		ClientID:     creds.ClientID,
+		ClientSecret: creds.ClientSecret,
+		Endpoint:     google.Endpoint,
+		Scopes:       []string{youtubeapi.YoutubeScope},
+	}
+	return oauthConfig.TokenSource(ctx, &oauth2.Token{RefreshToken: creds.RefreshToken})
 }
 
 func validateCredentials(creds OAuthCredentials) error {

@@ -33,6 +33,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/updateagent"
 	"github.com/example/autostream-control-panel/internal/version"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -53,6 +54,7 @@ const serviceHeartbeatWarningDefault = 60 * time.Second
 const serviceHeartbeatOfflineDefault = 180 * time.Second
 const runtimeSecretLeaseTTL = 60 * time.Second
 const youtubeCompleteRetryDefaultInterval = 60 * time.Second
+const oauthTokenRefreshDefaultInterval = 45 * time.Minute
 const sensitiveActionAttemptThreshold = 6
 const emailChangeChallengeTTL = 30 * time.Minute
 const defaultArchiveRetentionDays = 30
@@ -121,6 +123,10 @@ type startReadinessChecker interface {
 
 type previewServiceDispatcher interface {
 	PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name string) servicecall.PreviewAssetResult
+}
+
+type oauthAccessTokenRefresher interface {
+	RefreshAccessToken(ctx context.Context, credentials ytlive.OAuthCredentials) (*oauth2.Token, error)
 }
 
 type discordLiveNotificationDispatcher interface {
@@ -10074,6 +10080,96 @@ func (s *Server) RunYouTubeCompletionRetryLoop(ctx context.Context, interval tim
 		case <-ticker.C:
 		}
 	}
+}
+
+// RunOAuthTokenRefreshLoop keeps short-lived provider access tokens warm. It
+// never persists the access token; only the timestamp and any provider-issued
+// refresh-token rotation are recorded.
+func (s *Server) RunOAuthTokenRefreshLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = oauthTokenRefreshDefaultInterval
+	}
+	if _, err := s.RefreshOAuthTokensOnce(ctx, 100); err != nil {
+		log.Printf("oauth token refresh scan failed: %v", err)
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := s.RefreshOAuthTokensOnce(ctx, 100); err != nil {
+				log.Printf("oauth token refresh scan failed: %v", err)
+			}
+		}
+	}
+}
+
+// RefreshOAuthTokensOnce refreshes configured Google OAuth accounts. The
+// access token is intentionally discarded after the provider call; only a
+// rotated refresh token and the non-secret refresh timestamp are retained.
+func (s *Server) RefreshOAuthTokensOnce(ctx context.Context, limit int) (map[string]any, error) {
+	result := map[string]any{"attempted": 0, "refreshed": 0, "failed": 0, "skipped": 0}
+	refresher, ok := s.youtubeLive.(oauthAccessTokenRefresher)
+	if !ok {
+		return result, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	accounts, err := s.integrations.ListOAuthAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, listed := range accounts {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if result["attempted"].(int) >= limit {
+			break
+		}
+		if !strings.EqualFold(strings.TrimSpace(listed.ProviderType), "google") || !listed.RefreshTokenConfigured {
+			result["skipped"] = result["skipped"].(int) + 1
+			continue
+		}
+		account, err := s.integrations.GetOAuthAccountForDispatch(ctx, listed.ID)
+		if err != nil || strings.TrimSpace(account.RefreshToken) == "" {
+			result["failed"] = result["failed"].(int) + 1
+			log.Printf("oauth token refresh unavailable: account_id=%s error=%s", listed.ID, ytlive.RedactedError(err))
+			continue
+		}
+		provider, err := s.integrations.GetOAuthProviderForDispatch(ctx, account.ProviderID)
+		if err != nil || !provider.Enabled || !strings.EqualFold(strings.TrimSpace(provider.ProviderType), "google") || strings.TrimSpace(provider.ClientID) == "" || strings.TrimSpace(provider.ClientSecret) == "" {
+			result["skipped"] = result["skipped"].(int) + 1
+			continue
+		}
+		result["attempted"] = result["attempted"].(int) + 1
+		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		token, refreshErr := refresher.RefreshAccessToken(refreshCtx, ytlive.OAuthCredentials{ClientID: provider.ClientID, ClientSecret: provider.ClientSecret, RefreshToken: account.RefreshToken})
+		cancel()
+		if refreshErr != nil {
+			result["failed"] = result["failed"].(int) + 1
+			log.Printf("oauth token refresh failed: account_id=%s provider=%s error=%s", account.ID, provider.ProviderType, ytlive.RedactedError(refreshErr))
+			continue
+		}
+		if token == nil || strings.TrimSpace(token.AccessToken) == "" {
+			result["failed"] = result["failed"].(int) + 1
+			log.Printf("oauth token refresh failed: account_id=%s provider=%s error=empty_access_token", account.ID, provider.ProviderType)
+			continue
+		}
+		rotatedRefreshToken := ""
+		if token != nil && strings.TrimSpace(token.RefreshToken) != "" && token.RefreshToken != account.RefreshToken {
+			rotatedRefreshToken = token.RefreshToken
+		}
+		if _, err := s.integrations.RecordOAuthAccountTokenRefresh(ctx, account.ID, rotatedRefreshToken, time.Now().UTC()); err != nil {
+			result["failed"] = result["failed"].(int) + 1
+			log.Printf("oauth token refresh state save failed: account_id=%s error=%s", account.ID, ytlive.RedactedError(err))
+			continue
+		}
+		result["refreshed"] = result["refreshed"].(int) + 1
+	}
+	return result, nil
 }
 
 func (s *Server) CompleteDueYouTubeRuntimes(ctx context.Context, limit int) (map[string]any, error) {
