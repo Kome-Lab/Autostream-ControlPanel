@@ -113,13 +113,119 @@ func migrationApplied(ctx context.Context, db *sql.DB, id string) (bool, error) 
 }
 
 func splitSQLStatements(sqlText string) []string {
-	parts := strings.Split(sqlText, ";")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		stmt := strings.TrimSpace(part)
-		if stmt != "" {
-			out = append(out, stmt)
+	const (
+		sqlNormal = iota
+		sqlSingleQuote
+		sqlDoubleQuote
+		sqlBacktick
+		sqlLineComment
+		sqlBlockComment
+	)
+
+	isWhitespace := func(b byte) bool {
+		switch b {
+		case ' ', '\t', '\r', '\n', '\f':
+			return true
+		default:
+			return false
 		}
 	}
+
+	var current strings.Builder
+	out := make([]string, 0, strings.Count(sqlText, ";")+1)
+	flush := func() {
+		if stmt := strings.TrimSpace(current.String()); stmt != "" {
+			out = append(out, stmt)
+		}
+		current.Reset()
+	}
+
+	state := sqlNormal
+	for index := 0; index < len(sqlText); index++ {
+		currentByte := sqlText[index]
+		switch state {
+		case sqlNormal:
+			switch currentByte {
+			case ';':
+				flush()
+				continue
+			case '\'':
+				state = sqlSingleQuote
+			case '"':
+				state = sqlDoubleQuote
+			case '`':
+				state = sqlBacktick
+			case '-':
+				if index+1 < len(sqlText) && sqlText[index+1] == '-' &&
+					(index+2 == len(sqlText) || isWhitespace(sqlText[index+2])) {
+					current.WriteString("--")
+					index++
+					state = sqlLineComment
+					continue
+				}
+			case '#':
+				state = sqlLineComment
+			case '/':
+				if index+1 < len(sqlText) && sqlText[index+1] == '*' {
+					current.WriteString("/*")
+					index++
+					state = sqlBlockComment
+					continue
+				}
+			}
+		case sqlLineComment:
+			if currentByte == '\n' {
+				state = sqlNormal
+			}
+		case sqlBlockComment:
+			if currentByte == '*' && index+1 < len(sqlText) && sqlText[index+1] == '/' {
+				current.WriteString("*/")
+				index++
+				state = sqlNormal
+				continue
+			}
+		case sqlSingleQuote:
+			if currentByte == '\\' && index+1 < len(sqlText) {
+				current.WriteByte(currentByte)
+				index++
+				current.WriteByte(sqlText[index])
+				continue
+			}
+			if currentByte == '\'' {
+				if index+1 < len(sqlText) && sqlText[index+1] == '\'' {
+					current.WriteString("''")
+					index++
+					continue
+				}
+				state = sqlNormal
+			}
+		case sqlDoubleQuote:
+			if currentByte == '\\' && index+1 < len(sqlText) {
+				current.WriteByte(currentByte)
+				index++
+				current.WriteByte(sqlText[index])
+				continue
+			}
+			if currentByte == '"' {
+				if index+1 < len(sqlText) && sqlText[index+1] == '"' {
+					current.WriteString("\"\"")
+					index++
+					continue
+				}
+				state = sqlNormal
+			}
+		case sqlBacktick:
+			if currentByte == '`' {
+				if index+1 < len(sqlText) && sqlText[index+1] == '`' {
+					current.WriteString("``")
+					index++
+					continue
+				}
+				state = sqlNormal
+			}
+		}
+		current.WriteByte(currentByte)
+	}
+	flush()
 	return out
 }

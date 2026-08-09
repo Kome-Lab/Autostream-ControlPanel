@@ -11,6 +11,9 @@ func TestLegacyDiscordConfigureTokenMigrationRevokesOnlyUnscopedPendingTokens(t 
 		t.Fatal(err)
 	}
 	text := strings.ToLower(string(body))
+	if statements := splitSQLStatements(string(body)); len(statements) != 1 || !strings.Contains(strings.ToLower(statements[0]), "update services as s") {
+		t.Fatalf("legacy Discord Configure Token migration must remain one executable statement: %#v", statements)
+	}
 	for _, required := range []string{
 		"update services as s",
 		"join service_tokens as t on t.id = s.token_id",

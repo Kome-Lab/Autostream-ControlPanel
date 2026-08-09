@@ -12,6 +12,19 @@ func TestSplitSQLStatements(t *testing.T) {
 	}
 }
 
+func TestSplitSQLStatementsKeepsSemicolonsInCommentsAndQuotedText(t *testing.T) {
+	got := splitSQLStatements("-- release note; do not split here\nUPDATE services SET name = 'semi;colon';\n/* another; comment */ UPDATE services SET name = `quoted;name`;")
+	if len(got) != 2 {
+		t.Fatalf("got %d statements: %#v", len(got), got)
+	}
+	if !strings.Contains(got[0], "release note; do not split here") || !strings.Contains(got[0], "'semi;colon'") {
+		t.Fatalf("first statement lost protected semicolon content: %q", got[0])
+	}
+	if !strings.Contains(got[1], "another; comment") || !strings.Contains(got[1], "`quoted;name`") {
+		t.Fatalf("second statement lost protected semicolon content: %q", got[1])
+	}
+}
+
 func TestStreamArtifactUniqueMigrationDeduplicatesBeforeIndex(t *testing.T) {
 	body, err := embeddedMigrations.ReadFile("migrations/005_stream_artifacts_unique_key.sql")
 	if err != nil {
