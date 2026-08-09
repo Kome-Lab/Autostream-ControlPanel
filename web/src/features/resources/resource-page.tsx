@@ -155,9 +155,12 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
   const [actionMessage, setActionMessage] = useState("");
   const actionMutation = useMutation<unknown, Error, { path: string; label: string }>({
     mutationFn: async ({ path }) => apiPost(path),
-    onSuccess: async (_, action) => {
-      setActionMessage(`${action.label}を実行しました。`);
-      await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+    onSuccess: async (response, action) => {
+      setActionMessage(observabilityActionSuccessMessage(action, response));
+      const affectedResources = action.path.includes("/diagnostics/rerun")
+        ? [resource.path, "/observability/incidents", "/observability/diagnostics"]
+        : [resource.path];
+      await Promise.all([...new Set(affectedResources)].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
     },
     onError: (error) => setActionMessage(resourceWriteErrorMessage(resource, error, "更新")),
   });
@@ -1898,71 +1901,97 @@ function ResourceTable({
     setCopiedID(id);
     window.setTimeout(() => setCopiedID((current) => (current === id ? "" : current)), 1500);
   };
+  const rowActions = (row: ResourceRow) => (
+    <>
+      <div className="flex flex-wrap justify-start gap-1 xl:justify-end">
+        {showIDCopy ? <CopyResourceIDButton id={resourceRowID(row)} copied={copiedID === resourceRowID(row)} onCopy={copyRowID} /> : null}
+        {showEdit ? <EditResourceButton resource={resource} row={row} disabled={!canEdit} /> : null}
+        {resource.path === "/integrations/oauth-accounts" ? <OAuthAccountRelinkButton row={row} disabled={!canEdit} /> : null}
+        {showTest ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!resourceRowID(row) || !canTest || testMutation.isPending}
+            title={!canTest ? requiredPermissionText(resource.permissions?.test) : undefined}
+            aria-label={`${resourceRowLabel(row)} へテスト送信`}
+            onClick={() => testMutation.mutate(row)}
+          >
+            {testMutation.isPending && testNotice?.id === resourceRowID(row) ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
+            {testMutation.isPending && testNotice?.id === resourceRowID(row) ? "送信中" : "テスト送信"}
+          </Button>
+        ) : null}
+        {observabilityActionButtons(resource, row, currentUser).map((action) => (
+          <Button
+            key={action.key}
+            variant={action.emphasis ? "default" : "outline"}
+            size="sm"
+            disabled={action.disabled || actionPending}
+            title={action.disabled ? action.permissionText : undefined}
+            onClick={() => onAction(action.path, action.label)}
+          >
+            {actionPending ? <LoaderCircle className="size-4 animate-spin" /> : null}
+            {action.label}
+          </Button>
+        ))}
+        {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onDelete={onDelete} /> : null}
+      </div>
+      {testNotice?.id === resourceRowID(row) ? (
+        <p role={testNotice.pending || testNotice.ok ? "status" : "alert"} className={`mt-2 text-left text-xs ${testNotice.pending ? "text-muted-foreground" : testNotice.ok ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}`}>
+          {testNotice.message}
+        </p>
+      ) : null}
+    </>
+  );
 
   return (
-    <div className="overflow-x-auto rounded-md border">
-      <Table className="min-w-[720px]">
+    <div className="space-y-3">
+      <div className="hidden overflow-hidden rounded-md border xl:block">
+      <Table className="w-full table-fixed">
         <TableHeader>
           <TableRow>
             {columns.map((column) => (
-              <TableHead key={column}>{columnLabel(column)}</TableHead>
+              <TableHead key={column} className="whitespace-normal">{columnLabel(column)}</TableHead>
             ))}
-            {showActions ? <TableHead className="w-64 min-w-64 text-right">操作</TableHead> : null}
+            {showActions ? <TableHead className="w-56 whitespace-normal text-right">操作</TableHead> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((row, index) => (
             <TableRow key={String(row.id || row.name || index)}>
               {columns.map((column) => (
-                <TableCell key={column} className="max-w-[360px] whitespace-normal break-words align-top">
+                <TableCell key={column} className="whitespace-normal break-words align-top">
                   {formatResourceCell(resource, row[column], column, timezone)}
                 </TableCell>
               ))}
               {showActions ? (
-                <TableCell className="w-64 min-w-64 text-right">
-                  <div className="flex justify-end gap-1">
-                    {showIDCopy ? <CopyResourceIDButton id={resourceRowID(row)} copied={copiedID === resourceRowID(row)} onCopy={copyRowID} /> : null}
-                    {showEdit ? <EditResourceButton resource={resource} row={row} disabled={!canEdit} /> : null}
-                    {resource.path === "/integrations/oauth-accounts" ? <OAuthAccountRelinkButton row={row} disabled={!canEdit} /> : null}
-                    {showTest ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!resourceRowID(row) || !canTest || testMutation.isPending}
-                        title={!canTest ? requiredPermissionText(resource.permissions?.test) : undefined}
-                        aria-label={`${resourceRowLabel(row)} へテスト送信`}
-                        onClick={() => testMutation.mutate(row)}
-                      >
-                        {testMutation.isPending && testNotice?.id === resourceRowID(row) ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
-                        {testMutation.isPending && testNotice?.id === resourceRowID(row) ? "送信中" : "テスト送信"}
-                      </Button>
-                    ) : null}
-                    {observabilityActionButtons(resource, row, currentUser).map((action) => (
-                      <Button
-                        key={action.key}
-                        variant={action.emphasis ? "default" : "outline"}
-                        size="sm"
-                        disabled={action.disabled || actionPending}
-                        title={action.disabled ? action.permissionText : undefined}
-                        onClick={() => onAction(action.path, action.label)}
-                      >
-                        {actionPending ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                        {action.label}
-                      </Button>
-                    ))}
-                    {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onDelete={onDelete} /> : null}
-                  </div>
-                  {testNotice?.id === resourceRowID(row) ? (
-                    <p role={testNotice.pending || testNotice.ok ? "status" : "alert"} className={`mt-2 text-left text-xs ${testNotice.pending ? "text-muted-foreground" : testNotice.ok ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}`}>
-                      {testNotice.message}
-                    </p>
-                  ) : null}
+                <TableCell className="w-56 text-right">
+                  {rowActions(row)}
                 </TableCell>
               ) : null}
             </TableRow>
           ))}
         </TableBody>
       </Table>
+      </div>
+      <div className="grid gap-3 xl:hidden">
+        {rows.map((row, index) => (
+          <article key={String(row.id || row.name || index)} className="rounded-md border bg-card p-4 shadow-sm">
+            <div className="min-w-0">
+              <h3 className="break-words text-sm font-semibold">{resourceRowLabel(row)}</h3>
+              {resourceRowID(row) ? <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{resourceRowID(row)}</p> : null}
+            </div>
+            <dl className="mt-4 grid grid-cols-1 gap-x-5 gap-y-3 sm:grid-cols-2">
+              {columns.map((column) => (
+                <div key={column} className="min-w-0 space-y-1">
+                  <dt className="text-xs font-medium text-muted-foreground">{columnLabel(column)}</dt>
+                  <dd className="min-w-0 break-words text-sm">{formatResourceCell(resource, row[column], column, timezone)}</dd>
+                </div>
+              ))}
+            </dl>
+            {showActions ? <div className="mt-4 border-t pt-3">{rowActions(row)}</div> : null}
+          </article>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2006,13 +2035,14 @@ function OAuthAccountRelinkButton({ row, disabled }: { row: ResourceRow; disable
     <div className="flex flex-col items-end gap-1">
       <Button
         variant="outline"
-        size="icon-sm"
+        size="sm"
         disabled={!accountID || !providerID || disabled || mutation.isPending}
-        title={disabled ? requiredPermissionText("integrations.update") : "OAuthアカウントを再連携"}
+        title={disabled ? requiredPermissionText("integrations.update") : "同じアカウントIDのままOAuthを再連携"}
         aria-label={`${resourceRowLabel(row)} を再連携`}
         onClick={() => mutation.mutate()}
       >
         {mutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCcw className="size-4" />}
+        {mutation.isPending ? "連携準備中" : "再連携"}
       </Button>
       {message ? <span className="max-w-48 text-left text-xs text-destructive">{message}</span> : null}
     </div>
@@ -2057,19 +2087,32 @@ function observabilityActionButtons(resource: ResourceDefinition, row: ResourceR
   }
   if (resource.path === "/observability/diagnostics") {
     const incidentID = rowString(row, ["incident_id"]);
-    if (!incidentID || ["resolved", "closed", "ignored", "pass", "ok", "success"].includes(status)) return [];
+    if (!incidentID) return [];
     return [{
-      key: "diagnostic-resolve",
-      label: "対応済みにする",
-      path: `/observability/incidents/${encodeURIComponent(incidentID)}/resolve`,
-      disabled: !allowed("incidents.resolve"),
-      permissionText: requiredPermissionText("incidents.resolve"),
+      key: "diagnostic-rerun",
+      label: "診断を再評価",
+      path: `/observability/incidents/${encodeURIComponent(incidentID)}/diagnostics/rerun`,
+      disabled: !allowed("diagnostics.run"),
+      permissionText: requiredPermissionText("diagnostics.run"),
       emphasis: true,
     }];
   }
   if (resource.path === "/observability/remediation-actions") {
     const id = rowString(row, ["id"]);
-    if (!id || ["executed", "skipped", "blocked", "failed", "cancelled"].includes(status)) return [];
+    const incidentID = rowString(row, ["incident_id"]);
+    const actionName = rowString(row, ["action"]).trim().toLowerCase();
+    if (actionName === "rerun_diagnostics" && incidentID) {
+      return [{
+        key: "diagnostic-rerun",
+        label: "診断を再評価",
+        path: `/observability/incidents/${encodeURIComponent(incidentID)}/diagnostics/rerun`,
+        disabled: !allowed("diagnostics.run"),
+        permissionText: requiredPermissionText("diagnostics.run"),
+        emphasis: true,
+      }];
+    }
+    const mode = rowString(row, ["mode"]).trim().toLowerCase();
+    if (!id || mode === "suggest_only" || mode === "disabled" || ["executed", "skipped", "blocked", "failed", "cancelled", "disabled"].includes(status)) return [];
     const requiresApproval = rowBoolean(row, ["requires_approval"], false);
     const safeAuto = rowBoolean(row, ["safe_auto"], false);
     if (status === "pending_approval" || (status === "suggested" && requiresApproval)) {
@@ -2094,6 +2137,15 @@ function observabilityActionButtons(resource: ResourceDefinition, row: ResourceR
     }
   }
   return [];
+}
+
+function observabilityActionSuccessMessage(action: { path: string; label: string }, response: unknown) {
+  if (action.path.includes("/diagnostics/rerun")) {
+    const outcome = isRecord(response) && typeof response.outcome === "string" ? response.outcome.trim().toLowerCase() : "";
+    if (outcome === "inconclusive") return "診断を再評価しましたが、保存済みのシグナルでは結論を更新できませんでした。";
+    return "診断を再評価しました。";
+  }
+  return `${action.label}を実行しました。`;
 }
 
 function EditResourceButton({ resource, row, disabled }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean }) {
@@ -2318,12 +2370,24 @@ function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow): Reso
       ...row,
       oauth_account_display_name: oauthAccountDisplayName(row),
       account_usage: oauthAccountPurposeLabel(row),
-      account_summary: compactList([
-        labelValue("プロバイダ", formatScalarValue("provider_type", rowString(row, ["provider_type"]))),
-        oauthAccountConfiguredName(row) ? "表示名設定済み" : "表示名未設定",
-        rowString(row, ["email"]) ? "メール取得済み" : "メール未取得",
-        rowValue(row, ["refresh_token_configured"]) === true ? "OAuth tokenあり" : "OAuth token未接続",
-      ]),
+        account_summary: compactList([
+          labelValue("プロバイダ", formatScalarValue("provider_type", rowString(row, ["provider_type"]))),
+          oauthAccountConfiguredName(row) ? "表示名設定済み" : "表示名未設定",
+          rowString(row, ["email"]) ? "メール取得済み" : "メール未取得",
+          rowValue(row, ["refresh_token_configured"]) === true ? "OAuth tokenあり" : "OAuth token未接続",
+        ]),
+        oauth_refresh_status: {
+          attempted_at: rowValue(row, ["access_token_refresh_attempted_at"]),
+          failed_at: rowValue(row, ["access_token_refresh_failed_at"]),
+          failure_code: rowValue(row, ["access_token_refresh_failure_code"]),
+          relink_required: rowValue(row, ["access_token_refresh_relink_required"]),
+        },
+      };
+  }
+  if (resource.path === "/observability/diagnostics") {
+    return {
+      ...row,
+      report: rowValue(row, ["diagnostic_report", "report"]),
     };
   }
   if (resource.path === "/secrets/status") {
@@ -2397,7 +2461,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path.startsWith("/profiles/")) return ["name", "profile_summary", "updated_at", "created_at"];
   if (resource.path === "/discord/configs") return ["name", "bot_summary", "updated_at"];
   if (resource.path === "/integrations/oauth-providers") return ["name", "provider_type", "enabled", "client_secret_configured", "updated_at"];
-  if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_usage", "account_summary", "access_token_refreshed_at", "refresh_token_updated_at", "updated_at"];
+  if (resource.path === "/integrations/oauth-accounts") return ["oauth_account_display_name", "account_usage", "account_summary", "access_token_refreshed_at", "oauth_refresh_status", "refresh_token_updated_at"];
   if (resource.path === "/youtube/outputs") return ["name", "output_summary", "updated_at"];
   if (resource.path === "/archive/destinations") return ["name", "destination_summary", "updated_at"];
   if (resource.path === "/secrets/status") return ["secret_label", "secret_scope", "secret_status", "secret_hint", "updated_at"];
@@ -2408,8 +2472,8 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path === "/audit-logs") return ["timestamp", "actor_username", "action", "result", "resource_type"];
   if (resource.path === "/service-health") return ["service_name", "service_type", "status", "health_status", "last_heartbeat_at"];
   if (resource.path === "/observability/incidents") return ["title", "severity", "status", "updated_at"];
-  if (resource.path === "/observability/diagnostics") return ["check", "status", "target", "updated_at"];
-  if (resource.path === "/observability/remediation-actions") return ["action", "status", "target", "created_at"];
+  if (resource.path === "/observability/diagnostics") return ["rule", "severity", "status", "service_id", "stream_id", "report", "updated_at"];
+  if (resource.path === "/observability/remediation-actions") return ["action", "mode", "status", "result", "created_at", "updated_at"];
   if (resource.path === "/observability/notification-deliveries") return ["event_name", "event_detail", "channel", "status", "sent_at", "error"];
   if (resource.path === "/observability/notification-channels") return ["name", "type", "enabled", "severity_filter", "event_type_filter"];
   if (resource.path === "/observability/metrics") return ["name", "service_type", "status", "value", "updated_at"];
@@ -2431,11 +2495,17 @@ function formatResourceCell(resource: ResourceDefinition, value: unknown, key = 
   if (key === "action" && resource.path === "/observability/remediation-actions" && typeof value === "string") {
     return observabilityActionLabel(value);
   }
+  if (key === "mode" && resource.path === "/observability/remediation-actions" && typeof value === "string") {
+    return observabilityModeLabel(value);
+  }
   if (resource.path === "/integrations/oauth-accounts" && key === "refresh_token_updated_at" && (value === undefined || value === null || value === "")) {
-    return <span className="text-muted-foreground">未記録</span>;
+    return <span className="text-muted-foreground">未記録（既存連携では不明）</span>;
   }
   if (resource.path === "/integrations/oauth-accounts" && key === "access_token_refreshed_at" && (value === undefined || value === null || value === "")) {
     return <span className="text-muted-foreground">未実行</span>;
+  }
+  if (resource.path === "/integrations/oauth-accounts" && key === "oauth_refresh_status" && isRecord(value)) {
+    return <OAuthRefreshStatus value={value} timezone={timezone} />;
   }
   if (resource.path === "/observability/notification-channels" && key === "type" && typeof value === "string") {
     return notificationChannelTypeLabel(value);
@@ -2470,7 +2540,7 @@ function observabilityActionLabel(value: string) {
     restart_encoder: "Encoder / Recorderを再起動",
     restart_encoder_recorder: "Encoder / Recorderを再起動",
     restart_worker: "Workerを再起動",
-    rerun_diagnostics: "診断を再実行",
+    rerun_diagnostics: "診断を再評価",
     refresh_service_status: "サービス状態を更新",
     retry_package_remux: "アーカイブ変換を再試行",
     retry_gdrive_upload: "Driveアップロードを再試行",
@@ -2478,6 +2548,16 @@ function observabilityActionLabel(value: string) {
     clear_stale_warning: "古い警告を解除",
   };
   return labels[normalized] || value;
+}
+
+function observabilityModeLabel(value: string) {
+  const labels: Record<string, string> = {
+    disabled: "無効",
+    suggest_only: "提案のみ",
+    safe_auto: "安全な自動実行",
+    manual_approval: "手動承認",
+  };
+  return labels[value.trim().toLowerCase()] || value;
 }
 
 function formatCell(value: unknown, key = "", timezone?: string): ReactNode {
@@ -2566,6 +2646,35 @@ function oauthAccountOptionDescription(row: ResourceRow) {
     oauthAccountPurposeLabel(row),
     rowValue(row, ["refresh_token_configured"]) === true ? "接続済み" : "未接続",
   ]).join(" / ");
+}
+
+function OAuthRefreshStatus({ value, timezone }: { value: Record<string, unknown>; timezone?: string }) {
+  const attemptedAt = typeof value.attempted_at === "string" ? value.attempted_at : "";
+  const failedAt = typeof value.failed_at === "string" ? value.failed_at : "";
+  const failureCode = typeof value.failure_code === "string" ? value.failure_code : "";
+  const relinkRequired = value.relink_required === true;
+  return (
+    <div className="space-y-1 text-sm leading-relaxed">
+      <div><span className="text-muted-foreground">最終試行: </span>{attemptedAt ? formatScalarValue("access_token_refresh_attempted_at", attemptedAt, timezone) : "未実行"}</div>
+      {failedAt ? <div><span className="text-muted-foreground">最終失敗: </span>{formatScalarValue("access_token_refresh_failed_at", failedAt, timezone)}</div> : <div><span className="text-muted-foreground">失敗状態: </span>なし</div>}
+      {failureCode ? <div><span className="text-muted-foreground">失敗分類: </span>{oauthRefreshFailureLabel(failureCode)}</div> : null}
+      <div><span className="text-muted-foreground">再連携: </span>{relinkRequired ? <span className="font-medium text-destructive">必要</span> : "不要"}</div>
+    </div>
+  );
+}
+
+function oauthRefreshFailureLabel(value: string) {
+  const labels: Record<string, string> = {
+    unknown: "原因を安全に分類できませんでした",
+    credentials_unavailable: "接続情報を利用できません",
+    provider_not_ready: "プロバイダ設定を利用できません",
+    provider_unavailable: "プロバイダに一時的に接続できません",
+    provider_credentials_invalid: "プロバイダのクライアント設定が無効です",
+    reauthorization_required: "認可のやり直しが必要です",
+    timeout: "プロバイダ応答がタイムアウトしました",
+    invalid_response: "プロバイダ応答を利用できません",
+  };
+  return labels[value.trim().toLowerCase()] || "原因を安全に分類できませんでした";
 }
 
 function enabledLabel(label: string, value: unknown) {
@@ -2672,6 +2781,7 @@ const columnLabels: Record<string, string> = {
   account_usage: "利用可能な用途",
   refresh_token_updated_at: "Refresh Token登録/更新",
   access_token_refreshed_at: "Access Token最終自動更新",
+  oauth_refresh_status: "自動更新の状態",
   provider_type: "プロバイダ",
   type: "種別",
   status: "状態",
@@ -2681,6 +2791,12 @@ const columnLabels: Record<string, string> = {
   event_type_filter: "通知するイベント",
   title: "タイトル",
   check: "チェック",
+  rule: "検知ルール",
+  stream_id: "配信枠ID",
+  report: "診断内容",
+  diagnostic_report: "診断内容",
+  mode: "復旧モード",
+  result: "実行結果",
   channel: "通知先",
   event_type: "イベント",
   event_name: "イベント",

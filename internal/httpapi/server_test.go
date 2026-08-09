@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1953,6 +1954,387 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	}
 }
 
+func TestStartDoesNotReviveStreamCompletedDuringDelayedDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	config := createDiscordConfigForTest(t, profiles, "race discord", "discord_bot-01", "guild-race", "voice-race", "")
+	dispatcher := &blockingStartDispatcher{
+		startEntered: make(chan struct{}, 1),
+		releaseStart: make(chan struct{}),
+		stopEntered:  make(chan struct{}, 2),
+	}
+	startHandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	// A second Server models another Control Panel process. Its local stream
+	// lock is intentionally independent, so this test proves that the durable
+	// CAS transitions, not just the in-process lock, protect the final state.
+	stopHandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, startHandler, "operator", "correct horse battery")
+
+	stream, err := streams.CreateStream(t.Context(), "delayed start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-race", DiscordVoiceID: "voice-race"}); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
+
+	startDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		startHandler.ServeHTTP(res, req)
+		startDone <- res
+	}()
+
+	select {
+	case <-dispatcher.startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("start dispatch did not begin")
+	}
+	starting, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starting.Status != "starting" {
+		t.Fatalf("stream status before concurrent stop = %q, want starting", starting.Status)
+	}
+
+	stopDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		stopReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
+		stopReq.AddCookie(cookie)
+		stopReq.Header.Set("X-CSRF-Token", csrf)
+		stopRes := httptest.NewRecorder()
+		stopHandler.ServeHTTP(stopRes, stopReq)
+		stopDone <- stopRes
+	}()
+	select {
+	case stopRes := <-stopDone:
+		if stopRes.Code != http.StatusOK {
+			t.Fatalf("concurrent stop status = %d body = %s", stopRes.Code, stopRes.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent stop did not complete")
+	}
+	select {
+	case <-dispatcher.stopEntered:
+		// The normal stop has reached the services before the delayed start is
+		// allowed to finish.
+	case <-time.After(time.Second):
+		t.Fatal("concurrent stop did not dispatch")
+	}
+	close(dispatcher.releaseStart)
+	select {
+	case startRes := <-startDone:
+		if startRes.Code != http.StatusAccepted || !strings.Contains(startRes.Body.String(), "start_superseded") {
+			t.Fatalf("delayed start status = %d body = %s", startRes.Code, startRes.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("delayed start did not complete")
+	}
+	select {
+	case <-dispatcher.stopEntered:
+		// A separate Panel can have issued the normal stop while this start was
+		// blocked. Once the delayed remote start returns, the initiating Panel
+		// must emit a compensating stop so the final service-side action is stop.
+	case <-time.After(time.Second):
+		t.Fatal("superseded delayed start did not issue compensating stop")
+	}
+	if dispatcher.stopCalls != 2 {
+		t.Fatalf("stop dispatch count after delayed start = %d, want normal plus compensating stop", dispatcher.stopCalls)
+	}
+	final, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != "completed" {
+		t.Fatalf("delayed start revived stream to %q, want completed", final.Status)
+	}
+}
+
+func TestConcurrentStreamStartsClaimOnceBeforeDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	baseStreams := store.NewMemoryStreamStore()
+	transitionGate := &gatedLifecycleTransitionStore{
+		StreamStore: baseStreams,
+		expected:    "created",
+		status:      "starting",
+		entered:     make(chan struct{}, 2),
+		release:     make(chan struct{}),
+	}
+	profiles := store.NewMemoryProfileStore()
+	config := createDiscordConfigForTest(t, profiles, "concurrent start discord", "discord_bot-01", "", "", "")
+	dispatcher := &synchronizedServiceDispatcher{}
+	first := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	second := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, first, "operator", "correct horse battery")
+
+	stream, err := baseStreams.CreateStream(t.Context(), "concurrent start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := baseStreams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-concurrent-start", DiscordVoiceID: "voice-concurrent-start"}); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	for _, handler := range []http.Handler{first, second} {
+		go func(handler http.Handler) {
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			responses <- res
+		}(handler)
+	}
+	waitForLifecycleTransitionAttempts(t, transitionGate.entered, 2)
+	close(transitionGate.release)
+
+	codes := receiveLifecycleResponseCodes(t, responses, 2)
+	if codes[http.StatusOK] != 1 || codes[http.StatusConflict] != 1 {
+		t.Fatalf("concurrent start response codes = %#v, want one 200 and one 409", codes)
+	}
+	if got := dispatcher.StartCalls(); got != 1 {
+		t.Fatalf("concurrent starts dispatched %d times, want 1", got)
+	}
+	final, err := baseStreams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != "live" {
+		t.Fatalf("concurrent start final status = %q, want live", final.Status)
+	}
+}
+
+func TestConcurrentStreamStopsClaimOnceBeforeDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	baseStreams := store.NewMemoryStreamStore()
+	transitionGate := &gatedLifecycleTransitionStore{
+		StreamStore: baseStreams,
+		expected:    "live",
+		status:      "stopping",
+		entered:     make(chan struct{}, 2),
+		release:     make(chan struct{}),
+	}
+	dispatcher := &synchronizedServiceDispatcher{}
+	first := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	second := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, first, "operator", "correct horse battery")
+
+	stream, err := baseStreams.CreateStream(t.Context(), "concurrent stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := baseStreams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	for _, handler := range []http.Handler{first, second} {
+		go func(handler http.Handler) {
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			responses <- res
+		}(handler)
+	}
+	waitForLifecycleTransitionAttempts(t, transitionGate.entered, 2)
+	close(transitionGate.release)
+
+	codes := receiveLifecycleResponseCodes(t, responses, 2)
+	if codes[http.StatusOK] != 1 || codes[http.StatusConflict] != 1 {
+		t.Fatalf("concurrent stop response codes = %#v, want one 200 and one 409", codes)
+	}
+	if got := dispatcher.StopCalls(); got != 1 {
+		t.Fatalf("concurrent stops dispatched %d times, want 1", got)
+	}
+	final, err := baseStreams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != "completed" {
+		t.Fatalf("concurrent stop final status = %q, want completed", final.Status)
+	}
+}
+
+func TestConcurrentForceStopsClaimOnceBeforeDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	baseStreams := store.NewMemoryStreamStore()
+	transitionGate := &gatedLifecycleTransitionStore{
+		StreamStore: baseStreams,
+		expected:    "live",
+		status:      "failed",
+		entered:     make(chan struct{}, 2),
+		release:     make(chan struct{}),
+	}
+	dispatcher := &synchronizedServiceDispatcher{}
+	first := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	second := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, first, "operator", "correct horse battery")
+
+	stream, err := baseStreams.CreateStream(t.Context(), "concurrent force stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := baseStreams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	for _, handler := range []http.Handler{first, second} {
+		go func(handler http.Handler) {
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/force-stop", nil)
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			responses <- res
+		}(handler)
+	}
+	waitForLifecycleTransitionAttempts(t, transitionGate.entered, 2)
+	close(transitionGate.release)
+
+	codes := receiveLifecycleResponseCodes(t, responses, 2)
+	if codes[http.StatusOK] != 1 || codes[http.StatusAccepted] != 1 {
+		t.Fatalf("concurrent force-stop response codes = %#v, want one 200 and one 202", codes)
+	}
+	if got := dispatcher.StopCalls(); got != 1 {
+		t.Fatalf("concurrent force stops dispatched %d times, want 1", got)
+	}
+	final, err := baseStreams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != "failed" {
+		t.Fatalf("concurrent force stop final status = %q, want failed", final.Status)
+	}
+}
+
+func TestStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	dispatcher := &cancelingRequestStopDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	stream, err := streams.CreateStream(t.Context(), "auto stop detached context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		DiscordConfigID:  "discord-config-auto-stop",
+		DiscordGuildID:   "guild-auto-stop",
+		DiscordVoiceID:   "voice-auto-stop",
+		AutoStartTrigger: autoStartTriggerDiscordVoiceJoin,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+
+	requestCtx, cancelRequest := context.WithCancel(t.Context())
+	dispatcher.cancelRequest = cancelRequest
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil).WithContext(requestCtx)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("stop status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.stopContextCancelled {
+		t.Fatal("downstream stop inherited the cancelled requester context")
+	}
+	completed, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != "completed" {
+		t.Fatalf("stop after downstream request cancellation left status %q, want completed", completed.Status)
+	}
+	allStreams, err := streams.ListStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waitingCount int
+	for _, candidate := range allStreams {
+		if candidate.ID != stream.ID && candidate.Status == "created" && candidate.AutoStartTrigger == autoStartTriggerDiscordVoiceJoin {
+			waitingCount++
+		}
+	}
+	if waitingCount != 1 {
+		t.Fatalf("stop after downstream request cancellation rearmed %d waiting streams, want 1: %#v", waitingCount, allStreams)
+	}
+}
+
+func TestForceStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	dispatcher := &cancelingRequestStopDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	stream, err := streams.CreateStream(t.Context(), "force stop detached context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+
+	requestCtx, cancelRequest := context.WithCancel(t.Context())
+	dispatcher.cancelRequest = cancelRequest
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/force-stop", nil).WithContext(requestCtx)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("force-stop status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.stopContextCancelled {
+		t.Fatal("force-stop downstream stop inherited the cancelled requester context")
+	}
+	failed, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != "failed" {
+		t.Fatalf("force-stop after downstream request cancellation left status %q, want failed", failed.Status)
+	}
+}
+
 func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "archive-admin", Roles: []string{"archive_admin"}}, "correct horse battery", []string{"streams.read", "archives.read", "archives.download", "archives.delete"}); err != nil {
@@ -2537,6 +2919,188 @@ func TestCreateStreamMaterializesDirectArchiveSettings(t *testing.T) {
 	}
 }
 
+func TestUpdateStreamSettingsPreservesOmittedLegacyArchiveFields(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.update"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "legacy archive stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "legacy archive profile", map[string]any{"format": "mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		ArchiveProfileID:          archiveProfile.ID,
+		ArchiveDriveDestinationID: "legacy-destination",
+		ArchiveOAuthAccountID:     "legacy-oauth-account",
+		ArchiveSharedDrive:        true,
+		ArchiveSharedDriveID:      "legacy-shared-drive",
+		ArchiveFileName:           "legacy-recording.mp4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	update := func(body string) store.Stream {
+		req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(body))
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusOK {
+			t.Fatalf("update status = %d body = %s", res.Code, res.Body.String())
+		}
+		var updated store.Stream
+		if err := json.NewDecoder(res.Body).Decode(&updated); err != nil {
+			t.Fatal(err)
+		}
+		return updated
+	}
+
+	updated := update(`{"name":"renamed legacy archive stream","archive_profile_id":"` + archiveProfile.ID + `"}`)
+	if updated.ArchiveDriveDestinationID != "legacy-destination" || updated.ArchiveOAuthAccountID != "legacy-oauth-account" || !updated.ArchiveSharedDrive || updated.ArchiveSharedDriveID != "legacy-shared-drive" || updated.ArchiveFileName != "legacy-recording.mp4" {
+		t.Fatalf("standard settings edit erased omitted legacy archive fields: %#v", updated)
+	}
+
+	cleared := update(`{"name":"renamed legacy archive stream","archive_profile_id":"` + archiveProfile.ID + `","archive_oauth_account_id":"","archive_folder_id":"","archive_shared_drive":false,"archive_shared_drive_id":"","archive_file_name":""}`)
+	if cleared.ArchiveDriveDestinationID != "" || cleared.ArchiveOAuthAccountID != "" || cleared.ArchiveFolderIDConfigured || cleared.ArchiveSharedDrive || cleared.ArchiveSharedDriveID != "" || cleared.ArchiveFileName != "" {
+		t.Fatalf("explicit legacy archive field clear was not applied: %#v", cleared)
+	}
+}
+
+type failOnStreamAssignmentRegistry struct {
+	store.ServiceRegistryStore
+	failServiceID string
+}
+
+func (s failOnStreamAssignmentRegistry) AssignServiceToStreamWithRole(ctx context.Context, serviceID, streamID, actorUserID, assignmentRole string) (store.RegisteredService, error) {
+	if serviceID == s.failServiceID {
+		return store.RegisteredService{}, errors.New("injected stream assignment failure")
+	}
+	return s.ServiceRegistryStore.AssignServiceToStreamWithRole(ctx, serviceID, streamID, actorUserID, assignmentRole)
+}
+
+func TestUpdateStreamSettingsRollsBackExplicitAssignmentClearWhenLaterAssignmentFails(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.update", "services.assign", "workers.assign"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "before assignment rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceInstance(t, auth, "encoder-old", "encoder_recorder")
+	registerServiceInstance(t, auth, "worker-fail", "worker")
+	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "encoder-old", stream.ID, "bootstrap", "primary"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(
+		streams,
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(failOnStreamAssignmentRegistry{ServiceRegistryStore: auth, failServiceID: "worker-fail"}),
+	)
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"name":"must not persist","encoder_service_id":"","worker_service_id":"worker-fail"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "assign_service_failed") {
+		t.Fatalf("update status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	updated, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "before assignment rollback" {
+		t.Fatalf("settings persisted despite failed assignment: %#v", updated)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 1 || assignments[0].ServiceID != "encoder-old" || assignments[0].AssignmentRole != "primary" {
+		t.Fatalf("stream assignments did not converge after failure: %#v", assignments)
+	}
+	for serviceID, expectedStreamID := range map[string]string{
+		"encoder-old": stream.ID,
+		"worker-fail": "",
+	} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if service.CurrentStreamID != expectedStreamID {
+			t.Fatalf("%s current stream = %q, want %q", serviceID, service.CurrentStreamID, expectedStreamID)
+		}
+	}
+}
+
+func TestUpdateStreamSettingsExplicitEmptyServiceIDClearsOnlyRequestedAssignment(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.update", "services.assign", "workers.assign"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "before explicit assignment clear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceInstance(t, auth, "encoder-clear", "encoder_recorder")
+	registerServiceInstance(t, auth, "worker-preserve", "worker")
+	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "encoder-clear", stream.ID, "bootstrap", "primary"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "worker-preserve", stream.ID, "bootstrap", "primary"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"name":"after explicit assignment clear","encoder_service_id":""}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("update status = %d body = %s", res.Code, res.Body.String())
+	}
+	updated, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "after explicit assignment clear" {
+		t.Fatalf("updated name = %q", updated.Name)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 1 || assignments[0].ServiceID != "worker-preserve" || assignments[0].AssignmentRole != "primary" {
+		t.Fatalf("explicit encoder clear changed unexpected assignments: %#v", assignments)
+	}
+	for serviceID, expectedStreamID := range map[string]string{
+		"encoder-clear":   "",
+		"worker-preserve": stream.ID,
+	} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if service.CurrentStreamID != expectedStreamID {
+			t.Fatalf("%s current stream = %q, want %q", serviceID, service.CurrentStreamID, expectedStreamID)
+		}
+	}
+}
+
 func TestCreateStreamMaterializesLocalRetentionArchiveProfileWithoutDrive(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
@@ -2838,6 +3402,124 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 	}
 	if dispatcher.startCalls != 1 {
 		t.Fatalf("active stream must not be dispatched again, got %d calls", dispatcher.startCalls)
+	}
+}
+
+func TestServiceStopStreamUsesPrimaryDiscordBotAndCanonicalLifecycle(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "discord service stop stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	discordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.stop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	if _, err := auth.AssignServiceToStream(t.Context(), "discord-01", stream.ID, "test-user"); err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	config := createDiscordConfigForTest(t, profiles, "service stop discord", "discord-01", "guild-stop", "voice-stop", "")
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stop", DiscordVoiceID: "voice-stop", AutoStartTrigger: autoStartTriggerDiscordVoiceJoin}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+
+	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/stop", nil)
+	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("service stop status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.stopCalls != 1 || dispatcher.stoppedStream.ID != stream.ID || len(dispatcher.stoppedServices) != 3 {
+		t.Fatalf("service stop must use the canonical dispatch: %#v", dispatcher)
+	}
+	stopped, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Status != "completed" {
+		t.Fatalf("service stop must complete the stream, got %#v", stopped)
+	}
+
+	otherDiscordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.stop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, otherDiscordToken, store.ServiceRegistration{ServiceID: "discord-02", ServiceType: "discord_bot", ServiceName: "Discord 02", PublicURL: "https://discord-02.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	otherReq := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/stop", nil)
+	otherReq.Header.Set("Authorization", "Bearer "+otherDiscordToken.RawToken)
+	otherRes := httptest.NewRecorder()
+	handler.ServeHTTP(otherRes, otherReq)
+	if otherRes.Code != http.StatusForbidden || !strings.Contains(otherRes.Body.String(), "service_not_primary_assignment") {
+		t.Fatalf("unassigned Discord Bot completed stop status = %d body = %s", otherRes.Code, otherRes.Body.String())
+	}
+
+	duplicateReq := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/stop", nil)
+	duplicateReq.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	duplicateRes := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateRes, duplicateReq)
+	if duplicateRes.Code != http.StatusOK || !strings.Contains(duplicateRes.Body.String(), "already_stopped") {
+		t.Fatalf("duplicate service stop status = %d body = %s", duplicateRes.Code, duplicateRes.Body.String())
+	}
+	if dispatcher.stopCalls != 1 {
+		t.Fatalf("completed stream must not be stopped twice, got %d calls", dispatcher.stopCalls)
+	}
+}
+
+func TestStopStreamReportsWaitingStreamRearmFailure(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := &failingRearmStreamStore{MemoryStreamStore: store.NewMemoryStreamStore()}
+	stream, err := streams.CreateStream(t.Context(), "VC rearm failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+	if _, err := streams.MemoryStreamStore.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{AutoStartTrigger: autoStartTriggerDiscordVoiceJoin}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	streams.failSettingsUpdate = true
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "waiting_stream_rearm_failed") {
+		t.Fatalf("stop must surface rearm warning, status=%d body=%s", res.Code, res.Body.String())
+	}
+	completed, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != "completed" {
+		t.Fatalf("stream status after rearm failure = %q, want completed", completed.Status)
+	}
+	foundRearmFailure := false
+	for _, event := range auth.AuditEvents() {
+		if event.Action == "streams.rearm" && event.ResourceID == stream.ID && event.Result == "failure" && event.Metadata["reason"] == "waiting_stream_rearm_failed" {
+			foundRearmFailure = true
+		}
+	}
+	if !foundRearmFailure {
+		t.Fatalf("waiting stream rearm failure was not audited: %#v", auth.AuditEvents())
 	}
 }
 
@@ -3341,6 +4023,11 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	scheduledStart := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{ScheduledStartAt: &scheduledStart})
+	if err != nil {
+		t.Fatal(err)
+	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
 	secrets := store.NewMemorySecretStore()
 	integrations := store.NewMemoryIntegrationStore()
@@ -3369,9 +4056,10 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	profiles := store.NewMemoryProfileStore()
 	discord := createDiscordConfigForTest(t, profiles, "youtube live api discord", "discord_bot-01", "guild-youtube", "voice-youtube", "")
 	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "live-api-output", map[string]any{
-		"mode":             "live_api",
-		"oauth_account_id": account.ID,
-		"privacy_status":   "private",
+		"mode":                     "live_api",
+		"oauth_account_id":         account.ID,
+		"privacy_status":           "private",
+		"broadcast_title_template": "配信: {{program_title}}",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3394,6 +4082,12 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	}
 	if youtubeLive.prepareCalls != 1 || youtubeLive.prepareRequest.Credentials.ClientID != "youtube-client-id" || youtubeLive.prepareRequest.Credentials.ClientSecret != "raw-youtube-client-secret" || youtubeLive.prepareRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" {
 		t.Fatalf("youtube live api was not called with OAuth credentials: %#v", youtubeLive.prepareRequest)
+	}
+	if youtubeLive.prepareRequest.Title != "配信: real youtube stream" {
+		t.Fatalf("youtube live api title was not expanded from the stream name: %#v", youtubeLive.prepareRequest)
+	}
+	if !youtubeLive.prepareRequest.ScheduledStart.Equal(scheduledStart) {
+		t.Fatalf("youtube live api did not receive the stream scheduled start: got=%s want=%s", youtubeLive.prepareRequest.ScheduledStart, scheduledStart)
 	}
 	if dispatcher.startRequest.EncoderRTMPURL != "rtmps://youtube.example.com/live2" || dispatcher.startRequest.EncoderStreamKey != "" || !strings.HasPrefix(dispatcher.startRequest.EncoderStreamKeySecretName, "youtube_stream_key_runtime_") {
 		t.Fatalf("youtube live api output was not dispatched as a runtime secret reference: %#v", dispatcher.startRequest)
@@ -3659,8 +4353,8 @@ func TestStopStreamKeepsYouTubeRuntimeWhenLiveAPICompleteFails(t *testing.T) {
 	stopReq.Header.Set("X-CSRF-Token", csrf)
 	stopRes := httptest.NewRecorder()
 	handler.ServeHTTP(stopRes, stopReq)
-	if stopRes.Code != http.StatusBadGateway || !strings.Contains(stopRes.Body.String(), "youtube_live_api_complete_failed") {
-		t.Fatalf("expected youtube complete failure, status = %d body = %s", stopRes.Code, stopRes.Body.String())
+	if stopRes.Code != http.StatusOK || !strings.Contains(stopRes.Body.String(), "youtube_complete_warning") {
+		t.Fatalf("expected physical stop with youtube completion warning, status = %d body = %s", stopRes.Code, stopRes.Body.String())
 	}
 	for _, raw := range []string{"runtime-youtube-live-api-key", "raw-youtube-refresh-token", "raw-youtube-client-secret"} {
 		if strings.Contains(stopRes.Body.String(), raw) {
@@ -3681,8 +4375,8 @@ func TestStopStreamKeepsYouTubeRuntimeWhenLiveAPICompleteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != "failed" {
-		t.Fatalf("stream should be marked failed when youtube complete fails, got %s", updated.Status)
+	if updated.Status != "completed" {
+		t.Fatalf("stream should complete even when YouTube completion is retried, got %s", updated.Status)
 	}
 
 	youtubeLive.completeErr = nil
@@ -5425,6 +6119,48 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 	if got := publicRes.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("public preview CORS header = %q", got)
 	}
+	segmentPath := strings.TrimSuffix(parsed.Path, "/index.m3u8") + "/segment-000001.ts"
+	dispatcher.result = servicecall.PreviewAssetResult{
+		StatusCode:   http.StatusPartialContent,
+		Success:      true,
+		Body:         []byte("bcd"),
+		ContentRange: "bytes 1-3/6",
+		AcceptRanges: "bytes",
+	}
+	segmentReq := httptest.NewRequest(http.MethodGet, segmentPath, nil)
+	segmentReq.Header.Set("Range", "bytes=1-3")
+	segmentRes := httptest.NewRecorder()
+	handler.ServeHTTP(segmentRes, segmentReq)
+	if segmentRes.Code != http.StatusPartialContent || segmentRes.Header().Get("Content-Range") != "bytes 1-3/6" || segmentRes.Header().Get("Accept-Ranges") != "bytes" || segmentRes.Body.String() != "bcd" {
+		t.Fatalf("public preview segment status=%d headers=%#v body=%q", segmentRes.Code, segmentRes.Header(), segmentRes.Body.String())
+	}
+	if dispatcher.name != "segment-000001.ts" || dispatcher.byteRange != "bytes=1-3" || !strings.Contains(segmentRes.Header().Get("Access-Control-Expose-Headers"), "Content-Range") {
+		t.Fatalf("public preview segment dispatch/CORS mismatch: %#v headers=%#v", dispatcher, segmentRes.Header())
+	}
+
+	dispatcher.result = servicecall.PreviewAssetResult{
+		StatusCode:   http.StatusRequestedRangeNotSatisfiable,
+		Success:      true,
+		ContentRange: "bytes */6",
+		AcceptRanges: "bytes",
+	}
+	unsatisfiedReq := httptest.NewRequest(http.MethodGet, segmentPath, nil)
+	unsatisfiedReq.Header.Set("Range", "bytes=99-")
+	unsatisfiedRes := httptest.NewRecorder()
+	handler.ServeHTTP(unsatisfiedRes, unsatisfiedReq)
+	if unsatisfiedRes.Code != http.StatusRequestedRangeNotSatisfiable || unsatisfiedRes.Header().Get("Content-Range") != "bytes */6" || unsatisfiedRes.Header().Get("Accept-Ranges") != "bytes" || unsatisfiedRes.Body.Len() != 0 {
+		t.Fatalf("public preview unsatisfied range status=%d headers=%#v body=%q", unsatisfiedRes.Code, unsatisfiedRes.Header(), unsatisfiedRes.Body.String())
+	}
+	if dispatcher.name != "segment-000001.ts" || dispatcher.byteRange != "bytes=99-" || !strings.Contains(unsatisfiedRes.Header().Get("Access-Control-Expose-Headers"), "Content-Range") {
+		t.Fatalf("public preview unsatisfied range dispatch/CORS mismatch: %#v headers=%#v", dispatcher, unsatisfiedRes.Header())
+	}
+
+	dispatcher.result.ContentRange = "bytes 1-3/6"
+	invalidRangeRes := httptest.NewRecorder()
+	handler.ServeHTTP(invalidRangeRes, httptest.NewRequest(http.MethodGet, segmentPath, nil))
+	if invalidRangeRes.Code != http.StatusBadGateway || !strings.Contains(invalidRangeRes.Body.String(), "invalid_stream_preview_range") {
+		t.Fatalf("public preview malformed unsatisfied range status=%d body=%s", invalidRangeRes.Code, invalidRangeRes.Body.String())
+	}
 
 	tamperedPath := strings.Replace(parsed.Path, "ast_ingest_v1.", "ast_ingest_v1.X", 1)
 	tamperedRes := httptest.NewRecorder()
@@ -5438,7 +6174,7 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 	}
 	stoppedRes := httptest.NewRecorder()
 	handler.ServeHTTP(stoppedRes, httptest.NewRequest(http.MethodGet, parsed.Path, nil))
-	if stoppedRes.Code != http.StatusGone || dispatcher.calls != 1 {
+	if stoppedRes.Code != http.StatusGone || dispatcher.calls != 4 {
 		t.Fatalf("stopped preview status=%d body=%s calls=%d", stoppedRes.Code, stoppedRes.Body.String(), dispatcher.calls)
 	}
 	if strings.Contains(toJSONForTest(t, auth.AuditEvents()), "ast_ingest_v1") {
@@ -6282,6 +7018,118 @@ func TestServiceRuntimeConfigIncludesConfiguredDiscordStreamsWithoutAssignments(
 	}
 	if strings.Contains(res.Body.String(), "guild-other") || strings.Contains(res.Body.String(), "discord-02") || strings.Contains(res.Body.String(), "discord-bot-01") {
 		t.Fatalf("runtime config leaked another service or raw secret: %s", res.Body.String())
+	}
+}
+
+func TestServiceRuntimeConfigExcludesCompletedDiscordSourceAfterRearm(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	source, err := streams.CreateStream(t.Context(), "completed VC source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor, err := streams.CreateStream(t.Context(), "waiting VC successor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	discordProfile, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "rearm discord", map[string]any{
+		"service_id":       "discord-01",
+		"guild_id":         "guild-rearm",
+		"voice_channel_id": "voice-rearm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := store.StreamSettings{
+		DiscordConfigID:  discordProfile.ID,
+		DiscordGuildID:   "guild-rearm",
+		DiscordVoiceID:   "voice-rearm",
+		AutoStartTrigger: autoStartTriggerDiscordVoiceJoin,
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), source.ID, settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), successor.ID, settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), source.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.AssignServiceToStream(t.Context(), "discord-01", successor.ID, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
+
+	req := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=discord-01", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("runtime config status = %d body = %s", res.Code, res.Body.String())
+	}
+	var body serviceRuntimeConfigResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.StreamDiscordConfigs) != 1 {
+		t.Fatalf("runtime config retained terminal or ambiguous discord configs: %#v", body.StreamDiscordConfigs)
+	}
+	if got := body.StreamDiscordConfigs[0]; got.StreamID != successor.ID || got.AssignmentRole != "primary" {
+		t.Fatalf("runtime config did not retain only the waiting successor: %#v", got)
+	}
+	contender, err := streams.CreateStream(t.Context(), "ambiguous waiting contender")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), contender.ID, settings); err != nil {
+		t.Fatal(err)
+	}
+	// An explicit primary successor wins over a separately saved, unassigned
+	// candidate for the same VC. This prevents a Bot refresh from replacing the
+	// authoritative successor with a map-order-dependent implicit candidate.
+	secondReq := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=discord-01", nil)
+	secondReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+	secondRes := httptest.NewRecorder()
+	handler.ServeHTTP(secondRes, secondReq)
+	if secondRes.Code != http.StatusOK {
+		t.Fatalf("runtime config with explicit successor status = %d body = %s", secondRes.Code, secondRes.Body.String())
+	}
+	body = serviceRuntimeConfigResponse{}
+	if err := json.NewDecoder(secondRes.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.StreamDiscordConfigs) != 1 || body.StreamDiscordConfigs[0].StreamID != successor.ID {
+		t.Fatalf("explicit successor did not win same-VC candidate selection: %#v", body.StreamDiscordConfigs)
+	}
+	if _, err := auth.UnassignServiceFromStream(t.Context(), "discord-01", "operator"); err != nil {
+		t.Fatal(err)
+	}
+	if assignments, err := auth.ListServiceAssignmentsForService(t.Context(), "discord-01"); err != nil {
+		t.Fatal(err)
+	} else if len(assignments) != 0 {
+		t.Fatalf("discord assignment still present after unassign: %#v", assignments)
+	}
+	thirdReq := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=discord-01", nil)
+	thirdReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+	thirdRes := httptest.NewRecorder()
+	handler.ServeHTTP(thirdRes, thirdReq)
+	if thirdRes.Code != http.StatusOK {
+		t.Fatalf("runtime config with ambiguous candidates status = %d body = %s", thirdRes.Code, thirdRes.Body.String())
+	}
+	body = serviceRuntimeConfigResponse{}
+	if err := json.NewDecoder(thirdRes.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.StreamDiscordConfigs) != 0 {
+		successorCurrent, _ := streams.GetStream(t.Context(), successor.ID)
+		contenderCurrent, _ := streams.GetStream(t.Context(), contender.ID)
+		t.Fatalf("ambiguous unassigned same-VC candidates must not choose an implicit primary: source=%s successor=%#v contender=%#v configs=%#v", source.ID, successorCurrent, contenderCurrent, body.StreamDiscordConfigs)
 	}
 }
 
@@ -12826,13 +13674,16 @@ func TestValidateNodeConfigurationSecretPermissions(t *testing.T) {
 	}
 }
 
-func TestCreateDiscordNodeRegistrationTokenRequiresStartPermission(t *testing.T) {
+func TestCreateDiscordNodeRegistrationTokenRequiresStartAndStopPermissions(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "limited", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "streams.start"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "start-only", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "streams.start", "streams.stop"}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
@@ -12845,6 +13696,16 @@ func TestCreateDiscordNodeRegistrationTokenRequiresStartPermission(t *testing.T)
 	handler.ServeHTTP(limitedRes, limitedReq)
 	if limitedRes.Code != http.StatusForbidden || !strings.Contains(limitedRes.Body.String(), "permission_escalation") {
 		t.Fatalf("limited discord node status = %d body = %s", limitedRes.Code, limitedRes.Body.String())
+	}
+
+	startOnlyCookie, startOnlyCSRF := loginForTest(t, handler, "start-only", "correct horse battery")
+	startOnlyReq := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", bytes.NewBufferString(`{"node_type":"discord_bot","node_id":"discord-start-only","name":"Discord Start Only","host":"discord.example.com","port":8443,"ssl_enabled":true}`))
+	startOnlyReq.AddCookie(startOnlyCookie)
+	startOnlyReq.Header.Set("X-CSRF-Token", startOnlyCSRF)
+	startOnlyRes := httptest.NewRecorder()
+	handler.ServeHTTP(startOnlyRes, startOnlyReq)
+	if startOnlyRes.Code != http.StatusForbidden || !strings.Contains(startOnlyRes.Body.String(), "permission_escalation") {
+		t.Fatalf("start-only discord node status = %d body = %s", startOnlyRes.Code, startOnlyRes.Body.String())
 	}
 
 	adminCookie, adminCSRF := loginForTest(t, handler, "admin", "correct horse battery")
@@ -12862,8 +13723,112 @@ func TestCreateDiscordNodeRegistrationTokenRequiresStartPermission(t *testing.T)
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if !stringSliceContains(body.Scopes, "streams.start") || !stringSliceContains(body.Scopes, "discord.status.write") {
-		t.Fatalf("discord node scopes missing auto-start permissions: %#v", body.Scopes)
+	if !stringSliceContains(body.Scopes, "streams.start") || !stringSliceContains(body.Scopes, "streams.stop") || !stringSliceContains(body.Scopes, "discord.status.write") {
+		t.Fatalf("discord node scopes missing paired auto-start/stop permissions: %#v", body.Scopes)
+	}
+}
+
+func TestLegacyDiscordNodeConfigureRequiresStopPermissionAndUpgradesScope(t *testing.T) {
+	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "start-only", Roles: []string{"node_operator"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"node_operator"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	legacyToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "service.heartbeat", "service.config.read", "discord.status.write", "streams.start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(t.Context(), legacyToken, store.ServiceRegistration{
+		ServiceID:   "discord-legacy",
+		ServiceType: "discord_bot",
+		ServiceName: "Legacy Discord Bot",
+		Host:        "discord.example.com",
+		Port:        8443,
+		SSLEnabled:  true,
+		PublicURL:   "https://discord.example.com:8443",
+	}); err != nil {
+		t.Fatalf("precreate legacy Discord Bot: %v", err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+
+	startOnlyCookie, startOnlyCSRF := loginForTest(t, handler, "start-only", "correct horse battery")
+	deniedReq := httptest.NewRequest(http.MethodPost, "/nodes/discord-legacy/configure-token", nil)
+	deniedReq.AddCookie(startOnlyCookie)
+	deniedReq.Header.Set("X-CSRF-Token", startOnlyCSRF)
+	deniedRes := httptest.NewRecorder()
+	handler.ServeHTTP(deniedRes, deniedReq)
+	if deniedRes.Code != http.StatusForbidden || !strings.Contains(deniedRes.Body.String(), "permission_escalation") {
+		t.Fatalf("legacy Discord Configure Token without streams.stop status = %d body = %s", deniedRes.Code, deniedRes.Body.String())
+	}
+	rotateReq := httptest.NewRequest(http.MethodPost, "/nodes/discord-legacy/rotate-token", nil)
+	rotateReq.AddCookie(startOnlyCookie)
+	rotateReq.Header.Set("X-CSRF-Token", startOnlyCSRF)
+	rotateRes := httptest.NewRecorder()
+	handler.ServeHTTP(rotateRes, rotateReq)
+	if rotateRes.Code != http.StatusForbidden || !strings.Contains(rotateRes.Body.String(), "permission_escalation") {
+		t.Fatalf("legacy Discord Runtime Token rotation without streams.stop status = %d body = %s", rotateRes.Code, rotateRes.Body.String())
+	}
+	genericRotateReq := httptest.NewRequest(http.MethodPost, "/api-tokens/"+legacyToken.ID+"/rotate", nil)
+	genericRotateReq.AddCookie(startOnlyCookie)
+	genericRotateReq.Header.Set("X-CSRF-Token", startOnlyCSRF)
+	genericRotateRes := httptest.NewRecorder()
+	handler.ServeHTTP(genericRotateRes, genericRotateReq)
+	if genericRotateRes.Code != http.StatusForbidden || !strings.Contains(genericRotateRes.Body.String(), "permission_escalation") {
+		t.Fatalf("legacy Discord generic token rotation without streams.stop status = %d body = %s", genericRotateRes.Code, genericRotateRes.Body.String())
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), legacyToken.RawToken, "streams.start"); err != nil {
+		t.Fatalf("denied configuration or rotation must leave legacy token active: %v", err)
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), legacyToken.RawToken, "streams.stop"); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("legacy token unexpectedly gained streams.stop: %v", err)
+	}
+
+	operatorCookie, operatorCSRF := loginForTest(t, handler, "operator", "correct horse battery")
+	configureReq := httptest.NewRequest(http.MethodPost, "/nodes/discord-legacy/configure-token", nil)
+	configureReq.AddCookie(operatorCookie)
+	configureReq.Header.Set("X-CSRF-Token", operatorCSRF)
+	configureRes := httptest.NewRecorder()
+	handler.ServeHTTP(configureRes, configureReq)
+	if configureRes.Code != http.StatusCreated {
+		t.Fatalf("legacy Discord Configure Token status = %d body = %s", configureRes.Code, configureRes.Body.String())
+	}
+	var configureBody struct {
+		ConfigureToken string `json:"configure_token"`
+	}
+	if err := json.NewDecoder(configureRes.Body).Decode(&configureBody); err != nil {
+		t.Fatal(err)
+	}
+	if configureBody.ConfigureToken == "" {
+		t.Fatal("Configure Token was not returned once")
+	}
+
+	activateReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"discord-legacy","configureToken":"`+configureBody.ConfigureToken+`","version":"1.3.7"}`))
+	activateRes := httptest.NewRecorder()
+	handler.ServeHTTP(activateRes, activateReq)
+	if activateRes.Code != http.StatusOK {
+		t.Fatalf("legacy Discord configure status = %d body = %s", activateRes.Code, activateRes.Body.String())
+	}
+	var activateBody struct {
+		Config struct {
+			Auth struct {
+				Token string `json:"token"`
+			} `json:"auth"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(activateRes.Body).Decode(&activateBody); err != nil {
+		t.Fatal(err)
+	}
+	if activateBody.Config.Auth.Token == "" {
+		t.Fatal("updated Node Runtime Token was not returned once")
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), activateBody.Config.Auth.Token, "streams.stop"); err != nil {
+		t.Fatalf("reconfigured Discord Bot must authorize streams.stop: %v", err)
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), legacyToken.RawToken, "streams.start"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("legacy token must be retired after reconfiguration: %v", err)
 	}
 }
 
@@ -13371,6 +14336,8 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"inc-1","status":"acknowledged"}`))
 		case "/incidents/inc-1/resolve":
 			_, _ = w.Write([]byte(`{"id":"inc-1","status":"resolved"}`))
+		case "/incidents/inc-1/diagnostics/rerun":
+			_, _ = w.Write([]byte(`{"incident":{"id":"inc-1","status":"acknowledged"},"outcome":"evaluated"}`))
 		case "/remediation-actions/rem-1/approve":
 			_, _ = w.Write([]byte(`{"id":"rem-1","status":"approved"}`))
 		default:
@@ -13380,7 +14347,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	defer obs.Close()
 
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"incidents.read", "incidents.acknowledge", "incidents.resolve", "diagnostics.read", "metrics.read", "remediation.read", "remediation.approve", "notification_channels.read", "notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test", "audit_logs.read"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"incidents.read", "incidents.acknowledge", "incidents.resolve", "diagnostics.read", "diagnostics.run", "metrics.read", "remediation.read", "remediation.approve", "notification_channels.read", "notification_channels.create", "notification_channels.update", "notification_channels.delete", "notification_channels.test", "audit_logs.read"}); err != nil {
 		t.Fatal(err)
 	}
 	observabilityToken := registerObservabilityNodeForTest(t, auth, "secret-token", obs.URL)
@@ -13494,12 +14461,20 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	if approveRes.Code != http.StatusOK || !strings.Contains(approveRes.Body.String(), "approved") {
 		t.Fatalf("approve status = %d body = %s", approveRes.Code, approveRes.Body.String())
 	}
+	rerunReq := httptest.NewRequest(http.MethodPost, "/observability/incidents/inc-1/diagnostics/rerun", nil)
+	rerunReq.AddCookie(cookie)
+	rerunReq.Header.Set("X-CSRF-Token", csrf)
+	rerunRes := httptest.NewRecorder()
+	handler.ServeHTTP(rerunRes, rerunReq)
+	if rerunRes.Code != http.StatusOK || !strings.Contains(rerunRes.Body.String(), `"outcome":"evaluated"`) {
+		t.Fatalf("diagnostic rerun status = %d body = %s", rerunRes.Code, rerunRes.Body.String())
+	}
 	if gotAuth != "Bearer "+observabilityToken.RawToken {
 		t.Fatalf("unexpected upstream auth: %s", gotAuth)
 	}
 	events = auth.AuditEvents()
-	if len(events) == 0 || events[len(events)-1].Action != "remediation.approve" {
-		t.Fatalf("expected remediation approve audit event, got %#v", events)
+	if len(events) == 0 || events[len(events)-1].Action != "diagnostics.run" || events[len(events)-1].ResourceType != "incident" || events[len(events)-1].ResourceID != "inc-1" {
+		t.Fatalf("expected diagnostic rerun audit event, got %#v", events)
 	}
 }
 
@@ -13524,6 +14499,95 @@ func TestObservabilityProxyDoesNotLeakTokenOnUpstreamError(t *testing.T) {
 	}
 	if strings.Contains(res.Body.String(), "secret-token") {
 		t.Fatalf("token leaked in response: %s", res.Body.String())
+	}
+}
+
+func TestObservabilityDiagnosticRerunAuditsSafeUpstreamFailure(t *testing.T) {
+	tests := []struct {
+		name           string
+		upstreamStatus int
+		upstreamBody   string
+		wantStatus     int
+		wantCode       string
+	}{
+		{
+			name:           "upstream unavailable",
+			upstreamStatus: http.StatusServiceUnavailable,
+			upstreamBody:   `{"code":"private_upstream_failure","detail":"private-token"}`,
+			wantStatus:     http.StatusServiceUnavailable,
+			wantCode:       "observability_unavailable",
+		},
+		{
+			name:           "upstream rate limited",
+			upstreamStatus: http.StatusTooManyRequests,
+			upstreamBody:   `{"code":"private_upstream_failure","detail":"private-token"}`,
+			wantStatus:     http.StatusTooManyRequests,
+			wantCode:       "observability_rate_limited",
+		},
+		{
+			name:           "upstream gateway failure",
+			upstreamStatus: http.StatusBadGateway,
+			upstreamBody:   `{"code":"private_upstream_failure","detail":"private-token"}`,
+			wantStatus:     http.StatusBadGateway,
+			wantCode:       "observability_request_failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost && r.URL.Path == "/notification-events" {
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				if r.Method != http.MethodPost || r.URL.Path != "/incidents/inc-1/diagnostics/rerun" {
+					t.Fatalf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.upstreamStatus)
+				_, _ = w.Write([]byte(tt.upstreamBody))
+			}))
+			defer obs.Close()
+
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"diagnostics.run"}); err != nil {
+				t.Fatal(err)
+			}
+			registerObservabilityNodeForTest(t, auth, "unused", obs.URL)
+			handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+			cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+			req := httptest.NewRequest(http.MethodPost, "/observability/incidents/inc-1/diagnostics/rerun", nil)
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != tt.wantStatus {
+				t.Fatalf("status = %d body = %s, want %d", res.Code, res.Body.String(), tt.wantStatus)
+			}
+			if !strings.Contains(res.Body.String(), `"code":"`+tt.wantCode+`"`) || strings.Contains(res.Body.String(), "private-token") {
+				t.Fatalf("unsafe response body = %s", res.Body.String())
+			}
+
+			events := auth.AuditEvents()
+			var failureAudit *store.AuditEvent
+			for i := range events {
+				event := events[i]
+				if event.Action == "diagnostics.run" && event.ResourceType == "incident" && event.ResourceID == "inc-1" && event.Result == "failure" {
+					failureAudit = &event
+					break
+				}
+			}
+			if failureAudit == nil {
+				t.Fatalf("diagnostic rerun failure was not audited: %#v", events)
+			}
+			if failureAudit.ActorUsername != "admin" || failureAudit.Metadata["code"] != tt.wantCode || failureAudit.Metadata["reason"] != tt.wantCode || failureAudit.Metadata["status"] != tt.wantStatus {
+				t.Fatalf("unsafe or incomplete failure audit: %#v", failureAudit)
+			}
+			if auditJSON := toJSONForTest(t, failureAudit); strings.Contains(auditJSON, "private-token") || strings.Contains(auditJSON, "private_upstream_failure") {
+				t.Fatalf("upstream body leaked into audit: %s", auditJSON)
+			}
+		})
 	}
 }
 
@@ -14668,6 +15732,112 @@ type fakeServiceDispatcher struct {
 	dispatchFailureError     string
 }
 
+type blockingStartDispatcher struct {
+	fakeServiceDispatcher
+	startEntered chan struct{}
+	releaseStart chan struct{}
+	stopEntered  chan struct{}
+}
+
+// gatedLifecycleTransitionStore lets separate Server instances reach the same
+// conditional transition together. It verifies the persisted CAS claim rather
+// than relying on one Server's in-process stream lock.
+type gatedLifecycleTransitionStore struct {
+	store.StreamStore
+	expected string
+	status   string
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (s *gatedLifecycleTransitionStore) TransitionStreamStatus(ctx context.Context, id, expectedStatus, status string) (store.Stream, bool, error) {
+	if strings.EqualFold(strings.TrimSpace(expectedStatus), s.expected) && strings.EqualFold(strings.TrimSpace(status), s.status) {
+		select {
+		case s.entered <- struct{}{}:
+		case <-ctx.Done():
+			return store.Stream{}, false, ctx.Err()
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return store.Stream{}, false, ctx.Err()
+		}
+	}
+	return s.StreamStore.TransitionStreamStatus(ctx, id, expectedStatus, status)
+}
+
+type synchronizedServiceDispatcher struct {
+	fakeServiceDispatcher
+	mu sync.Mutex
+}
+
+// cancelingRequestStopDispatcher simulates the Discord Bot's self-stop: the
+// Bot cancels the outbound auto-stop request while processing the Panel's
+// downstream stop dispatch. The Panel must continue the durable lifecycle on
+// a detached, bounded context.
+type cancelingRequestStopDispatcher struct {
+	fakeServiceDispatcher
+	cancelRequest        context.CancelFunc
+	stopContextCancelled bool
+}
+
+func (f *cancelingRequestStopDispatcher) Stop(ctx context.Context, stream store.Stream, services []store.RegisteredService) []servicecall.DispatchResult {
+	if f.cancelRequest != nil {
+		f.cancelRequest()
+	}
+	f.stopContextCancelled = ctx.Err() != nil
+	return f.fakeServiceDispatcher.Stop(ctx, stream, services)
+}
+
+func (f *synchronizedServiceDispatcher) Start(ctx context.Context, stream store.Stream, services []store.RegisteredService, req servicecall.StartRequest) []servicecall.DispatchResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fakeServiceDispatcher.Start(ctx, stream, services, req)
+}
+
+func (f *synchronizedServiceDispatcher) Stop(ctx context.Context, stream store.Stream, services []store.RegisteredService) []servicecall.DispatchResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fakeServiceDispatcher.Stop(ctx, stream, services)
+}
+
+func (f *synchronizedServiceDispatcher) StartCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.startCalls
+}
+
+func (f *synchronizedServiceDispatcher) StopCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCalls
+}
+
+func waitForLifecycleTransitionAttempts(t *testing.T, entered <-chan struct{}, want int) {
+	t.Helper()
+	for range want {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatalf("only part of the concurrent lifecycle transition reached the CAS gate")
+		}
+	}
+}
+
+func receiveLifecycleResponseCodes(t *testing.T, responses <-chan *httptest.ResponseRecorder, want int) map[int]int {
+	t.Helper()
+	codes := make(map[int]int, want)
+	for range want {
+		select {
+		case response := <-responses:
+			codes[response.Code]++
+		case <-time.After(time.Second):
+			t.Fatalf("concurrent lifecycle request did not complete")
+		}
+	}
+	return codes
+}
+
 type failingYouTubeRuntimeStreamStore struct {
 	*store.MemoryStreamStore
 	err error
@@ -14677,11 +15847,24 @@ func (s *failingYouTubeRuntimeStreamStore) SaveStreamYouTubeRuntime(context.Cont
 	return s.err
 }
 
+type failingRearmStreamStore struct {
+	*store.MemoryStreamStore
+	failSettingsUpdate bool
+}
+
+func (s *failingRearmStreamStore) UpdateStreamSettings(ctx context.Context, id string, settings store.StreamSettings) (store.Stream, error) {
+	if s.failSettingsUpdate {
+		return store.Stream{}, errors.New("waiting stream settings unavailable")
+	}
+	return s.MemoryStreamStore.UpdateStreamSettings(ctx, id, settings)
+}
+
 type previewFakeDispatcher struct {
 	fakeServiceDispatcher
-	result servicecall.PreviewAssetResult
-	calls  int
-	name   string
+	result    servicecall.PreviewAssetResult
+	calls     int
+	name      string
+	byteRange string
 }
 
 type notificationFakeDispatcher struct {
@@ -14693,9 +15876,10 @@ type notificationFakeDispatcher struct {
 	notifiedURL     string
 }
 
-func (f *previewFakeDispatcher) PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name string) servicecall.PreviewAssetResult {
+func (f *previewFakeDispatcher) PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name, byteRange string) servicecall.PreviewAssetResult {
 	f.calls++
 	f.name = name
+	f.byteRange = byteRange
 	result := f.result
 	if result.ServiceID == "" && len(services) > 0 {
 		result.ServiceID = services[0].ServiceID
@@ -14894,6 +16078,25 @@ func (f *fakeServiceDispatcher) Start(ctx context.Context, stream store.Stream, 
 		results = append(results, servicecall.DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: "/start", StatusCode: http.StatusAccepted, Success: true})
 	}
 	return results
+}
+
+func (f *blockingStartDispatcher) Start(ctx context.Context, stream store.Stream, services []store.RegisteredService, req servicecall.StartRequest) []servicecall.DispatchResult {
+	select {
+	case f.startEntered <- struct{}{}:
+	default:
+	}
+	<-f.releaseStart
+	return f.fakeServiceDispatcher.Start(ctx, stream, services, req)
+}
+
+func (f *blockingStartDispatcher) Stop(ctx context.Context, stream store.Stream, services []store.RegisteredService) []servicecall.DispatchResult {
+	if f.stopEntered != nil {
+		select {
+		case f.stopEntered <- struct{}{}:
+		default:
+		}
+	}
+	return f.fakeServiceDispatcher.Stop(ctx, stream, services)
 }
 
 func (f *fakeServiceDispatcher) Stop(ctx context.Context, stream store.Stream, services []store.RegisteredService) []servicecall.DispatchResult {

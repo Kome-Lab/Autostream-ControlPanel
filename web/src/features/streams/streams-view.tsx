@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertCircle, Check, Copy, Eye, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Trash2, Video } from "lucide-react";
+import { AlertCircle, Check, Copy, Eye, Pencil, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,7 +16,7 @@ import { DataTable } from "@/components/tables/data-table";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
-import { APIError, apiDelete, apiPost } from "@/lib/api/client";
+import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
   oauthAccountDisplayName as oauthAccountLabel,
@@ -28,7 +28,7 @@ import {
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
-import { buildStreamCreatePayload } from "@/lib/stream-create";
+import { buildStreamCreatePayload, buildStreamSettingsPayload } from "@/lib/stream-create";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { StreamPreview } from "@/features/streams/stream-preview";
@@ -49,6 +49,7 @@ export function StreamsView() {
   const [createdStreams, setCreatedStreams] = useState<Stream[]>([]);
   const [copiedStreamID, setCopiedStreamID] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editingStream, setEditingStream] = useState<Stream | null>(null);
   const [selectedStream, setSelectedStream] = useState<Stream | null>(null);
   const [actionNotice, setActionNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
@@ -130,6 +131,11 @@ export function StreamsView() {
           <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={() => setSelectedStream(row.original)}>
             <Eye />
           </Button>
+          {streamStatusAllowsEdit(row.original.status) ? <RoleGuard allowed={canUpdate}>
+            <Button variant="outline" size="icon-sm" aria-label={`${row.original.name} を編集`} onClick={() => setEditingStream(row.original)} {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
+              <Pencil />
+            </Button>
+          </RoleGuard> : null}
           {streamStatusAllowsStart(row.original.status) ? <RoleGuard allowed={canStart}>
             <DangerConfirm
               title={`${row.original.name} を開始しますか`}
@@ -294,14 +300,35 @@ export function StreamsView() {
           <StreamSlotForm
             className="min-h-full rounded-none border-0 shadow-none"
             canCreate={canCreate}
+            canUpdate={canUpdate}
             canAssignEncoder={can("services.assign")}
             canAssignWorker={can("workers.assign")}
-            onCreated={(stream) => {
+            onSaved={(stream) => {
               setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]);
               setActionNotice({ tone: "success", message: `${stream.name} を作成し、開始トリガーの待機を開始しました。VC、配信経路、録画設定を確認してください。` });
               setCreateOpen(false);
             }}
           />
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={editingStream !== null} onOpenChange={(open) => { if (!open) setEditingStream(null); }}>
+        <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl">
+          <SheetHeader className="sr-only"><SheetTitle>配信枠を編集</SheetTitle><SheetDescription>待機中または終了済みの配信枠の設定を変更します。</SheetDescription></SheetHeader>
+          {editingStream ? <StreamSlotForm
+            key={editingStream.id}
+            stream={editingStream}
+            className="min-h-full rounded-none border-0 shadow-none"
+            canCreate={canCreate}
+            canUpdate={canUpdate}
+            canAssignEncoder={can("services.assign")}
+            canAssignWorker={can("workers.assign")}
+            onSaved={(stream) => {
+              setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]);
+              setActionNotice({ tone: "success", message: `${stream.name} の設定を更新しました。開始前に担当Nodeと出力先を確認してください。` });
+              setEditingStream(null);
+            }}
+          /> : null}
         </SheetContent>
       </Sheet>
 
@@ -368,17 +395,21 @@ function DetailGroup({ title, children }: { title: string; children: ReactNode }
 function DetailLine({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2 border-b py-2 text-sm last:border-b-0"><span className="text-muted-foreground">{label}</span><span className={cn("min-w-0 break-all", mono && "font-mono text-xs")}>{value}</span></div>; }
 
 function StreamSlotForm({
+  stream,
   className,
   canCreate,
+  canUpdate,
   canAssignEncoder,
   canAssignWorker,
-  onCreated,
+  onSaved,
 }: {
+  stream?: Stream | null;
   className?: string;
   canCreate: boolean;
+  canUpdate: boolean;
   canAssignEncoder: boolean;
   canAssignWorker: boolean;
-  onCreated: (stream: Stream) => void;
+  onSaved: (stream: Stream) => void;
 }) {
   const discordConfigs = useResourceOptions("/discord/configs", ["name", "service_id", "id"]);
   const youtubeOutputs = useResourceOptions("/youtube/outputs", ["name", "id"]);
@@ -388,39 +419,40 @@ function StreamSlotForm({
   const archiveProfiles = useResourceOptions("/profiles/archive", ["name", "id"]);
   const encoderNodes = useServiceOptions("encoder_recorder");
   const workerNodes = useServiceOptions("worker");
-  const [name, setName] = useState("");
-  const [discordConfigID, setDiscordConfigID] = useState(noneValue);
-  const [guildID, setGuildID] = useState("");
-  const [voiceChannelID, setVoiceChannelID] = useState("");
-  const [textChannelID, setTextChannelID] = useState("");
-  const [autoStartFromDiscord, setAutoStartFromDiscord] = useState(true);
-  const [youtubeOutputID, setYouTubeOutputID] = useState(noneValue);
-  const [archiveProfileID, setArchiveProfileID] = useState(noneValue);
-  const [encoderProfileID, setEncoderProfileID] = useState(noneValue);
-  const [captionProfileID, setCaptionProfileID] = useState(noneValue);
-  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
-  const [overlayProfileID, setOverlayProfileID] = useState(noneValue);
-  const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
-  const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
+  const editing = stream !== undefined && stream !== null;
+  const [name, setName] = useState(stream?.name || "");
+  const [discordConfigID, setDiscordConfigID] = useState(optionOrNone(stream?.discord_config_id));
+  const [guildID, setGuildID] = useState(stream?.discord_guild_id || "");
+  const [voiceChannelID, setVoiceChannelID] = useState(stream?.discord_voice_channel_id || "");
+  const [textChannelID, setTextChannelID] = useState(stream?.discord_text_channel_id || "");
+  const [autoStartFromDiscord, setAutoStartFromDiscord] = useState(editing ? stream?.auto_start_trigger === "discord_voice_join" : true);
+  const [youtubeOutputID, setYouTubeOutputID] = useState(optionOrNone(stream?.youtube_output_id));
+  const [archiveProfileID, setArchiveProfileID] = useState(optionOrNone(stream?.archive_profile_id));
+  const [encoderProfileID, setEncoderProfileID] = useState(optionOrNone(stream?.encoder_profile_id));
+  const [captionProfileID, setCaptionProfileID] = useState(optionOrNone(stream?.caption_profile_id));
+  const [watermarkEnabled, setWatermarkEnabled] = useState(Boolean(stream?.overlay_profile_id));
+  const [overlayProfileID, setOverlayProfileID] = useState(optionOrNone(stream?.overlay_profile_id));
+  const [encoderServiceID, setEncoderServiceID] = useState<string | null>(stream?.assigned_encoder_id || null);
+  const [workerServiceID, setWorkerServiceID] = useState<string | null>(stream?.assigned_worker_id || null);
   const [message, setMessage] = useState("");
 
   const effectiveEncoderServiceID = encoderServiceID ?? singleOptionValue(encoderNodes);
   const effectiveWorkerServiceID = workerServiceID ?? singleOptionValue(workerNodes);
 
-  const createStream = useMutation<Stream, Error, Record<string, unknown>>({
-    mutationFn: (payload) => apiPost<Stream>("/streams", payload),
+  const saveStream = useMutation<Stream, Error, Record<string, unknown>>({
+    mutationFn: (payload) => editing && stream ? apiPut<Stream>(`/streams/${stream.id}/settings`, payload) : apiPost<Stream>("/streams", payload),
     onSuccess: (stream) => {
-      setMessage(`${stream.name} を配信枠として作成しました。`);
-      onCreated(stream);
+      setMessage(editing ? `${stream.name} の設定を更新しました。` : `${stream.name} を配信枠として作成しました。`);
+      onSaved(stream);
     },
     onError: (error) => {
-      setMessage(streamCreateErrorMessage(error));
+      setMessage(streamSaveErrorMessage(error, editing));
     },
   });
 
   const payload = useMemo(
     () =>
-      buildStreamCreatePayload({
+      (editing ? buildStreamSettingsPayload : buildStreamCreatePayload)({
         name,
         discordConfigID: selectedValue(discordConfigID),
         discordGuildID: guildID,
@@ -433,10 +465,15 @@ function StreamSlotForm({
         captionProfileID: selectedValue(captionProfileID),
         watermarkEnabled,
         overlayProfileID: selectedValue(overlayProfileID),
-        encoderServiceID: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : "",
-        workerServiceID: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : "",
+        // Omit assignments that this editor cannot manage. A selectable
+        // "未選択" remains an explicit empty value and therefore unassigns.
+        encoderServiceID: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : undefined,
+        workerServiceID: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : undefined,
+        scheduledStartAt: stream?.scheduled_start_at || "",
+        scheduledEndAt: stream?.scheduled_end_at || "",
+        encoderInputURL: stream?.encoder_input_url || "",
       }),
-    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderProfileID, guildID, name, overlayProfileID, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
+    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderProfileID, guildID, name, overlayProfileID, stream?.encoder_input_url, stream?.scheduled_end_at, stream?.scheduled_start_at, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
@@ -449,10 +486,10 @@ function StreamSlotForm({
     <Card id="create-stream" className={className}>
       <CardHeader className="border-b">
         <CardTitle className="flex items-center gap-2">
-          <Plus className="size-5" />
-          配信枠を作成
+          {editing ? <Pencil className="size-5" /> : <Plus className="size-5" />}
+          {editing ? "配信枠を編集" : "配信枠を作成"}
         </CardTitle>
-        <CardDescription>Discord VCの開始条件、配信経路、録画保存先を確認してから待機を開始します。</CardDescription>
+        <CardDescription>{editing ? "待機中または終了済みの枠だけを編集できます。稼働中の配信設定は停止後に変更してください。" : "Discord VCの開始条件、配信経路、録画保存先を確認してから待機を開始します。"}</CardDescription>
       </CardHeader>
       <CardContent>
         <form
@@ -460,7 +497,7 @@ function StreamSlotForm({
           onSubmit={(event) => {
             event.preventDefault();
             setMessage("");
-            createStream.mutate(payload);
+            saveStream.mutate(payload);
           }}
         >
           <FormSection title="基本情報" description="運用中に識別する配信枠名">
@@ -532,11 +569,12 @@ function StreamSlotForm({
             </div>
           ) : null}
           {message ? <div aria-live="polite" className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">{message}</div> : null}
-          {!canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
+          {editing && !canUpdate ? <p className="text-sm text-red-600">配信枠を更新する権限がありません。</p> : null}
+          {!editing && !canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!canCreate || createStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !watermarkReady || !nodeAssignmentReady}>
-              <Plus className="size-4" />
-              {createStream.isPending ? "作成中..." : "配信枠を作成"}
+            <Button type="submit" disabled={!(editing ? canUpdate : canCreate) || saveStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !watermarkReady || !nodeAssignmentReady}>
+              {editing ? <Pencil className="size-4" /> : <Plus className="size-4" />}
+              {saveStream.isPending ? (editing ? "更新中..." : "作成中...") : (editing ? "設定を保存" : "配信枠を作成")}
             </Button>
           </div>
         </form>
@@ -712,6 +750,10 @@ function selectedValue(value: string) {
   return value === noneValue ? "" : value;
 }
 
+function optionOrNone(value?: string) {
+  return value?.trim() || noneValue;
+}
+
 function singleOptionValue(options: SelectOption[]) {
   return options.length === 1 ? options[0].value : noneValue;
 }
@@ -745,6 +787,22 @@ function streamCreateErrorMessage(error: unknown) {
   return "作成に失敗しました。";
 }
 
+function streamSaveErrorMessage(error: unknown, editing: boolean) {
+  if (!editing) return streamCreateErrorMessage(error);
+  if (error instanceof APIError) {
+    const messages: Record<string, string> = {
+      name_required: "配信枠名を入力してください。",
+      schedule_end_before_start: "終了予定は開始予定より後に設定してください。",
+      permission_denied: "配信枠を更新する権限がありません。",
+      assign_service_failed: "担当Nodeの割り当て更新に失敗しました。",
+      stream_status_not_editable: "開始中または配信中の枠は編集できません。停止後にもう一度お試しください。",
+    };
+    return messages[error.code || ""] || `設定の更新に失敗しました。${error.code || error.message}`;
+  }
+  if (error instanceof Error) return `設定の更新に失敗しました。${error.message}`;
+  return "設定の更新に失敗しました。";
+}
+
 function streamActionErrorMessage(error: unknown, actionLabel: string) {
   if (error instanceof APIError) {
     if (error.detailCode === "database_connection_transient") return `${actionLabel}を完了できませんでした。Control PanelとMariaDBの一時的な接続切断が発生しました。少し待ってから再試行してください。`;
@@ -769,6 +827,10 @@ function streamActionErrorMessage(error: unknown, actionLabel: string) {
 
 function streamStatusAllowsStart(status: Stream["status"]) {
   return ["created", "draft", "scheduled", "ready", "failed"].includes(String(status).toLowerCase());
+}
+
+function streamStatusAllowsEdit(status: Stream["status"]) {
+  return !["starting", "live", "stopping"].includes(String(status).toLowerCase());
 }
 
 function streamStatusAllowsStop(status: Stream["status"]) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildStreamCreatePayload, type StreamCreateValues } from "../src/lib/stream-create.ts";
+import { buildStreamCreatePayload, buildStreamSettingsPayload, type StreamCreateValues } from "../src/lib/stream-create.ts";
 
 const baseValues: StreamCreateValues = {
   name: "定例配信",
@@ -47,4 +47,42 @@ test("choosing not to record omits archive_profile_id", () => {
   const payload = buildStreamCreatePayload({ ...baseValues, archiveProfileID: "" });
 
   assert.equal("archive_profile_id" in payload, false);
+});
+
+test("stream editing sends standard settings and deliberate clears without legacy archive fields", () => {
+  const payload = buildStreamSettingsPayload({
+    ...baseValues,
+    name: "名称を変更",
+    archiveProfileID: "",
+    youtubeOutputID: "",
+    watermarkEnabled: false,
+    overlayProfileID: "overlay-logo",
+  });
+
+  assert.equal(payload.name, "名称を変更");
+  assert.equal(payload.archive_profile_id, "");
+  assert.equal(payload.youtube_output_id, "");
+  assert.equal(payload.overlay_profile_id, "");
+  for (const key of [
+    "archive_oauth_account_id",
+    "archive_folder_id",
+    "archive_shared_drive",
+    "archive_shared_drive_id",
+    "archive_file_name",
+    "archive_retention_days",
+  ]) {
+    assert.equal(key in payload, false, `${key} must be omitted by the standard edit form`);
+  }
+});
+
+test("stream editing distinguishes an explicit Node clear from an omitted assignment", () => {
+  const payload = buildStreamSettingsPayload({
+    ...baseValues,
+    encoderServiceID: "",
+    workerServiceID: undefined,
+  });
+
+  assert.equal("encoder_service_id" in payload, true);
+  assert.equal(payload.encoder_service_id, "");
+  assert.equal("worker_service_id" in payload, false);
 });

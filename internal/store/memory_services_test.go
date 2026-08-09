@@ -654,6 +654,46 @@ func TestConfigureServiceNodeAddsRequiredObservabilityEmailScope(t *testing.T) {
 	}
 }
 
+func TestConfigureServiceNodeAddsPairedDiscordStopScope(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	oldToken, err := auth.CreateServiceToken(ctx, "discord_bot", []string{"service.register", "service.heartbeat", "streams.start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{
+		ServiceID:    "discord-configure",
+		ServiceType:  "discord_bot",
+		ServiceName:  "Legacy Discord Bot",
+		PublicURL:    "https://discord.example.com",
+		Capabilities: map[string]any{},
+	}); err != nil {
+		t.Fatalf("precreate discord service: %v", err)
+	}
+
+	configureToken := "configure-discord-once"
+	now := time.Date(2026, time.August, 9, 2, 0, 0, 0, time.UTC)
+	if _, err := auth.SetServiceConfigureToken(ctx, "discord-configure", security.HashToken(configureToken), now.Add(time.Hour)); err != nil {
+		t.Fatalf("set configure token: %v", err)
+	}
+
+	newToken, _, err := auth.ConfigureServiceNode(ctx, "discord-configure", configureToken, now, ServiceRuntimeReport{Version: "1.3.7"}, func(string) (string, string, error) {
+		return "new-ciphertext", "new-nonce", nil
+	})
+	if err != nil {
+		t.Fatalf("configure legacy discord node: %v", err)
+	}
+	if !hasString(newToken.Scopes, "streams.start") || !hasString(newToken.Scopes, "streams.stop") {
+		t.Fatalf("configured Discord Bot scopes were not upgraded: %#v", newToken.Scopes)
+	}
+	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "streams.stop"); err != nil || authenticated.ID != newToken.ID {
+		t.Fatalf("configured token should authorize paired auto-stop: token=%#v err=%v", authenticated, err)
+	}
+	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "streams.stop"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("legacy token unexpectedly gained stop permission: %v", err)
+	}
+}
+
 func TestConfigureServiceNodeSealerFailureDoesNotMutate(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()

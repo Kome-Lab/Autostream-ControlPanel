@@ -162,6 +162,48 @@ jobs:
           jq -e \
             'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/store" and ((.Test // "") == ""))' \
             "${result}" > /dev/null
+      - name: Test MariaDB OAuth and Configure Token migrations
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+        run: |
+          set -euo pipefail
+          mapfile -t migration_tests < <(
+            go test ./internal/database -list '^TestMariaDB' |
+              LC_ALL=C grep '^TestMariaDB'
+          )
+          if [[ "${#migration_tests[@]}" -eq 0 ]]; then
+            echo "No MariaDB migration integration tests were discovered" >&2
+            exit 1
+          fi
+          printf 'Discovered MariaDB migration test: %s\n' "${migration_tests[@]}"
+          result="${RUNNER_TEMP}/mariadb-migration-tests.json"
+          go test ./internal/database \
+            -run '^TestMariaDB' \
+            -count=1 \
+            -json | tee "${result}"
+          if jq -e \
+            'select(.Action == "skip" and ((.Test // "") | startswith("TestMariaDB")))' \
+            "${result}" > /dev/null; then
+            echo "A MariaDB migration integration test was skipped" >&2
+            exit 1
+          fi
+          for test_name in "${migration_tests[@]}"; do
+            if ! jq -e \
+              --arg test_name "${test_name}" \
+              'select(
+                .Action == "pass" and
+                .Package == "github.com/example/autostream-control-panel/internal/database" and
+                .Test == $test_name
+              )' \
+              "${result}" > /dev/null; then
+              echo "MariaDB migration integration test did not report pass: ${test_name}" >&2
+              exit 1
+            fi
+          done
+          jq -e \
+            'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and ((.Test // "") == ""))' \
+            "${result}" > /dev/null
       - name: Test managed Host config and upgrade locks with root-owned Linux fixtures
         run: |
           set -euo pipefail

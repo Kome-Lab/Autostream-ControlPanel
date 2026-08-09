@@ -31,24 +31,43 @@ type OAuthProvider struct {
 }
 
 type OAuthAccount struct {
-	ID                     string   `json:"id"`
-	ProviderID             string   `json:"provider_id"`
-	ProviderType           string   `json:"provider_type"`
-	ProviderName           string   `json:"provider_name,omitempty"`
-	AccountLabel           string   `json:"account_label"`
-	AccountPurpose         string   `json:"account_purpose"`
-	DisplayName            string   `json:"display_name,omitempty"`
-	Subject                string   `json:"subject,omitempty"`
-	Email                  string   `json:"email,omitempty"`
-	Scopes                 []string `json:"scopes"`
-	RefreshToken           string   `json:"-"`
-	RefreshTokenConfigured bool     `json:"refresh_token_configured"`
-	TokenFingerprint       string   `json:"token_fingerprint,omitempty"`
-	RefreshTokenUpdatedAt  string   `json:"refresh_token_updated_at"`
-	AccessTokenRefreshedAt string   `json:"access_token_refreshed_at"`
-	CreatedAt              string   `json:"created_at"`
-	UpdatedAt              string   `json:"updated_at"`
+	ID                               string   `json:"id"`
+	ProviderID                       string   `json:"provider_id"`
+	ProviderType                     string   `json:"provider_type"`
+	ProviderName                     string   `json:"provider_name,omitempty"`
+	AccountLabel                     string   `json:"account_label"`
+	AccountPurpose                   string   `json:"account_purpose"`
+	DisplayName                      string   `json:"display_name,omitempty"`
+	Subject                          string   `json:"subject,omitempty"`
+	Email                            string   `json:"email,omitempty"`
+	Scopes                           []string `json:"scopes"`
+	RefreshToken                     string   `json:"-"`
+	RefreshTokenConfigured           bool     `json:"refresh_token_configured"`
+	TokenFingerprint                 string   `json:"token_fingerprint,omitempty"`
+	TokenRevision                    uint64   `json:"-"`
+	RefreshTokenUpdatedAt            string   `json:"refresh_token_updated_at"`
+	AccessTokenRefreshedAt           string   `json:"access_token_refreshed_at"`
+	AccessTokenRefreshAttemptedAt    string   `json:"access_token_refresh_attempted_at"`
+	AccessTokenRefreshFailedAt       string   `json:"access_token_refresh_failed_at"`
+	AccessTokenRefreshFailureCode    string   `json:"access_token_refresh_failure_code"`
+	AccessTokenRefreshRelinkRequired bool     `json:"access_token_refresh_relink_required"`
+	CreatedAt                        string   `json:"created_at"`
+	UpdatedAt                        string   `json:"updated_at"`
 }
+
+// OAuthTokenRefreshFailureCode is intentionally a bounded operational class.
+// It must never be populated from a provider error string because those can
+// include tokens or other provider-side detail.
+const (
+	OAuthTokenRefreshFailureUnknown                    = "unknown"
+	OAuthTokenRefreshFailureCredentialsUnavailable     = "credentials_unavailable"
+	OAuthTokenRefreshFailureProviderNotReady           = "provider_not_ready"
+	OAuthTokenRefreshFailureProviderUnavailable        = "provider_unavailable"
+	OAuthTokenRefreshFailureProviderCredentialsInvalid = "provider_credentials_invalid"
+	OAuthTokenRefreshFailureReauthorizationRequired    = "reauthorization_required"
+	OAuthTokenRefreshFailureTimedOut                   = "timeout"
+	OAuthTokenRefreshFailureInvalidResponse            = "invalid_response"
+)
 
 type DriveDestination struct {
 	ID                  string `json:"id"`
@@ -78,7 +97,9 @@ type IntegrationStore interface {
 	GetOAuthAccount(ctx context.Context, id string) (OAuthAccount, error)
 	GetOAuthAccountForDispatch(ctx context.Context, id string) (OAuthAccount, error)
 	UpdateOAuthAccount(ctx context.Context, account OAuthAccount) (OAuthAccount, error)
-	RecordOAuthAccountTokenRefresh(ctx context.Context, id, rotatedRefreshToken string, refreshedAt time.Time) (OAuthAccount, error)
+	RecordOAuthAccountTokenRefreshAttempt(ctx context.Context, id string, expectedTokenRevision uint64, attemptedAt time.Time) (OAuthAccount, error)
+	RecordOAuthAccountTokenRefreshFailure(ctx context.Context, id string, expectedTokenRevision uint64, failureCode string, relinkRequired bool, failedAt time.Time) (OAuthAccount, error)
+	RecordOAuthAccountTokenRefresh(ctx context.Context, id string, expectedTokenRevision uint64, rotatedRefreshToken string, refreshedAt time.Time) (OAuthAccount, error)
 	DeleteOAuthAccount(ctx context.Context, id string) error
 
 	ListDriveDestinations(ctx context.Context) ([]DriveDestination, error)
@@ -237,6 +258,7 @@ func (s *MemoryIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 	now := time.Now().UTC().Format(time.RFC3339)
 	account.CreatedAt, account.UpdatedAt = now, now
 	account.RefreshTokenConfigured = account.RefreshToken != ""
+	account.TokenRevision = 1
 	if account.RefreshToken != "" {
 		account.TokenFingerprint = security.SecretFingerprint(account.RefreshToken)
 		account.RefreshTokenUpdatedAt = now
@@ -293,12 +315,25 @@ func (s *MemoryIntegrationStore) UpdateOAuthAccount(ctx context.Context, account
 		account.RefreshToken = existing.RefreshToken
 		account.RefreshTokenConfigured = existing.RefreshTokenConfigured
 		account.TokenFingerprint = existing.TokenFingerprint
+		account.TokenRevision = existing.TokenRevision
 		account.RefreshTokenUpdatedAt = existing.RefreshTokenUpdatedAt
 		account.AccessTokenRefreshedAt = existing.AccessTokenRefreshedAt
+		account.AccessTokenRefreshAttemptedAt = existing.AccessTokenRefreshAttemptedAt
+		account.AccessTokenRefreshFailedAt = existing.AccessTokenRefreshFailedAt
+		account.AccessTokenRefreshFailureCode = existing.AccessTokenRefreshFailureCode
+		account.AccessTokenRefreshRelinkRequired = existing.AccessTokenRefreshRelinkRequired
 	} else {
 		account.RefreshTokenConfigured = true
 		account.TokenFingerprint = security.SecretFingerprint(account.RefreshToken)
 		account.RefreshTokenUpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		// A successful re-link replaces the credentials that caused any prior
+		// refresh failure. The next automatic refresh records fresh metadata.
+		account.AccessTokenRefreshedAt = ""
+		account.AccessTokenRefreshAttemptedAt = ""
+		account.AccessTokenRefreshFailedAt = ""
+		account.AccessTokenRefreshFailureCode = ""
+		account.AccessTokenRefreshRelinkRequired = false
+		account.TokenRevision = nextOAuthAccountTokenRevision(existing.TokenRevision)
 	}
 	account.CreatedAt = existing.CreatedAt
 	account.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -306,7 +341,49 @@ func (s *MemoryIntegrationStore) UpdateOAuthAccount(ctx context.Context, account
 	return s.publicOAuthAccountLocked(account), nil
 }
 
-func (s *MemoryIntegrationStore) RecordOAuthAccountTokenRefresh(ctx context.Context, id, rotatedRefreshToken string, refreshedAt time.Time) (OAuthAccount, error) {
+func (s *MemoryIntegrationStore) RecordOAuthAccountTokenRefreshAttempt(ctx context.Context, id string, expectedTokenRevision uint64, attemptedAt time.Time) (OAuthAccount, error) {
+	if err := ctx.Err(); err != nil {
+		return OAuthAccount{}, err
+	}
+	attemptedAt = normalizedOAuthRefreshTime(attemptedAt)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	account, ok := s.accounts[strings.TrimSpace(id)]
+	if !ok {
+		return OAuthAccount{}, ErrNotFound
+	}
+	if !oauthAccountTokenRevisionMatches(account.TokenRevision, expectedTokenRevision) {
+		return OAuthAccount{}, ErrConflict
+	}
+	account.AccessTokenRefreshAttemptedAt = attemptedAt.Format(time.RFC3339)
+	s.accounts[account.ID] = account
+	return s.publicOAuthAccountLocked(account), nil
+}
+
+func (s *MemoryIntegrationStore) RecordOAuthAccountTokenRefreshFailure(ctx context.Context, id string, expectedTokenRevision uint64, failureCode string, relinkRequired bool, failedAt time.Time) (OAuthAccount, error) {
+	if err := ctx.Err(); err != nil {
+		return OAuthAccount{}, err
+	}
+	failedAt = normalizedOAuthRefreshTime(failedAt)
+	failureCode, relinkRequired = normalizedOAuthTokenRefreshFailure(failureCode, relinkRequired)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	account, ok := s.accounts[strings.TrimSpace(id)]
+	if !ok {
+		return OAuthAccount{}, ErrNotFound
+	}
+	if !oauthAccountTokenRevisionMatches(account.TokenRevision, expectedTokenRevision) {
+		return OAuthAccount{}, ErrConflict
+	}
+	account.AccessTokenRefreshAttemptedAt = failedAt.Format(time.RFC3339)
+	account.AccessTokenRefreshFailedAt = failedAt.Format(time.RFC3339)
+	account.AccessTokenRefreshFailureCode = failureCode
+	account.AccessTokenRefreshRelinkRequired = relinkRequired
+	s.accounts[account.ID] = account
+	return s.publicOAuthAccountLocked(account), nil
+}
+
+func (s *MemoryIntegrationStore) RecordOAuthAccountTokenRefresh(ctx context.Context, id string, expectedTokenRevision uint64, rotatedRefreshToken string, refreshedAt time.Time) (OAuthAccount, error) {
 	if err := ctx.Err(); err != nil {
 		return OAuthAccount{}, err
 	}
@@ -317,13 +394,21 @@ func (s *MemoryIntegrationStore) RecordOAuthAccountTokenRefresh(ctx context.Cont
 	if !ok {
 		return OAuthAccount{}, ErrNotFound
 	}
+	if !oauthAccountTokenRevisionMatches(account.TokenRevision, expectedTokenRevision) {
+		return OAuthAccount{}, ErrConflict
+	}
 	if rotatedRefreshToken = strings.TrimSpace(rotatedRefreshToken); rotatedRefreshToken != "" && rotatedRefreshToken != account.RefreshToken {
 		account.RefreshToken = rotatedRefreshToken
 		account.RefreshTokenConfigured = true
 		account.TokenFingerprint = security.SecretFingerprint(rotatedRefreshToken)
+		account.TokenRevision = nextOAuthAccountTokenRevision(account.TokenRevision)
 		account.RefreshTokenUpdatedAt = refreshedAt.Format(time.RFC3339)
 	}
+	account.AccessTokenRefreshAttemptedAt = refreshedAt.Format(time.RFC3339)
 	account.AccessTokenRefreshedAt = refreshedAt.Format(time.RFC3339)
+	account.AccessTokenRefreshFailedAt = ""
+	account.AccessTokenRefreshFailureCode = ""
+	account.AccessTokenRefreshRelinkRequired = false
 	s.accounts[id] = account
 	return s.publicOAuthAccountLocked(account), nil
 }
@@ -603,7 +688,7 @@ func (s MariaDBIntegrationStore) DeleteOAuthProvider(ctx context.Context, id str
 }
 
 func (s MariaDBIntegrationStore) ListOAuthAccounts(ctx context.Context) ([]OAuthAccount, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.refresh_token_updated_at, a.access_token_refreshed_at, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.token_revision, a.refresh_token_updated_at, a.access_token_refreshed_at, a.access_token_refresh_attempted_at, a.access_token_refresh_failed_at, a.access_token_refresh_failure_code, a.access_token_refresh_relink_required, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -646,13 +731,14 @@ func (s MariaDBIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 	if configured {
 		refreshTokenUpdatedAt = now
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_accounts (id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, refresh_token_updated_at, access_token_refreshed_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)`, account.ID, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, refreshTokenUpdatedAt, nil, now, now)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_accounts (id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, token_revision, refresh_token_updated_at, access_token_refreshed_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 1, ?, ?, ?, ?)`, account.ID, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, refreshTokenUpdatedAt, nil, now, now)
 	if err != nil {
 		return OAuthAccount{}, err
 	}
 	account.RefreshToken = ""
 	account.RefreshTokenConfigured = configured
 	account.TokenFingerprint = fingerprint
+	account.TokenRevision = 1
 	if configured {
 		account.RefreshTokenUpdatedAt = now.Format(time.RFC3339)
 	}
@@ -665,7 +751,7 @@ func (s MariaDBIntegrationStore) CreateOAuthAccount(ctx context.Context, account
 }
 
 func (s MariaDBIntegrationStore) GetOAuthAccount(ctx context.Context, id string) (OAuthAccount, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.refresh_token_updated_at, a.access_token_refreshed_at, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id WHERE a.id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT a.id, a.provider_id, a.provider_type, a.account_label, a.subject, a.email, a.scopes, a.refresh_token_ciphertext, a.token_fingerprint, a.token_revision, a.refresh_token_updated_at, a.access_token_refreshed_at, a.access_token_refresh_attempted_at, a.access_token_refresh_failed_at, a.access_token_refresh_failure_code, a.access_token_refresh_relink_required, a.created_at, a.updated_at, p.name FROM oauth_accounts a LEFT JOIN oauth_providers p ON p.id = a.provider_id WHERE a.id = ?`, id)
 	account, err := scanOAuthAccount(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OAuthAccount{}, ErrNotFound
@@ -677,13 +763,15 @@ func (s MariaDBIntegrationStore) GetOAuthAccount(ctx context.Context, id string)
 }
 
 func (s MariaDBIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context, id string) (OAuthAccount, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, refresh_token_updated_at, access_token_refreshed_at, created_at, updated_at FROM oauth_accounts WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, provider_id, provider_type, account_label, subject, email, scopes, refresh_token_ciphertext, refresh_token_nonce, token_fingerprint, token_revision, refresh_token_updated_at, access_token_refreshed_at, access_token_refresh_attempted_at, access_token_refresh_failed_at, access_token_refresh_failure_code, access_token_refresh_relink_required, created_at, updated_at FROM oauth_accounts WHERE id = ?`, id)
 	var account OAuthAccount
 	var scopes string
-	var subject, email, refreshCiphertext, refreshNonce, tokenFingerprint sql.NullString
-	var refreshTokenUpdatedAt, accessTokenRefreshedAt sql.NullTime
+	var subject, email, refreshCiphertext, refreshNonce, tokenFingerprint, refreshFailureCode sql.NullString
+	var tokenRevision uint64
+	var refreshTokenUpdatedAt, accessTokenRefreshedAt, refreshAttemptedAt, refreshFailedAt sql.NullTime
+	var refreshRelinkRequired sql.NullBool
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &refreshNonce, &tokenFingerprint, &refreshTokenUpdatedAt, &accessTokenRefreshedAt, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &refreshNonce, &tokenFingerprint, &tokenRevision, &refreshTokenUpdatedAt, &accessTokenRefreshedAt, &refreshAttemptedAt, &refreshFailedAt, &refreshFailureCode, &refreshRelinkRequired, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return OAuthAccount{}, ErrNotFound
 	} else if err != nil {
 		return OAuthAccount{}, err
@@ -702,12 +790,21 @@ func (s MariaDBIntegrationStore) GetOAuthAccountForDispatch(ctx context.Context,
 	account.Subject = subject.String
 	account.Email = email.String
 	account.TokenFingerprint = tokenFingerprint.String
+	account.TokenRevision = tokenRevision
 	if refreshTokenUpdatedAt.Valid {
 		account.RefreshTokenUpdatedAt = refreshTokenUpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	if accessTokenRefreshedAt.Valid {
 		account.AccessTokenRefreshedAt = accessTokenRefreshedAt.Time.UTC().Format(time.RFC3339)
 	}
+	if refreshAttemptedAt.Valid {
+		account.AccessTokenRefreshAttemptedAt = refreshAttemptedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if refreshFailedAt.Valid {
+		account.AccessTokenRefreshFailedAt = refreshFailedAt.Time.UTC().Format(time.RFC3339)
+	}
+	account.AccessTokenRefreshFailureCode = refreshFailureCode.String
+	account.AccessTokenRefreshRelinkRequired = refreshRelinkRequired.Bool
 	_ = json.Unmarshal([]byte(scopes), &account.Scopes)
 	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
 	account.CreatedAt = createdAt.UTC().Format(time.RFC3339)
@@ -731,7 +828,7 @@ func (s MariaDBIntegrationStore) UpdateOAuthAccount(ctx context.Context, account
 			return OAuthAccount{}, err
 		}
 		fingerprint := security.SecretFingerprint(account.RefreshToken)
-		result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET provider_id = ?, provider_type = ?, account_label = ?, subject = NULLIF(?, ''), email = NULLIF(?, ''), scopes = ?, refresh_token_ciphertext = ?, refresh_token_nonce = ?, token_fingerprint = ?, refresh_token_updated_at = ?, access_token_refreshed_at = NULL, updated_at = ? WHERE id = ?`, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, now, now, account.ID)
+		result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET provider_id = ?, provider_type = ?, account_label = ?, subject = NULLIF(?, ''), email = NULLIF(?, ''), scopes = ?, refresh_token_ciphertext = ?, refresh_token_nonce = ?, token_fingerprint = ?, token_revision = token_revision + 1, refresh_token_updated_at = ?, access_token_refreshed_at = NULL, access_token_refresh_attempted_at = NULL, access_token_refresh_failed_at = NULL, access_token_refresh_failure_code = NULL, access_token_refresh_relink_required = FALSE, updated_at = ? WHERE id = ?`, account.ProviderID, account.ProviderType, account.AccountLabel, account.Subject, account.Email, scopes, nullableString(ciphertext), nullableString(nonce), fingerprint, now, now, account.ID)
 		if err != nil {
 			return OAuthAccount{}, err
 		}
@@ -750,35 +847,80 @@ func (s MariaDBIntegrationStore) UpdateOAuthAccount(ctx context.Context, account
 	return s.GetOAuthAccount(ctx, account.ID)
 }
 
-func (s MariaDBIntegrationStore) RecordOAuthAccountTokenRefresh(ctx context.Context, id, rotatedRefreshToken string, refreshedAt time.Time) (OAuthAccount, error) {
+func (s MariaDBIntegrationStore) RecordOAuthAccountTokenRefresh(ctx context.Context, id string, expectedTokenRevision uint64, rotatedRefreshToken string, refreshedAt time.Time) (OAuthAccount, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return OAuthAccount{}, ErrNotFound
 	}
+	if expectedTokenRevision == 0 {
+		return OAuthAccount{}, ErrConflict
+	}
 	refreshedAt = normalizedOAuthRefreshTime(refreshedAt)
 	rotatedRefreshToken = strings.TrimSpace(rotatedRefreshToken)
 	if rotatedRefreshToken == "" {
-		result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET access_token_refreshed_at = ? WHERE id = ?`, refreshedAt, id)
+		result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET access_token_refresh_attempted_at = ?, access_token_refreshed_at = ?, access_token_refresh_failed_at = NULL, access_token_refresh_failure_code = NULL, access_token_refresh_relink_required = FALSE WHERE id = ? AND token_revision = ?`, refreshedAt, refreshedAt, id, expectedTokenRevision)
 		if err != nil {
 			return OAuthAccount{}, err
 		}
-		if affected, err := result.RowsAffected(); err != nil || affected == 0 {
-			return OAuthAccount{}, ErrNotFound
-		}
-		return s.GetOAuthAccount(ctx, id)
+		return s.oauthAccountTokenRefreshWriteResult(ctx, id, expectedTokenRevision, result)
 	}
 	ciphertext, nonce, _, err := s.encryptOptional(rotatedRefreshToken)
 	if err != nil {
 		return OAuthAccount{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET refresh_token_ciphertext = ?, refresh_token_nonce = ?, token_fingerprint = ?, refresh_token_updated_at = ?, access_token_refreshed_at = ? WHERE id = ?`, nullableString(ciphertext), nullableString(nonce), security.SecretFingerprint(rotatedRefreshToken), refreshedAt, refreshedAt, id)
+	result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET refresh_token_ciphertext = ?, refresh_token_nonce = ?, token_fingerprint = ?, token_revision = token_revision + 1, refresh_token_updated_at = ?, access_token_refresh_attempted_at = ?, access_token_refreshed_at = ?, access_token_refresh_failed_at = NULL, access_token_refresh_failure_code = NULL, access_token_refresh_relink_required = FALSE WHERE id = ? AND token_revision = ?`, nullableString(ciphertext), nullableString(nonce), security.SecretFingerprint(rotatedRefreshToken), refreshedAt, refreshedAt, refreshedAt, id, expectedTokenRevision)
 	if err != nil {
 		return OAuthAccount{}, err
 	}
-	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+	return s.oauthAccountTokenRefreshWriteResult(ctx, id, expectedTokenRevision, result)
+}
+
+func (s MariaDBIntegrationStore) RecordOAuthAccountTokenRefreshAttempt(ctx context.Context, id string, expectedTokenRevision uint64, attemptedAt time.Time) (OAuthAccount, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
 		return OAuthAccount{}, ErrNotFound
 	}
-	return s.GetOAuthAccount(ctx, id)
+	if expectedTokenRevision == 0 {
+		return OAuthAccount{}, ErrConflict
+	}
+	attemptedAt = normalizedOAuthRefreshTime(attemptedAt)
+	result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET access_token_refresh_attempted_at = ? WHERE id = ? AND token_revision = ?`, attemptedAt, id, expectedTokenRevision)
+	if err != nil {
+		return OAuthAccount{}, err
+	}
+	return s.oauthAccountTokenRefreshWriteResult(ctx, id, expectedTokenRevision, result)
+}
+
+func (s MariaDBIntegrationStore) RecordOAuthAccountTokenRefreshFailure(ctx context.Context, id string, expectedTokenRevision uint64, failureCode string, relinkRequired bool, failedAt time.Time) (OAuthAccount, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return OAuthAccount{}, ErrNotFound
+	}
+	if expectedTokenRevision == 0 {
+		return OAuthAccount{}, ErrConflict
+	}
+	failedAt = normalizedOAuthRefreshTime(failedAt)
+	failureCode, relinkRequired = normalizedOAuthTokenRefreshFailure(failureCode, relinkRequired)
+	result, err := s.db.ExecContext(ctx, `UPDATE oauth_accounts SET access_token_refresh_attempted_at = ?, access_token_refresh_failed_at = ?, access_token_refresh_failure_code = ?, access_token_refresh_relink_required = ? WHERE id = ? AND token_revision = ?`, failedAt, failedAt, failureCode, relinkRequired, id, expectedTokenRevision)
+	if err != nil {
+		return OAuthAccount{}, err
+	}
+	return s.oauthAccountTokenRefreshWriteResult(ctx, id, expectedTokenRevision, result)
+}
+
+func (s MariaDBIntegrationStore) oauthAccountTokenRefreshWriteResult(ctx context.Context, id string, expectedTokenRevision uint64, result sql.Result) (OAuthAccount, error) {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return OAuthAccount{}, err
+	}
+	account, err := s.GetOAuthAccount(ctx, id)
+	if err != nil {
+		return OAuthAccount{}, err
+	}
+	if affected == 0 && !oauthAccountTokenRevisionMatches(account.TokenRevision, expectedTokenRevision) {
+		return OAuthAccount{}, ErrConflict
+	}
+	return account, nil
 }
 
 func (s MariaDBIntegrationStore) DeleteOAuthAccount(ctx context.Context, id string) error {
@@ -925,22 +1067,33 @@ func scanOAuthProvider(row scanner) (OAuthProvider, error) {
 func scanOAuthAccount(row scanner) (OAuthAccount, error) {
 	var account OAuthAccount
 	var scopes string
-	var subject, email, tokenFingerprint, refreshCiphertext, providerName sql.NullString
-	var refreshTokenUpdatedAt, accessTokenRefreshedAt sql.NullTime
+	var subject, email, tokenFingerprint, refreshCiphertext, providerName, refreshFailureCode sql.NullString
+	var tokenRevision uint64
+	var refreshTokenUpdatedAt, accessTokenRefreshedAt, refreshAttemptedAt, refreshFailedAt sql.NullTime
+	var refreshRelinkRequired sql.NullBool
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &tokenFingerprint, &refreshTokenUpdatedAt, &accessTokenRefreshedAt, &createdAt, &updatedAt, &providerName); err != nil {
+	if err := row.Scan(&account.ID, &account.ProviderID, &account.ProviderType, &account.AccountLabel, &subject, &email, &scopes, &refreshCiphertext, &tokenFingerprint, &tokenRevision, &refreshTokenUpdatedAt, &accessTokenRefreshedAt, &refreshAttemptedAt, &refreshFailedAt, &refreshFailureCode, &refreshRelinkRequired, &createdAt, &updatedAt, &providerName); err != nil {
 		return OAuthAccount{}, err
 	}
 	account.ProviderName = providerName.String
 	account.Subject = subject.String
 	account.Email = email.String
 	account.TokenFingerprint = tokenFingerprint.String
+	account.TokenRevision = tokenRevision
 	if refreshTokenUpdatedAt.Valid {
 		account.RefreshTokenUpdatedAt = refreshTokenUpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	if accessTokenRefreshedAt.Valid {
 		account.AccessTokenRefreshedAt = accessTokenRefreshedAt.Time.UTC().Format(time.RFC3339)
 	}
+	if refreshAttemptedAt.Valid {
+		account.AccessTokenRefreshAttemptedAt = refreshAttemptedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if refreshFailedAt.Valid {
+		account.AccessTokenRefreshFailedAt = refreshFailedAt.Time.UTC().Format(time.RFC3339)
+	}
+	account.AccessTokenRefreshFailureCode = refreshFailureCode.String
+	account.AccessTokenRefreshRelinkRequired = refreshRelinkRequired.Bool
 	account.RefreshTokenConfigured = refreshCiphertext.Valid && refreshCiphertext.String != ""
 	_ = json.Unmarshal([]byte(scopes), &account.Scopes)
 	account.AccountPurpose = OAuthAccountPurposeFromScopes(account.Scopes)
@@ -1241,6 +1394,33 @@ func normalizedOAuthRefreshTime(value time.Time) time.Time {
 		return time.Now().UTC()
 	}
 	return value.UTC()
+}
+
+func oauthAccountTokenRevisionMatches(actual, expected uint64) bool {
+	return actual != 0 && expected != 0 && actual == expected
+}
+
+func nextOAuthAccountTokenRevision(current uint64) uint64 {
+	if current == 0 {
+		return 1
+	}
+	return current + 1
+}
+
+func normalizedOAuthTokenRefreshFailure(code string, relinkRequired bool) (string, bool) {
+	switch strings.TrimSpace(strings.ToLower(code)) {
+	case OAuthTokenRefreshFailureCredentialsUnavailable,
+		OAuthTokenRefreshFailureProviderNotReady,
+		OAuthTokenRefreshFailureProviderUnavailable,
+		OAuthTokenRefreshFailureProviderCredentialsInvalid,
+		OAuthTokenRefreshFailureTimedOut,
+		OAuthTokenRefreshFailureInvalidResponse:
+		return strings.TrimSpace(strings.ToLower(code)), false
+	case OAuthTokenRefreshFailureReauthorizationRequired:
+		return OAuthTokenRefreshFailureReauthorizationRequired, relinkRequired
+	default:
+		return OAuthTokenRefreshFailureUnknown, false
+	}
 }
 
 func notFoundOnNoRows(result sql.Result, err error) error {

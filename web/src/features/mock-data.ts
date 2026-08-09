@@ -708,12 +708,13 @@ const mockResourceData: Record<string, unknown[]> = {
     { id: "inc-2", severity: "info", status: "resolved", title: "YouTube API dry-run retry", service_id: "worker-main", updated_at: "2026-07-02T07:50:00+09:00" },
   ],
   "/observability/diagnostics": [
-    { id: "diag-1", incident_id: "inc-1", check: "audio_status", status: "open", target: "stream-cable-morning", updated_at: baseTime },
-    { id: "diag-2", incident_id: "inc-2", check: "encoder_preflight", status: "acknowledged", target: "encoder-field", updated_at: "2026-07-02T08:58:00+09:00" },
+    { incident_id: "inc-1", rule: "encoder_process_exited", severity: "warning", status: "acknowledged", service_id: "encoder-field", stream_id: "stream-cable-morning", diagnostic_report: { summary: "Encoderのハートビートを再確認してください。", safe_auto_candidates: ["refresh_service_status", "rerun_diagnostics"] }, updated_at: baseTime },
+    { incident_id: "inc-2", rule: "youtube_live_api_retry", severity: "info", status: "resolved", service_id: "worker-main", diagnostic_report: { summary: "YouTube APIの再試行は完了しています。" }, updated_at: "2026-07-02T08:58:00+09:00" },
   ],
   "/observability/remediation-actions": [
-    { id: "rem-1", incident_id: "inc-1", status: "pending_approval", action: "restart_encoder", target: "encoder-field", safe_auto: false, requires_approval: true, created_at: baseTime },
-    { id: "rem-2", incident_id: "inc-2", status: "executed", action: "switch_worker", target: "worker-standby", safe_auto: true, requires_approval: false, created_at: "2026-07-02T08:30:00+09:00" },
+    { id: "rem-1", incident_id: "inc-1", mode: "manual_approval", status: "pending_approval", action: "restart_encoder", safe_auto: false, requires_approval: true, result: "承認待ち", created_at: baseTime, updated_at: baseTime },
+    { id: "rem-2", incident_id: "inc-2", mode: "safe_auto", status: "executed", action: "switch_worker", safe_auto: true, requires_approval: false, result: "recorded_noop", created_at: "2026-07-02T08:30:00+09:00", updated_at: "2026-07-02T08:31:00+09:00" },
+    { id: "rem-3", incident_id: "inc-1", mode: "suggest_only", status: "blocked", action: "rerun_diagnostics", safe_auto: true, requires_approval: false, result: "remediation mode is suggest_only", created_at: baseTime, updated_at: baseTime },
   ],
   "/observability/notification-deliveries": [
     { id: "ntf-1", event_type: "incident.opened", status: "success", channel: "discord", incident_id: "inc-1", created_at: baseTime },
@@ -843,6 +844,20 @@ export function mockGet(path: string): unknown {
 
 export function mockPost(path: string, body?: unknown): unknown {
   const normalizedPath = stripQuery(path);
+  const diagnosticRerun = normalizedPath.match(/^\/observability\/incidents\/([^/]+)\/diagnostics\/rerun$/);
+  if (diagnosticRerun) {
+    const incidentID = decodeURIComponent(diagnosticRerun[1]);
+    const incidents = mockResourceData["/observability/incidents"] as Array<Record<string, unknown>>;
+    const incident = incidents.find((row) => row.id === incidentID);
+    if (!incident) throw new Error("not_found");
+    const now = new Date().toISOString();
+    incident.updated_at = now;
+    const diagnostics = mockResourceData["/observability/diagnostics"] as Array<Record<string, unknown>>;
+    for (const diagnostic of diagnostics) {
+      if (diagnostic.incident_id === incidentID) diagnostic.updated_at = now;
+    }
+    return { incident: structuredClone(incident), outcome: "evaluated" };
+  }
   const incidentAction = normalizedPath.match(/^\/observability\/incidents\/([^/]+)\/(acknowledge|resolve)$/);
   if (incidentAction) {
     const incidentID = decodeURIComponent(incidentAction[1]);

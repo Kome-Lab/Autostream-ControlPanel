@@ -45,6 +45,7 @@ type Stream struct {
 }
 
 type StreamSettings struct {
+	Name                      string     `json:"name,omitempty"`
 	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`
 	ScheduledEndAt            *time.Time `json:"scheduled_end_at,omitempty"`
 	DiscordConfigID           string     `json:"discord_config_id,omitempty"`
@@ -121,6 +122,10 @@ type StreamStore interface {
 	DeleteStream(ctx context.Context, id string) error
 	UpdateStreamSettings(ctx context.Context, id string, settings StreamSettings) (Stream, error)
 	UpdateStreamStatus(ctx context.Context, id, status string) (Stream, error)
+	// TransitionStreamStatus updates a stream only when its persisted status still
+	// equals expectedStatus. It prevents an asynchronous lifecycle completion from
+	// overwriting a newer transition for the same stream.
+	TransitionStreamStatus(ctx context.Context, id, expectedStatus, status string) (stream Stream, transitioned bool, err error)
 	RetryArchiveUpload(ctx context.Context, id, actorUserID string) (StreamLog, error)
 	ListStreamLogs(ctx context.Context, id string) ([]StreamLog, error)
 	ListStreamArtifacts(ctx context.Context, id string) ([]StreamArtifact, error)
@@ -287,7 +292,7 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 		return Stream{}, err
 	}
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE streams SET scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE streams SET name = COALESCE(NULLIF(?, ''), name), scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(settings.Name), nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
 		return Stream{}, err
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
@@ -314,6 +319,25 @@ func (s MariaDBStreamStore) UpdateStreamStatus(ctx context.Context, id, status s
 		return Stream{}, ErrNotFound
 	}
 	return s.GetStream(ctx, id)
+}
+
+func (s MariaDBStreamStore) TransitionStreamStatus(ctx context.Context, id, expectedStatus, status string) (Stream, bool, error) {
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `UPDATE streams
+SET status = ?, updated_at = ?
+WHERE id = ? AND LOWER(TRIM(status)) = LOWER(TRIM(?))`, status, now, id, expectedStatus)
+	if err != nil {
+		return Stream{}, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Stream{}, false, err
+	}
+	stream, err := s.GetStream(ctx, id)
+	if err != nil {
+		return Stream{}, false, err
+	}
+	return stream, affected > 0, nil
 }
 
 const (

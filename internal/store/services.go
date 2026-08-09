@@ -568,9 +568,27 @@ func newRotatedServiceToken(oldToken ServiceToken, now time.Time) (ServiceToken,
 }
 
 func serviceTokenScopesForRotation(oldToken ServiceToken) []string {
+	return ProjectedServiceTokenScopesForRotation(oldToken)
+}
+
+// ProjectedServiceTokenScopesForRotation returns the scopes a freshly issued
+// replacement Node Runtime Token would receive. Callers that authorize an
+// operator-triggered rotation must validate this projected set rather than the
+// old token alone, so an operator cannot use a rotation to grant a permission
+// they do not hold.
+func ProjectedServiceTokenScopesForRotation(oldToken ServiceToken) []string {
 	scopes := append([]string(nil), oldToken.Scopes...)
 	if oldToken.ServiceType == "observability" && !hasString(scopes, "notifications.email.send") {
 		scopes = append(scopes, "notifications.email.send")
+	}
+	// Voice-triggered streams use streams.start and streams.stop as one paired
+	// capability. Keep a legacy Bot token unchanged until an operator performs
+	// the existing explicit Node Configure/rotation flow; that flow then grants
+	// only the missing paired stop scope, never a broader Discord authority.
+	if oldToken.ServiceType == "discord_bot" &&
+		hasString(scopes, "streams.start") &&
+		!hasString(scopes, "streams.stop") {
+		scopes = append(scopes, "streams.stop")
 	}
 	return scopes
 }
@@ -2303,6 +2321,7 @@ func validateServiceScopes(scopes []string) error {
 		"worker.events.write": true, "encoder.status.write": true, "discord.status.write": true, "observability.ingest": true,
 		"notifications.email.send": true,
 		"streams.start":            true,
+		"streams.stop":             true,
 		"remediation.execute":      true,
 		"updates.claim":            true,
 		"updates.report":           true,

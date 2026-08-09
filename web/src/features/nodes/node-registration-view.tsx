@@ -525,6 +525,15 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
                 </div>
                 {configuration.configure_token_expires_at ? <div className="text-xs text-muted-foreground">Configure Token期限: {formatNodeDateTime(configuration.configure_token_expires_at, timezone)}</div> : null}
               </div>
+              {configuration.node?.service_type === "discord_bot" ? (
+                <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+                  <div className="font-medium">Discord VC空室時の自動停止を有効化</div>
+                  <p className="text-muted-foreground">
+                    既存のDiscord Botでは、ここでConfigure Tokenを再生成し、表示された設定をBotホストへ適用してからサービスを再起動してください。
+                    この権限追加の対象になる、更新前に発行した未使用のConfigure Tokenは使えないため、再発行が必要です。実行完了時にだけ、既存の <code>streams.start</code> 権限へ対応する <code>streams.stop</code> 権限が新しいNode Runtime Tokenへ追加されます。Tokenを発行しただけでは切り替わりません。
+                  </p>
+                </div>
+              ) : null}
               {configuration.node ? (
                 <NodeEndpointStateView
                   node={configuration.node}

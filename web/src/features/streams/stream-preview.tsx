@@ -7,7 +7,11 @@ import { Check, Copy, Link2, LoaderCircle, MonitorPlay } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { APIError, apiPost } from "@/lib/api/client";
-import { resolveStreamPreviewURL } from "@/lib/stream-preview";
+import {
+  STREAM_PREVIEW_PLAYBACK_DEADLINE_MS,
+  resolveStreamPreviewURL,
+  signedStreamPreviewPlaybackURL,
+} from "@/lib/stream-preview";
 import type { Stream } from "@/types/domain";
 
 type PreviewLink = {
@@ -23,28 +27,39 @@ export function StreamPreview({ stream }: { stream: Stream }) {
   const [playbackState, setPlaybackState] = useState<PlaybackState>("connecting");
   const [previewLink, setPreviewLink] = useState<PreviewLink | null>(null);
   const [previewLinkError, setPreviewLinkError] = useState<unknown>(null);
-  const [playbackFallback, setPlaybackFallback] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
   const [retryNonce, setRetryNonce] = useState(0);
   const [copied, setCopied] = useState(false);
-  const playlistURL = `/streams/${encodeURIComponent(stream.id)}/preview/index.m3u8`;
-  const playbackURL = !playbackFallback && previewLink?.url ? previewLink.url : playlistURL;
+  const playbackURL = signedStreamPreviewPlaybackURL(previewLink?.url);
   const issueLink = useMutation({
     mutationFn: () => apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`),
     onSuccess: (value) => {
       const resolvedURL = resolveStreamPreviewURL(value.url, window.location.origin);
-      setPreviewLink(resolvedURL ? { ...value, url: resolvedURL } : null);
+      if (!resolvedURL) {
+        setPreviewLink(null);
+        setPreviewLinkError(new Error("署名付きプレビューURLが無効です。"));
+        setPlaybackError("");
+        setPlaybackState("error");
+        return;
+      }
+      setPreviewLink({ ...value, url: resolvedURL });
       setPreviewLinkError(null);
-      setPlaybackFallback(false);
       setPlaybackError("");
+      setPlaybackState("connecting");
       setCopied(false);
     },
-    onError: (error) => setPreviewLinkError(error),
+    onError: (error) => {
+      setPreviewLinkError(error);
+      if (!previewLink?.url) {
+        setPlaybackError("");
+        setPlaybackState("error");
+      }
+    },
   });
 
-  // Browser playback must use the same signed route as the external preview
-  // link. The authenticated relative route is useful as a fallback, but it
-  // is not reliable for HLS segment requests in every browser/proxy setup.
+  // Do not assign a video source until the signed route is available. A
+  // relative authenticated playlist can load while its HLS segment requests
+  // fail in a browser or proxy, which otherwise leaves the UI spinning.
   useEffect(() => {
     let cancelled = false;
     let retryTimer: number | undefined;
@@ -55,12 +70,16 @@ export function StreamPreview({ stream }: { stream: Stream }) {
           if (cancelled) return;
           const resolvedURL = resolveStreamPreviewURL(value.url, window.location.origin);
           if (!resolvedURL) {
-            setPreviewLinkError(new Error("preview link URL is invalid"));
+            setPreviewLink(null);
+            setPreviewLinkError(new Error("署名付きプレビューURLが無効です。"));
+            setPlaybackError("");
+            setPlaybackState("error");
             return;
           }
           setPreviewLink({ ...value, url: resolvedURL });
           setPreviewLinkError(null);
           setPlaybackError("");
+          setPlaybackState("connecting");
         })
         .catch((error) => {
           if (cancelled) return;
@@ -69,14 +88,16 @@ export function StreamPreview({ stream }: { stream: Stream }) {
             retryTimer = window.setTimeout(requestLink, attempts * 1_500);
             return;
           }
+          setPreviewLink(null);
           setPreviewLinkError(error);
+          setPlaybackError("");
+          setPlaybackState("error");
         });
     };
     window.queueMicrotask(() => {
       if (cancelled) return;
       setPreviewLink(null);
       setPreviewLinkError(null);
-      setPlaybackFallback(false);
       setPlaybackError("");
       setCopied(false);
       setPlaybackState("connecting");
@@ -90,27 +111,38 @@ export function StreamPreview({ stream }: { stream: Stream }) {
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !playbackURL) return;
     setPlaybackState("connecting");
     let retryTimer: number | undefined;
     let networkRetries = 0;
     let mediaRetries = 0;
+    let terminal = false;
+    let hls: Hls | null = null;
 
-    const markReady = () => setPlaybackState("ready");
-    const markNativeError = () => {
-      setPlaybackError("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
+    const clearTimers = () => {
+      window.clearTimeout(retryTimer);
+      window.clearTimeout(deadlineTimer);
+    };
+    const markReady = () => {
+      if (terminal) return;
+      window.clearTimeout(deadlineTimer);
+      setPlaybackError("");
+      setPlaybackState("ready");
+    };
+    const failPlayback = (message: string) => {
+      if (terminal) return;
+      terminal = true;
+      clearTimers();
+      hls?.stopLoad();
+      setPlaybackError(message);
       setPlaybackState("error");
     };
-    const fallBackOrFail = () => {
-      if (previewLink?.url && !playbackFallback) {
-        setPlaybackFallback(true);
-        setPlaybackState("connecting");
-        return;
-      }
-      setPlaybackError("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
-      setPlaybackState("error");
-    };
+    const markNativeError = () => failPlayback("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
     video.addEventListener("playing", markReady);
+    const deadlineTimer = window.setTimeout(
+      () => failPlayback("プレビューの再生開始を30秒待ちましたが、開始できませんでした。Encoder Nodeの稼働状態と配信状態を確認してから再試行してください。"),
+      STREAM_PREVIEW_PLAYBACK_DEADLINE_MS,
+    );
 
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = playbackURL;
@@ -118,6 +150,8 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       video.addEventListener("error", markNativeError);
       void video.play().catch(() => undefined);
       return () => {
+        terminal = true;
+        clearTimers();
         video.removeEventListener("playing", markReady);
         video.removeEventListener("loadedmetadata", markReady);
         video.removeEventListener("error", markNativeError);
@@ -127,12 +161,12 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     }
 
     if (!Hls.isSupported()) {
-      window.queueMicrotask(() => setPlaybackState("error"));
+      failPlayback("このブラウザーはHLSプレビューに対応していません。対応ブラウザーで開くか、ネットワーク再生URLを使用してください。");
       video.removeEventListener("playing", markReady);
       return;
     }
 
-    const hls = new Hls({
+    hls = new Hls({
       enableWorker: true,
       lowLatencyMode: false,
       manifestLoadingMaxRetry: 6,
@@ -142,45 +176,52 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       fragLoadingRetryDelay: 1_000,
     });
     hls.attachMedia(video);
-    hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(playbackURL));
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      if (!terminal) hls?.loadSource(playbackURL);
+    });
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      setPlaybackState("ready");
+      if (terminal) return;
+      markReady();
       void video.play().catch(() => undefined);
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (terminal) return;
       if (!data.fatal) return;
       if (data.type === ErrorTypes.NETWORK_ERROR) {
         if (networkRetries >= 4) {
-          fallBackOrFail();
+          failPlayback("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
           return;
         }
         networkRetries += 1;
         setPlaybackState("retrying");
         window.clearTimeout(retryTimer);
-        retryTimer = window.setTimeout(() => hls.loadSource(playbackURL), 2_000);
+        retryTimer = window.setTimeout(() => {
+          if (!terminal) hls?.loadSource(playbackURL);
+        }, 2_000);
         return;
       }
       if (data.type === ErrorTypes.MEDIA_ERROR) {
         if (mediaRetries >= 2) {
-          fallBackOrFail();
+          failPlayback("Encoderプレビューを再生できません。Encoderの映像出力を確認してから再試行してください。");
           return;
         }
         mediaRetries += 1;
         setPlaybackState("retrying");
-        hls.recoverMediaError();
+        hls?.recoverMediaError();
         return;
       }
-      fallBackOrFail();
+      failPlayback("Encoderプレビューを再生できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
     });
 
     return () => {
-      window.clearTimeout(retryTimer);
+      terminal = true;
+      clearTimers();
       video.removeEventListener("playing", markReady);
-      hls.destroy();
+      hls?.destroy();
       video.removeAttribute("src");
       video.load();
     };
-  }, [playbackURL, playbackFallback, previewLink, retryNonce]);
+  }, [playbackURL]);
 
   const copyPreviewLink = async () => {
     if (!previewLink?.url || !navigator.clipboard) return;
@@ -219,8 +260,8 @@ export function StreamPreview({ stream }: { stream: Stream }) {
         </Button>
       </div>
       {previewLink ? <p className="text-xs text-muted-foreground">有効期限: {new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}
-      {previewLinkError && !previewLink ? <p className="text-sm text-destructive">{previewLinkErrorMessage(previewLinkError)}</p> : null}
-      {playbackError ? <p className="text-sm text-destructive">{playbackError}</p> : null}
+      {previewLinkError ? <p className="text-sm text-destructive" role="alert">{previewLinkErrorMessage(previewLinkError)}</p> : null}
+      {playbackError ? <p className="text-sm text-destructive" role="alert">{playbackError}</p> : null}
     </section>
   );
 }
@@ -252,5 +293,6 @@ function previewLinkErrorMessage(error: unknown) {
     };
     return messages[error.code || ""] || `URLを発行できませんでした。HTTP ${error.status}`;
   }
+  if (error instanceof Error && error.message) return error.message;
   return "URLを発行できませんでした。";
 }

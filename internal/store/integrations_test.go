@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -71,12 +72,18 @@ func TestOAuthAccountTokenRefreshRecordsAccessRefreshWithoutStoringAccessToken(t
 		t.Fatal(err)
 	}
 	refreshedAt := time.Date(2026, time.August, 8, 8, 0, 0, 0, time.UTC)
-	updated, err := integrations.RecordOAuthAccountTokenRefresh(t.Context(), account.ID, "rotated-refresh-token", refreshedAt)
+	updated, err := integrations.RecordOAuthAccountTokenRefresh(t.Context(), account.ID, account.TokenRevision, "rotated-refresh-token", refreshedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.AccessTokenRefreshedAt != refreshedAt.Format(time.RFC3339) {
 		t.Fatalf("access token refresh time = %q, want %q", updated.AccessTokenRefreshedAt, refreshedAt.Format(time.RFC3339))
+	}
+	if updated.AccessTokenRefreshAttemptedAt != refreshedAt.Format(time.RFC3339) {
+		t.Fatalf("access token refresh attempt time = %q, want %q", updated.AccessTokenRefreshAttemptedAt, refreshedAt.Format(time.RFC3339))
+	}
+	if updated.AccessTokenRefreshFailedAt != "" || updated.AccessTokenRefreshFailureCode != "" || updated.AccessTokenRefreshRelinkRequired {
+		t.Fatalf("successful refresh should clear prior failure metadata: %#v", updated)
 	}
 	if updated.RefreshTokenUpdatedAt != refreshedAt.Format(time.RFC3339) {
 		t.Fatalf("rotated refresh token time = %q, want %q", updated.RefreshTokenUpdatedAt, refreshedAt.Format(time.RFC3339))
@@ -90,6 +97,93 @@ func TestOAuthAccountTokenRefreshRecordsAccessRefreshWithoutStoringAccessToken(t
 	}
 	if strings.Contains(updated.DisplayName, "rotated-refresh-token") || updated.RefreshToken != "" {
 		t.Fatalf("public account leaked refresh token: %#v", updated)
+	}
+}
+
+func TestOAuthAccountTokenRefreshFailureUsesBoundedMetadataAndIsClearedBySuccess(t *testing.T) {
+	integrations := NewMemoryIntegrationStore()
+	account, err := integrations.CreateOAuthAccount(t.Context(), OAuthAccount{
+		ProviderID:   "google-main",
+		ProviderType: "google",
+		AccountLabel: "YouTube Account",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RefreshToken: "raw-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedAt := time.Date(2026, time.August, 9, 1, 0, 0, 0, time.UTC)
+	failed, err := integrations.RecordOAuthAccountTokenRefreshFailure(t.Context(), account.ID, account.TokenRevision, "provider response: refresh_token=raw-refresh-token", true, failedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.AccessTokenRefreshAttemptedAt != failedAt.Format(time.RFC3339) || failed.AccessTokenRefreshFailedAt != failedAt.Format(time.RFC3339) {
+		t.Fatalf("failure timestamps = %#v", failed)
+	}
+	if failed.AccessTokenRefreshFailureCode != OAuthTokenRefreshFailureUnknown || failed.AccessTokenRefreshRelinkRequired {
+		t.Fatalf("unsafe failure code must be bounded without a relink instruction: %#v", failed)
+	}
+	refreshedAt := failedAt.Add(time.Minute)
+	updated, err := integrations.RecordOAuthAccountTokenRefresh(t.Context(), account.ID, failed.TokenRevision, "", refreshedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AccessTokenRefreshFailedAt != "" || updated.AccessTokenRefreshFailureCode != "" || updated.AccessTokenRefreshRelinkRequired {
+		t.Fatalf("success should clear failure state: %#v", updated)
+	}
+}
+
+func TestOAuthAccountTokenRefreshStateDoesNotOverwriteNewerRelink(t *testing.T) {
+	integrations := NewMemoryIntegrationStore()
+	account, err := integrations.CreateOAuthAccount(t.Context(), OAuthAccount{
+		ProviderID:   "google-main",
+		ProviderType: "google",
+		AccountLabel: "YouTube Account",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RefreshToken: "old-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := integrations.GetOAuthAccountForDispatch(t.Context(), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := integrations.UpdateOAuthAccount(t.Context(), OAuthAccount{
+		ID:           account.ID,
+		ProviderID:   account.ProviderID,
+		ProviderType: account.ProviderType,
+		AccountLabel: account.AccountLabel,
+		Scopes:       account.Scopes,
+		// Google may return the same refresh token during a successful re-link.
+		// A durable revision, rather than a token fingerprint comparison alone,
+		// must still keep an in-flight older refresh from writing metadata.
+		RefreshToken: "old-refresh-token",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := integrations.RecordOAuthAccountTokenRefreshAttempt(t.Context(), account.ID, stale.TokenRevision, time.Now().UTC()); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale refresh attempt error = %v, want ErrConflict", err)
+	}
+	if _, err := integrations.RecordOAuthAccountTokenRefreshFailure(t.Context(), account.ID, stale.TokenRevision, OAuthTokenRefreshFailureReauthorizationRequired, true, time.Now().UTC()); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale refresh failure error = %v, want ErrConflict", err)
+	}
+	if _, err := integrations.RecordOAuthAccountTokenRefresh(t.Context(), account.ID, stale.TokenRevision, "stale-rotated-refresh-token", time.Now().UTC()); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale refresh update error = %v, want ErrConflict", err)
+	}
+	updated, err := integrations.GetOAuthAccountForDispatch(t.Context(), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RefreshToken != "old-refresh-token" {
+		t.Fatalf("stale refresh replaced newer relink token: got %q", updated.RefreshToken)
+	}
+	if updated.TokenRevision == stale.TokenRevision {
+		t.Fatalf("relink did not advance token revision: stale=%d updated=%d", stale.TokenRevision, updated.TokenRevision)
+	}
+	if updated.AccessTokenRefreshedAt != "" || updated.AccessTokenRefreshAttemptedAt != "" || updated.AccessTokenRefreshFailedAt != "" || updated.AccessTokenRefreshFailureCode != "" || updated.AccessTokenRefreshRelinkRequired {
+		t.Fatalf("stale refresh state overwrote newer relink: %#v", updated)
 	}
 }
 

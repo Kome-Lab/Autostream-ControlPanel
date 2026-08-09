@@ -47,3 +47,53 @@ func TestStreamYouTubeRuntimeCompleteLastErrorUsesEmptyStringWhenUnset(t *testin
 		t.Fatalf("streamYouTubeRuntimeCompleteLastError(value) = %q", got)
 	}
 }
+
+func TestMemoryStreamStoreUpdateSettingsRenamesWhenNameIsProvided(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	created, err := streams.CreateStream(t.Context(), "before")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	updated, err := streams.UpdateStreamSettings(t.Context(), created.ID, StreamSettings{Name: " after "})
+	if err != nil {
+		t.Fatalf("update stream settings: %v", err)
+	}
+	if updated.Name != "after" {
+		t.Fatalf("updated name = %q, want after", updated.Name)
+	}
+	unchanged, err := streams.UpdateStreamSettings(t.Context(), created.ID, StreamSettings{})
+	if err != nil {
+		t.Fatalf("update stream settings without name: %v", err)
+	}
+	if unchanged.Name != "after" {
+		t.Fatalf("name after empty update = %q, want after", unchanged.Name)
+	}
+}
+
+func TestMemoryStreamStoreTransitionStatusRequiresExpectedCurrentStatus(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	created, err := streams.CreateStream(t.Context(), "lifecycle")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), created.ID, "completed"); err != nil {
+		t.Fatalf("complete stream: %v", err)
+	}
+	notTransitioned, transitioned, err := streams.TransitionStreamStatus(t.Context(), created.ID, "starting", "live")
+	if err != nil {
+		t.Fatalf("conditional live transition: %v", err)
+	}
+	if transitioned {
+		t.Fatal("transition from stale starting status succeeded")
+	}
+	if notTransitioned.Status != "completed" {
+		t.Fatalf("stale transition returned status %q, want completed", notTransitioned.Status)
+	}
+	stopping, transitioned, err := streams.TransitionStreamStatus(t.Context(), created.ID, "completed", "stopping")
+	if err != nil {
+		t.Fatalf("conditional stopping transition: %v", err)
+	}
+	if !transitioned || stopping.Status != "stopping" {
+		t.Fatalf("expected completed -> stopping transition, got transitioned=%t stream=%#v", transitioned, stopping)
+	}
+}

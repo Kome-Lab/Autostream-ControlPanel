@@ -3,6 +3,7 @@ package youtube
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -90,6 +91,41 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 	if !strings.Contains(transport.broadcastInsertBody, `"enableAutoStart":true`) ||
 		!strings.Contains(transport.broadcastInsertBody, `"enableAutoStop":true`) {
 		t.Fatalf("broadcast insert body omitted YouTube auto start/stop settings: %s", transport.broadcastInsertBody)
+	}
+}
+
+func TestLiveAPIClientPrepareUsesImmediateStartLeadWhenUnscheduled(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{}
+	httpClient := &http.Client{Transport: transport}
+	client := LiveAPIClient{HTTPClient: httpClient}
+	before := time.Now().UTC()
+
+	_, err := client.Prepare(context.Background(), PrepareRequest{
+		Credentials: OAuthCredentials{
+			ClientID:     "youtube-client-id",
+			ClientSecret: "youtube-client-secret",
+			RefreshToken: "youtube-refresh-token",
+		},
+		StreamID:   "stream-immediate",
+		StreamName: "Immediate Stream",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Snippet struct {
+			ScheduledStartTime string `json:"scheduledStartTime"`
+		} `json:"snippet"`
+	}
+	if err := json.Unmarshal([]byte(transport.broadcastInsertBody), &payload); err != nil {
+		t.Fatalf("decode broadcast request: %v\nbody=%s", err, transport.broadcastInsertBody)
+	}
+	scheduledStart, err := time.Parse(time.RFC3339, payload.Snippet.ScheduledStartTime)
+	if err != nil {
+		t.Fatalf("parse scheduled start %q: %v", payload.Snippet.ScheduledStartTime, err)
+	}
+	if !scheduledStart.After(before) || !scheduledStart.Before(before.Add(time.Minute)) {
+		t.Fatalf("unscheduled broadcast must start promptly, got %s from %s", scheduledStart, before)
 	}
 }
 

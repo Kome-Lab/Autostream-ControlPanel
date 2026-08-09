@@ -538,7 +538,7 @@ func TestPreviewAssetUsesAssignedEncoderTokenAndBoundsResponse(t *testing.T) {
 	defer server.Close()
 
 	client := testClient()
-	result := client.PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "index.m3u8")
+	result := client.PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "index.m3u8", "")
 	if !result.Success || string(result.Body) != playlist || result.ContentType != "application/vnd.apple.mpegurl" {
 		t.Fatalf("unexpected preview result: %#v body=%q", result, string(result.Body))
 	}
@@ -550,9 +550,70 @@ func TestPreviewAssetRejectsOversizedPlaylist(t *testing.T) {
 	}))
 	defer server.Close()
 	client := testClient()
-	result := client.PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "index.m3u8")
+	result := client.PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "index.m3u8", "")
 	if result.Success || result.Code != "preview_asset_too_large" || len(result.Body) != 0 {
 		t.Fatalf("oversized preview was accepted: %#v", result)
+	}
+}
+
+func TestPreviewAssetForwardsSingleRangeAndPreservesPartialResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/streams/stream-01/preview/segment-000001.ts" {
+			t.Fatalf("unexpected preview path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer service-token" {
+			t.Fatalf("unexpected preview authorization: %q", r.Header.Get("Authorization"))
+		}
+		if got := r.Header.Get("Range"); got != "bytes=1-3" {
+			t.Fatalf("range = %q, want bytes=1-3", got)
+		}
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", "bytes 1-3/6")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("bcd"))
+	}))
+	defer server.Close()
+
+	client := testClient()
+	result := client.PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "segment-000001.ts", "bytes=1-3")
+	if !result.Success || result.StatusCode != http.StatusPartialContent || result.ContentRange != "bytes 1-3/6" || result.AcceptRanges != "bytes" || string(result.Body) != "bcd" {
+		t.Fatalf("unexpected partial preview result: %#v body=%q", result, string(result.Body))
+	}
+}
+
+func TestPreviewAssetPreservesUnsatisfiedRangeResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/streams/stream-01/preview/segment-000001.ts" {
+			t.Fatalf("unexpected preview path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Range"); got != "bytes=99-" {
+			t.Fatalf("range = %q, want bytes=99-", got)
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", "bytes */6")
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+	}))
+	defer server.Close()
+
+	result := testClient().PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "segment-000001.ts", "bytes=99-")
+	if !result.Success || result.StatusCode != http.StatusRequestedRangeNotSatisfiable || result.ContentRange != "bytes */6" || result.AcceptRanges != "bytes" || len(result.Body) != 0 {
+		t.Fatalf("unexpected unsatisfied range result: %#v body=%q", result, string(result.Body))
+	}
+}
+
+func TestPreviewAssetDoesNotForwardInvalidOrMultiRange(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Range"); got != "" {
+			t.Fatalf("unexpected range forwarding: %q", got)
+		}
+		_, _ = w.Write([]byte("segment"))
+	}))
+	defer server.Close()
+
+	result := testClient().PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "segment-000001.ts", "bytes=0-1,4-5")
+	if !result.Success {
+		t.Fatalf("invalid range request failed unexpectedly: %#v", result)
 	}
 }
 

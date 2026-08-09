@@ -105,6 +105,9 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	if !ok {
 		return Stream{}, ErrNotFound
 	}
+	if name := strings.TrimSpace(settings.Name); name != "" {
+		stream.Name = name
+	}
 	stream.ScheduledStartAt = cloneTimePtr(settings.ScheduledStartAt)
 	stream.ScheduledEndAt = cloneTimePtr(settings.ScheduledEndAt)
 	stream.DiscordConfigID = strings.TrimSpace(settings.DiscordConfigID)
@@ -151,6 +154,25 @@ func (s *MemoryStreamStore) UpdateStreamStatus(ctx context.Context, id, status s
 	stream.UpdatedAt = time.Now().UTC()
 	s.streams[id] = stream
 	return stream, nil
+}
+
+func (s *MemoryStreamStore) TransitionStreamStatus(ctx context.Context, id, expectedStatus, status string) (Stream, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Stream{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stream, ok := s.streams[id]
+	if !ok {
+		return Stream{}, false, ErrNotFound
+	}
+	if !strings.EqualFold(strings.TrimSpace(stream.Status), strings.TrimSpace(expectedStatus)) {
+		return stream, false, nil
+	}
+	stream.Status = status
+	stream.UpdatedAt = time.Now().UTC()
+	s.streams[id] = stream
+	return stream, true, nil
 }
 
 func (s *MemoryStreamStore) SaveStreamYouTubeRuntime(ctx context.Context, runtime StreamYouTubeRuntime) error {

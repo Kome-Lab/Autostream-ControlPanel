@@ -62,6 +62,11 @@ var (
 	ErrMissingIngestInfo  = errors.New("youtube_ingest_info_missing")
 )
 
+// minimumScheduledStartLead keeps an immediately requested broadcast just far
+// enough in the future for YouTube's liveBroadcasts.insert validation while
+// avoiding an operator-visible artificial wait.
+const minimumScheduledStartLead = 15 * time.Second
+
 func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (PreparedOutput, error) {
 	if err := validateCredentials(req.Credentials); err != nil {
 		return PreparedOutput{}, err
@@ -81,10 +86,7 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 	if privacy == "" {
 		privacy = "private"
 	}
-	start := req.ScheduledStart.UTC()
-	if start.IsZero() {
-		start = time.Now().UTC().Add(5 * time.Minute)
-	}
+	start := normalizedScheduledStart(req.ScheduledStart, time.Now())
 	broadcast, err := service.LiveBroadcasts.Insert([]string{"snippet", "status", "contentDetails"}, &youtubeapi.LiveBroadcast{
 		Snippet: &youtubeapi.LiveBroadcastSnippet{
 			Title:              title,
@@ -122,6 +124,14 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		return PreparedOutput{}, ErrMissingIngestInfo
 	}
 	return PreparedOutput{RTMPURL: rtmpURL, StreamKey: streamKey, BroadcastID: broadcast.Id, LiveStreamID: stream.Id}, nil
+}
+
+func normalizedScheduledStart(requested, now time.Time) time.Time {
+	minimum := now.UTC().Add(minimumScheduledStartLead)
+	if requested.IsZero() || !requested.UTC().After(minimum) {
+		return minimum
+	}
+	return requested.UTC()
 }
 
 func rtmpsIngest(info *youtubeapi.IngestionInfo) (string, string, error) {

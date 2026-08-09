@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,15 +142,17 @@ type ArchiveArtifactDownloadResult struct {
 }
 
 type PreviewAssetResult struct {
-	ServiceID   string `json:"service_id"`
-	ServiceType string `json:"service_type"`
-	Endpoint    string `json:"endpoint"`
-	StatusCode  int    `json:"status_code"`
-	Success     bool   `json:"success"`
-	Error       string `json:"error,omitempty"`
-	Code        string `json:"code,omitempty"`
-	ContentType string `json:"content_type,omitempty"`
-	Body        []byte `json:"-"`
+	ServiceID    string `json:"service_id"`
+	ServiceType  string `json:"service_type"`
+	Endpoint     string `json:"endpoint"`
+	StatusCode   int    `json:"status_code"`
+	Success      bool   `json:"success"`
+	Error        string `json:"error,omitempty"`
+	Code         string `json:"code,omitempty"`
+	ContentType  string `json:"content_type,omitempty"`
+	ContentRange string `json:"content_range,omitempty"`
+	AcceptRanges string `json:"accept_ranges,omitempty"`
+	Body         []byte `json:"-"`
 }
 
 func RedactServicePreflightResult(result ServicePreflightResult) ServicePreflightResult {
@@ -516,11 +519,11 @@ func (c Client) EncoderPreflight(ctx context.Context, stream store.Stream, servi
 	return ServicePreflightResult{ServiceType: "encoder_recorder", Endpoint: "/preflight", Error: "assigned encoder_recorder service not found"}
 }
 
-func (c Client) PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name string) PreviewAssetResult {
+func (c Client) PreviewAsset(ctx context.Context, stream store.Stream, services []store.RegisteredService, name, byteRange string) PreviewAssetResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
 			endpoint := "/streams/" + url.PathEscape(stream.ID) + "/preview/" + url.PathEscape(name)
-			return c.getPreviewAsset(ctx, service, endpoint, name)
+			return c.getPreviewAsset(ctx, service, endpoint, name, byteRange)
 		}
 	}
 	return PreviewAssetResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
@@ -753,7 +756,7 @@ func (c Client) getArchiveArtifact(ctx context.Context, service store.Registered
 	return result
 }
 
-func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredService, endpoint, name string) PreviewAssetResult {
+func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredService, endpoint, name, byteRange string) PreviewAssetResult {
 	result := PreviewAssetResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
@@ -782,6 +785,11 @@ func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredSer
 	}
 	request.Header.Set("Authorization", "Bearer "+authToken)
 	request.Header.Set("Accept", previewAcceptHeader(name))
+	if name != "index.m3u8" {
+		if rangeValue := normalizedPreviewByteRange(byteRange); rangeValue != "" {
+			request.Header.Set("Range", rangeValue)
+		}
+	}
 	response, err := c.httpClient().Do(request)
 	if err != nil {
 		result.Error = "service request failed"
@@ -789,6 +797,16 @@ func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredSer
 	}
 	defer response.Body.Close()
 	result.StatusCode = response.StatusCode
+	result.ContentType = response.Header.Get("Content-Type")
+	result.ContentRange = response.Header.Get("Content-Range")
+	result.AcceptRanges = response.Header.Get("Accept-Ranges")
+	// A valid RFC 7233 unsatisfied range is not an upstream availability
+	// failure. The Control Panel validates the only safe form of
+	// Content-Range before returning it to the browser.
+	if response.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		result.Success = true
+		return result
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var errorBody struct {
 			Code string `json:"code"`
@@ -814,9 +832,58 @@ func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredSer
 		return result
 	}
 	result.Success = true
-	result.ContentType = response.Header.Get("Content-Type")
 	result.Body = body
 	return result
+}
+
+// normalizedPreviewByteRange accepts exactly one RFC 7233 byte range. Preview
+// is a bounded proxy, so forwarding arbitrary or multi-range headers would
+// create avoidable request amplification at the Encoder.
+func normalizedPreviewByteRange(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "bytes=") {
+		return ""
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(value, "bytes="))
+	if spec == "" || strings.Contains(spec, ",") {
+		return ""
+	}
+	parts := strings.Split(spec, "-")
+	if len(parts) != 2 {
+		return ""
+	}
+	start := strings.TrimSpace(parts[0])
+	end := strings.TrimSpace(parts[1])
+	if start == "" && end == "" {
+		return ""
+	}
+	if start != "" && !decimalPreviewRangeValue(start) {
+		return ""
+	}
+	if end != "" && !decimalPreviewRangeValue(end) {
+		return ""
+	}
+	if start != "" && end != "" {
+		startValue, startErr := strconv.ParseUint(start, 10, 64)
+		endValue, endErr := strconv.ParseUint(end, 10, 64)
+		if startErr != nil || endErr != nil || endValue < startValue {
+			return ""
+		}
+	}
+	return "bytes=" + start + "-" + end
+}
+
+func decimalPreviewRangeValue(value string) bool {
+	if value == "" || len(value) > 20 {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
 }
 
 func previewAcceptHeader(name string) string {
