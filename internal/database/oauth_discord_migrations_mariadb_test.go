@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/autostream-control-panel/internal/netpolicy"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
@@ -24,6 +25,13 @@ type mariaDBConfigureMigrationFixture struct {
 	tokenID       string
 	nodeCipher    string
 	nodeNonce     string
+}
+
+func TestOAuthMigrationFixturesUseExplicitPublicHostAllowlist(t *testing.T) {
+	configureMariaDBOAuthMigrationFixtureURLPolicy(t)
+	if err := netpolicy.ServiceURLPolicyFromEnv().ValidateURL("https://legacy_discord.example.com:18443"); err != nil {
+		t.Fatalf("MariaDB migration fixture endpoint must be explicitly allowed: %v", err)
+	}
 }
 
 func TestMariaDBOAuthAccountRefreshStatusMigrationReapplyAndStaleCAS(t *testing.T) {
@@ -302,6 +310,7 @@ func TestMariaDBLegacyDiscordConfigureTokenMigrationReplaysSafely(t *testing.T) 
 
 func openMariaDBOAuthMigrationTest(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
+	configureMariaDBOAuthMigrationFixtureURLPolicy(t)
 	dsn := os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN")
 	if dsn == "" {
 		t.Skip("AUTOSTREAM_MARIADB_TEST_DSN is not configured")
@@ -318,6 +327,14 @@ func openMariaDBOAuthMigrationTest(t *testing.T) (*sql.DB, context.Context) {
 		t.Fatal(err)
 	}
 	return db, ctx
+}
+
+func configureMariaDBOAuthMigrationFixtureURLPolicy(t *testing.T) {
+	t.Helper()
+	// The fixtures use isolated example.com endpoints. Keep the production
+	// public-host allowlist enabled while permitting those explicit test hosts.
+	t.Setenv("AUTOSTREAM_REQUIRE_SERVICE_PUBLIC_ALLOWED_HOSTS", "true")
+	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "*.example.com")
 }
 
 func replayEmbeddedMariaDBMigration(
