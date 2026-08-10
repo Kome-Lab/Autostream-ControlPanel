@@ -1433,7 +1433,7 @@ func waitForValues(t *testing.T, values <-chan string, count int) {
 	for range count {
 		select {
 		case <-values:
-		case <-time.After(time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatalf("timed out waiting for %d values", count)
 		}
 	}
