@@ -10,13 +10,20 @@ const formSource = source.slice(componentStart, componentEnd);
 test("fixed Relay Live API output asks for only nonsecret binding fields", () => {
   assert.ok(componentStart >= 0, "YouTube output form must exist");
   assert.ok(componentEnd > componentStart, "YouTube output form must have a bounded source section");
-  assert.match(formSource, /value: "live_api_relay_static", label: "固定Relay（YouTube Live API）"/);
+  assert.match(formSource, /value: "live_api_relay_static", label: "YouTube Live API（管理済み固定Relay）"/);
   assert.match(formSource, /const staticRelayMode = mode === "live_api_relay_static";/);
   assert.match(formSource, /const requiresOAuth = mode === "live_api" \|\| mode === "live_api_dry_run" \|\| staticRelayMode;/);
   assert.match(formSource, /<TextField label="固定RelayバインディングID"[\s\S]*?required \/>/);
   assert.match(formSource, /<TextField label="再利用するYouTube Live Stream ID"[\s\S]*?required \/>/);
   assert.match(formSource, /watch_url: staticRelayMode \? "" : watchURL/);
   assert.match(formSource, /1つの固定Relayは同時に1配信枠だけを処理できます。/);
+});
+
+test("YouTube output modes explain their relay compatibility", () => {
+  assert.match(formSource, /value: "live_api_dry_run", label: "YouTube Live API（検証）", description: "検証用の出力方式です。固定Relay構成では選択しません。"/);
+  assert.match(formSource, /value: "live_api", label: "YouTube Live API（本番）", description: "YouTube Live APIで配信枠を作成します。固定Relayを使う場合は管理済み固定Relayを選びます。"/);
+  assert.match(formSource, /value: "live_api_relay_static", label: "YouTube Live API（管理済み固定Relay）", description: "管理済み固定Relay用です。Encoderのlive_api_static設定、binding ID、再利用Live Stream IDを一致させます。"/);
+  assert.match(formSource, /value: "stream_key", label: "ストリームキー（直接送信／従来Relay）", description: "既存ストリームキー方式です。Encoderが固定Relay構成ならこちらを選びます。"/);
 });
 
 test("fixed Relay Live API output omits direct RTMP credentials and forces completion", () => {
