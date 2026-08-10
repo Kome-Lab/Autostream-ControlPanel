@@ -200,6 +200,9 @@ func TestMariaDBStreamYouTubeRelayBindingClaimLifecycle(t *testing.T) {
 	if _, err := profiles.UpdateProfile(ctx, store.ProfileYouTubeOutput, output.ID, output.Name+" released", map[string]any{}); err != nil {
 		t.Fatalf("update output after claim release: %v", err)
 	}
+	if _, err := streams.UpdateStreamStatus(ctx, stream.ID, "starting"); err != nil {
+		t.Fatalf("restart stream for profile revision fence: %v", err)
+	}
 	if _, err := streams.ReserveStreamYouTubeRelayBindingClaim(ctx, claim); !errors.Is(err, store.ErrYouTubeRelayBindingClaimProfileRevisionConflict) {
 		t.Fatalf("reserve after output update with stale revision err = %v, want profile revision conflict", err)
 	}
@@ -208,9 +211,6 @@ func TestMariaDBStreamYouTubeRelayBindingClaimLifecycle(t *testing.T) {
 		t.Fatalf("reload updated output profile: %v", err)
 	}
 	setMariaDBRelayBindingExpectedRevision(&claim, output.YouTubeRelayBindingRevision)
-	if _, err := streams.UpdateStreamStatus(ctx, stream.ID, "starting"); err != nil {
-		t.Fatalf("restart stream for stale reservation fence: %v", err)
-	}
 	staleFirst, err := streams.ReserveStreamYouTubeRelayBindingClaim(ctx, claim)
 	if err != nil {
 		t.Fatalf("reserve first stale-fence claim: %v", err)
