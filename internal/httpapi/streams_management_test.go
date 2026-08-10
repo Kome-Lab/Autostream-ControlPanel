@@ -158,8 +158,8 @@ func TestForceStopRearmsDiscordVoiceStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != "failed" {
-		t.Fatalf("force stop status = %q", updated.Status)
+	if updated.Status != "completed" {
+		t.Fatalf("force stop status = %q, want completed after acknowledged downstream stop", updated.Status)
 	}
 	items, err := streams.ListStreams(t.Context())
 	if err != nil {

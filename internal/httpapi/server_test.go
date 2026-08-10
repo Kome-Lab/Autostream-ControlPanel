@@ -3811,8 +3811,22 @@ func TestServiceStartStreamUsesDiscordProfileChannelDefaultsForYouTubeNotificati
 	if dispatcher.startRequest.DiscordGuildID != "guild-profile" || dispatcher.startRequest.DiscordVoiceChannelID != "voice-profile" || dispatcher.startRequest.DiscordTextChannelID != "chat-profile" {
 		t.Fatalf("service start did not apply Discord profile channel defaults: %#v", dispatcher.startRequest)
 	}
+	if dispatcher.notifyCalls != 0 {
+		t.Fatalf("service start must only enqueue the configured text notification: calls=%d", dispatcher.notifyCalls)
+	}
+	queued, err := streams.GetLatestDiscordYouTubeLiveNotification(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.DiscordTextChannelID != "chat-profile" || queued.WatchURL != "https://www.youtube.com/watch?v=profile_defaults" || queued.State != store.DiscordYouTubeLiveNotificationStateDispatchPending {
+		t.Fatalf("service start did not enqueue the configured text notification: %#v", queued)
+	}
+	result, err := handler.DispatchDueDiscordYouTubeLiveNotifications(t.Context(), 1)
+	if err != nil || result["claimed"] != 1 || result["delivered"] != 1 {
+		t.Fatalf("queued profile-default notification was not delivered: result=%#v err=%v", result, err)
+	}
 	if dispatcher.notifyCalls != 1 || dispatcher.notifiedURL != "https://www.youtube.com/watch?v=profile_defaults" {
-		t.Fatalf("service start did not notify the configured text channel: calls=%d url=%q", dispatcher.notifyCalls, dispatcher.notifiedURL)
+		t.Fatalf("outbox did not notify the configured text channel: calls=%d url=%q", dispatcher.notifyCalls, dispatcher.notifiedURL)
 	}
 }
 
@@ -6004,6 +6018,18 @@ func TestStartStreamRelayStaticObservedFinalizeCommitStillNotifiesDiscord(t *tes
 	response := fixture.start(t)
 	if response.Code != http.StatusOK {
 		t.Fatalf("observed finalizer commit start status=%d body=%s", response.Code, response.Body.String())
+	}
+	queued, err := fixture.streams.GetLatestDiscordYouTubeLiveNotification(t.Context(), fixture.stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.State != store.DiscordYouTubeLiveNotificationStateAwaitingYouTubeLive || queued.WatchURL != "https://www.youtube.com/watch?v=broadcast-static-dispatch" || notifier.notifyCalls != 0 {
+		t.Fatalf("observed finalizer commit must queue the static watch URL before provider-live delivery: notification=%#v notifier=%#v", queued, notifier)
+	}
+	fixture.server.youtubeLive = &scriptedYouTubeLifecycleClient{fakeYouTubeLiveClient: fixture.youtubeLive, statuses: []string{"live"}}
+	result, err := fixture.server.DispatchDueDiscordYouTubeLiveNotifications(t.Context(), 1)
+	if err != nil || result["claimed"] != 1 || result["delivered"] != 1 {
+		t.Fatalf("observed finalizer notification delivery result=%#v err=%v", result, err)
 	}
 	if notifier.notifyCalls != 1 || notifier.notifiedStream.Status != "live" || notifier.notifiedURL != "https://www.youtube.com/watch?v=broadcast-static-dispatch" {
 		t.Fatalf("observed finalizer commit must retain static watch URL for Discord notification: notifier=%#v", notifier)
@@ -19288,7 +19314,7 @@ func (f *relayStaticNotificationDispatcher) NotifyDiscordYouTubeLive(_ context.C
 	f.notifiedStream = stream
 	f.notifiedEventID = eventID
 	f.notifiedURL = watchURL
-	return servicecall.DispatchResult{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/streams/" + stream.ID + "/notifications/youtube-live", StatusCode: http.StatusOK, Success: true}
+	return servicecall.DispatchResult{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/streams/" + stream.ID + "/notifications/youtube-live", StatusCode: http.StatusOK, Success: true, MessageID: "discord-static-message-01"}
 }
 
 func (f *readinessBlockDispatcher) StartReadinessIssues(services []store.RegisteredService, req servicecall.StartRequest, now time.Time) []servicecall.ReadinessIssue {
