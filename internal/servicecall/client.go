@@ -23,6 +23,7 @@ import (
 const (
 	maxPreviewPlaylistBytes = 1 << 20
 	maxPreviewSegmentBytes  = 32 << 20
+	encoderStopTimeout      = 15 * time.Second
 )
 
 type Config struct {
@@ -85,6 +86,12 @@ type DispatchResult struct {
 	Code         string `json:"code,omitempty"`
 	FailurePhase string `json:"failure_phase,omitempty"`
 	ErrorClass   string `json:"error_class,omitempty"`
+	// Retryable is set only when the service explicitly confirms that it did
+	// not accept the notification. Transport errors and 5xx responses remain
+	// ambiguous delivery outcomes at the durable outbox boundary.
+	Retryable   bool   `json:"retryable,omitempty"`
+	MessageID   string `json:"message_id,omitempty"`
+	AlreadySent bool   `json:"already_sent,omitempty"`
 }
 
 type AudioStatusResult struct {
@@ -467,6 +474,10 @@ func (c Client) Stop(ctx context.Context, stream store.Stream, services []store.
 		if !ok {
 			continue
 		}
+		if service.ServiceType == "encoder_recorder" {
+			results = append(results, c.postWithTimeout(ctx, service, endpoint, payload, encoderStopRequestTimeout(c.Config.Timeout)))
+			continue
+		}
 		results = append(results, c.post(ctx, service, endpoint, payload))
 	}
 	return results
@@ -536,35 +547,13 @@ func (c Client) NotifyDiscordYouTubeLive(ctx context.Context, stream store.Strea
 		}
 		endpoint := "/streams/" + url.PathEscape(stream.ID) + "/notifications/youtube-live"
 		payload := map[string]string{"event_id": strings.TrimSpace(eventID), "watch_url": strings.TrimSpace(watchURL)}
-		var result DispatchResult
-		for attempt := 0; attempt < 3; attempt++ {
-			result = c.post(ctx, service, endpoint, payload)
-			if result.Success || !transientNotificationFailure(result.StatusCode) || attempt == 2 {
-				return result
-			}
-			if !waitForServiceRetry(ctx, time.Duration(250*(1<<attempt))*time.Millisecond) {
-				result.Error = "service notification retry canceled"
-				return result
-			}
-		}
-		return result
+		// This is intentionally one attempt. A response loss (and many 5xx
+		// outcomes) may occur after Discord accepted the message. The durable
+		// Control Panel outbox decides whether an explicit service receipt makes
+		// a retry safe; this transport client must not create a hidden retry loop.
+		return c.post(ctx, service, endpoint, payload)
 	}
 	return DispatchResult{ServiceType: "discord_bot", Error: "assigned discord_bot service not found"}
-}
-
-func transientNotificationFailure(status int) bool {
-	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
-}
-
-func waitForServiceRetry(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
 }
 
 func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) ArchiveArtifactDownloadResult {
@@ -630,18 +619,41 @@ func (c Client) post(ctx context.Context, service store.RegisteredService, endpo
 	return c.serviceJSONAction(ctx, service, http.MethodPost, endpoint, payload)
 }
 
+// postWithTimeout uses a copied Client so the Encoder's bounded graceful stop
+// window cannot shorten other service calls or mutate a caller-supplied HTTP
+// client shared by them.
+func (c Client) postWithTimeout(ctx context.Context, service store.RegisteredService, endpoint string, payload any, timeout time.Duration) DispatchResult {
+	c.Config.Timeout = timeout
+	if c.HTTP != nil {
+		client := *c.HTTP
+		client.Timeout = timeout
+		c.HTTP = &client
+	}
+	return c.post(ctx, service, endpoint, payload)
+}
+
+func encoderStopRequestTimeout(configured time.Duration) time.Duration {
+	if configured > encoderStopTimeout {
+		return configured
+	}
+	return encoderStopTimeout
+}
+
 func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredService, method, endpoint string, payload any) DispatchResult {
 	result := DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
+		result.FailurePhase = "pre_dispatch"
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
 		return result
 	}
 	authToken, err := c.authToken(service)
 	if err != nil {
+		result.FailurePhase = "pre_dispatch"
 		result.Error = err.Error()
 		return result
 	}
 	if err := c.Config.URLPolicy.ValidateURL(service.PublicURL); err != nil {
+		result.FailurePhase = "pre_dispatch"
 		result.Code = serviceURLIssueCode(err)
 		result.Error = serviceURLMessage(err)
 		return result
@@ -650,6 +662,7 @@ func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredS
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
+			result.FailurePhase = "pre_dispatch"
 			result.Error = "marshal payload failed"
 			return result
 		}
@@ -663,6 +676,7 @@ func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredS
 	}
 	request, err := http.NewRequestWithContext(reqCtx, method, joinURL(service.PublicURL, endpoint), body)
 	if err != nil {
+		result.FailurePhase = "pre_dispatch"
 		result.Error = "build request failed"
 		return result
 	}
@@ -673,12 +687,21 @@ func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredS
 	client := c.httpClient()
 	response, err := client.Do(request)
 	if err != nil {
+		result.FailurePhase = "transport"
 		result.Error = "service request failed"
 		return result
 	}
 	defer response.Body.Close()
 	result.StatusCode = response.StatusCode
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		var successBody struct {
+			MessageID   string `json:"message_id"`
+			AlreadySent bool   `json:"already_sent"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&successBody); err == nil {
+			result.MessageID = sanitizeServiceErrorValue(successBody.MessageID)
+			result.AlreadySent = successBody.AlreadySent
+		}
 		result.Success = true
 		return result
 	}
@@ -686,11 +709,13 @@ func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredS
 		Code         string `json:"code"`
 		FailurePhase string `json:"failure_phase"`
 		ErrorClass   string `json:"error_class"`
+		Retryable    bool   `json:"retryable"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&errorBody); err == nil {
 		result.Code = sanitizeServiceErrorValue(errorBody.Code)
 		result.FailurePhase = sanitizeServiceErrorValue(errorBody.FailurePhase)
 		result.ErrorClass = sanitizeServiceErrorValue(errorBody.ErrorClass)
+		result.Retryable = errorBody.Retryable
 	}
 	result.Error = fmt.Sprintf("service returned status %d", response.StatusCode)
 	if result.Code != "" {

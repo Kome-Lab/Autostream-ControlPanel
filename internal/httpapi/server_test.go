@@ -2175,6 +2175,204 @@ func TestConcurrentStreamStopsClaimOnceBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestStopStreamNormalizesOnlyExactAlreadyStoppedDownstreamReceipts(t *testing.T) {
+	defaultResults := func() []servicecall.DispatchResult {
+		return []servicecall.DispatchResult{
+			{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", StatusCode: http.StatusAccepted, Success: true},
+			{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusAccepted, Success: true},
+			{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusAccepted, Success: true},
+		}
+	}
+	withFailure := func(result servicecall.DispatchResult) []servicecall.DispatchResult {
+		results := defaultResults()
+		for index := range results {
+			if results[index].ServiceType == result.ServiceType {
+				results[index] = result
+				return results
+			}
+		}
+		t.Fatalf("missing default result for service type %q", result.ServiceType)
+		return nil
+	}
+
+	tests := []struct {
+		name             string
+		results          []servicecall.DispatchResult
+		wantHTTPStatus   int
+		wantStreamStatus string
+		failure          servicecall.DispatchResult
+	}{
+		{
+			name: "exact stopped receipts complete the dynamic stream",
+			results: []servicecall.DispatchResult{
+				{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", StatusCode: http.StatusNotFound, Code: "stream_not_running", Error: "service returned status 404: stream_not_running"},
+				{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusConflict, Code: "no_active_stream_job", Error: "service returned status 409: no_active_stream_job"},
+				{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusAccepted, Success: true},
+			},
+			wantHTTPStatus:   http.StatusOK,
+			wantStreamStatus: "completed",
+		},
+		{
+			name:             "encoder starting remains a failure",
+			results:          withFailure(servicecall.DispatchResult{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", StatusCode: http.StatusConflict, Code: "stream_starting", Error: "service returned status 409: stream_starting"}),
+			wantHTTPStatus:   http.StatusBadGateway,
+			wantStreamStatus: "failed",
+			failure:          servicecall.DispatchResult{ServiceType: "encoder_recorder", StatusCode: http.StatusConflict, Code: "stream_starting"},
+		},
+		{
+			name:             "worker stream mismatch remains a failure",
+			results:          withFailure(servicecall.DispatchResult{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusConflict, Code: "stream_id_mismatch", Error: "service returned status 409: stream_id_mismatch"}),
+			wantHTTPStatus:   http.StatusBadGateway,
+			wantStreamStatus: "failed",
+			failure:          servicecall.DispatchResult{ServiceType: "worker", StatusCode: http.StatusConflict, Code: "stream_id_mismatch"},
+		},
+		{
+			name:             "encoder different active stream remains a failure",
+			results:          withFailure(servicecall.DispatchResult{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", StatusCode: http.StatusConflict, Code: "stream_already_running", Error: "service returned status 409: stream_already_running"}),
+			wantHTTPStatus:   http.StatusBadGateway,
+			wantStreamStatus: "failed",
+			failure:          servicecall.DispatchResult{ServiceType: "encoder_recorder", StatusCode: http.StatusConflict, Code: "stream_already_running"},
+		},
+		{
+			name:             "authentication failure remains a failure",
+			results:          withFailure(servicecall.DispatchResult{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusUnauthorized, Code: "missing_or_invalid_service_token", Error: "service returned status 401: missing_or_invalid_service_token"}),
+			wantHTTPStatus:   http.StatusBadGateway,
+			wantStreamStatus: "failed",
+			failure:          servicecall.DispatchResult{ServiceType: "worker", StatusCode: http.StatusUnauthorized, Code: "missing_or_invalid_service_token"},
+		},
+		{
+			name:             "server failure remains a failure",
+			results:          withFailure(servicecall.DispatchResult{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", StatusCode: http.StatusInternalServerError, Code: "stop_stream_failed", Error: "service returned status 500: stop_stream_failed"}),
+			wantHTTPStatus:   http.StatusBadGateway,
+			wantStreamStatus: "failed",
+			failure:          servicecall.DispatchResult{ServiceType: "encoder_recorder", StatusCode: http.StatusInternalServerError, Code: "stop_stream_failed"},
+		},
+		{
+			name:             "transport failure remains a failure",
+			results:          withFailure(servicecall.DispatchResult{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", Error: "service request failed"}),
+			wantHTTPStatus:   http.StatusBadGateway,
+			wantStreamStatus: "failed",
+			failure:          servicecall.DispatchResult{ServiceType: "encoder_recorder", Error: "service request failed"},
+		},
+		{
+			name:             "encoder no process with the wrong status remains a failure",
+			results:          withFailure(servicecall.DispatchResult{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", StatusCode: http.StatusConflict, Code: "stream_not_running", Error: "service returned status 409: stream_not_running"}),
+			wantHTTPStatus:   http.StatusBadGateway,
+			wantStreamStatus: "failed",
+			failure:          servicecall.DispatchResult{ServiceType: "encoder_recorder", StatusCode: http.StatusConflict, Code: "stream_not_running"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+				t.Fatal(err)
+			}
+			streams := store.NewMemoryStreamStore()
+			dispatcher := &fakeServiceDispatcher{stopResultsOverride: tt.results}
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+			stream, err := streams.CreateStream(t.Context(), "manual stop receipts")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+				t.Fatal(err)
+			}
+			registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != tt.wantHTTPStatus {
+				t.Fatalf("stop status=%d want=%d body=%s", response.Code, tt.wantHTTPStatus, response.Body.String())
+			}
+
+			stored, err := streams.GetStream(t.Context(), stream.ID)
+			if err != nil || stored.Status != tt.wantStreamStatus {
+				t.Fatalf("stream status=%q err=%v want=%q", stored.Status, err, tt.wantStreamStatus)
+			}
+
+			responseBody := response.Body.String()
+			var body struct {
+				Dispatch []servicecall.DispatchResult `json:"dispatch"`
+			}
+			if err := json.NewDecoder(strings.NewReader(responseBody)).Decode(&body); err != nil {
+				t.Fatalf("decode stop response: %v", err)
+			}
+			if tt.wantHTTPStatus == http.StatusOK {
+				var encoderStopped, workerStopped bool
+				for _, result := range body.Dispatch {
+					switch {
+					case result.ServiceType == "encoder_recorder" && result.StatusCode == http.StatusNotFound && result.Code == "stream_not_running":
+						encoderStopped = result.Success && result.Error == ""
+					case result.ServiceType == "worker" && result.StatusCode == http.StatusConflict && result.Code == "no_active_stream_job":
+						workerStopped = result.Success && result.Error == ""
+					}
+				}
+				if !encoderStopped || !workerStopped {
+					t.Fatalf("exact already-stopped receipts were not normalized: %#v", body.Dispatch)
+				}
+				return
+			}
+
+			if !strings.Contains(responseBody, `"code":"service_dispatch_failed"`) {
+				t.Fatalf("unsafe downstream result must preserve service dispatch failure: %s", responseBody)
+			}
+			for _, result := range body.Dispatch {
+				if result.ServiceType == tt.failure.ServiceType && result.StatusCode == tt.failure.StatusCode && result.Code == tt.failure.Code {
+					if result.Success {
+						t.Fatalf("unsafe downstream result was normalized: %#v", result)
+					}
+					return
+				}
+			}
+			t.Fatalf("missing unsafe downstream result %#v in %#v", tt.failure, body.Dispatch)
+		})
+	}
+}
+
+func TestStopStreamDoesNotNormalizeEncoderNoProcessWhenRelayClaimLookupFails(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := &failingRelayBindingClaimLookupStreamStore{MemoryStreamStore: store.NewMemoryStreamStore(), err: errors.New("relay binding lookup unavailable")}
+	dispatcher := &fakeServiceDispatcher{stopResultsOverride: []servicecall.DispatchResult{
+		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/stream/stop", StatusCode: http.StatusNotFound, Code: "stream_not_running", Error: "service returned status 404: stream_not_running"},
+		{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusConflict, Code: "no_active_stream_job", Error: "service returned status 409: no_active_stream_job"},
+		{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/jobs/stream/stop", StatusCode: http.StatusAccepted, Success: true},
+	}}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	stream, err := streams.CreateStream(t.Context(), "manual stop claim lookup failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"code":"service_dispatch_failed"`) {
+		t.Fatalf("claim lookup failure must retain encoder dispatch failure: status=%d body=%s", response.Code, response.Body.String())
+	}
+	stored, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil || stored.Status != "failed" {
+		t.Fatalf("claim lookup failure must leave stream failed: stream=%#v err=%v", stored, err)
+	}
+}
+
 func TestConcurrentForceStopsClaimOnceBeforeDispatch(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
@@ -2227,8 +2425,8 @@ func TestConcurrentForceStopsClaimOnceBeforeDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if final.Status != "failed" {
-		t.Fatalf("concurrent force stop final status = %q, want failed", final.Status)
+	if final.Status != "completed" {
+		t.Fatalf("concurrent force stop final status = %q, want completed after confirmed downstream stop", final.Status)
 	}
 }
 
@@ -2330,8 +2528,8 @@ func TestForceStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failed.Status != "failed" {
-		t.Fatalf("force-stop after downstream request cancellation left status %q, want failed", failed.Status)
+	if failed.Status != "completed" {
+		t.Fatalf("force-stop after downstream request cancellation left status %q, want completed after confirmed downstream stop", failed.Status)
 	}
 }
 
@@ -2619,6 +2817,88 @@ func TestCreateStreamPersistsSchedule(t *testing.T) {
 	}
 }
 
+func TestStreamScheduledStartIsOptionalClearableAndHonored(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.update"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"immediate stream"}`))
+	createReq.AddCookie(cookie)
+	createReq.Header.Set("X-CSRF-Token", csrf)
+	createRes := httptest.NewRecorder()
+	handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", createRes.Code, createRes.Body.String())
+	}
+	var created store.Stream
+	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ScheduledStartAt != nil || !youtubeLiveAPIScheduledStart(created, nil).IsZero() {
+		t.Fatalf("stream without an explicit schedule must use the immediate YouTube path: %#v", created)
+	}
+
+	future := "2030-07-10T01:00:00Z"
+	updateReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/settings", bytes.NewBufferString(`{"scheduled_start_at":"`+future+`"}`))
+	updateReq.AddCookie(cookie)
+	updateReq.Header.Set("X-CSRF-Token", csrf)
+	updateRes := httptest.NewRecorder()
+	handler.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusOK {
+		t.Fatalf("schedule update status=%d body=%s", updateRes.Code, updateRes.Body.String())
+	}
+	var scheduled store.Stream
+	if err := json.NewDecoder(updateRes.Body).Decode(&scheduled); err != nil {
+		t.Fatal(err)
+	}
+	if scheduled.ScheduledStartAt == nil || scheduled.ScheduledStartAt.Format(time.RFC3339) != future || !youtubeLiveAPIScheduledStart(scheduled, nil).Equal(*scheduled.ScheduledStartAt) {
+		t.Fatalf("explicit scheduled start was not retained for YouTube: %#v", scheduled)
+	}
+
+	if _, err := streams.UpdateStreamStatus(t.Context(), created.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	activeClearReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/settings", bytes.NewBufferString(`{"scheduled_start_at":""}`))
+	activeClearReq.AddCookie(cookie)
+	activeClearReq.Header.Set("X-CSRF-Token", csrf)
+	activeClearRes := httptest.NewRecorder()
+	handler.ServeHTTP(activeClearRes, activeClearReq)
+	if activeClearRes.Code != http.StatusConflict || !strings.Contains(activeClearRes.Body.String(), "stream_status_not_editable") {
+		t.Fatalf("active stream schedule clear must remain blocked: status=%d body=%s", activeClearRes.Code, activeClearRes.Body.String())
+	}
+	stillScheduled, err := streams.GetStream(t.Context(), created.ID)
+	if err != nil || stillScheduled.ScheduledStartAt == nil || stillScheduled.ScheduledStartAt.Format(time.RFC3339) != future {
+		t.Fatalf("active stream schedule changed after rejected clear: stream=%#v err=%v", stillScheduled, err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), created.ID, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+
+	clearReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/settings", bytes.NewBufferString(`{"scheduled_start_at":""}`))
+	clearReq.AddCookie(cookie)
+	clearReq.Header.Set("X-CSRF-Token", csrf)
+	clearRes := httptest.NewRecorder()
+	handler.ServeHTTP(clearRes, clearReq)
+	if clearRes.Code != http.StatusOK {
+		t.Fatalf("schedule clear status=%d body=%s", clearRes.Code, clearRes.Body.String())
+	}
+	var cleared store.Stream
+	if err := json.NewDecoder(clearRes.Body).Decode(&cleared); err != nil {
+		t.Fatal(err)
+	}
+	if cleared.ScheduledStartAt != nil || strings.Contains(clearRes.Body.String(), `"scheduled_start_at"`) {
+		t.Fatalf("cleared schedule must be omitted from the response: stream=%#v body=%s", cleared, clearRes.Body.String())
+	}
+	stored, err := streams.GetStream(t.Context(), created.ID)
+	if err != nil || stored.ScheduledStartAt != nil {
+		t.Fatalf("cleared schedule was not persisted as NULL: stream=%#v err=%v", stored, err)
+	}
+}
+
 func TestCreateStreamAssignsSelectedPrimaryNodes(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
@@ -2805,6 +3085,71 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	handler.ServeHTTP(getRes, getReq)
 	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), discordTwo.ID) || !strings.Contains(getRes.Body.String(), "guild-stream") || !strings.Contains(getRes.Body.String(), "discord_voice_join") || !strings.Contains(getRes.Body.String(), archiveProfile.ID) {
 		t.Fatalf("get stream did not return settings: status=%d body=%s", getRes.Code, getRes.Body.String())
+	}
+}
+
+func TestUpdateStreamSettingsAllowsInactiveStatusesAndRejectsActiveStatuses(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.update"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	for _, tc := range []struct {
+		name       string
+		status     string
+		wantStatus int
+		wantEdit   bool
+	}{
+		{name: "created", status: "created", wantStatus: http.StatusOK, wantEdit: true},
+		{name: "draft", status: "draft", wantStatus: http.StatusOK, wantEdit: true},
+		{name: "scheduled", status: "scheduled", wantStatus: http.StatusOK, wantEdit: true},
+		{name: "ready", status: "ready", wantStatus: http.StatusOK, wantEdit: true},
+		{name: "failed", status: "failed", wantStatus: http.StatusOK, wantEdit: true},
+		{name: "completed", status: "completed", wantStatus: http.StatusOK, wantEdit: true},
+		{name: "stopped", status: "stopped", wantStatus: http.StatusOK, wantEdit: true},
+		{name: "starting", status: "starting", wantStatus: http.StatusConflict},
+		{name: "live", status: "live", wantStatus: http.StatusConflict},
+		{name: "stopping", status: "stopping", wantStatus: http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := streams.CreateStream(t.Context(), "before "+tc.status+" edit")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, tc.status); err != nil {
+				t.Fatal(err)
+			}
+
+			updatedName := "after " + tc.status + " edit"
+			req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"name":"`+updatedName+`"}`))
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+
+			if res.Code != tc.wantStatus {
+				t.Fatalf("update status=%d want=%d body=%s", res.Code, tc.wantStatus, res.Body.String())
+			}
+			stored, err := streams.GetStream(t.Context(), stream.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantEdit {
+				if stored.Name != updatedName || stored.Status != tc.status {
+					t.Fatalf("inactive stream update did not persist name/status: %#v", stored)
+				}
+				return
+			}
+			if !strings.Contains(res.Body.String(), `"code":"stream_status_not_editable"`) {
+				t.Fatalf("active stream rejection code missing: %s", res.Body.String())
+			}
+			if stored.Name != stream.Name || stored.Status != tc.status {
+				t.Fatalf("active stream was modified: %#v", stored)
+			}
+		})
 	}
 }
 
@@ -3405,6 +3750,72 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 	}
 }
 
+func TestServiceStartStreamUsesDiscordProfileChannelDefaultsForYouTubeNotification(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "discord profile defaults service start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	discordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	if _, err := auth.AssignServiceToStream(t.Context(), "discord-01", stream.ID, "test-user"); err != nil {
+		t.Fatal(err)
+	}
+
+	profiles := store.NewMemoryProfileStore()
+	discord, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "profile defaults discord", map[string]any{
+		"service_id":           "discord-01",
+		"bot_token_configured": true,
+		"guild_id":             "guild-profile",
+		"voice_channel_id":     "voice-profile",
+		"text_channel_id":      "chat-profile",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "profile defaults output", map[string]any{
+		"mode":                   "stream_key",
+		"rtmp_url":               "rtmps://youtube.example.com/live2",
+		"stream_key_secret_name": "youtube_stream_key_profile_defaults",
+		"watch_url":              "https://youtu.be/profile_defaults",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), "youtube_stream_key_profile_defaults", "runtime-secret-stream-key"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		DiscordConfigID:  discord.ID,
+		AutoStartTrigger: autoStartTriggerDiscordVoiceJoin,
+		YouTubeOutputID:  youtube.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatcher := &notificationFakeDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
+	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("service start status=%d body=%s", res.Code, res.Body.String())
+	}
+	if dispatcher.startRequest.DiscordGuildID != "guild-profile" || dispatcher.startRequest.DiscordVoiceChannelID != "voice-profile" || dispatcher.startRequest.DiscordTextChannelID != "chat-profile" {
+		t.Fatalf("service start did not apply Discord profile channel defaults: %#v", dispatcher.startRequest)
+	}
+	if dispatcher.notifyCalls != 1 || dispatcher.notifiedURL != "https://www.youtube.com/watch?v=profile_defaults" {
+		t.Fatalf("service start did not notify the configured text channel: calls=%d url=%q", dispatcher.notifyCalls, dispatcher.notifiedURL)
+	}
+}
+
 func TestServiceStopStreamUsesPrimaryDiscordBotAndCanonicalLifecycle(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()
@@ -3716,7 +4127,7 @@ func TestStartStreamRejectsDiscordConfigForDifferentPrimaryBot(t *testing.T) {
 	}
 }
 
-func TestStartStreamResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
+func TestStartStreamLegacyStaticRelayResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
 		t.Fatal(err)
@@ -3726,7 +4137,17 @@ func TestStartStreamResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+	// Older Encoder releases report the ambiguous "static" capability whenever
+	// a local fixed relay URL is configured. That must stay on the established
+	// stream_key route until an operator explicitly moves it to live_api_static.
+	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{"output_relay_mode": "static"})
+	registerServiceInstance(t, auth, "worker-01", "worker")
+	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
+	for _, serviceID := range []string{"encoder_recorder-01", "worker-01", "discord_bot-01"} {
+		if _, err := auth.AssignServiceToStream(t.Context(), serviceID, stream.ID, "test-user"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	secrets := store.NewMemorySecretStore()
 	if _, err := secrets.UpdateSecret(t.Context(), "youtube_stream_key_main", "runtime-secret-stream-key"); err != nil {
 		t.Fatal(err)
@@ -3760,22 +4181,29 @@ func TestStartStreamResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	}
 }
 
-func TestStartStreamNotifiesDiscordOnlyAfterSuccessfulDispatch(t *testing.T) {
+func TestStartStreamQueuesDiscordNotificationOnlyAfterSuccessfulDispatch(t *testing.T) {
 	tests := []struct {
-		name               string
-		watchURL           string
-		failStart          bool
-		notificationResult servicecall.DispatchResult
-		wantHTTPStatus     int
-		wantStreamStatus   string
-		wantNotifyCalls    int
-		wantResponseCode   string
-		wantNotifiedURL    string
+		name                      string
+		watchURL                  string
+		failStart                 bool
+		notificationResult        servicecall.DispatchResult
+		requestDiscordTextChannel string
+		streamDiscordTextChannel  string
+		wantDispatchTextChannel   string
+		wantHTTPStatus            int
+		wantStreamStatus          string
+		wantNotifyCalls           int
+		wantResponseCode          string
+		wantNotifiedURL           string
+		wantNotificationState     string
+		wantNotificationLastError string
 	}{
-		{name: "notification sent", watchURL: "https://youtu.be/video_01", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_01"},
-		{name: "notification failure does not roll back live stream", watchURL: "https://www.youtube.com/watch?v=video_02", notificationResult: servicecall.DispatchResult{StatusCode: http.StatusBadGateway, Code: "discord_api_unavailable", Error: "service returned status 502"}, wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantResponseCode: "discord_api_unavailable", wantNotifiedURL: "https://www.youtube.com/watch?v=video_02"},
-		{name: "dispatch failure suppresses notification", watchURL: "https://www.youtube.com/watch?v=video_03", failStart: true, wantHTTPStatus: http.StatusBadGateway, wantStreamStatus: "failed", wantNotifyCalls: 0, wantResponseCode: "service_dispatch_failed"},
-		{name: "configured chat requires watch URL", wantHTTPStatus: http.StatusConflict, wantStreamStatus: "created", wantNotifyCalls: 0, wantResponseCode: "youtube_output_invalid_config"},
+		{name: "notification sent", watchURL: "https://youtu.be/video_01", requestDiscordTextChannel: "chat-youtube", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_01", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
+		{name: "profile text channel fallback sends notification", watchURL: "https://youtu.be/video_profile_fallback", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_profile_fallback", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
+		{name: "saved stream text channel override keeps priority", watchURL: "https://youtu.be/video_stream_override", streamDiscordTextChannel: "chat-stream-override", wantDispatchTextChannel: "chat-stream-override", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_stream_override", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
+		{name: "ambiguous notification failure keeps live stream and fences recovery", watchURL: "https://www.youtube.com/watch?v=video_02", notificationResult: servicecall.DispatchResult{StatusCode: http.StatusBadGateway, Code: "discord_api_unavailable", Error: "service returned status 502"}, requestDiscordTextChannel: "chat-youtube", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_02", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDeliveryUnknown, wantNotificationLastError: "discord_api_unavailable"},
+		{name: "dispatch failure suppresses notification", watchURL: "https://www.youtube.com/watch?v=video_03", failStart: true, requestDiscordTextChannel: "chat-youtube", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusBadGateway, wantStreamStatus: "failed", wantNotifyCalls: 0, wantResponseCode: "service_dispatch_failed"},
+		{name: "profile text channel fallback requires watch URL", wantHTTPStatus: http.StatusConflict, wantStreamStatus: "created", wantNotifyCalls: 0, wantResponseCode: "youtube_output_invalid_config"},
 	}
 
 	for _, tt := range tests {
@@ -3795,7 +4223,16 @@ func TestStartStreamNotifiesDiscordOnlyAfterSuccessfulDispatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			profiles := store.NewMemoryProfileStore()
-			discord := createDiscordConfigForTest(t, profiles, "notification discord", "discord_bot-01", "guild-youtube", "voice-youtube", "chat-youtube")
+			discord, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "notification discord", map[string]any{
+				"service_id":           "discord_bot-01",
+				"bot_token_configured": true,
+				"guild_id":             "guild-youtube",
+				"voice_channel_id":     "voice-youtube",
+				"text_channel_id":      "chat-youtube",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 			youtubeConfig := map[string]any{
 				"mode":                   "stream_key",
 				"rtmp_url":               "rtmps://youtube.example.com/live2",
@@ -3808,11 +4245,16 @@ func TestStartStreamNotifiesDiscordOnlyAfterSuccessfulDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tt.streamDiscordTextChannel != "" {
+				if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordTextID: tt.streamDiscordTextChannel}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			dispatcher := &notificationFakeDispatcher{fakeServiceDispatcher: fakeServiceDispatcher{failStart: tt.failStart}, result: tt.notificationResult}
 			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
 			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-			body := `{"discord_config_id":"` + discord.ID + `","discord_guild_id":"guild-youtube","discord_voice_channel_id":"voice-youtube","discord_text_channel_id":"chat-youtube","youtube_output_id":"` + youtube.ID + `"}`
+			body := fmt.Sprintf(`{"discord_config_id":%q,"discord_guild_id":"guild-youtube","discord_voice_channel_id":"voice-youtube","discord_text_channel_id":%q,"youtube_output_id":%q}`, discord.ID, tt.requestDiscordTextChannel, youtube.ID)
 			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(body))
 			req.AddCookie(cookie)
 			req.Header.Set("X-CSRF-Token", csrf)
@@ -3825,14 +4267,39 @@ func TestStartStreamNotifiesDiscordOnlyAfterSuccessfulDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if updated.Status != tt.wantStreamStatus || dispatcher.notifyCalls != tt.wantNotifyCalls {
-				t.Fatalf("unexpected completion state: stream=%s notify_calls=%d body=%s", updated.Status, dispatcher.notifyCalls, res.Body.String())
+			if updated.Status != tt.wantStreamStatus || dispatcher.notifyCalls != 0 {
+				t.Fatalf("start must only enqueue notification: stream=%s notify_calls=%d body=%s", updated.Status, dispatcher.notifyCalls, res.Body.String())
 			}
 			if tt.wantResponseCode != "" && !strings.Contains(res.Body.String(), tt.wantResponseCode) {
 				t.Fatalf("expected response code %q: %s", tt.wantResponseCode, res.Body.String())
 			}
+			if tt.wantDispatchTextChannel != "" && dispatcher.startRequest.DiscordTextChannelID != tt.wantDispatchTextChannel {
+				t.Fatalf("discord text channel was not resolved for dispatch: got=%q want=%q request=%#v", dispatcher.startRequest.DiscordTextChannelID, tt.wantDispatchTextChannel, dispatcher.startRequest)
+			}
 			if strings.Contains(toJSONForTest(t, auth.AuditEvents()), "youtube.com/watch") || strings.Contains(toJSONForTest(t, auth.AuditEvents()), "youtu.be/") {
 				t.Fatalf("YouTube watch URL leaked into audit events: %#v", auth.AuditEvents())
+			}
+			if tt.wantNotificationState != "" {
+				queued, err := streams.GetLatestDiscordYouTubeLiveNotification(t.Context(), stream.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if queued.State != store.DiscordYouTubeLiveNotificationStateDispatchPending || queued.LifecycleStatus != "legacy_unverified" {
+					t.Fatalf("start did not enqueue legacy notification: %#v", queued)
+				}
+				if _, err := handler.DispatchDueDiscordYouTubeLiveNotifications(t.Context(), 25); err != nil {
+					t.Fatal(err)
+				}
+				notification, err := streams.GetLatestDiscordYouTubeLiveNotification(t.Context(), stream.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if notification.State != tt.wantNotificationState || notification.LastError != tt.wantNotificationLastError {
+					t.Fatalf("notification state = %#v, want state=%q last_error=%q", notification, tt.wantNotificationState, tt.wantNotificationLastError)
+				}
+			}
+			if dispatcher.notifyCalls != tt.wantNotifyCalls {
+				t.Fatalf("notification calls = %d, want %d", dispatcher.notifyCalls, tt.wantNotifyCalls)
 			}
 			if dispatcher.notifyCalls == 1 {
 				if dispatcher.notifiedStream.Status != "live" || dispatcher.notifiedURL != tt.wantNotifiedURL {
@@ -4080,7 +4547,7 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if strings.Contains(res.Body.String(), "runtime-youtube-live-api-key") || strings.Contains(res.Body.String(), "raw-youtube-refresh-token") || strings.Contains(res.Body.String(), "raw-youtube-client-secret") {
 		t.Fatalf("youtube live api secret leaked in response: %s", res.Body.String())
 	}
-	if youtubeLive.prepareCalls != 1 || youtubeLive.prepareRequest.Credentials.ClientID != "youtube-client-id" || youtubeLive.prepareRequest.Credentials.ClientSecret != "raw-youtube-client-secret" || youtubeLive.prepareRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" {
+	if youtubeLive.prepareCalls != 1 || youtubeLive.prepareRequest.Credentials.ClientID != "youtube-client-id" || youtubeLive.prepareRequest.Credentials.ClientSecret != "raw-youtube-client-secret" || youtubeLive.prepareRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" || !youtubeLive.prepareRequest.EnableAutoStart {
 		t.Fatalf("youtube live api was not called with OAuth credentials: %#v", youtubeLive.prepareRequest)
 	}
 	if youtubeLive.prepareRequest.Title != "配信: real youtube stream" {
@@ -4147,6 +4614,2622 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	}
 	if _, err := secrets.GetSecretValue(t.Context(), stored.StreamKeySecretName); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("youtube live api runtime stream key secret should be cleared after stop, got err=%v", err)
+	}
+}
+
+func TestStartStreamLegacyStaticRelayRejectsNonStreamKeyYouTubeOutputBeforePrepareOrDispatch(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		mode         string
+		code         string
+		capabilities map[string]any
+	}{
+		{name: "legacy static live api", mode: "live_api", code: "live_api_requires_managed_output_relay", capabilities: map[string]any{"output_relay_mode": "static"}},
+		{name: "legacy static live api dry run", mode: "live_api_dry_run", code: "live_api_requires_managed_output_relay", capabilities: map[string]any{"output_relay_mode": "static"}},
+		{name: "legacy static missing output", code: "youtube_output_invalid_config", capabilities: map[string]any{"output_relay_mode": "static"}},
+		{name: "capability not reported live api", mode: "live_api", code: "live_api_requires_managed_output_relay", capabilities: map[string]any{}},
+		{name: "capability not reported live api dry run", mode: "live_api_dry_run", code: "live_api_requires_managed_output_relay", capabilities: map[string]any{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start"}); err != nil {
+				t.Fatal(err)
+			}
+			streams := store.NewMemoryStreamStore()
+			stream, err := streams.CreateStream(t.Context(), "legacy static relay "+tt.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", tt.capabilities)
+			registerServiceInstance(t, auth, "worker-01", "worker")
+			registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
+			for _, serviceID := range []string{"encoder_recorder-01", "worker-01", "discord_bot-01"} {
+				if _, err := auth.AssignServiceToStream(t.Context(), serviceID, stream.ID, "test-user"); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			profiles := store.NewMemoryProfileStore()
+			discord := createDiscordConfigForTest(t, profiles, "legacy static relay discord", "discord_bot-01", "guild-static", "voice-static", "")
+			outputID := ""
+			if tt.mode != "" {
+				youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "legacy static relay output", map[string]any{"mode": tt.mode})
+				if err != nil {
+					t.Fatal(err)
+				}
+				outputID = youtube.ID
+			}
+			dispatcher := &fakeServiceDispatcher{}
+			youtubeLive := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-static", LiveStreamID: "live-stream-static"}}
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+			body := `{"discord_config_id":"` + discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static"}`
+			if outputID != "" {
+				body = `{"discord_config_id":"` + discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"` + outputID + `"}`
+			}
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(body))
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), tt.code) {
+				t.Fatalf("expected managed relay rejection %q, status=%d body=%s", tt.code, res.Code, res.Body.String())
+			}
+			if youtubeLive.prepareCalls != 0 || youtubeLive.relayStaticPrepareCalls != 0 {
+				t.Fatalf("YouTube prepare must not run for rejected legacy static output: %#v", youtubeLive)
+			}
+			if dispatcher.startCalls != 0 {
+				t.Fatalf("dispatcher must not run for rejected legacy static output: %#v", dispatcher.startRequest)
+			}
+			unchanged, err := streams.GetStream(t.Context(), stream.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unchanged.Status != "created" {
+				t.Fatalf("legacy static rejection must not transition the stream, got=%q", unchanged.Status)
+			}
+		})
+	}
+}
+
+func TestYouTubeOutputConfigAcceptsRelayStaticWithoutIngestSecrets(t *testing.T) {
+	completeOnStop := false
+	config, err := youtubeOutputConfigFromRequest(youtubeOutputRequest{
+		Name:                 "fixed relay",
+		Mode:                 "live_api_relay_static",
+		OAuthAccountID:       "youtube-oauth-account",
+		RelayBindingID:       "relay-00000000-0000-4000-8000-000000000001",
+		ReusableLiveStreamID: "youtube-live-stream-primary",
+		CompleteOnStop:       &completeOnStop,
+	}, "youtube-output-static")
+	if err != nil {
+		t.Fatalf("relay static configuration error: %v", err)
+	}
+	if got := configString(config, "mode"); got != "live_api_relay_static" {
+		t.Fatalf("mode=%q", got)
+	}
+	if got := configString(config, "relay_binding_id"); got != "relay-00000000-0000-4000-8000-000000000001" {
+		t.Fatalf("relay_binding_id=%q", got)
+	}
+	if got := configString(config, "reusable_live_stream_id"); got != "youtube-live-stream-primary" {
+		t.Fatalf("reusable_live_stream_id=%q", got)
+	}
+	if got := configString(config, "rtmp_url"); got != "" {
+		t.Fatalf("relay static config leaked rtmp_url=%q", got)
+	}
+	if got := configString(config, "stream_key_secret_name"); got != "" {
+		t.Fatalf("relay static config must not create a stream key secret=%q", got)
+	}
+	if !youtubeCompleteOnStop(config) {
+		t.Fatal("relay static config must force complete_on_stop")
+	}
+}
+
+func TestYouTubeOutputAutoStartDefaultsManagedLiveAPIOnly(t *testing.T) {
+	disabled := false
+	enabled := true
+	for _, tc := range []struct {
+		name          string
+		request       youtubeOutputRequest
+		want          bool
+		wantPersisted bool
+	}{
+		{
+			name:          "live api default",
+			request:       youtubeOutputRequest{Name: "live api", Mode: "live_api", OAuthAccountID: "youtube-oauth-account"},
+			want:          true,
+			wantPersisted: true,
+		},
+		{
+			name: "relay static default",
+			request: youtubeOutputRequest{
+				Name:                 "fixed relay",
+				Mode:                 "live_api_relay_static",
+				OAuthAccountID:       "youtube-oauth-account",
+				RelayBindingID:       "relay-00000000-0000-4000-8000-000000000001",
+				ReusableLiveStreamID: "youtube-live-stream-primary",
+			},
+			want:          true,
+			wantPersisted: true,
+		},
+		{
+			name:          "live api explicit disable",
+			request:       youtubeOutputRequest{Name: "live api disabled", Mode: "live_api", OAuthAccountID: "youtube-oauth-account", EnableAutoStart: &disabled},
+			want:          false,
+			wantPersisted: true,
+		},
+		{
+			name: "relay static explicit disable",
+			request: youtubeOutputRequest{
+				Name:                 "fixed relay disabled",
+				Mode:                 "live_api_relay_static",
+				OAuthAccountID:       "youtube-oauth-account",
+				RelayBindingID:       "relay-00000000-0000-4000-8000-000000000001",
+				ReusableLiveStreamID: "youtube-live-stream-primary",
+				EnableAutoStart:      &disabled,
+			},
+			want:          false,
+			wantPersisted: true,
+		},
+		{
+			name:          "stream key remains unchanged when omitted",
+			request:       youtubeOutputRequest{Name: "stream key", Mode: "stream_key"},
+			want:          false,
+			wantPersisted: false,
+		},
+		{
+			name:          "stream key keeps explicit enable",
+			request:       youtubeOutputRequest{Name: "stream key enabled", Mode: "stream_key", EnableAutoStart: &enabled},
+			want:          true,
+			wantPersisted: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, err := youtubeOutputConfigFromRequest(tc.request, "youtube-output")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := youtubeOutputAutoStartEnabled(config); got != tc.want {
+				t.Fatalf("auto-start=%t want=%t config=%#v", got, tc.want, config)
+			}
+			value, persisted := config["enable_auto_start"]
+			if persisted != tc.wantPersisted {
+				t.Fatalf("persisted=%t want=%t config=%#v", persisted, tc.wantPersisted, config)
+			}
+			if persisted && value != tc.want {
+				t.Fatalf("persisted auto-start=%#v want=%t", value, tc.want)
+			}
+		})
+	}
+}
+
+func TestYouTubeRelayStaticBindingIDRequiresCanonicalLowercaseUUID(t *testing.T) {
+	valid := "relay-01234567-89ab-4cde-8f01-23456789abcd"
+	if !validYouTubeRelayStaticBindingID(valid) {
+		t.Fatalf("canonical relay binding id was rejected: %q", valid)
+	}
+	for _, value := range []string{
+		"",
+		"relay-static-primary",
+		"yt-stream-key-like-value",
+		" relay-01234567-89ab-4cde-8f01-23456789abcd ",
+		"relay-01234567-89AB-4cde-8f01-23456789abcd",
+		"01234567-89ab-4cde-8f01-23456789abcd",
+		"relay-01234567-89ab-4cde-8f01-23456789abcde",
+	} {
+		if validYouTubeRelayStaticBindingID(value) {
+			t.Fatalf("noncanonical relay binding id was accepted: %q", value)
+		}
+	}
+}
+
+func TestCreateYouTubeOutputRejectsNoncanonicalRelayBindingBeforePersistenceOrResponse(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"youtube_outputs.create"}); err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	const rawBindingID = "yt-stream-key-like-value"
+	req := httptest.NewRequest(http.MethodPost, "/youtube/outputs", bytes.NewBufferString(`{"name":"unsafe-fixed-relay","mode":"live_api_relay_static","oauth_account_id":"unreachable-oauth-account","relay_binding_id":"`+rawBindingID+`","reusable_live_stream_id":"youtube-live-stream-primary"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_youtube_output") {
+		t.Fatalf("noncanonical relay binding status=%d body=%s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), rawBindingID) {
+		t.Fatalf("noncanonical relay binding leaked in validation response: %s", res.Body.String())
+	}
+	stored, err := profiles.ListProfiles(t.Context(), store.ProfileYouTubeOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("noncanonical relay binding was persisted: %#v", stored)
+	}
+}
+
+func TestYouTubeOutputResponseRedactsNoncanonicalRelayBinding(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"youtube_outputs.read"}); err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	const rawBindingID = "yt-stream-key-like-value"
+	profile, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "legacy unsafe fixed relay", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"relay_binding_id":        rawBindingID,
+		"reusable_live_stream_id": "youtube-live-stream-primary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
+	cookie, _ := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodGet, "/youtube/outputs/"+profile.ID, nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("get unsafe fixed relay status=%d body=%s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), rawBindingID) || strings.Contains(res.Body.String(), `"relay_binding_id"`) {
+		t.Fatalf("noncanonical relay binding leaked in output response: %s", res.Body.String())
+	}
+}
+
+func TestYouTubeOutputConfigRejectsRelayStaticIngestSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		request youtubeOutputRequest
+	}{
+		{
+			name: "rtmp url",
+			request: youtubeOutputRequest{
+				Name:                 "fixed relay",
+				Mode:                 "live_api_relay_static",
+				OAuthAccountID:       "youtube-oauth-account",
+				RelayBindingID:       "relay-00000000-0000-4000-8000-000000000001",
+				ReusableLiveStreamID: "youtube-live-stream-primary",
+				RTMPURL:              "rtmps://youtube.example.com/live2",
+			},
+		},
+		{
+			name: "stream key",
+			request: youtubeOutputRequest{
+				Name:                 "fixed relay",
+				Mode:                 "live_api_relay_static",
+				OAuthAccountID:       "youtube-oauth-account",
+				RelayBindingID:       "relay-00000000-0000-4000-8000-000000000001",
+				ReusableLiveStreamID: "youtube-live-stream-primary",
+				StreamKey:            "must-not-be-accepted",
+			},
+		},
+		{
+			name: "watch url",
+			request: youtubeOutputRequest{
+				Name:                 "fixed relay",
+				Mode:                 "live_api_relay_static",
+				OAuthAccountID:       "youtube-oauth-account",
+				RelayBindingID:       "relay-00000000-0000-4000-8000-000000000001",
+				ReusableLiveStreamID: "youtube-live-stream-primary",
+				WatchURL:             "https://www.youtube.com/watch?v=video-static",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := youtubeOutputConfigFromRequest(tt.request, "youtube-output-static"); err == nil {
+				t.Fatal("relay-static configuration unexpectedly accepted ingest data")
+			}
+		})
+	}
+}
+
+func TestYouTubeRuntimeConfigFromRelayStaticProfileExcludesIngestSettings(t *testing.T) {
+	config := youtubeRuntimeConfigFromProfile(store.Profile{
+		ID: "youtube-output-static",
+		Config: map[string]any{
+			"mode":                    "live_api_relay_static",
+			"relay_binding_id":        "relay-00000000-0000-4000-8000-000000000001",
+			"reusable_live_stream_id": "youtube-live-stream-primary",
+			"oauth_account_id":        "youtube-oauth-account",
+			"rtmp_url":                "rtmps://must-not-reach-encoder.example/live2",
+			"stream_key_secret_name":  "must-not-reach-encoder",
+			"watch_url":               "https://www.youtube.com/watch?v=must-not-reach-encoder",
+		},
+	})
+	if config["mode"] != "live_api_relay_static" || config["relay_binding_id"] != "relay-00000000-0000-4000-8000-000000000001" || config["reusable_live_stream_id"] != "youtube-live-stream-primary" {
+		t.Fatalf("relay-static runtime config did not preserve the specialized binding: %#v", config)
+	}
+	for _, key := range []string{"rtmp_url", "stream_key", "stream_key_secret_name", "watch_url"} {
+		if value, ok := config[key]; ok {
+			t.Fatalf("relay-static runtime config leaked %s=%#v: %#v", key, value, config)
+		}
+	}
+}
+
+func TestRuntimeYouTubeRelayStaticConfigRequiresExactEncoderBinding(t *testing.T) {
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "fixed relay runtime config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "raw-youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "raw-youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "fixed relay runtime", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        account.ID,
+		"relay_binding_id":        "relay-00000000-0000-4000-8000-000000000001",
+		"reusable_live_stream_id": "youtube-live-stream-primary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{streams: streams, profiles: profiles, integrations: integrations, youtubeLive: &fakeYouTubeLiveClient{}}
+	assignment := store.StreamServiceAssignment{StreamID: stream.ID, ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", AssignmentRole: "primary"}
+	service := store.RegisteredService{
+		ServiceID:   assignment.ServiceID,
+		ServiceType: assignment.ServiceType,
+		Capabilities: map[string]any{
+			"output_relay_mode":       "live_api_static",
+			"output_relay_binding_id": "relay-00000000-0000-4000-8000-000000000001",
+		},
+	}
+	configs, err := server.runtimeYouTubeStreamConfigs(t.Context(), service, []store.StreamServiceAssignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || !configs[0].Ready || configs[0].YouTubeConfig["mode"] != "live_api_relay_static" || configs[0].YouTubeConfig["relay_binding_id"] != "relay-00000000-0000-4000-8000-000000000001" {
+		t.Fatalf("matching static relay config was not safely forwarded: %#v", configs)
+	}
+	for _, key := range []string{"rtmp_url", "stream_key", "stream_key_secret_name", "watch_url"} {
+		if value, ok := configs[0].YouTubeConfig[key]; ok {
+			t.Fatalf("matching static relay config leaked %s=%#v: %#v", key, value, configs[0].YouTubeConfig)
+		}
+	}
+
+	service.Capabilities["output_relay_binding_id"] = "relay-00000000-0000-4000-8000-000000000002"
+	configs, err = server.runtimeYouTubeStreamConfigs(t.Context(), service, []store.StreamServiceAssignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || configs[0].Ready || configs[0].ReadinessCode != "youtube_relay_static_binding_unavailable" {
+		t.Fatalf("mismatched static relay binding must be not-ready: %#v", configs)
+	}
+}
+
+func TestRuntimeYouTubeRelayStaticConfigRejectsAndRedactsNoncanonicalBinding(t *testing.T) {
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "unsafe fixed relay runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	const rawBindingID = "yt-stream-key-like-value"
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "unsafe fixed relay runtime", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"relay_binding_id":        rawBindingID,
+		"reusable_live_stream_id": "youtube-live-stream-primary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{streams: streams, profiles: profiles}
+	assignment := store.StreamServiceAssignment{StreamID: stream.ID, ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", AssignmentRole: "primary"}
+	service := store.RegisteredService{
+		ServiceID:   assignment.ServiceID,
+		ServiceType: assignment.ServiceType,
+		Capabilities: map[string]any{
+			"output_relay_mode":       "live_api_static",
+			"output_relay_binding_id": "relay-00000000-0000-4000-8000-000000000001",
+		},
+	}
+	configs, err := server.runtimeYouTubeStreamConfigs(t.Context(), service, []store.StreamServiceAssignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || configs[0].Ready || configs[0].ReadinessCode != "youtube_output_invalid_config" {
+		t.Fatalf("noncanonical relay binding must be not-ready: %#v", configs)
+	}
+	if _, present := configs[0].YouTubeConfig["relay_binding_id"]; present {
+		t.Fatalf("noncanonical relay binding reached the Encoder runtime config: %#v", configs[0].YouTubeConfig)
+	}
+	runtimeResponse, err := json.Marshal(configs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(runtimeResponse), rawBindingID) {
+		t.Fatalf("noncanonical relay binding leaked in runtime response: %s", runtimeResponse)
+	}
+	profileResponse := sanitizeRuntimeProfileConfigForKind(store.ProfileYouTubeOutput, youtube.Config)
+	if _, present := profileResponse["relay_binding_id"]; present {
+		t.Fatalf("noncanonical relay binding leaked in runtime profile response: %#v", profileResponse)
+	}
+}
+
+func TestRuntimeYouTubeLegacyStaticRelayKeepsStreamKeyReadyWithoutRawKey(t *testing.T) {
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "legacy fixed relay runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "legacy fixed relay output", map[string]any{
+		"mode":                   "stream_key",
+		"rtmp_url":               "rtmps://a.rtmps.youtube.com/live2",
+		"stream_key_secret_name": "youtube_stream_key_legacy_runtime",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), "youtube_stream_key_legacy_runtime", "raw-legacy-stream-key"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{streams: streams, profiles: profiles, secrets: secrets}
+	assignment := store.StreamServiceAssignment{StreamID: stream.ID, ServiceID: "encoder_recorder-legacy", ServiceType: "encoder_recorder", AssignmentRole: "primary"}
+	service := store.RegisteredService{
+		ServiceID:   assignment.ServiceID,
+		ServiceType: assignment.ServiceType,
+		Capabilities: map[string]any{
+			"output_relay_mode": "static",
+		},
+	}
+	configs, err := server.runtimeYouTubeStreamConfigs(t.Context(), service, []store.StreamServiceAssignment{assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || !configs[0].Ready || configs[0].YouTubeConfig["mode"] != "stream_key" || configs[0].YouTubeConfig["stream_key_secret_name"] != "youtube_stream_key_legacy_runtime" {
+		t.Fatalf("legacy static relay did not preserve the stream-key runtime route: %#v", configs)
+	}
+	if _, leaked := configs[0].YouTubeConfig["stream_key"]; leaked {
+		t.Fatalf("legacy static relay runtime config leaked the raw stream key: %#v", configs[0].YouTubeConfig)
+	}
+}
+
+func TestRuntimeYouTubeLegacyOrUnknownRelayRejectsDynamicOutputBeforeOAuthReadiness(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		capabilities map[string]any
+	}{
+		{name: "legacy static alias", capabilities: map[string]any{"output_relay_mode": "static"}},
+		{name: "legacy stream key", capabilities: map[string]any{"output_relay_mode": "legacy_stream_key"}},
+		{name: "capability not reported", capabilities: map[string]any{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			streams := store.NewMemoryStreamStore()
+			stream, err := streams.CreateStream(t.Context(), "dynamic runtime "+tt.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profiles := store.NewMemoryProfileStore()
+			youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "dynamic output", map[string]any{
+				"mode":             "live_api",
+				"oauth_account_id": "unreachable-oauth-account",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID}); err != nil {
+				t.Fatal(err)
+			}
+			server := &Server{streams: streams, profiles: profiles, integrations: store.NewMemoryIntegrationStore()}
+			assignment := store.StreamServiceAssignment{StreamID: stream.ID, ServiceID: "encoder_recorder-runtime", ServiceType: "encoder_recorder", AssignmentRole: "primary"}
+			service := store.RegisteredService{ServiceID: assignment.ServiceID, ServiceType: assignment.ServiceType, Capabilities: tt.capabilities}
+			configs, err := server.runtimeYouTubeStreamConfigs(t.Context(), service, []store.StreamServiceAssignment{assignment})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(configs) != 1 || configs[0].Ready || configs[0].ReadinessCode != "live_api_requires_managed_output_relay" {
+				t.Fatalf("dynamic output must report relay capability before OAuth readiness: %#v", configs)
+			}
+		})
+	}
+}
+
+func TestStartStreamPreparesRelayStaticYouTubeAndReleasesClaimOnlyAfterCompletion(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "fixed relay stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const relayBindingID = "relay-00000000-0000-4000-8000-000000000001"
+	const reusableLiveStreamID = "youtube-live-stream-primary"
+	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{
+		"output_relay_mode":       "live_api_static",
+		"output_relay_binding_id": relayBindingID,
+	})
+	registerServiceInstance(t, auth, "worker-01", "worker")
+	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
+	for _, serviceID := range []string{"encoder_recorder-01", "worker-01", "discord_bot-01"} {
+		if _, err := auth.AssignServiceToStream(t.Context(), serviceID, stream.ID, "test-user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "raw-youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "raw-youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "fixed relay discord", "discord_bot-01", "guild-static", "voice-static", "")
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "fixed relay output", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        account.ID,
+		"relay_binding_id":        relayBindingID,
+		"reusable_live_stream_id": reusableLiveStreamID,
+		"complete_on_stop":        false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	youtubeLive := &fakeYouTubeLiveClient{relayStaticPrepared: ytlive.PreparedOutput{
+		BroadcastID:  "broadcast-static-primary",
+		LiveStreamID: reusableLiveStreamID,
+	}}
+	handler := NewServer(streams,
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithProfileStore(profiles),
+		WithSecretStore(store.NewMemorySecretStore()),
+		WithIntegrationStore(integrations),
+		WithYouTubeLiveClient(&relayStaticCompletingYouTubeLiveClient{fakeYouTubeLiveClient: youtubeLive}),
+		WithServiceDispatcher(dispatcher),
+	)
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
+	startReq.AddCookie(cookie)
+	startReq.Header.Set("X-CSRF-Token", csrf)
+	startRes := httptest.NewRecorder()
+	handler.ServeHTTP(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("start status=%d body=%s", startRes.Code, startRes.Body.String())
+	}
+	for _, secret := range []string{"raw-youtube-client-secret", "raw-youtube-refresh-token"} {
+		if strings.Contains(startRes.Body.String(), secret) {
+			t.Fatalf("start response leaked OAuth secret %q: %s", secret, startRes.Body.String())
+		}
+	}
+	if youtubeLive.prepareCalls != 0 || youtubeLive.relayStaticPrepareCalls != 1 {
+		t.Fatalf("unexpected prepare calls: live_api=%d relay_static=%d", youtubeLive.prepareCalls, youtubeLive.relayStaticPrepareCalls)
+	}
+	if youtubeLive.relayStaticRequest.ReusableLiveStreamID != reusableLiveStreamID ||
+		youtubeLive.relayStaticRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" ||
+		!youtubeLive.relayStaticRequest.EnableAutoStart {
+		t.Fatalf("relay static prepare request did not use the bound reusable stream and OAuth account: %#v", youtubeLive.relayStaticRequest)
+	}
+	if dispatcher.startCalls != 1 || dispatcher.startRequest.EncoderRTMPURL != "" || dispatcher.startRequest.EncoderStreamKey != "" || dispatcher.startRequest.EncoderStreamKeySecretName != "" {
+		t.Fatalf("relay static dispatch leaked an ingest endpoint or key: calls=%d request=%#v", dispatcher.startCalls, dispatcher.startRequest)
+	}
+	runtimeConfig := dispatcher.startRequest.YouTubeRuntime
+	if runtimeConfig["mode"] != "live_api_relay_static" || runtimeConfig["relay_binding_id"] != relayBindingID || runtimeConfig["reusable_live_stream_id"] != reusableLiveStreamID || runtimeConfig["watch_url"] != "https://www.youtube.com/watch?v=broadcast-static-primary" || runtimeConfig["complete_on_stop"] != true {
+		t.Fatalf("relay static dispatch runtime missing specialized values: %#v", runtimeConfig)
+	}
+	for _, key := range []string{"rtmp_url", "stream_key", "stream_key_secret_name"} {
+		if value, ok := runtimeConfig[key]; ok {
+			t.Fatalf("relay static dispatch runtime leaked %s=%#v: %#v", key, value, runtimeConfig)
+		}
+	}
+
+	runtime, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatalf("get relay static runtime: %v", err)
+	}
+	if runtime.Mode != "live_api_relay_static" || runtime.YouTubeOutput != youtube.ID || runtime.OAuthAccountID != account.ID || runtime.BroadcastID != "broadcast-static-primary" || runtime.LiveStreamID != reusableLiveStreamID || runtime.RTMPURL != "" || runtime.StreamKeySecretName != "" || !runtime.CompleteOnStop {
+		t.Fatalf("unexpected relay static runtime: %#v", runtime)
+	}
+	claim, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), relayBindingID)
+	if err != nil {
+		t.Fatalf("get relay static claim: %v", err)
+	}
+	if claim.State != store.YouTubeRelayBindingClaimStatePrepared || claim.StreamID != stream.ID || claim.YouTubeOutputID != youtube.ID || claim.OAuthAccountID != account.ID || claim.ReusableLiveStreamID != reusableLiveStreamID || claim.BroadcastID != runtime.BroadcastID {
+		t.Fatalf("unexpected prepared relay static claim: %#v", claim)
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
+	stopReq.AddCookie(cookie)
+	stopReq.Header.Set("X-CSRF-Token", csrf)
+	stopRes := httptest.NewRecorder()
+	handler.ServeHTTP(stopRes, stopReq)
+	if stopRes.Code != http.StatusOK {
+		t.Fatalf("stop status=%d body=%s", stopRes.Code, stopRes.Body.String())
+	}
+	if youtubeLive.completeCalls != 1 || youtubeLive.completeRequest.BroadcastID != runtime.BroadcastID || youtubeLive.completeRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" {
+		t.Fatalf("relay static completion did not finish the prepared broadcast: %#v", youtubeLive.completeRequest)
+	}
+	if _, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("relay static runtime must be released only after provider completion, err=%v", err)
+	}
+	if _, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), relayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("relay static claim must be released only after provider completion, err=%v", err)
+	}
+}
+
+type relayStaticStartFixtureForTest struct {
+	server         *Server
+	streams        *store.MemoryStreamStore
+	profiles       *store.MemoryProfileStore
+	stream         store.Stream
+	relayBindingID string
+	discord        store.Profile
+	youtube        store.Profile
+	dispatcher     *fakeServiceDispatcher
+	youtubeLive    *fakeYouTubeLiveClient
+	cookie         *http.Cookie
+	csrf           string
+}
+
+func newRelayStaticStartFixtureForTest(t *testing.T, dispatcher *fakeServiceDispatcher, youtubeLive *fakeYouTubeLiveClient) relayStaticStartFixtureForTest {
+	t.Helper()
+	if dispatcher == nil {
+		dispatcher = &fakeServiceDispatcher{}
+	}
+	const relayBindingID = "relay-00000000-0000-4000-8000-000000000003"
+	const reusableLiveStreamID = "youtube-live-stream-dispatch"
+	if youtubeLive == nil {
+		youtubeLive = &fakeYouTubeLiveClient{relayStaticPrepared: ytlive.PreparedOutput{BroadcastID: "broadcast-static-dispatch", LiveStreamID: reusableLiveStreamID}}
+	}
+
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "static relay dispatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{
+		"output_relay_mode":       "live_api_static",
+		"output_relay_binding_id": relayBindingID,
+	})
+	registerServiceInstance(t, auth, "worker-01", "worker")
+	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
+	for _, serviceID := range []string{"encoder_recorder-01", "worker-01", "discord_bot-01"} {
+		if _, err := auth.AssignServiceToStream(t.Context(), serviceID, stream.ID, "test-user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "raw-youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "raw-youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "static relay dispatch discord", "discord_bot-01", "guild-static", "voice-static", "")
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "static relay dispatch output", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        account.ID,
+		"relay_binding_id":        relayBindingID,
+		"reusable_live_stream_id": reusableLiveStreamID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(streams,
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithProfileStore(profiles),
+		WithIntegrationStore(integrations),
+		WithYouTubeLiveClient(&relayStaticCompletingYouTubeLiveClient{fakeYouTubeLiveClient: youtubeLive}),
+		WithServiceDispatcher(dispatcher),
+	)
+	cookie, csrf := loginForTest(t, server, "operator", "correct horse battery")
+	return relayStaticStartFixtureForTest{
+		server:         server,
+		streams:        streams,
+		profiles:       profiles,
+		stream:         stream,
+		relayBindingID: relayBindingID,
+		discord:        discord,
+		youtube:        youtube,
+		dispatcher:     dispatcher,
+		youtubeLive:    youtubeLive,
+		cookie:         cookie,
+		csrf:           csrf,
+	}
+}
+
+// relayStaticReservationBarrierStreamStore lets an HTTP regression mutate the
+// durable output configuration exactly after the server has read it but before
+// the static binding reservation is attempted. The actual MemoryStreamStore
+// performs the reservation, so this exercises the same revision and settings
+// fences as the regular in-memory server.
+type relayStaticReservationBarrierStreamStore struct {
+	*store.MemoryStreamStore
+	beforeReserve func()
+}
+
+func (s *relayStaticReservationBarrierStreamStore) ReserveStreamYouTubeRelayBindingClaim(ctx context.Context, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+	if before := s.beforeReserve; before != nil {
+		s.beforeReserve = nil
+		before()
+	}
+	return s.MemoryStreamStore.ReserveStreamYouTubeRelayBindingClaim(ctx, claim)
+}
+
+// relayStaticSelectionBarrierStreamStore changes the selected output after the
+// static mode was read but before the post-claim start-wide fence runs. This
+// is the dangerous static-to-dynamic window: an implementation that rereads
+// the output only in applyYouTubeOutput would otherwise run a different
+// provider/encoder path under a static lifecycle claim.
+type relayStaticSelectionBarrierStreamStore struct {
+	*store.MemoryStreamStore
+	afterStaticStartClaim func()
+}
+
+func (s *relayStaticSelectionBarrierStreamStore) TransitionStreamStatus(ctx context.Context, id, from, to string) (store.Stream, bool, error) {
+	stream, transitioned, err := s.MemoryStreamStore.TransitionStreamStatus(ctx, id, from, to)
+	if transitioned && to == "starting" && s.afterStaticStartClaim != nil {
+		after := s.afterStaticStartClaim
+		s.afterStaticStartClaim = nil
+		after()
+	}
+	return stream, transitioned, err
+}
+
+// relayStaticFinalizeResponseLostStreamStore models a response loss after the
+// atomic finalizer committed. The server must verify the exact prepared claim
+// and runtime before it sends the Encoder start request.
+type relayStaticFinalizeResponseLostStreamStore struct {
+	*store.MemoryStreamStore
+	responseLost bool
+}
+
+func (s *relayStaticFinalizeResponseLostStreamStore) FinalizeStreamYouTubeRuntimeAndMarkRelayBindingPrepared(ctx context.Context, claim store.YouTubeRelayBindingClaim, runtime store.StreamYouTubeRuntime) error {
+	if err := s.MemoryStreamStore.FinalizeStreamYouTubeRuntimeAndMarkRelayBindingPrepared(ctx, claim, runtime); err != nil {
+		return err
+	}
+	if s.responseLost {
+		s.responseLost = false
+		return errors.New("relay static finalizer response lost")
+	}
+	return nil
+}
+
+// relayStaticPrepareMarkerResponseLostStreamStore models the worst safe
+// provider handoff boundary: the marker commits but its response is lost before
+// the Panel can call PrepareRelayStatic. The server must not issue a second
+// Prepare; it must turn the visible possible-prepare reservation into recovery.
+type relayStaticPrepareMarkerResponseLostStreamStore struct {
+	*store.MemoryStreamStore
+	responseLost bool
+}
+
+func (s *relayStaticPrepareMarkerResponseLostStreamStore) MarkReservedStreamYouTubeRelayBindingClaimPossiblyPrepared(ctx context.Context, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+	marked, err := s.MemoryStreamStore.MarkReservedStreamYouTubeRelayBindingClaimPossiblyPrepared(ctx, claim)
+	if err != nil {
+		return store.YouTubeRelayBindingClaim{}, err
+	}
+	if s.responseLost {
+		s.responseLost = false
+		return store.YouTubeRelayBindingClaim{}, errors.New("relay static prepare marker response lost")
+	}
+	return marked, nil
+}
+
+// relayStaticDispatchMarkerRepairStreamStore models the nastiest downstream
+// handoff outage: the dispatch marker commits, its response and the immediate
+// re-read are lost, and the first attempt to mark recovery also fails. The
+// explicit recovery endpoint must later normalize the inactive prepared claim
+// atomically instead of leaving the reusable binding permanently occupied.
+type relayStaticDispatchMarkerRepairStreamStore struct {
+	*store.MemoryStreamStore
+	markerCommitted         bool
+	failPostMarkerRead      bool
+	failInitialMarkRecovery bool
+}
+
+func (s *relayStaticDispatchMarkerRepairStreamStore) MarkPreparedStreamYouTubeRelayBindingClaimPossiblyDispatched(ctx context.Context, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+	_, err := s.MemoryStreamStore.MarkPreparedStreamYouTubeRelayBindingClaimPossiblyDispatched(ctx, claim)
+	if err != nil {
+		return store.YouTubeRelayBindingClaim{}, err
+	}
+	s.markerCommitted = true
+	s.failPostMarkerRead = true
+	return store.YouTubeRelayBindingClaim{}, errors.New("relay static dispatch marker response lost")
+}
+
+func (s *relayStaticDispatchMarkerRepairStreamStore) GetStreamYouTubeRelayBindingClaimForStream(ctx context.Context, streamID string) (store.YouTubeRelayBindingClaim, error) {
+	if s.markerCommitted && s.failPostMarkerRead {
+		s.failPostMarkerRead = false
+		return store.YouTubeRelayBindingClaim{}, errors.New("relay static dispatch marker read unavailable")
+	}
+	return s.MemoryStreamStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, streamID)
+}
+
+func (s *relayStaticDispatchMarkerRepairStreamStore) MarkStreamYouTubeRelayBindingClaimRecoveryRequired(ctx context.Context, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+	if s.failInitialMarkRecovery {
+		s.failInitialMarkRecovery = false
+		return store.YouTubeRelayBindingClaim{}, errors.New("relay static initial recovery write unavailable")
+	}
+	return s.MemoryStreamStore.MarkStreamYouTubeRelayBindingClaimRecoveryRequired(ctx, claim)
+}
+
+// relayStaticEncoderStopReceiptRecordingStreamStore proves the panel persists
+// the Encoder acknowledgement before it releases the static claim. Once the
+// provider completion succeeds the claim is intentionally gone, so observing
+// this fenced Store call is the only direct regression proof of ordering.
+type relayStaticEncoderStopReceiptRecordingStreamStore struct {
+	*store.MemoryStreamStore
+	encoderStopReceiptCalls int
+	lastEncoderStopClaim    store.YouTubeRelayBindingClaim
+}
+
+func (s *relayStaticEncoderStopReceiptRecordingStreamStore) MarkPreparedStreamYouTubeRelayBindingClaimEncoderStopConfirmed(ctx context.Context, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+	s.encoderStopReceiptCalls++
+	s.lastEncoderStopClaim = claim
+	return s.MemoryStreamStore.MarkPreparedStreamYouTubeRelayBindingClaimEncoderStopConfirmed(ctx, claim)
+}
+
+func (f relayStaticStartFixtureForTest) start(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+f.stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+f.discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+f.youtube.ID+`"}`))
+	req.AddCookie(f.cookie)
+	req.Header.Set("X-CSRF-Token", f.csrf)
+	res := httptest.NewRecorder()
+	f.server.ServeHTTP(res, req)
+	return res
+}
+
+func TestStartStreamRelayStaticRejectsNoncanonicalBindingBeforeClaimPrepareOrDispatch(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	const rawBindingID = "yt-stream-key-like-value"
+	if _, err := fixture.profiles.UpdateProfile(t.Context(), store.ProfileYouTubeOutput, fixture.youtube.ID, fixture.youtube.Name, map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        configString(fixture.youtube.Config, "oauth_account_id"),
+		"relay_binding_id":        rawBindingID,
+		"reusable_live_stream_id": configString(fixture.youtube.Config, "reusable_live_stream_id"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := fixture.start(t)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "youtube_output_invalid_config") {
+		t.Fatalf("noncanonical relay binding start status=%d body=%s", res.Code, res.Body.String())
+	}
+	if fixture.youtubeLive.prepareCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 {
+		t.Fatalf("noncanonical relay binding called YouTube Prepare: %#v", fixture.youtubeLive)
+	}
+	if fixture.dispatcher.startCalls != 0 {
+		t.Fatalf("noncanonical relay binding dispatched the Encoder: %#v", fixture.dispatcher.startRequest)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), rawBindingID); !errors.Is(err, store.ErrInvalidYouTubeRelayBindingClaim) {
+		t.Fatalf("noncanonical relay binding lookup must fail strict validation: %v", err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("noncanonical relay binding created a claim: %v", err)
+	}
+	unchanged, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Status != "created" {
+		t.Fatalf("noncanonical relay binding transitioned the stream: %q", unchanged.Status)
+	}
+}
+
+func TestStartStreamRelayStaticRejectsOutputChangesBeforeClaimReservation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(t *testing.T, fixture relayStaticStartFixtureForTest) error
+	}{
+		{
+			name: "output profile revision changes",
+			mutate: func(t *testing.T, fixture relayStaticStartFixtureForTest) error {
+				_, err := fixture.profiles.UpdateProfile(t.Context(), store.ProfileYouTubeOutput, fixture.youtube.ID, "static relay dispatch output changed", map[string]any{
+					"mode":                    "live_api_relay_static",
+					"oauth_account_id":        configString(fixture.youtube.Config, "oauth_account_id"),
+					"relay_binding_id":        fixture.relayBindingID,
+					"reusable_live_stream_id": "youtube-live-stream-dispatch",
+				})
+				return err
+			},
+		},
+		{
+			name: "persisted stream output changes",
+			mutate: func(t *testing.T, fixture relayStaticStartFixtureForTest) error {
+				alternate, err := fixture.profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "alternate static relay output", map[string]any{
+					"mode":                    "live_api_relay_static",
+					"oauth_account_id":        configString(fixture.youtube.Config, "oauth_account_id"),
+					"relay_binding_id":        "relay-00000000-0000-4000-8000-000000000004",
+					"reusable_live_stream_id": "youtube-live-stream-alternate",
+				})
+				if err != nil {
+					return err
+				}
+				_, err = fixture.streams.UpdateStreamSettings(t.Context(), fixture.stream.ID, store.StreamSettings{YouTubeOutputID: alternate.ID})
+				return err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+			barrier := &relayStaticReservationBarrierStreamStore{MemoryStreamStore: fixture.streams}
+			fixture.server.streams = barrier
+			var mutationErr error
+			barrier.beforeReserve = func() {
+				mutationErr = tt.mutate(t, fixture)
+			}
+
+			response := fixture.start(t)
+			if mutationErr != nil {
+				t.Fatalf("reservation barrier mutation: %v", mutationErr)
+			}
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), errYouTubeRelayStaticConfigChanged.Error()) {
+				t.Fatalf("stale static output must request reload before prepare: status=%d body=%s", response.Code, response.Body.String())
+			}
+			if fixture.youtubeLive.prepareCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.dispatcher.startCalls != 0 {
+				t.Fatalf("stale static output must not prepare or dispatch: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+			}
+			if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("stale static output must not reserve a recovery claim: %v", err)
+			}
+			if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("stale static output must not create a runtime: %v", err)
+			}
+			stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+			if err != nil || stream.Status != "failed" {
+				t.Fatalf("pre-provider static conflict must terminalize the claimed lifecycle: stream=%#v err=%v", stream, err)
+			}
+		})
+	}
+}
+
+func TestStartStreamRelayStaticRejectsModeChangesAfterSelectionBeforePrepareOrDispatch(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config func(fixture relayStaticStartFixtureForTest) map[string]any
+	}{
+		{
+			name: "live api",
+			config: func(fixture relayStaticStartFixtureForTest) map[string]any {
+				return map[string]any{
+					"mode":             "live_api",
+					"oauth_account_id": configString(fixture.youtube.Config, "oauth_account_id"),
+				}
+			},
+		},
+		{
+			name: "stream key",
+			config: func(fixture relayStaticStartFixtureForTest) map[string]any {
+				return map[string]any{
+					"mode":                   "stream_key",
+					"rtmp_url":               "rtmps://a.rtmps.youtube.com/live2",
+					"stream_key_secret_name": "youtube_stream_key_mode_change",
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+			barrier := &relayStaticSelectionBarrierStreamStore{MemoryStreamStore: fixture.streams}
+			fixture.server.streams = barrier
+			var mutationErr error
+			barrier.afterStaticStartClaim = func() {
+				_, mutationErr = fixture.profiles.UpdateProfile(t.Context(), store.ProfileYouTubeOutput, fixture.youtube.ID, "static relay output mode changed", tt.config(fixture))
+			}
+
+			response := fixture.start(t)
+			if mutationErr != nil {
+				t.Fatalf("selection barrier mutation: %v", mutationErr)
+			}
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), errYouTubeRelayStaticConfigChanged.Error()) {
+				t.Fatalf("static mode change must request reload before prepare: status=%d body=%s", response.Code, response.Body.String())
+			}
+			if fixture.youtubeLive.prepareCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.dispatcher.startCalls != 0 {
+				t.Fatalf("static mode change must not prepare or dispatch: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+			}
+			if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("static mode change must not reserve a claim: %v", err)
+			}
+			if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("static mode change must not create a runtime: %v", err)
+			}
+			stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+			if err != nil || stream.Status != "failed" {
+				t.Fatalf("static mode change must converge claimed lifecycle to failed: stream=%#v err=%v", stream, err)
+			}
+		})
+	}
+}
+
+// TestStartStreamRelayStaticRejectsModeChangesAfterPrechecksBeforeStaticFence
+// covers the earlier race where capability/readiness checks had accepted the
+// selected static output but another writer changed it before the first static
+// lifecycle fence. The snapshot must remain static and fail closed rather than
+// rerunning a dynamic Prepare path under the old static authorization.
+func TestStartStreamRelayStaticRejectsModeChangesAfterPrechecksBeforeStaticFence(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config func(fixture relayStaticStartFixtureForTest) map[string]any
+	}{
+		{
+			name: "live api",
+			config: func(fixture relayStaticStartFixtureForTest) map[string]any {
+				return map[string]any{
+					"mode":             "live_api",
+					"oauth_account_id": configString(fixture.youtube.Config, "oauth_account_id"),
+				}
+			},
+		},
+		{
+			name: "stream key",
+			config: func(fixture relayStaticStartFixtureForTest) map[string]any {
+				return map[string]any{
+					"mode":                   "stream_key",
+					"rtmp_url":               "rtmps://a.rtmps.youtube.com/live2",
+					"stream_key_secret_name": "youtube_stream_key_mode_change",
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+			var mutationErr error
+			fixture.server.dispatcher = &relayStaticPreFenceMutationDispatcher{
+				fakeServiceDispatcher: fixture.dispatcher,
+				mutate: func() {
+					_, mutationErr = fixture.profiles.UpdateProfile(t.Context(), store.ProfileYouTubeOutput, fixture.youtube.ID, "static relay output mode changed during precheck", tt.config(fixture))
+				},
+			}
+
+			response := fixture.start(t)
+			if mutationErr != nil {
+				t.Fatalf("pre-fence mutation: %v", mutationErr)
+			}
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), errYouTubeRelayStaticConfigChanged.Error()) {
+				t.Fatalf("static precheck mode change must request reload before prepare: status=%d body=%s", response.Code, response.Body.String())
+			}
+			if fixture.youtubeLive.prepareCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.dispatcher.startCalls != 0 {
+				t.Fatalf("static precheck mode change must not prepare or dispatch: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+			}
+			if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("static precheck mode change must not reserve a claim: %v", err)
+			}
+			if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("static precheck mode change must not create a runtime: %v", err)
+			}
+			stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+			if err != nil || stream.Status != "failed" {
+				t.Fatalf("static precheck mode change must terminalize the static lifecycle: stream=%#v err=%v", stream, err)
+			}
+		})
+	}
+}
+
+// TestStartStreamRelayStaticRejectsDynamicOutputOverrideBeforePrepareOrDispatch
+// closes the request-level variant of the static-to-dynamic race: a caller
+// cannot supply a different dynamic output while the persisted stream still
+// owns a fixed relay binding.
+func TestStartStreamRelayStaticRejectsDynamicOutputOverrideBeforePrepareOrDispatch(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	alternate, err := fixture.profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "dynamic override output", map[string]any{
+		"mode":             "live_api",
+		"oauth_account_id": configString(fixture.youtube.Config, "oauth_account_id"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+fixture.discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+alternate.ID+`"}`))
+	req.AddCookie(fixture.cookie)
+	req.Header.Set("X-CSRF-Token", fixture.csrf)
+	response := httptest.NewRecorder()
+	fixture.server.ServeHTTP(response, req)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), errYouTubeRelayStaticConfigChanged.Error()) {
+		t.Fatalf("dynamic output override status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fixture.youtubeLive.prepareCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.dispatcher.startCalls != 0 {
+		t.Fatalf("dynamic output override must not prepare or dispatch: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("dynamic output override must not create runtime: %v", err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("dynamic output override must not claim the fixed binding: %v", err)
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "created" {
+		t.Fatalf("dynamic output override must fail before lifecycle claim: stream=%#v err=%v", stream, err)
+	}
+}
+
+func TestStartStreamRelayStaticReconcilesCommittedFinalizeResponseLossBeforeDispatch(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	streamStore := &relayStaticFinalizeResponseLostStreamStore{MemoryStreamStore: fixture.streams, responseLost: true}
+	fixture.server.streams = streamStore
+
+	response := fixture.start(t)
+	if response.Code != http.StatusOK {
+		t.Fatalf("finalizer response loss should reconcile the committed state before dispatch: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fixture.youtubeLive.relayStaticPrepareCalls != 1 || fixture.dispatcher.startCalls != 1 {
+		t.Fatalf("reconciled finalizer response loss must prepare and dispatch exactly once: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+	}
+	runtime, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID)
+	if err != nil || runtime.Mode != "live_api_relay_static" || runtime.BroadcastID != "broadcast-static-dispatch" {
+		t.Fatalf("finalizer response loss must retain exact committed runtime: runtime=%#v err=%v", runtime, err)
+	}
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStatePrepared || claim.BroadcastID != runtime.BroadcastID {
+		t.Fatalf("finalizer response loss must retain exact prepared claim: claim=%#v err=%v", claim, err)
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "live" {
+		t.Fatalf("reconciled finalizer response loss must complete normal start lifecycle: stream=%#v err=%v", stream, err)
+	}
+}
+
+func TestStartStreamRelayStaticPrepareMarkerResponseLossRequiresRecoveryBeforeProviderCall(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	fixture.server.streams = &relayStaticPrepareMarkerResponseLostStreamStore{MemoryStreamStore: fixture.streams, responseLost: true}
+
+	response := fixture.start(t)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), errYouTubeRelayStaticRecoveryRequired.Error()) {
+		t.Fatalf("prepare marker response loss status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fixture.youtubeLive.prepareCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.dispatcher.startCalls != 0 {
+		t.Fatalf("prepare marker response loss must not call provider or dispatch: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("prepare marker response loss must not create runtime: %v", err)
+	}
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.PrepareState != store.YouTubeRelayBindingClaimPrepareStatePossiblyPrepared || claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStateNotDispatched || claim.BroadcastID != youtubeRelayStaticUnknownBroadcastID {
+		t.Fatalf("prepare marker response loss must retain a pre-dispatch recovery claim: claim=%#v err=%v", claim, err)
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "failed" {
+		t.Fatalf("prepare marker response loss must converge static lifecycle to failed: stream=%#v err=%v", stream, err)
+	}
+}
+
+func TestResolveRelayStaticRecoveryReconcilesInactiveReservedPrepareFence(t *testing.T) {
+	reserve := func(t *testing.T, fixture relayStaticStartFixtureForTest, possiblyPrepared bool) store.YouTubeRelayBindingClaim {
+		t.Helper()
+		starting, transitioned, err := fixture.streams.TransitionStreamStatus(t.Context(), fixture.stream.ID, fixture.stream.Status, "starting")
+		if err != nil || !transitioned {
+			t.Fatalf("claim static stream start: transitioned=%t err=%v", transitioned, err)
+		}
+		expectedRevision := fixture.youtube.YouTubeRelayBindingRevision
+		claim, err := fixture.streams.ReserveStreamYouTubeRelayBindingClaim(t.Context(), store.YouTubeRelayBindingClaim{
+			RelayBindingID:                fixture.relayBindingID,
+			StreamID:                      starting.ID,
+			YouTubeOutputID:               fixture.youtube.ID,
+			ExpectedYouTubeOutputRevision: &expectedRevision,
+			OAuthAccountID:                configString(fixture.youtube.Config, "oauth_account_id"),
+			ReusableLiveStreamID:          configString(fixture.youtube.Config, "reusable_live_stream_id"),
+		})
+		if err != nil {
+			t.Fatalf("reserve static prepare-fence claim: %v", err)
+		}
+		if possiblyPrepared {
+			claim, err = fixture.streams.MarkReservedStreamYouTubeRelayBindingClaimPossiblyPrepared(t.Context(), claim)
+			if err != nil {
+				t.Fatalf("mark static prepare-fence claim: %v", err)
+			}
+		}
+		if _, transitioned, err := fixture.streams.TransitionStreamStatus(t.Context(), starting.ID, "starting", "failed"); err != nil || !transitioned {
+			t.Fatalf("terminalize reserved prepare-fence stream: transitioned=%t err=%v", transitioned, err)
+		}
+		return claim
+	}
+	resolve := func(t *testing.T, fixture relayStaticStartFixtureForTest) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/youtube/relay-static/recovery/resolve", bytes.NewBufferString(`{"confirm_external_cleanup":true}`))
+		req.AddCookie(fixture.cookie)
+		req.Header.Set("X-CSRF-Token", fixture.csrf)
+		response := httptest.NewRecorder()
+		fixture.server.ServeHTTP(response, req)
+		return response
+	}
+
+	t.Run("not attempted reservation releases without provider or encoder call", func(t *testing.T) {
+		fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+		claim := reserve(t, fixture, false)
+		response := resolve(t, fixture)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"resolved":true`) {
+			t.Fatalf("reserved not-attempted recovery status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.dispatcher.stopCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 || fixture.youtubeLive.completeCalls != 0 {
+			t.Fatalf("not-attempted reservation must not call Encoder or provider: dispatcher=%#v youtube=%#v", fixture.dispatcher, fixture.youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), claim.RelayBindingID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("not-attempted reserved claim must be released: %v", err)
+		}
+	})
+
+	t.Run("possibly prepared reservation becomes explicit unknown-broadcast recovery", func(t *testing.T) {
+		fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+		claim := reserve(t, fixture, true)
+		response := resolve(t, fixture)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cleanup":"operator_confirmed_unknown_broadcast"`) {
+			t.Fatalf("reserved possibly-prepared recovery status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.dispatcher.stopCalls != 1 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 || fixture.youtubeLive.completeCalls != 0 {
+			t.Fatalf("possibly-prepared claim must require the no-process fence but no provider cleanup: dispatcher=%#v youtube=%#v", fixture.dispatcher, fixture.youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), claim.RelayBindingID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("operator-confirmed unknown-broadcast recovery must release claim: %v", err)
+		}
+	})
+}
+
+func TestResolveRelayStaticRecoveryRepairsInactivePreparedDispatchMarkerOutage(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	fixture.server.streams = &relayStaticDispatchMarkerRepairStreamStore{
+		MemoryStreamStore:       fixture.streams,
+		failInitialMarkRecovery: true,
+	}
+
+	start := fixture.start(t)
+	if start.Code != http.StatusConflict || !strings.Contains(start.Body.String(), errYouTubeRelayStaticRecoveryRequired.Error()) {
+		t.Fatalf("dispatch marker outage start status=%d body=%s", start.Code, start.Body.String())
+	}
+	if fixture.youtubeLive.relayStaticPrepareCalls != 1 || fixture.dispatcher.startCalls != 0 {
+		t.Fatalf("dispatch marker outage must not issue downstream Start: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "failed" {
+		t.Fatalf("dispatch marker outage must terminalize the start: stream=%#v err=%v", stream, err)
+	}
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStatePrepared || claim.PrepareState != store.YouTubeRelayBindingClaimPrepareStatePossiblyPrepared || claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched {
+		t.Fatalf("dispatch marker outage must retain exact prepared handoff fence: claim=%#v err=%v", claim, err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); err != nil {
+		t.Fatalf("dispatch marker outage must retain runtime until explicit repair: %v", err)
+	}
+
+	recoveryReq := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/youtube/relay-static/recovery/resolve", bytes.NewBufferString(`{"confirm_external_cleanup":true}`))
+	recoveryReq.AddCookie(fixture.cookie)
+	recoveryReq.Header.Set("X-CSRF-Token", fixture.csrf)
+	recoveryRes := httptest.NewRecorder()
+	fixture.server.ServeHTTP(recoveryRes, recoveryReq)
+	if recoveryRes.Code != http.StatusOK || !strings.Contains(recoveryRes.Body.String(), `"cleanup":"provider_complete"`) {
+		t.Fatalf("dispatch marker outage recovery status=%d body=%s", recoveryRes.Code, recoveryRes.Body.String())
+	}
+	if fixture.dispatcher.stopCalls != 1 || fixture.youtubeLive.completeCalls != 1 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+		t.Fatalf("prepared marker repair must Stop once then Complete, never Delete: dispatcher=%#v youtube=%#v", fixture.dispatcher, fixture.youtubeLive)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("prepared marker repair must atomically remove runtime before release: %v", err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("prepared marker repair must release recovered claim: %v", err)
+	}
+}
+
+func TestStartStreamRelayStaticObservedFinalizeCommitStillNotifiesDiscord(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	if _, err := fixture.streams.UpdateStreamSettings(t.Context(), fixture.stream.ID, store.StreamSettings{
+		DiscordTextID:   "chat-static-relay",
+		YouTubeOutputID: fixture.youtube.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	notifier := &relayStaticNotificationDispatcher{fakeServiceDispatcher: fixture.dispatcher}
+	fixture.server.dispatcher = notifier
+	fixture.server.streams = &relayStaticFinalizeResponseLostStreamStore{MemoryStreamStore: fixture.streams, responseLost: true}
+
+	response := fixture.start(t)
+	if response.Code != http.StatusOK {
+		t.Fatalf("observed finalizer commit start status=%d body=%s", response.Code, response.Body.String())
+	}
+	if notifier.notifyCalls != 1 || notifier.notifiedStream.Status != "live" || notifier.notifiedURL != "https://www.youtube.com/watch?v=broadcast-static-dispatch" {
+		t.Fatalf("observed finalizer commit must retain static watch URL for Discord notification: notifier=%#v", notifier)
+	}
+	if fixture.youtubeLive.relayStaticPrepareCalls != 1 || fixture.dispatcher.startCalls != 1 {
+		t.Fatalf("observed finalizer commit must still perform one static prepare and dispatch: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+	}
+}
+
+func TestStartStreamRelayStaticPrepareStatusChangeRetainsRecoveryFence(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	fixture.youtubeLive.onRelayStaticPrepare = func(ctx context.Context, _ ytlive.RelayStaticPrepareRequest) {
+		if _, transitioned, err := fixture.streams.TransitionStreamStatus(ctx, fixture.stream.ID, "starting", "failed"); err != nil || !transitioned {
+			t.Fatalf("supersede static start after provider prepare: transitioned=%t err=%v", transitioned, err)
+		}
+	}
+
+	res := fixture.start(t)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), errYouTubeRelayStaticRecoveryRequired.Error()) {
+		t.Fatalf("prepare/status conflict status=%d body=%s", res.Code, res.Body.String())
+	}
+	if fixture.youtubeLive.relayStaticPrepareCalls != 1 || fixture.dispatcher.startCalls != 0 || fixture.youtubeLive.completeCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+		t.Fatalf("superseded static prepare must not dispatch or clean up as a live stream: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+	}
+	updated, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || updated.Status != "failed" {
+		t.Fatalf("provider/status conflict must preserve superseding lifecycle state: stream=%#v err=%v", updated, err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("finalize conflict must not orphan a static runtime, err=%v", err)
+	}
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.BroadcastID != "broadcast-static-dispatch" {
+		t.Fatalf("provider/status conflict must preserve a recovery fence: claim=%#v err=%v", claim, err)
+	}
+	due, err := fixture.streams.ListDueStreamYouTubeRuntimes(t.Context(), time.Now().UTC(), 10)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("finalize conflict left an unexpected completion retry: due=%#v err=%v", due, err)
+	}
+}
+
+func TestStartStreamRelayStaticDispatchFailureRequiresRecoveryWithoutProviderCleanup(t *testing.T) {
+	youtubeLive := &fakeYouTubeLiveClient{
+		relayStaticPrepared: ytlive.PreparedOutput{BroadcastID: "broadcast-static-dispatch", LiveStreamID: "youtube-live-stream-dispatch"},
+	}
+	fixture := newRelayStaticStartFixtureForTest(t, &fakeServiceDispatcher{failStart: true}, youtubeLive)
+
+	res := fixture.start(t)
+	if res.Code != http.StatusBadGateway || !strings.Contains(res.Body.String(), "service_dispatch_failed") {
+		t.Fatalf("dispatch failure status=%d body=%s", res.Code, res.Body.String())
+	}
+	if fixture.youtubeLive.relayStaticPrepareCalls != 1 || fixture.dispatcher.startCalls != 1 || fixture.youtubeLive.relayStaticCleanupCalls != 0 || fixture.youtubeLive.completeCalls != 0 {
+		t.Fatalf("unconfirmed static dispatch must never clean up or complete provider state: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("static dispatch failure must remove the automatic completion runtime, err=%v", err)
+	}
+	failed, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || failed.Status != "failed" {
+		t.Fatalf("static dispatch failure must terminalize before recovery fencing: stream=%#v err=%v", failed, err)
+	}
+	due, err := fixture.streams.ListDueStreamYouTubeRuntimes(t.Context(), time.Now().UTC(), 10)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("static dispatch failure must leave no due completion retry: due=%#v err=%v", due, err)
+	}
+	result, err := fixture.server.CompleteDueYouTubeRuntimes(t.Context(), 10)
+	if err != nil || result["attempted"] != 0 || fixture.youtubeLive.completeCalls != 0 {
+		t.Fatalf("completion retry must not touch an unconfirmed static dispatch: result=%#v complete_calls=%d err=%v", result, fixture.youtubeLive.completeCalls, err)
+	}
+
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.PrepareState != store.YouTubeRelayBindingClaimPrepareStatePossiblyPrepared || claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched || !claim.EncoderStopConfirmedAt.IsZero() || claim.LastError != "youtube_relay_static_start_dispatch_unconfirmed" {
+		t.Fatalf("unconfirmed static start must retain recovery fence: claim=%#v err=%v", claim, err)
+	}
+}
+
+func TestForceStopRelayStaticDispatchFailureRetainsRecoveryFenceWithoutProviderCompletion(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, &fakeServiceDispatcher{failStop: true}, nil)
+	if response := fixture.start(t); response.Code != http.StatusOK {
+		t.Fatalf("start static stream: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/force-stop", nil)
+	req.AddCookie(fixture.cookie)
+	req.Header.Set("X-CSRF-Token", fixture.csrf)
+	response := httptest.NewRecorder()
+	fixture.server.ServeHTTP(response, req)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"recovery_required":true`) {
+		t.Fatalf("force stop static dispatch failure status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fixture.dispatcher.stopCalls != 1 || fixture.youtubeLive.completeCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+		t.Fatalf("unconfirmed force stop must not complete or delete provider state: dispatcher=%#v youtube=%#v", fixture.dispatcher, fixture.youtubeLive)
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "failed" {
+		t.Fatalf("unconfirmed force stop must remain failed: stream=%#v err=%v", stream, err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unconfirmed force stop must remove automatic completion runtime: %v", err)
+	}
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || !claim.EncoderStopConfirmedAt.IsZero() || claim.LastError != "youtube_relay_static_force_stop_dispatch_unconfirmed" {
+		t.Fatalf("unconfirmed force stop must retain recovery claim: claim=%#v err=%v", claim, err)
+	}
+	due, err := fixture.streams.ListDueStreamYouTubeRuntimes(t.Context(), time.Now().UTC(), 10)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("unconfirmed force stop must not leave a completion retry: due=%#v err=%v", due, err)
+	}
+}
+
+func TestStopRelayStaticDispatchFailureRetainsRecoveryFenceWithoutProviderCompletion(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, &fakeServiceDispatcher{failStop: true}, nil)
+	if response := fixture.start(t); response.Code != http.StatusOK {
+		t.Fatalf("start static stream: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/stop", nil)
+	req.AddCookie(fixture.cookie)
+	req.Header.Set("X-CSRF-Token", fixture.csrf)
+	response := httptest.NewRecorder()
+	fixture.server.ServeHTTP(response, req)
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"recovery_required":true`) {
+		t.Fatalf("normal stop static dispatch failure status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fixture.dispatcher.stopCalls != 1 || fixture.youtubeLive.completeCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+		t.Fatalf("unconfirmed normal stop must not complete or delete provider state: dispatcher=%#v youtube=%#v", fixture.dispatcher, fixture.youtubeLive)
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "failed" {
+		t.Fatalf("unconfirmed normal stop must remain failed: stream=%#v err=%v", stream, err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unconfirmed normal stop must remove automatic completion runtime: %v", err)
+	}
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched || !claim.EncoderStopConfirmedAt.IsZero() || claim.LastError != "youtube_relay_static_stop_dispatch_unconfirmed" {
+		t.Fatalf("unconfirmed normal stop must retain possible-dispatch recovery claim: claim=%#v err=%v", claim, err)
+	}
+	due, err := fixture.streams.ListDueStreamYouTubeRuntimes(t.Context(), time.Now().UTC(), 10)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("unconfirmed normal stop must not leave a completion retry: due=%#v err=%v", due, err)
+	}
+}
+
+func TestStopRelayStaticDoesNotNormalizeEncoderNoProcessAfterDispatch(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	if response := fixture.start(t); response.Code != http.StatusOK {
+		t.Fatalf("start static stream: status=%d body=%s", response.Code, response.Body.String())
+	}
+	fixture.dispatcher.stopResultsOverride = []servicecall.DispatchResult{
+		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/stop", StatusCode: http.StatusNotFound, Code: "stream_not_running", Error: "service returned status 404: stream_not_running"},
+		{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/stop", StatusCode: http.StatusAccepted, Success: true},
+		{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/stop", StatusCode: http.StatusAccepted, Success: true},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/stop", nil)
+	req.AddCookie(fixture.cookie)
+	req.Header.Set("X-CSRF-Token", fixture.csrf)
+	response := httptest.NewRecorder()
+	fixture.server.ServeHTTP(response, req)
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"recovery_required":true`) {
+		t.Fatalf("static no-process stop status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fixture.youtubeLive.completeCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+		t.Fatalf("unconfirmed static encoder stop must not complete or delete provider state: youtube=%#v", fixture.youtubeLive)
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "failed" {
+		t.Fatalf("unconfirmed static encoder stop must remain failed: stream=%#v err=%v", stream, err)
+	}
+	claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched || !claim.EncoderStopConfirmedAt.IsZero() {
+		t.Fatalf("static no-process reply must retain the unconfirmed recovery claim: claim=%#v err=%v", claim, err)
+	}
+}
+
+func TestPartialRelayStaticStopPersistsEncoderReceiptBeforeAbandon(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{name: "normal stop", path: "stop", wantStatus: http.StatusBadGateway},
+		{name: "force stop", path: "force-stop", wantStatus: http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+			if response := fixture.start(t); response.Code != http.StatusOK {
+				t.Fatalf("start static stream: status=%d body=%s", response.Code, response.Body.String())
+			}
+			fixture.dispatcher.stopResultsOverride = []servicecall.DispatchResult{
+				{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/stop", StatusCode: http.StatusAccepted, Success: true},
+				{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/stop", StatusCode: http.StatusBadGateway, Code: "worker_stop_failed", Success: false},
+				{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/stop", StatusCode: http.StatusAccepted, Success: true},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/"+tt.path, nil)
+			req.AddCookie(fixture.cookie)
+			req.Header.Set("X-CSRF-Token", fixture.csrf)
+			response := httptest.NewRecorder()
+			fixture.server.ServeHTTP(response, req)
+			if response.Code != tt.wantStatus || !strings.Contains(response.Body.String(), `"recovery_required":true`) {
+				t.Fatalf("partial %s status=%d body=%s", tt.path, response.Code, response.Body.String())
+			}
+			claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+			if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched || claim.EncoderStopConfirmedAt.IsZero() {
+				t.Fatalf("partial %s must persist Encoder receipt before abandon: claim=%#v err=%v", tt.path, claim, err)
+			}
+			if fixture.youtubeLive.completeCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+				t.Fatalf("partial %s must not complete/delete before recovery: youtube=%#v", tt.path, fixture.youtubeLive)
+			}
+		})
+	}
+}
+
+func TestForceStopRelayStaticAfterConfirmedStopsCompletesAndReleasesBinding(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	if response := fixture.start(t); response.Code != http.StatusOK {
+		t.Fatalf("start static stream: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	receipts := &relayStaticEncoderStopReceiptRecordingStreamStore{MemoryStreamStore: fixture.streams}
+	fixture.server.streams = receipts
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/force-stop", nil)
+	req.AddCookie(fixture.cookie)
+	req.Header.Set("X-CSRF-Token", fixture.csrf)
+	response := httptest.NewRecorder()
+	fixture.server.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("confirmed force stop status=%d body=%s", response.Code, response.Body.String())
+	}
+	stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+	if err != nil || stream.Status != "completed" {
+		t.Fatalf("confirmed force stop must transition to completed before static completion: stream=%#v err=%v", stream, err)
+	}
+	if fixture.youtubeLive.completeCalls != 1 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+		t.Fatalf("confirmed force stop must use YouTube Complete exactly once: youtube=%#v", fixture.youtubeLive)
+	}
+	if receipts.encoderStopReceiptCalls != 1 || receipts.lastEncoderStopClaim.BroadcastID != "broadcast-static-dispatch" {
+		t.Fatalf("confirmed force stop must persist Encoder Stop receipt before completion: receipts=%#v", receipts)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("confirmed force stop must release static runtime: %v", err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("confirmed force stop must release static claim: %v", err)
+	}
+}
+
+func TestStopRelayStaticTransitionsCompletedBeforeProviderCompletion(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	if response := fixture.start(t); response.Code != http.StatusOK {
+		t.Fatalf("start static stream: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var completionObservedStatus string
+	fixture.youtubeLive.onComplete = func(ctx context.Context, _ ytlive.CompleteRequest) {
+		stream, err := fixture.streams.GetStream(ctx, fixture.stream.ID)
+		if err != nil {
+			t.Fatalf("read static stream during completion: %v", err)
+		}
+		completionObservedStatus = stream.Status
+	}
+	receipts := &relayStaticEncoderStopReceiptRecordingStreamStore{MemoryStreamStore: fixture.streams}
+	fixture.server.streams = receipts
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/stop", nil)
+	req.AddCookie(fixture.cookie)
+	req.Header.Set("X-CSRF-Token", fixture.csrf)
+	response := httptest.NewRecorder()
+	fixture.server.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("static stop status=%d body=%s", response.Code, response.Body.String())
+	}
+	if completionObservedStatus != "completed" || fixture.youtubeLive.completeCalls != 1 {
+		t.Fatalf("static stop must mark completed before provider completion: observed=%q youtube=%#v", completionObservedStatus, fixture.youtubeLive)
+	}
+	if receipts.encoderStopReceiptCalls != 1 || receipts.lastEncoderStopClaim.BroadcastID != "broadcast-static-dispatch" {
+		t.Fatalf("normal stop must persist Encoder Stop receipt before completion: receipts=%#v", receipts)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("confirmed normal stop must release static claim: %v", err)
+	}
+}
+
+func TestRelayStaticManualAndDueCompletionRequireCompletedStream(t *testing.T) {
+	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+	if response := fixture.start(t); response.Code != http.StatusOK {
+		t.Fatalf("start static stream: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	manual := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/youtube/complete", nil)
+	manual.AddCookie(fixture.cookie)
+	manual.Header.Set("X-CSRF-Token", fixture.csrf)
+	manualResponse := httptest.NewRecorder()
+	fixture.server.ServeHTTP(manualResponse, manual)
+	if manualResponse.Code != http.StatusConflict || !strings.Contains(manualResponse.Body.String(), errYouTubeRelayStaticCompletionRequiresCompleted.Error()) {
+		t.Fatalf("manual active static completion must be rejected: status=%d body=%s", manualResponse.Code, manualResponse.Body.String())
+	}
+	if fixture.youtubeLive.completeCalls != 0 {
+		t.Fatalf("manual active static completion called provider: %#v", fixture.youtubeLive.completeRequest)
+	}
+	if _, err := fixture.streams.RecordStreamYouTubeRuntimeCompleteFailure(t.Context(), fixture.stream.ID, "youtube_live_api_complete_failed", time.Now().UTC().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.server.CompleteDueYouTubeRuntimes(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["attempted"] != 0 || result["skipped"] != 1 || result["completed"] != 0 || fixture.youtubeLive.completeCalls != 0 {
+		t.Fatalf("due active static completion must skip provider and binding release: result=%#v youtube=%#v", result, fixture.youtubeLive)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRuntime(t.Context(), fixture.stream.ID); err != nil {
+		t.Fatalf("active static completion must retain runtime: %v", err)
+	}
+	if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); err != nil {
+		t.Fatalf("active static completion must retain claim: %v", err)
+	}
+}
+
+func TestStartStreamRejectsRelayStaticBindingMismatchBeforeClaimReservePrepareOrDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "mismatched fixed relay stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{
+		"output_relay_mode":       "live_api_static",
+		"output_relay_binding_id": "relay-00000000-0000-4000-8000-000000000002",
+	})
+	registerServiceInstance(t, auth, "worker-01", "worker")
+	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
+	for _, serviceID := range []string{"encoder_recorder-01", "worker-01", "discord_bot-01"} {
+		if _, err := auth.AssignServiceToStream(t.Context(), serviceID, stream.ID, "test-user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "raw-youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "raw-youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "mismatched fixed relay discord", "discord_bot-01", "guild-static", "voice-static", "")
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "mismatched fixed relay output", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        account.ID,
+		"relay_binding_id":        "relay-00000000-0000-4000-8000-000000000001",
+		"reusable_live_stream_id": "youtube-live-stream-primary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	youtubeLive := &fakeYouTubeLiveClient{relayStaticPrepared: ytlive.PreparedOutput{BroadcastID: "broadcast-static-primary", LiveStreamID: "youtube-live-stream-primary"}}
+	handler := NewServer(streams,
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithProfileStore(profiles),
+		WithIntegrationStore(integrations),
+		WithYouTubeLiveClient(youtubeLive),
+		WithServiceDispatcher(dispatcher),
+	)
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	request := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+youtube.ID+`"}`))
+	request.AddCookie(cookie)
+	request.Header.Set("X-CSRF-Token", csrf)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "youtube_relay_static_binding_unavailable") {
+		t.Fatalf("expected fixed binding rejection, status=%d body=%s", response.Code, response.Body.String())
+	}
+	if youtubeLive.prepareCalls != 0 || youtubeLive.relayStaticPrepareCalls != 0 || dispatcher.startCalls != 0 {
+		t.Fatalf("binding mismatch must reject before provider prepare or dispatch: live_api=%d relay_static=%d dispatch=%d", youtubeLive.prepareCalls, youtubeLive.relayStaticPrepareCalls, dispatcher.startCalls)
+	}
+	if _, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), "relay-00000000-0000-4000-8000-000000000001"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("binding mismatch must reject before reserving a claim, err=%v", err)
+	}
+	unchanged, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil || unchanged.Status != "created" {
+		t.Fatalf("binding mismatch changed stream state: stream=%#v err=%v", unchanged, err)
+	}
+}
+
+func TestStartStreamStaticRelayEncoderRejectsNonStaticOrMissingYouTubeOutputBeforeProviderOrDispatch(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(t *testing.T, fixture relayStaticStartFixtureForTest)
+		body   func(fixture relayStaticStartFixtureForTest) string
+	}{
+		{
+			name: "stream key output",
+			mutate: func(t *testing.T, fixture relayStaticStartFixtureForTest) {
+				t.Helper()
+				if _, err := fixture.profiles.UpdateProfile(t.Context(), store.ProfileYouTubeOutput, fixture.youtube.ID, "dynamic stream key output", map[string]any{
+					"mode":                   "stream_key",
+					"rtmp_url":               "rtmps://a.rtmps.youtube.com/live2",
+					"stream_key_secret_name": "youtube_stream_key_static_guard",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			body: func(fixture relayStaticStartFixtureForTest) string {
+				return `{"discord_config_id":"` + fixture.discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"` + fixture.youtube.ID + `"}`
+			},
+		},
+		{
+			name: "live api dry run output",
+			mutate: func(t *testing.T, fixture relayStaticStartFixtureForTest) {
+				t.Helper()
+				if _, err := fixture.profiles.UpdateProfile(t.Context(), store.ProfileYouTubeOutput, fixture.youtube.ID, "dynamic dry run output", map[string]any{
+					"mode": "live_api_dry_run",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			body: func(fixture relayStaticStartFixtureForTest) string {
+				return `{"discord_config_id":"` + fixture.discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"` + fixture.youtube.ID + `"}`
+			},
+		},
+		{
+			name: "missing output",
+			mutate: func(t *testing.T, fixture relayStaticStartFixtureForTest) {
+				t.Helper()
+				if _, err := fixture.streams.UpdateStreamSettings(t.Context(), fixture.stream.ID, store.StreamSettings{}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			body: func(fixture relayStaticStartFixtureForTest) string {
+				return `{"discord_config_id":"` + fixture.discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static"}`
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
+			tt.mutate(t, fixture)
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/start", bytes.NewBufferString(tt.body(fixture)))
+			req.AddCookie(fixture.cookie)
+			req.Header.Set("X-CSRF-Token", fixture.csrf)
+			response := httptest.NewRecorder()
+			fixture.server.ServeHTTP(response, req)
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), errYouTubeRelayStaticBindingUnavailable.Error()) {
+				t.Fatalf("static relay Encoder %s status=%d body=%s", tt.name, response.Code, response.Body.String())
+			}
+			if fixture.youtubeLive.prepareCalls != 0 || fixture.youtubeLive.relayStaticPrepareCalls != 0 || fixture.dispatcher.startCalls != 0 {
+				t.Fatalf("static relay Encoder %s must reject before provider/dispatch: youtube=%#v dispatcher=%#v", tt.name, fixture.youtubeLive, fixture.dispatcher)
+			}
+			if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("static relay Encoder %s must not reserve a static claim: %v", tt.name, err)
+			}
+			stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
+			if err != nil || stream.Status != "created" {
+				t.Fatalf("static relay Encoder %s must leave stream unstarted: stream=%#v err=%v", tt.name, stream, err)
+			}
+		})
+	}
+}
+
+func setRelayStaticReservationPreconditionsForTest(t *testing.T, streams *store.MemoryStreamStore, profiles *store.MemoryProfileStore, stream store.Stream, youtube store.Profile) store.Stream {
+	t.Helper()
+	profiles.BindStreamYouTubeRelayBindingClaims(streams)
+	configured, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID})
+	if err != nil {
+		t.Fatalf("set relay-static stream output: %v", err)
+	}
+	starting, transitioned, err := streams.TransitionStreamStatus(t.Context(), configured.ID, configured.Status, "starting")
+	if err != nil || !transitioned {
+		t.Fatalf("claim relay-static stream lifecycle: transitioned=%t err=%v", transitioned, err)
+	}
+	return starting
+}
+
+func TestApplyRelayStaticYouTubePreservesRecoveryClaimWhenBindCleanupIsUncertain(t *testing.T) {
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "uncertain fixed relay stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "raw-youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "raw-youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "uncertain fixed relay output", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        account.ID,
+		"relay_binding_id":        "relay-00000000-0000-4000-8000-000000000005",
+		"reusable_live_stream_id": "youtube-live-stream-uncertain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream = setRelayStaticReservationPreconditionsForTest(t, streams, profiles, stream, youtube)
+	youtubeLive := &fakeYouTubeLiveClient{relayStaticPrepareErr: &ytlive.RelayStaticBindError{
+		BroadcastID:      "broadcast-static-uncertain",
+		LiveStreamID:     "youtube-live-stream-uncertain",
+		CleanupConfirmed: false,
+	}}
+	server := &Server{streams: streams, profiles: profiles, integrations: integrations, youtubeLive: youtubeLive}
+	request := &servicecall.StartRequest{YouTubeOutputID: youtube.ID}
+	err = server.applyYouTubeRelayStaticOutput(t.Context(), stream, youtube, request)
+	if !errors.Is(err, errYouTubeRelayStaticRecoveryRequired) {
+		t.Fatalf("uncertain bind error=%v, want recovery-required", err)
+	}
+	if youtubeLive.relayStaticPrepareCalls != 1 {
+		t.Fatalf("relay-static provider was not called once: %d", youtubeLive.relayStaticPrepareCalls)
+	}
+	claim, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), "relay-00000000-0000-4000-8000-000000000005")
+	if err != nil {
+		t.Fatalf("uncertain bind claim was not preserved: %v", err)
+	}
+	if claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.BroadcastID != "broadcast-static-uncertain" || claim.LastError != ytlive.ErrRelayStaticBindCleanupUncertain.Error() {
+		t.Fatalf("unexpected recovery claim: %#v", claim)
+	}
+	if _, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("uncertain bind must not create a runtime, err=%v", err)
+	}
+}
+
+func TestApplyRelayStaticYouTubeRetainsEveryPostPrepareFenceFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		prepareErr      error
+		wantBroadcastID string
+	}{
+		{
+			name:            "unknown transport result remains fenced",
+			prepareErr:      errors.New("youtube insert response lost"),
+			wantBroadcastID: youtubeRelayStaticUnknownBroadcastID,
+		},
+		{
+			name:            "known reusable stream validation remains fenced after marker",
+			prepareErr:      ytlive.ErrReusableLiveStreamNotFound,
+			wantBroadcastID: youtubeRelayStaticUnknownBroadcastID,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			streams := store.NewMemoryStreamStore()
+			stream, err := streams.CreateStream(t.Context(), "relay static prepare classification")
+			if err != nil {
+				t.Fatal(err)
+			}
+			integrations := store.NewMemoryIntegrationStore()
+			provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+				ProviderType: "google",
+				Name:         "YouTube Google",
+				Enabled:      true,
+				ClientID:     "youtube-client-id",
+				ClientSecret: "raw-youtube-client-secret",
+				Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+				RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+				ProviderID:   provider.ID,
+				ProviderType: "google",
+				AccountLabel: "youtube account",
+				RefreshToken: "raw-youtube-refresh-token",
+				Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			profiles := store.NewMemoryProfileStore()
+			youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "relay static output", map[string]any{
+				"mode":                    "live_api_relay_static",
+				"oauth_account_id":        account.ID,
+				"relay_binding_id":        "relay-00000000-0000-4000-8000-000000000006",
+				"reusable_live_stream_id": "youtube-live-stream-prepare-classification",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream = setRelayStaticReservationPreconditionsForTest(t, streams, profiles, stream, youtube)
+			server := &Server{
+				streams:      streams,
+				profiles:     profiles,
+				integrations: integrations,
+				youtubeLive:  &fakeYouTubeLiveClient{relayStaticPrepareErr: tt.prepareErr},
+			}
+			err = server.applyYouTubeRelayStaticOutput(t.Context(), stream, youtube, &servicecall.StartRequest{YouTubeOutputID: youtube.ID})
+			if !errors.Is(err, errYouTubeRelayStaticRecoveryRequired) {
+				t.Fatalf("prepare error=%v, want recovery-required", err)
+			}
+			claim, claimErr := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), "relay-00000000-0000-4000-8000-000000000006")
+			if claimErr != nil {
+				t.Fatalf("post-marker prepare result must retain recovery claim: %v", claimErr)
+			}
+			if claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.BroadcastID != tt.wantBroadcastID || claim.LastError != "youtube_relay_static_prepare_uncertain" {
+				t.Fatalf("unexpected post-marker recovery claim: %#v", claim)
+			}
+			if _, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("post-marker prepare result must not create a runtime, err=%v", err)
+			}
+		})
+	}
+}
+
+func TestResolveRelayStaticYouTubeRecoveryRequiresConfirmationAndFencedCleanup(t *testing.T) {
+	type recoveryFixture struct {
+		handler     http.Handler
+		streams     *store.MemoryStreamStore
+		stream      store.Stream
+		claim       store.YouTubeRelayBindingClaim
+		youtubeLive *fakeYouTubeLiveClient
+		dispatcher  *fakeServiceDispatcher
+		cookie      *http.Cookie
+		csrf        string
+		auth        *store.MemoryAuthStore
+	}
+	newFixture := func(t *testing.T, relayBindingID, broadcastID string) recoveryFixture {
+		t.Helper()
+		auth := store.NewMemoryAuthStore()
+		if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.stop"}); err != nil {
+			t.Fatal(err)
+		}
+		streams := store.NewMemoryStreamStore()
+		stream, err := streams.CreateStream(t.Context(), "relay static recovery")
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerServiceInstance(t, auth, "encoder-recorder-01", "encoder_recorder")
+		if _, err := auth.AssignServiceToStream(t.Context(), "encoder-recorder-01", stream.ID, "test-user"); err != nil {
+			t.Fatal(err)
+		}
+		integrations := store.NewMemoryIntegrationStore()
+		provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+			ProviderType: "google",
+			Name:         "YouTube Google",
+			Enabled:      true,
+			ClientID:     "youtube-client-id",
+			ClientSecret: "raw-youtube-client-secret",
+			Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+			RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+			ProviderID:   provider.ID,
+			ProviderType: "google",
+			AccountLabel: "youtube account",
+			RefreshToken: "raw-youtube-refresh-token",
+			Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		profiles := store.NewMemoryProfileStore()
+		youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "relay static recovery output", map[string]any{
+			"mode":                    "live_api_relay_static",
+			"oauth_account_id":        account.ID,
+			"relay_binding_id":        relayBindingID,
+			"reusable_live_stream_id": "youtube-live-stream-recovery",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream = setRelayStaticReservationPreconditionsForTest(t, streams, profiles, stream, youtube)
+		expectedYouTubeOutputRevision := youtube.YouTubeRelayBindingRevision
+		reserved, err := streams.ReserveStreamYouTubeRelayBindingClaim(t.Context(), store.YouTubeRelayBindingClaim{
+			RelayBindingID:                relayBindingID,
+			StreamID:                      stream.ID,
+			YouTubeOutputID:               youtube.ID,
+			ExpectedYouTubeOutputRevision: &expectedYouTubeOutputRevision,
+			OAuthAccountID:                account.ID,
+			ReusableLiveStreamID:          "youtube-live-stream-recovery",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reserved.BroadcastID = broadcastID
+		reserved.LastError = "youtube_relay_static_prepare_uncertain"
+		claim, err := streams.MarkStreamYouTubeRelayBindingClaimRecoveryRequired(t.Context(), reserved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, transitioned, err := streams.TransitionStreamStatus(t.Context(), stream.ID, "starting", "failed")
+		if err != nil || !transitioned {
+			t.Fatalf("terminalize recovery fixture stream: transitioned=%t err=%v", transitioned, err)
+		}
+		youtubeLive := &fakeYouTubeLiveClient{}
+		dispatcher := &fakeServiceDispatcher{}
+		handler := NewServer(streams,
+			WithAuthStore(auth),
+			WithAuditStore(auth),
+			WithServiceRegistryStore(auth),
+			WithIntegrationStore(integrations),
+			WithProfileStore(profiles),
+			WithYouTubeLiveClient(youtubeLive),
+			WithServiceDispatcher(dispatcher),
+		)
+		cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+		return recoveryFixture{handler: handler, streams: streams, stream: stream, claim: claim, youtubeLive: youtubeLive, dispatcher: dispatcher, cookie: cookie, csrf: csrf, auth: auth}
+	}
+	resolve := func(t *testing.T, fixture recoveryFixture, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/youtube/relay-static/recovery/resolve", bytes.NewBufferString(body))
+		req.AddCookie(fixture.cookie)
+		req.Header.Set("X-CSRF-Token", fixture.csrf)
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, req)
+		return response
+	}
+
+	t.Run("requires explicit confirmation", func(t *testing.T) {
+		fixture := newFixture(t, "relay-00000000-0000-4000-8000-000000000007", youtubeRelayStaticUnknownBroadcastID)
+		response := resolve(t, fixture, `{}`)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "youtube_relay_static_external_cleanup_confirmation_required") {
+			t.Fatalf("missing confirmation status=%d body=%s", response.Code, response.Body.String())
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.claim.RelayBindingID); err != nil {
+			t.Fatalf("missing confirmation must retain claim: %v", err)
+		}
+	})
+
+	t.Run("known broadcast uses confirmed provider delete", func(t *testing.T) {
+		fixture := newFixture(t, "relay-00000000-0000-4000-8000-000000000008", "broadcast-static-recovery-known")
+		// This claim was durably marked before any Start dispatch. The Encoder's
+		// exact no-process reply is therefore a safe receipt, unlike it would be
+		// after a possibly-dispatched hand-off.
+		fixture.dispatcher.stopResultsOverride = []servicecall.DispatchResult{{
+			ServiceID: "encoder-recorder-01", ServiceType: "encoder_recorder", Endpoint: "/stop",
+			StatusCode: http.StatusNotFound, Code: "stream_not_running", Success: false,
+		}}
+		response := resolve(t, fixture, `{"confirm_external_cleanup":true}`)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cleanup":"provider_delete"`) {
+			t.Fatalf("known recovery status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.youtubeLive.relayStaticCleanupCalls != 1 || fixture.youtubeLive.relayStaticCleanupRequest.BroadcastID != fixture.claim.BroadcastID || fixture.youtubeLive.relayStaticCleanupRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" {
+			t.Fatalf("known recovery did not perform the fixed-relay delete: %#v", fixture.youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.claim.RelayBindingID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("confirmed provider delete must release recovery claim: %v", err)
+		}
+		if !hasAuditAction(fixture.auth.AuditEvents(), "streams.youtube_relay_static_recovery.resolve") {
+			t.Fatalf("recovery resolution audit is missing: %#v", fixture.auth.AuditEvents())
+		}
+	})
+
+	t.Run("unknown broadcast requires and records operator attestation", func(t *testing.T) {
+		fixture := newFixture(t, "relay-00000000-0000-4000-8000-000000000009", youtubeRelayStaticUnknownBroadcastID)
+		response := resolve(t, fixture, `{"confirm_external_cleanup":true}`)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cleanup":"operator_confirmed_unknown_broadcast"`) {
+			t.Fatalf("unknown recovery status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+			t.Fatalf("unknown broadcast sentinel must never be sent to provider delete: %#v", fixture.youtubeLive.relayStaticCleanupRequest)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.claim.RelayBindingID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("operator-confirmed unknown recovery must release claim: %v", err)
+		}
+	})
+}
+
+// TestResolveRelayStaticYouTubeRecoveryPossiblyDispatchedRequiresEncoderStop
+// exercises the durable hand-off fence set immediately before downstream Start.
+// A failed Start response is never proof that the Encoder did not receive it:
+// recovery must require an Encoder receipt and Complete (never Delete) before
+// releasing the binding.
+func TestResolveRelayStaticYouTubeRecoveryPossiblyDispatchedRequiresEncoderStop(t *testing.T) {
+	newFixture := func(t *testing.T, youtubeLive *fakeYouTubeLiveClient) relayStaticStartFixtureForTest {
+		t.Helper()
+		fixture := newRelayStaticStartFixtureForTest(t, &fakeServiceDispatcher{failStart: true}, youtubeLive)
+		response := fixture.start(t)
+		if response.Code != http.StatusBadGateway {
+			t.Fatalf("create possibly-dispatched recovery fixture: status=%d body=%s", response.Code, response.Body.String())
+		}
+		claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+		if err != nil || claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired || claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched {
+			t.Fatalf("start failure must retain a possibly-dispatched recovery claim: claim=%#v err=%v", claim, err)
+		}
+		return fixture
+	}
+	resolve := func(t *testing.T, fixture relayStaticStartFixtureForTest) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/youtube/relay-static/recovery/resolve", bytes.NewBufferString(`{"confirm_external_cleanup":true}`))
+		req.AddCookie(fixture.cookie)
+		req.Header.Set("X-CSRF-Token", fixture.csrf)
+		response := httptest.NewRecorder()
+		fixture.server.ServeHTTP(response, req)
+		return response
+	}
+
+	t.Run("encoder receipt completes without delete", func(t *testing.T) {
+		fixture := newFixture(t, nil)
+		response := resolve(t, fixture)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cleanup":"provider_complete"`) {
+			t.Fatalf("possibly-dispatched recovery status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.youtubeLive.completeCalls != 1 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+			t.Fatalf("possibly-dispatched recovery must Complete and never Delete: youtube=%#v", fixture.youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("confirmed encoder stop and Complete must release claim: %v", err)
+		}
+	})
+
+	t.Run("encoder no-process response is insufficient after dispatch hand-off", func(t *testing.T) {
+		fixture := newFixture(t, nil)
+		fixture.dispatcher.stopResultsOverride = []servicecall.DispatchResult{{
+			ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/stop",
+			StatusCode: http.StatusNotFound, Code: "stream_not_running", Success: false,
+		}}
+		response := resolve(t, fixture)
+		if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "youtube_relay_static_recovery_encoder_stop_unconfirmed") {
+			t.Fatalf("possibly-dispatched idle reply status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.youtubeLive.completeCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+			t.Fatalf("unconfirmed encoder stop must not touch provider cleanup: youtube=%#v", fixture.youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); err != nil {
+			t.Fatalf("unconfirmed encoder stop must retain claim: %v", err)
+		}
+	})
+
+	t.Run("encoder stop failure retains claim before provider cleanup", func(t *testing.T) {
+		fixture := newFixture(t, nil)
+		fixture.dispatcher.failStop = true
+		response := resolve(t, fixture)
+		if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "youtube_relay_static_recovery_encoder_stop_unconfirmed") {
+			t.Fatalf("failed encoder stop status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.youtubeLive.completeCalls != 0 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+			t.Fatalf("failed encoder stop must not touch provider cleanup: youtube=%#v", fixture.youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); err != nil {
+			t.Fatalf("failed encoder stop must retain claim: %v", err)
+		}
+	})
+
+	t.Run("operator attestation releases known broadcast after reconciled completion failure", func(t *testing.T) {
+		fixture := newFixture(t, &fakeYouTubeLiveClient{relayStaticPrepared: ytlive.PreparedOutput{BroadcastID: "broadcast-static-dispatch", LiveStreamID: "youtube-live-stream-dispatch"}, completeErr: errors.New("youtube completion unavailable")})
+		response := resolve(t, fixture)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cleanup":"operator_confirmed_provider_cleanup"`) {
+			t.Fatalf("operator-attested completion recovery status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.youtubeLive.completeCalls != 1 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+			t.Fatalf("operator-attested completion must never fall back to Delete: youtube=%#v", fixture.youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("explicit operator attestation with durable Encoder receipt must release claim: %v", err)
+		}
+		var attested bool
+		for _, event := range fixture.server.audit.(*store.MemoryAuthStore).AuditEvents() {
+			if event.Action == "streams.youtube_relay_static_recovery.resolve" && event.Metadata != nil {
+				attested, _ = event.Metadata["operator_attested_provider_cleanup"].(bool)
+			}
+		}
+		if !attested {
+			t.Fatalf("operator-confirmed provider cleanup must be audited: %#v", fixture.server.audit.(*store.MemoryAuthStore).AuditEvents())
+		}
+	})
+
+	t.Run("worker and bot stop warnings do not replace encoder receipt", func(t *testing.T) {
+		fixture := newFixture(t, nil)
+		fixture.dispatcher.stopResultsOverride = []servicecall.DispatchResult{
+			{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/stop", StatusCode: http.StatusAccepted, Success: true},
+			{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/stop", StatusCode: http.StatusBadGateway, Code: "worker_stop_failed", Success: false},
+			{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/stop", StatusCode: http.StatusBadGateway, Code: "bot_stop_failed", Success: false},
+		}
+		response := resolve(t, fixture)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cleanup":"provider_complete"`) {
+			t.Fatalf("non-encoder warning recovery status=%d body=%s", response.Code, response.Body.String())
+		}
+		if fixture.youtubeLive.completeCalls != 1 || fixture.youtubeLive.relayStaticCleanupCalls != 0 {
+			t.Fatalf("non-encoder warnings must preserve encoder-gated Complete recovery: youtube=%#v", fixture.youtubeLive)
+		}
+	})
+
+	t.Run("durable encoder receipt survives recovery retry and suppresses stale encoder no-process", func(t *testing.T) {
+		youtubeLive := &fakeYouTubeLiveClient{
+			relayStaticPrepared: ytlive.PreparedOutput{BroadcastID: "broadcast-static-dispatch", LiveStreamID: "youtube-live-stream-dispatch"},
+		}
+		fixture := newFixture(t, youtubeLive)
+		// First persist the positive Encoder receipt while the reconciled
+		// completion client is unavailable. This retains the recovery claim
+		// without using the explicit operator-cleanup attestation branch.
+		fixture.server.youtubeLive = youtubeLive
+		fixture.dispatcher.stopResultsOverride = []servicecall.DispatchResult{
+			{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/stop", StatusCode: http.StatusAccepted, Success: true},
+			{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/stop", StatusCode: http.StatusBadGateway, Code: "worker_stop_failed", Success: false},
+			{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/stop", StatusCode: http.StatusBadGateway, Code: "bot_stop_failed", Success: false},
+		}
+		first := resolve(t, fixture)
+		if first.Code != http.StatusServiceUnavailable || !strings.Contains(first.Body.String(), "youtube_relay_static_recovery_cleanup_unavailable") {
+			t.Fatalf("receipt persistence recovery status=%d body=%s", first.Code, first.Body.String())
+		}
+		claim, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID)
+		if err != nil || claim.EncoderStopConfirmedAt.IsZero() {
+			t.Fatalf("positive encoder Stop must persist recovery receipt: claim=%#v err=%v", claim, err)
+		}
+		if fixture.dispatcher.stopCalls != 1 || youtubeLive.completeCalls != 0 {
+			t.Fatalf("first recovery must dispatch one stop and retain before completion: dispatcher=%#v youtube=%#v", fixture.dispatcher, youtubeLive)
+		}
+
+		// Simulate a later retry after the Encoder has restarted and only reports
+		// its normal no-process 404. The durable first receipt, not this stale
+		// response, is what permits the reconciled provider completion.
+		fixture.server.youtubeLive = &relayStaticCompletingYouTubeLiveClient{fakeYouTubeLiveClient: youtubeLive}
+		fixture.dispatcher.stopResultsOverride = []servicecall.DispatchResult{{
+			ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/stop",
+			StatusCode: http.StatusNotFound, Code: "stream_not_running", Success: false,
+		}}
+		second := resolve(t, fixture)
+		if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"cleanup":"provider_complete"`) {
+			t.Fatalf("durable-receipt retry status=%d body=%s", second.Code, second.Body.String())
+		}
+		if fixture.dispatcher.stopCalls != 1 || youtubeLive.completeCalls != 1 || youtubeLive.relayStaticCleanupCalls != 0 {
+			t.Fatalf("durable receipt must skip stale stop and never Delete: dispatcher=%#v youtube=%#v", fixture.dispatcher, youtubeLive)
+		}
+		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("reconciled completion must release the durable receipt claim: %v", err)
+		}
+	})
+}
+
+func TestCompleteRelayStaticYouTubeRetainsClaimUntilProviderCompletionSucceeds(t *testing.T) {
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "relay static completion retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "raw-youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "raw-youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "relay static completion output", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        account.ID,
+		"relay_binding_id":        "relay-00000000-0000-4000-8000-00000000000a",
+		"reusable_live_stream_id": "youtube-live-stream-complete",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream = setRelayStaticReservationPreconditionsForTest(t, streams, profiles, stream, youtube)
+	expectedYouTubeOutputRevision := youtube.YouTubeRelayBindingRevision
+	reserved, err := streams.ReserveStreamYouTubeRelayBindingClaim(t.Context(), store.YouTubeRelayBindingClaim{
+		RelayBindingID:                "relay-00000000-0000-4000-8000-00000000000a",
+		StreamID:                      stream.ID,
+		YouTubeOutputID:               youtube.ID,
+		ExpectedYouTubeOutputRevision: &expectedYouTubeOutputRevision,
+		OAuthAccountID:                account.ID,
+		ReusableLiveStreamID:          "youtube-live-stream-complete",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err = streams.MarkReservedStreamYouTubeRelayBindingClaimPossiblyPrepared(t.Context(), reserved)
+	if err != nil {
+		t.Fatalf("mark static completion fixture possibly prepared: %v", err)
+	}
+	reserved.BroadcastID = "broadcast-static-complete"
+	runtime := store.StreamYouTubeRuntime{
+		StreamID:       stream.ID,
+		YouTubeOutput:  reserved.YouTubeOutputID,
+		OAuthAccountID: account.ID,
+		Mode:           "live_api_relay_static",
+		BroadcastID:    reserved.BroadcastID,
+		LiveStreamID:   reserved.ReusableLiveStreamID,
+		CompleteOnStop: true,
+	}
+	if err := streams.FinalizeStreamYouTubeRuntimeAndMarkRelayBindingPrepared(t.Context(), reserved, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.MarkPreparedStreamYouTubeRelayBindingClaimPossiblyDispatched(t.Context(), reserved); err != nil {
+		t.Fatalf("mark static completion fixture possibly dispatched: %v", err)
+	}
+	if _, transitioned, err := streams.TransitionStreamStatus(t.Context(), stream.ID, "starting", "completed"); err != nil || !transitioned {
+		t.Fatalf("mark static completion fixture completed: transitioned=%t err=%v", transitioned, err)
+	}
+	youtubeLive := &fakeYouTubeLiveClient{completeErr: errors.New("youtube transition unavailable")}
+	withoutReconciler := &Server{streams: streams, integrations: integrations, youtubeLive: youtubeLive}
+	if _, err := withoutReconciler.completeYouTubeRuntime(t.Context(), stream.ID, true); !errors.Is(err, errYouTubeRelayStaticUnavailable) {
+		t.Fatalf("static completion without a reconciler err=%v, want fail-closed unavailable", err)
+	}
+	if youtubeLive.completeCalls != 0 {
+		t.Fatalf("static completion must not fall back to generic Complete: calls=%d", youtubeLive.completeCalls)
+	}
+	stillFencedRuntime, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID)
+	if err != nil || stillFencedRuntime.CompleteRetryCount != 1 {
+		t.Fatalf("missing reconciler must retain and retry static runtime: runtime=%#v err=%v", stillFencedRuntime, err)
+	}
+	if claim, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), reserved.RelayBindingID); err != nil || claim.State != store.YouTubeRelayBindingClaimStatePrepared {
+		t.Fatalf("missing reconciler must retain static claim: claim=%#v err=%v", claim, err)
+	}
+	server := &Server{streams: streams, integrations: integrations, youtubeLive: &relayStaticCompletingYouTubeLiveClient{fakeYouTubeLiveClient: youtubeLive}}
+	if _, err := server.completeYouTubeRuntime(t.Context(), stream.ID, true); !errors.Is(err, errYouTubeLiveAPICompleteFailed) {
+		t.Fatalf("completion error=%v, want provider completion failure", err)
+	}
+	if youtubeLive.completeCalls != 1 || youtubeLive.completeRequest.BroadcastID != runtime.BroadcastID {
+		t.Fatalf("provider completion was not attempted: %#v", youtubeLive.completeRequest)
+	}
+	storedRuntime, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatalf("provider failure must retain runtime for retry: %v", err)
+	}
+	if storedRuntime.CompleteRetryCount != 2 || storedRuntime.CompleteNextRetryAt.IsZero() {
+		t.Fatalf("provider failure did not schedule retry: %#v", storedRuntime)
+	}
+	claim, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), reserved.RelayBindingID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStatePrepared {
+		t.Fatalf("provider failure must retain prepared claim: claim=%#v err=%v", claim, err)
+	}
+
+	youtubeLive.completeErr = nil
+	if _, err := server.completeYouTubeRuntime(t.Context(), stream.ID, true); err != nil {
+		t.Fatalf("completion retry: %v", err)
+	}
+	if youtubeLive.completeCalls != 2 {
+		t.Fatalf("completion retry did not call provider: %d", youtubeLive.completeCalls)
+	}
+	if _, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("successful completion must atomically release runtime, err=%v", err)
+	}
+	if _, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), reserved.RelayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("successful completion must atomically release claim, err=%v", err)
+	}
+}
+
+func TestYouTubeOutputMutationAndDeleteRejectActiveRelayStaticClaim(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"youtube_outputs.update", "youtube_outputs.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "claimed output stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "claimed static output", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        "8fd47de4-5aec-486f-99c7-10591076c408",
+		"relay_binding_id":        "relay-00000000-0000-4000-8000-00000000000b",
+		"reusable_live_stream_id": "youtube-live-stream-claimed-output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream = setRelayStaticReservationPreconditionsForTest(t, streams, profiles, stream, youtube)
+	expectedYouTubeOutputRevision := youtube.YouTubeRelayBindingRevision
+	if _, err := streams.ReserveStreamYouTubeRelayBindingClaim(t.Context(), store.YouTubeRelayBindingClaim{
+		RelayBindingID:                "relay-00000000-0000-4000-8000-00000000000b",
+		StreamID:                      stream.ID,
+		YouTubeOutputID:               youtube.ID,
+		ExpectedYouTubeOutputRevision: &expectedYouTubeOutputRevision,
+		OAuthAccountID:                "8fd47de4-5aec-486f-99c7-10591076c408",
+		ReusableLiveStreamID:          "youtube-live-stream-claimed-output",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			request := httptest.NewRequest(method, "/youtube/outputs/"+youtube.ID, bytes.NewBufferString(`{}`))
+			request.AddCookie(cookie)
+			request.Header.Set("X-CSRF-Token", csrf)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "youtube_relay_binding_release_pending") {
+				t.Fatalf("active claim %s status=%d body=%s", method, response.Code, response.Body.String())
+			}
+		})
+	}
+	if _, err := profiles.GetProfile(t.Context(), store.ProfileYouTubeOutput, youtube.ID); err != nil {
+		t.Fatalf("active relay claim must retain output profile: %v", err)
+	}
+}
+
+func TestCompleteDueYouTubeRuntimesCompletesRelayStaticAndReleasesClaim(t *testing.T) {
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "due relay static completion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "raw-youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "raw-youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "due relay static completion output", map[string]any{
+		"mode":                    "live_api_relay_static",
+		"oauth_account_id":        account.ID,
+		"relay_binding_id":        "relay-00000000-0000-4000-8000-00000000000c",
+		"reusable_live_stream_id": "youtube-live-stream-due-complete",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream = setRelayStaticReservationPreconditionsForTest(t, streams, profiles, stream, youtube)
+	expectedYouTubeOutputRevision := youtube.YouTubeRelayBindingRevision
+	reserved, err := streams.ReserveStreamYouTubeRelayBindingClaim(t.Context(), store.YouTubeRelayBindingClaim{
+		RelayBindingID:                "relay-00000000-0000-4000-8000-00000000000c",
+		StreamID:                      stream.ID,
+		YouTubeOutputID:               youtube.ID,
+		ExpectedYouTubeOutputRevision: &expectedYouTubeOutputRevision,
+		OAuthAccountID:                account.ID,
+		ReusableLiveStreamID:          "youtube-live-stream-due-complete",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err = streams.MarkReservedStreamYouTubeRelayBindingClaimPossiblyPrepared(t.Context(), reserved)
+	if err != nil {
+		t.Fatalf("mark due static completion fixture possibly prepared: %v", err)
+	}
+	reserved.BroadcastID = "broadcast-static-due-complete"
+	runtime := store.StreamYouTubeRuntime{
+		StreamID:       stream.ID,
+		YouTubeOutput:  reserved.YouTubeOutputID,
+		OAuthAccountID: account.ID,
+		Mode:           "live_api_relay_static",
+		BroadcastID:    reserved.BroadcastID,
+		LiveStreamID:   reserved.ReusableLiveStreamID,
+		CompleteOnStop: true,
+	}
+	if err := streams.FinalizeStreamYouTubeRuntimeAndMarkRelayBindingPrepared(t.Context(), reserved, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.MarkPreparedStreamYouTubeRelayBindingClaimPossiblyDispatched(t.Context(), reserved); err != nil {
+		t.Fatalf("mark due static completion fixture possibly dispatched: %v", err)
+	}
+	if _, transitioned, err := streams.TransitionStreamStatus(t.Context(), stream.ID, "starting", "completed"); err != nil || !transitioned {
+		t.Fatalf("mark due static completion fixture completed: transitioned=%t err=%v", transitioned, err)
+	}
+	if _, err := streams.RecordStreamYouTubeRuntimeCompleteFailure(t.Context(), stream.ID, "youtube_live_api_complete_failed", time.Now().UTC().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	youtubeLive := &fakeYouTubeLiveClient{}
+	server := &Server{streams: streams, integrations: integrations, youtubeLive: &relayStaticCompletingYouTubeLiveClient{fakeYouTubeLiveClient: youtubeLive}}
+	result, err := server.CompleteDueYouTubeRuntimes(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["attempted"] != 1 || result["completed"] != 1 || result["failed"] != 0 || youtubeLive.completeCalls != 1 || youtubeLive.completeRequest.BroadcastID != runtime.BroadcastID {
+		t.Fatalf("due relay-static completion result=%#v completion=%#v", result, youtubeLive.completeRequest)
+	}
+	if _, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("due relay-static completion must release runtime, err=%v", err)
+	}
+	if _, err := streams.GetStreamYouTubeRelayBindingClaim(t.Context(), reserved.RelayBindingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("due relay-static completion must release claim, err=%v", err)
 	}
 }
 
@@ -4714,6 +7797,7 @@ func TestStartStreamRejectsYouTubeLiveAPIWithoutOAuthAccount(t *testing.T) {
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
 	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "youtube oauth unavailable discord", "discord_bot-01", "guild-youtube", "voice-youtube", "")
 	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "live-api-output", map[string]any{
 		"mode":             "live_api",
 		"oauth_account_id": "oauth-account-01",
@@ -4725,7 +7809,7 @@ func TestStartStreamRejectsYouTubeLiveAPIWithoutOAuthAccount(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-youtube","discord_voice_channel_id":"voice-youtube","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -6265,6 +9349,44 @@ func TestStreamEncoderPreflightProxiesAssignedEncoder(t *testing.T) {
 		if strings.Contains(res.Body.String(), raw) {
 			t.Fatalf("encoder preflight leaked upstream secret %q in response: %s", raw, res.Body.String())
 		}
+	}
+}
+
+func TestStreamEncoderPreflightRejectsLegacyRelayLiveAPIWithoutDispatch(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "legacy relay preflight")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "legacy relay live api", map[string]any{"mode": "live_api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{YouTubeOutputID: youtube.ID}); err != nil {
+		t.Fatal(err)
+	}
+	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{"output_relay_mode": "legacy_stream_key"})
+	if _, err := auth.AssignServiceToStream(t.Context(), "encoder_recorder-01", stream.ID, "test-user"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "viewer", "correct horse battery")
+	req := httptest.NewRequest(http.MethodGet, "/streams/"+stream.ID+"/encoder-preflight", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "live_api_requires_managed_output_relay") {
+		t.Fatalf("legacy relay preflight status=%d body=%s", res.Code, res.Body.String())
+	}
+	if dispatcher.encoderPreflightCalls != 0 {
+		t.Fatalf("legacy relay preflight must fail before encoder dispatch: %#v", dispatcher)
 	}
 }
 
@@ -11693,6 +14815,31 @@ func TestProfileCRUDRejectsRawSecretConfig(t *testing.T) {
 		t.Fatalf("allowed live api dry-run status = %d body = %s", allowedCamelRes.Code, allowedCamelRes.Body.String())
 	}
 
+	invalidStaticOAuthReq := httptest.NewRequest(http.MethodPost, "/youtube/outputs", bytes.NewBufferString(`{"name":"invalid-static-oauth","mode":"live_api_relay_static","oauth_account_id":"036b8f3e-c853-4b9d-9f74-bdbbd6c0c960","relay_binding_id":"relay-00000000-0000-4000-8000-00000000000d","reusable_live_stream_id":"youtube-live-stream-profile"}`))
+	invalidStaticOAuthReq.AddCookie(cookie)
+	invalidStaticOAuthReq.Header.Set("X-CSRF-Token", csrf)
+	invalidStaticOAuthRes := httptest.NewRecorder()
+	handler.ServeHTTP(invalidStaticOAuthRes, invalidStaticOAuthReq)
+	if invalidStaticOAuthRes.Code != http.StatusNotFound || !strings.Contains(invalidStaticOAuthRes.Body.String(), "oauth_account_not_found") {
+		t.Fatalf("invalid static OAuth status = %d body = %s", invalidStaticOAuthRes.Code, invalidStaticOAuthRes.Body.String())
+	}
+
+	allowedStaticReq := httptest.NewRequest(http.MethodPost, "/youtube/outputs", bytes.NewBufferString(`{"name":"good-youtube-static","mode":"live_api_relay_static","oauth_account_id":"`+account.ID+`","relay_binding_id":"relay-00000000-0000-4000-8000-00000000000d","reusable_live_stream_id":"youtube-live-stream-profile","complete_on_stop":false}`))
+	allowedStaticReq.AddCookie(cookie)
+	allowedStaticReq.Header.Set("X-CSRF-Token", csrf)
+	allowedStaticRes := httptest.NewRecorder()
+	handler.ServeHTTP(allowedStaticRes, allowedStaticReq)
+	if allowedStaticRes.Code != http.StatusCreated {
+		t.Fatalf("allowed static relay status = %d body = %s", allowedStaticRes.Code, allowedStaticRes.Body.String())
+	}
+	var allowedStatic youtubeOutputResponse
+	if err := json.NewDecoder(allowedStaticRes.Body).Decode(&allowedStatic); err != nil {
+		t.Fatal(err)
+	}
+	if allowedStatic.Mode != "live_api_relay_static" || allowedStatic.OAuthAccountID != account.ID || allowedStatic.RelayBindingID != "relay-00000000-0000-4000-8000-00000000000d" || allowedStatic.ReusableLiveStreamID != "youtube-live-stream-profile" || !allowedStatic.CompleteOnStop || allowedStatic.RTMPURL != "" || allowedStatic.StreamKeyConfigured {
+		t.Fatalf("unexpected static relay output response: %#v", allowedStatic)
+	}
+
 	discordLegacyReq := httptest.NewRequest(http.MethodPost, "/discord/configs", bytes.NewBufferString(`{"name":"bad-discord","config":{"guild_id":"guild-01","bot_token":"raw-discord-bot-token"}}`))
 	discordLegacyReq.AddCookie(cookie)
 	discordLegacyReq.Header.Set("X-CSRF-Token", csrf)
@@ -15721,6 +18868,7 @@ type fakeServiceDispatcher struct {
 	workerEvents             servicecall.WorkerEventsResult
 	encoderPreflight         servicecall.ServicePreflightResult
 	workerEventRequest       servicecall.WorkerEventRequest
+	stopResultsOverride      []servicecall.DispatchResult
 	failStart                bool
 	failStop                 bool
 	failRetry                bool
@@ -15847,6 +18995,15 @@ func (s *failingYouTubeRuntimeStreamStore) SaveStreamYouTubeRuntime(context.Cont
 	return s.err
 }
 
+type failingRelayBindingClaimLookupStreamStore struct {
+	*store.MemoryStreamStore
+	err error
+}
+
+func (s *failingRelayBindingClaimLookupStreamStore) GetStreamYouTubeRelayBindingClaimForStream(context.Context, string) (store.YouTubeRelayBindingClaim, error) {
+	return store.YouTubeRelayBindingClaim{}, s.err
+}
+
 type failingRearmStreamStore struct {
 	*store.MemoryStreamStore
 	failSettingsUpdate bool
@@ -15910,17 +19067,40 @@ func (f *notificationFakeDispatcher) NotifyDiscordYouTubeLive(ctx context.Contex
 		result.StatusCode = http.StatusOK
 		result.Success = true
 	}
+	if result.Success && result.MessageID == "" {
+		result.MessageID = "discord-message-01"
+	}
 	return result
 }
 
 type fakeYouTubeLiveClient struct {
-	prepareCalls    int
-	completeCalls   int
-	prepareRequest  ytlive.PrepareRequest
-	completeRequest ytlive.CompleteRequest
-	prepared        ytlive.PreparedOutput
-	prepareErr      error
-	completeErr     error
+	prepareCalls              int
+	relayStaticPrepareCalls   int
+	relayStaticCleanupCalls   int
+	completeCalls             int
+	prepareRequest            ytlive.PrepareRequest
+	relayStaticRequest        ytlive.RelayStaticPrepareRequest
+	relayStaticCleanupRequest ytlive.RelayStaticBroadcastCleanupRequest
+	completeRequest           ytlive.CompleteRequest
+	prepared                  ytlive.PreparedOutput
+	relayStaticPrepared       ytlive.PreparedOutput
+	prepareErr                error
+	relayStaticPrepareErr     error
+	relayStaticCleanupErr     error
+	completeErr               error
+	onRelayStaticPrepare      func(context.Context, ytlive.RelayStaticPrepareRequest)
+	onComplete                func(context.Context, ytlive.CompleteRequest)
+}
+
+// relayStaticCompletingYouTubeLiveClient is intentionally opt-in. Generic
+// LiveClient fakes must not accidentally gain the response-loss reconciliation
+// contract required before a reusable static relay claim can be released.
+type relayStaticCompletingYouTubeLiveClient struct {
+	*fakeYouTubeLiveClient
+}
+
+func (f *relayStaticCompletingYouTubeLiveClient) CompleteRelayStaticBroadcast(ctx context.Context, req ytlive.CompleteRequest) error {
+	return f.fakeYouTubeLiveClient.Complete(ctx, req)
 }
 
 type fakeOAuthVerifier struct {
@@ -16050,15 +19230,65 @@ func (f *fakeYouTubeLiveClient) Prepare(ctx context.Context, req ytlive.PrepareR
 	return f.prepared, nil
 }
 
+func (f *fakeYouTubeLiveClient) PrepareRelayStatic(ctx context.Context, req ytlive.RelayStaticPrepareRequest) (ytlive.PreparedOutput, error) {
+	f.relayStaticPrepareCalls++
+	f.relayStaticRequest = req
+	if f.onRelayStaticPrepare != nil {
+		f.onRelayStaticPrepare(ctx, req)
+	}
+	if f.relayStaticPrepareErr != nil {
+		return ytlive.PreparedOutput{}, f.relayStaticPrepareErr
+	}
+	return f.relayStaticPrepared, nil
+}
+
+func (f *fakeYouTubeLiveClient) DeleteRelayStaticBroadcast(ctx context.Context, req ytlive.RelayStaticBroadcastCleanupRequest) error {
+	f.relayStaticCleanupCalls++
+	f.relayStaticCleanupRequest = req
+	return f.relayStaticCleanupErr
+}
+
 func (f *fakeYouTubeLiveClient) Complete(ctx context.Context, req ytlive.CompleteRequest) error {
 	f.completeCalls++
 	f.completeRequest = req
+	if f.onComplete != nil {
+		f.onComplete(ctx, req)
+	}
 	return f.completeErr
 }
 
 type readinessBlockDispatcher struct {
 	fakeServiceDispatcher
 	issues []servicecall.ReadinessIssue
+}
+
+type relayStaticPreFenceMutationDispatcher struct {
+	*fakeServiceDispatcher
+	mutate func()
+}
+
+func (f *relayStaticPreFenceMutationDispatcher) StartReadinessIssues(_ []store.RegisteredService, _ servicecall.StartRequest, _ time.Time) []servicecall.ReadinessIssue {
+	if mutate := f.mutate; mutate != nil {
+		f.mutate = nil
+		mutate()
+	}
+	return nil
+}
+
+type relayStaticNotificationDispatcher struct {
+	*fakeServiceDispatcher
+	notifyCalls     int
+	notifiedStream  store.Stream
+	notifiedEventID string
+	notifiedURL     string
+}
+
+func (f *relayStaticNotificationDispatcher) NotifyDiscordYouTubeLive(_ context.Context, stream store.Stream, _ []store.RegisteredService, eventID, watchURL string) servicecall.DispatchResult {
+	f.notifyCalls++
+	f.notifiedStream = stream
+	f.notifiedEventID = eventID
+	f.notifiedURL = watchURL
+	return servicecall.DispatchResult{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/streams/" + stream.ID + "/notifications/youtube-live", StatusCode: http.StatusOK, Success: true}
 }
 
 func (f *readinessBlockDispatcher) StartReadinessIssues(services []store.RegisteredService, req servicecall.StartRequest, now time.Time) []servicecall.ReadinessIssue {
@@ -16103,6 +19333,9 @@ func (f *fakeServiceDispatcher) Stop(ctx context.Context, stream store.Stream, s
 	f.stopCalls++
 	f.stoppedStream = stream
 	f.stoppedServices = append([]store.RegisteredService(nil), services...)
+	if f.stopResultsOverride != nil {
+		return append([]servicecall.DispatchResult(nil), f.stopResultsOverride...)
+	}
 	if f.failStop {
 		return []servicecall.DispatchResult{{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/stop", Success: false, Error: f.failureError()}}
 	}
@@ -16282,7 +19515,11 @@ func stringValue(value any) string {
 
 func registerServiceInstance(t *testing.T, auth *store.MemoryAuthStore, serviceID, serviceType string) {
 	t.Helper()
-	registerServiceInstanceWithCapabilities(t, auth, serviceID, serviceType, map[string]any{})
+	capabilities := map[string]any{}
+	if serviceType == "encoder_recorder" {
+		capabilities["output_relay_mode"] = "direct"
+	}
+	registerServiceInstanceWithCapabilities(t, auth, serviceID, serviceType, capabilities)
 }
 
 func registerServiceInstanceWithCapabilities(t *testing.T, auth *store.MemoryAuthStore, serviceID, serviceType string, capabilities map[string]any) {

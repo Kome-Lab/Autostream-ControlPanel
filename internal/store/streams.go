@@ -229,6 +229,19 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
+	var streamID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? FOR UPDATE`, id).Scan(&streamID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if hasClaim, err := hasStreamYouTubeRelayBindingClaimForStreamTx(ctx, tx, id); err != nil {
+		return err
+	} else if hasClaim {
+		return ErrYouTubeRelayBindingClaimActive
+	}
 	for _, query := range []string{
 		`DELETE FROM runtime_secret_leases WHERE stream_id = ?`,
 		`DELETE FROM service_remediation_executions WHERE stream_id = ?`,
@@ -288,18 +301,43 @@ WHERE s.id = ?`, id).Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledSt
 }
 
 func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string, settings StreamSettings) (Stream, error) {
-	if _, err := s.GetStream(ctx, id); err != nil {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Stream{}, ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Stream{}, err
+	}
+	defer tx.Rollback()
+	var streamID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? FOR UPDATE`, id).Scan(&streamID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Stream{}, ErrNotFound
+	}
+	if err != nil {
+		return Stream{}, err
+	}
+	var claimOutputID string
+	err = tx.QueryRowContext(ctx, `SELECT youtube_output_id FROM stream_youtube_relay_binding_claims WHERE stream_id = ? FOR UPDATE`, id).Scan(&claimOutputID)
+	if err == nil && claimOutputID != strings.TrimSpace(settings.YouTubeOutputID) {
+		return Stream{}, ErrYouTubeRelayBindingClaimActive
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Stream{}, err
 	}
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE streams SET name = COALESCE(NULLIF(?, ''), name), scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(settings.Name), nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE streams SET name = COALESCE(NULLIF(?, ''), name), scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(settings.Name), nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
 		return Stream{}, err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), discord_guild_id = VALUES(discord_guild_id), discord_voice_channel_id = VALUES(discord_voice_channel_id), discord_text_channel_id = VALUES(discord_text_channel_id), auto_start_trigger = VALUES(auto_start_trigger), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), archive_profile_id = VALUES(archive_profile_id), archive_drive_destination_id = VALUES(archive_drive_destination_id), archive_oauth_account_id = VALUES(archive_oauth_account_id), archive_shared_drive = VALUES(archive_shared_drive), archive_shared_drive_id = VALUES(archive_shared_drive_id), archive_file_name = VALUES(archive_file_name), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
 		id, nullEmpty(settings.DiscordConfigID), nullEmpty(settings.DiscordGuildID), nullEmpty(settings.DiscordVoiceID), nullEmpty(settings.DiscordTextID), nullEmpty(settings.AutoStartTrigger), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.ArchiveDriveDestinationID), nullEmpty(settings.ArchiveOAuthAccountID), settings.ArchiveSharedDrive, nullEmpty(settings.ArchiveSharedDriveID), nullEmpty(settings.ArchiveFileName), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
 	if err != nil {
+		return Stream{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Stream{}, err
 	}
 	return s.GetStream(ctx, id)
@@ -346,6 +384,9 @@ const (
 )
 
 func (s MariaDBStreamStore) SaveStreamYouTubeRuntime(ctx context.Context, runtime StreamYouTubeRuntime) error {
+	if strings.TrimSpace(runtime.Mode) == youtubeRelayBindingClaimStaticRuntimeMode {
+		return ErrInvalidYouTubeRelayBindingClaim
+	}
 	if strings.TrimSpace(runtime.StreamID) == "" {
 		return ErrNotFound
 	}
@@ -373,13 +414,28 @@ func (s MariaDBStreamStore) SaveStreamYouTubeRuntime(ctx context.Context, runtim
 }
 
 func (s MariaDBStreamStore) saveStreamYouTubeRuntimeOnce(ctx context.Context, runtime StreamYouTubeRuntime) error {
-	if _, err := s.GetStream(ctx, runtime.StreamID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO stream_youtube_runtimes (stream_id, youtube_output, oauth_account_id, mode, broadcast_id, live_stream_id, rtmp_url, stream_key_secret_name, dry_run, complete_on_stop, complete_retry_count, complete_next_retry_at, complete_last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE youtube_output = VALUES(youtube_output), oauth_account_id = VALUES(oauth_account_id), mode = VALUES(mode), broadcast_id = VALUES(broadcast_id), live_stream_id = VALUES(live_stream_id), rtmp_url = VALUES(rtmp_url), stream_key_secret_name = VALUES(stream_key_secret_name), dry_run = VALUES(dry_run), complete_on_stop = VALUES(complete_on_stop), complete_retry_count = VALUES(complete_retry_count), complete_next_retry_at = VALUES(complete_next_retry_at), complete_last_error = VALUES(complete_last_error), updated_at = VALUES(updated_at)`,
-		runtime.StreamID, runtime.YouTubeOutput, runtime.OAuthAccountID, runtime.Mode, runtime.BroadcastID, runtime.LiveStreamID, runtime.RTMPURL, runtime.StreamKeySecretName, runtime.DryRun, runtime.CompleteOnStop, runtime.CompleteRetryCount, nullTime(runtime.CompleteNextRetryAt), streamYouTubeRuntimeCompleteLastError(runtime.CompleteLastError), runtime.CreatedAt, runtime.UpdatedAt)
-	return err
+	defer tx.Rollback()
+	var streamID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? FOR UPDATE`, runtime.StreamID).Scan(&streamID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if hasClaim, err := hasStreamYouTubeRelayBindingClaimForStreamTx(ctx, tx, runtime.StreamID); err != nil {
+		return err
+	} else if hasClaim {
+		return ErrYouTubeRelayBindingClaimActive
+	}
+	if err := saveStreamYouTubeRuntimeTx(ctx, tx, runtime); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func streamYouTubeRuntimeCompleteLastError(value string) string {
@@ -420,7 +476,7 @@ func (s MariaDBStreamStore) ListDueStreamYouTubeRuntimes(ctx context.Context, no
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT stream_id, youtube_output, oauth_account_id, mode, broadcast_id, live_stream_id, rtmp_url, stream_key_secret_name, dry_run, complete_on_stop, complete_retry_count, complete_next_retry_at, complete_last_error, created_at, updated_at
 FROM stream_youtube_runtimes
-WHERE mode = 'live_api' AND complete_next_retry_at IS NOT NULL AND complete_next_retry_at <= ?
+WHERE mode IN ('live_api', 'live_api_relay_static') AND complete_next_retry_at IS NOT NULL AND complete_next_retry_at <= ?
 ORDER BY complete_next_retry_at ASC LIMIT ?`, now.UTC(), limit)
 	if err != nil {
 		return nil, err
@@ -448,8 +504,28 @@ WHERE stream_id = ?`, nextRetryAt.UTC(), truncateString(strings.TrimSpace(lastEr
 }
 
 func (s MariaDBStreamStore) DeleteStreamYouTubeRuntime(ctx context.Context, streamID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM stream_youtube_runtimes WHERE stream_id = ?`, streamID)
-	return err
+	streamID = strings.TrimSpace(streamID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var lockedStreamID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? FOR UPDATE`, streamID).Scan(&lockedStreamID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		if hasClaim, err := hasStreamYouTubeRelayBindingClaimForStreamTx(ctx, tx, streamID); err != nil {
+			return err
+		} else if hasClaim {
+			return ErrYouTubeRelayBindingClaimActive
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stream_youtube_runtimes WHERE stream_id = ?`, streamID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type streamYouTubeRuntimeScanner interface {

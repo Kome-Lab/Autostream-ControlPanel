@@ -9,8 +9,12 @@ import { Input } from "@/components/ui/input";
 import { APIError, apiPost } from "@/lib/api/client";
 import {
   STREAM_PREVIEW_PLAYBACK_DEADLINE_MS,
+  isStreamPreviewPlaybackReady,
   resolveStreamPreviewURL,
+  selectStreamPreviewPlaybackEngine,
   signedStreamPreviewPlaybackURL,
+  streamPreviewPlaybackDiagnosticMessage,
+  type StreamPreviewPlaybackDiagnostic,
 } from "@/lib/stream-preview";
 import type { Stream } from "@/types/domain";
 
@@ -28,8 +32,10 @@ export function StreamPreview({ stream }: { stream: Stream }) {
   const [previewLink, setPreviewLink] = useState<PreviewLink | null>(null);
   const [previewLinkError, setPreviewLinkError] = useState<unknown>(null);
   const [playbackError, setPlaybackError] = useState("");
+  const [playbackDetail, setPlaybackDetail] = useState("");
   const [retryNonce, setRetryNonce] = useState(0);
   const [copied, setCopied] = useState(false);
+  const playbackDiagnosticRef = useRef<StreamPreviewPlaybackDiagnostic | null>(null);
   const playbackURL = signedStreamPreviewPlaybackURL(previewLink?.url);
   const issueLink = useMutation({
     mutationFn: () => apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`),
@@ -113,11 +119,45 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     const video = videoRef.current;
     if (!video || !playbackURL) return;
     setPlaybackState("connecting");
+    setPlaybackDetail("");
+    playbackDiagnosticRef.current = null;
     let retryTimer: number | undefined;
     let networkRetries = 0;
     let mediaRetries = 0;
     let terminal = false;
     let hls: Hls | null = null;
+    let canPlay = false;
+    let playing = false;
+    let hlsFragmentBuffered = false;
+    let playbackStartTime = 0;
+    const markReadyWhenPlaybackAdvances = () => {
+      if (
+        isStreamPreviewPlaybackReady({
+          canPlay,
+          playing,
+          hlsFragmentBuffered,
+          timeProgressed: video.currentTime > playbackStartTime,
+        })
+      ) {
+        markReady();
+      }
+    };
+    const markCanPlay = () => {
+      canPlay = true;
+      markReadyWhenPlaybackAdvances();
+    };
+    const markPlaying = () => {
+      playing = true;
+      playbackStartTime = video.currentTime;
+      markReadyWhenPlaybackAdvances();
+    };
+    const markPlaybackTimeUpdated = () => {
+      markReadyWhenPlaybackAdvances();
+    };
+    const markHlsFragmentBuffered = () => {
+      hlsFragmentBuffered = true;
+      markReadyWhenPlaybackAdvances();
+    };
 
     const clearTimers = () => {
       window.clearTimeout(retryTimer);
@@ -126,7 +166,9 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     const markReady = () => {
       if (terminal) return;
       window.clearTimeout(deadlineTimer);
+      playbackDiagnosticRef.current = null;
       setPlaybackError("");
+      setPlaybackDetail("");
       setPlaybackState("ready");
     };
     const failPlayback = (message: string) => {
@@ -134,35 +176,64 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       terminal = true;
       clearTimers();
       hls?.stopLoad();
+      video.pause();
       setPlaybackError(message);
+      setPlaybackDetail(streamPreviewPlaybackDiagnosticMessage(playbackDiagnosticRef.current));
       setPlaybackState("error");
     };
     const markNativeError = () => failPlayback("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
-    video.addEventListener("playing", markReady);
+    const markPlaybackStalled = () => {
+      playbackDiagnosticRef.current = { source: "browser", reason: "stalled" };
+      failPlayback("プレビューの再生が停止しました。Encoder Nodeの稼働状態と配信状態を確認してから再試行してください。");
+    };
+    video.addEventListener("canplay", markCanPlay);
+    video.addEventListener("playing", markPlaying);
+    video.addEventListener("timeupdate", markPlaybackTimeUpdated);
+    video.addEventListener("stalled", markPlaybackStalled);
     const deadlineTimer = window.setTimeout(
       () => failPlayback("プレビューの再生開始を30秒待ちましたが、開始できませんでした。Encoder Nodeの稼働状態と配信状態を確認してから再試行してください。"),
       STREAM_PREVIEW_PLAYBACK_DEADLINE_MS,
     );
+    const requestPlayback = () => {
+      void video.play().catch(() => {
+        playbackDiagnosticRef.current = { source: "browser", reason: "play_rejected" };
+        failPlayback("プレビューの再生を開始できませんでした。ブラウザーの自動再生設定とEncoder Nodeの稼働状態を確認してから再試行してください。");
+      });
+    };
+    const nativeErrorWithDiagnostic = () => {
+      playbackDiagnosticRef.current = { source: "native", code: video.error?.code };
+      markNativeError();
+    };
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    const engine = selectStreamPreviewPlaybackEngine(
+      Hls.isSupported(),
+      video.canPlayType("application/vnd.apple.mpegurl") !== "",
+    );
+
+    if (engine === "native") {
       video.src = playbackURL;
-      video.addEventListener("loadedmetadata", markReady);
-      video.addEventListener("error", markNativeError);
-      void video.play().catch(() => undefined);
+      video.addEventListener("error", nativeErrorWithDiagnostic);
+      requestPlayback();
       return () => {
         terminal = true;
         clearTimers();
-        video.removeEventListener("playing", markReady);
-        video.removeEventListener("loadedmetadata", markReady);
-        video.removeEventListener("error", markNativeError);
+        video.removeEventListener("canplay", markCanPlay);
+        video.removeEventListener("playing", markPlaying);
+        video.removeEventListener("timeupdate", markPlaybackTimeUpdated);
+        video.removeEventListener("stalled", markPlaybackStalled);
+        video.removeEventListener("error", nativeErrorWithDiagnostic);
         video.removeAttribute("src");
         video.load();
       };
     }
 
-    if (!Hls.isSupported()) {
+    if (engine === "unsupported") {
+      playbackDiagnosticRef.current = { source: "browser", reason: "unsupported" };
       failPlayback("このブラウザーはHLSプレビューに対応していません。対応ブラウザーで開くか、ネットワーク再生URLを使用してください。");
-      video.removeEventListener("playing", markReady);
+      video.removeEventListener("canplay", markCanPlay);
+      video.removeEventListener("playing", markPlaying);
+      video.removeEventListener("timeupdate", markPlaybackTimeUpdated);
+      video.removeEventListener("stalled", markPlaybackStalled);
       return;
     }
 
@@ -181,11 +252,18 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     });
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       if (terminal) return;
-      markReady();
-      void video.play().catch(() => undefined);
+      requestPlayback();
+    });
+    hls.on(Hls.Events.FRAG_BUFFERED, () => {
+      if (!terminal) markHlsFragmentBuffered();
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (terminal) return;
+      playbackDiagnosticRef.current = {
+        source: "hls",
+        category: data.type === ErrorTypes.NETWORK_ERROR ? "network" : data.type === ErrorTypes.MEDIA_ERROR ? "media" : "other",
+        detail: typeof data.details === "string" ? data.details : undefined,
+      };
       if (!data.fatal) return;
       if (data.type === ErrorTypes.NETWORK_ERROR) {
         if (networkRetries >= 4) {
@@ -216,7 +294,10 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     return () => {
       terminal = true;
       clearTimers();
-      video.removeEventListener("playing", markReady);
+      video.removeEventListener("canplay", markCanPlay);
+      video.removeEventListener("playing", markPlaying);
+      video.removeEventListener("timeupdate", markPlaybackTimeUpdated);
+      video.removeEventListener("stalled", markPlaybackStalled);
       hls?.destroy();
       video.removeAttribute("src");
       video.load();
@@ -262,6 +343,7 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       {previewLink ? <p className="text-xs text-muted-foreground">有効期限: {new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}
       {previewLinkError ? <p className="text-sm text-destructive" role="alert">{previewLinkErrorMessage(previewLinkError)}</p> : null}
       {playbackError ? <p className="text-sm text-destructive" role="alert">{playbackError}</p> : null}
+      {playbackError && playbackDetail ? <p className="text-xs text-muted-foreground" role="status">詳細: {playbackDetail}</p> : null}
     </section>
   );
 }

@@ -9,16 +9,34 @@ import (
 )
 
 type MemoryStreamStore struct {
-	mu              sync.Mutex
-	streams         map[string]Stream
-	logs            map[string][]StreamLog
-	artifacts       map[string][]StreamArtifact
-	artifactShares  map[string]StreamArtifactShare
-	youtubeRuntimes map[string]StreamYouTubeRuntime
+	mu                                         sync.Mutex
+	youtubeRelayBindingOutputMu                sync.Mutex
+	streams                                    map[string]Stream
+	logs                                       map[string][]StreamLog
+	artifacts                                  map[string][]StreamArtifact
+	artifactShares                             map[string]StreamArtifactShare
+	youtubeRuntimes                            map[string]StreamYouTubeRuntime
+	youtubeRelayBindingClaims                  map[string]YouTubeRelayBindingClaim
+	discordYouTubeLiveNotifications            map[string]DiscordYouTubeLiveNotification
+	discordYouTubeLiveNotificationEvents       map[string]string
+	discordYouTubeLiveNotificationLeases       map[string]string
+	discordYouTubeLiveNotificationLeaseExpires map[string]time.Time
+	relayBindingClaimProfiles                  *MemoryProfileStore
 }
 
 func NewMemoryStreamStore() *MemoryStreamStore {
-	return &MemoryStreamStore{streams: map[string]Stream{}, logs: map[string][]StreamLog{}, artifacts: map[string][]StreamArtifact{}, artifactShares: map[string]StreamArtifactShare{}, youtubeRuntimes: map[string]StreamYouTubeRuntime{}}
+	return &MemoryStreamStore{
+		streams:                              map[string]Stream{},
+		logs:                                 map[string][]StreamLog{},
+		artifacts:                            map[string][]StreamArtifact{},
+		artifactShares:                       map[string]StreamArtifactShare{},
+		youtubeRuntimes:                      map[string]StreamYouTubeRuntime{},
+		youtubeRelayBindingClaims:            map[string]YouTubeRelayBindingClaim{},
+		discordYouTubeLiveNotifications:      map[string]DiscordYouTubeLiveNotification{},
+		discordYouTubeLiveNotificationEvents: map[string]string{},
+		discordYouTubeLiveNotificationLeases: map[string]string{},
+		discordYouTubeLiveNotificationLeaseExpires: map[string]time.Time{},
+	}
 }
 
 func (s *MemoryStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
@@ -83,9 +101,23 @@ func (s *MemoryStreamStore) DeleteStream(ctx context.Context, id string) error {
 	if _, ok := s.streams[id]; !ok {
 		return ErrNotFound
 	}
+	for _, claim := range s.youtubeRelayBindingClaims {
+		if claim.StreamID == id {
+			return ErrYouTubeRelayBindingClaimActive
+		}
+	}
 	delete(s.streams, id)
 	delete(s.logs, id)
 	delete(s.youtubeRuntimes, id)
+	for notificationID, notification := range s.discordYouTubeLiveNotifications {
+		if notification.StreamID != id {
+			continue
+		}
+		delete(s.discordYouTubeLiveNotificationEvents, notification.EventID)
+		delete(s.discordYouTubeLiveNotificationLeases, notificationID)
+		delete(s.discordYouTubeLiveNotificationLeaseExpires, notificationID)
+		delete(s.discordYouTubeLiveNotifications, notificationID)
+	}
 	for artifactID, artifact := range s.artifactShares {
 		if artifact.StreamID == id {
 			delete(s.artifactShares, artifactID)
@@ -104,6 +136,11 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	stream, ok := s.streams[id]
 	if !ok {
 		return Stream{}, ErrNotFound
+	}
+	for _, claim := range s.youtubeRelayBindingClaims {
+		if claim.StreamID == id && claim.YouTubeOutputID != strings.TrimSpace(settings.YouTubeOutputID) {
+			return Stream{}, ErrYouTubeRelayBindingClaimActive
+		}
 	}
 	if name := strings.TrimSpace(settings.Name); name != "" {
 		stream.Name = name
@@ -179,10 +216,18 @@ func (s *MemoryStreamStore) SaveStreamYouTubeRuntime(ctx context.Context, runtim
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if strings.TrimSpace(runtime.Mode) == youtubeRelayBindingClaimStaticRuntimeMode {
+		return ErrInvalidYouTubeRelayBindingClaim
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.streams[runtime.StreamID]; !ok {
 		return ErrNotFound
+	}
+	for _, claim := range s.youtubeRelayBindingClaims {
+		if claim.StreamID == runtime.StreamID {
+			return ErrYouTubeRelayBindingClaimActive
+		}
 	}
 	now := time.Now().UTC()
 	if runtime.CreatedAt.IsZero() {
@@ -233,7 +278,7 @@ func (s *MemoryStreamStore) ListDueStreamYouTubeRuntimes(ctx context.Context, no
 	defer s.mu.Unlock()
 	runtimes := make([]StreamYouTubeRuntime, 0)
 	for _, runtime := range s.youtubeRuntimes {
-		if runtime.Mode != "live_api" || runtime.CompleteNextRetryAt.IsZero() || runtime.CompleteNextRetryAt.After(now) {
+		if (runtime.Mode != "live_api" && runtime.Mode != youtubeRelayBindingClaimStaticRuntimeMode) || runtime.CompleteNextRetryAt.IsZero() || runtime.CompleteNextRetryAt.After(now) {
 			continue
 		}
 		runtimes = append(runtimes, runtime)
@@ -268,6 +313,11 @@ func (s *MemoryStreamStore) DeleteStreamYouTubeRuntime(ctx context.Context, stre
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, claim := range s.youtubeRelayBindingClaims {
+		if claim.StreamID == strings.TrimSpace(streamID) {
+			return ErrYouTubeRelayBindingClaimActive
+		}
+	}
 	delete(s.youtubeRuntimes, streamID)
 	return nil
 }

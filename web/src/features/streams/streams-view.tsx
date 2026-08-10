@@ -28,7 +28,8 @@ import {
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
-import { buildStreamCreatePayload, buildStreamSettingsPayload } from "@/lib/stream-create";
+import { buildStreamCreatePayload, buildStreamSettingsPayload, streamScheduleInputValue, streamScheduleRFC3339 } from "@/lib/stream-create";
+import { staticRelayRecoveryActionAvailable, staticRelayRecoveryConfirmation, staticRelayRecoveryErrorMessage } from "@/lib/stream-static-relay";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { StreamPreview } from "@/features/streams/stream-preview";
@@ -36,6 +37,7 @@ import type { Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
 type SelectOption = { value: string; label: string; description?: string };
+type StreamAction = { path: string; streamName: string; streamID?: string; actionLabel: string; method?: "POST" | "DELETE"; body?: unknown };
 
 const noneValue = "__none__";
 
@@ -60,8 +62,8 @@ export function StreamsView() {
     return () => window.removeEventListener("hashchange", syncFromHash);
   }, []);
 
-  const actionMutation = useMutation<unknown, Error, { path: string; streamName: string; streamID?: string; actionLabel: string; method?: "POST" | "DELETE" }>({
-    mutationFn: ({ path, method }) => method === "DELETE" ? apiDelete(path) : apiPost(path),
+  const actionMutation = useMutation<unknown, Error, StreamAction>({
+    mutationFn: ({ path, method, body }) => method === "DELETE" ? apiDelete(path) : apiPost(path, body),
     onMutate: () => setActionNotice(null),
     onSuccess: async (_, action) => {
       if (action.method === "DELETE" && action.streamID) setCreatedStreams((current) => current.filter((stream) => stream.id !== action.streamID));
@@ -92,6 +94,11 @@ export function StreamsView() {
   const currentSelectedStream = selectedStream ? streamRows.find((stream) => stream.id === selectedStream.id) || selectedStream : null;
   const discordLabels = useOptionLabelMap(useResourceOptions("/discord/configs", ["name", "service_id", "id"]));
   const youtubeOutputLabels = useOptionLabelMap(useResourceOptions("/youtube/outputs", ["name", "id"]));
+  const youtubeOutputs = useResourceData<unknown>("/youtube/outputs");
+  const staticRelayOutputIDs = useMemo(
+    () => new Set(normalizeRows(youtubeOutputs.data).filter((row) => rowString(row, ["mode"]) === "live_api_relay_static").map((row) => rowString(row, ["id"])).filter(Boolean)),
+    [youtubeOutputs.data],
+  );
   const archiveAccountLabels = useOptionLabelMap(useOAuthAccountOptions("drive"));
   const archiveDestinationLabels = useOptionLabelMap(useResourceOptions("/archive/destinations", ["name", "id"]));
   const archiveProfileLabels = useOptionLabelMap(useResourceOptions("/profiles/archive", ["name", "id"]));
@@ -162,6 +169,26 @@ export function StreamsView() {
             >
               <Button variant="destructive" size="icon-sm" aria-label="強制停止" {...guardedButtonProps(canStop)} disabled={!canStop || actionMutation.isPending}>
                 <AlertCircle />
+              </Button>
+            </DangerConfirm>
+          </RoleGuard> : null}
+          {staticRelayRecoveryActionAvailable(
+            staticRelayOutputIDs.has(row.original.youtube_output_id || "") ? "live_api_relay_static" : "",
+            row.original.status,
+          ) ? <RoleGuard allowed={canStop}>
+            <DangerConfirm
+              title={`${row.original.name} の固定Relay回復を実行しますか`}
+              description="開始失敗時に残った固定RelayのYouTube配信枠を安全に解消します。枠が不明な場合は、YouTube Studioで該当候補を削除済みであることを確認してから実行してください。実行中の配信には使用できません。"
+              onConfirm={() => actionMutation.mutate({
+                path: `/streams/${row.original.id}/youtube/relay-static/recovery/resolve`,
+                streamName: row.original.name,
+                actionLabel: "固定Relay回復",
+                body: staticRelayRecoveryConfirmation(),
+              })}
+              actionLabel="固定Relay回復を実行"
+            >
+              <Button variant="outline" size="icon-sm" aria-label="固定Relay回復を実行" {...guardedButtonProps(canStop)} disabled={!canStop || actionMutation.isPending}>
+                <RadioTower />
               </Button>
             </DangerConfirm>
           </RoleGuard> : null}
@@ -434,6 +461,7 @@ function StreamSlotForm({
   const [overlayProfileID, setOverlayProfileID] = useState(optionOrNone(stream?.overlay_profile_id));
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(stream?.assigned_encoder_id || null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(stream?.assigned_worker_id || null);
+  const [scheduledStartAt, setScheduledStartAt] = useState(() => streamScheduleInputValue(stream?.scheduled_start_at));
   const [message, setMessage] = useState("");
 
   const effectiveEncoderServiceID = encoderServiceID ?? singleOptionValue(encoderNodes);
@@ -469,11 +497,11 @@ function StreamSlotForm({
         // "未選択" remains an explicit empty value and therefore unassigns.
         encoderServiceID: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : undefined,
         workerServiceID: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : undefined,
-        scheduledStartAt: stream?.scheduled_start_at || "",
+        scheduledStartAt: streamScheduleRFC3339(scheduledStartAt),
         scheduledEndAt: stream?.scheduled_end_at || "",
         encoderInputURL: stream?.encoder_input_url || "",
       }),
-    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderProfileID, guildID, name, overlayProfileID, stream?.encoder_input_url, stream?.scheduled_end_at, stream?.scheduled_start_at, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
+    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderProfileID, guildID, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
@@ -503,6 +531,13 @@ function StreamSlotForm({
           <FormSection title="基本情報" description="運用中に識別する配信枠名">
             <div className="max-w-xl">
               <TextField label="配信枠名" value={name} onChange={setName} placeholder="例: 商品発表会 メイン配信" required />
+            </div>
+          </FormSection>
+
+          <FormSection title="YouTube開始予定" description="空欄なら、配信開始時にYouTubeの枠をすぐ開始します。日時を指定した場合だけ予定配信になります。">
+            <div className="max-w-xl">
+              <TextField label="開始予定（任意）" type="datetime-local" value={scheduledStartAt} onChange={setScheduledStartAt} />
+              <p className="mt-2 text-xs text-muted-foreground">日時はこのブラウザのタイムゾーンで扱います。既存の予定を消して保存すると、次回の開始は即時になります。</p>
             </div>
           </FormSection>
 
@@ -805,6 +840,8 @@ function streamSaveErrorMessage(error: unknown, editing: boolean) {
 
 function streamActionErrorMessage(error: unknown, actionLabel: string) {
   if (error instanceof APIError) {
+    const staticRelayMessage = staticRelayRecoveryErrorMessage(error.code || "");
+    if (staticRelayMessage) return staticRelayMessage;
     if (error.detailCode === "database_connection_transient") return `${actionLabel}を完了できませんでした。Control PanelとMariaDBの一時的な接続切断が発生しました。少し待ってから再試行してください。`;
     if (error.detailCode === "database_write_failed") return `${actionLabel}を完了できませんでした。配信ランタイム情報を保存できませんでした。Panelログを確認してください。`;
     if (error.status === 403) return `${actionLabel}を実行する権限がありません。管理者に操作権限を確認してください。`;

@@ -66,6 +66,12 @@ const emailChangeChallengeTTL = 30 * time.Minute
 const defaultArchiveRetentionDays = 30
 const maxArchiveRetentionDays = 3650
 const streamPreviewLinkTTL = 12 * time.Hour
+
+// youtubeRelayStaticUnknownBroadcastID is an internal, non-provider identifier
+// used only when a relay-static prepare attempt may have created a Broadcast
+// but did not return its ID. It is never sent to YouTube. Keeping a durable
+// recovery claim is safer than releasing the fixed LiveStream for reuse.
+const youtubeRelayStaticUnknownBroadcastID = "unknown_external_broadcast"
 const (
 	adminAuditNotificationTimeout        = 40 * time.Second
 	notificationObservabilityCallTimeout = 35 * time.Second
@@ -300,6 +306,14 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	}
 	if s.profiles == nil {
 		s.profiles = store.NewMemoryProfileStore()
+	}
+	// The production ProfileStore and relay claim reservation share a database
+	// fence. Mirror that boundary for the in-memory implementation used by the
+	// HTTP tests, otherwise an output update could race a static relay reserve.
+	if profiles, ok := s.profiles.(*store.MemoryProfileStore); ok {
+		if streams, ok := s.streams.(*store.MemoryStreamStore); ok {
+			profiles.BindStreamYouTubeRelayBindingClaims(streams)
+		}
 	}
 	if s.integrations == nil {
 		s.integrations = store.NewMemoryIntegrationStore()
@@ -568,9 +582,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /streams/{id}/settings", s.requirePermission("streams.update", s.updateStreamSettings))
 	s.mux.HandleFunc("POST /streams/{id}/start-readiness", s.requirePermission("streams.start", s.startReadiness))
 	s.mux.HandleFunc("POST /streams/{id}/start", s.requirePermission("streams.start", s.startStream))
+	s.mux.HandleFunc("GET /streams/{id}/youtube-live-notification", s.requirePermission("streams.read", s.getDiscordYouTubeLiveNotification))
+	s.mux.HandleFunc("POST /streams/{id}/youtube-live-notifications/{notification_id}/recover", s.requirePermission("streams.start", s.recoverDiscordYouTubeLiveNotification))
 	s.mux.HandleFunc("POST /streams/{id}/stop", s.requirePermission("streams.stop", s.stopStream))
 	s.mux.HandleFunc("POST /streams/{id}/force-stop", s.requirePermission("streams.stop", s.forceStopStream))
 	s.mux.HandleFunc("POST /streams/{id}/youtube/complete", s.requirePermission("streams.stop", s.completeYouTubeStream))
+	// This is intentionally guarded by streams.stop, like the existing manual
+	// YouTube completion route. It is an exceptional, explicitly confirmed
+	// recovery path for a static fixed relay; normal completion must continue
+	// through /youtube/complete or the retry loop.
+	s.mux.HandleFunc("POST /streams/{id}/youtube/relay-static/recovery/resolve", s.requirePermission("streams.stop", s.resolveYouTubeRelayStaticRecovery))
 	s.mux.HandleFunc("POST /streams/{id}/mark-failed", s.requirePermission("streams.update", s.markStreamFailed))
 	s.mux.HandleFunc("POST /streams/{id}/retry-upload", s.requirePermission("streams.retry_upload", s.retryUpload))
 	s.mux.HandleFunc("GET /streams/{id}/encoder-preflight", s.requirePermission("streams.read", s.streamEncoderPreflight))
@@ -3362,6 +3383,8 @@ type youtubeOutputRequest struct {
 	StreamKey              string `json:"stream_key"`
 	WatchURL               string `json:"watch_url"`
 	OAuthAccountID         string `json:"oauth_account_id"`
+	RelayBindingID         string `json:"relay_binding_id"`
+	ReusableLiveStreamID   string `json:"reusable_live_stream_id"`
 	BroadcastTitleTemplate string `json:"broadcast_title_template"`
 	BroadcastDescription   string `json:"broadcast_description"`
 	PrivacyStatus          string `json:"privacy_status"`
@@ -3381,6 +3404,8 @@ type youtubeOutputResponse struct {
 	StreamKeyFingerprint   string    `json:"stream_key_fingerprint,omitempty"`
 	WatchURL               string    `json:"watch_url,omitempty"`
 	OAuthAccountID         string    `json:"oauth_account_id,omitempty"`
+	RelayBindingID         string    `json:"relay_binding_id,omitempty"`
+	ReusableLiveStreamID   string    `json:"reusable_live_stream_id,omitempty"`
 	BroadcastTitleTemplate string    `json:"broadcast_title_template,omitempty"`
 	BroadcastDescription   string    `json:"broadcast_description,omitempty"`
 	PrivacyStatus          string    `json:"privacy_status,omitempty"`
@@ -3484,6 +3509,15 @@ func (s *Server) updateYouTubeOutput(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_youtube_output_failed"})
 		return
 	}
+	if blocked, err := s.youtubeRelayBindingOutputClaimActive(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "youtube_relay_binding_claim_check_failed"})
+		return
+	} else if blocked {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube_outputs.update", ResourceType: "youtube_output", ResourceID: id, Result: "failure", Metadata: map[string]any{"reason": "youtube_relay_binding_release_pending"}})
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
+		return
+	}
 	config, err := youtubeOutputConfigFromRequest(body, id)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_youtube_output"})
@@ -3493,7 +3527,9 @@ func (s *Server) updateYouTubeOutput(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
-	if existingSecret := strings.TrimSpace(configString(existing.Config, "stream_key_secret_name")); existingSecret != "" && strings.TrimSpace(body.StreamKey) == "" {
+	existingSecret := strings.TrimSpace(configString(existing.Config, "stream_key_secret_name"))
+	staticRelayMode := normalizedYouTubeOutputMode(configString(config, "mode")) == "live_api_relay_static"
+	if existingSecret != "" && !staticRelayMode && strings.TrimSpace(body.StreamKey) == "" {
 		config["stream_key_secret_name"] = existingSecret
 	}
 	if strings.TrimSpace(body.StreamKey) != "" {
@@ -3519,6 +3555,9 @@ func (s *Server) updateYouTubeOutput(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "update_youtube_output_failed"})
 		return
 	}
+	if staticRelayMode && existingSecret != "" {
+		_, _ = s.secrets.UpdateSecret(r.Context(), existingSecret, "")
+	}
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube_outputs.update", ResourceType: "youtube_output", ResourceID: profile.ID, Result: "success", Metadata: map[string]any{"mode": normalizedYouTubeOutputMode(body.Mode), "stream_key_updated": strings.TrimSpace(body.StreamKey) != ""}})
 	statuses, _ := s.secrets.ListSecretStatus(r.Context())
@@ -3534,6 +3573,15 @@ func (s *Server) deleteYouTubeOutput(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_youtube_output_failed"})
+		return
+	}
+	if blocked, err := s.youtubeRelayBindingOutputClaimActive(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "youtube_relay_binding_claim_check_failed"})
+		return
+	} else if blocked {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube_outputs.delete", ResourceType: "youtube_output", ResourceID: id, Result: "failure", Metadata: map[string]any{"reason": "youtube_relay_binding_release_pending"}})
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
 		return
 	}
 	if s.writeProfileDeleteBlockedIfInUse(w, r, store.ProfileYouTubeOutput, id) {
@@ -3564,6 +3612,9 @@ func youtubeOutputConfigFromRequest(body youtubeOutputRequest, id string) (map[s
 		return nil, errors.New("invalid youtube output mode")
 	}
 	rtmpURL := strings.TrimSpace(body.RTMPURL)
+	if mode == "live_api_relay_static" && (rtmpURL != "" || strings.TrimSpace(body.StreamKey) != "" || strings.TrimSpace(body.WatchURL) != "") {
+		return nil, errors.New("relay static output cannot include ingest settings")
+	}
 	if mode == "stream_key" && rtmpURL == "" {
 		rtmpURL = "rtmps://a.rtmps.youtube.com/live2"
 	}
@@ -3581,6 +3632,15 @@ func youtubeOutputConfigFromRequest(body youtubeOutputRequest, id string) (map[s
 	}
 	if mode == "stream_key" && id != "" {
 		config["stream_key_secret_name"] = youtubeOutputSecretName(id)
+	}
+	if mode == "live_api_relay_static" {
+		relayBindingID := body.RelayBindingID
+		reusableLiveStreamID := strings.TrimSpace(body.ReusableLiveStreamID)
+		if !validYouTubeRelayStaticBindingID(relayBindingID) || !validYouTubeRelayStaticExternalID(reusableLiveStreamID, 255) {
+			return nil, errors.New("relay static output requires valid binding and reusable stream ids")
+		}
+		config["relay_binding_id"] = relayBindingID
+		config["reusable_live_stream_id"] = reusableLiveStreamID
 	}
 	if value := strings.TrimSpace(body.WatchURL); value != "" {
 		normalized, ok := normalizeYouTubeWatchURL(value)
@@ -3613,14 +3673,18 @@ func youtubeOutputConfigFromRequest(body youtubeOutputRequest, id string) (map[s
 	}
 	if body.EnableAutoStart != nil {
 		config["enable_auto_start"] = *body.EnableAutoStart
+	} else if youtubeOutputModeDefaultsAutoStart(mode) {
+		config["enable_auto_start"] = true
 	}
 	if body.EnableAutoStop != nil {
 		config["enable_auto_stop"] = *body.EnableAutoStop
 	}
-	if body.CompleteOnStop != nil {
+	if mode == "live_api_relay_static" {
+		config["complete_on_stop"] = true
+	} else if body.CompleteOnStop != nil {
 		config["complete_on_stop"] = *body.CompleteOnStop
 	}
-	if mode == "live_api" && strings.TrimSpace(body.OAuthAccountID) == "" {
+	if (mode == "live_api" || mode == "live_api_dry_run" || mode == "live_api_relay_static") && strings.TrimSpace(body.OAuthAccountID) == "" {
 		return nil, errors.New("live_api requires oauth_account_id")
 	}
 	return config, nil
@@ -3634,9 +3698,54 @@ func normalizedYouTubeOutputMode(value string) string {
 		return "live_api_dry_run"
 	case "live_api", "youtube_live_api":
 		return "live_api"
+	case "live_api_relay_static", "youtube_live_api_relay_static":
+		return "live_api_relay_static"
 	default:
 		return ""
 	}
+}
+
+func youtubeOutputModeDefaultsAutoStart(mode string) bool {
+	return mode == "live_api" || mode == "live_api_relay_static"
+}
+
+func youtubeOutputAutoStartEnabled(config map[string]any) bool {
+	mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(config, "mode"), configString(config, "output_mode")))
+	return configBoolDefault(config, "enable_auto_start", youtubeOutputModeDefaultsAutoStart(mode))
+}
+
+func validYouTubeRelayStaticBindingID(value string) bool {
+	const prefix = "relay-"
+	if len(value) != len(prefix)+36 || !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	for index := len(prefix); index < len(value); index++ {
+		char := value[index]
+		switch index - len(prefix) {
+		case 8, 13, 18, 23:
+			if char != '-' {
+				return false
+			}
+		default:
+			if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validYouTubeRelayStaticExternalID(value string, max int) bool {
+	if len(value) == 0 || len(value) > max {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func youtubeOutputSecretName(id string) string {
@@ -3650,6 +3759,13 @@ func youtubeOutputFromProfile(profile store.Profile, statuses []store.SecretStat
 	}
 	secretName := strings.TrimSpace(configString(profile.Config, "stream_key_secret_name"))
 	status := secretStatusByName(statuses, secretName)
+	relayBindingID := ""
+	if mode == "live_api_relay_static" {
+		candidate := configString(profile.Config, "relay_binding_id")
+		if validYouTubeRelayStaticBindingID(candidate) {
+			relayBindingID = candidate
+		}
+	}
 	return youtubeOutputResponse{
 		ID:                     profile.ID,
 		Name:                   profile.Name,
@@ -3659,16 +3775,41 @@ func youtubeOutputFromProfile(profile store.Profile, statuses []store.SecretStat
 		StreamKeyFingerprint:   status.Fingerprint,
 		WatchURL:               configString(profile.Config, "watch_url"),
 		OAuthAccountID:         configString(profile.Config, "oauth_account_id"),
+		RelayBindingID:         relayBindingID,
+		ReusableLiveStreamID:   configString(profile.Config, "reusable_live_stream_id"),
 		BroadcastTitleTemplate: firstNonEmpty(configString(profile.Config, "broadcast_title_template"), configString(profile.Config, "broadcast_title")),
 		BroadcastDescription:   configString(profile.Config, "broadcast_description"),
 		PrivacyStatus:          configString(profile.Config, "privacy_status"),
 		LatencyPreference:      configString(profile.Config, "latency_preference"),
-		EnableAutoStart:        configBool(profile.Config, "enable_auto_start"),
+		EnableAutoStart:        youtubeOutputAutoStartEnabled(profile.Config),
 		EnableAutoStop:         configBool(profile.Config, "enable_auto_stop"),
 		CompleteOnStop:         youtubeCompleteOnStop(profile.Config),
 		CreatedAt:              profile.CreatedAt,
 		UpdatedAt:              profile.UpdatedAt,
 	}
+}
+
+func (s *Server) youtubeRelayBindingOutputClaimActive(ctx context.Context, outputID string) (bool, error) {
+	claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+	if !ok {
+		return false, nil
+	}
+	return claimStore.HasStreamYouTubeRelayBindingClaimForOutput(ctx, strings.TrimSpace(outputID))
+}
+
+func (s *Server) youtubeRelayBindingStreamClaimActive(ctx context.Context, streamID string) (bool, error) {
+	claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+	if !ok {
+		return false, nil
+	}
+	_, err := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, strings.TrimSpace(streamID))
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func secretStatusByName(statuses []store.SecretStatus, name string) store.SecretStatus {
@@ -7163,7 +7304,16 @@ func (s *Server) runtimeYouTubeStreamConfigs(ctx context.Context, service store.
 		}
 		item.YouTubeConfig = youtubeRuntimeConfigFromProfile(profile)
 		req := servicecall.StartRequest{YouTubeOutputID: stream.YouTubeOutputID}
-		if err := s.validateYouTubeOutputReadiness(ctx, stream, &req); err != nil {
+		// Resolve the Encoder capability first. A legacy or unknown Encoder must
+		// report the relay-policy reason rather than an unrelated OAuth/secret
+		// readiness detail for a dynamic output it is not allowed to receive.
+		serviceForAssignment := service
+		serviceForAssignment.AssignmentRole = assignment.AssignmentRole
+		if err := s.validateYouTubeLiveAPIOutputRelay(ctx, []store.RegisteredService{serviceForAssignment}, &req); err != nil {
+			item.Ready = false
+			item.ReadinessCode = youtubeOutputCode(err)
+			item.ReadinessMessage = youtubeOutputReadinessMessage(err)
+		} else if err := s.validateYouTubeOutputReadiness(ctx, stream, &req); err != nil {
 			item.Ready = false
 			item.ReadinessCode = youtubeOutputCode(err)
 			item.ReadinessMessage = youtubeOutputReadinessMessage(err)
@@ -7186,9 +7336,6 @@ func youtubeRuntimeConfigFromProfile(profile store.Profile) map[string]any {
 		"output_id": profile.ID,
 	}
 	for key, value := range map[string]string{
-		"rtmp_url":                 configString(profile.Config, "rtmp_url"),
-		"stream_key_secret_name":   configString(profile.Config, "stream_key_secret_name"),
-		"watch_url":                configString(profile.Config, "watch_url"),
 		"oauth_account_id":         firstNonEmpty(configString(profile.Config, "oauth_account_id"), configString(profile.Config, "youtube_oauth_account_id")),
 		"broadcast_title_template": firstNonEmpty(configString(profile.Config, "broadcast_title_template"), configString(profile.Config, "broadcast_title")),
 		"broadcast_description":    configString(profile.Config, "broadcast_description"),
@@ -7199,7 +7346,26 @@ func youtubeRuntimeConfigFromProfile(profile store.Profile) map[string]any {
 			out[key] = value
 		}
 	}
-	out["enable_auto_start"] = configBool(profile.Config, "enable_auto_start")
+	if mode == "live_api_relay_static" {
+		relayBindingID := configString(profile.Config, "relay_binding_id")
+		if validYouTubeRelayStaticBindingID(relayBindingID) {
+			out["relay_binding_id"] = relayBindingID
+			if reusableLiveStreamID := strings.TrimSpace(configString(profile.Config, "reusable_live_stream_id")); reusableLiveStreamID != "" {
+				out["reusable_live_stream_id"] = reusableLiveStreamID
+			}
+		}
+	} else {
+		for key, value := range map[string]string{
+			"rtmp_url":               configString(profile.Config, "rtmp_url"),
+			"stream_key_secret_name": configString(profile.Config, "stream_key_secret_name"),
+			"watch_url":              configString(profile.Config, "watch_url"),
+		} {
+			if strings.TrimSpace(value) != "" {
+				out[key] = value
+			}
+		}
+	}
+	out["enable_auto_start"] = youtubeOutputAutoStartEnabled(profile.Config)
 	out["enable_auto_stop"] = configBool(profile.Config, "enable_auto_stop")
 	out["complete_on_stop"] = youtubeCompleteOnStop(profile.Config)
 	return sanitizeRuntimeProfileConfig(out)
@@ -7643,6 +7809,12 @@ func sanitizeRuntimeProfileConfigForKind(kind store.ProfileKind, config map[stri
 		delete(out, "guild_id")
 		delete(out, "voice_channel_id")
 		delete(out, "text_channel_id")
+	}
+	if kind == store.ProfileYouTubeOutput {
+		mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(out, "mode"), configString(out, "output_mode")))
+		if mode == "live_api_relay_static" && !validYouTubeRelayStaticBindingID(configString(out, "relay_binding_id")) {
+			delete(out, "relay_binding_id")
+		}
 	}
 	return out
 }
@@ -8414,6 +8586,15 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_active", "status": stream.Status})
 		return
 	}
+	if claimed, err := s.youtubeRelayBindingStreamClaimActive(r.Context(), stream.ID); err != nil {
+		auditFailure("youtube_relay_binding_claim_check_failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "youtube_relay_binding_claim_check_failed"})
+		return
+	} else if claimed {
+		auditFailure("youtube_relay_binding_release_pending")
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
+		return
+	}
 	if s.services != nil {
 		assignments, err := s.services.ListStreamAssignments(r.Context(), stream.ID)
 		if err != nil {
@@ -8441,6 +8622,10 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 	if err := s.streams.DeleteStream(r.Context(), stream.ID); errors.Is(err, store.ErrNotFound) {
 		auditFailure("not_found")
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	} else if errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {
+		auditFailure("youtube_relay_binding_release_pending")
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
 		return
 	} else if err != nil {
 		auditFailure("delete_stream_failed")
@@ -8763,6 +8948,15 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	preserveOmittedLegacyArchiveSettings(&settings, existing, body)
+	if strings.TrimSpace(existing.YouTubeOutputID) != strings.TrimSpace(settings.YouTubeOutputID) {
+		if claimed, err := s.youtubeRelayBindingStreamClaimActive(r.Context(), existing.ID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "youtube_relay_binding_claim_check_failed"})
+			return
+		} else if claimed {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
+			return
+		}
+	}
 	assignments, code, status := s.applyStreamServiceAssignments(r, streamID, body, current)
 	if code != "" {
 		writeJSON(w, status, map[string]string{"code": code})
@@ -8783,6 +8977,15 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 	stream, err := s.streams.UpdateStreamSettings(r.Context(), streamID, settings)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {
+		if rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
+			log.Printf("stream settings assignment rollback failed after relay binding claim error: stream_id=%s error=%v", streamID, rollbackErr)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_rollback_failed"})
+			return
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
 		return
 	}
 	if err != nil {
@@ -9819,12 +10022,37 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "encoder_input_url_blocked"})
 		return
 	}
-	if err := s.validateYouTubeOutputReadiness(r.Context(), stream, &body); err != nil {
+	// Snapshot a static fixed relay before any capability/readiness precheck.
+	// Subsequent static checks use this exact profile version and the later
+	// start-wide fence rejects a concurrent static-to-dynamic edit before any
+	// provider Prepare or service dispatch can observe it.
+	relayStaticOutput, err := s.selectedYouTubeRelayStaticOutputStartFence(r.Context(), body.YouTubeOutputID)
+	if err != nil {
 		current := currentFromContext(r.Context())
 		code := youtubeOutputCode(err)
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}})
 		writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
 		return
+	}
+	// A start request normally inherits the persisted output, but callers may
+	// explicitly supply an output ID. Do not let such an override downgrade an
+	// already configured static fixed relay into a dynamic path: that would skip
+	// its binding claim and invalidate the selected profile snapshot entirely.
+	if relayStaticOutput == nil && strings.TrimSpace(stream.YouTubeOutputID) != "" && strings.TrimSpace(stream.YouTubeOutputID) != strings.TrimSpace(body.YouTubeOutputID) {
+		persistedStaticOutput, persistedErr := s.selectedYouTubeRelayStaticOutputStartFence(r.Context(), stream.YouTubeOutputID)
+		if persistedErr != nil {
+			current := currentFromContext(r.Context())
+			code := youtubeOutputCode(persistedErr)
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": stream.YouTubeOutputID}})
+			writeJSON(w, youtubeOutputStatus(persistedErr), map[string]string{"code": code})
+			return
+		}
+		if persistedStaticOutput != nil {
+			current := currentFromContext(r.Context())
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": errYouTubeRelayStaticConfigChanged.Error(), "youtube_output_id": stream.YouTubeOutputID}})
+			writeJSON(w, http.StatusConflict, map[string]string{"code": errYouTubeRelayStaticConfigChanged.Error()})
+			return
+		}
 	}
 	if err := s.validateArchiveConfigReadiness(r.Context(), &body); err != nil {
 		current := currentFromContext(r.Context())
@@ -9868,6 +10096,30 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, discordConfigStatus(err), map[string]string{"code": code})
 		return
 	}
+	validateYouTubeReadiness := func() error {
+		if relayStaticOutput != nil {
+			return s.validateYouTubeOutputReadinessProfile(r.Context(), stream, relayStaticOutput.Profile, &body)
+		}
+		return s.validateYouTubeOutputReadiness(r.Context(), stream, &body)
+	}
+	// The Encoder declares whether it can receive direct output, an existing
+	// fixed stream-key relay, or the new claimed Live API static relay. Enforce
+	// that compatibility boundary before readiness can prepare dynamic output or
+	// before the static path can reserve its reusable binding.
+	if err := s.validateYouTubeLiveAPIOutputRelay(r.Context(), primaryAssignments, &body); err != nil {
+		current := currentFromContext(r.Context())
+		code := youtubeOutputCode(err)
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}})
+		writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
+		return
+	}
+	if err := validateYouTubeReadiness(); err != nil {
+		current := currentFromContext(r.Context())
+		code := youtubeOutputCode(err)
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}})
+		writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
+		return
+	}
 	if checker, ok := s.dispatcher.(startReadinessChecker); ok {
 		if issues := checker.StartReadinessIssues(primaryAssignments, body, time.Now().UTC()); len(issues) > 0 {
 			current := currentFromContext(r.Context())
@@ -9883,7 +10135,53 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, archiveConfigStatus(err), map[string]string{"code": code})
 		return
 	}
-	if err := s.applyYouTubeOutput(r.Context(), stream, &body); err != nil {
+	// The static fixed relay reserves a pre-provisioned YouTube LiveStream. Claim
+	// the stream lifecycle before the external Prepare call so a stale
+	// created/failed CAS cannot leave a successfully created Broadcast, runtime,
+	// and relay claim behind without an owning start lifecycle.
+	relayStaticStartClaimed := relayStaticOutput != nil
+	if relayStaticStartClaimed {
+		claimed, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, stream.Status, "starting")
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
+			return
+		}
+		if !transitioned {
+			current := currentFromContext(r.Context())
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_startable", "current_status": claimed.Status}})
+			writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_startable", "status": claimed.Status})
+			return
+		}
+		stream = claimed
+		s.systemUpdateOperationMu.Unlock()
+		updateOperationLocked = false
+		// A static start must remain bound to the exact output version that was
+		// selected before we claimed the lifecycle. Do not let a concurrent
+		// static-to-dynamic output edit fall through to a different Prepare or
+		// dispatch path after the stream has entered starting.
+		if err := s.validateYouTubeRelayStaticOutputStartFence(r.Context(), stream.ID, *relayStaticOutput); err != nil {
+			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
+			current := currentFromContext(r.Context())
+			code := youtubeOutputCode(err)
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}})
+			writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
+			return
+		}
+	}
+	applyYouTubeOutput := s.applyYouTubeOutput
+	if relayStaticOutput != nil {
+		applyYouTubeOutput = func(ctx context.Context, stream store.Stream, req *servicecall.StartRequest) error {
+			return s.applyYouTubeOutputProfile(ctx, stream, relayStaticOutput.Profile, req)
+		}
+	}
+	if err := applyYouTubeOutput(r.Context(), stream, &body); err != nil {
+		if relayStaticStartClaimed {
+			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
+		}
 		current := currentFromContext(r.Context())
 		code := youtubeOutputCode(err)
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}})
@@ -9891,6 +10189,9 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.saveYouTubeRuntime(r.Context(), stream.ID, body.YouTubeRuntime); err != nil {
+		if relayStaticStartClaimed {
+			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
+		}
 		current := currentFromContext(r.Context())
 		errorCode := store.YouTubeRuntimeSaveErrorCode(err)
 		log.Printf("stream start runtime save failed: stream_id=%s error_code=%s error_type=%T", stream.ID, errorCode, err)
@@ -9914,24 +10215,40 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	claimed, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, stream.Status, "starting")
-	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
-		return
+	if !relayStaticStartClaimed {
+		claimed, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, stream.Status, "starting")
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
+			return
+		}
+		if !transitioned {
+			current := currentFromContext(r.Context())
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_startable", "current_status": claimed.Status}})
+			writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_startable", "status": claimed.Status})
+			return
+		}
+		stream = claimed
+		s.systemUpdateOperationMu.Unlock()
+		updateOperationLocked = false
 	}
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
-		return
+	if relayStaticStartClaimed {
+		// Persist the external-dispatch fence before the first downstream Start
+		// request. A returned timeout can otherwise look like a harmless local
+		// failure even though the Encoder may have received the request and begun
+		// pushing this reusable fixed relay.
+		if err := s.markYouTubeRelayStaticPossiblyDispatched(r.Context(), stream.ID); err != nil {
+			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
+			current := currentFromContext(r.Context())
+			code := youtubeOutputCode(err)
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "trigger": "before_start_dispatch", "youtube_output_id": body.YouTubeOutputID}})
+			writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
+			return
+		}
 	}
-	if !transitioned {
-		current := currentFromContext(r.Context())
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_startable", "current_status": claimed.Status}})
-		writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_startable", "status": claimed.Status})
-		return
-	}
-	stream = claimed
-	s.systemUpdateOperationMu.Unlock()
-	updateOperationLocked = false
 	results := s.dispatcher.Start(r.Context(), stream, primaryAssignments, body)
 	results = sanitizeDispatchResults(results)
 	if hasDispatchFailure(results) {
@@ -9948,7 +10265,23 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 			s.writeStartSupersededResponse(w, r, failed, results, primaryAssignments)
 			return
 		}
-		if metadata, err := s.completeYouTubeRuntime(r.Context(), stream.ID, true); err != nil {
+		if relayStaticStartClaimed {
+			// An Encoder Start timeout or partial failure is not evidence that the
+			// Encoder never started pushing the fixed relay. Do not delete or
+			// complete the Broadcast in this branch: atomically remove the runtime
+			// from automatic completion and retain the binding for an explicit,
+			// stop-confirmed recovery flow.
+			staticRuntime, err := s.abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(r.Context(), stream.ID, "youtube_relay_static_start_dispatch_unconfirmed")
+			current := currentFromContext(r.Context())
+			metadata := map[string]any{"trigger": "start_dispatch_failed", "mode": "live_api_relay_static"}
+			if err != nil {
+				metadata["reason"] = "youtube_relay_static_start_dispatch_recovery_fence_failed"
+				s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.relay_static_recovery", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: metadata})
+			} else if staticRuntime {
+				metadata["recovery_required"] = true
+				s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.relay_static_recovery", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+			}
+		} else if metadata, err := s.completeYouTubeRuntime(r.Context(), stream.ID, true); err != nil {
 			code := "complete_youtube_runtime_failed"
 			if errors.Is(err, errYouTubeLiveAPICompleteFailed) {
 				code = errYouTubeLiveAPICompleteFailed.Error()
@@ -9970,12 +10303,40 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) completeStreamStart(w http.ResponseWriter, r *http.Request, stream store.Stream, assignments []store.RegisteredService, req servicecall.StartRequest, dispatch []servicecall.DispatchResult) {
 	dispatch = sanitizeDispatchResults(dispatch)
-	liveStream, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "live")
+	queuedNotification, notificationRequested := discordYouTubeLiveNotificationForStart(stream, assignments, req)
+	var (
+		liveStream         store.Stream
+		transitioned       bool
+		err                error
+		notificationQueued *store.DiscordYouTubeLiveNotification
+		outboxUnavailable  bool
+	)
+	if notificationRequested {
+		if outbox, ok := s.streams.(store.StreamDiscordYouTubeLiveNotificationStore); ok {
+			var queued store.DiscordYouTubeLiveNotification
+			liveStream, queued, transitioned, err = outbox.TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNotification(r.Context(), stream.ID, "starting", "live", queuedNotification)
+			if transitioned {
+				notificationQueued = &queued
+			}
+		} else {
+			// Production stores implement the durable outbox. Keep older narrow
+			// test doubles source-compatible, but never represent this fallback as
+			// a delivered Discord notification.
+			outboxUnavailable = true
+			liveStream, transitioned, err = s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "live")
+		}
+	} else {
+		liveStream, transitioned, err = s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "live")
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	}
 	if err != nil {
+		if notificationRequested {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "discord_youtube_notification_enqueue_failed"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
 		return
 	}
@@ -9984,30 +10345,18 @@ func (s *Server) completeStreamStart(w http.ResponseWriter, r *http.Request, str
 		return
 	}
 
-	var notification *servicecall.DispatchResult
-	watchURL, watchURLOK := normalizeYouTubeWatchURL(mapString(req.YouTubeRuntime, "watch_url"))
-	if watchURLOK && !mapBool(req.YouTubeRuntime, "dry_run") && strings.TrimSpace(req.DiscordTextChannelID) != "" {
-		result := servicecall.DispatchResult{ServiceType: "discord_bot", Code: "discord_youtube_notification_not_supported", Error: "discord youtube notification is not supported"}
-		if notifier, ok := s.dispatcher.(discordLiveNotificationDispatcher); ok {
-			eventID := "youtube-live-" + security.SecretFingerprint(stream.ID+":"+watchURL)
-			result = notifier.NotifyDiscordYouTubeLive(r.Context(), liveStream, assignments, eventID, watchURL)
-		}
-		result = sanitizeDispatchResults([]servicecall.DispatchResult{result})[0]
-		notification = &result
-		current := currentFromContext(r.Context())
-		resultName := "failure"
-		if result.Success {
-			resultName = "success"
-		}
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.discord_youtube_notify", ResourceType: "stream", ResourceID: stream.ID, Result: resultName, Metadata: map[string]any{"service_id": result.ServiceID, "status_code": result.StatusCode, "code": result.Code, "watch_url_fingerprint": security.SecretFingerprint(watchURL)}})
-	}
-
 	current := currentFromContext(r.Context())
 	metadata := map[string]any{"status": "live", "dispatch": dispatch}
 	response := map[string]any{"stream": liveStream, "dispatch": dispatch}
-	if notification != nil {
-		metadata["discord_notification"] = notification
-		response["discord_notification"] = notification
+	if notificationQueued != nil {
+		notificationMetadata := discordYouTubeLiveNotificationAuditMetadata(*notificationQueued)
+		metadata["discord_notification"] = notificationMetadata
+		response["discord_notification"] = safeDiscordYouTubeLiveNotification(*notificationQueued)
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.discord_youtube_notify", ResourceType: "stream", ResourceID: stream.ID, Result: "pending", Metadata: notificationMetadata})
+	} else if notificationRequested && outboxUnavailable {
+		metadata["discord_notification"] = map[string]any{"state": "outbox_unavailable"}
+		response["discord_notification"] = map[string]any{"state": "outbox_unavailable"}
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.discord_youtube_notify", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "discord_youtube_notification_outbox_unavailable"}})
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: liveStream.ID, Result: "success", Metadata: metadata})
 	writeJSON(w, http.StatusOK, response)
@@ -10114,32 +10463,40 @@ func (s *Server) writeStopSupersededResponse(w http.ResponseWriter, r *http.Requ
 }
 
 var (
-	errYouTubeOutputNotFound             = errors.New("youtube_output_not_found")
-	errYouTubeOutputInvalidConfig        = errors.New("youtube_output_invalid_config")
-	errYouTubeOutputStreamKeyUnavailable = errors.New("youtube_stream_key_unavailable")
-	errYouTubeLiveAPIUnavailable         = errors.New("youtube_live_api_unavailable")
-	errYouTubeOAuthAccountUnavailable    = errors.New("youtube_oauth_account_unavailable")
-	errYouTubeLiveAPIPrepareFailed       = errors.New("youtube_live_api_prepare_failed")
-	errYouTubeLiveAPICompleteFailed      = errors.New("youtube_live_api_complete_failed")
-	errArchiveProfileNotFound            = errors.New("archive_profile_not_found")
-	errArchiveProfileInvalidConfig       = errors.New("archive_profile_invalid_config")
-	errDriveDestinationNotFound          = errors.New("drive_destination_not_found")
-	errDriveDestinationUnavailable       = errors.New("drive_destination_unavailable")
-	errDriveOAuthAccountUnavailable      = errors.New("drive_oauth_account_unavailable")
-	errArchiveOAuthAccountRequired       = errors.New("archive_oauth_account_required")
-	errArchiveFolderIDRequired           = errors.New("archive_folder_id_required")
-	errArchiveSharedDriveIDRequired      = errors.New("archive_shared_drive_id_required")
-	errArchiveSettingsStoreUnavailable   = errors.New("archive_settings_store_unavailable")
-	errAutoStartTriggerInvalid           = errors.New("auto_start_trigger_invalid")
-	errAutoStartDiscordRequired          = errors.New("auto_start_discord_required")
-	errDiscordConfigRequired             = errors.New("discord_config_required")
-	errDiscordConfigNotFound             = errors.New("discord_config_not_found")
-	errDiscordConfigInvalid              = errors.New("discord_config_invalid")
-	errDiscordConfigServiceMismatch      = errors.New("discord_config_service_mismatch")
-	errEncoderProfileNotFound            = errors.New("encoder_profile_not_found")
-	errCaptionProfileNotFound            = errors.New("caption_profile_not_found")
-	errOverlayProfileNotFound            = errors.New("overlay_profile_not_found")
-	errEncoderInputURLBlocked            = errors.New("encoder_input_url_blocked")
+	errYouTubeOutputNotFound                         = errors.New("youtube_output_not_found")
+	errYouTubeOutputInvalidConfig                    = errors.New("youtube_output_invalid_config")
+	errYouTubeOutputStreamKeyUnavailable             = errors.New("youtube_stream_key_unavailable")
+	errYouTubeLiveAPIUnavailable                     = errors.New("youtube_live_api_unavailable")
+	errYouTubeOAuthAccountUnavailable                = errors.New("youtube_oauth_account_unavailable")
+	errYouTubeLiveAPIPrepareFailed                   = errors.New("youtube_live_api_prepare_failed")
+	errYouTubeLiveAPICompleteFailed                  = errors.New("youtube_live_api_complete_failed")
+	errYouTubeLiveAPIRequiresManagedOutputRelay      = errors.New("live_api_requires_managed_output_relay")
+	errYouTubeRelayStaticUnavailable                 = errors.New("youtube_relay_static_unavailable")
+	errYouTubeRelayStaticBindingUnavailable          = errors.New("youtube_relay_static_binding_unavailable")
+	errYouTubeRelayBindingStoreUnavailable           = errors.New("youtube_relay_binding_store_unavailable")
+	errYouTubeRelayBindingInUse                      = errors.New("youtube_relay_binding_in_use")
+	errYouTubeRelayStaticConfigChanged               = errors.New("youtube_relay_static_config_changed_reload")
+	errYouTubeRelayStaticCompletionRequiresCompleted = errors.New("youtube_relay_static_completion_requires_completed_stream")
+	errYouTubeRelayStaticRecoveryRequired            = errors.New("youtube_relay_static_recovery_required")
+	errArchiveProfileNotFound                        = errors.New("archive_profile_not_found")
+	errArchiveProfileInvalidConfig                   = errors.New("archive_profile_invalid_config")
+	errDriveDestinationNotFound                      = errors.New("drive_destination_not_found")
+	errDriveDestinationUnavailable                   = errors.New("drive_destination_unavailable")
+	errDriveOAuthAccountUnavailable                  = errors.New("drive_oauth_account_unavailable")
+	errArchiveOAuthAccountRequired                   = errors.New("archive_oauth_account_required")
+	errArchiveFolderIDRequired                       = errors.New("archive_folder_id_required")
+	errArchiveSharedDriveIDRequired                  = errors.New("archive_shared_drive_id_required")
+	errArchiveSettingsStoreUnavailable               = errors.New("archive_settings_store_unavailable")
+	errAutoStartTriggerInvalid                       = errors.New("auto_start_trigger_invalid")
+	errAutoStartDiscordRequired                      = errors.New("auto_start_discord_required")
+	errDiscordConfigRequired                         = errors.New("discord_config_required")
+	errDiscordConfigNotFound                         = errors.New("discord_config_not_found")
+	errDiscordConfigInvalid                          = errors.New("discord_config_invalid")
+	errDiscordConfigServiceMismatch                  = errors.New("discord_config_service_mismatch")
+	errEncoderProfileNotFound                        = errors.New("encoder_profile_not_found")
+	errCaptionProfileNotFound                        = errors.New("caption_profile_not_found")
+	errOverlayProfileNotFound                        = errors.New("overlay_profile_not_found")
+	errEncoderInputURLBlocked                        = errors.New("encoder_input_url_blocked")
 )
 
 func (s *Server) applyDiscordConfig(ctx context.Context, assignments []store.RegisteredService, req *servicecall.StartRequest) error {
@@ -10161,9 +10518,12 @@ func (s *Server) applyDiscordConfig(ctx context.Context, assignments []store.Reg
 			return errDiscordConfigServiceMismatch
 		}
 	}
-	guildID := strings.TrimSpace(req.DiscordGuildID)
-	voiceChannelID := strings.TrimSpace(req.DiscordVoiceChannelID)
-	textChannelID := strings.TrimSpace(req.DiscordTextChannelID)
+	// Stream settings have already filled req before this point.  Keep those
+	// explicit per-stream values ahead of the selected Discord profile, while
+	// allowing a complete profile to supply omitted channel defaults.
+	guildID := strings.TrimSpace(firstNonEmpty(req.DiscordGuildID, configString(profile.Config, "guild_id")))
+	voiceChannelID := strings.TrimSpace(firstNonEmpty(req.DiscordVoiceChannelID, configString(profile.Config, "voice_channel_id")))
+	textChannelID := strings.TrimSpace(firstNonEmpty(req.DiscordTextChannelID, configString(profile.Config, "text_channel_id")))
 	if guildID == "" || voiceChannelID == "" {
 		return errDiscordConfigInvalid
 	}
@@ -10182,6 +10542,168 @@ func primaryServiceID(assignments []store.RegisteredService, serviceType string)
 	return ""
 }
 
+type encoderOutputRelayMode string
+
+const (
+	encoderOutputRelayModeUnknown         encoderOutputRelayMode = ""
+	encoderOutputRelayModeDirect          encoderOutputRelayMode = "direct"
+	encoderOutputRelayModeLegacyStreamKey encoderOutputRelayMode = "legacy_stream_key"
+	encoderOutputRelayModeLiveAPIStatic   encoderOutputRelayMode = "live_api_static"
+)
+
+// normalizedEncoderOutputRelayMode deliberately treats the historical
+// ambiguous "static" capability as the pre-existing stream-key relay. It must
+// never opt an existing fixed key into the newer reusable LiveStream contract.
+func normalizedEncoderOutputRelayMode(value string) encoderOutputRelayMode {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "direct":
+		return encoderOutputRelayModeDirect
+	case "legacy_stream_key", "static":
+		return encoderOutputRelayModeLegacyStreamKey
+	case "live_api_static":
+		return encoderOutputRelayModeLiveAPIStatic
+	default:
+		return encoderOutputRelayModeUnknown
+	}
+}
+
+func primaryEncoderOutputRelayMode(service store.RegisteredService) (encoderOutputRelayMode, bool) {
+	if service.ServiceType != "encoder_recorder" || normalizeAssignmentRole(service.AssignmentRole) != "primary" {
+		return encoderOutputRelayModeUnknown, false
+	}
+	return normalizedEncoderOutputRelayMode(capabilityString(service.Capabilities["output_relay_mode"])), true
+}
+
+func (s *Server) validateYouTubeLiveAPIOutputRelay(ctx context.Context, assignments []store.RegisteredService, req *servicecall.StartRequest) error {
+	if req == nil || strings.TrimSpace(req.YouTubeOutputID) == "" {
+		for _, service := range assignments {
+			relayMode, primary := primaryEncoderOutputRelayMode(service)
+			if !primary || relayMode == encoderOutputRelayModeDirect {
+				continue
+			}
+			if relayMode == encoderOutputRelayModeLiveAPIStatic {
+				return errYouTubeRelayStaticBindingUnavailable
+			}
+			return errYouTubeOutputInvalidConfig
+		}
+		return nil
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileYouTubeOutput, strings.TrimSpace(req.YouTubeOutputID))
+	if errors.Is(err, store.ErrNotFound) {
+		return errYouTubeOutputNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return validateYouTubeLiveAPIOutputRelayProfile(assignments, profile)
+}
+
+func validateYouTubeLiveAPIOutputRelayProfile(assignments []store.RegisteredService, profile store.Profile) error {
+	mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(profile.Config, "mode"), configString(profile.Config, "output_mode")))
+	if mode == "" {
+		return errYouTubeOutputInvalidConfig
+	}
+	for _, service := range assignments {
+		relayMode, primary := primaryEncoderOutputRelayMode(service)
+		if !primary {
+			continue
+		}
+		switch relayMode {
+		case encoderOutputRelayModeDirect:
+			if mode == "live_api_relay_static" {
+				return errYouTubeRelayStaticBindingUnavailable
+			}
+		case encoderOutputRelayModeLegacyStreamKey:
+			if mode != "stream_key" {
+				return youtubeOutputRelayModeUnsupportedError(mode)
+			}
+		case encoderOutputRelayModeLiveAPIStatic:
+			if mode != "live_api_relay_static" {
+				return errYouTubeRelayStaticBindingUnavailable
+			}
+			relayBindingID := configString(profile.Config, "relay_binding_id")
+			if !validYouTubeRelayStaticBindingID(relayBindingID) {
+				return errYouTubeOutputInvalidConfig
+			}
+			if capabilityString(service.Capabilities["output_relay_binding_id"]) != relayBindingID {
+				return errYouTubeRelayStaticBindingUnavailable
+			}
+		default:
+			// Older Encoders without a capability report retain only the established
+			// stream-key compatibility route. Dynamic and reusable-static modes
+			// require an explicit capability so the Panel never guesses how an
+			// encoder forwards output.
+			if mode != "stream_key" {
+				return youtubeOutputRelayModeUnsupportedError(mode)
+			}
+		}
+	}
+	return nil
+}
+
+func youtubeOutputRelayModeUnsupportedError(mode string) error {
+	switch mode {
+	case "live_api", "live_api_dry_run":
+		return errYouTubeLiveAPIRequiresManagedOutputRelay
+	case "live_api_relay_static":
+		return errYouTubeRelayStaticBindingUnavailable
+	default:
+		return errYouTubeOutputInvalidConfig
+	}
+}
+
+type relayStaticYouTubeOutputStartFence struct {
+	OutputID string
+	Profile  store.Profile
+}
+
+func (s *Server) selectedYouTubeRelayStaticOutputStartFence(ctx context.Context, outputID string) (*relayStaticYouTubeOutputStartFence, error) {
+	outputID = strings.TrimSpace(outputID)
+	if outputID == "" {
+		return nil, nil
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileYouTubeOutput, outputID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, errYouTubeOutputNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(profile.Config, "mode"), configString(profile.Config, "output_mode")))
+	if mode != "live_api_relay_static" {
+		return nil, nil
+	}
+	return &relayStaticYouTubeOutputStartFence{OutputID: outputID, Profile: profile}, nil
+}
+
+func (s *Server) validateYouTubeRelayStaticOutputStartFence(ctx context.Context, streamID string, fence relayStaticYouTubeOutputStartFence) error {
+	stream, err := s.streams.GetStream(ctx, strings.TrimSpace(streamID))
+	if err != nil || strings.TrimSpace(stream.YouTubeOutputID) != strings.TrimSpace(fence.OutputID) {
+		return errYouTubeRelayStaticConfigChanged
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileYouTubeOutput, strings.TrimSpace(fence.OutputID))
+	if err != nil || profile.ID != fence.Profile.ID || profile.YouTubeRelayBindingRevision != fence.Profile.YouTubeRelayBindingRevision {
+		return errYouTubeRelayStaticConfigChanged
+	}
+	mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(profile.Config, "mode"), configString(profile.Config, "output_mode")))
+	if mode != "live_api_relay_static" {
+		return errYouTubeRelayStaticConfigChanged
+	}
+	return nil
+}
+
+// convergeRelayStaticPreDispatchFailure is used only after the static path has
+// successfully claimed starting before its external Prepare call. It is
+// intentionally best effort: a newer lifecycle transition remains authoritative
+// and must never be overwritten by this failed start request.
+func (s *Server) convergeRelayStaticPreDispatchFailure(ctx context.Context, streamID string) {
+	if _, transitioned, err := s.streams.TransitionStreamStatus(ctx, streamID, "starting", "failed"); err != nil {
+		log.Printf("relay static pre-dispatch start convergence failed: stream_id=%s error_type=%T", streamID, err)
+	} else if !transitioned {
+		log.Printf("relay static pre-dispatch start convergence superseded: stream_id=%s", streamID)
+	}
+}
+
 func (s *Server) applyYouTubeOutput(ctx context.Context, stream store.Stream, req *servicecall.StartRequest) error {
 	outputID := strings.TrimSpace(req.YouTubeOutputID)
 	if outputID == "" {
@@ -10194,23 +10716,28 @@ func (s *Server) applyYouTubeOutput(ctx context.Context, stream store.Stream, re
 	if err != nil {
 		return err
 	}
-	mode := strings.ToLower(strings.TrimSpace(configString(profile.Config, "mode")))
+	return s.applyYouTubeOutputProfile(ctx, stream, profile, req)
+}
+
+func (s *Server) applyYouTubeOutputProfile(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {
+	mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(profile.Config, "mode"), configString(profile.Config, "output_mode")))
 	if mode == "" {
-		mode = strings.ToLower(strings.TrimSpace(configString(profile.Config, "output_mode")))
+		return errYouTubeOutputInvalidConfig
 	}
-	if mode == "" {
-		mode = "stream_key"
-	}
-	if value := strings.TrimSpace(configString(profile.Config, "rtmp_url")); value != "" {
-		req.EncoderRTMPURL = value
+	if mode != "live_api_relay_static" {
+		if value := strings.TrimSpace(configString(profile.Config, "rtmp_url")); value != "" {
+			req.EncoderRTMPURL = value
+		}
 	}
 	switch mode {
-	case "stream_key", "existing_stream_key", "rtmps_stream_key":
+	case "stream_key":
 		return s.applyYouTubeStreamKeyOutput(ctx, profile, req)
-	case "live_api_dry_run", "dry_run_live_api", "youtube_live_api_dry_run":
+	case "live_api_dry_run":
 		return s.applyYouTubeLiveAPIDryRunOutput(ctx, stream, profile, req)
-	case "live_api", "youtube_live_api":
+	case "live_api":
 		return s.applyYouTubeLiveAPIOutput(ctx, stream, profile, req)
+	case "live_api_relay_static":
+		return s.applyYouTubeRelayStaticOutput(ctx, stream, profile, req)
 	default:
 		return errYouTubeOutputInvalidConfig
 	}
@@ -10243,12 +10770,18 @@ func (s *Server) validateYouTubeOutputReadiness(ctx context.Context, stream stor
 	if err != nil {
 		return err
 	}
+	return s.validateYouTubeOutputReadinessProfile(ctx, stream, profile, req)
+}
+
+func (s *Server) validateYouTubeOutputReadinessProfile(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {
 	mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(profile.Config, "mode"), configString(profile.Config, "output_mode")))
 	if mode == "" {
 		return errYouTubeOutputInvalidConfig
 	}
-	if value := youtubeOutputRTMPURL(profile); value != "" {
-		req.EncoderRTMPURL = value
+	if mode != "live_api_relay_static" {
+		if value := youtubeOutputRTMPURL(profile); value != "" {
+			req.EncoderRTMPURL = value
+		}
 	}
 	switch mode {
 	case "stream_key":
@@ -10263,6 +10796,8 @@ func (s *Server) validateYouTubeOutputReadiness(ctx context.Context, stream stor
 		return nil
 	case "live_api":
 		return s.validateYouTubeLiveAPIReadiness(ctx, stream, profile)
+	case "live_api_relay_static":
+		return s.validateYouTubeRelayStaticReadiness(ctx, stream, profile)
 	default:
 		return errYouTubeOutputInvalidConfig
 	}
@@ -10328,6 +10863,28 @@ func (s *Server) validateYouTubeLiveAPIReadiness(ctx context.Context, stream sto
 	return nil
 }
 
+func (s *Server) validateYouTubeRelayStaticReadiness(ctx context.Context, stream store.Stream, profile store.Profile) error {
+	if err := s.validateYouTubeLiveAPIReadiness(ctx, stream, profile); err != nil {
+		return err
+	}
+	if _, ok := s.youtubeLive.(ytlive.RelayStaticLiveClient); !ok {
+		return errYouTubeRelayStaticUnavailable
+	}
+	if _, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore); !ok {
+		return errYouTubeRelayBindingStoreUnavailable
+	}
+	if strings.TrimSpace(configString(profile.Config, "rtmp_url")) != "" ||
+		strings.TrimSpace(firstNonEmpty(configString(profile.Config, "stream_key_secret_name"), configString(profile.Config, "streamKeySecretName"))) != "" ||
+		strings.TrimSpace(configString(profile.Config, "watch_url")) != "" {
+		return errYouTubeOutputInvalidConfig
+	}
+	if !validYouTubeRelayStaticBindingID(configString(profile.Config, "relay_binding_id")) ||
+		!validYouTubeRelayStaticExternalID(strings.TrimSpace(configString(profile.Config, "reusable_live_stream_id")), 255) {
+		return errYouTubeOutputInvalidConfig
+	}
+	return nil
+}
+
 func youtubeOutputReadinessMessage(err error) string {
 	switch {
 	case errors.Is(err, errYouTubeOutputNotFound):
@@ -10340,6 +10897,18 @@ func youtubeOutputReadinessMessage(err error) string {
 		return "YouTube Live API client is not available on the Control Panel."
 	case errors.Is(err, errYouTubeOAuthAccountUnavailable):
 		return "selected YouTube OAuth connected account is not ready."
+	case errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay):
+		return "YouTube Live API requires a managed Encoder output relay."
+	case errors.Is(err, errYouTubeRelayStaticUnavailable):
+		return "the Control Panel does not support the selected fixed relay YouTube output."
+	case errors.Is(err, errYouTubeRelayStaticBindingUnavailable):
+		return "the primary Encoder does not have the selected fixed relay binding."
+	case errors.Is(err, errYouTubeRelayBindingInUse):
+		return "the selected fixed relay binding is already reserved by another stream."
+	case errors.Is(err, errYouTubeRelayStaticConfigChanged):
+		return "the selected fixed relay output changed while starting; reload the stream settings and try again."
+	case errors.Is(err, errYouTubeRelayStaticRecoveryRequired):
+		return "the fixed relay YouTube binding requires recovery before it can be reused."
 	default:
 		return "selected YouTube output could not be validated."
 	}
@@ -10403,7 +10972,7 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		ScheduledStart:  youtubeLiveAPIScheduledStart(stream, profile.Config),
 		Resolution:      defaultConfigString(profile.Config, "resolution", "1080p"),
 		FrameRate:       defaultConfigString(profile.Config, "frame_rate", "60fps"),
-		EnableAutoStart: configBool(profile.Config, "enable_auto_start"),
+		EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
 		EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
 	})
 	if err != nil {
@@ -10431,6 +11000,230 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		"complete_on_stop":       youtubeCompleteOnStop(profile.Config),
 	}
 	return nil
+}
+
+func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {
+	if err := s.validateYouTubeRelayStaticReadiness(ctx, stream, profile); err != nil {
+		return err
+	}
+	relayStaticClient, ok := s.youtubeLive.(ytlive.RelayStaticLiveClient)
+	if !ok {
+		return errYouTubeRelayStaticUnavailable
+	}
+	claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+	if !ok {
+		return errYouTubeRelayBindingStoreUnavailable
+	}
+	oauthAccountID := firstNonEmpty(configString(profile.Config, "oauth_account_id"), configString(profile.Config, "youtube_oauth_account_id"))
+	credentials, err := s.youtubeOAuthCredentials(ctx, oauthAccountID)
+	if err != nil {
+		return err
+	}
+	expectedYouTubeOutputRevision := profile.YouTubeRelayBindingRevision
+	claim, err := claimStore.ReserveStreamYouTubeRelayBindingClaim(ctx, store.YouTubeRelayBindingClaim{
+		RelayBindingID:                configString(profile.Config, "relay_binding_id"),
+		StreamID:                      stream.ID,
+		YouTubeOutputID:               profile.ID,
+		ExpectedYouTubeOutputRevision: &expectedYouTubeOutputRevision,
+		OAuthAccountID:                oauthAccountID,
+		ReusableLiveStreamID:          configString(profile.Config, "reusable_live_stream_id"),
+	})
+	if errors.Is(err, store.ErrYouTubeRelayBindingClaimProfileRevisionConflict) || errors.Is(err, store.ErrYouTubeRelayBindingClaimStreamOutputConflict) {
+		return errYouTubeRelayStaticConfigChanged
+	}
+	if errors.Is(err, store.ErrYouTubeRelayBindingClaimConflict) {
+		return errYouTubeRelayBindingInUse
+	}
+	if errors.Is(err, store.ErrInvalidYouTubeRelayBindingClaim) {
+		return errYouTubeOutputInvalidConfig
+	}
+	if err != nil {
+		return err
+	}
+	// Advance the durable provider-handoff fence immediately before the first
+	// external PrepareRelayStatic call. Once this marker has committed, even a
+	// documented validation error cannot prove that a prior process did not
+	// reach YouTube; every later outcome is therefore recovered, never released.
+	claim, err = s.markYouTubeRelayStaticPossiblyPrepared(ctx, claimStore, claim)
+	if err != nil {
+		return err
+	}
+	prepared, err := relayStaticClient.PrepareRelayStatic(ctx, ytlive.RelayStaticPrepareRequest{
+		PrepareRequest: ytlive.PrepareRequest{
+			Credentials:     credentials,
+			StreamID:        stream.ID,
+			StreamName:      stream.Name,
+			OutputID:        profile.ID,
+			Title:           youtubeLiveAPITitle(profile.Config, stream.Name),
+			Description:     configString(profile.Config, "broadcast_description"),
+			PrivacyStatus:   defaultConfigString(profile.Config, "privacy_status", "private"),
+			ScheduledStart:  youtubeLiveAPIScheduledStart(stream, profile.Config),
+			Resolution:      defaultConfigString(profile.Config, "resolution", "1080p"),
+			FrameRate:       defaultConfigString(profile.Config, "frame_rate", "60fps"),
+			EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
+			EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
+		},
+		ReusableLiveStreamID: claim.ReusableLiveStreamID,
+	})
+	if err != nil {
+		var bindErr *ytlive.RelayStaticBindError
+		if errors.As(err, &bindErr) && bindErr != nil {
+			s.markYouTubeRelayStaticRecovery(ctx, claimStore, claim, bindErr.BroadcastID, youtubeRelayStaticRecoveryErrorCode(err))
+			return errYouTubeRelayStaticRecoveryRequired
+		}
+		// The provider handoff fence was already persisted. This includes known
+		// pre-create validation errors: a previous process may have crossed the
+		// same fence and lost its response, so releasing the reusable binding
+		// would be unsafe.
+		s.markYouTubeRelayStaticRecovery(ctx, claimStore, claim, "", youtubeRelayStaticRecoveryErrorCode(err))
+		return errYouTubeRelayStaticRecoveryRequired
+	}
+	if strings.TrimSpace(prepared.RTMPURL) != "" || strings.TrimSpace(prepared.StreamKey) != "" ||
+		!validYouTubeRelayStaticExternalID(strings.TrimSpace(prepared.BroadcastID), 255) ||
+		strings.TrimSpace(prepared.LiveStreamID) != claim.ReusableLiveStreamID ||
+		youtubeWatchURLForBroadcastID(prepared.BroadcastID) == "" {
+		// A malformed successful response is also post-attempt uncertainty: the
+		// provider may have created a Broadcast that cannot safely be reused.
+		s.markYouTubeRelayStaticRecovery(ctx, claimStore, claim, prepared.BroadcastID, "youtube_relay_static_prepare_invalid")
+		return errYouTubeRelayStaticRecoveryRequired
+	}
+	claim.BroadcastID = prepared.BroadcastID
+	runtime := store.StreamYouTubeRuntime{
+		StreamID:       stream.ID,
+		YouTubeOutput:  profile.ID,
+		OAuthAccountID: oauthAccountID,
+		Mode:           "live_api_relay_static",
+		BroadcastID:    prepared.BroadcastID,
+		LiveStreamID:   claim.ReusableLiveStreamID,
+		DryRun:         false,
+		CompleteOnStop: true,
+	}
+	if err := claimStore.FinalizeStreamYouTubeRuntimeAndMarkRelayBindingPrepared(ctx, claim, runtime); err != nil {
+		// A database response can be lost after the atomic finalizer committed.
+		// Re-read the exact reservation and runtime before treating the error as a
+		// failed start: when both durable records are present we can continue the
+		// still-starting lifecycle deterministically, rather than either dispatching
+		// without proof or trying to downgrade a prepared claim to recovery.
+		if !s.relayStaticFinalizeCommitWasObserved(ctx, claimStore, claim, runtime) {
+			s.markYouTubeRelayStaticRecovery(ctx, claimStore, claim, claim.BroadcastID, "youtube_relay_static_runtime_finalize_failed")
+			return errYouTubeRelayStaticRecoveryRequired
+		}
+	}
+	// The Encoder must keep the raw YouTube key out of its process and use the
+	// configured local fixed relay. Never forward an RTMP endpoint or secret
+	// reference in this mode.
+	req.EncoderRTMPURL = ""
+	req.EncoderStreamKey = ""
+	req.EncoderStreamKeySecretName = ""
+	req.YouTubeRuntime = map[string]any{
+		"mode":                    "live_api_relay_static",
+		"output_id":               profile.ID,
+		"oauth_account_id":        oauthAccountID,
+		"relay_binding_id":        claim.RelayBindingID,
+		"reusable_live_stream_id": claim.ReusableLiveStreamID,
+		"broadcast_id":            prepared.BroadcastID,
+		"watch_url":               youtubeWatchURLForBroadcastID(prepared.BroadcastID),
+		"live_stream_id":          claim.ReusableLiveStreamID,
+		"dry_run":                 false,
+		"complete_on_stop":        true,
+	}
+	return nil
+}
+
+func (s *Server) relayStaticFinalizeCommitWasObserved(ctx context.Context, claimStore store.StreamYouTubeRelayBindingClaimStore, expectedClaim store.YouTubeRelayBindingClaim, expectedRuntime store.StreamYouTubeRuntime) bool {
+	observedClaim, err := claimStore.GetStreamYouTubeRelayBindingClaim(ctx, expectedClaim.RelayBindingID)
+	if err != nil || observedClaim.State != store.YouTubeRelayBindingClaimStatePrepared ||
+		observedClaim.PrepareState != store.YouTubeRelayBindingClaimPrepareStatePossiblyPrepared ||
+		observedClaim.DispatchState != store.YouTubeRelayBindingClaimDispatchStateNotDispatched ||
+		observedClaim.ReservationToken != expectedClaim.ReservationToken ||
+		observedClaim.StreamID != expectedClaim.StreamID ||
+		observedClaim.YouTubeOutputID != expectedClaim.YouTubeOutputID ||
+		observedClaim.YouTubeOutputRevision != expectedClaim.YouTubeOutputRevision ||
+		observedClaim.OAuthAccountID != expectedClaim.OAuthAccountID ||
+		observedClaim.ReusableLiveStreamID != expectedClaim.ReusableLiveStreamID ||
+		observedClaim.BroadcastID != expectedClaim.BroadcastID {
+		return false
+	}
+	runtimeStore, ok := s.streams.(store.StreamYouTubeRuntimeStore)
+	if !ok {
+		return false
+	}
+	observedRuntime, err := runtimeStore.GetStreamYouTubeRuntime(ctx, expectedRuntime.StreamID)
+	if err != nil || observedRuntime.Mode != "live_api_relay_static" ||
+		observedRuntime.StreamID != expectedRuntime.StreamID ||
+		observedRuntime.YouTubeOutput != expectedRuntime.YouTubeOutput ||
+		observedRuntime.OAuthAccountID != expectedRuntime.OAuthAccountID ||
+		observedRuntime.BroadcastID != expectedRuntime.BroadcastID ||
+		observedRuntime.LiveStreamID != expectedRuntime.LiveStreamID ||
+		!observedRuntime.CompleteOnStop {
+		return false
+	}
+	stream, err := s.streams.GetStream(ctx, expectedRuntime.StreamID)
+	return err == nil && strings.EqualFold(strings.TrimSpace(stream.Status), "starting")
+}
+
+// markYouTubeRelayStaticPossiblyPrepared is the durable YouTube Prepare
+// handoff. A lost marker response must never be retried as a provider Prepare:
+// when the marker is visible, recovery owns the possible external Broadcast.
+// Only a provably unchanged reserved/not-attempted claim may be released,
+// because the external client has not been called before that marker.
+func (s *Server) markYouTubeRelayStaticPossiblyPrepared(ctx context.Context, claimStore store.StreamYouTubeRelayBindingClaimStore, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+	marked, err := claimStore.MarkReservedStreamYouTubeRelayBindingClaimPossiblyPrepared(ctx, claim)
+	if err == nil {
+		return marked, nil
+	}
+	// The Prepare marker may have committed even when its response (or the
+	// following read) was lost. First terminalize this local start attempt; the
+	// Store reconciliation then reads the durable PrepareState under its own
+	// fence and releases only a proven not-attempted reservation.
+	failed, transitioned, transitionErr := s.streams.TransitionStreamStatus(ctx, claim.StreamID, "starting", "failed")
+	if transitionErr != nil {
+		// A status-CAS response may have been lost just like the marker response.
+		// Re-read before deciding whether reconciliation is safe: only an inactive
+		// stream can release a reservation that is proven not attempted.
+		current, readErr := s.streams.GetStream(ctx, claim.StreamID)
+		if readErr != nil || isActiveStreamStatus(current.Status) {
+			log.Printf("youtube relay static prepare marker failed before inactive reconciliation: stream_id=%s marker_error_type=%T transition_error_type=%T", claim.StreamID, err, transitionErr)
+			return claim, errYouTubeRelayStaticRecoveryRequired
+		}
+	} else if !transitioned && isActiveStreamStatus(failed.Status) {
+		log.Printf("youtube relay static prepare marker failed before inactive reconciliation: stream_id=%s marker_error_type=%T transition_error_type=%T", claim.StreamID, err, transitionErr)
+		return claim, errYouTubeRelayStaticRecoveryRequired
+	}
+	claim.BroadcastID = youtubeRelayStaticUnknownBroadcastID
+	claim.LastError = "youtube_relay_static_prepare_marker_response_uncertain"
+	resolution, reconcileErr := claimStore.ReconcileReservedStreamYouTubeRelayBindingClaimAfterPrepareFence(ctx, claim)
+	if reconcileErr != nil {
+		log.Printf("youtube relay static prepare marker reconciliation failed: stream_id=%s marker_error_type=%T reconcile_error_type=%T", claim.StreamID, err, reconcileErr)
+		return claim, errYouTubeRelayStaticRecoveryRequired
+	}
+	if resolution.Released {
+		return claim, errYouTubeLiveAPIPrepareFailed
+	}
+	return resolution.Claim, errYouTubeRelayStaticRecoveryRequired
+}
+
+func (s *Server) markYouTubeRelayStaticRecovery(ctx context.Context, claimStore store.StreamYouTubeRelayBindingClaimStore, claim store.YouTubeRelayBindingClaim, broadcastID, lastError string) {
+	broadcastID = strings.TrimSpace(broadcastID)
+	if !validYouTubeRelayStaticExternalID(broadcastID, 255) {
+		broadcastID = youtubeRelayStaticUnknownBroadcastID
+	}
+	claim.BroadcastID = broadcastID
+	claim.LastError = strings.TrimSpace(lastError)
+	if _, recoveryErr := claimStore.MarkStreamYouTubeRelayBindingClaimRecoveryRequired(ctx, claim); recoveryErr != nil {
+		log.Printf("youtube relay static recovery claim failed: stream_id=%s error_type=%T", claim.StreamID, recoveryErr)
+	}
+}
+
+func youtubeRelayStaticRecoveryErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ytlive.ErrRelayStaticBindCleanupUncertain):
+		return ytlive.ErrRelayStaticBindCleanupUncertain.Error()
+	case errors.Is(err, ytlive.ErrRelayStaticBindFailed):
+		return ytlive.ErrRelayStaticBindFailed.Error()
+	default:
+		return "youtube_relay_static_prepare_uncertain"
+	}
 }
 
 func (s *Server) youtubeOAuthCredentials(ctx context.Context, oauthAccountID string) (ytlive.OAuthCredentials, error) {
@@ -10581,6 +11374,12 @@ func (s *Server) saveYouTubeRuntime(ctx context.Context, streamID string, runtim
 	if len(runtime) == 0 {
 		return nil
 	}
+	if mapString(runtime, "mode") == "live_api_relay_static" {
+		// The relay-static path persisted the runtime atomically with its claim
+		// before this generic start flow. Never downgrade that transaction to a
+		// standalone runtime write.
+		return nil
+	}
 	storeWithRuntime, ok := s.streams.(store.StreamYouTubeRuntimeStore)
 	if !ok {
 		return nil
@@ -10595,9 +11394,161 @@ func (s *Server) deleteYouTubeRuntime(ctx context.Context, streamID string) {
 	}
 	runtime, err := storeWithRuntime.GetStreamYouTubeRuntime(ctx, streamID)
 	if err == nil {
+		if runtime.Mode == "live_api_relay_static" {
+			return
+		}
 		s.clearYouTubeRuntimeSecret(ctx, runtime)
 	}
 	_ = storeWithRuntime.DeleteStreamYouTubeRuntime(ctx, streamID)
+}
+
+// abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch is the only cleanup
+// allowed after an unacknowledged Start or Stop. An HTTP timeout can race a
+// successful Encoder action, so provider Delete/Complete and claim release are
+// unsafe until the recovery route has obtained a fresh downstream Stop receipt.
+// The store operation removes the runtime from automatic completion in the same
+// transaction that creates the recovery fence.
+func (s *Server) abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(ctx context.Context, streamID, reason string) (bool, error) {
+	runtimeStore, ok := s.streams.(store.StreamYouTubeRuntimeStore)
+	if !ok {
+		return false, errYouTubeRelayBindingStoreUnavailable
+	}
+	runtime, err := runtimeStore.GetStreamYouTubeRuntime(ctx, streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if runtime.Mode != "live_api_relay_static" {
+		return false, nil
+	}
+	claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+	if !ok {
+		return true, errYouTubeRelayBindingStoreUnavailable
+	}
+	claim, err := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, streamID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStatePrepared {
+		return true, errYouTubeRelayStaticRecoveryRequired
+	}
+	claim.LastError = strings.TrimSpace(reason)
+	if _, err := claimStore.AbandonPreparedStreamYouTubeRuntimeAndMarkRelayBindingRecoveryRequired(ctx, claim); err != nil {
+		log.Printf("youtube relay static unconfirmed dispatch recovery fence failed: stream_id=%s error_type=%T", streamID, err)
+		return true, errYouTubeRelayStaticRecoveryRequired
+	}
+	return true, nil
+}
+
+// markYouTubeRelayStaticEncoderStopConfirmed preserves a positive primary
+// Encoder Stop acknowledgement before a partially failed Stop is converted to
+// recovery_required. The receipt is deliberately scoped to the Encoder: Worker
+// and Discord failures are operational warnings, but neither owns the fixed
+// relay's ingest process. A marker response-loss is safe only when the exact
+// fenced claim can be re-read with its durable timestamp.
+func (s *Server) markYouTubeRelayStaticEncoderStopConfirmed(ctx context.Context, streamID string, assignments []store.RegisteredService, results []servicecall.DispatchResult) (staticRuntime bool, encoderStopConfirmed bool, err error) {
+	runtimeStore, ok := s.streams.(store.StreamYouTubeRuntimeStore)
+	if !ok {
+		return false, false, errYouTubeRelayBindingStoreUnavailable
+	}
+	runtime, err := runtimeStore.GetStreamYouTubeRuntime(ctx, streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if runtime.Mode != "live_api_relay_static" {
+		return false, false, nil
+	}
+	claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+	if !ok {
+		return true, false, errYouTubeRelayBindingStoreUnavailable
+	}
+	claim, err := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, streamID)
+	if err != nil {
+		return true, false, err
+	}
+	if claim.DispatchState != store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched ||
+		(claim.State != store.YouTubeRelayBindingClaimStatePrepared && claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired) {
+		return true, false, nil
+	}
+	if !claim.EncoderStopConfirmedAt.IsZero() {
+		return true, true, nil
+	}
+	confirmed, _ := relayStaticEncoderStopConfirmed(assignments, results, store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched)
+	if !confirmed {
+		return true, false, nil
+	}
+	marked, markerErr := markYouTubeRelayStaticClaimEncoderStopConfirmed(ctx, claimStore, claim)
+	if markerErr == nil {
+		return true, !marked.EncoderStopConfirmedAt.IsZero(), nil
+	}
+	return true, false, markerErr
+}
+
+// markYouTubeRelayStaticClaimEncoderStopConfirmed is shared by the immediate
+// Stop path (prepared runtime still present) and recovery (runtime atomically
+// abandoned). Both use the same reservation/broadcast fence. A response loss
+// is accepted only after an exact durable receipt re-read.
+func markYouTubeRelayStaticClaimEncoderStopConfirmed(ctx context.Context, claimStore store.StreamYouTubeRelayBindingClaimStore, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+	marked, markerErr := claimStore.MarkPreparedStreamYouTubeRelayBindingClaimEncoderStopConfirmed(ctx, claim)
+	if markerErr == nil {
+		return marked, nil
+	}
+	// A write response can be lost after the receipt timestamp committed. Never
+	// treat an arbitrary claim as proof; the durable result must still match this
+	// reservation and Broadcast exactly.
+	observed, observedErr := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, claim.StreamID)
+	if observedErr == nil && observed.RelayBindingID == claim.RelayBindingID &&
+		observed.ReservationToken == claim.ReservationToken && observed.CreatedAt.Equal(claim.CreatedAt) &&
+		observed.BroadcastID == claim.BroadcastID && !observed.EncoderStopConfirmedAt.IsZero() {
+		return observed, nil
+	}
+	return claim, markerErr
+}
+
+// markYouTubeRelayStaticPossiblyDispatched is the durable hand-off point from
+// a prepared fixed relay to the external Start dispatcher. It must succeed
+// before the first downstream request; a failed marker never permits dispatch.
+// If its response was lost after commit, the exact prepared/possibly-dispatched
+// claim is observed again while the stream is still starting and may continue.
+func (s *Server) markYouTubeRelayStaticPossiblyDispatched(ctx context.Context, streamID string) error {
+	claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+	if !ok {
+		return errYouTubeRelayBindingStoreUnavailable
+	}
+	claim, err := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, streamID)
+	if err != nil || claim.State != store.YouTubeRelayBindingClaimStatePrepared {
+		return errYouTubeRelayStaticRecoveryRequired
+	}
+	if _, err := claimStore.MarkPreparedStreamYouTubeRelayBindingClaimPossiblyDispatched(ctx, claim); err == nil {
+		return nil
+	}
+
+	// A response-loss error can occur after the marker committed. It is safe to
+	// continue only when the exact claim is now explicitly fenced as possibly
+	// dispatched and the owning stream still belongs to this start lifecycle.
+	observed, observedErr := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, streamID)
+	if observedErr == nil && observed.State == store.YouTubeRelayBindingClaimStatePrepared &&
+		observed.DispatchState == store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched &&
+		observed.ReservationToken == claim.ReservationToken && observed.CreatedAt.Equal(claim.CreatedAt) {
+		stream, streamErr := s.streams.GetStream(ctx, streamID)
+		if streamErr == nil && strings.EqualFold(strings.TrimSpace(stream.Status), "starting") {
+			return nil
+		}
+	}
+
+	// If the marker did not commit, this is still provably pre-dispatch. Convert
+	// it into the store's not-dispatched recovery state, which atomically removes
+	// the prepared runtime and keeps the binding fenced.
+	if observedErr == nil {
+		claim = observed
+	}
+	claim.LastError = "youtube_relay_static_dispatch_marker_failed"
+	if _, recoveryErr := claimStore.MarkStreamYouTubeRelayBindingClaimRecoveryRequired(ctx, claim); recoveryErr != nil {
+		log.Printf("youtube relay static dispatch marker recovery fence failed: stream_id=%s error_type=%T", streamID, recoveryErr)
+	}
+	return errYouTubeRelayStaticRecoveryRequired
 }
 
 func (s *Server) completeYouTubeRuntime(ctx context.Context, streamID string, force bool) (map[string]any, error) {
@@ -10612,7 +11563,12 @@ func (s *Server) completeYouTubeRuntime(ctx context.Context, streamID string, fo
 	if err != nil {
 		return nil, err
 	}
-	shouldComplete := force || runtime.CompleteOnStop
+	if runtime.Mode == "live_api_relay_static" {
+		if err := s.ensureYouTubeRelayStaticCompletionCompleted(ctx, streamID); err != nil {
+			return nil, err
+		}
+	}
+	shouldComplete := force || runtime.CompleteOnStop || runtime.Mode == "live_api_relay_static"
 	if runtime.Mode == "live_api" && shouldComplete {
 		credentials, err := s.youtubeOAuthCredentials(ctx, runtime.OAuthAccountID)
 		if err != nil {
@@ -10628,7 +11584,52 @@ func (s *Server) completeYouTubeRuntime(ctx context.Context, streamID string, fo
 			return nil, errYouTubeLiveAPICompleteFailed
 		}
 	}
-	if err := storeWithRuntime.DeleteStreamYouTubeRuntime(ctx, streamID); err != nil {
+	if runtime.Mode == "live_api_relay_static" {
+		// A fixed relay may already have observed a provider-side Complete even
+		// when the transition response was lost. The generic LiveClient.Complete
+		// cannot distinguish that response-loss case from a true failure, so it is
+		// never an acceptable fallback for releasing a reusable relay claim.
+		completionClient, ok := s.youtubeLive.(ytlive.RelayStaticBroadcastCompletionClient)
+		if !ok {
+			s.recordYouTubeRuntimeCompleteFailure(ctx, storeWithRuntime, runtime, errYouTubeRelayStaticUnavailable)
+			return nil, errYouTubeRelayStaticUnavailable
+		}
+		credentials, err := s.youtubeOAuthCredentials(ctx, runtime.OAuthAccountID)
+		if err != nil {
+			s.recordYouTubeRuntimeCompleteFailure(ctx, storeWithRuntime, runtime, err)
+			return nil, err
+		}
+		if err := completionClient.CompleteRelayStaticBroadcast(ctx, ytlive.CompleteRequest{Credentials: credentials, BroadcastID: runtime.BroadcastID}); err != nil {
+			// Keep both the stable Panel error category and the client's typed
+			// uncertain-completion cause so retries/audits remain actionable while
+			// the claim and runtime stay durably fenced.
+			completionErr := errors.Join(errYouTubeLiveAPICompleteFailed, err)
+			s.recordYouTubeRuntimeCompleteFailure(ctx, storeWithRuntime, runtime, completionErr)
+			return nil, completionErr
+		}
+	}
+	if runtime.Mode == "live_api_relay_static" {
+		// Recheck immediately before releasing the durable runtime/claim. The
+		// store-side completed-only fence is the cross-process boundary; this
+		// local read avoids issuing a release after a visible lifecycle change.
+		if err := s.ensureYouTubeRelayStaticCompletionCompleted(ctx, streamID); err != nil {
+			return nil, err
+		}
+		claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+		if !ok {
+			s.recordYouTubeRuntimeCompleteFailure(ctx, storeWithRuntime, runtime, errYouTubeRelayBindingStoreUnavailable)
+			return nil, errYouTubeRelayBindingStoreUnavailable
+		}
+		claim, err := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, streamID)
+		if err != nil {
+			s.recordYouTubeRuntimeCompleteFailure(ctx, storeWithRuntime, runtime, err)
+			return nil, err
+		}
+		if err := claimStore.CompleteStreamYouTubeRuntimeAndReleaseRelayBindingClaim(ctx, claim); err != nil {
+			s.recordYouTubeRuntimeCompleteFailure(ctx, storeWithRuntime, runtime, err)
+			return nil, err
+		}
+	} else if err := storeWithRuntime.DeleteStreamYouTubeRuntime(ctx, streamID); err != nil {
 		return nil, err
 	}
 	s.clearYouTubeRuntimeSecret(ctx, runtime)
@@ -10643,6 +11644,17 @@ func (s *Server) completeYouTubeRuntime(ctx context.Context, streamID string, fo
 		"retry_count":      runtime.CompleteRetryCount,
 		"complete_skipped": runtime.Mode == "live_api" && !shouldComplete,
 	}, nil
+}
+
+func (s *Server) ensureYouTubeRelayStaticCompletionCompleted(ctx context.Context, streamID string) error {
+	stream, err := s.streams.GetStream(ctx, strings.TrimSpace(streamID))
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(stream.Status), "completed") {
+		return errYouTubeRelayStaticCompletionRequiresCompleted
+	}
+	return nil
 }
 
 func (s *Server) recordYouTubeRuntimeCompleteFailure(ctx context.Context, storeWithRuntime store.StreamYouTubeRuntimeStore, runtime store.StreamYouTubeRuntime, err error) {
@@ -10672,6 +11684,12 @@ func youtubeCompleteRetryDelay(retryCount int) time.Duration {
 
 func youtubeCompleteRetryErrorCode(err error) string {
 	switch {
+	case errors.Is(err, ytlive.ErrRelayStaticBroadcastCompletionUncertain):
+		return ytlive.ErrRelayStaticBroadcastCompletionUncertain.Error()
+	case errors.Is(err, ytlive.ErrRelayStaticBroadcastCompletionFailed):
+		return ytlive.ErrRelayStaticBroadcastCompletionFailed.Error()
+	case errors.Is(err, errYouTubeRelayStaticUnavailable):
+		return errYouTubeRelayStaticUnavailable.Error()
 	case errors.Is(err, errYouTubeLiveAPIUnavailable):
 		return errYouTubeLiveAPIUnavailable.Error()
 	case errors.Is(err, errYouTubeOAuthAccountUnavailable):
@@ -10878,7 +11896,7 @@ func classifyOAuthTokenRefreshFailure(err error) (string, bool) {
 func (s *Server) CompleteDueYouTubeRuntimes(ctx context.Context, limit int) (map[string]any, error) {
 	storeWithRuntime, ok := s.streams.(store.StreamYouTubeRuntimeStore)
 	if !ok {
-		return map[string]any{"attempted": 0, "completed": 0, "failed": 0}, nil
+		return map[string]any{"attempted": 0, "completed": 0, "failed": 0, "skipped": 0}, nil
 	}
 	runtimes, err := storeWithRuntime.ListDueStreamYouTubeRuntimes(ctx, time.Now().UTC(), limit)
 	if err != nil {
@@ -10887,7 +11905,19 @@ func (s *Server) CompleteDueYouTubeRuntimes(ctx context.Context, limit int) (map
 	attempted := 0
 	completed := 0
 	failed := 0
+	skipped := 0
 	for _, runtime := range runtimes {
+		if runtime.Mode == "live_api_relay_static" {
+			if err := s.ensureYouTubeRelayStaticCompletionCompleted(ctx, runtime.StreamID); err != nil {
+				if errors.Is(err, errYouTubeRelayStaticCompletionRequiresCompleted) {
+					skipped++
+					continue
+				}
+				failed++
+				s.writeSystemAudit(ctx, store.AuditEvent{Action: "youtube.complete", ResourceType: "stream", ResourceID: runtime.StreamID, Result: "failure", Metadata: map[string]any{"reason": youtubeCompleteRetryErrorCode(err), "trigger": "auto_retry"}})
+				continue
+			}
+		}
 		attempted++
 		metadata, err := s.completeYouTubeRuntime(ctx, runtime.StreamID, true)
 		if err != nil {
@@ -10903,7 +11933,7 @@ func (s *Server) CompleteDueYouTubeRuntimes(ctx context.Context, limit int) (map
 		metadata["trigger"] = "auto_retry"
 		s.writeSystemAudit(ctx, store.AuditEvent{Action: "youtube.complete", ResourceType: "stream", ResourceID: runtime.StreamID, Result: "success", Metadata: metadata})
 	}
-	return map[string]any{"attempted": attempted, "completed": completed, "failed": failed}, nil
+	return map[string]any{"attempted": attempted, "completed": completed, "failed": failed, "skipped": skipped}, nil
 }
 
 func streamYouTubeRuntimeFromMap(streamID string, runtime map[string]any) store.StreamYouTubeRuntime {
@@ -11240,6 +12270,9 @@ func configBoolDefault(config map[string]any, key string, fallback bool) bool {
 }
 
 func youtubeCompleteOnStop(config map[string]any) bool {
+	if normalizedYouTubeOutputMode(firstNonEmpty(configString(config, "mode"), configString(config, "output_mode"))) == "live_api_relay_static" {
+		return true
+	}
 	return configBoolDefault(config, "complete_on_stop", true)
 }
 
@@ -11281,7 +12314,9 @@ func youtubeOutputStatus(err error) int {
 	switch {
 	case errors.Is(err, errYouTubeOutputNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed), errors.Is(err, store.ErrSecretKeyRequired):
+	case errors.Is(err, errYouTubeRelayBindingStoreUnavailable):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed), errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay), errors.Is(err, errYouTubeRelayStaticUnavailable), errors.Is(err, errYouTubeRelayStaticBindingUnavailable), errors.Is(err, errYouTubeRelayBindingInUse), errors.Is(err, errYouTubeRelayStaticConfigChanged), errors.Is(err, errYouTubeRelayStaticRecoveryRequired), errors.Is(err, store.ErrSecretKeyRequired):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
@@ -11290,7 +12325,7 @@ func youtubeOutputStatus(err error) int {
 
 func youtubeOutputCode(err error) string {
 	switch {
-	case errors.Is(err, errYouTubeOutputNotFound), errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed):
+	case errors.Is(err, errYouTubeOutputNotFound), errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed), errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay), errors.Is(err, errYouTubeRelayStaticUnavailable), errors.Is(err, errYouTubeRelayStaticBindingUnavailable), errors.Is(err, errYouTubeRelayBindingStoreUnavailable), errors.Is(err, errYouTubeRelayBindingInUse), errors.Is(err, errYouTubeRelayStaticConfigChanged), errors.Is(err, errYouTubeRelayStaticRecoveryRequired):
 		return err.Error()
 	case errors.Is(err, store.ErrSecretKeyRequired):
 		return errYouTubeOutputStreamKeyUnavailable.Error()
@@ -11356,7 +12391,11 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, discordConfigStatus(err), map[string]string{"code": discordConfigCode(err)})
 			return
 		}
-		issues = append(issues, s.youtubeOutputReadinessIssues(r.Context(), stream, &body)...)
+		if err := s.validateYouTubeLiveAPIOutputRelay(r.Context(), primaryAssignments, &body); err != nil {
+			issues = append(issues, servicecall.ReadinessIssue{ServiceType: "encoder_recorder", Code: youtubeOutputCode(err), Message: youtubeOutputReadinessMessage(err)})
+		} else {
+			issues = append(issues, s.youtubeOutputReadinessIssues(r.Context(), stream, &body)...)
+		}
 		issues = append(issues, s.archiveConfigReadinessIssues(r.Context(), &body)...)
 		if checker, ok := s.dispatcher.(startReadinessChecker); ok {
 			issues = append(issues, checker.StartReadinessIssues(primaryAssignments, body, time.Now().UTC())...)
@@ -11424,6 +12463,7 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	defer cancelStopLifecycle()
 	results := s.dispatcher.Stop(r.Context(), stream, primaryAssignments)
 	results = sanitizeDispatchResults(results)
+	results = s.normalizeManualStopAlreadyStoppedResults(r.Context(), stream.ID, results)
 	if hasDispatchFailure(results) {
 		failed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "stopping", "failed")
 		if errors.Is(transitionErr, store.ErrNotFound) {
@@ -11439,8 +12479,50 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		current := currentFromContext(r.Context())
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.stop", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"dispatch": results}})
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "service_dispatch_failed", "stream": failed, "dispatch": results})
+		metadata := map[string]any{"dispatch": results}
+		staticRuntime, encoderStopConfirmed, receiptErr := s.markYouTubeRelayStaticEncoderStopConfirmed(r.Context(), stream.ID, primaryAssignments, results)
+		if receiptErr != nil {
+			metadata["youtube_relay_static_encoder_stop_receipt_warning"] = "durable encoder stop receipt could not be confirmed"
+		} else if staticRuntime && encoderStopConfirmed {
+			metadata["youtube_relay_static_encoder_stop_confirmed"] = true
+		}
+		abandonedStaticRuntime, recoveryErr := s.abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(r.Context(), stream.ID, "youtube_relay_static_stop_dispatch_unconfirmed")
+		staticRuntime = staticRuntime || abandonedStaticRuntime
+		if recoveryErr != nil {
+			metadata["youtube_relay_static_recovery_warning"] = "recovery fence could not be confirmed"
+		} else if staticRuntime {
+			metadata["youtube_relay_static_recovery_required"] = true
+		}
+		// A normal Stop timeout is no stronger evidence than a force-stop timeout:
+		// the Encoder may still be pushing the fixed relay. Preserve the binding
+		// behind a recovery claim rather than leaving a prepared runtime that no
+		// completion/recovery path can safely release.
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.stop", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: metadata})
+		response := map[string]any{"code": "service_dispatch_failed", "stream": failed, "dispatch": results}
+		if staticRuntime {
+			response["recovery_required"] = true
+		}
+		writeJSON(w, http.StatusBadGateway, response)
+		return
+	}
+	// Persist a positive Encoder Stop receipt before the completed transition and
+	// provider completion. A later provider response-loss must never make this
+	// acknowledgement depend on the Encoder's short-lived request cache.
+	staticRuntime, encoderStopConfirmed, encoderStopReceiptErr := s.markYouTubeRelayStaticEncoderStopConfirmed(r.Context(), stream.ID, primaryAssignments, results)
+	if encoderStopReceiptErr != nil {
+		log.Printf("youtube relay static encoder stop receipt marker failed after confirmed stop: stream_id=%s error_type=%T", stream.ID, encoderStopReceiptErr)
+	}
+	completed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "stopping", "completed")
+	if errors.Is(transitionErr, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if transitionErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
+		return
+	}
+	if !transitioned {
+		s.writeStopSupersededResponse(w, r, completed, results)
 		return
 	}
 	youtubeCompleteWarning := ""
@@ -11459,19 +12541,6 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 		current := currentFromContext(r.Context())
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
 	}
-	completed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "stopping", "completed")
-	if errors.Is(transitionErr, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
-		return
-	}
-	if transitionErr != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
-		return
-	}
-	if !transitioned {
-		s.writeStopSupersededResponse(w, r, completed, results)
-		return
-	}
 	rearmed, rearmErr := s.ensureAutoStartWaitingStream(r, completed, assignments)
 	if rearmErr != nil {
 		log.Printf("stream VC rearm failed: stream_id=%s error=%v", completed.ID, rearmErr)
@@ -11480,6 +12549,12 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	}
 	current := currentFromContext(r.Context())
 	metadata := map[string]any{"status": "completed", "dispatch": results}
+	if staticRuntime && encoderStopConfirmed {
+		metadata["youtube_relay_static_encoder_stop_confirmed"] = true
+	}
+	if encoderStopReceiptErr != nil && staticRuntime {
+		metadata["youtube_relay_static_encoder_stop_receipt_warning"] = "durable encoder stop receipt could not be confirmed"
+	}
 	if youtubeCompleteWarning != "" {
 		metadata["youtube_complete_warning"] = youtubeCompleteWarning
 	}
@@ -11554,18 +12629,69 @@ func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
 	metadata := map[string]any{"dispatch": results, "previous_status": stream.Status}
 	if hasDispatchFailure(results) {
 		metadata["dispatch_warning"] = "one or more services did not acknowledge force stop"
+		staticRuntime, encoderStopConfirmed, receiptErr := s.markYouTubeRelayStaticEncoderStopConfirmed(r.Context(), stream.ID, primaryStreamAssignments(assignments), results)
+		if receiptErr != nil {
+			metadata["youtube_relay_static_encoder_stop_receipt_warning"] = "durable encoder stop receipt could not be confirmed"
+		} else if staticRuntime && encoderStopConfirmed {
+			metadata["youtube_relay_static_encoder_stop_confirmed"] = true
+		}
+		abandonedStaticRuntime, recoveryErr := s.abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(r.Context(), stream.ID, "youtube_relay_static_force_stop_dispatch_unconfirmed")
+		staticRuntime = staticRuntime || abandonedStaticRuntime
+		if recoveryErr != nil {
+			metadata["youtube_relay_static_recovery_warning"] = "recovery fence could not be confirmed"
+		} else if staticRuntime {
+			metadata["youtube_relay_static_recovery_required"] = true
+		}
+		// The Encoder might still be pushing despite the Panel state having been
+		// force-terminalized. Do not Complete/release the fixed relay and do not
+		// re-arm the next VC until the explicit recovery route receives a fresh
+		// Stop acknowledgement.
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.force_stop", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+		writeJSON(w, http.StatusOK, map[string]any{"stream": updated, "dispatch": results, "forced": true, "recovery_required": staticRuntime})
+		return
 	}
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.force_stop", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+	// The force-stop transition already put the stream in failed; a fully
+	// acknowledged Encoder Stop is still durable evidence that permits the
+	// subsequent failed->completed/provider-complete path to survive a restart.
+	staticRuntime, encoderStopConfirmed, encoderStopReceiptErr := s.markYouTubeRelayStaticEncoderStopConfirmed(r.Context(), stream.ID, primaryStreamAssignments(assignments), results)
+	if encoderStopReceiptErr != nil {
+		log.Printf("youtube relay static encoder stop receipt marker failed after confirmed force stop: stream_id=%s error_type=%T", stream.ID, encoderStopReceiptErr)
+	}
+
+	completed, completedTransitioned, completionTransitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "failed", "completed")
+	if errors.Is(completionTransitionErr, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if completionTransitionErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
+		return
+	}
+	if !completedTransitioned {
+		metadata["status"] = completed.Status
+		metadata["force_stop_completion_superseded"] = true
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.force_stop", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+		writeJSON(w, http.StatusAccepted, map[string]any{"stream": completed, "dispatch": results, "forced": true, "force_stop_completion_superseded": true})
+		return
+	}
+	metadata["status"] = "completed"
+	if staticRuntime && encoderStopConfirmed {
+		metadata["youtube_relay_static_encoder_stop_confirmed"] = true
+	}
+	if encoderStopReceiptErr != nil && staticRuntime {
+		metadata["youtube_relay_static_encoder_stop_receipt_warning"] = "durable encoder stop receipt could not be confirmed"
+	}
 	if _, err := s.completeYouTubeRuntime(r.Context(), stream.ID, true); err != nil {
 		metadata["youtube_complete_warning"] = "youtube runtime completion failed"
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "force_stop_completion_failed"}})
 	}
-	rearmed, rearmErr := s.ensureAutoStartWaitingStream(r, updated, assignments)
+	rearmed, rearmErr := s.ensureAutoStartWaitingStream(r, completed, assignments)
 	if rearmErr != nil {
-		log.Printf("forced stream VC rearm failed: stream_id=%s error=%v", updated.ID, rearmErr)
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.rearm", ResourceType: "stream", ResourceID: updated.ID, Result: "failure", Metadata: map[string]any{"reason": "waiting_stream_rearm_failed", "trigger": updated.AutoStartTrigger}})
+		log.Printf("forced stream VC rearm failed: stream_id=%s error=%v", completed.ID, rearmErr)
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.rearm", ResourceType: "stream", ResourceID: completed.ID, Result: "failure", Metadata: map[string]any{"reason": "waiting_stream_rearm_failed", "trigger": completed.AutoStartTrigger}})
 	}
-	response := map[string]any{"stream": updated, "dispatch": results, "forced": true}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.force_stop", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+	response := map[string]any{"stream": completed, "dispatch": results, "forced": true}
 	if rearmErr != nil {
 		response["rearm_warning"] = "waiting_stream_rearm_failed"
 	}
@@ -11664,11 +12790,15 @@ func (s *Server) completeYouTubeStream(w http.ResponseWriter, r *http.Request) {
 	metadata, err := s.completeYouTubeRuntime(r.Context(), stream.ID, true)
 	if err != nil {
 		code := "complete_youtube_runtime_failed"
-		if errors.Is(err, errYouTubeLiveAPICompleteFailed) {
+		status := http.StatusBadGateway
+		if errors.Is(err, errYouTubeRelayStaticCompletionRequiresCompleted) {
+			code = errYouTubeRelayStaticCompletionRequiresCompleted.Error()
+			status = http.StatusConflict
+		} else if errors.Is(err, errYouTubeLiveAPICompleteFailed) {
 			code = errYouTubeLiveAPICompleteFailed.Error()
 		}
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "trigger": "manual_retry"}})
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": code})
+		writeJSON(w, status, map[string]any{"code": code})
 		return
 	}
 	if len(metadata) == 0 {
@@ -11680,6 +12810,289 @@ func (s *Server) completeYouTubeStream(w http.ResponseWriter, r *http.Request) {
 	metadata["trigger"] = "manual_retry"
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
 	writeJSON(w, http.StatusOK, map[string]any{"completed": true, "youtube_runtime": metadata})
+}
+
+type relayStaticRecoveryResolveRequest struct {
+	// ConfirmExternalCleanup is required because a recovery claim exists only
+	// after the Panel could no longer prove the remote Broadcast state. For a
+	// known Broadcast the handler still retries provider completion; for an
+	// unknown Broadcast this is the privileged operator attestation that the
+	// external cleanup was verified out of band.
+	ConfirmExternalCleanup bool `json:"confirm_external_cleanup"`
+}
+
+// resolveYouTubeRelayStaticRecovery is an intentionally explicit recovery
+// escape hatch. It never runs automatically: an unknown provider result must
+// continue fencing the fixed relay until an operator confirms external cleanup.
+func (s *Server) resolveYouTubeRelayStaticRecovery(w http.ResponseWriter, r *http.Request) {
+	streamID := strings.TrimSpace(r.PathValue("id"))
+	unlockLifecycle := s.lockStreamLifecycle(streamID)
+	defer unlockLifecycle()
+
+	var body relayStaticRecoveryResolveRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+
+	stream, err := s.streams.GetStream(r.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	writeFailure := func(status int, code string, metadata map[string]any) {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["reason"] = code
+		s.writeAudit(r, store.AuditEvent{
+			ActorUserID:   current.User.ID,
+			ActorUsername: current.User.Username,
+			Action:        "streams.youtube_relay_static_recovery.resolve",
+			ResourceType:  "stream",
+			ResourceID:    stream.ID,
+			Result:        "failure",
+			Metadata:      metadata,
+		})
+		writeJSON(w, status, map[string]string{"code": code})
+	}
+	if !body.ConfirmExternalCleanup {
+		writeFailure(http.StatusBadRequest, "youtube_relay_static_external_cleanup_confirmation_required", nil)
+		return
+	}
+	if isActiveStreamStatus(stream.Status) {
+		writeFailure(http.StatusConflict, "stream_relay_recovery_not_safe_while_active", map[string]any{"status": stream.Status})
+		return
+	}
+	claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+	if !ok {
+		writeFailure(http.StatusServiceUnavailable, errYouTubeRelayBindingStoreUnavailable.Error(), nil)
+		return
+	}
+	claim, err := claimStore.GetStreamYouTubeRelayBindingClaimForStream(r.Context(), stream.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeFailure(http.StatusNotFound, "youtube_relay_static_recovery_not_found", nil)
+		return
+	}
+	if err != nil {
+		writeFailure(http.StatusInternalServerError, "get_youtube_relay_static_recovery_failed", nil)
+		return
+	}
+	if claim.State == store.YouTubeRelayBindingClaimStateReserved {
+		// A process can crash after Reserve or after the Prepare handoff marker
+		// while the stream is already terminal. Reconcile under the exact
+		// reservation fence: only reserved/not_attempted is provably provider-free
+		// and releasable; possibly_prepared becomes the same explicit recovery
+		// state used for all uncertain Broadcasts.
+		claim.BroadcastID = youtubeRelayStaticUnknownBroadcastID
+		if strings.TrimSpace(claim.LastError) == "" {
+			claim.LastError = "youtube_relay_static_prepare_recovery_reconcile"
+		}
+		resolution, reconcileErr := claimStore.ReconcileReservedStreamYouTubeRelayBindingClaimAfterPrepareFence(r.Context(), claim)
+		if reconcileErr != nil {
+			writeFailure(http.StatusServiceUnavailable, errYouTubeRelayBindingStoreUnavailable.Error(), map[string]any{"relay_binding_id": claim.RelayBindingID, "operation": "prepare_fence_reconcile"})
+			return
+		}
+		if resolution.Released {
+			s.writeAudit(r, store.AuditEvent{
+				ActorUserID:   current.User.ID,
+				ActorUsername: current.User.Username,
+				Action:        "streams.youtube_relay_static_recovery.resolve",
+				ResourceType:  "stream",
+				ResourceID:    stream.ID,
+				Result:        "success",
+				Metadata: map[string]any{
+					"confirm_external_cleanup": true,
+					"cleanup":                  "operator_confirmed_unknown_broadcast",
+					"prepare_state":            store.YouTubeRelayBindingClaimPrepareStateNotAttempted,
+					"relay_binding_id":         claim.RelayBindingID,
+					"youtube_output_id":        claim.YouTubeOutputID,
+				},
+			})
+			writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "cleanup": "operator_confirmed_unknown_broadcast", "relay_binding_id": claim.RelayBindingID})
+			return
+		}
+		claim = resolution.Claim
+	}
+	if claim.State == store.YouTubeRelayBindingClaimStatePrepared {
+		// A dispatch-marker write/read failure can leave an inactive prepared
+		// runtime even though the Panel cannot prove whether the first Start was
+		// observed by the Encoder. Normalize it under the same exact reservation
+		// fence before recovery; never release or provider-clean up this state
+		// directly.
+		if strings.TrimSpace(claim.LastError) == "" {
+			claim.LastError = "youtube_relay_static_dispatch_marker_recovery_reconcile"
+		}
+		var reconcileErr error
+		claim, reconcileErr = claimStore.ReconcilePreparedStreamYouTubeRelayBindingClaimAfterDispatchFence(r.Context(), claim)
+		if reconcileErr != nil {
+			writeFailure(http.StatusServiceUnavailable, errYouTubeRelayBindingStoreUnavailable.Error(), map[string]any{"relay_binding_id": claim.RelayBindingID, "operation": "dispatch_fence_reconcile"})
+			return
+		}
+	}
+	if claim.State != store.YouTubeRelayBindingClaimStateRecoveryRequired {
+		writeFailure(http.StatusConflict, "youtube_relay_static_recovery_not_required", map[string]any{"claim_state": claim.State})
+		return
+	}
+	// A stream status of failed is not proof an Encoder Start/Stop request was
+	// observed by the Encoder. Before an operator confirmation or provider
+	// cleanup can release this fixed binding, obtain a fresh Encoder-specific
+	// Stop receipt. Other assigned services are still stopped and audited, but
+	// only the Encoder owns the reusable fixed relay safety boundary.
+	var stopResults []servicecall.DispatchResult
+	var stopWarnings []servicecall.DispatchResult
+	encoderStopped := !claim.EncoderStopConfirmedAt.IsZero()
+	if !encoderStopped {
+		assignments, err := s.streamAssignments(r.Context(), stream.ID)
+		if err != nil {
+			writeFailure(http.StatusInternalServerError, "list_stream_assignments_failed", nil)
+			return
+		}
+		primaryAssignments := primaryStreamAssignments(assignments)
+		if missing := missingServiceTypes(primaryAssignments, []string{"encoder_recorder"}); len(missing) > 0 {
+			writeFailure(http.StatusConflict, "youtube_relay_static_recovery_encoder_stop_unavailable", map[string]any{"missing_service_types": missing})
+			return
+		}
+		stopRequest, cancelStopLifecycle := detachedStopLifecycleRequest(r)
+		defer cancelStopLifecycle()
+		stopResults = sanitizeDispatchResults(s.dispatcher.Stop(stopRequest.Context(), stream, primaryAssignments))
+		encoderStopped, stopWarnings = relayStaticEncoderStopConfirmed(primaryAssignments, stopResults, claim.DispatchState)
+		if !encoderStopped {
+			writeFailure(http.StatusBadGateway, "youtube_relay_static_recovery_encoder_stop_unconfirmed", map[string]any{"dispatch": stopResults, "dispatch_state": claim.DispatchState})
+			return
+		}
+		if claim.DispatchState == store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched {
+			marked, markerErr := markYouTubeRelayStaticClaimEncoderStopConfirmed(r.Context(), claimStore, claim)
+			if markerErr != nil || marked.EncoderStopConfirmedAt.IsZero() {
+				writeFailure(http.StatusBadGateway, "youtube_relay_static_recovery_encoder_stop_unconfirmed", map[string]any{"dispatch": stopResults, "dispatch_state": claim.DispatchState, "durable_receipt": false})
+				return
+			}
+			claim = marked
+		}
+	}
+
+	cleanup := "operator_confirmed_unknown_broadcast"
+	operatorAttestedProviderCleanup := false
+	switch claim.DispatchState {
+	case store.YouTubeRelayBindingClaimDispatchStateNotDispatched:
+		// The durable marker proves no Start request was issued. A known
+		// pre-dispatch Broadcast can therefore use the client's confirmed
+		// delete path; an unknown result still requires the operator's explicit
+		// attestation from the request body.
+		if claim.BroadcastID == youtubeRelayStaticUnknownBroadcastID {
+			break
+		}
+		credentials, err := s.youtubeOAuthCredentials(r.Context(), claim.OAuthAccountID)
+		if err != nil {
+			code := "youtube_relay_static_recovery_credentials_failed"
+			status := http.StatusInternalServerError
+			if errors.Is(err, errYouTubeOAuthAccountUnavailable) {
+				code = errYouTubeOAuthAccountUnavailable.Error()
+				status = http.StatusConflict
+			}
+			writeFailure(status, code, map[string]any{"relay_binding_id": claim.RelayBindingID})
+			return
+		}
+		cleanupClient, ok := s.youtubeLive.(ytlive.RelayStaticBroadcastCleanupClient)
+		if !ok {
+			writeFailure(http.StatusServiceUnavailable, "youtube_relay_static_recovery_cleanup_unavailable", map[string]any{"relay_binding_id": claim.RelayBindingID})
+			return
+		}
+		if err := cleanupClient.DeleteRelayStaticBroadcast(r.Context(), ytlive.RelayStaticBroadcastCleanupRequest{Credentials: credentials, BroadcastID: claim.BroadcastID}); err != nil {
+			writeFailure(http.StatusBadGateway, "youtube_relay_static_recovery_cleanup_failed", map[string]any{"relay_binding_id": claim.RelayBindingID})
+			return
+		}
+		cleanup = "provider_delete"
+	case store.YouTubeRelayBindingClaimDispatchStatePossiblyDispatched:
+		// Once Start was handed off, a timeout/partial response may conceal a
+		// running ingest. Even after the fresh Encoder Stop receipt, do not use
+		// Delete (which is only safe for an unstarted Broadcast). Complete is
+		// the sole automatic provider cleanup; any error preserves the recovery
+		// claim for explicit operator investigation.
+		if claim.BroadcastID == youtubeRelayStaticUnknownBroadcastID {
+			writeFailure(http.StatusConflict, "youtube_relay_static_recovery_broadcast_unknown", map[string]any{"relay_binding_id": claim.RelayBindingID})
+			return
+		}
+		credentials, err := s.youtubeOAuthCredentials(r.Context(), claim.OAuthAccountID)
+		if err != nil {
+			code := "youtube_relay_static_recovery_credentials_failed"
+			status := http.StatusInternalServerError
+			if errors.Is(err, errYouTubeOAuthAccountUnavailable) {
+				code = errYouTubeOAuthAccountUnavailable.Error()
+				status = http.StatusConflict
+			}
+			writeFailure(status, code, map[string]any{"relay_binding_id": claim.RelayBindingID})
+			return
+		}
+		completionClient, ok := s.youtubeLive.(ytlive.RelayStaticBroadcastCompletionClient)
+		if !ok {
+			writeFailure(http.StatusServiceUnavailable, "youtube_relay_static_recovery_cleanup_unavailable", map[string]any{"relay_binding_id": claim.RelayBindingID})
+			return
+		}
+		if err := completionClient.CompleteRelayStaticBroadcast(r.Context(), ytlive.CompleteRequest{Credentials: credentials, BroadcastID: claim.BroadcastID}); err != nil {
+			// This endpoint is explicitly permissioned and requires the operator's
+			// confirm_external_cleanup attestation. It is the manual-only escape
+			// hatch for a provider response loss or an externally completed
+			// Broadcast, but never substitutes for the durable Encoder stop fence.
+			// Automatic completion retries still retain this claim on every error.
+			if claim.EncoderStopConfirmedAt.IsZero() {
+				writeFailure(http.StatusBadGateway, "youtube_relay_static_recovery_complete_failed", map[string]any{"relay_binding_id": claim.RelayBindingID})
+				return
+			}
+			cleanup = "operator_confirmed_provider_cleanup"
+			operatorAttestedProviderCleanup = true
+		} else {
+			cleanup = "provider_complete"
+		}
+	default:
+		writeFailure(http.StatusConflict, "youtube_relay_static_recovery_dispatch_state_invalid", map[string]any{"relay_binding_id": claim.RelayBindingID, "dispatch_state": claim.DispatchState})
+		return
+	}
+	if err := claimStore.ResolveStreamYouTubeRelayBindingRecovery(r.Context(), claim); err != nil {
+		code := "resolve_youtube_relay_static_recovery_failed"
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			code = "youtube_relay_static_recovery_not_found"
+			status = http.StatusNotFound
+		case errors.Is(err, store.ErrYouTubeRelayBindingClaimConflict), errors.Is(err, store.ErrYouTubeRelayBindingClaimState), errors.Is(err, store.ErrInvalidYouTubeRelayBindingClaim):
+			code = "youtube_relay_static_recovery_not_required"
+			status = http.StatusConflict
+		}
+		writeFailure(status, code, map[string]any{"relay_binding_id": claim.RelayBindingID})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{
+		ActorUserID:   current.User.ID,
+		ActorUsername: current.User.Username,
+		Action:        "streams.youtube_relay_static_recovery.resolve",
+		ResourceType:  "stream",
+		ResourceID:    stream.ID,
+		Result:        "success",
+		Metadata: map[string]any{
+			"confirm_external_cleanup":           true,
+			"cleanup":                            cleanup,
+			"stop_dispatch":                      stopResults,
+			"stop_dispatch_warnings":             stopWarnings,
+			"dispatch_state":                     claim.DispatchState,
+			"operator_attested_provider_cleanup": operatorAttestedProviderCleanup,
+			"relay_binding_id":                   claim.RelayBindingID,
+			"youtube_output_id":                  claim.YouTubeOutputID,
+		},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "cleanup": cleanup, "relay_binding_id": claim.RelayBindingID})
 }
 
 func (s *Server) markStreamFailed(w http.ResponseWriter, r *http.Request) {
@@ -11763,6 +13176,90 @@ func hasDispatchFailure(results []servicecall.DispatchResult) bool {
 		}
 	}
 	return false
+}
+
+// normalizeManualStopAlreadyStoppedResults is deliberately limited to a normal
+// operator Stop after the stream has claimed stopping. Worker reports its exact
+// no-active-job receipt when no job remains. Encoder's no-process reply is only
+// equivalent for a stream with no durable static-relay claim: a fixed relay
+// possibly dispatched to YouTube needs a positive Encoder acknowledgement
+// before it may complete or release its binding. Preserve the raw HTTP status
+// and code as audit evidence while clearing the failure presentation.
+func (s *Server) normalizeManualStopAlreadyStoppedResults(ctx context.Context, streamID string, results []servicecall.DispatchResult) []servicecall.DispatchResult {
+	encoderNoProcessMayBeNormalized := false
+	for _, result := range results {
+		if strings.EqualFold(strings.TrimSpace(result.ServiceType), "encoder_recorder") &&
+			result.StatusCode == http.StatusNotFound && strings.TrimSpace(result.Code) == "stream_not_running" {
+			claimStore, ok := s.streams.(store.StreamYouTubeRelayBindingClaimStore)
+			if ok {
+				_, err := claimStore.GetStreamYouTubeRelayBindingClaimForStream(ctx, strings.TrimSpace(streamID))
+				encoderNoProcessMayBeNormalized = errors.Is(err, store.ErrNotFound)
+			}
+			break
+		}
+	}
+
+	for index := range results {
+		result := &results[index]
+		workerNoActiveJob := strings.EqualFold(strings.TrimSpace(result.ServiceType), "worker") &&
+			result.StatusCode == http.StatusConflict && strings.TrimSpace(result.Code) == "no_active_stream_job"
+		encoderNoProcess := encoderNoProcessMayBeNormalized &&
+			strings.EqualFold(strings.TrimSpace(result.ServiceType), "encoder_recorder") &&
+			result.StatusCode == http.StatusNotFound && strings.TrimSpace(result.Code) == "stream_not_running"
+		if !workerNoActiveJob && !encoderNoProcess {
+			continue
+		}
+		result.Success = true
+		result.Error = ""
+		result.FailurePhase = ""
+		result.ErrorClass = ""
+	}
+	return results
+}
+
+// relayStaticEncoderStopConfirmed separates the reusable fixed-relay ownership
+// fence from best-effort stops for Worker and Discord. A possibly-dispatched
+// static start requires a positive Encoder Stop acknowledgement. Only a claim
+// durably marked not_dispatched may treat the Encoder's exact no-process reply
+// as equivalent evidence, because no Start request was ever sent in that case.
+func relayStaticEncoderStopConfirmed(assignments []store.RegisteredService, results []servicecall.DispatchResult, dispatchState string) (bool, []servicecall.DispatchResult) {
+	encoderIDs := make(map[string]struct{})
+	for _, assignment := range assignments {
+		if strings.EqualFold(strings.TrimSpace(assignment.ServiceType), "encoder_recorder") {
+			encoderIDs[strings.TrimSpace(assignment.ServiceID)] = struct{}{}
+		}
+	}
+	if len(encoderIDs) == 0 {
+		return false, nil
+	}
+
+	byServiceID := make(map[string][]servicecall.DispatchResult, len(results))
+	warnings := make([]servicecall.DispatchResult, 0)
+	for _, result := range results {
+		serviceID := strings.TrimSpace(result.ServiceID)
+		byServiceID[serviceID] = append(byServiceID[serviceID], result)
+		if _, isEncoder := encoderIDs[serviceID]; !isEncoder && !result.Success {
+			warnings = append(warnings, result)
+		}
+	}
+
+	for encoderID := range encoderIDs {
+		encoderResults := byServiceID[encoderID]
+		if len(encoderResults) == 0 {
+			return false, warnings
+		}
+		for _, result := range encoderResults {
+			if result.Success {
+				continue
+			}
+			if strings.TrimSpace(dispatchState) == store.YouTubeRelayBindingClaimDispatchStateNotDispatched &&
+				result.StatusCode == http.StatusNotFound && strings.TrimSpace(result.Code) == "stream_not_running" {
+				continue
+			}
+			return false, warnings
+		}
+	}
+	return true, warnings
 }
 
 func sanitizeDispatchResults(results []servicecall.DispatchResult) []servicecall.DispatchResult {
@@ -11893,6 +13390,11 @@ func (s *Server) streamEncoderPreflight(w http.ResponseWriter, r *http.Request) 
 	primaryAssignments := primaryStreamAssignments(assignments)
 	if missing := missingServiceTypes(primaryAssignments, requiredRetryUploadServiceTypes); len(missing) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
+		return
+	}
+	if err := s.validateYouTubeLiveAPIOutputRelay(r.Context(), primaryAssignments, &servicecall.StartRequest{YouTubeOutputID: stream.YouTubeOutputID}); err != nil {
+		code := youtubeOutputCode(err)
+		writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
 		return
 	}
 	result := s.dispatcher.EncoderPreflight(r.Context(), stream, primaryAssignments)
@@ -15276,7 +16778,7 @@ func normalizeDriveDestinationAPIRequest(body *driveDestinationRequest) (string,
 
 func (s *Server) validateYouTubeOutputOAuthAccount(ctx context.Context, config map[string]any) (string, int) {
 	mode := normalizedYouTubeOutputMode(configString(config, "mode"))
-	if mode != "live_api" && mode != "live_api_dry_run" {
+	if mode != "live_api" && mode != "live_api_dry_run" && mode != "live_api_relay_static" {
 		return "", 0
 	}
 	accountID := firstNonEmpty(configString(config, "oauth_account_id"), configString(config, "youtube_oauth_account_id"))

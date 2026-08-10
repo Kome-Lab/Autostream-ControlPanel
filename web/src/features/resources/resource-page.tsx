@@ -162,7 +162,19 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
         : [resource.path];
       await Promise.all([...new Set(affectedResources)].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
     },
-    onError: (error) => setActionMessage(resourceWriteErrorMessage(resource, error, "更新")),
+    onError: async (error, action) => {
+      const conflictMessage = observabilityRemediationExecutionConflictMessage(action.path, error);
+      if (conflictMessage) {
+        setActionMessage(conflictMessage);
+        await Promise.all(
+          ["/observability/remediation-actions", "/observability/incidents", "/observability/diagnostics"].map((path) =>
+            queryClient.invalidateQueries({ queryKey: ["resource", path] }),
+          ),
+        );
+        return;
+      }
+      setActionMessage(resourceWriteErrorMessage(resource, error, "更新"));
+    },
   });
   const deleteMutation = useMutation<unknown, Error, ResourceRow>({
     mutationFn: async (row) => apiDelete(deletePathForResource(resource, row)),
@@ -488,11 +500,15 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
   const [latencyPreference, setLatencyPreference] = useState(() => rowString(row, ["latency_preference", "config.latency_preference"]) || "low");
   const [titleTemplate, setTitleTemplate] = useState(() => rowString(row, ["broadcast_title_template", "title_template", "config.broadcast_title_template", "config.title_template"]) || "{{program_title}}");
   const [description, setDescription] = useState(() => rowString(row, ["broadcast_description", "description", "config.broadcast_description", "config.description"]));
+  const [relayBindingID, setRelayBindingID] = useState(() => rowString(row, ["relay_binding_id", "config.relay_binding_id"]));
+  const [reusableLiveStreamID, setReusableLiveStreamID] = useState(() => rowString(row, ["reusable_live_stream_id", "config.reusable_live_stream_id"]));
   const [autoStart, setAutoStart] = useState(() => rowValue(row, ["enable_auto_start", "config.enable_auto_start"]) !== false);
   const [autoStop, setAutoStop] = useState(() => rowValue(row, ["enable_auto_stop", "config.enable_auto_stop"]) !== false);
   const [completeOnStop, setCompleteOnStop] = useState(() => rowValue(row, ["complete_on_stop", "config.complete_on_stop"]) !== false);
-  const requiresOAuth = mode === "live_api" || mode === "live_api_dry_run";
+  const staticRelayMode = mode === "live_api_relay_static";
+  const requiresOAuth = mode === "live_api" || mode === "live_api_dry_run" || staticRelayMode;
   const effectiveOAuthAccountID = requiresOAuth && oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
+  const staticRelayReady = relayBindingID.trim() !== "" && reusableLiveStreamID.trim() !== "";
 
   return (
     <form
@@ -503,9 +519,15 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
           compactRecord({
             name,
             mode,
-            rtmp_url: rtmpURL,
-            stream_key: streamKey,
-            watch_url: watchURL,
+            rtmp_url: staticRelayMode ? "" : rtmpURL,
+            stream_key: staticRelayMode ? "" : streamKey,
+            relay_binding_id: staticRelayMode ? relayBindingID.trim() : "",
+            reusable_live_stream_id: staticRelayMode ? reusableLiveStreamID.trim() : "",
+            // A profile edited from stream_key can retain this state even though
+            // the field is hidden in static-relay mode. Do not submit a stale
+            // watch URL: the server correctly rejects ingest-adjacent fields
+            // for the non-secret relay binding flow.
+            watch_url: staticRelayMode ? "" : watchURL,
             oauth_account_id: effectiveOAuthAccountID === noneValue ? "" : effectiveOAuthAccountID,
             broadcast_title_template: titleTemplate,
             broadcast_description: description,
@@ -513,7 +535,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
             latency_preference: latencyPreference,
             enable_auto_start: autoStart,
             enable_auto_stop: autoStop,
-            complete_on_stop: completeOnStop,
+            complete_on_stop: staticRelayMode ? true : completeOnStop,
           }),
         );
       }}
@@ -527,12 +549,22 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
           options={[
             { value: "live_api_dry_run", label: "YouTube Live API検証" },
             { value: "live_api", label: "YouTube Live API本番" },
+            { value: "live_api_relay_static", label: "固定Relay（YouTube Live API）" },
             { value: "stream_key", label: "既存ストリームキー" },
           ]}
         />
-        <TextField label="RTMP URL" value={rtmpURL} onChange={setRTMPURL} required />
+        {!staticRelayMode ? <TextField label="RTMP URL" value={rtmpURL} onChange={setRTMPURL} required /> : null}
         <SelectField label="接続済みGoogleアカウント" value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
-        <TextField label="ストリームキー" value={streamKey} onChange={setStreamKey} type="password" description="既存ストリームキー方式で使う場合だけ入力します。" />
+        {staticRelayMode ? (
+          <>
+            <TextField label="固定RelayバインディングID" value={relayBindingID} onChange={setRelayBindingID} description="管理済みの固定Relayを識別する非秘密IDです。配信キーは入力しません。" required />
+            <TextField label="再利用するYouTube Live Stream ID" value={reusableLiveStreamID} onChange={setReusableLiveStreamID} description="固定Relayが配信する既存のYouTube Live Stream IDを入力します。URLやストリームキーは入力しません。" required />
+            <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground md:col-span-2">
+              <div className="font-medium text-foreground">固定Relayの同時配信制約</div>
+              <p className="mt-1">1つの固定Relayは同時に1配信枠だけを処理できます。Relayの設定と同じバインディングID・Live Stream IDを指定してください。</p>
+            </div>
+          </>
+        ) : <TextField label="ストリームキー" value={streamKey} onChange={setStreamKey} type="password" description="既存ストリームキー方式で使う場合だけ入力します。" />}
         {mode === "stream_key" ? <TextField label="YouTube視聴URL" value={watchURL} onChange={setWatchURL} placeholder="https://www.youtube.com/watch?v=..." description="配信開始時のDiscord通知に使用します。" required /> : null}
         <TextField label="番組タイトルテンプレート" value={titleTemplate} onChange={setTitleTemplate} />
         <SelectField
@@ -562,10 +594,15 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
       <div className="grid gap-3 md:grid-cols-3">
         <SwitchField label="自動開始" checked={autoStart} onCheckedChange={setAutoStart} />
         <SwitchField label="自動停止" checked={autoStop} onCheckedChange={setAutoStop} />
-        <SwitchField label="停止時に完了扱い" checked={completeOnStop} onCheckedChange={setCompleteOnStop} />
+        {staticRelayMode ? (
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+            <div className="font-medium">停止時に完了扱い: 常に有効</div>
+            <p className="mt-1 text-xs text-muted-foreground">固定Relayモードでは停止時にYouTube配信を必ず完了扱いにします。</p>
+          </div>
+        ) : <SwitchField label="停止時に完了扱い" checked={completeOnStop} onCheckedChange={setCompleteOnStop} />}
       </div>
       {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、YouTube Live用途でGoogleアカウントを接続してください。</p> : null}
-      <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue)} />
+      <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue) || (staticRelayMode && !staticRelayReady)} />
     </form>
   );
 }
@@ -2101,7 +2138,8 @@ function observabilityActionButtons(resource: ResourceDefinition, row: ResourceR
     const id = rowString(row, ["id"]);
     const incidentID = rowString(row, ["incident_id"]);
     const actionName = rowString(row, ["action"]).trim().toLowerCase();
-    if (actionName === "rerun_diagnostics" && incidentID) {
+    if (actionName === "rerun_diagnostics") {
+      if (!incidentID) return [];
       return [{
         key: "diagnostic-rerun",
         label: "診断を再評価",
@@ -2146,6 +2184,22 @@ function observabilityActionSuccessMessage(action: { path: string; label: string
     return "診断を再評価しました。";
   }
   return `${action.label}を実行しました。`;
+}
+
+function observabilityRemediationExecutionConflictMessage(path: string, error: Error) {
+  if (!isRemediationExecutionPath(path) || !(error instanceof APIError) || error.status !== 409) return "";
+  switch (error.code) {
+    case "remediation_action_terminal":
+      return "この復旧操作は既に最終状態です。再実行せず、最新の状態を確認してください。";
+    case "remediation_action_not_executable":
+      return "この復旧操作は現在の状態では実行できません。最新の状態を確認してから、必要な承認または診断の再評価を行ってください。";
+    default:
+      return "復旧操作の状態が更新されたため実行できませんでした。最新の状態を読み込みました。再実行せず、現在の状態を確認してください。";
+  }
+}
+
+function isRemediationExecutionPath(path: string) {
+  return /^\/observability\/remediation-actions\/[^/]+\/execute$/.test(path);
 }
 
 function EditResourceButton({ resource, row, disabled }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean }) {
@@ -2730,6 +2784,7 @@ const valueLabels: Record<string, string> = {
   stream_key: "既存ストリームキー",
   live_api: "YouTube Live API本番",
   live_api_dry_run: "YouTube Live API検証",
+  live_api_relay_static: "固定Relay（YouTube Live API）",
   top_left: "左上",
   top_right: "右上",
   bottom_left: "左下",

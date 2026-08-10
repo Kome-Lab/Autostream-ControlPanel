@@ -24,12 +24,13 @@ const (
 )
 
 type Profile struct {
-	ID        string         `json:"id"`
-	Kind      ProfileKind    `json:"kind"`
-	Name      string         `json:"name"`
-	Config    map[string]any `json:"config"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	ID                          string         `json:"id"`
+	Kind                        ProfileKind    `json:"kind"`
+	Name                        string         `json:"name"`
+	Config                      map[string]any `json:"config"`
+	CreatedAt                   time.Time      `json:"created_at"`
+	UpdatedAt                   time.Time      `json:"updated_at"`
+	YouTubeRelayBindingRevision uint64         `json:"-"`
 }
 
 type ProfileStore interface {
@@ -43,12 +44,34 @@ type ProfileStore interface {
 var ErrProfileRawSecretConfig = errors.New("profile config must reference secrets by name and must not contain raw secret values")
 
 type MemoryProfileStore struct {
-	mu       sync.Mutex
-	profiles map[string]Profile
+	mu                       sync.Mutex
+	profiles                 map[string]Profile
+	relayBindingClaimStreams *MemoryStreamStore
 }
 
 func NewMemoryProfileStore() *MemoryProfileStore {
 	return &MemoryProfileStore{profiles: map[string]Profile{}}
+}
+
+// BindStreamYouTubeRelayBindingClaims gives a memory ProfileStore the same
+// output-profile fence as MariaDB. Bind it during test/server construction
+// before handling requests; the shared lock serializes output mutation with
+// relay-static reservation.
+func (s *MemoryProfileStore) BindStreamYouTubeRelayBindingClaims(streams *MemoryStreamStore) {
+	if streams == nil {
+		s.mu.Lock()
+		s.relayBindingClaimStreams = nil
+		s.mu.Unlock()
+		return
+	}
+	streams.youtubeRelayBindingOutputMu.Lock()
+	defer streams.youtubeRelayBindingOutputMu.Unlock()
+	s.mu.Lock()
+	s.relayBindingClaimStreams = streams
+	s.mu.Unlock()
+	streams.mu.Lock()
+	streams.relayBindingClaimProfiles = s
+	streams.mu.Unlock()
 }
 
 func (s *MemoryProfileStore) ListProfiles(ctx context.Context, kind ProfileKind) ([]Profile, error) {
@@ -113,11 +136,16 @@ func (s *MemoryProfileStore) UpdateProfile(ctx context.Context, kind ProfileKind
 	if err := validateProfileInput(kind, name, config); err != nil {
 		return Profile{}, err
 	}
+	unlockRelayBindingOutput := s.lockRelayBindingOutputMutation(kind)
+	defer unlockRelayBindingOutput()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	profile, ok := s.profiles[id]
 	if !ok || profile.Kind != kind {
 		return Profile{}, ErrNotFound
+	}
+	if err := s.requireUnclaimedYouTubeOutputLocked(ctx, kind, id); err != nil {
+		return Profile{}, err
 	}
 	for existingID, existing := range s.profiles {
 		if existingID != id && existing.Kind == kind && existing.Name == strings.TrimSpace(name) {
@@ -126,6 +154,9 @@ func (s *MemoryProfileStore) UpdateProfile(ctx context.Context, kind ProfileKind
 	}
 	profile.Name = strings.TrimSpace(name)
 	profile.Config = copyConfig(config)
+	if kind == ProfileYouTubeOutput {
+		profile.YouTubeRelayBindingRevision++
+	}
 	profile.UpdatedAt = time.Now().UTC()
 	s.profiles[id] = profile
 	return copyProfile(profile), nil
@@ -138,13 +169,46 @@ func (s *MemoryProfileStore) DeleteProfile(ctx context.Context, kind ProfileKind
 	if err := validateProfileKind(kind); err != nil {
 		return err
 	}
+	unlockRelayBindingOutput := s.lockRelayBindingOutputMutation(kind)
+	defer unlockRelayBindingOutput()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	profile, ok := s.profiles[id]
 	if !ok || profile.Kind != kind {
 		return ErrNotFound
 	}
+	if err := s.requireUnclaimedYouTubeOutputLocked(ctx, kind, id); err != nil {
+		return err
+	}
 	delete(s.profiles, id)
+	return nil
+}
+
+func (s *MemoryProfileStore) lockRelayBindingOutputMutation(kind ProfileKind) func() {
+	if kind != ProfileYouTubeOutput {
+		return func() {}
+	}
+	s.mu.Lock()
+	streams := s.relayBindingClaimStreams
+	s.mu.Unlock()
+	if streams == nil {
+		return func() {}
+	}
+	streams.youtubeRelayBindingOutputMu.Lock()
+	return streams.youtubeRelayBindingOutputMu.Unlock
+}
+
+func (s *MemoryProfileStore) requireUnclaimedYouTubeOutputLocked(ctx context.Context, kind ProfileKind, id string) error {
+	if kind != ProfileYouTubeOutput || s.relayBindingClaimStreams == nil {
+		return nil
+	}
+	hasClaim, err := s.relayBindingClaimStreams.HasStreamYouTubeRelayBindingClaimForOutput(ctx, id)
+	if err != nil {
+		return err
+	}
+	if hasClaim {
+		return ErrYouTubeRelayBindingClaimActive
+	}
 	return nil
 }
 
@@ -160,7 +224,7 @@ func (s MariaDBProfileStore) ListProfiles(ctx context.Context, kind ProfileKind)
 	if err := validateProfileKind(kind); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, name, config, created_at, updated_at FROM profiles WHERE kind = ? ORDER BY name`, string(kind))
+	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, name, config, created_at, updated_at, youtube_relay_binding_revision FROM profiles WHERE kind = ? ORDER BY name`, string(kind))
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +261,7 @@ func (s MariaDBProfileStore) GetProfile(ctx context.Context, kind ProfileKind, i
 	if err := validateProfileKind(kind); err != nil {
 		return Profile{}, err
 	}
-	profile, err := scanProfile(s.db.QueryRowContext(ctx, `SELECT id, kind, name, config, created_at, updated_at FROM profiles WHERE id = ? AND kind = ?`, id, string(kind)))
+	profile, err := scanProfile(s.db.QueryRowContext(ctx, `SELECT id, kind, name, config, created_at, updated_at, youtube_relay_binding_revision FROM profiles WHERE id = ? AND kind = ?`, id, string(kind)))
 	if err == sql.ErrNoRows {
 		return Profile{}, ErrNotFound
 	}
@@ -212,8 +276,17 @@ func (s MariaDBProfileStore) UpdateProfile(ctx context.Context, kind ProfileKind
 	if err != nil {
 		return Profile{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE profiles SET name = ?, config = ?, updated_at = ? WHERE id = ? AND kind = ?`, strings.TrimSpace(name), string(body), time.Now().UTC(), id, string(kind))
+	query := `UPDATE profiles SET name = ?, config = ?, updated_at = ? WHERE id = ? AND kind = ?`
+	if kind == ProfileYouTubeOutput {
+		query = `UPDATE profiles
+SET name = ?, config = ?, updated_at = ?, youtube_relay_binding_revision = youtube_relay_binding_revision + 1
+WHERE id = ? AND kind = ?`
+	}
+	result, err := s.db.ExecContext(ctx, query, strings.TrimSpace(name), string(body), time.Now().UTC(), id, string(kind))
 	if err != nil {
+		if isYouTubeRelayBindingClaimProfileConstraintError(err) {
+			return Profile{}, ErrYouTubeRelayBindingClaimActive
+		}
 		return Profile{}, err
 	}
 	affected, err := result.RowsAffected()
@@ -232,6 +305,9 @@ func (s MariaDBProfileStore) DeleteProfile(ctx context.Context, kind ProfileKind
 	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM profiles WHERE id = ? AND kind = ?`, id, string(kind))
 	if err != nil {
+		if isYouTubeRelayBindingClaimProfileConstraintError(err) {
+			return ErrYouTubeRelayBindingClaimActive
+		}
 		return err
 	}
 	affected, err := result.RowsAffected()
@@ -252,7 +328,7 @@ func scanProfile(row profileScanner) (Profile, error) {
 	var profile Profile
 	var kind string
 	var config string
-	if err := row.Scan(&profile.ID, &kind, &profile.Name, &config, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
+	if err := row.Scan(&profile.ID, &kind, &profile.Name, &config, &profile.CreatedAt, &profile.UpdatedAt, &profile.YouTubeRelayBindingRevision); err != nil {
 		return Profile{}, err
 	}
 	profile.Kind = ProfileKind(kind)

@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 	youtubeapi "google.golang.org/api/youtube/v3"
 )
@@ -35,6 +36,94 @@ type PrepareRequest struct {
 	EnableAutoStop  bool
 }
 
+// RelayStaticPrepareRequest creates a broadcast bound to a pre-provisioned,
+// reusable YouTube LiveStream. The caller keeps the fixed ingest path outside
+// this client; no ingestion address or stream key is fetched or returned.
+type RelayStaticPrepareRequest struct {
+	PrepareRequest
+	ReusableLiveStreamID string
+}
+
+// RelayStaticBindError carries only the non-secret identity needed for a
+// caller to retain or release its reusable-stream claim after a bind failure.
+// CleanupConfirmed distinguishes a safely removed Broadcast from a state that
+// must be reconciled before reusing the fixed LiveStream.
+type RelayStaticBindError struct {
+	BroadcastID      string
+	LiveStreamID     string
+	CleanupConfirmed bool
+}
+
+func (e *RelayStaticBindError) Error() string {
+	if e != nil && !e.CleanupConfirmed {
+		return ErrRelayStaticBindCleanupUncertain.Error()
+	}
+	return ErrRelayStaticBindFailed.Error()
+}
+
+func (e *RelayStaticBindError) Unwrap() []error {
+	if e != nil && !e.CleanupConfirmed {
+		return []error{ErrRelayStaticBindFailed, ErrRelayStaticBindCleanupUncertain}
+	}
+	return []error{ErrRelayStaticBindFailed}
+}
+
+// RelayStaticBroadcastCreateError means liveBroadcasts.insert may have reached
+// YouTube, but this client did not receive a usable Broadcast identity. The
+// caller must retain the fixed LiveStream claim and reconcile it; the original
+// provider error is deliberately not retained because it may contain details
+// that are unsafe to surface.
+type RelayStaticBroadcastCreateError struct {
+	LiveStreamID string
+}
+
+func (e *RelayStaticBroadcastCreateError) Error() string {
+	return ErrRelayStaticBroadcastCreateUncertain.Error()
+}
+
+func (e *RelayStaticBroadcastCreateError) Unwrap() error {
+	return ErrRelayStaticBroadcastCreateUncertain
+}
+
+// RelayStaticBroadcastCleanupRequest identifies a known static-relay
+// Broadcast that was created but must be removed before the fixed relay claim
+// can be released. BroadcastID is a provider resource identity, never a key.
+type RelayStaticBroadcastCleanupRequest struct {
+	Credentials OAuthCredentials
+	BroadcastID string
+}
+
+// RelayStaticBroadcastCleanupError means a DELETE request could have reached
+// YouTube but confirmed cleanup was not obtained. Its identity fields are safe
+// for durable recovery state; it intentionally does not unwrap provider errors.
+type RelayStaticBroadcastCleanupError struct {
+	BroadcastID string
+}
+
+func (e *RelayStaticBroadcastCleanupError) Error() string {
+	return ErrRelayStaticBroadcastCleanupUncertain.Error()
+}
+
+func (e *RelayStaticBroadcastCleanupError) Unwrap() []error {
+	return []error{ErrRelayStaticBroadcastCleanupFailed, ErrRelayStaticBroadcastCleanupUncertain}
+}
+
+// RelayStaticBroadcastCompletionError means a transition to complete could not
+// be confirmed by a follow-up status read. The Broadcast identity is safe to
+// retain for the caller's fenced retry state; provider details are never
+// retained or exposed.
+type RelayStaticBroadcastCompletionError struct {
+	BroadcastID string
+}
+
+func (e *RelayStaticBroadcastCompletionError) Error() string {
+	return ErrRelayStaticBroadcastCompletionUncertain.Error()
+}
+
+func (e *RelayStaticBroadcastCompletionError) Unwrap() []error {
+	return []error{ErrRelayStaticBroadcastCompletionFailed, ErrRelayStaticBroadcastCompletionUncertain}
+}
+
 type PreparedOutput struct {
 	RTMPURL      string
 	StreamKey    string
@@ -47,9 +136,48 @@ type CompleteRequest struct {
 	BroadcastID string
 }
 
+// BroadcastLifecycleRequest contains only the OAuth credentials needed for a
+// read and the public Broadcast resource identity. It deliberately does not
+// expose ingest settings or any stream key.
+type BroadcastLifecycleRequest struct {
+	Credentials OAuthCredentials
+	BroadcastID string
+}
+
 type LiveClient interface {
 	Prepare(ctx context.Context, req PrepareRequest) (PreparedOutput, error)
 	Complete(ctx context.Context, req CompleteRequest) error
+}
+
+// BroadcastLifecycleClient is an optional extension so existing LiveClient
+// fakes remain source-compatible. Callers that use it must wait for exactly
+// the provider's `live` lifecycle before announcing a live-api broadcast.
+type BroadcastLifecycleClient interface {
+	BroadcastLifecycle(ctx context.Context, req BroadcastLifecycleRequest) (string, error)
+}
+
+// RelayStaticLiveClient is intentionally separate from LiveClient so existing
+// live_api callers retain their stable contract while relay-static callers opt
+// into the non-secret, reusable-LiveStream path.
+type RelayStaticLiveClient interface {
+	PrepareRelayStatic(ctx context.Context, req RelayStaticPrepareRequest) (PreparedOutput, error)
+}
+
+// RelayStaticBroadcastCleanupClient is deliberately separate from
+// RelayStaticLiveClient so existing relay-static fakes and callers do not gain
+// a destructive capability implicitly. A nil error means DELETE was confirmed
+// by YouTube or the Broadcast was already absent; any other error requires the
+// caller to retain the fixed relay claim for recovery.
+type RelayStaticBroadcastCleanupClient interface {
+	DeleteRelayStaticBroadcast(ctx context.Context, req RelayStaticBroadcastCleanupRequest) error
+}
+
+// RelayStaticBroadcastCompletionClient confirms completion of a possibly
+// dispatched fixed-relay Broadcast. Unlike the generic completion method, it
+// reconciles an ambiguous transition response against the provider's current
+// lifecycle status before the caller releases its fixed-relay claim.
+type RelayStaticBroadcastCompletionClient interface {
+	CompleteRelayStaticBroadcast(ctx context.Context, req CompleteRequest) error
 }
 
 type LiveAPIClient struct {
@@ -57,15 +185,32 @@ type LiveAPIClient struct {
 }
 
 var (
-	ErrMissingCredentials = errors.New("youtube_oauth_credentials_missing")
-	ErrMissingBroadcastID = errors.New("youtube_broadcast_id_missing")
-	ErrMissingIngestInfo  = errors.New("youtube_ingest_info_missing")
+	ErrMissingCredentials                      = errors.New("youtube_oauth_credentials_missing")
+	ErrMissingBroadcastID                      = errors.New("youtube_broadcast_id_missing")
+	ErrBroadcastNotFound                       = errors.New("youtube_broadcast_not_found")
+	ErrBroadcastLifecycleUnavailable           = errors.New("youtube_broadcast_lifecycle_unavailable")
+	ErrMissingIngestInfo                       = errors.New("youtube_ingest_info_missing")
+	ErrMissingReusableLiveStreamID             = errors.New("youtube_reusable_live_stream_id_missing")
+	ErrReusableLiveStreamNotFound              = errors.New("youtube_reusable_live_stream_not_found")
+	ErrReusableLiveStreamNotReusable           = errors.New("youtube_reusable_live_stream_not_reusable")
+	ErrRelayStaticBroadcastCreateUncertain     = errors.New("youtube_relay_static_broadcast_create_uncertain")
+	ErrRelayStaticBindFailed                   = errors.New("youtube_relay_static_bind_failed")
+	ErrRelayStaticBindCleanupUncertain         = errors.New("youtube_relay_static_bind_cleanup_uncertain")
+	ErrRelayStaticBroadcastCleanupFailed       = errors.New("youtube_relay_static_broadcast_cleanup_failed")
+	ErrRelayStaticBroadcastCleanupUncertain    = errors.New("youtube_relay_static_broadcast_cleanup_uncertain")
+	ErrRelayStaticBroadcastCompletionFailed    = errors.New("youtube_relay_static_broadcast_completion_failed")
+	ErrRelayStaticBroadcastCompletionUncertain = errors.New("youtube_relay_static_broadcast_completion_uncertain")
 )
 
 // minimumScheduledStartLead keeps an immediately requested broadcast just far
 // enough in the future for YouTube's liveBroadcasts.insert validation while
 // avoiding an operator-visible artificial wait.
 const minimumScheduledStartLead = 15 * time.Second
+
+const (
+	relayStaticCleanupTimeout    = 5 * time.Second
+	relayStaticCompletionTimeout = 5 * time.Second
+)
 
 func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (PreparedOutput, error) {
 	if err := validateCredentials(req.Credentials); err != nil {
@@ -75,35 +220,12 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 	if err != nil {
 		return PreparedOutput{}, err
 	}
-	title := strings.TrimSpace(req.Title)
-	if title == "" {
-		title = strings.TrimSpace(req.StreamName)
-	}
-	if title == "" {
-		title = "AutoStream Broadcast"
-	}
-	privacy := strings.TrimSpace(req.PrivacyStatus)
-	if privacy == "" {
-		privacy = "private"
-	}
-	start := normalizedScheduledStart(req.ScheduledStart, time.Now())
-	broadcast, err := service.LiveBroadcasts.Insert([]string{"snippet", "status", "contentDetails"}, &youtubeapi.LiveBroadcast{
-		Snippet: &youtubeapi.LiveBroadcastSnippet{
-			Title:              title,
-			Description:        req.Description,
-			ScheduledStartTime: start.Format(time.RFC3339),
-		},
-		Status: &youtubeapi.LiveBroadcastStatus{PrivacyStatus: privacy},
-		ContentDetails: &youtubeapi.LiveBroadcastContentDetails{
-			EnableAutoStart: req.EnableAutoStart,
-			EnableAutoStop:  req.EnableAutoStop,
-		},
-	}).Context(ctx).Do()
+	broadcast, err := prepareBroadcast(ctx, service, req)
 	if err != nil {
 		return PreparedOutput{}, err
 	}
 	stream, err := service.LiveStreams.Insert([]string{"snippet", "cdn"}, &youtubeapi.LiveStream{
-		Snippet: &youtubeapi.LiveStreamSnippet{Title: title + " input"},
+		Snippet: &youtubeapi.LiveStreamSnippet{Title: broadcastTitle(req) + " input"},
 		Cdn: &youtubeapi.CdnSettings{
 			FrameRate:     defaultString(req.FrameRate, "60fps"),
 			IngestionType: "rtmp",
@@ -124,6 +246,133 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		return PreparedOutput{}, ErrMissingIngestInfo
 	}
 	return PreparedOutput{RTMPURL: rtmpURL, StreamKey: streamKey, BroadcastID: broadcast.Id, LiveStreamID: stream.Id}, nil
+}
+
+// PrepareRelayStatic creates a broadcast and binds it to the fixed
+// pre-provisioned LiveStream used by a managed static output relay. It requests
+// only the stream's ID and reusable flag, and never reads or returns ingestion
+// details.
+func (c LiveAPIClient) PrepareRelayStatic(ctx context.Context, req RelayStaticPrepareRequest) (PreparedOutput, error) {
+	if err := validateCredentials(req.Credentials); err != nil {
+		return PreparedOutput{}, err
+	}
+	reusableLiveStreamID := strings.TrimSpace(req.ReusableLiveStreamID)
+	if reusableLiveStreamID == "" {
+		return PreparedOutput{}, ErrMissingReusableLiveStreamID
+	}
+	service, err := c.service(ctx, req.Credentials)
+	if err != nil {
+		return PreparedOutput{}, err
+	}
+	liveStreams, err := service.LiveStreams.List([]string{"id", "contentDetails"}).
+		Id(reusableLiveStreamID).
+		Fields("items(id,contentDetails/isReusable)").
+		Context(ctx).
+		Do()
+	if err != nil {
+		if isYouTubeNotFound(err) {
+			return PreparedOutput{}, ErrReusableLiveStreamNotFound
+		}
+		return PreparedOutput{}, err
+	}
+	if len(liveStreams.Items) != 1 || liveStreams.Items[0] == nil || strings.TrimSpace(liveStreams.Items[0].Id) != reusableLiveStreamID {
+		return PreparedOutput{}, ErrReusableLiveStreamNotFound
+	}
+	if liveStreams.Items[0].ContentDetails == nil || !liveStreams.Items[0].ContentDetails.IsReusable {
+		return PreparedOutput{}, ErrReusableLiveStreamNotReusable
+	}
+	broadcast, err := prepareBroadcast(ctx, service, req.PrepareRequest)
+	if err != nil {
+		return PreparedOutput{LiveStreamID: reusableLiveStreamID}, &RelayStaticBroadcastCreateError{LiveStreamID: reusableLiveStreamID}
+	}
+	if _, err := service.LiveBroadcasts.Bind(broadcast.Id, []string{"id", "contentDetails"}).StreamId(reusableLiveStreamID).Context(ctx).Do(); err != nil {
+		prepared := PreparedOutput{BroadcastID: broadcast.Id, LiveStreamID: reusableLiveStreamID}
+		return prepared, &RelayStaticBindError{
+			BroadcastID:      prepared.BroadcastID,
+			LiveStreamID:     prepared.LiveStreamID,
+			CleanupConfirmed: cleanupRelayStaticBroadcast(ctx, service, broadcast.Id),
+		}
+	}
+	return PreparedOutput{BroadcastID: broadcast.Id, LiveStreamID: reusableLiveStreamID}, nil
+}
+
+func cleanupRelayStaticBroadcast(ctx context.Context, service *youtubeapi.Service, broadcastID string) bool {
+	return deleteRelayStaticBroadcast(ctx, service, broadcastID) == nil
+}
+
+// DeleteRelayStaticBroadcast performs the only safe cleanup for an unstarted
+// fixed-relay Broadcast. It never transitions the Broadcast to complete.
+// Success and a confirmed 404 are safe to release; all other provider or
+// transport outcomes are typed uncertainty and must retain the relay claim.
+func (c LiveAPIClient) DeleteRelayStaticBroadcast(ctx context.Context, req RelayStaticBroadcastCleanupRequest) error {
+	if err := validateCredentials(req.Credentials); err != nil {
+		return err
+	}
+	broadcastID := strings.TrimSpace(req.BroadcastID)
+	if broadcastID == "" {
+		return ErrMissingBroadcastID
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayStaticCleanupTimeout)
+	defer cancel()
+	service, err := c.service(cleanupCtx, req.Credentials)
+	if err != nil {
+		return &RelayStaticBroadcastCleanupError{BroadcastID: broadcastID}
+	}
+	if err := deleteRelayStaticBroadcastWithContext(cleanupCtx, service, broadcastID); err != nil {
+		return &RelayStaticBroadcastCleanupError{BroadcastID: broadcastID}
+	}
+	return nil
+}
+
+func deleteRelayStaticBroadcast(ctx context.Context, service *youtubeapi.Service, broadcastID string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayStaticCleanupTimeout)
+	defer cancel()
+	return deleteRelayStaticBroadcastWithContext(cleanupCtx, service, broadcastID)
+}
+
+func deleteRelayStaticBroadcastWithContext(ctx context.Context, service *youtubeapi.Service, broadcastID string) error {
+	err := service.LiveBroadcasts.Delete(broadcastID).Context(ctx).Do()
+	if err == nil || isYouTubeNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func prepareBroadcast(ctx context.Context, service *youtubeapi.Service, req PrepareRequest) (*youtubeapi.LiveBroadcast, error) {
+	title := broadcastTitle(req)
+	privacy := strings.TrimSpace(req.PrivacyStatus)
+	if privacy == "" {
+		privacy = "private"
+	}
+	start := normalizedScheduledStart(req.ScheduledStart, time.Now())
+	return service.LiveBroadcasts.Insert([]string{"snippet", "status", "contentDetails"}, &youtubeapi.LiveBroadcast{
+		Snippet: &youtubeapi.LiveBroadcastSnippet{
+			Title:              title,
+			Description:        req.Description,
+			ScheduledStartTime: start.Format(time.RFC3339),
+		},
+		Status: &youtubeapi.LiveBroadcastStatus{PrivacyStatus: privacy},
+		ContentDetails: &youtubeapi.LiveBroadcastContentDetails{
+			EnableAutoStart: req.EnableAutoStart,
+			EnableAutoStop:  req.EnableAutoStop,
+		},
+	}).Context(ctx).Do()
+}
+
+func broadcastTitle(req PrepareRequest) string {
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		title = strings.TrimSpace(req.StreamName)
+	}
+	if title == "" {
+		return "AutoStream Broadcast"
+	}
+	return title
+}
+
+func isYouTubeNotFound(err error) bool {
+	var apiErr *googleapi.Error
+	return errors.As(err, &apiErr) && apiErr.Code == http.StatusNotFound
 }
 
 func normalizedScheduledStart(requested, now time.Time) time.Time {
@@ -160,6 +409,93 @@ func (c LiveAPIClient) Complete(ctx context.Context, req CompleteRequest) error 
 	}
 	_, err = service.LiveBroadcasts.Transition("complete", broadcastID, []string{"id", "status"}).Context(ctx).Do()
 	return err
+}
+
+// BroadcastLifecycle returns the provider's current normalized lifecycle for
+// one exact Broadcast. An empty, missing, or non-matching response is not
+// interpreted as live: callers retain a pending notification instead.
+func (c LiveAPIClient) BroadcastLifecycle(ctx context.Context, req BroadcastLifecycleRequest) (string, error) {
+	if err := validateCredentials(req.Credentials); err != nil {
+		return "", err
+	}
+	broadcastID := strings.TrimSpace(req.BroadcastID)
+	if broadcastID == "" {
+		return "", ErrMissingBroadcastID
+	}
+	service, err := c.service(ctx, req.Credentials)
+	if err != nil {
+		return "", err
+	}
+	response, err := service.LiveBroadcasts.List([]string{"id", "status"}).
+		Id(broadcastID).
+		Fields("items(id,status/lifeCycleStatus)").
+		Context(ctx).
+		Do()
+	if err != nil {
+		if isYouTubeNotFound(err) {
+			return "", ErrBroadcastNotFound
+		}
+		return "", err
+	}
+	for _, broadcast := range response.Items {
+		if broadcast == nil || strings.TrimSpace(broadcast.Id) != broadcastID || broadcast.Status == nil {
+			continue
+		}
+		lifecycle := strings.ToLower(strings.TrimSpace(broadcast.Status.LifeCycleStatus))
+		if lifecycle != "" {
+			return lifecycle, nil
+		}
+	}
+	return "", ErrBroadcastLifecycleUnavailable
+}
+
+// CompleteRelayStaticBroadcast is the fixed-relay completion boundary. A
+// transport error or redundant transition can mean that YouTube already
+// accepted the requested completion. In that case it reads only the safe
+// Broadcast lifecycle field and succeeds exclusively once the provider reports
+// the terminal complete status; all other outcomes retain the caller's claim.
+func (c LiveAPIClient) CompleteRelayStaticBroadcast(ctx context.Context, req CompleteRequest) error {
+	if err := validateCredentials(req.Credentials); err != nil {
+		return err
+	}
+	broadcastID := strings.TrimSpace(req.BroadcastID)
+	if broadcastID == "" {
+		return ErrMissingBroadcastID
+	}
+	service, err := c.service(ctx, req.Credentials)
+	if err != nil {
+		return &RelayStaticBroadcastCompletionError{BroadcastID: broadcastID}
+	}
+	if _, err = service.LiveBroadcasts.Transition("complete", broadcastID, []string{"id", "status"}).Context(ctx).Do(); err == nil {
+		return nil
+	}
+	confirmationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayStaticCompletionTimeout)
+	defer cancel()
+	confirmationService, confirmationErr := c.service(confirmationCtx, req.Credentials)
+	if confirmationErr != nil || !relayStaticBroadcastIsComplete(confirmationCtx, confirmationService, broadcastID) {
+		return &RelayStaticBroadcastCompletionError{BroadcastID: broadcastID}
+	}
+	return nil
+}
+
+func relayStaticBroadcastIsComplete(ctx context.Context, service *youtubeapi.Service, broadcastID string) bool {
+	if service == nil {
+		return false
+	}
+	response, err := service.LiveBroadcasts.List([]string{"id", "status"}).
+		Id(broadcastID).
+		Fields("items(id,status/lifeCycleStatus)").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return false
+	}
+	for _, broadcast := range response.Items {
+		if broadcast != nil && strings.TrimSpace(broadcast.Id) == broadcastID && broadcast.Status != nil && strings.EqualFold(strings.TrimSpace(broadcast.Status.LifeCycleStatus), "complete") {
+			return true
+		}
+	}
+	return false
 }
 
 // RefreshAccessToken obtains a fresh short-lived access token from the
@@ -215,7 +551,11 @@ func RedactedError(err error) string {
 	if err == nil {
 		return ""
 	}
-	if errors.Is(err, ErrMissingCredentials) || errors.Is(err, ErrMissingBroadcastID) || errors.Is(err, ErrMissingIngestInfo) {
+	if errors.Is(err, ErrMissingCredentials) || errors.Is(err, ErrMissingBroadcastID) || errors.Is(err, ErrBroadcastNotFound) || errors.Is(err, ErrBroadcastLifecycleUnavailable) || errors.Is(err, ErrMissingIngestInfo) ||
+		errors.Is(err, ErrMissingReusableLiveStreamID) || errors.Is(err, ErrReusableLiveStreamNotFound) || errors.Is(err, ErrReusableLiveStreamNotReusable) ||
+		errors.Is(err, ErrRelayStaticBroadcastCreateUncertain) || errors.Is(err, ErrRelayStaticBindFailed) || errors.Is(err, ErrRelayStaticBindCleanupUncertain) ||
+		errors.Is(err, ErrRelayStaticBroadcastCleanupFailed) || errors.Is(err, ErrRelayStaticBroadcastCleanupUncertain) ||
+		errors.Is(err, ErrRelayStaticBroadcastCompletionFailed) || errors.Is(err, ErrRelayStaticBroadcastCompletionUncertain) {
 		return err.Error()
 	}
 	return fmt.Sprintf("%T", err)

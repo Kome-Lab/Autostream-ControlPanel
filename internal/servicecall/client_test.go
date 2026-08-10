@@ -520,6 +520,70 @@ func TestDisabledClientReturnsFailureWithoutRequest(t *testing.T) {
 	}
 }
 
+func TestStopExtendsOnlyEncoderTimeoutWithoutMutatingSuppliedHTTPClient(t *testing.T) {
+	const normalTimeout = time.Second
+	transport := &requestDeadlineTransport{}
+	suppliedHTTPClient := &http.Client{Transport: transport, Timeout: normalTimeout}
+	client := testClient()
+	client.Config.Timeout = normalTimeout
+	client.HTTP = suppliedHTTPClient
+	stream := store.Stream{ID: "stream-01"}
+
+	for _, service := range []store.RegisteredService{
+		{ServiceID: "encoder-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com"},
+		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: "https://discord.example.com"},
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com"},
+	} {
+		results := client.Stop(t.Context(), stream, []store.RegisteredService{service})
+		if len(results) != 1 || !results[0].Success {
+			t.Fatalf("stop %s failed: %#v", service.ServiceType, results)
+		}
+	}
+	startResults := client.Start(t.Context(), stream, []store.RegisteredService{{
+		ServiceID: "encoder-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com",
+	}}, StartRequest{})
+	if len(startResults) != 1 || !startResults[0].Success {
+		t.Fatalf("start failed: %#v", startResults)
+	}
+
+	if client.Config.Timeout != normalTimeout {
+		t.Fatalf("client config timeout was mutated: got %s want %s", client.Config.Timeout, normalTimeout)
+	}
+	if suppliedHTTPClient.Timeout != normalTimeout {
+		t.Fatalf("supplied HTTP client timeout was mutated: got %s want %s", suppliedHTTPClient.Timeout, normalTimeout)
+	}
+	if len(transport.requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(transport.requests))
+	}
+	assertRequestTimeout(t, transport.requests[0], 15*time.Second)
+	assertRequestTimeout(t, transport.requests[1], normalTimeout)
+	assertRequestTimeout(t, transport.requests[2], normalTimeout)
+	assertRequestTimeout(t, transport.requests[3], normalTimeout)
+}
+
+func TestStopEncoderUsesLongerConfiguredTimeout(t *testing.T) {
+	const configuredTimeout = 20 * time.Second
+	transport := &requestDeadlineTransport{}
+	suppliedHTTPClient := &http.Client{Transport: transport, Timeout: time.Second}
+	client := testClient()
+	client.Config.Timeout = configuredTimeout
+	client.HTTP = suppliedHTTPClient
+
+	results := client.Stop(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{
+		ServiceID: "encoder-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com",
+	}})
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("encoder stop failed: %#v", results)
+	}
+	if suppliedHTTPClient.Timeout != time.Second {
+		t.Fatalf("supplied HTTP client timeout was mutated: got %s want %s", suppliedHTTPClient.Timeout, time.Second)
+	}
+	if len(transport.requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(transport.requests))
+	}
+	assertRequestTimeout(t, transport.requests[0], configuredTimeout)
+}
+
 func TestPreviewAssetUsesAssignedEncoderTokenAndBoundsResponse(t *testing.T) {
 	playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2.0,\nsegment-000001.ts\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -617,7 +681,7 @@ func TestPreviewAssetDoesNotForwardInvalidOrMultiRange(t *testing.T) {
 	}
 }
 
-func TestNotifyDiscordYouTubeLiveRetriesTransientFailures(t *testing.T) {
+func TestNotifyDiscordYouTubeLiveDoesNotRetryAmbiguousFailure(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -634,20 +698,33 @@ func TestNotifyDiscordYouTubeLiveRetriesTransientFailures(t *testing.T) {
 		if payload["event_id"] != "youtube-live-event-01" || payload["watch_url"] != "https://www.youtube.com/watch?v=video_01" {
 			t.Fatalf("unexpected notification payload: %#v", payload)
 		}
-		if attempts < 3 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{"code": "discord_unavailable"})
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "discord_unavailable"})
 	}))
 	defer server.Close()
 
 	client := testClient()
 	result := client.NotifyDiscordYouTubeLive(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL}}, "youtube-live-event-01", "https://www.youtube.com/watch?v=video_01")
-	if !result.Success || result.StatusCode != http.StatusOK || attempts != 3 {
-		t.Fatalf("unexpected notification result: attempts=%d result=%#v", attempts, result)
+	if result.Success || result.StatusCode != http.StatusServiceUnavailable || result.Code != "discord_unavailable" || attempts != 1 {
+		t.Fatalf("ambiguous notification must make exactly one request: attempts=%d result=%#v", attempts, result)
+	}
+}
+
+func TestNotifyDiscordYouTubeLivePreservesBareRateLimitForDurableRetry(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		// A proxy or a minimal Bot deployment can return a real 429 without a
+		// JSON body. The durable outbox must still recognize this as an explicit
+		// pre-send rate-limit rejection, rather than losing it as a generic error.
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	result := testClient().NotifyDiscordYouTubeLive(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL}}, "youtube-live-event-01", "https://www.youtube.com/watch?v=video_01")
+	if result.Success || result.StatusCode != http.StatusTooManyRequests || result.Code != "" || attempts != 1 {
+		t.Fatalf("bare rate limit classification was lost: attempts=%d result=%#v", attempts, result)
 	}
 }
 
@@ -743,6 +820,42 @@ func testClient() Client {
 			AllowedHosts: map[string]struct{}{"127.0.0.1": {}},
 		},
 	}}
+}
+
+type capturedRequestDeadline struct {
+	path         string
+	deadlineSet  bool
+	timeToExpiry time.Duration
+}
+
+type requestDeadlineTransport struct {
+	requests []capturedRequestDeadline
+}
+
+func (t *requestDeadlineTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	deadline, deadlineSet := request.Context().Deadline()
+	captured := capturedRequestDeadline{path: request.URL.Path, deadlineSet: deadlineSet}
+	if deadlineSet {
+		captured.timeToExpiry = time.Until(deadline)
+	}
+	t.requests = append(t.requests, captured)
+	return &http.Response{
+		StatusCode: http.StatusAccepted,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    request,
+	}, nil
+}
+
+func assertRequestTimeout(t *testing.T, request capturedRequestDeadline, want time.Duration) {
+	t.Helper()
+	if !request.deadlineSet {
+		t.Fatalf("request %s had no deadline", request.path)
+	}
+	const tolerance = time.Second
+	if request.timeToExpiry < want-tolerance || request.timeToExpiry > want+tolerance {
+		t.Fatalf("request %s timeout = %s, want %s (+/-%s)", request.path, request.timeToExpiry, want, tolerance)
+	}
 }
 
 func hasIssueCode(issues []ReadinessIssue, code string) bool {

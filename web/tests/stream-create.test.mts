@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildStreamCreatePayload, buildStreamSettingsPayload, type StreamCreateValues } from "../src/lib/stream-create.ts";
+import { buildStreamCreatePayload, buildStreamSettingsPayload, streamScheduleInputValue, streamScheduleRFC3339, type StreamCreateValues } from "../src/lib/stream-create.ts";
 
 const baseValues: StreamCreateValues = {
   name: "定例配信",
@@ -47,6 +47,26 @@ test("choosing not to record omits archive_profile_id", () => {
   const payload = buildStreamCreatePayload({ ...baseValues, archiveProfileID: "" });
 
   assert.equal("archive_profile_id" in payload, false);
+});
+
+test("stream scheduling is opt-in on create and can be deliberately cleared on edit", () => {
+  const future = "2030-07-10T01:00:00Z";
+
+  const inputValue = streamScheduleInputValue(future);
+  assert.notEqual(inputValue, "", "an existing RFC3339 schedule must remain visible in the date control");
+  assert.equal(Date.parse(streamScheduleRFC3339(inputValue)), Date.parse(future), "saving an unchanged visible schedule must retain its instant");
+
+  const scheduledCreate = buildStreamCreatePayload({ ...baseValues, scheduledStartAt: future });
+  assert.equal(scheduledCreate.scheduled_start_at, future);
+
+  const immediateCreate = buildStreamCreatePayload({ ...baseValues, scheduledStartAt: "" });
+  assert.equal("scheduled_start_at" in immediateCreate, false, "an empty schedule must not turn an immediate stream into a scheduled one");
+
+  const retainedSchedule = buildStreamSettingsPayload({ ...baseValues, scheduledStartAt: future });
+  assert.equal(retainedSchedule.scheduled_start_at, future);
+
+  const clearedSchedule = buildStreamSettingsPayload({ ...baseValues, scheduledStartAt: "" });
+  assert.equal(clearedSchedule.scheduled_start_at, "", "an edit must send an explicit clear for a previously scheduled stream");
 });
 
 test("stream editing sends standard settings and deliberate clears without legacy archive fields", () => {

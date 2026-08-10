@@ -35,6 +35,7 @@ export function buildStreamCreatePayload(values: StreamCreateValues): Record<str
     overlay_profile_id: values.watermarkEnabled ? values.overlayProfileID : "",
     ...(values.encoderServiceID === undefined ? {} : { encoder_service_id: values.encoderServiceID }),
     ...(values.workerServiceID === undefined ? {} : { worker_service_id: values.workerServiceID }),
+    scheduled_start_at: values.scheduledStartAt,
   });
 }
 
@@ -64,4 +65,23 @@ export function buildStreamSettingsPayload(values: StreamCreateValues): Record<s
 
 function compactRecord(record: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== "" && value !== undefined));
+}
+
+// A datetime-local control represents the browser's local wall-clock time,
+// while the API contract uses RFC3339. Keep the conversion at the UI boundary
+// so an empty control remains an intentional immediate-start request.
+export function streamScheduleInputValue(value?: string): string {
+  const raw = value?.trim() || "";
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+export function streamScheduleRFC3339(value?: string): string {
+  const raw = value?.trim() || "";
+  if (!raw) return "";
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? raw : date.toISOString();
 }
