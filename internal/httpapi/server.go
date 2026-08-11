@@ -6974,7 +6974,7 @@ func (s *Server) runtimeConfigForService(ctx context.Context, service store.Regi
 	if err != nil {
 		return serviceRuntimeConfigResponse{}, "list_service_assignments_failed", err
 	}
-	profiles, err := s.runtimeProfilesForService(ctx, service)
+	profiles, err := s.runtimeProfilesForService(ctx, service, assignments)
 	if err != nil {
 		return serviceRuntimeConfigResponse{}, "list_runtime_profiles_failed", err
 	}
@@ -7085,16 +7085,36 @@ func (s *Server) serviceRuntimeSecretResolve(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func (s *Server) runtimeProfilesForService(ctx context.Context, service store.RegisteredService) (map[string][]store.Profile, error) {
+func (s *Server) runtimeProfilesForService(ctx context.Context, service store.RegisteredService, assignments []store.StreamServiceAssignment) (map[string][]store.Profile, error) {
 	kinds := runtimeProfileKindsForService(service.ServiceType)
 	profiles := make(map[string][]store.Profile, len(kinds))
+	streamOverlayProfileIDs := make(map[string]struct{})
+	if service.ServiceType == "encoder_recorder" {
+		for _, assignment := range assignments {
+			if assignment.ServiceID != service.ServiceID || assignment.ServiceType != service.ServiceType {
+				continue
+			}
+			stream, err := s.streams.GetStream(ctx, assignment.StreamID)
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if profileID := strings.TrimSpace(stream.OverlayProfileID); profileID != "" {
+				streamOverlayProfileIDs[profileID] = struct{}{}
+			}
+		}
+	}
 	for _, kind := range kinds {
 		items, err := s.profiles.ListProfiles(ctx, kind)
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range items {
-			if kind != store.ProfileCaption && !runtimeProfileMatchesService(item.Config, service.ServiceID) {
+			if kind != store.ProfileCaption && !runtimeProfileMatchesService(item.Config, service.ServiceID) &&
+				!(kind == store.ProfileOverlay && service.ServiceType == "encoder_recorder" &&
+					runtimeOverlayProfileMayFollowAssignedEncoder(item, streamOverlayProfileIDs)) {
 				continue
 			}
 			item.Config = sanitizeRuntimeProfileConfigForKind(kind, item.Config)
@@ -7102,6 +7122,27 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 		}
 	}
 	return profiles, nil
+}
+
+// Watermark profiles are selected by stream settings, so an unscoped profile
+// referenced by a stream must follow that stream's assigned Encoder. Explicit
+// service bindings still win and are never overridden by the stream reference.
+func runtimeOverlayProfileMayFollowAssignedEncoder(profile store.Profile, streamOverlayProfileIDs map[string]struct{}) bool {
+	if _, referenced := streamOverlayProfileIDs[profile.ID]; !referenced {
+		return false
+	}
+	if _, configured := profile.Config["service_id"]; configured && strings.TrimSpace(configString(profile.Config, "service_id")) != "" {
+		return false
+	}
+	if values, configured := profile.Config["service_ids"]; configured {
+		if list, ok := values.([]any); ok && len(list) > 0 {
+			return false
+		}
+		if list, ok := values.([]string); ok && len(list) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) runtimeDiscordStreamConfigs(ctx context.Context, service store.RegisteredService, assignments []store.StreamServiceAssignment) ([]serviceRuntimeDiscordStreamConfig, error) {

@@ -10382,6 +10382,85 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 	}
 }
 
+func TestServiceRuntimeConfigIncludesStreamWatermarkForAssignedEncoder(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	stream, err := streams.CreateStream(t.Context(), "encoder watermark stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "encoder_recorder", []string{"service.register", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID:   "encoder-watermark-01",
+		ServiceType: "encoder_recorder",
+		ServiceName: "Encoder Watermark 01",
+		PublicURL:   "https://encoder-watermark.example.com",
+		Version:     "0.1.0",
+	})
+	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-watermark-01", stream.ID, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := profiles.CreateProfile(t.Context(), store.ProfileOverlay, "Kome-Lab watermark", map[string]any{
+		"watermark_enabled":        true,
+		"watermark_image_data_url": "data:image/png;base64,AA==",
+		"watermark_file_name":      "kome-lab.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{OverlayProfileID: overlay.ID}); err != nil {
+		t.Fatal(err)
+	}
+	otherStream, err := streams.CreateStream(t.Context(), "encoder watermark restricted stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID:   "encoder-other-01",
+		ServiceType: "encoder_recorder",
+		ServiceName: "Encoder Other 01",
+		PublicURL:   "https://encoder-other.example.com",
+		Version:     "0.1.0",
+	})
+	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-other-01", otherStream.ID, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	restrictedOverlay, err := profiles.CreateProfile(t.Context(), store.ProfileOverlay, "Other encoder watermark", map[string]any{
+		"service_id":               "encoder-other-01",
+		"watermark_image_data_url": "data:image/png;base64,BB==",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), otherStream.ID, store.StreamSettings{OverlayProfileID: restrictedOverlay.ID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
+
+	req := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=encoder-watermark-01", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("runtime config status = %d body = %s", res.Code, res.Body.String())
+	}
+	var body serviceRuntimeConfigResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	overlayProfiles := body.Profiles[string(store.ProfileOverlay)]
+	if len(overlayProfiles) != 1 || overlayProfiles[0].ID != overlay.ID {
+		t.Fatalf("assigned encoder runtime config omitted stream watermark profile: %#v", overlayProfiles)
+	}
+	if overlayProfiles[0].Config["watermark_image_data_url"] != "data:image/png;base64,AA==" {
+		t.Fatalf("runtime watermark image was not preserved: %#v", overlayProfiles[0].Config)
+	}
+}
+
 func TestServiceRuntimeConfigIncludesEncoderYouTubeConfigWithoutRawStreamKey(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()
