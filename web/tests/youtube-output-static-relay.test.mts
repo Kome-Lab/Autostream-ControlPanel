@@ -10,7 +10,7 @@ const formSource = source.slice(componentStart, componentEnd);
 test("fixed Relay Live API output asks for only nonsecret binding fields", () => {
   assert.ok(componentStart >= 0, "YouTube output form must exist");
   assert.ok(componentEnd > componentStart, "YouTube output form must have a bounded source section");
-  assert.match(formSource, /value: "live_api_relay_static", label: "YouTube Live API（管理済み固定Relay）"/);
+  assert.match(formSource, /value: "live_api_relay_static", label: "YouTube Live API（固定Relay・既存互換）"/);
   assert.match(formSource, /const staticRelayMode = mode === "live_api_relay_static";/);
   assert.match(formSource, /const requiresOAuth = mode === "live_api" \|\| mode === "live_api_dry_run" \|\| staticRelayMode;/);
   assert.match(formSource, /<TextField label="固定RelayバインディングID"[\s\S]*?required \/>/);
@@ -20,10 +20,11 @@ test("fixed Relay Live API output asks for only nonsecret binding fields", () =>
 });
 
 test("YouTube output modes explain their relay compatibility", () => {
-  assert.match(formSource, /value: "live_api_dry_run", label: "YouTube Live API（検証）", description: "検証用の出力方式です。固定Relay構成では選択しません。"/);
-  assert.match(formSource, /value: "live_api", label: "YouTube Live API（本番）", description: "YouTube Live APIで配信枠を作成します。固定Relayを使う場合は管理済み固定Relayを選びます。"/);
-  assert.match(formSource, /value: "live_api_relay_static", label: "YouTube Live API（管理済み固定Relay）", description: "管理済み固定Relay用です。Encoderのlive_api_static設定、binding ID、再利用Live Stream IDを一致させます。"/);
-  assert.match(formSource, /value: "stream_key", label: "ストリームキー（直接送信／従来Relay）", description: "既存ストリームキー方式です。Encoderが固定Relay構成ならこちらを選びます。"/);
+  assert.match(formSource, /value: "live_api", label: "YouTube Live API（本番・通常）", description: "通常はこちら。Control Panelが配信枠を作成し、EncoderからYouTubeへ直接送信します。固定Relayは不要です。"/);
+  assert.match(formSource, /value: "live_api_dry_run", label: "YouTube Live API（検証）", description: "接続確認用です。実際に配信を開始する場合は本番・通常を選択してください。"/);
+  assert.match(formSource, /value: "stream_key", label: "ストリームキー（従来方式）", description: "既存のストリームキー設定を使う場合だけ選択します。新規設定では本番・通常を推奨します。"/);
+  assert.match(formSource, /const \[mode, setMode\] = useState\(\(\) => rowString\(row, \["mode", "config.mode"\]\) \|\| "live_api"\);/);
+  assert.match(formSource, /\.\.\.\(staticRelayMode\n\s*\? \[\{ value: "live_api_relay_static", label: "YouTube Live API（固定Relay・既存互換）"/);
 });
 
 test("fixed Relay Live API output omits direct RTMP credentials and forces completion", () => {

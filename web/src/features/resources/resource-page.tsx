@@ -491,7 +491,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
   const row = initial || {};
   const oauthAccounts = useOAuthAccountOptions("youtube");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "public-live");
-  const [mode, setMode] = useState(() => rowString(row, ["mode", "config.mode"]) || "live_api_dry_run");
+  const [mode, setMode] = useState(() => rowString(row, ["mode", "config.mode"]) || "live_api");
   const [rtmpURL, setRTMPURL] = useState(() => rowString(row, ["rtmp_url", "config.rtmp_url"]) || "rtmps://a.rtmps.youtube.com/live2");
   const [streamKey, setStreamKey] = useState("");
   const [watchURL, setWatchURL] = useState(() => rowString(row, ["watch_url", "config.watch_url"]));
@@ -506,6 +506,14 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
   const [autoStop, setAutoStop] = useState(() => rowValue(row, ["enable_auto_stop", "config.enable_auto_stop"]) !== false);
   const [completeOnStop, setCompleteOnStop] = useState(() => rowValue(row, ["complete_on_stop", "config.complete_on_stop"]) !== false);
   const staticRelayMode = mode === "live_api_relay_static";
+  const outputModeOptions = [
+    { value: "live_api", label: "YouTube Live API（本番・通常）", description: "通常はこちら。Control Panelが配信枠を作成し、EncoderからYouTubeへ直接送信します。固定Relayは不要です。" },
+    { value: "live_api_dry_run", label: "YouTube Live API（検証）", description: "接続確認用です。実際に配信を開始する場合は本番・通常を選択してください。" },
+    { value: "stream_key", label: "ストリームキー（従来方式）", description: "既存のストリームキー設定を使う場合だけ選択します。新規設定では本番・通常を推奨します。" },
+    ...(staticRelayMode
+      ? [{ value: "live_api_relay_static", label: "YouTube Live API（固定Relay・既存互換）", description: "既存の固定Relay設定を編集する場合だけ使用します。新規作成では選択できません。" }]
+      : []),
+  ];
   const requiresOAuth = mode === "live_api" || mode === "live_api_dry_run" || staticRelayMode;
   const effectiveOAuthAccountID = requiresOAuth && oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
   const staticRelayReady = relayBindingID.trim() !== "" && reusableLiveStreamID.trim() !== "";
@@ -546,12 +554,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
           label="出力方式"
           value={mode}
           onChange={setMode}
-          options={[
-            { value: "live_api_dry_run", label: "YouTube Live API（検証）", description: "検証用の出力方式です。固定Relay構成では選択しません。" },
-            { value: "live_api", label: "YouTube Live API（本番）", description: "YouTube Live APIで配信枠を作成します。固定Relayを使う場合は管理済み固定Relayを選びます。" },
-            { value: "live_api_relay_static", label: "YouTube Live API（管理済み固定Relay）", description: "管理済み固定Relay用です。Encoderのlive_api_static設定、binding ID、再利用Live Stream IDを一致させます。" },
-            { value: "stream_key", label: "ストリームキー（直接送信／従来Relay）", description: "既存ストリームキー方式です。Encoderが固定Relay構成ならこちらを選びます。" },
-          ]}
+          options={outputModeOptions}
         />
         {!staticRelayMode ? <TextField label="RTMP URL" value={rtmpURL} onChange={setRTMPURL} required /> : null}
         <SelectField label="接続済みGoogleアカウント" value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
@@ -2782,9 +2785,9 @@ const valueLabels: Record<string, string> = {
   discord_voice_join: "VC参加で自動開始",
   manual: "手動開始",
   stream_key: "ストリームキー（直接送信／従来Relay）",
-  live_api: "YouTube Live API（本番）",
+  live_api: "YouTube Live API（本番・通常）",
   live_api_dry_run: "YouTube Live API（検証）",
-  live_api_relay_static: "YouTube Live API（管理済み固定Relay）",
+  live_api_relay_static: "YouTube Live API（固定Relay・既存互換）",
   top_left: "左上",
   top_right: "右上",
   bottom_left: "左下",
