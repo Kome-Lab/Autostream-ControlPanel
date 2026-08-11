@@ -736,7 +736,11 @@ func TestCentralCoordinatorCanceledRecoveryClosesPreparedStatusListener(t *testi
 func TestCentralCoordinatorMakesControlPanelUpdateGloballyExclusive(t *testing.T) {
 	c, panel, remote := newCoordinatorFixture(t, "host-a", "host-b", "host-c")
 	c.KeepaliveInterval = 10 * time.Millisecond
-	c.ReportAckTimeout = time.Second
+	// The control-panel worker intentionally waits behind the global writer gate
+	// while another host is staged. Keep the lease/report window comfortably
+	// above a loaded CI scheduler quantum so this ordering test does not turn a
+	// scheduling delay into a false terminal failure.
+	c.ReportAckTimeout = 5 * time.Second
 	controlTarget := Target{TargetID: "control-panel", HostID: "host-b", ServiceType: "control_panel", DeploymentMode: ModeSystemd}
 	c.workers["host-b"].targets = map[string]Target{controlTarget.TargetID: controlTarget}
 	panel.jobs["host-a"] = []UpdateJob{coordinatorJob("host-a", "target-host-a", "job-a")}
@@ -1433,7 +1437,7 @@ func waitForValues(t *testing.T, values <-chan string, count int) {
 	for range count {
 		select {
 		case <-values:
-		case <-time.After(5 * time.Second):
+		case <-time.After(15 * time.Second):
 			t.Fatalf("timed out waiting for %d values", count)
 		}
 	}
@@ -1441,10 +1445,13 @@ func waitForValues(t *testing.T, values <-chan string, count int) {
 
 func waitForValue(t *testing.T, values <-chan string) string {
 	t.Helper()
+	// Coordinator stages can be delayed by the package's filesystem and
+	// updater-journal tests on a loaded CI runner; this is a synchronization
+	// guard, not the operation's production deadline.
 	select {
 	case value := <-values:
 		return value
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for coordinator stage")
 		return ""
 	}

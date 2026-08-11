@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -9842,10 +9843,9 @@ func (s *Server) serviceStopStream(w http.ResponseWriter, r *http.Request) {
 	}
 	switch strings.ToLower(strings.TrimSpace(stream.Status)) {
 	case "completed":
-		// Re-arming a VC stream moves its single-service assignment to the
-		// successor waiting stream. A duplicate stop must still be tied to
-		// that stream's configured Discord Bot; it is never an authorization
-		// shortcut for an arbitrary registered bot.
+		// Re-arming a VC stream reuses its existing row. A duplicate stop must
+		// still be tied to that stream's configured Discord Bot; it is never an
+		// authorization shortcut for an arbitrary registered bot.
 		if !assigned {
 			s.writeServiceAudit(r, token, "streams.stop", "stream", stream.ID, "failure", map[string]any{"reason": "service_not_primary_assignment"})
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_primary_assignment"})
@@ -12541,7 +12541,7 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 		current := currentFromContext(r.Context())
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
 	}
-	rearmed, rearmErr := s.ensureAutoStartWaitingStream(r, completed, assignments)
+	rearmed, rearmErr := s.ensureAutoStartWaitingStream(r, completed)
 	if rearmErr != nil {
 		log.Printf("stream VC rearm failed: stream_id=%s error=%v", completed.ID, rearmErr)
 		current := currentFromContext(r.Context())
@@ -12685,7 +12685,7 @@ func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
 		metadata["youtube_complete_warning"] = "youtube runtime completion failed"
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "force_stop_completion_failed"}})
 	}
-	rearmed, rearmErr := s.ensureAutoStartWaitingStream(r, completed, assignments)
+	rearmed, rearmErr := s.ensureAutoStartWaitingStream(r, completed)
 	if rearmErr != nil {
 		log.Printf("forced stream VC rearm failed: stream_id=%s error=%v", completed.ID, rearmErr)
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.rearm", ResourceType: "stream", ResourceID: completed.ID, Result: "failure", Metadata: map[string]any{"reason": "waiting_stream_rearm_failed", "trigger": completed.AutoStartTrigger}})
@@ -12701,7 +12701,33 @@ func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) ensureAutoStartWaitingStream(r *http.Request, completed store.Stream, assignments []store.RegisteredService) (store.Stream, error) {
+func (s *Server) ensureAutoStartWaitingStream(r *http.Request, completed store.Stream) (store.Stream, error) {
+	if !strings.EqualFold(strings.TrimSpace(completed.AutoStartTrigger), autoStartTriggerDiscordVoiceJoin) {
+		return store.Stream{}, nil
+	}
+	waiting, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), completed.ID, "completed", "ready")
+	if err != nil {
+		return store.Stream{}, err
+	}
+	if !transitioned {
+		current, getErr := s.streams.GetStream(r.Context(), completed.ID)
+		if getErr != nil {
+			return store.Stream{}, getErr
+		}
+		if isAutoStartableStreamStatus(current.Status) {
+			return current, nil
+		}
+		return store.Stream{}, fmt.Errorf("stream rearm superseded: status=%s", current.Status)
+	}
+	current := currentFromContext(r.Context())
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.rearm", ResourceType: "stream", ResourceID: completed.ID, Result: "success", Metadata: map[string]any{"waiting_stream_id": waiting.ID, "reused_stream": true, "trigger": completed.AutoStartTrigger}})
+	return waiting, nil
+}
+
+// ensureAutoStartWaitingStreamLegacy is retained below only as a reference for
+// migrations from the former successor-stream behavior. New stops use the
+// same-row rearm above.
+func (s *Server) ensureAutoStartWaitingStreamLegacy(r *http.Request, completed store.Stream, assignments []store.RegisteredService) (store.Stream, error) {
 	if !strings.EqualFold(strings.TrimSpace(completed.AutoStartTrigger), autoStartTriggerDiscordVoiceJoin) {
 		return store.Stream{}, nil
 	}

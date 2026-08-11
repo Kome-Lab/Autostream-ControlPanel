@@ -364,7 +364,7 @@ export function StreamPreview({ stream }: { stream: Stream }) {
         </Button>
         {previewLink ? (
           <div className="flex w-full min-w-0 items-center gap-2 sm:flex-1">
-            <Input className="min-w-0 flex-1 font-mono text-xs" value={previewLink.url} readOnly aria-label="ネットワーク再生URL" />
+            <Input className="min-w-0 flex-1 font-mono text-xs" value={displayURL} readOnly aria-label="プレビューURL" />
             <Button type="button" variant="outline" size="icon-sm" onClick={() => void copyPreviewLink()} aria-label="ネットワーク再生URLをコピー">
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
             </Button>

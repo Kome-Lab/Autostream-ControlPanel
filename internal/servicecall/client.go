@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -454,10 +455,11 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 }
 
 func (c Client) Start(ctx context.Context, stream store.Stream, services []store.RegisteredService, req StartRequest) []DispatchResult {
-	results := make([]DispatchResult, 0, len(services))
-	encoderURL := firstServiceURL(services, "encoder_recorder")
-	workerService := firstService(services, "worker")
-	for _, service := range services {
+	ordered := orderStartServices(services)
+	results := make([]DispatchResult, 0, len(ordered))
+	encoderURL := firstServiceURL(ordered, "encoder_recorder")
+	workerService := firstService(ordered, "worker")
+	for _, service := range ordered {
 		endpoint, payload, ok := c.startPayload(stream, service, req, encoderURL, workerService, time.Now().UTC())
 		if !ok {
 			continue
@@ -468,8 +470,9 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 }
 
 func (c Client) Stop(ctx context.Context, stream store.Stream, services []store.RegisteredService) []DispatchResult {
-	results := make([]DispatchResult, 0, len(services))
-	for _, service := range services {
+	ordered := orderStopServices(services)
+	results := make([]DispatchResult, 0, len(ordered))
+	for _, service := range ordered {
 		endpoint, payload, ok := stopPayload(stream, service)
 		if !ok {
 			continue
@@ -481,6 +484,55 @@ func (c Client) Stop(ctx context.Context, stream store.Stream, services []store.
 		results = append(results, c.post(ctx, service, endpoint, payload))
 	}
 	return results
+}
+
+// Start order is part of the downstream lifecycle contract. The Encoder must
+// have accepted the media process before the Discord Bot joins and begins
+// forwarding audio; Worker starts between those two so its event route is
+// available before the Bot sends participant/caption events. Keep this order
+// deterministic even when the database returns assignments by service type.
+func orderStartServices(services []store.RegisteredService) []store.RegisteredService {
+	ordered := append([]store.RegisteredService(nil), services...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return startServiceRank(ordered[i].ServiceType) < startServiceRank(ordered[j].ServiceType)
+	})
+	return ordered
+}
+
+func startServiceRank(serviceType string) int {
+	switch strings.TrimSpace(serviceType) {
+	case "encoder_recorder":
+		return 0
+	case "worker":
+		return 1
+	case "discord_bot":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// Stop in the reverse dependency order: stop the Bot's audio/event producer,
+// then Worker processing, and only then terminate the Encoder process.
+func orderStopServices(services []store.RegisteredService) []store.RegisteredService {
+	ordered := append([]store.RegisteredService(nil), services...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return stopServiceRank(ordered[i].ServiceType) < stopServiceRank(ordered[j].ServiceType)
+	})
+	return ordered
+}
+
+func stopServiceRank(serviceType string) int {
+	switch strings.TrimSpace(serviceType) {
+	case "discord_bot":
+		return 0
+	case "worker":
+		return 1
+	case "encoder_recorder":
+		return 2
+	default:
+		return 3
+	}
 }
 
 func (c Client) RetryArchiveUpload(ctx context.Context, stream store.Stream, services []store.RegisteredService, archiveConfig map[string]any) []DispatchResult {
@@ -1085,6 +1137,7 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 			"input_url":          req.EncoderInputURL,
 			"rtmp_url":           req.EncoderRTMPURL,
 			"encoder_profile_id": req.EncoderProfileID,
+			"overlay_profile_id": req.OverlayProfileID,
 			"archive_profile_id": req.ArchiveProfileID,
 		}
 		if req.EncoderStreamKey != "" {

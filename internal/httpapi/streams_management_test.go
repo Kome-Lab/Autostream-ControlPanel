@@ -158,8 +158,8 @@ func TestForceStopRearmsDiscordVoiceStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != "completed" {
-		t.Fatalf("force stop status = %q, want completed after acknowledged downstream stop", updated.Status)
+	if updated.Status != "ready" {
+		t.Fatalf("force stop status = %q, want ready after acknowledged downstream stop", updated.Status)
 	}
 	items, err := streams.ListStreams(t.Context())
 	if err != nil {
@@ -167,18 +167,19 @@ func TestForceStopRearmsDiscordVoiceStream(t *testing.T) {
 	}
 	var waiting store.Stream
 	for _, item := range items {
-		if item.ID != stream.ID && item.Status == "created" && item.AutoStartTrigger == "discord_voice_join" {
+		if item.ID == stream.ID && item.Status == "ready" && item.AutoStartTrigger == "discord_voice_join" {
 			waiting = item
 		}
 	}
-	if waiting.ID == "" || waiting.Name != "Dev_1（待機）" {
-		t.Fatalf("waiting stream was not created: %#v", items)
+	if waiting.ID == "" || len(items) != 1 || items[0].ID != stream.ID || items[0].Status != "ready" {
+		t.Fatalf("same stream was not rearmed: %#v", items)
 	}
-	assignments, err := auth.ListStreamAssignments(t.Context(), waiting.ID)
+	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(assignments) != 3 {
-		t.Fatalf("waiting stream assignments = %d, want 3", len(assignments))
+		t.Fatalf("rearmed stream assignments = %d, want 3", len(assignments))
 	}
+	// Same-row rearm is fully asserted above.
 }

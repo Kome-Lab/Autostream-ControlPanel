@@ -1,17 +1,55 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Hls, { ErrorTypes } from "hls.js";
 import { LoaderCircle, MonitorPlay } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type PlayerState = "waiting" | "playing" | "retrying" | "error";
 
+type SeekWindow = {
+  start: number;
+  end: number;
+  position: number;
+};
+
+const emptySeekWindow: SeekWindow = { start: 0, end: 0, position: 0 };
+
 export function StreamPreviewPlayerView({ token }: { token: string }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [state, setState] = useState<PlayerState>(token ? "waiting" : "error");
   const [message, setMessage] = useState(token ? "配信映像を読み込んでいます…" : "プレビューTokenがありません。");
   const [retry, setRetry] = useState(0);
+  const [seekWindow, setSeekWindow] = useState<SeekWindow>(emptySeekWindow);
+
+  const refreshSeekWindow = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let start = 0;
+    let end = Number.isFinite(video.duration) ? Math.max(0, video.duration) : 0;
+    if (video.seekable.length > 0) {
+      const index = video.seekable.length - 1;
+      start = video.seekable.start(index);
+      end = video.seekable.end(index);
+    }
+    const position = Math.min(end, Math.max(start, Number.isFinite(video.currentTime) ? video.currentTime : start));
+    setSeekWindow({ start, end, position });
+  }, []);
+
+  const seekBy = useCallback((seconds: number) => {
+    const video = videoRef.current;
+    if (!video || seekWindow.end <= seekWindow.start) return;
+    video.currentTime = Math.min(seekWindow.end, Math.max(seekWindow.start, video.currentTime + seconds));
+    refreshSeekWindow();
+  }, [refreshSeekWindow, seekWindow]);
+
+  const seekTo = useCallback((value: string) => {
+    const video = videoRef.current;
+    const position = Number(value);
+    if (!video || !Number.isFinite(position) || seekWindow.end <= seekWindow.start) return;
+    video.currentTime = Math.min(seekWindow.end, Math.max(seekWindow.start, position));
+    refreshSeekWindow();
+  }, [refreshSeekWindow, seekWindow]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -57,6 +95,10 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
     const onError = () => fail("映像のデコードに失敗しました。Encoderの出力を確認してください。");
     video.addEventListener("playing", onPlaying);
     video.addEventListener("error", onError);
+    video.addEventListener("loadedmetadata", refreshSeekWindow);
+    video.addEventListener("durationchange", refreshSeekWindow);
+    video.addEventListener("progress", refreshSeekWindow);
+    video.addEventListener("timeupdate", refreshSeekWindow);
     if (Hls.isSupported()) {
       hls = new Hls({
         enableWorker: true,
@@ -83,11 +125,15 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       window.clearTimeout(retryTimer);
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("error", onError);
+      video.removeEventListener("loadedmetadata", refreshSeekWindow);
+      video.removeEventListener("durationchange", refreshSeekWindow);
+      video.removeEventListener("progress", refreshSeekWindow);
+      video.removeEventListener("timeupdate", refreshSeekWindow);
       hls?.destroy();
       video.removeAttribute("src");
       video.load();
     };
-  }, [token, retry]);
+  }, [refreshSeekWindow, retry, token]);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-4 sm:p-8">
@@ -102,6 +148,29 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
         <div className="aspect-video overflow-hidden rounded-md border bg-black">
           <video ref={videoRef} className="h-full w-full object-contain" controls muted autoPlay playsInline preload="metadata" />
         </div>
+        <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2" aria-label="プレビュー操作">
+          <Button type="button" variant="outline" size="sm" onClick={() => seekBy(-10)} disabled={seekWindow.end <= seekWindow.start} aria-label="10秒戻る" data-testid="preview-skip-backward">
+            −10秒
+          </Button>
+          <input
+            className="min-w-[12rem] flex-1 accent-primary"
+            type="range"
+            min={seekWindow.start}
+            max={Math.max(seekWindow.end, seekWindow.start + 1)}
+            step="0.1"
+            value={seekWindow.position}
+            onChange={(event) => seekTo(event.target.value)}
+            disabled={seekWindow.end <= seekWindow.start}
+            aria-label="プレビューシークバー"
+            data-testid="preview-seek"
+          />
+          <Button type="button" variant="outline" size="sm" onClick={() => seekBy(10)} disabled={seekWindow.end <= seekWindow.start} aria-label="10秒進む" data-testid="preview-skip-forward">
+            +10秒
+          </Button>
+          <span className="min-w-24 text-right font-mono text-xs text-muted-foreground" aria-live="polite">
+            {formatPreviewTime(seekWindow.position)} / {formatPreviewTime(seekWindow.end)}
+          </span>
+        </div>
         <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground" role="status">
           {state === "waiting" || state === "retrying" ? <LoaderCircle className="size-4 animate-spin" /> : null}
           <span>{message}</span>
@@ -110,4 +179,15 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       </section>
     </main>
   );
+}
+
+function formatPreviewTime(value: number) {
+  if (!Number.isFinite(value) || value < 0) return "--:--";
+  const totalSeconds = Math.floor(value);
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }

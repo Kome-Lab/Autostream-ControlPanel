@@ -96,6 +96,27 @@ func TestDiscordYouTubeLiveNotificationWaitsForTestingThenDispatchesOnce(t *test
 	}
 }
 
+func TestDiscordYouTubeLiveNotificationAcceptsLegacyStreamKeyMode(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "legacy relay notification")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "discord_bot")
+	if _, _, transitioned, err := streams.TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNotification(t.Context(), stream.ID, "created", "live", store.DiscordYouTubeLiveNotification{
+		WatchURL: "https://www.youtube.com/watch?v=legacy-relay", DiscordServiceID: "discord_bot-01", DiscordTextChannelID: "text-01", YouTubeMode: "legacy_stream_key",
+	}); err != nil || !transitioned {
+		t.Fatalf("enqueue legacy notification: transitioned=%v err=%v", transitioned, err)
+	}
+	dispatcher := &notificationFakeDispatcher{}
+	handler := NewServer(streams, WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	result, err := handler.DispatchDueDiscordYouTubeLiveNotifications(t.Context(), 1)
+	if err != nil || result["claimed"] != 1 || result["delivered"] != 1 || dispatcher.notifyCalls != 1 {
+		t.Fatalf("legacy stream-key notification was not delivered: result=%#v calls=%d err=%v", result, dispatcher.notifyCalls, err)
+	}
+}
+
 func TestDiscordYouTubeLiveNotificationBareRateLimitSchedulesOneDurableRetry(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SERVICE_ALLOWED_HOSTS", "127.0.0.1")
 	botCalls := 0

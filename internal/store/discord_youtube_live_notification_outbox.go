@@ -100,7 +100,7 @@ func initialDiscordYouTubeLiveNotificationState(mode string) string {
 	// their established behavior as an explicit compatibility decision: dispatch
 	// only from the durable outbox after a successful local start, while marking
 	// lifecycle confirmation unavailable rather than inventing provider proof.
-	if strings.EqualFold(strings.TrimSpace(mode), "stream_key") {
+	if strings.EqualFold(strings.TrimSpace(mode), "stream_key") || strings.EqualFold(strings.TrimSpace(mode), "legacy_stream_key") {
 		return DiscordYouTubeLiveNotificationStateDispatchPending
 	}
 	return DiscordYouTubeLiveNotificationStateAwaitingYouTubeLive
@@ -136,7 +136,7 @@ func normalizeNewDiscordYouTubeLiveNotification(notification DiscordYouTubeLiveN
 		return DiscordYouTubeLiveNotification{}, ErrInvalidDiscordYouTubeLiveNotification
 	}
 	switch notification.YouTubeMode {
-	case "stream_key":
+	case "stream_key", "legacy_stream_key":
 		if notification.State != DiscordYouTubeLiveNotificationStateDispatchPending {
 			return DiscordYouTubeLiveNotification{}, ErrInvalidDiscordYouTubeLiveNotification
 		}

@@ -2474,8 +2474,8 @@ func TestStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completed.Status != "completed" {
-		t.Fatalf("stop after downstream request cancellation left status %q, want completed", completed.Status)
+	if completed.Status != "ready" {
+		t.Fatalf("stop after downstream request cancellation left status %q, want ready", completed.Status)
 	}
 	allStreams, err := streams.ListStreams(t.Context())
 	if err != nil {
@@ -2487,8 +2487,8 @@ func TestStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing.T) {
 			waitingCount++
 		}
 	}
-	if waitingCount != 1 {
-		t.Fatalf("stop after downstream request cancellation rearmed %d waiting streams, want 1: %#v", waitingCount, allStreams)
+	if waitingCount != 0 || len(allStreams) != 1 || allStreams[0].ID != stream.ID || allStreams[0].Status != "ready" {
+		t.Fatalf("stop after downstream request cancellation did not reuse the source stream: %#v", allStreams)
 	}
 }
 
@@ -3871,8 +3871,8 @@ func TestServiceStopStreamUsesPrimaryDiscordBotAndCanonicalLifecycle(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stopped.Status != "completed" {
-		t.Fatalf("service stop must complete the stream, got %#v", stopped)
+	if stopped.Status != "ready" || stopped.ID != stream.ID {
+		t.Fatalf("service stop must rearm the same stream, got %#v", stopped)
 	}
 
 	otherDiscordToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.stop"})
@@ -3892,11 +3892,11 @@ func TestServiceStopStreamUsesPrimaryDiscordBotAndCanonicalLifecycle(t *testing.
 	duplicateReq.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
 	duplicateRes := httptest.NewRecorder()
 	handler.ServeHTTP(duplicateRes, duplicateReq)
-	if duplicateRes.Code != http.StatusOK || !strings.Contains(duplicateRes.Body.String(), "already_stopped") {
-		t.Fatalf("duplicate service stop status = %d body = %s", duplicateRes.Code, duplicateRes.Body.String())
+	if duplicateRes.Code != http.StatusConflict || !strings.Contains(duplicateRes.Body.String(), "stream_status_not_stoppable") {
+		t.Fatalf("rearmed service stop status = %d body = %s", duplicateRes.Code, duplicateRes.Body.String())
 	}
 	if dispatcher.stopCalls != 1 {
-		t.Fatalf("completed stream must not be stopped twice, got %d calls", dispatcher.stopCalls)
+		t.Fatalf("rearmed stream must not be stopped twice, got %d calls", dispatcher.stopCalls)
 	}
 }
 
@@ -19042,6 +19042,13 @@ func (s *failingRearmStreamStore) UpdateStreamSettings(ctx context.Context, id s
 		return store.Stream{}, errors.New("waiting stream settings unavailable")
 	}
 	return s.MemoryStreamStore.UpdateStreamSettings(ctx, id, settings)
+}
+
+func (s *failingRearmStreamStore) TransitionStreamStatus(ctx context.Context, id, expectedStatus, status string) (store.Stream, bool, error) {
+	if s.failSettingsUpdate && expectedStatus == "completed" && status == "ready" {
+		return store.Stream{}, false, errors.New("waiting stream status unavailable")
+	}
+	return s.MemoryStreamStore.TransitionStreamStatus(ctx, id, expectedStatus, status)
 }
 
 type previewFakeDispatcher struct {

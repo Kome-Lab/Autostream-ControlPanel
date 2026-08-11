@@ -16,6 +16,7 @@ import (
 
 func TestStartDispatchesToAssignedServices(t *testing.T) {
 	var paths []string
+	var dispatchOrder []string
 	var auth string
 	payloads := map[string]map[string]any{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,11 +30,14 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 			t.Fatalf("unexpected payload: %#v", payload)
 		}
 		switch {
-		case payload["overlay_profile_id"] != nil:
-			payloads["worker"] = payload
 		case payload["encoder_profile_id"] != nil:
+			dispatchOrder = append(dispatchOrder, "encoder_recorder")
 			payloads["encoder_recorder"] = payload
+		case payload["overlay_profile_id"] != nil:
+			dispatchOrder = append(dispatchOrder, "worker")
+			payloads["worker"] = payload
 		case payload["guild_id"] != nil:
+			dispatchOrder = append(dispatchOrder, "discord_bot")
 			payloads["discord_bot"] = payload
 		}
 		w.WriteHeader(http.StatusAccepted)
@@ -44,9 +48,9 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
 	client.Config.IngestTokenTTL = time.Hour
 	services := []store.RegisteredService{
-		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
-		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
 		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
+		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
 	}
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, services, StartRequest{
 		DiscordGuildID: "guild", DiscordVoiceChannelID: "voice", DiscordTextChannelID: "text", EncoderInputURL: "srt://input.example.com:9000",
@@ -56,6 +60,9 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	})
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %#v", results)
+	}
+	if got, want := strings.Join(dispatchOrder, ","), "encoder_recorder,worker,discord_bot"; got != want {
+		t.Fatalf("start dispatch order = %q, want %q", got, want)
 	}
 	if auth != "Bearer service-token" {
 		t.Fatalf("unexpected auth: %s", auth)
@@ -69,7 +76,7 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	if payloads["worker"]["overlay_profile_id"] != "overlay-prof-01" || payloads["worker"]["caption_profile_id"] != "caption-prof-01" {
 		t.Fatalf("worker profile IDs were not dispatched: %#v", payloads["worker"])
 	}
-	if payloads["encoder_recorder"]["encoder_profile_id"] != "enc-prof-01" || payloads["encoder_recorder"]["archive_profile_id"] != "archive-prof-01" {
+	if payloads["encoder_recorder"]["encoder_profile_id"] != "enc-prof-01" || payloads["encoder_recorder"]["overlay_profile_id"] != "overlay-prof-01" || payloads["encoder_recorder"]["archive_profile_id"] != "archive-prof-01" {
 		t.Fatalf("encoder profile IDs were not dispatched: %#v", payloads["encoder_recorder"])
 	}
 	if payloads["encoder_recorder"]["stream_key"] != nil || payloads["encoder_recorder"]["stream_key_secret_name"] != "youtube_stream_key_main" {

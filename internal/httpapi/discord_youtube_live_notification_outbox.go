@@ -91,7 +91,7 @@ func discordYouTubeLiveNotificationForStart(stream store.Stream, assignments []s
 	}
 	mode := strings.TrimSpace(mapString(req.YouTubeRuntime, "mode"))
 	switch mode {
-	case "stream_key", "live_api", "live_api_relay_static":
+	case "stream_key", "legacy_stream_key", "live_api", "live_api_relay_static":
 	default:
 		return store.DiscordYouTubeLiveNotification{}, false
 	}
@@ -268,7 +268,7 @@ func (s *Server) dispatchClaimedDiscordYouTubeLiveNotification(ctx context.Conte
 // Broadcast identity and is retained as legacy_unverified rather than falsely
 // claiming provider confirmation.
 func (s *Server) discordYouTubeLiveNotificationLifecycle(ctx context.Context, notification store.DiscordYouTubeLiveNotification) (lifecycle string, ready, terminal bool, code string) {
-	if notification.YouTubeMode == "stream_key" {
+	if notification.YouTubeMode == "stream_key" || notification.YouTubeMode == "legacy_stream_key" {
 		return "legacy_unverified", true, false, ""
 	}
 	lifecycleClient, ok := s.youtubeLive.(ytlive.BroadcastLifecycleClient)
