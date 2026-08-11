@@ -464,7 +464,17 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 		if !ok {
 			continue
 		}
-		results = append(results, c.post(ctx, service, endpoint, payload))
+		result := c.post(ctx, service, endpoint, payload)
+		results = append(results, result)
+		// Start dependencies are ordered encoder -> worker -> Discord Bot.
+		// Once a dependency rejects the start, continuing would create a
+		// misleading partial start (for example, the Bot joins Discord while
+		// the Encoder never accepted the media process).  The caller will
+		// terminalize the stream from the first failure and can retry the whole
+		// dependency chain after the underlying issue is fixed.
+		if !result.Success {
+			break
+		}
 	}
 	return results
 }

@@ -137,6 +137,35 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	}
 }
 
+func TestStartStopsAtFirstFailedDependency(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/streams/start" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		t.Fatalf("downstream start must not continue after encoder failure: %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	client := testClient()
+	results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
+		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
+		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
+	}, StartRequest{})
+	if len(results) != 1 {
+		t.Fatalf("expected only the failed encoder result, got %#v", results)
+	}
+	if results[0].ServiceType != "encoder_recorder" || results[0].Success {
+		t.Fatalf("unexpected failed encoder result: %#v", results[0])
+	}
+	if got, want := strings.Join(paths, ","), "/streams/start"; got != want {
+		t.Fatalf("start dispatch continued after failure: got %q want %q", got, want)
+	}
+}
+
 func TestStartPayloadOmitsCaptionRouteWhenCaptionProfileIsNotSelected(t *testing.T) {
 	client := testClient()
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
