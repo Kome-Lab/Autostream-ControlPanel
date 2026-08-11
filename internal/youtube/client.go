@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -34,6 +35,10 @@ type PrepareRequest struct {
 	FrameRate       string
 	EnableAutoStart bool
 	EnableAutoStop  bool
+	// ReuseAccountStream asks the provider client to bind each broadcast to
+	// one reusable LiveStream owned by this OAuth account. It keeps the
+	// account from accumulating a new stream key for every broadcast.
+	ReuseAccountStream bool
 }
 
 // RelayStaticPrepareRequest creates a broadcast bound to a pre-provisioned,
@@ -136,6 +141,15 @@ type CompleteRequest struct {
 	BroadcastID string
 }
 
+// BroadcastTransitionRequest identifies a prepared Broadcast that should be
+// moved into YouTube's live lifecycle after the Encoder has started sending.
+// It intentionally carries only OAuth credentials and the public Broadcast
+// identity; ingest URLs and stream keys never cross this boundary.
+type BroadcastTransitionRequest struct {
+	Credentials OAuthCredentials
+	BroadcastID string
+}
+
 // BroadcastLifecycleRequest contains only the OAuth credentials needed for a
 // read and the public Broadcast resource identity. It deliberately does not
 // expose ingest settings or any stream key.
@@ -154,6 +168,13 @@ type LiveClient interface {
 // the provider's `live` lifecycle before announcing a live-api broadcast.
 type BroadcastLifecycleClient interface {
 	BroadcastLifecycle(ctx context.Context, req BroadcastLifecycleRequest) (string, error)
+}
+
+// BroadcastTransitionClient is an optional extension so existing LiveClient
+// fakes remain source-compatible. Production clients use it to make the
+// provider-side live transition explicit when AutoStart did not take effect.
+type BroadcastTransitionClient interface {
+	TransitionBroadcastLive(ctx context.Context, req BroadcastTransitionRequest) error
 }
 
 // RelayStaticLiveClient is intentionally separate from LiveClient so existing
@@ -202,6 +223,10 @@ var (
 	ErrRelayStaticBroadcastCompletionUncertain = errors.New("youtube_relay_static_broadcast_completion_uncertain")
 )
 
+const reusableAccountStreamTitle = "AutoStream account ingest"
+
+var reusableAccountStreamMu sync.Mutex
+
 // minimumScheduledStartLead keeps an immediately requested broadcast just far
 // enough in the future for YouTube's liveBroadcasts.insert validation while
 // avoiding an operator-visible artificial wait.
@@ -220,18 +245,30 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 	if err != nil {
 		return PreparedOutput{}, err
 	}
-	broadcast, err := prepareBroadcast(ctx, service, req)
+	var stream *youtubeapi.LiveStream
+	if req.ReuseAccountStream {
+		// The provider has no idempotency key for liveStreams.insert. Serialize
+		// the find-or-create section in this process so concurrent starts do not
+		// create two account streams before either response is observed.
+		reusableAccountStreamMu.Lock()
+		defer reusableAccountStreamMu.Unlock()
+		stream, err = ensureReusableAccountLiveStream(ctx, service, req)
+	} else {
+		stream, err = service.LiveStreams.Insert([]string{"snippet", "cdn"}, &youtubeapi.LiveStream{
+			Snippet: &youtubeapi.LiveStreamSnippet{Title: broadcastTitle(req) + " input"},
+			Cdn: &youtubeapi.CdnSettings{
+				FrameRate:     defaultString(req.FrameRate, "60fps"),
+				IngestionType: "rtmp",
+				Resolution:    defaultString(req.Resolution, "1080p"),
+			},
+		}).
+			Context(ctx).
+			Do()
+	}
 	if err != nil {
 		return PreparedOutput{}, err
 	}
-	stream, err := service.LiveStreams.Insert([]string{"snippet", "cdn"}, &youtubeapi.LiveStream{
-		Snippet: &youtubeapi.LiveStreamSnippet{Title: broadcastTitle(req) + " input"},
-		Cdn: &youtubeapi.CdnSettings{
-			FrameRate:     defaultString(req.FrameRate, "60fps"),
-			IngestionType: "rtmp",
-			Resolution:    defaultString(req.Resolution, "1080p"),
-		},
-	}).Context(ctx).Do()
+	broadcast, err := prepareBroadcast(ctx, service, req)
 	if err != nil {
 		return PreparedOutput{}, err
 	}
@@ -246,6 +283,56 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		return PreparedOutput{}, ErrMissingIngestInfo
 	}
 	return PreparedOutput{RTMPURL: rtmpURL, StreamKey: streamKey, BroadcastID: broadcast.Id, LiveStreamID: stream.Id}, nil
+}
+
+func ensureReusableAccountLiveStream(ctx context.Context, service *youtubeapi.Service, req PrepareRequest) (*youtubeapi.LiveStream, error) {
+	var existingReusable *youtubeapi.LiveStream
+	pageToken := ""
+	for {
+		query := service.LiveStreams.List([]string{"id", "snippet", "cdn", "contentDetails"}).
+			Mine(true).
+			MaxResults(50).
+			Fields("items(id,snippet/title,cdn/ingestionInfo,contentDetails/isReusable)").
+			Context(ctx)
+		if pageToken != "" {
+			query = query.PageToken(pageToken)
+		}
+		streams, err := query.Do()
+		if err != nil {
+			return nil, err
+		}
+		for _, stream := range streams.Items {
+			if stream == nil || stream.ContentDetails == nil || !stream.ContentDetails.IsReusable ||
+				stream.Cdn == nil || stream.Cdn.IngestionInfo == nil {
+				continue
+			}
+			if existingReusable == nil {
+				existingReusable = stream
+			}
+			if stream.Snippet != nil && strings.TrimSpace(stream.Snippet.Title) == reusableAccountStreamTitle {
+				return stream, nil
+			}
+		}
+		if streams.NextPageToken == "" {
+			break
+		}
+		pageToken = streams.NextPageToken
+	}
+	// Older AutoStream installations may already have a reusable stream with a
+	// different title. Reuse the first valid account-owned stream instead of
+	// creating another key just to adopt the new canonical title.
+	if existingReusable != nil {
+		return existingReusable, nil
+	}
+	return service.LiveStreams.Insert([]string{"snippet", "cdn", "contentDetails"}, &youtubeapi.LiveStream{
+		Snippet:        &youtubeapi.LiveStreamSnippet{Title: reusableAccountStreamTitle},
+		ContentDetails: &youtubeapi.LiveStreamContentDetails{IsReusable: true},
+		Cdn: &youtubeapi.CdnSettings{
+			FrameRate:     defaultString(req.FrameRate, "60fps"),
+			IngestionType: "rtmp",
+			Resolution:    defaultString(req.Resolution, "1080p"),
+		},
+	}).Context(ctx).Do()
 }
 
 // PrepareRelayStatic creates a broadcast and binds it to the fixed
@@ -408,6 +495,25 @@ func (c LiveAPIClient) Complete(ctx context.Context, req CompleteRequest) error 
 		return err
 	}
 	_, err = service.LiveBroadcasts.Transition("complete", broadcastID, []string{"id", "status"}).Context(ctx).Do()
+	return err
+}
+
+// TransitionBroadcastLive explicitly starts a prepared YouTube Broadcast.
+// This is called only after the selected Encoder has accepted the stream. A
+// caller may reconcile an already-live response through BroadcastLifecycle.
+func (c LiveAPIClient) TransitionBroadcastLive(ctx context.Context, req BroadcastTransitionRequest) error {
+	if err := validateCredentials(req.Credentials); err != nil {
+		return err
+	}
+	broadcastID := strings.TrimSpace(req.BroadcastID)
+	if broadcastID == "" {
+		return ErrMissingBroadcastID
+	}
+	service, err := c.service(ctx, req.Credentials)
+	if err != nil {
+		return err
+	}
+	_, err = service.LiveBroadcasts.Transition("live", broadcastID, []string{"id", "status"}).Context(ctx).Do()
 	return err
 }
 

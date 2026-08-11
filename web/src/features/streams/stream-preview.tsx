@@ -28,6 +28,14 @@ type PreviewLink = {
 
 type PlaybackState = "connecting" | "ready" | "retrying" | "error";
 
+type PreviewParticipant = {
+  user_id: string;
+  display_name?: string;
+  avatar_url?: string;
+  is_bot?: boolean;
+  speaking?: boolean;
+};
+
 const previewLinkCache = new Map<string, PreviewLink>();
 
 function isPreviewLinkFresh(value: PreviewLink | null | undefined) {
@@ -45,6 +53,7 @@ export function StreamPreview({ stream }: { stream: Stream }) {
   const [playbackDetail, setPlaybackDetail] = useState("");
   const [retryNonce, setRetryNonce] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [participants, setParticipants] = useState<PreviewParticipant[]>([]);
   const playbackDiagnosticRef = useRef<StreamPreviewPlaybackDiagnostic | null>(null);
   const playbackURL = signedStreamPreviewPlaybackURL(previewLink?.playback_url || previewLink?.url);
   const displayURL = previewLink?.player_url || previewLink?.url || "";
@@ -338,6 +347,31 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     };
   }, [playbackURL]);
 
+  useEffect(() => {
+    const endpoint = resolvePreviewParticipantsURL(playbackURL || "");
+    if (!endpoint) {
+      return;
+    }
+    let cancelled = false;
+    const refreshParticipants = async () => {
+      try {
+        const response = await fetch(endpoint, { cache: "no-store" });
+        if (!response.ok) return;
+        const body = (await response.json()) as { participants?: PreviewParticipant[] };
+        if (!cancelled) setParticipants(Array.isArray(body.participants) ? body.participants : []);
+      } catch {
+        // Participant metadata is optional; the video preview remains usable
+        // while the worker or control-panel event endpoint is unavailable.
+      }
+    };
+    void refreshParticipants();
+    const interval = window.setInterval(refreshParticipants, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [playbackURL]);
+
   const copyPreviewLink = async () => {
     if (!displayURL || !navigator.clipboard) return;
     await navigator.clipboard.writeText(displayURL);
@@ -354,8 +388,33 @@ export function StreamPreview({ stream }: { stream: Stream }) {
         </div>
         <PreviewStatus state={playbackState} />
       </div>
-      <div className="aspect-video w-full overflow-hidden rounded-md border bg-black">
+      <div className="relative aspect-video w-full overflow-hidden rounded-md border bg-black">
         <video ref={videoRef} className="h-full w-full object-contain" controls muted autoPlay playsInline preload="metadata" />
+        {playbackURL && participants.length > 0 ? (
+          <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-2" aria-label="VC参加者">
+            {participants.map((participant) => (
+              <div
+                key={participant.user_id}
+                className={`flex items-center gap-2 rounded-full bg-black/75 px-2 py-1 text-xs text-white shadow ${participant.speaking ? "ring-2 ring-green-400" : "ring-1 ring-white/20"}`}
+              >
+                {safeDiscordAvatarURL(participant.avatar_url) ? (
+                  <span
+                    className="size-7 rounded-full bg-cover bg-center"
+                    style={{ backgroundImage: `url("${safeDiscordAvatarURL(participant.avatar_url)}")` }}
+                    role="img"
+                    aria-label={participant.display_name || participant.user_id}
+                  />
+                ) : (
+                  <span className="flex size-7 items-center justify-center rounded-full bg-slate-600 font-semibold" aria-hidden="true">
+                    {(participant.display_name || "?").slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <span className="max-w-40 truncate">{participant.display_name || participant.user_id}</span>
+                {participant.is_bot ? <span className="rounded bg-indigo-500/80 px-1 text-[10px]">BOT</span> : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center">
         <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => issueLink.mutate()} disabled={issueLink.isPending}>
@@ -414,4 +473,28 @@ function previewLinkErrorMessage(error: unknown) {
   }
   if (error instanceof Error && error.message) return error.message;
   return "URLを発行できませんでした。";
+}
+
+function resolvePreviewParticipantsURL(playbackURL: string) {
+  if (!playbackURL) return "";
+  try {
+    const parsed = new URL(playbackURL, window.location.origin);
+    if (!parsed.pathname.endsWith("/index.m3u8")) return "";
+    parsed.pathname = `${parsed.pathname.slice(0, -"/index.m3u8".length)}/participants`;
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function safeDiscordAvatarURL(value: string | undefined) {
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.hostname === "cdn.discordapp.com" ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
 }

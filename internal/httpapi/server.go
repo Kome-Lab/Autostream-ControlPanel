@@ -61,6 +61,8 @@ const runtimeSecretLeaseTTL = 60 * time.Second
 // this phase must not inherit that requester cancellation.
 const streamStopLifecycleTimeout = 30 * time.Second
 const youtubeCompleteRetryDefaultInterval = 60 * time.Second
+const youtubeLiveTransitionTimeout = 20 * time.Second
+const youtubeLiveTransitionAttempts = 5
 const oauthTokenRefreshDefaultInterval = 45 * time.Minute
 const sensitiveActionAttemptThreshold = 6
 const emailChangeChallengeTTL = 30 * time.Minute
@@ -612,6 +614,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /archive-shares/{token}", s.publicArchiveShare)
 	s.mux.HandleFunc("GET /archive-shares/{token}/download", s.downloadPublicArchiveShare)
 	s.mux.HandleFunc("GET /stream-previews/{token}/{name}", s.publicStreamPreviewAsset)
+	s.mux.HandleFunc("GET /stream-previews/{token}/participants", s.publicStreamPreviewParticipants)
 	s.mux.HandleFunc("GET /audit-logs", s.requirePermission("audit_logs.read", s.listAuditLogs))
 	s.mux.HandleFunc("GET /audit-logs/export", s.requirePermission("audit_logs.export", s.exportAuditLogs))
 	s.mux.HandleFunc("GET /security/settings", s.requirePermission("system_settings.read", s.securitySettings))
@@ -10339,7 +10342,114 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "service_dispatch_failed", "stream": failed, "dispatch": results})
 		return
 	}
+	if err := s.ensureYouTubeBroadcastLive(r.Context(), body.YouTubeRuntime); err != nil {
+		s.failYouTubeLiveAPIStart(w, r, stream, primaryAssignments, results, err)
+		return
+	}
 	s.completeStreamStart(w, r, stream, primaryAssignments, body, results)
+}
+
+// ensureYouTubeBroadcastLive closes the gap between a successful Encoder
+// dispatch and YouTube's provider lifecycle. AutoStart is advisory: a
+// Broadcast can remain ready/testing even while the Encoder is already
+// sending. For an immediate Live API start, explicitly transition it to live
+// and reconcile response-loss/already-live errors through the provider status
+// endpoint. Scheduled broadcasts remain under YouTube's own schedule.
+func (s *Server) ensureYouTubeBroadcastLive(ctx context.Context, runtime map[string]any) error {
+	if strings.ToLower(strings.TrimSpace(mapString(runtime, "mode"))) != "live_api" {
+		return nil
+	}
+	if scheduledStart, ok := youtubeRuntimeScheduledStart(runtime); ok && scheduledStart.After(time.Now().UTC()) {
+		return nil
+	}
+	transitionClient, ok := s.youtubeLive.(ytlive.BroadcastTransitionClient)
+	if !ok {
+		// Keep narrow test doubles and older integrations source-compatible. The
+		// production LiveAPIClient implements this optional capability.
+		return nil
+	}
+	broadcastID := strings.TrimSpace(mapString(runtime, "broadcast_id"))
+	oauthAccountID := strings.TrimSpace(mapString(runtime, "oauth_account_id"))
+	if broadcastID == "" || oauthAccountID == "" {
+		return errYouTubeLiveAPIStartFailed
+	}
+	credentials, err := s.youtubeOAuthCredentials(ctx, oauthAccountID)
+	if err != nil {
+		return err
+	}
+	transitionCtx, cancel := context.WithTimeout(ctx, youtubeLiveTransitionTimeout)
+	defer cancel()
+	request := ytlive.BroadcastTransitionRequest{Credentials: credentials, BroadcastID: broadcastID}
+	var lastErr error
+	for attempt := 0; attempt < youtubeLiveTransitionAttempts; attempt++ {
+		if err := transitionClient.TransitionBroadcastLive(transitionCtx, request); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if lifecycleClient, ok := s.youtubeLive.(ytlive.BroadcastLifecycleClient); ok {
+			lifecycle, lifecycleErr := lifecycleClient.BroadcastLifecycle(transitionCtx, ytlive.BroadcastLifecycleRequest{Credentials: credentials, BroadcastID: broadcastID})
+			if lifecycleErr == nil && strings.EqualFold(strings.TrimSpace(lifecycle), "live") {
+				return nil
+			}
+		}
+		if attempt+1 < youtubeLiveTransitionAttempts {
+			delay := time.Duration(1<<attempt) * 500 * time.Millisecond
+			timer := time.NewTimer(delay)
+			select {
+			case <-transitionCtx.Done():
+				timer.Stop()
+				lastErr = transitionCtx.Err()
+				attempt = youtubeLiveTransitionAttempts
+			case <-timer.C:
+			}
+		}
+	}
+	log.Printf("youtube live api broadcast transition failed: broadcast_id=%s error_type=%T", broadcastID, lastErr)
+	return errYouTubeLiveAPIStartFailed
+}
+
+// failYouTubeLiveAPIStart prevents a provider Broadcast from being left
+// scheduled/live after the Encoder accepted the stream but YouTube could not
+// be moved to live. Downstream stop and provider completion use a detached,
+// bounded context so a cancelled Discord auto-start request cannot abandon
+// cleanup.
+func (s *Server) failYouTubeLiveAPIStart(w http.ResponseWriter, r *http.Request, stream store.Stream, assignments []store.RegisteredService, dispatch []servicecall.DispatchResult, transitionErr error) {
+	log.Printf("youtube live api start failed: stream_id=%s error_type=%T", stream.ID, transitionErr)
+	failed, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "failed")
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
+		return
+	}
+	if !transitioned {
+		s.writeStartSupersededResponse(w, r, failed, dispatch, assignments)
+		return
+	}
+	stopRequest, cancel := detachedStopLifecycleRequest(r)
+	defer cancel()
+	stopDispatch := sanitizeDispatchResults(s.dispatcher.Stop(stopRequest.Context(), failed, assignments))
+	metadata := map[string]any{
+		"reason":          errYouTubeLiveAPIStartFailed.Error(),
+		"dispatch":        dispatch,
+		"stop_dispatch":   stopDispatch,
+		"transition_code": errYouTubeLiveAPIStartFailed.Error(),
+	}
+	if completeMetadata, completeErr := s.completeYouTubeRuntime(stopRequest.Context(), stream.ID, true); completeErr != nil {
+		metadata["youtube_complete_error"] = "youtube_live_api_complete_failed"
+		current := currentFromContext(stopRequest.Context())
+		s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "youtube_live_api_complete_failed", "trigger": "start_transition_failed"}})
+	} else if len(completeMetadata) > 0 {
+		metadata["youtube_complete"] = completeMetadata
+		current := currentFromContext(stopRequest.Context())
+		s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"trigger": "start_transition_failed", "complete": completeMetadata}})
+	}
+	current := currentFromContext(stopRequest.Context())
+	s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: metadata})
+	writeJSON(w, http.StatusBadGateway, map[string]any{"code": errYouTubeLiveAPIStartFailed.Error(), "stream": failed, "dispatch": dispatch, "stop_dispatch": stopDispatch})
 }
 
 func (s *Server) completeStreamStart(w http.ResponseWriter, r *http.Request, stream store.Stream, assignments []store.RegisteredService, req servicecall.StartRequest, dispatch []servicecall.DispatchResult) {
@@ -10510,6 +10620,7 @@ var (
 	errYouTubeLiveAPIUnavailable                     = errors.New("youtube_live_api_unavailable")
 	errYouTubeOAuthAccountUnavailable                = errors.New("youtube_oauth_account_unavailable")
 	errYouTubeLiveAPIPrepareFailed                   = errors.New("youtube_live_api_prepare_failed")
+	errYouTubeLiveAPIStartFailed                     = errors.New("youtube_live_api_start_failed")
 	errYouTubeLiveAPICompleteFailed                  = errors.New("youtube_live_api_complete_failed")
 	errYouTubeLiveAPIRequiresManagedOutputRelay      = errors.New("live_api_requires_managed_output_relay")
 	errYouTubeRelayStaticUnavailable                 = errors.New("youtube_relay_static_unavailable")
@@ -10987,6 +11098,18 @@ func youtubeLiveAPIScheduledStart(stream store.Stream, config map[string]any) ti
 	return configTime(config, "scheduled_start_at")
 }
 
+func youtubeRuntimeScheduledStart(runtime map[string]any) (time.Time, bool) {
+	value := strings.TrimSpace(mapString(runtime, "scheduled_start_at"))
+	if value == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
+}
+
 func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {
 	if s.youtubeLive == nil {
 		return errYouTubeLiveAPIUnavailable
@@ -11002,19 +11125,21 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	if err != nil {
 		return err
 	}
+	scheduledStart := youtubeLiveAPIScheduledStart(stream, profile.Config)
 	prepared, err := s.youtubeLive.Prepare(ctx, ytlive.PrepareRequest{
-		Credentials:     credentials,
-		StreamID:        stream.ID,
-		StreamName:      stream.Name,
-		OutputID:        profile.ID,
-		Title:           youtubeLiveAPITitle(profile.Config, stream.Name),
-		Description:     configString(profile.Config, "broadcast_description"),
-		PrivacyStatus:   defaultConfigString(profile.Config, "privacy_status", "private"),
-		ScheduledStart:  youtubeLiveAPIScheduledStart(stream, profile.Config),
-		Resolution:      defaultConfigString(profile.Config, "resolution", "1080p"),
-		FrameRate:       defaultConfigString(profile.Config, "frame_rate", "60fps"),
-		EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
-		EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
+		Credentials:        credentials,
+		StreamID:           stream.ID,
+		StreamName:         stream.Name,
+		OutputID:           profile.ID,
+		Title:              youtubeLiveAPITitle(profile.Config, stream.Name),
+		Description:        configString(profile.Config, "broadcast_description"),
+		PrivacyStatus:      defaultConfigString(profile.Config, "privacy_status", "private"),
+		ScheduledStart:     youtubeLiveAPIScheduledStart(stream, profile.Config),
+		Resolution:         defaultConfigString(profile.Config, "resolution", "1080p"),
+		FrameRate:          defaultConfigString(profile.Config, "frame_rate", "60fps"),
+		EnableAutoStart:    youtubeOutputAutoStartEnabled(profile.Config),
+		EnableAutoStop:     configBool(profile.Config, "enable_auto_stop"),
+		ReuseAccountStream: true,
 	})
 	if err != nil {
 		return errYouTubeLiveAPIPrepareFailed
@@ -11039,6 +11164,9 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		"stream_key_secret_name": streamKeySecretName,
 		"dry_run":                false,
 		"complete_on_stop":       youtubeCompleteOnStop(profile.Config),
+	}
+	if !scheduledStart.IsZero() {
+		req.YouTubeRuntime["scheduled_start_at"] = scheduledStart.UTC().Format(time.RFC3339Nano)
 	}
 	return nil
 }
@@ -13554,6 +13682,130 @@ func (s *Server) publicStreamPreviewAsset(w http.ResponseWriter, r *http.Request
 	s.writeStreamPreviewAsset(w, r, claims.StreamID, strings.TrimSpace(r.PathValue("name")), true)
 }
 
+type publicPreviewParticipant struct {
+	UserID      string `json:"user_id"`
+	DisplayName string `json:"display_name,omitempty"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+	IsBot       bool   `json:"is_bot,omitempty"`
+	Speaking    bool   `json:"speaking,omitempty"`
+}
+
+type publicPreviewParticipantsResponse struct {
+	Participants    []publicPreviewParticipant `json:"participants"`
+	ActiveSpeakerID string                     `json:"active_speaker_id,omitempty"`
+	UpdatedAt       time.Time                  `json:"updated_at,omitempty"`
+}
+
+// publicStreamPreviewParticipants exposes only the non-secret participant
+// snapshot carried by worker overlay events. The same short-lived preview
+// bearer token that authorizes HLS assets authorizes this endpoint; no service
+// token or Discord credential is exposed to the browser.
+func (s *Server) publicStreamPreviewParticipants(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(s.previewSigningKey) == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_preview_unavailable"})
+		return
+	}
+	token := strings.TrimSpace(r.PathValue("token"))
+	streamID, ok := s.publicPreviewStreamID(token)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "stream_preview_not_found"})
+		return
+	}
+	stream, assignments, ok := s.prepareActiveStreamPreview(w, r, streamID, true)
+	if !ok {
+		return
+	}
+	dispatcher, ok := s.dispatcher.(serviceDispatcher)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_preview_not_supported"})
+		return
+	}
+	result := servicecall.RedactWorkerEventsResult(dispatcher.WorkerEvents(r.Context(), stream, assignments))
+	if !result.Success {
+		status := http.StatusBadGateway
+		if result.StatusCode == http.StatusConflict {
+			status = http.StatusGone
+		}
+		writeJSON(w, status, map[string]string{"code": "stream_preview_participants_unavailable"})
+		return
+	}
+	response := publicPreviewParticipantsFromEvents(result.Events)
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) publicPreviewStreamID(token string) (string, bool) {
+	if streamID, _, err := ingesttoken.VerifyPreview(s.previewSigningKey, token, time.Now().UTC()); err == nil {
+		return streamID, true
+	}
+	claims, err := ingesttoken.Verify(s.previewSigningKey, token, ingesttoken.Expected{
+		ServiceID:   "control-panel",
+		ServiceType: "control_panel",
+		Purpose:     "stream_preview",
+		Audience:    "external_player",
+		Now:         time.Now().UTC(),
+	})
+	if err != nil {
+		return "", false
+	}
+	return claims.StreamID, true
+}
+
+func publicPreviewParticipantsFromEvents(events []servicecall.WorkerEvent) publicPreviewParticipantsResponse {
+	response := publicPreviewParticipantsResponse{Participants: []publicPreviewParticipant{}}
+	ordered := append([]servicecall.WorkerEvent(nil), events...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Timestamp.IsZero() || ordered[j].Timestamp.IsZero() {
+			return false
+		}
+		return ordered[i].Timestamp.Before(ordered[j].Timestamp)
+	})
+	for _, event := range ordered {
+		if event.Timestamp.After(response.UpdatedAt) {
+			response.UpdatedAt = event.Timestamp
+		}
+		switch event.Type {
+		case "overlay.participants":
+			var participants []publicPreviewParticipant
+			encoded, err := json.Marshal(event.Payload["participants"])
+			if err != nil || json.Unmarshal(encoded, &participants) != nil {
+				continue
+			}
+			response.Participants = participants
+			response.ActiveSpeakerID = ""
+			for _, participant := range participants {
+				if participant.Speaking {
+					response.ActiveSpeakerID = participant.UserID
+					break
+				}
+			}
+		case "overlay.active_speaker":
+			userID, _ := event.Payload["user_id"].(string)
+			speaking := true
+			if rawSpeaking, ok := event.Payload["speaking"].(bool); ok {
+				speaking = rawSpeaking
+			}
+			if speaking {
+				response.ActiveSpeakerID = strings.TrimSpace(userID)
+			} else if response.ActiveSpeakerID == strings.TrimSpace(userID) || strings.TrimSpace(userID) == "" {
+				response.ActiveSpeakerID = ""
+			}
+		}
+	}
+	found := false
+	for index := range response.Participants {
+		response.Participants[index].Speaking = response.ActiveSpeakerID != "" && response.Participants[index].UserID == response.ActiveSpeakerID
+		if response.Participants[index].Speaking {
+			found = true
+		}
+	}
+	if !found {
+		response.ActiveSpeakerID = ""
+	}
+	return response
+}
+
 func (s *Server) writeStreamPreviewAsset(w http.ResponseWriter, r *http.Request, streamID, name string, public bool) {
 	if !validStreamPreviewAssetName(name) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stream_preview_asset"})
@@ -13735,13 +13987,15 @@ func validStreamPreviewAssetName(name string) bool {
 	return true
 }
 
+const maxPreviewPlaylistLines = 32 << 10
+
 func validatedStreamPreviewPlaylist(body []byte) ([]byte, bool) {
 	if len(body) == 0 || len(body) > 1<<20 || strings.ContainsRune(string(body), '\x00') {
 		return nil, false
 	}
 	normalized := strings.ReplaceAll(string(body), "\r\n", "\n")
 	lines := strings.Split(normalized, "\n")
-	if len(lines) > 256 {
+	if len(lines) > maxPreviewPlaylistLines {
 		return nil, false
 	}
 	firstContent := ""

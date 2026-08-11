@@ -4504,7 +4504,10 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	scheduledStart := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
+	// This fixture exercises the immediate-start transition. Future schedules
+	// intentionally remain under YouTube's scheduler and are covered by the
+	// stream settings tests above.
+	scheduledStart := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{ScheduledStartAt: &scheduledStart})
 	if err != nil {
 		t.Fatal(err)
@@ -4546,7 +4549,7 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	youtubeLive := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-01", LiveStreamID: "live-stream-01"}}
+	youtubeLive := &transitioningYouTubeLiveClient{fakeYouTubeLiveClient: &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-01", LiveStreamID: "live-stream-01"}}}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
@@ -4566,6 +4569,9 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	}
 	if youtubeLive.prepareRequest.Title != "配信: real youtube stream" {
 		t.Fatalf("youtube live api title was not expanded from the stream name: %#v", youtubeLive.prepareRequest)
+	}
+	if youtubeLive.transitionCalls != 1 || youtubeLive.transitionRequest.BroadcastID != "broadcast-01" || youtubeLive.transitionRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" {
+		t.Fatalf("youtube live api broadcast was not explicitly transitioned to live: %#v", youtubeLive)
 	}
 	if !youtubeLive.prepareRequest.ScheduledStart.Equal(scheduledStart) {
 		t.Fatalf("youtube live api did not receive the stream scheduled start: got=%s want=%s", youtubeLive.prepareRequest.ScheduledStart, scheduledStart)
@@ -4628,6 +4634,23 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	}
 	if _, err := secrets.GetSecretValue(t.Context(), stored.StreamKeySecretName); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("youtube live api runtime stream key secret should be cleared after stop, got err=%v", err)
+	}
+}
+
+func TestEnsureYouTubeBroadcastLiveLeavesFutureScheduleToYouTube(t *testing.T) {
+	youtubeLive := &transitioningYouTubeLiveClient{fakeYouTubeLiveClient: &fakeYouTubeLiveClient{}}
+	server := &Server{youtubeLive: youtubeLive}
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	if err := server.ensureYouTubeBroadcastLive(t.Context(), map[string]any{
+		"mode":               "live_api",
+		"oauth_account_id":   "oauth-account-01",
+		"broadcast_id":       "broadcast-01",
+		"scheduled_start_at": future,
+	}); err != nil {
+		t.Fatalf("future scheduled broadcast should not be transitioned immediately: %v", err)
+	}
+	if youtubeLive.transitionCalls != 0 {
+		t.Fatalf("future scheduled broadcast was transitioned immediately: %#v", youtubeLive)
 	}
 }
 
@@ -9294,6 +9317,81 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 	}
 }
 
+func TestPublicStreamPreviewParticipantsReturnsNamesAvatarsAndSpeakerState(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "participant preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	dispatcher := &previewFakeDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher), WithPreviewSigningKey("preview-signing-key"))
+	cookie, csrf := loginForTest(t, handler, "viewer", "correct horse battery")
+	linkReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/preview-links", nil)
+	linkReq.AddCookie(cookie)
+	linkReq.Header.Set("X-CSRF-Token", csrf)
+	linkRes := httptest.NewRecorder()
+	handler.ServeHTTP(linkRes, linkReq)
+	if linkRes.Code != http.StatusCreated {
+		t.Fatalf("preview link status=%d body=%s", linkRes.Code, linkRes.Body.String())
+	}
+	var link struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(linkRes.Body).Decode(&link); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(link.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewPath := strings.TrimSuffix(parsed.Path, "/index.m3u8") + "/participants"
+	dispatcher.workerEvents = servicecall.WorkerEventsResult{
+		ServiceID:   "encoder_recorder-01",
+		ServiceType: "encoder_recorder",
+		StatusCode:  http.StatusOK,
+		Success:     true,
+		Events: []servicecall.WorkerEvent{
+			{Type: "overlay.participants", Payload: map[string]any{"participants": []any{
+				map[string]any{"user_id": "user-01", "display_name": "Alice", "avatar_url": "https://cdn.discordapp.com/avatars/user-01/a.png", "is_bot": false, "speaking": true},
+				map[string]any{"user_id": "bot-01", "display_name": "Helper", "is_bot": true},
+			}}},
+			{Type: "overlay.active_speaker", Payload: map[string]any{"user_id": "user-01"}},
+		},
+	}
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, previewPath, nil))
+	if res.Code != http.StatusOK || res.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("participants status=%d headers=%#v body=%s", res.Code, res.Header(), res.Body.String())
+	}
+	body := res.Body.String()
+	for _, expected := range []string{"Alice", "https://cdn.discordapp.com/avatars/user-01/a.png", "Helper", `"active_speaker_id":"user-01"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("participants response missing %q: %s", expected, body)
+		}
+	}
+}
+
+func TestPublicPreviewParticipantsClearsSpeakerOnSpeakingStop(t *testing.T) {
+	response := publicPreviewParticipantsFromEvents([]servicecall.WorkerEvent{
+		{Type: "overlay.participants", Payload: map[string]any{"participants": []any{
+			map[string]any{"user_id": "user-01", "display_name": "Alice", "speaking": true},
+		}}},
+		{Type: "overlay.active_speaker", Payload: map[string]any{"user_id": "user-01", "speaking": true}},
+		{Type: "overlay.active_speaker", Payload: map[string]any{"user_id": "user-01", "speaking": false}},
+	})
+	if response.ActiveSpeakerID != "" || len(response.Participants) != 1 || response.Participants[0].Speaking {
+		t.Fatalf("speaking stop did not clear preview state: %#v", response)
+	}
+}
+
 func TestConfiguredStreamPreviewURLDoesNotTrustRequestHostFallbacks(t *testing.T) {
 	path := "/stream-previews/signed-token/index.m3u8"
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "")
@@ -9307,6 +9405,17 @@ func TestConfiguredStreamPreviewURLDoesNotTrustRequestHostFallbacks(t *testing.T
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.jp/control")
 	if got := configuredStreamPreviewURL(path); got != "https://panel.example.jp/control"+path {
 		t.Fatalf("configured preview URL was not used: %q", got)
+	}
+}
+
+func TestValidatedStreamPreviewPlaylistAllowsLongDVRWindow(t *testing.T) {
+	var playlist strings.Builder
+	playlist.WriteString("#EXTM3U\n#EXT-X-VERSION:3\n")
+	for index := 0; index < 300; index++ {
+		fmt.Fprintf(&playlist, "#EXTINF:2.0,\nsegment-%06d.ts\n", index)
+	}
+	if _, ok := validatedStreamPreviewPlaylist([]byte(playlist.String())); !ok {
+		t.Fatal("long start-to-now preview playlist was rejected")
 	}
 }
 
@@ -19211,6 +19320,19 @@ type fakeYouTubeLiveClient struct {
 // contract required before a reusable static relay claim can be released.
 type relayStaticCompletingYouTubeLiveClient struct {
 	*fakeYouTubeLiveClient
+}
+
+type transitioningYouTubeLiveClient struct {
+	*fakeYouTubeLiveClient
+	transitionCalls   int
+	transitionRequest ytlive.BroadcastTransitionRequest
+	transitionErr     error
+}
+
+func (f *transitioningYouTubeLiveClient) TransitionBroadcastLive(_ context.Context, req ytlive.BroadcastTransitionRequest) error {
+	f.transitionCalls++
+	f.transitionRequest = req
+	return f.transitionErr
 }
 
 func (f *relayStaticCompletingYouTubeLiveClient) CompleteRelayStaticBroadcast(ctx context.Context, req ytlive.CompleteRequest) error {

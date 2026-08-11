@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import {
   isStreamPreviewPlaybackReady,
@@ -7,6 +8,9 @@ import {
   signedStreamPreviewPlaybackURL,
   streamPreviewPlaybackDiagnosticMessage,
 } from "../src/lib/stream-preview.ts";
+
+const previewPlayerSource = fs.readFileSync(new URL("../src/features/streams/stream-preview-player-view.tsx", import.meta.url), "utf8");
+const streamPreviewSource = fs.readFileSync(new URL("../src/features/streams/stream-preview.tsx", import.meta.url), "utf8");
 
 test("relative preview links resolve against the current panel origin", () => {
   assert.equal(
@@ -74,4 +78,17 @@ test("preview timeout diagnostics map known HLS failures and never expose raw va
     streamPreviewPlaybackDiagnosticMessage({ source: "browser", reason: "play_rejected" }),
     "ブラウザーが再生開始を許可しませんでした。",
   );
+});
+
+test("external preview uses one custom control bar and exposes the participant overlay feed", () => {
+  assert.equal(/<video[^>]*\bcontrols\b/i.test(previewPlayerSource), false);
+  assert.match(previewPlayerSource, /stream-previews\/.*\/participants/);
+  assert.match(previewPlayerSource, /preview-playback/);
+  assert.match(previewPlayerSource, /preview-skip-backward/);
+});
+
+test("in-panel preview also exposes the participant overlay feed", () => {
+  assert.match(streamPreviewSource, /resolvePreviewParticipantsURL/);
+  assert.match(streamPreviewSource, /VC参加者/);
+  assert.match(streamPreviewSource, /ring-green-400/);
 });

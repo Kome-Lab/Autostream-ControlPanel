@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Hls, { ErrorTypes } from "hls.js";
-import { LoaderCircle, MonitorPlay } from "lucide-react";
+import { LoaderCircle, MonitorPlay, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type PlayerState = "waiting" | "playing" | "retrying" | "error";
@@ -13,6 +13,14 @@ type SeekWindow = {
   position: number;
 };
 
+type PreviewParticipant = {
+  user_id: string;
+  display_name?: string;
+  avatar_url?: string;
+  is_bot?: boolean;
+  speaking?: boolean;
+};
+
 const emptySeekWindow: SeekWindow = { start: 0, end: 0, position: 0 };
 
 export function StreamPreviewPlayerView({ token }: { token: string }) {
@@ -21,6 +29,8 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
   const [message, setMessage] = useState(token ? "配信映像を読み込んでいます…" : "プレビューTokenがありません。");
   const [retry, setRetry] = useState(0);
   const [seekWindow, setSeekWindow] = useState<SeekWindow>(emptySeekWindow);
+  const [participants, setParticipants] = useState<PreviewParticipant[]>([]);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   const refreshSeekWindow = useCallback(() => {
     const video = videoRef.current;
@@ -51,9 +61,20 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
     refreshSeekWindow();
   }, [refreshSeekWindow, seekWindow]);
 
+  const togglePlayback = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play().catch(() => undefined);
+    } else {
+      video.pause();
+    }
+  }, []);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !token) return;
+    setIsPlaying(false);
     const playlistURL = `/stream-previews/${encodeURIComponent(token)}/index.m3u8`;
     let hls: Hls | null = null;
     let cancelled = false;
@@ -89,11 +110,14 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       return;
     }
     const onPlaying = () => {
+      setIsPlaying(true);
       setState("playing");
       setMessage("配信映像を再生中です。");
     };
+    const onPause = () => setIsPlaying(false);
     const onError = () => fail("映像のデコードに失敗しました。Encoderの出力を確認してください。");
     video.addEventListener("playing", onPlaying);
+    video.addEventListener("pause", onPause);
     video.addEventListener("error", onError);
     video.addEventListener("loadedmetadata", refreshSeekWindow);
     video.addEventListener("durationchange", refreshSeekWindow);
@@ -124,6 +148,7 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       cancelled = true;
       window.clearTimeout(retryTimer);
       video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("pause", onPause);
       video.removeEventListener("error", onError);
       video.removeEventListener("loadedmetadata", refreshSeekWindow);
       video.removeEventListener("durationchange", refreshSeekWindow);
@@ -135,6 +160,29 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
     };
   }, [refreshSeekWindow, retry, token]);
 
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    const endpoint = `/stream-previews/${encodeURIComponent(token)}/participants`;
+    const refreshParticipants = async () => {
+      try {
+        const response = await fetch(endpoint, { cache: "no-store" });
+        if (!response.ok) return;
+        const body = (await response.json()) as { participants?: PreviewParticipant[] };
+        if (!cancelled) setParticipants(Array.isArray(body.participants) ? body.participants : []);
+      } catch {
+        // The HLS player remains usable when the optional participant overlay
+        // endpoint is temporarily unavailable.
+      }
+    };
+    void refreshParticipants();
+    const interval = window.setInterval(refreshParticipants, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [token]);
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-4 sm:p-8">
       <section className="w-full max-w-5xl space-y-4 rounded-lg border bg-card p-4 shadow-sm sm:p-6">
@@ -145,10 +193,38 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
             <p className="text-sm text-muted-foreground">署名済みの配信映像を再生します。</p>
           </div>
         </div>
-        <div className="aspect-video overflow-hidden rounded-md border bg-black">
-          <video ref={videoRef} className="h-full w-full object-contain" controls muted autoPlay playsInline preload="metadata" />
+        <div className="relative aspect-video overflow-hidden rounded-md border bg-black">
+          <video ref={videoRef} className="h-full w-full object-contain" muted autoPlay playsInline preload="metadata" />
+          {participants.length > 0 ? (
+            <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-2" aria-label="VC参加者">
+              {participants.map((participant) => (
+                <div
+                  key={participant.user_id}
+                  className={`flex items-center gap-2 rounded-full bg-black/75 px-2 py-1 text-xs text-white shadow ${participant.speaking ? "ring-2 ring-green-400" : "ring-1 ring-white/20"}`}
+                >
+                  {safeDiscordAvatarURL(participant.avatar_url) ? (
+                    <span
+                      className="size-7 rounded-full bg-cover bg-center"
+                      style={{ backgroundImage: `url("${safeDiscordAvatarURL(participant.avatar_url)}")` }}
+                      role="img"
+                      aria-label={participant.display_name || participant.user_id}
+                    />
+                  ) : (
+                    <span className="flex size-7 items-center justify-center rounded-full bg-slate-600 font-semibold" aria-hidden="true">
+                      {(participant.display_name || "?").slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                  <span className="max-w-40 truncate">{participant.display_name || participant.user_id}</span>
+                  {participant.is_bot ? <span className="rounded bg-indigo-500/80 px-1 text-[10px]">BOT</span> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2" aria-label="プレビュー操作">
+          <Button type="button" variant="outline" size="sm" onClick={togglePlayback} disabled={seekWindow.end <= seekWindow.start} aria-label={isPlaying ? "一時停止" : "再生"} data-testid="preview-playback">
+            {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
+          </Button>
           <Button type="button" variant="outline" size="sm" onClick={() => seekBy(-10)} disabled={seekWindow.end <= seekWindow.start} aria-label="10秒戻る" data-testid="preview-skip-backward">
             −10秒
           </Button>
@@ -179,6 +255,16 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       </section>
     </main>
   );
+}
+
+function safeDiscordAvatarURL(value: string | undefined) {
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.hostname === "cdn.discordapp.com" ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 function formatPreviewTime(value: number) {

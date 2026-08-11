@@ -129,6 +129,44 @@ func TestLiveAPIClientPrepareUsesImmediateStartLeadWhenUnscheduled(t *testing.T)
 	}
 }
 
+func TestLiveAPIClientPrepareReusesOneAccountLiveStream(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{}
+	httpClient := &http.Client{Transport: transport}
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+	client := LiveAPIClient{HTTPClient: httpClient}
+	request := PrepareRequest{
+		Credentials: OAuthCredentials{
+			ClientID:     "youtube-client-id",
+			ClientSecret: "youtube-client-secret",
+			RefreshToken: "youtube-refresh-token",
+		},
+		StreamID:           "account-stream-01",
+		StreamName:         "Account Stream",
+		Title:              "Account Stream",
+		ReuseAccountStream: true,
+	}
+	first, err := client.Prepare(ctx, request)
+	if err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	second, err := client.Prepare(ctx, request)
+	if err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+	if first.LiveStreamID != "live-stream-01" || second.LiveStreamID != first.LiveStreamID {
+		t.Fatalf("account stream was not reused: first=%#v second=%#v", first, second)
+	}
+	if first.StreamKey != "runtime-stream-key" || second.StreamKey != first.StreamKey {
+		t.Fatalf("account stream ingest key changed: first=%q second=%q", first.StreamKey, second.StreamKey)
+	}
+	if transport.accountStreamInsertions != 1 {
+		t.Fatalf("expected one account LiveStream insertion, got %d (steps=%#v)", transport.accountStreamInsertions, transport.steps)
+	}
+	if !transport.saw("list_account_reusable_streams") {
+		t.Fatalf("expected account LiveStream lookup, got %#v", transport.steps)
+	}
+}
+
 func TestLiveAPIClientPrepareRelayStaticBindsReusableLiveStreamWithoutIngestInfo(t *testing.T) {
 	transport := &fakeYouTubeRoundTripper{}
 	httpClient := &http.Client{Transport: transport}
@@ -444,6 +482,36 @@ func TestLiveAPIClientCompleteUsesOAuthAndTransition(t *testing.T) {
 	}
 }
 
+func TestLiveAPIClientTransitionBroadcastLiveUsesOAuthAndTransition(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{}
+	httpClient := &http.Client{Transport: transport}
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+	client := LiveAPIClient{HTTPClient: httpClient}
+
+	err := client.TransitionBroadcastLive(ctx, BroadcastTransitionRequest{
+		Credentials: OAuthCredentials{
+			ClientID:     "youtube-client-id",
+			ClientSecret: "youtube-client-secret",
+			RefreshToken: "youtube-refresh-token",
+		},
+		BroadcastID: "broadcast-01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport.tokenRefreshes != 1 {
+		t.Fatalf("expected one OAuth refresh, got %d", transport.tokenRefreshes)
+	}
+	if !transport.saw("live_broadcast") {
+		t.Fatalf("missing live transition in %#v", transport.steps)
+	}
+	for _, request := range transport.apiRequests {
+		if request.Authorization != "Bearer ya29.fake-youtube-access-token" {
+			t.Fatalf("YouTube live transition did not use refreshed bearer token: %#v", request)
+		}
+	}
+}
+
 func TestLiveAPIClientCompleteRelayStaticBroadcastReconcilesRedundantTransition(t *testing.T) {
 	transport := &fakeYouTubeRoundTripper{
 		completeBroadcastStatus: http.StatusForbidden,
@@ -531,6 +599,8 @@ type fakeYouTubeRoundTripper struct {
 	completeBroadcastResponseLost bool
 	broadcastListStatus           int
 	broadcastListResponse         string
+	accountReusableStreamCreated  bool
+	accountStreamInsertions       int
 }
 
 type fakeYouTubeAPIRequest struct {
@@ -568,6 +638,12 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 
 	f.apiRequests = append(f.apiRequests, fakeYouTubeAPIRequest{Method: req.Method, Path: req.URL.Path, Authorization: req.Header.Get("Authorization")})
 	switch {
+	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams" && req.URL.Query().Get("id") == "":
+		f.steps = append(f.steps, "list_account_reusable_streams")
+		if f.accountReusableStreamCreated {
+			return fakeHTTPResponse(req, http.StatusOK, `{"items":[{"id":"live-stream-01","snippet":{"title":"AutoStream account ingest"},"contentDetails":{"isReusable":true},"cdn":{"ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"runtime-stream-key"}}}]}`), nil
+		}
+		return fakeHTTPResponse(req, http.StatusOK, `{"items":[]}`), nil
 	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams":
 		f.steps = append(f.steps, "get_reusable_stream")
 		f.reusableLiveStreamQuery = req.URL.RawQuery
@@ -592,6 +668,8 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 		return fakeHTTPResponse(req, http.StatusOK, `{"id":"broadcast-01"}`), nil
 	case req.Method == http.MethodPost && req.URL.Path == "/youtube/v3/liveStreams" && hasParts(req, "snippet", "cdn"):
 		f.steps = append(f.steps, "insert_stream")
+		f.accountReusableStreamCreated = true
+		f.accountStreamInsertions++
 		return fakeHTTPResponse(req, http.StatusOK, `{"id":"live-stream-01","cdn":{"ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"runtime-stream-key"}}}`), nil
 	case req.Method == http.MethodPost && req.URL.Path == "/youtube/v3/liveBroadcasts/bind":
 		f.steps = append(f.steps, "bind_broadcast")
@@ -630,8 +708,13 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 		}
 		return fakeHTTPResponse(req, status, body), nil
 	case req.Method == http.MethodPost && req.URL.Path == "/youtube/v3/liveBroadcasts/transition":
-		f.steps = append(f.steps, "complete_broadcast")
-		if req.URL.Query().Get("id") != "broadcast-01" || req.URL.Query().Get("broadcastStatus") != "complete" {
+		broadcastStatus := req.URL.Query().Get("broadcastStatus")
+		step := "complete_broadcast"
+		if broadcastStatus == "live" {
+			step = "live_broadcast"
+		}
+		f.steps = append(f.steps, step)
+		if req.URL.Query().Get("id") != "broadcast-01" || (broadcastStatus != "complete" && broadcastStatus != "live") {
 			return fakeHTTPResponse(req, http.StatusBadRequest, `{"error":{"message":"bad transition"}}`), nil
 		}
 		if f.completeBroadcastResponseLost {
