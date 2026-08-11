@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, CheckCircle2, Copy, KeyRound, Link2, Mail, Plus, QrCode, RefreshCcw, Save, ShieldCheck, ShieldOff, Trash2, Upload, UserCog, X } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
@@ -278,6 +279,7 @@ function AvatarPanel({
 }
 
 function PasswordPanel({ setNotice, onError }: { setNotice: (notice: AccountNotice) => void; onError: (error: unknown, fallback: string) => void }) {
+  const router = useRouter();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -286,7 +288,7 @@ function PasswordPanel({ setNotice, onError }: { setNotice: (notice: AccountNoti
     mutationFn: () => apiPost<{ status: string }>("/auth/change-password", { current_password: currentPassword, new_password: newPassword }),
     onSuccess: () => {
       setNotice({ tone: "success", text: "パスワードを変更しました。再ログインしてください。" });
-      window.setTimeout(() => window.location.assign("/login"), 900);
+      window.setTimeout(() => router.push("/login"), 900);
     },
     onError: (error) => onError(error, "パスワードを変更できませんでした"),
   });
