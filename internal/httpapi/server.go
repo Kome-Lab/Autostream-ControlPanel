@@ -10349,17 +10349,26 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	s.completeStreamStart(w, r, stream, primaryAssignments, body, results)
 }
 
-// ensureYouTubeBroadcastLive closes the gap between a successful Encoder
-// dispatch and YouTube's provider lifecycle. AutoStart is advisory: a
-// Broadcast can remain ready/testing even while the Encoder is already
-// sending. For an immediate Live API start, explicitly transition it to live
-// and reconcile response-loss/already-live errors through the provider status
-// endpoint. Scheduled broadcasts remain under YouTube's own schedule.
+// ensureYouTubeBroadcastLive handles the provider transition after a
+// successful Encoder dispatch. AutoStart-enabled immediate broadcasts are
+// intentionally left for YouTube to move through testing into live after it
+// observes ingest; the durable notification outbox polls that lifecycle.
+// Explicit auto-start=false retains the operator-controlled transition path.
+// Scheduled broadcasts remain under YouTube's own schedule.
 func (s *Server) ensureYouTubeBroadcastLive(ctx context.Context, runtime map[string]any) error {
 	if strings.ToLower(strings.TrimSpace(mapString(runtime, "mode"))) != "live_api" {
 		return nil
 	}
 	if scheduledStart, ok := youtubeRuntimeScheduledStart(runtime); ok && scheduledStart.After(time.Now().UTC()) {
+		return nil
+	}
+	// With YouTube AutoStart enabled, the provider must observe the Encoder
+	// ingest before it can move the Broadcast through testing/into live. Do not
+	// race that provider transition synchronously from the start request. The
+	// durable Discord notification outbox polls lifecycle and delivers only
+	// after YouTube reports live. Explicit auto-start=false keeps the legacy
+	// operator-controlled transition path below.
+	if mapBoolDefault(runtime, "enable_auto_start", true) {
 		return nil
 	}
 	transitionClient, ok := s.youtubeLive.(ytlive.BroadcastTransitionClient)
@@ -11163,6 +11172,7 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		"rtmp_url":               prepared.RTMPURL,
 		"stream_key_secret_name": streamKeySecretName,
 		"dry_run":                false,
+		"enable_auto_start":      youtubeOutputAutoStartEnabled(profile.Config),
 		"complete_on_stop":       youtubeCompleteOnStop(profile.Config),
 	}
 	if !scheduledStart.IsZero() {

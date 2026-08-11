@@ -4543,6 +4543,7 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 		"mode":                     "live_api",
 		"oauth_account_id":         account.ID,
 		"privacy_status":           "private",
+		"enable_auto_start":        false,
 		"broadcast_title_template": "配信: {{program_title}}",
 	})
 	if err != nil {
@@ -4564,7 +4565,7 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if strings.Contains(res.Body.String(), "runtime-youtube-live-api-key") || strings.Contains(res.Body.String(), "raw-youtube-refresh-token") || strings.Contains(res.Body.String(), "raw-youtube-client-secret") {
 		t.Fatalf("youtube live api secret leaked in response: %s", res.Body.String())
 	}
-	if youtubeLive.prepareCalls != 1 || youtubeLive.prepareRequest.Credentials.ClientID != "youtube-client-id" || youtubeLive.prepareRequest.Credentials.ClientSecret != "raw-youtube-client-secret" || youtubeLive.prepareRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" || !youtubeLive.prepareRequest.EnableAutoStart {
+	if youtubeLive.prepareCalls != 1 || youtubeLive.prepareRequest.Credentials.ClientID != "youtube-client-id" || youtubeLive.prepareRequest.Credentials.ClientSecret != "raw-youtube-client-secret" || youtubeLive.prepareRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" || youtubeLive.prepareRequest.EnableAutoStart {
 		t.Fatalf("youtube live api was not called with OAuth credentials: %#v", youtubeLive.prepareRequest)
 	}
 	if youtubeLive.prepareRequest.Title != "配信: real youtube stream" {
@@ -4651,6 +4652,46 @@ func TestEnsureYouTubeBroadcastLiveLeavesFutureScheduleToYouTube(t *testing.T) {
 	}
 	if youtubeLive.transitionCalls != 0 {
 		t.Fatalf("future scheduled broadcast was transitioned immediately: %#v", youtubeLive)
+	}
+}
+
+func TestEnsureYouTubeBroadcastLiveDefersWhenAutoStartEnabled(t *testing.T) {
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube Google",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "youtube-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/auth/oauth/google/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "youtube account",
+		RefreshToken: "youtube-refresh-token",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	youtubeLive := &transitioningYouTubeLiveClient{fakeYouTubeLiveClient: &fakeYouTubeLiveClient{}}
+	server := &Server{integrations: integrations, youtubeLive: youtubeLive}
+
+	if err := server.ensureYouTubeBroadcastLive(t.Context(), map[string]any{
+		"mode":              "live_api",
+		"oauth_account_id":  account.ID,
+		"broadcast_id":      "broadcast-01",
+		"enable_auto_start": true,
+	}); err != nil {
+		t.Fatalf("auto-start should defer the provider transition: %v", err)
+	}
+	if youtubeLive.transitionCalls != 0 {
+		t.Fatalf("auto-start path attempted an explicit provider transition: %#v", youtubeLive)
 	}
 }
 
