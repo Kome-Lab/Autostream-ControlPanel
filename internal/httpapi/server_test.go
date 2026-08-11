@@ -9209,14 +9209,16 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 		t.Fatalf("preview link status=%d body=%s", res.Code, res.Body.String())
 	}
 	var link struct {
-		URL       string    `json:"url"`
-		ExpiresAt time.Time `json:"expires_at"`
+		URL         string    `json:"url"`
+		PlaybackURL string    `json:"playback_url"`
+		PlayerURL   string    `json:"player_url"`
+		ExpiresAt   time.Time `json:"expires_at"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&link); err != nil {
 		t.Fatal(err)
 	}
 	parsed, err := url.Parse(link.URL)
-	if err != nil || parsed.Host != "panel.example.jp" || !strings.HasSuffix(parsed.Path, "/index.m3u8") || link.ExpiresAt.Before(time.Now().UTC().Add(11*time.Hour)) {
+	if err != nil || parsed.Host != "panel.example.jp" || !strings.HasSuffix(parsed.Path, "/index.m3u8") || link.ExpiresAt.Before(time.Now().UTC().Add(11*time.Hour)) || link.PlaybackURL != link.URL || !strings.Contains(link.PlayerURL, "/stream-preview/?token=") || len(link.PlayerURL) >= len(link.URL) {
 		t.Fatalf("unexpected preview link: %#v err=%v", link, err)
 	}
 
@@ -9272,7 +9274,7 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 		t.Fatalf("public preview malformed unsatisfied range status=%d body=%s", invalidRangeRes.Code, invalidRangeRes.Body.String())
 	}
 
-	tamperedPath := strings.Replace(parsed.Path, "ast_ingest_v1.", "ast_ingest_v1.X", 1)
+	tamperedPath := strings.Replace(parsed.Path, "ast_preview_v1.", "ast_preview_v1.X", 1)
 	tamperedRes := httptest.NewRecorder()
 	handler.ServeHTTP(tamperedRes, httptest.NewRequest(http.MethodGet, tamperedPath, nil))
 	if tamperedRes.Code != http.StatusNotFound {

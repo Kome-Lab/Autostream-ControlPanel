@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import Hls, { ErrorTypes } from "hls.js";
-import { Check, Copy, Link2, LoaderCircle, MonitorPlay } from "lucide-react";
+import { Check, Copy, ExternalLink, Link2, LoaderCircle, MonitorPlay } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { APIError, apiPost } from "@/lib/api/client";
@@ -21,10 +21,20 @@ import type { Stream } from "@/types/domain";
 type PreviewLink = {
   stream_id: string;
   url: string;
+  playback_url?: string;
+  player_url?: string;
   expires_at: string;
 };
 
 type PlaybackState = "connecting" | "ready" | "retrying" | "error";
+
+const previewLinkCache = new Map<string, PreviewLink>();
+
+function isPreviewLinkFresh(value: PreviewLink | null | undefined) {
+  if (!value?.expires_at) return false;
+  const expiresAt = Date.parse(value.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt > Date.now() + 60_000;
+}
 
 export function StreamPreview({ stream }: { stream: Stream }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -36,11 +46,12 @@ export function StreamPreview({ stream }: { stream: Stream }) {
   const [retryNonce, setRetryNonce] = useState(0);
   const [copied, setCopied] = useState(false);
   const playbackDiagnosticRef = useRef<StreamPreviewPlaybackDiagnostic | null>(null);
-  const playbackURL = signedStreamPreviewPlaybackURL(previewLink?.url);
+  const playbackURL = signedStreamPreviewPlaybackURL(previewLink?.playback_url || previewLink?.url);
+  const displayURL = previewLink?.player_url || previewLink?.url || "";
   const issueLink = useMutation({
     mutationFn: () => apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`),
     onSuccess: (value) => {
-      const resolvedURL = resolveStreamPreviewURL(value.url, window.location.origin);
+      const resolvedURL = resolveStreamPreviewURL(value.playback_url || value.url, window.location.origin);
       if (!resolvedURL) {
         setPreviewLink(null);
         setPreviewLinkError(new Error("署名付きプレビューURLが無効です。"));
@@ -48,7 +59,14 @@ export function StreamPreview({ stream }: { stream: Stream }) {
         setPlaybackState("error");
         return;
       }
-      setPreviewLink({ ...value, url: resolvedURL });
+      const normalized = {
+        ...value,
+        url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
+        playback_url: resolvedURL,
+        player_url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
+      };
+      previewLinkCache.set(stream.id, normalized);
+      setPreviewLink(normalized);
       setPreviewLinkError(null);
       setPlaybackError("");
       setPlaybackState("connecting");
@@ -56,7 +74,7 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     },
     onError: (error) => {
       setPreviewLinkError(error);
-      if (!previewLink?.url) {
+      if (!previewLink?.playback_url && !previewLink?.url) {
         setPlaybackError("");
         setPlaybackState("error");
       }
@@ -74,7 +92,7 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       void apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`)
         .then((value) => {
           if (cancelled) return;
-          const resolvedURL = resolveStreamPreviewURL(value.url, window.location.origin);
+          const resolvedURL = resolveStreamPreviewURL(value.playback_url || value.url, window.location.origin);
           if (!resolvedURL) {
             setPreviewLink(null);
             setPreviewLinkError(new Error("署名付きプレビューURLが無効です。"));
@@ -82,7 +100,14 @@ export function StreamPreview({ stream }: { stream: Stream }) {
             setPlaybackState("error");
             return;
           }
-          setPreviewLink({ ...value, url: resolvedURL });
+          const normalized = {
+            ...value,
+            url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
+            playback_url: resolvedURL,
+            player_url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
+          };
+          previewLinkCache.set(stream.id, normalized);
+          setPreviewLink(normalized);
           setPreviewLinkError(null);
           setPlaybackError("");
           setPlaybackState("connecting");
@@ -102,6 +127,15 @@ export function StreamPreview({ stream }: { stream: Stream }) {
     };
     window.queueMicrotask(() => {
       if (cancelled) return;
+      const cached = previewLinkCache.get(stream.id);
+      if (isPreviewLinkFresh(cached)) {
+        setPreviewLink(cached || null);
+        setPreviewLinkError(null);
+        setPlaybackError("");
+        setCopied(false);
+        setPlaybackState("connecting");
+        return;
+      }
       setPreviewLink(null);
       setPreviewLinkError(null);
       setPlaybackError("");
@@ -305,8 +339,8 @@ export function StreamPreview({ stream }: { stream: Stream }) {
   }, [playbackURL]);
 
   const copyPreviewLink = async () => {
-    if (!previewLink?.url || !navigator.clipboard) return;
-    await navigator.clipboard.writeText(previewLink.url);
+    if (!displayURL || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(displayURL);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_500);
   };
@@ -333,6 +367,9 @@ export function StreamPreview({ stream }: { stream: Stream }) {
             <Input className="min-w-0 flex-1 font-mono text-xs" value={previewLink.url} readOnly aria-label="ネットワーク再生URL" />
             <Button type="button" variant="outline" size="icon-sm" onClick={() => void copyPreviewLink()} aria-label="ネットワーク再生URLをコピー">
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+            </Button>
+            <Button type="button" variant="outline" size="icon-sm" asChild aria-label="Open preview player">
+              <a href={displayURL} target="_blank" rel="noreferrer"><ExternalLink className="size-4" /></a>
             </Button>
           </div>
         ) : null}

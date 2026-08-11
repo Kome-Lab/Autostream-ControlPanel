@@ -10898,7 +10898,7 @@ func youtubeOutputReadinessMessage(err error) string {
 	case errors.Is(err, errYouTubeOAuthAccountUnavailable):
 		return "selected YouTube OAuth connected account is not ready."
 	case errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay):
-		return "YouTube Live API requires a managed Encoder output relay."
+		return "The primary Encoder is not advertising direct YouTube output. A fixed Relay is not required: set AUTOSTREAM_OUTPUT_RELAY_MODE=direct, leave AUTOSTREAM_OUTPUT_RELAY_URL empty, disable AUTOSTREAM_REQUIRE_OUTPUT_RELAY, then restart the Encoder so its capability refreshes."
 	case errors.Is(err, errYouTubeRelayStaticUnavailable):
 		return "the Control Panel does not support the selected fixed relay YouTube output."
 	case errors.Is(err, errYouTubeRelayStaticBindingUnavailable):
@@ -13425,25 +13425,31 @@ func (s *Server) createStreamPreviewLink(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	now := time.Now().UTC()
-	expiresAt := now.Add(streamPreviewLinkTTL)
-	token, err := ingesttoken.Issue(s.previewSigningKey, ingesttoken.Claims{
-		StreamID:    stream.ID,
-		ServiceID:   "control-panel",
-		ServiceType: "control_panel",
-		Purpose:     "stream_preview",
-		Audience:    "external_player",
-		ExpiresAt:   expiresAt.Unix(),
-	})
+	// Round expiry to an hourly bucket. Together with the compact token this
+	// makes repeated details-panel opens return the same preview capability
+	// while keeping the maximum lifetime bounded by the normal preview TTL.
+	expiresAt := now.Add(streamPreviewLinkTTL).Truncate(time.Hour)
+	token, err := ingesttoken.IssuePreview(s.previewSigningKey, stream.ID, expiresAt.Unix())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "stream_preview_link_failed"})
 		return
 	}
-	path := "/stream-previews/" + url.PathEscape(token) + "/index.m3u8"
-	previewURL := configuredStreamPreviewURL(path)
+	playbackPath := "/stream-previews/" + url.PathEscape(token) + "/index.m3u8"
+	playerPath := "/stream-preview/?token=" + url.QueryEscape(token)
+	playbackURL := configuredStreamPreviewURL(playbackPath)
+	playerURL := configuredStreamPreviewURL(playerPath)
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.preview_link.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"expires_at": expiresAt, "assignment_count": len(assignments)}})
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusCreated, map[string]any{"stream_id": stream.ID, "url": previewURL, "expires_at": expiresAt})
+	// Keep url as the legacy HLS URL for API compatibility. New callers should
+	// display/copy player_url; playback_url is explicit for embedded players.
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"stream_id":    stream.ID,
+		"url":          playbackURL,
+		"playback_url": playbackURL,
+		"player_url":   playerURL,
+		"expires_at":   expiresAt,
+	})
 }
 
 func configuredStreamPreviewURL(path string) string {
@@ -13460,7 +13466,14 @@ func (s *Server) publicStreamPreviewAsset(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_preview_unavailable"})
 		return
 	}
-	claims, err := ingesttoken.Verify(s.previewSigningKey, strings.TrimSpace(r.PathValue("token")), ingesttoken.Expected{
+	token := strings.TrimSpace(r.PathValue("token"))
+	streamID, _, compactErr := ingesttoken.VerifyPreview(s.previewSigningKey, token, time.Now().UTC())
+	if compactErr == nil {
+		s.writeStreamPreviewAsset(w, r, streamID, strings.TrimSpace(r.PathValue("name")), true)
+		return
+	}
+	// Accept the previous long ingest-token format until old links expire.
+	claims, err := ingesttoken.Verify(s.previewSigningKey, token, ingesttoken.Expected{
 		ServiceID:   "control-panel",
 		ServiceType: "control_panel",
 		Purpose:     "stream_preview",

@@ -1084,6 +1084,8 @@ export function mockPost(path: string, body?: unknown): unknown {
     return {
       stream_id: streamID,
       url: `https://control.example.jp/stream-previews/mock-preview-token-${encodeURIComponent(streamID)}/index.m3u8`,
+      playback_url: `https://control.example.jp/stream-previews/mock-preview-token-${encodeURIComponent(streamID)}/index.m3u8`,
+      player_url: `https://control.example.jp/stream-preview/?token=mock-preview-token-${encodeURIComponent(streamID)}`,
       expires_at: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
     };
   }
