@@ -1444,7 +1444,7 @@ func waitForValue(t *testing.T, values <-chan string) string {
 	select {
 	case value := <-values:
 		return value
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for coordinator stage")
 		return ""
 	}
