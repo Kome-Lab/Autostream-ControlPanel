@@ -1167,6 +1167,12 @@ func allowedSystemUpdateTransition(current, next string) bool {
 	if next == SystemUpdateStatusFailed {
 		return true
 	}
+	// Older pull agents can persist a verified rollback result without the
+	// intermediate rolling_back report. Accept that terminal report so an
+	// already-running job can settle; current agents emit rolling_back first.
+	if current == SystemUpdateStatusHealthChecking && next == SystemUpdateStatusRolledBack {
+		return true
+	}
 	if current == SystemUpdateStatusRollingBack {
 		return next == SystemUpdateStatusRolledBack
 	}

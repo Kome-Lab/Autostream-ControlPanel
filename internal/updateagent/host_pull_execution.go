@@ -379,6 +379,15 @@ func (a *HostPullAgent) processExecutionJob(
 	if _, err := a.emitExecutionReport(ctx, panel, job, "health_checking", "", "root executor completed bounded health and version checks", 90, result.ArtifactDigest, result.PreviousDigest); err != nil {
 		return err
 	}
+	if result.Status == "rolled_back" || result.RolledBack {
+		if _, err := a.emitExecutionReport(
+			ctx, panel, job, "rolling_back", "",
+			"post-update checks failed; previous release was restored", 95,
+			result.ArtifactDigest, result.PreviousDigest,
+		); err != nil {
+			return err
+		}
+	}
 	return a.finishExecutionResult(terminal, result)
 }
 

@@ -435,6 +435,12 @@ func TestSystemUpdateTransitionAllowsOnlyLateStageReconciliation(t *testing.T) {
 	if allowedSystemUpdateTransition(SystemUpdateStatusReconciling, SystemUpdateStatusInstalling) || !allowedSystemUpdateTransition(SystemUpdateStatusReconciling, SystemUpdateStatusRolledBack) {
 		t.Fatal("reconciling transition fence is invalid")
 	}
+	if !allowedSystemUpdateTransition(SystemUpdateStatusHealthChecking, SystemUpdateStatusRolledBack) {
+		t.Fatal("legacy verified rollback from health_checking was rejected")
+	}
+	if allowedSystemUpdateTransition(SystemUpdateStatusStarting, SystemUpdateStatusRolledBack) {
+		t.Fatal("rollback was accepted before post-update health checking")
+	}
 }
 
 func TestControlPanelServiceIDIsReservedForSyntheticUpdateTarget(t *testing.T) {

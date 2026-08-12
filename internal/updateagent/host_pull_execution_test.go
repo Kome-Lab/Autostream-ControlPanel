@@ -91,6 +91,7 @@ type hostPullExecutionTestExecutor struct {
 	portFences      []LocalExecutorMutationFence
 	stageErr        error
 	applyErr        error
+	applyResult     *ApplyResult
 	reconcileErr    error
 	reconcileResult *ApplyResult
 	portApplyErr    error
@@ -109,6 +110,13 @@ func (e *hostPullExecutionTestExecutor) Apply(_ context.Context, plan RemotePlan
 	e.applyFences = append(e.applyFences, fence)
 	if e.applyErr != nil {
 		return ApplyResult{}, e.applyErr
+	}
+	if e.applyResult != nil {
+		result := *e.applyResult
+		if result.ArtifactDigest == "" {
+			result.ArtifactDigest = plan.ResultArtifactDigest()
+		}
+		return result, nil
 	}
 	return ApplyResult{Status: "succeeded", ArtifactDigest: plan.ResultArtifactDigest()}, nil
 }
@@ -411,6 +419,43 @@ func TestHostPullExecutionClaimsServerOwnedHostAndCompletesThroughLocalExecutor(
 	if strings.Contains(string(payload), "ast_mutation_") ||
 		strings.Contains(string(payload), strings.Repeat("l", 48)) {
 		t.Fatalf("journal persisted a bearer secret: %s", payload)
+	}
+}
+
+func TestHostPullExecutionPostUpdateRollbackReportsRollingBackBeforeTerminal(t *testing.T) {
+	agent, panel, executor, binding, policy := newHostPullExecutionHarness(t, false)
+	executor.applyResult = &ApplyResult{
+		Status:     "rolled_back",
+		RolledBack: true,
+		Message:    "expected worker version was not healthy",
+	}
+
+	if err := agent.executeOnce(context.Background(), binding, policy); err != nil {
+		t.Fatalf("executeOnce: %v", err)
+	}
+
+	wantStatuses := []string{
+		"claimed", "downloading", "verifying", "staging", "installing",
+		"health_checking", "rolling_back", "rolled_back",
+	}
+	if len(panel.reports) != len(wantStatuses) {
+		t.Fatalf("reports=%+v, want statuses=%v", panel.reports, wantStatuses)
+	}
+	for i, want := range wantStatuses {
+		if got := panel.reports[i].Status; got != want {
+			t.Fatalf("report[%d]=%+v, want status=%q", i, panel.reports[i], want)
+		}
+	}
+	rollingBack := panel.reports[len(panel.reports)-2]
+	if rollingBack.Progress != 95 || rollingBack.Code != "" {
+		t.Fatalf("rolling_back report=%+v", rollingBack)
+	}
+	terminal := panel.reports[len(panel.reports)-1]
+	if terminal.Progress != 100 || terminal.Code != "post_update_verification_failed" {
+		t.Fatalf("terminal report=%+v", terminal)
+	}
+	if active := agent.Journal.Active(); active != nil {
+		t.Fatalf("rolled-back job left active: %+v", active)
 	}
 }
 
