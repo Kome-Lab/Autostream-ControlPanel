@@ -138,7 +138,7 @@ type serviceDispatcher interface {
 	WorkerEvents(ctx context.Context, stream store.Stream, services []store.RegisteredService) servicecall.WorkerEventsResult
 	EncoderPreflight(ctx context.Context, stream store.Stream, services []store.RegisteredService) servicecall.ServicePreflightResult
 	SendWorkerEvent(ctx context.Context, stream store.Stream, services []store.RegisteredService, req servicecall.WorkerEventRequest) servicecall.DispatchResult
-	DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) servicecall.ArchiveArtifactDownloadResult
+	DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, byteRange string) servicecall.ArchiveArtifactDownloadResult
 	DeleteArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) servicecall.DispatchResult
 	RenameArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, name string) servicecall.DispatchResult
 }
@@ -9392,7 +9392,7 @@ func (s *Server) upsertStreamArchiveDriveDestination(ctx context.Context, stream
 		OAuthAccountID: oauthAccountID,
 		FolderID:       folderID,
 		SharedDrive:    sharedDrive,
-		BasePath:       "AutoStream",
+		BasePath:       "",
 	}
 	if destination.ID != "" {
 		updated, err := s.integrations.UpdateDriveDestination(ctx, destination)
@@ -14458,8 +14458,16 @@ func (s *Server) downloadStreamArtifact(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	result := s.dispatcher.DownloadArchiveArtifact(r.Context(), stream, assignments, artifact)
+	result := s.dispatcher.DownloadArchiveArtifact(r.Context(), stream, assignments, artifact, r.Header.Get("Range"))
 	if !result.Success || result.Body == nil {
+		if result.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			if contentRange := validatedPreviewUnsatisfiedContentRange(result.ContentRange); contentRange != "" {
+				w.Header().Set("Content-Range", contentRange)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "archive_artifact_download_failed", "dispatch": sanitizeArchiveDownloadResult(result)})
 		return
 	}
@@ -14478,11 +14486,26 @@ func (s *Server) downloadStreamArtifact(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", disposition+`; filename="`+sanitizeDownloadFileName(fileName)+`"`)
+	if strings.EqualFold(strings.TrimSpace(result.AcceptRanges), "bytes") {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
+	status := http.StatusOK
+	if result.StatusCode == http.StatusPartialContent {
+		if contentRange := validatedPreviewContentRange(result.ContentRange, int(result.SizeBytes)); contentRange != "" {
+			w.Header().Set("Content-Range", contentRange)
+			status = http.StatusPartialContent
+		}
+	}
 	if result.SizeBytes >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(result.SizeBytes, 10))
 	}
 	current := currentFromContext(r.Context())
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.download", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"artifact_id": artifact.ID, "artifact_name": artifact.Name}})
+	if disposition == "attachment" {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "archive.artifact.download", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"artifact_id": artifact.ID, "artifact_name": artifact.Name}})
+	}
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+	}
 	_, _ = io.Copy(w, result.Body)
 }
 
@@ -14623,8 +14646,16 @@ func (s *Server) downloadPublicArchiveShare(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
 		return
 	}
-	result := s.dispatcher.DownloadArchiveArtifact(r.Context(), stream, primaryAssignments, artifact)
+	result := s.dispatcher.DownloadArchiveArtifact(r.Context(), stream, primaryAssignments, artifact, r.Header.Get("Range"))
 	if !result.Success || result.Body == nil {
+		if result.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			if contentRange := validatedPreviewUnsatisfiedContentRange(result.ContentRange); contentRange != "" {
+				w.Header().Set("Content-Range", contentRange)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "archive_artifact_download_failed", "dispatch": sanitizeArchiveDownloadResult(result)})
 		return
 	}
@@ -14643,8 +14674,21 @@ func (s *Server) downloadPublicArchiveShare(w http.ResponseWriter, r *http.Reque
 		disposition = "attachment"
 	}
 	w.Header().Set("Content-Disposition", disposition+`; filename="`+sanitizeDownloadFileName(fileName)+`"`)
+	if strings.EqualFold(strings.TrimSpace(result.AcceptRanges), "bytes") {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
+	status := http.StatusOK
+	if result.StatusCode == http.StatusPartialContent {
+		if contentRange := validatedPreviewContentRange(result.ContentRange, int(result.SizeBytes)); contentRange != "" {
+			w.Header().Set("Content-Range", contentRange)
+			status = http.StatusPartialContent
+		}
+	}
 	if result.SizeBytes >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(result.SizeBytes, 10))
+	}
+	if status != http.StatusOK {
+		w.WriteHeader(status)
 	}
 	_, _ = io.Copy(w, result.Body)
 }

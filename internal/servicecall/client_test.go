@@ -3,6 +3,7 @@ package servicecall
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -182,8 +183,8 @@ func TestStartNegotiatesWorkerVideoIngestWithoutLeakingCredential(t *testing.T) 
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
 	services := []store.RegisteredService{
 		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
-		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_video_srt": true}},
-		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_video_ingest_srt": true}},
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
+		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
 	}
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, services, StartRequest{
 		EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60,
@@ -238,8 +239,8 @@ func TestStartWorkerVideoCapabilityMismatchFailsBeforeDispatch(t *testing.T) {
 		workerCaps  map[string]any
 		encoderCaps map[string]any
 	}{
-		{name: "Worker only", workerCaps: map[string]any{"scene_video_srt": true}},
-		{name: "Encoder only", encoderCaps: map[string]any{"worker_video_ingest_srt": true}},
+		{name: "Worker only", workerCaps: map[string]any{"scene_frames_mjpeg_srt": true}},
+		{name: "Encoder only", encoderCaps: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requests := 0
@@ -268,13 +269,13 @@ func TestStartWorkerVideoCapabilityMismatchFailsBeforeDispatch(t *testing.T) {
 
 func TestWorkerVideoCapabilitiesRequireExactReportedBooleans(t *testing.T) {
 	services := []store.RegisteredService{
-		{ServiceID: "worker-01", ServiceType: "worker", ReportedCapabilities: map[string]any{"scene_video_srt": "true"}},
-		{ServiceID: "enc-01", ServiceType: "encoder_recorder", ReportedCapabilities: map[string]any{"worker_video_ingest_srt": "true"}},
+		{ServiceID: "worker-01", ServiceType: "worker", ReportedCapabilities: map[string]any{"scene_frames_mjpeg_srt": "true"}},
+		{ServiceID: "enc-01", ServiceType: "encoder_recorder", ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": "true"}},
 	}
 	if WorkerVideoCapabilitiesEnabled(services) {
 		t.Fatalf("string capability values must not negotiate Worker video: %#v", services)
 	}
-	services[0].ReportedCapabilities["scene_video_srt"] = true
+	services[0].ReportedCapabilities["scene_frames_mjpeg_srt"] = true
 	if _, mismatch := workerVideoCapabilityMismatch(services); !mismatch {
 		t.Fatalf("one exact capability and one non-boolean capability must fail closed: %#v", services)
 	}
@@ -301,8 +302,8 @@ func TestStartNegotiatedWorkerVideoStopsBeforeBotWhenWorkerRejectsRoute(t *testi
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
 		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
-		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_video_srt": true}},
-		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_video_ingest_srt": true}},
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
+		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
 	}, StartRequest{EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60})
 	if got, want := strings.Join(paths, ","), "/streams/start,/jobs/start"; got != want {
 		t.Fatalf("Bot was dispatched after Worker rejected its video route: got=%q want=%q", got, want)
@@ -327,8 +328,8 @@ func TestStartRejectsSecretBearingWorkerVideoURLWithoutLeakingCredential(t *test
 	client := testClient()
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
-		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_video_srt": true}},
-		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_video_ingest_srt": true}},
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
+		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
 	}, StartRequest{})
 	encoded, err := json.Marshal(results)
 	if err != nil {
@@ -925,6 +926,52 @@ func TestPreviewAssetDoesNotForwardInvalidOrMultiRange(t *testing.T) {
 	result := testClient().PreviewAsset(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}}, "segment-000001.ts", "bytes=0-1,4-5")
 	if !result.Success {
 		t.Fatalf("invalid range request failed unexpectedly: %#v", result)
+	}
+}
+
+func TestDownloadArchiveArtifactForwardsRangeAndKeepsStreamingBodyAlive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/streams/stream-01/artifacts/final.mp4" {
+			t.Fatalf("unexpected archive path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer service-token" {
+			t.Fatalf("unexpected archive authorization: %q", got)
+		}
+		if got := r.Header.Get("Range"); got != "bytes=0-3" {
+			t.Fatalf("archive range = %q, want bytes=0-3", got)
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", "bytes 0-3/8")
+		w.WriteHeader(http.StatusPartialContent)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(25 * time.Millisecond)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	client := testClient()
+	client.Config.Timeout = 10 * time.Millisecond
+	client.HTTP = server.Client()
+	result := client.DownloadArchiveArtifact(
+		t.Context(),
+		store.Stream{ID: "stream-01"},
+		[]store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}},
+		store.StreamArtifact{ID: "artifact-01", StreamID: "stream-01", Kind: "archive", Name: "final.mp4"},
+		"bytes=0-3",
+	)
+	if !result.Success || result.StatusCode != http.StatusPartialContent || result.ContentRange != "bytes 0-3/8" || result.AcceptRanges != "bytes" || result.Body == nil {
+		t.Fatalf("unexpected archive result: %#v", result)
+	}
+	defer result.Body.Close()
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		t.Fatalf("archive body was cancelled before streaming completed: %v", err)
+	}
+	if string(body) != "data" {
+		t.Fatalf("archive body = %q, want data", string(body))
 	}
 }
 

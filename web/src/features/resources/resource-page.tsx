@@ -855,7 +855,6 @@ function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disa
   const [oauthAccountID, setOAuthAccountID] = useState(() => rowString(row, ["oauth_account_id"]) || noneValue);
   const [folderID, setFolderID] = useState(() => rowString(row, ["folder_id"]));
   const [sharedDrive, setSharedDrive] = useState(() => rowValue(row, ["shared_drive"]) === true);
-  const [basePath, setBasePath] = useState(() => rowString(row, ["base_path"]) || "autostream");
   const effectiveOAuthAccountID = oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
 
   return (
@@ -870,7 +869,6 @@ function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disa
             oauth_account_id: effectiveOAuthAccountID === noneValue ? "" : effectiveOAuthAccountID,
             folder_id: folderID,
             shared_drive: sharedDrive,
-            base_path: basePath,
           }),
         );
       }}
@@ -879,7 +877,6 @@ function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disa
         <TextField label="保存先名" value={name} onChange={setName} required />
         <SelectField label="OAuthアカウント" value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
         <TextField label={sharedDrive ? "共有ドライブ配下のフォルダID" : "DriveフォルダID"} value={folderID} onChange={setFolderID} required description="URLのfolders/以降にあるIDを入力します。" />
-        <TextField label="保存先パス" value={basePath} onChange={setBasePath} />
       </div>
       <SwitchField label="共有ドライブを使う" checked={sharedDrive} onCheckedChange={setSharedDrive} />
       {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">Drive保存用途でGoogleアカウントを接続してください。</p> : null}

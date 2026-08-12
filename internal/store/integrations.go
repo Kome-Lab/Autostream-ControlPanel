@@ -1207,9 +1207,6 @@ func normalizeDriveDestination(destination DriveDestination, creating bool) (Dri
 	if creating && destination.FolderID == "" {
 		return DriveDestination{}, errors.New("drive destination folder_id is required")
 	}
-	if destination.BasePath == "" {
-		destination.BasePath = "AutoStream"
-	}
 	return destination, nil
 }
 

@@ -21,6 +21,7 @@ import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
 import { archiveArtifactPollInterval } from "@/features/archive/archive-artifact-polling";
+import { isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
 
 type StreamArtifact = {
   id: string;
@@ -142,7 +143,7 @@ function ArchiveArtifacts({
   const query = useQuery({
     queryKey: ["resource", artifactsPath],
     queryFn: async () => {
-      const nextArtifacts = await apiGet<StreamArtifact[]>(artifactsPath);
+      const nextArtifacts = (await apiGet<StreamArtifact[]>(artifactsPath)).filter(isArchiveRecordingArtifact);
       emptyPollAttempts.current = nextArtifacts.length === 0 ? emptyPollAttempts.current + 1 : 0;
       return nextArtifacts;
     },
@@ -199,7 +200,7 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
   const [copied, setCopied] = useState(false);
   const artifactPath = `/streams/${encodeURIComponent(streamID)}/artifacts/${encodeURIComponent(artifact.id)}`;
   const sharesPath = `${artifactPath}/shares`;
-  const playable = isLikelyVideo(artifact.name, artifact.kind);
+  const playable = isArchiveRecordingArtifact(artifact);
   const nameReady = name.trim() !== "" && !/[\\/]/.test(name);
   const shareHoursValue = Number.parseInt(shareHours, 10);
   const shareHoursReady = Number.isFinite(shareHoursValue) && shareHoursValue >= 1 && shareHoursValue <= 720;
@@ -362,11 +363,6 @@ function artifactKindLabel(kind: string) {
     logs: "ログ",
   };
   return labels[kind] || kind;
-}
-
-function isLikelyVideo(name: string, kind: string) {
-  if (kind === "archive") return true;
-  return /\.(mp4|webm|m4v|mov|mkv)$/i.test(name);
 }
 
 function formatBytes(value: number) {

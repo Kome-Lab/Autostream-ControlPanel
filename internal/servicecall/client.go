@@ -26,6 +26,7 @@ const (
 	maxPreviewPlaylistBytes = 1 << 20
 	maxPreviewSegmentBytes  = 32 << 20
 	encoderStopTimeout      = 15 * time.Second
+	archiveTransferTimeout  = 6 * time.Hour
 )
 
 type Config struct {
@@ -165,17 +166,19 @@ type ServicePreflightResult struct {
 }
 
 type ArchiveArtifactDownloadResult struct {
-	ServiceID   string        `json:"service_id"`
-	ServiceType string        `json:"service_type"`
-	Endpoint    string        `json:"endpoint"`
-	StatusCode  int           `json:"status_code"`
-	Success     bool          `json:"success"`
-	Error       string        `json:"error,omitempty"`
-	Code        string        `json:"code,omitempty"`
-	FileName    string        `json:"file_name,omitempty"`
-	ContentType string        `json:"content_type,omitempty"`
-	SizeBytes   int64         `json:"size_bytes,omitempty"`
-	Body        io.ReadCloser `json:"-"`
+	ServiceID    string        `json:"service_id"`
+	ServiceType  string        `json:"service_type"`
+	Endpoint     string        `json:"endpoint"`
+	StatusCode   int           `json:"status_code"`
+	Success      bool          `json:"success"`
+	Error        string        `json:"error,omitempty"`
+	Code         string        `json:"code,omitempty"`
+	FileName     string        `json:"file_name,omitempty"`
+	ContentType  string        `json:"content_type,omitempty"`
+	ContentRange string        `json:"content_range,omitempty"`
+	AcceptRanges string        `json:"accept_ranges,omitempty"`
+	SizeBytes    int64         `json:"size_bytes,omitempty"`
+	Body         io.ReadCloser `json:"-"`
 }
 
 type PreviewAssetResult struct {
@@ -711,10 +714,10 @@ func (c Client) NotifyDiscordYouTubeLive(ctx context.Context, stream store.Strea
 	return DispatchResult{ServiceType: "discord_bot", Error: "assigned discord_bot service not found"}
 }
 
-func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) ArchiveArtifactDownloadResult {
+func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, byteRange string) ArchiveArtifactDownloadResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
-			return c.getArchiveArtifact(ctx, service, archiveArtifactEndpoint(stream.ID, artifact.Name), artifact.Name)
+			return c.getArchiveArtifact(ctx, service, archiveArtifactEndpoint(stream.ID, artifact.Name), artifact.Name, byteRange)
 		}
 	}
 	return ArchiveArtifactDownloadResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
@@ -891,7 +894,7 @@ func (c Client) serviceJSONActionInternal(ctx context.Context, service store.Reg
 	return result
 }
 
-func (c Client) getArchiveArtifact(ctx context.Context, service store.RegisteredService, endpoint, fallbackName string) ArchiveArtifactDownloadResult {
+func (c Client) getArchiveArtifact(ctx context.Context, service store.RegisteredService, endpoint, fallbackName, byteRange string) ArchiveArtifactDownloadResult {
 	result := ArchiveArtifactDownloadResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint, FileName: fallbackName}
 	if !c.Enabled() {
 		result.Error = "SERVICE_CALL_TOKEN is not configured"
@@ -907,27 +910,36 @@ func (c Client) getArchiveArtifact(ctx context.Context, service store.Registered
 		result.Error = serviceURLMessage(err)
 		return result
 	}
-	reqCtx := ctx
-	if c.Config.Timeout > 0 {
-		var cancel context.CancelFunc
-		reqCtx, cancel = context.WithTimeout(ctx, c.Config.Timeout)
-		defer cancel()
-	}
+	reqCtx, cancel := context.WithTimeout(ctx, archiveTransferTimeout)
 	request, err := http.NewRequestWithContext(reqCtx, http.MethodGet, joinURL(service.PublicURL, endpoint), nil)
 	if err != nil {
+		cancel()
 		result.Error = "build request failed"
 		return result
 	}
 	request.Header.Set("Authorization", "Bearer "+authToken)
 	request.Header.Set("Accept", "application/octet-stream")
-	client := c.httpClient()
+	if value := normalizedPreviewByteRange(byteRange); value != "" {
+		request.Header.Set("Range", value)
+	}
+	client := c.archiveHTTPClient()
 	response, err := client.Do(request)
 	if err != nil {
+		cancel()
 		result.Error = "service request failed"
 		return result
 	}
 	result.StatusCode = response.StatusCode
+	result.ContentRange = response.Header.Get("Content-Range")
+	result.AcceptRanges = response.Header.Get("Accept-Ranges")
+	if response.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		defer cancel()
+		defer response.Body.Close()
+		result.Success = true
+		return result
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		defer cancel()
 		defer response.Body.Close()
 		var errorBody struct {
 			Code string `json:"code"`
@@ -944,8 +956,29 @@ func (c Client) getArchiveArtifact(ctx context.Context, service store.Registered
 	result.Success = true
 	result.ContentType = response.Header.Get("Content-Type")
 	result.SizeBytes = response.ContentLength
-	result.Body = response.Body
+	result.Body = &cancelOnCloseReadCloser{ReadCloser: response.Body, cancel: cancel}
 	return result
+}
+
+func (c Client) archiveHTTPClient() *http.Client {
+	client := c.httpClient()
+	clone := *client
+	clone.Timeout = archiveTransferTimeout
+	return &clone
+}
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnCloseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	if r.cancel != nil {
+		r.cancel()
+		r.cancel = nil
+	}
+	return err
 }
 
 func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredService, endpoint, name, byteRange string) PreviewAssetResult {
@@ -1384,8 +1417,8 @@ func firstService(services []store.RegisteredService, serviceType string) store.
 func workerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
 	worker := firstService(services, "worker")
 	encoder := firstService(services, "encoder_recorder")
-	workerEnabled := reportedCapabilityTrue(worker.ReportedCapabilities, "scene_video_srt")
-	encoderEnabled := reportedCapabilityTrue(encoder.ReportedCapabilities, "worker_video_ingest_srt")
+	workerEnabled := reportedCapabilityTrue(worker.ReportedCapabilities, "scene_frames_mjpeg_srt")
+	encoderEnabled := reportedCapabilityTrue(encoder.ReportedCapabilities, "worker_frame_ingest_mjpeg_srt")
 	return workerEnabled && encoderEnabled
 }
 
@@ -1399,8 +1432,8 @@ func WorkerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
 func workerVideoCapabilityMismatch(services []store.RegisteredService) (ReadinessIssue, bool) {
 	worker := firstService(services, "worker")
 	encoder := firstService(services, "encoder_recorder")
-	workerEnabled := reportedCapabilityTrue(worker.ReportedCapabilities, "scene_video_srt")
-	encoderEnabled := reportedCapabilityTrue(encoder.ReportedCapabilities, "worker_video_ingest_srt")
+	workerEnabled := reportedCapabilityTrue(worker.ReportedCapabilities, "scene_frames_mjpeg_srt")
+	encoderEnabled := reportedCapabilityTrue(encoder.ReportedCapabilities, "worker_frame_ingest_mjpeg_srt")
 	if workerEnabled == encoderEnabled {
 		return ReadinessIssue{}, false
 	}
@@ -1411,7 +1444,7 @@ func workerVideoCapabilityMismatch(services []store.RegisteredService) (Readines
 	return ReadinessIssue{
 		ServiceID: missing.ServiceID, ServiceType: missing.ServiceType,
 		Code:    "worker_video_capability_mismatch",
-		Message: "Worker scene video and Encoder video ingest capabilities must be upgraded together.",
+		Message: "Worker scene-frame output and Encoder MJPEG frame ingest capabilities must be upgraded together.",
 	}, true
 }
 

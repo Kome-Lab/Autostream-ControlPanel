@@ -7,9 +7,18 @@ import {
   ARCHIVE_ARTIFACT_EMPTY_POLL_MAX_ATTEMPTS,
   archiveArtifactPollInterval,
 } from "../src/features/archive/archive-artifact-polling.ts";
+import { isArchiveRecordingArtifact } from "../src/features/archive/archive-artifact.ts";
 
 const archiveViewSource = fs.readFileSync(
   new URL("../src/features/archive/archive-view.tsx", import.meta.url),
+  "utf8",
+);
+const archivePlayerSource = fs.readFileSync(
+  new URL("../src/features/archive/archive-player-view.tsx", import.meta.url),
+  "utf8",
+);
+const resourcePageSource = fs.readFileSync(
+  new URL("../src/features/resources/resource-page.tsx", import.meta.url),
   "utf8",
 );
 
@@ -40,4 +49,17 @@ test("the empty archive state does not expose synchronous repackaging", () => {
   assert.doesNotMatch(archiveViewSource, /\/streams\/.*\/retry-upload/);
   assert.doesNotMatch(archiveViewSource, /canRetryUpload/);
   assert.doesNotMatch(archiveViewSource, /録画を再パッケージ化/);
+});
+
+test("archive management and player only expose recording artifacts", () => {
+  assert.equal(isArchiveRecordingArtifact({ kind: "archive", name: "final.mp4" }), true);
+  assert.equal(isArchiveRecordingArtifact({ kind: "logs", name: "logs.jsonl" }), false);
+  assert.equal(isArchiveRecordingArtifact({ kind: "metadata", name: "metadata.json" }), false);
+  assert.match(archiveViewSource, /filter\(isArchiveRecordingArtifact\)/);
+  assert.match(archivePlayerSource, /isArchiveRecordingArtifact\(item\)/);
+});
+
+test("Drive destination UI uses the selected folder as the archive root", () => {
+  assert.doesNotMatch(resourcePageSource, /label="保存先パス"/);
+  assert.doesNotMatch(resourcePageSource, /base_path:\s*basePath/);
 });

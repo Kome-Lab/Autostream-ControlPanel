@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiGet } from "@/lib/api/client";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { useAppSettings, useStreams } from "@/features/queries";
+import { isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
 
 type StreamArtifact = {
   id: string;
@@ -34,7 +35,7 @@ export function ArchivePlayerView() {
     enabled: streamID !== "",
   });
   const stream = (streams.data || []).find((item) => item.id === streamID);
-  const artifact = (artifacts.data || []).find((item) => item.id === artifactID);
+  const artifact = (artifacts.data || []).find((item) => item.id === artifactID && isArchiveRecordingArtifact(item));
   const loading = streams.isLoading || artifacts.isLoading;
 
   return (
@@ -68,7 +69,7 @@ export function ArchivePlayerView() {
 function ArchivePlayer({ streamName, streamID, artifact, timezone }: { streamName: string; streamID: string; artifact: StreamArtifact; timezone?: string }) {
   const mediaURL = `/streams/${encodeURIComponent(streamID)}/artifacts/${encodeURIComponent(artifact.id)}/download?inline=1`;
   const downloadURL = `/streams/${encodeURIComponent(streamID)}/artifacts/${encodeURIComponent(artifact.id)}/download`;
-  const playable = isLikelyVideo(artifact.name, artifact.kind);
+  const playable = isArchiveRecordingArtifact(artifact);
 
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -136,11 +137,6 @@ function InfoRow({ label, value }: { label: string; value: string }) {
       <span className="text-right font-medium">{value}</span>
     </div>
   );
-}
-
-function isLikelyVideo(name: string, kind: string) {
-  if (kind === "archive") return true;
-  return /\.(mp4|webm|m4v|mov|mkv)$/i.test(name);
 }
 
 function artifactKindLabel(kind: string) {

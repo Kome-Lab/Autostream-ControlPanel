@@ -1977,8 +1977,8 @@ func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, registration := range []store.ServiceRegistration{
-		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_video_ingest_srt": true}},
-		{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{"scene_video_srt": true}},
+		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_frame_ingest_mjpeg_srt": true}},
+		{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
 		{ServiceID: "discord_bot-01", ServiceType: "discord_bot", ServiceName: "bot", PublicURL: "https://bot.example.com"},
 	} {
 		token, err := auth.CreateServiceToken(t.Context(), registration.ServiceType, []string{"service.register"})
@@ -2667,17 +2667,30 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 	}
 
 	previewReq := httptest.NewRequest(http.MethodGet, artifactPath+"/download?inline=1", nil)
+	previewReq.Header.Set("Range", "bytes=0-3")
 	previewReq.AddCookie(cookie)
 	previewRes := httptest.NewRecorder()
 	handler.ServeHTTP(previewRes, previewReq)
-	if previewRes.Code != http.StatusOK || previewRes.Body.String() != "archive-bytes" {
+	if previewRes.Code != http.StatusPartialContent || previewRes.Body.String() != "arch" {
 		t.Fatalf("preview status=%d body=%q", previewRes.Code, previewRes.Body.String())
+	}
+	if previewRes.Header().Get("Content-Range") != "bytes 0-3/13" || previewRes.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("preview range headers = %#v", previewRes.Header())
 	}
 	if got := previewRes.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") || !strings.Contains(got, "final.mp4") {
 		t.Fatalf("preview content disposition = %q", got)
 	}
-	if dispatcher.archiveDownloadCalls != 2 || dispatcher.archiveArtifact.ID != archiveArtifact.ID {
+	if dispatcher.archiveDownloadCalls != 2 || dispatcher.archiveArtifact.ID != archiveArtifact.ID || dispatcher.archiveByteRange != "bytes=0-3" {
 		t.Fatalf("preview did not dispatch expected artifact: %#v", dispatcher)
+	}
+	var downloadAudits int
+	for _, event := range auth.AuditEvents() {
+		if event.Action == "archive.artifact.download" && event.ResourceID == stream.ID {
+			downloadAudits++
+		}
+	}
+	if downloadAudits != 1 {
+		t.Fatalf("inline playback must not be audited as a download: audits=%#v", auth.AuditEvents())
 	}
 
 	invalidRenameReq := httptest.NewRequest(http.MethodPut, artifactPath, bytes.NewBufferString(`{"name":"../secret.mp4"}`))
@@ -8580,8 +8593,8 @@ func TestStreamStartReadinessRejectsUnsupportedNegotiatedWorkerVideoProfile(t *t
 		t.Fatal(err)
 	}
 	for _, registration := range []store.ServiceRegistration{
-		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_video_ingest_srt": true}},
-		{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{"scene_video_srt": true}},
+		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_frame_ingest_mjpeg_srt": true}},
+		{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
 		{ServiceID: "discord_bot-01", ServiceType: "discord_bot", ServiceName: "bot", PublicURL: "https://bot.example.com"},
 	} {
 		token, err := auth.CreateServiceToken(t.Context(), registration.ServiceType, []string{"service.register"})
@@ -19637,6 +19650,7 @@ type fakeServiceDispatcher struct {
 	workerEventStream        store.Stream
 	archiveStream            store.Stream
 	archiveArtifact          store.StreamArtifact
+	archiveByteRange         string
 	archiveRenameName        string
 	startRequest             servicecall.StartRequest
 	retriedArchiveConfig     map[string]any
@@ -20259,12 +20273,16 @@ func (f *fakeServiceDispatcher) SendWorkerEvent(ctx context.Context, stream stor
 	}
 }
 
-func (f *fakeServiceDispatcher) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) servicecall.ArchiveArtifactDownloadResult {
+func (f *fakeServiceDispatcher) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, byteRange string) servicecall.ArchiveArtifactDownloadResult {
 	f.archiveDownloadCalls++
 	f.archiveStream = stream
 	f.archiveArtifact = artifact
+	f.archiveByteRange = byteRange
 	if f.failArchiveAction {
 		return servicecall.ArchiveArtifactDownloadResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, Success: false, Error: f.failureError()}
+	}
+	if byteRange == "bytes=0-3" {
+		return servicecall.ArchiveArtifactDownloadResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, StatusCode: http.StatusPartialContent, Success: true, FileName: artifact.Name, ContentType: "video/mp4", ContentRange: "bytes 0-3/13", AcceptRanges: "bytes", SizeBytes: 4, Body: io.NopCloser(strings.NewReader("arch"))}
 	}
 	return servicecall.ArchiveArtifactDownloadResult{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/streams/" + stream.ID + "/artifacts/" + artifact.Name, StatusCode: http.StatusOK, Success: true, FileName: artifact.Name, ContentType: "video/mp4", SizeBytes: 13, Body: io.NopCloser(strings.NewReader("archive-bytes"))}
 }
