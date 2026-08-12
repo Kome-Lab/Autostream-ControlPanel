@@ -7171,6 +7171,7 @@ func TestResolveRelayStaticYouTubeRecoveryPossiblyDispatchedRequiresEncoderStop(
 			relayStaticPrepared: ytlive.PreparedOutput{BroadcastID: "broadcast-static-dispatch", LiveStreamID: "youtube-live-stream-dispatch"},
 		}
 		fixture := newFixture(t, youtubeLive)
+		initialStopCalls := fixture.dispatcher.stopCalls
 		// First persist the positive Encoder receipt while the reconciled
 		// completion client is unavailable. This retains the recovery claim
 		// without using the explicit operator-cleanup attestation branch.
@@ -7188,8 +7189,8 @@ func TestResolveRelayStaticYouTubeRecoveryPossiblyDispatchedRequiresEncoderStop(
 		if err != nil || claim.EncoderStopConfirmedAt.IsZero() {
 			t.Fatalf("positive encoder Stop must persist recovery receipt: claim=%#v err=%v", claim, err)
 		}
-		if fixture.dispatcher.stopCalls != 1 || youtubeLive.completeCalls != 0 {
-			t.Fatalf("first recovery must dispatch one stop and retain before completion: dispatcher=%#v youtube=%#v", fixture.dispatcher, youtubeLive)
+		if fixture.dispatcher.stopCalls != initialStopCalls+1 || youtubeLive.completeCalls != 0 {
+			t.Fatalf("first recovery must dispatch one additional stop and retain before completion: initial_stop_calls=%d dispatcher=%#v youtube=%#v", initialStopCalls, fixture.dispatcher, youtubeLive)
 		}
 
 		// Simulate a later retry after the Encoder has restarted and only reports
@@ -7204,7 +7205,7 @@ func TestResolveRelayStaticYouTubeRecoveryPossiblyDispatchedRequiresEncoderStop(
 		if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"cleanup":"provider_complete"`) {
 			t.Fatalf("durable-receipt retry status=%d body=%s", second.Code, second.Body.String())
 		}
-		if fixture.dispatcher.stopCalls != 1 || youtubeLive.completeCalls != 1 || youtubeLive.relayStaticCleanupCalls != 0 {
+		if fixture.dispatcher.stopCalls != initialStopCalls+1 || youtubeLive.completeCalls != 1 || youtubeLive.relayStaticCleanupCalls != 0 {
 			t.Fatalf("durable receipt must skip stale stop and never Delete: dispatcher=%#v youtube=%#v", fixture.dispatcher, youtubeLive)
 		}
 		if _, err := fixture.streams.GetStreamYouTubeRelayBindingClaim(t.Context(), fixture.relayBindingID); !errors.Is(err, store.ErrNotFound) {
