@@ -97,7 +97,7 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 	}
 }
 
-func TestLiveAPIClientPrepareUsesUnscheduledEpochWhenUnscheduled(t *testing.T) {
+func TestLiveAPIClientPrepareUsesNearTermStartWhenUnscheduled(t *testing.T) {
 	transport := &fakeYouTubeRoundTripper{}
 	httpClient := &http.Client{Transport: transport}
 	client := LiveAPIClient{HTTPClient: httpClient}
@@ -127,8 +127,9 @@ func TestLiveAPIClientPrepareUsesUnscheduledEpochWhenUnscheduled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse scheduled start %q: %v", payload.Snippet.ScheduledStartTime, err)
 	}
-	if !scheduledStart.Equal(time.Unix(0, 0).UTC()) {
-		t.Fatalf("unscheduled broadcast must use YouTube's epoch-zero no-schedule value, got %s", scheduledStart)
+	now := time.Now().UTC()
+	if scheduledStart.Before(now.Add(10*time.Second)) || scheduledStart.After(now.Add(20*time.Second)) {
+		t.Fatalf("immediate broadcast must use a near-term future start, got %s (now %s)", scheduledStart, now)
 	}
 	if !strings.Contains(transport.broadcastInsertBody, `"enableAutoStart":true`) ||
 		!strings.Contains(transport.broadcastInsertBody, `"enableMonitorStream":false`) {

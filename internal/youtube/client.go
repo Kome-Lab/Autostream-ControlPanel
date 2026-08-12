@@ -227,14 +227,14 @@ const reusableAccountStreamTitle = "AutoStream account ingest"
 
 var reusableAccountStreamMu sync.Mutex
 
-// minimumScheduledStartLead prevents an explicitly requested start time that
-// is only a few seconds away from being rejected by YouTube's validation. An
-// empty requested time is handled separately as YouTube's epoch-zero
-// no-schedule value.
+// minimumScheduledStartLead keeps an automatically-started broadcast within a
+// small admission window. The LiveBroadcasts insert endpoint requires a
+// scheduledStartTime in the future even when enableAutoStart is enabled; the
+// encoder input then causes YouTube to transition the broadcast to live.
 const minimumScheduledStartLead = 15 * time.Second
 
-func youtubeUnscheduledStart() time.Time {
-	return time.Unix(0, 0).UTC()
+func youtubeImmediateStart(now time.Time) time.Time {
+	return now.UTC().Add(minimumScheduledStartLead)
 }
 
 const (
@@ -475,13 +475,13 @@ func isYouTubeNotFound(err error) bool {
 }
 
 func normalizedScheduledStart(requested, now time.Time) time.Time {
+	now = now.UTC()
 	if requested.IsZero() {
-		return youtubeUnscheduledStart()
+		return youtubeImmediateStart(now)
 	}
 	requested = requested.UTC()
-	now = now.UTC()
 	if !requested.After(now) {
-		return youtubeUnscheduledStart()
+		return youtubeImmediateStart(now)
 	}
 	minimum := now.Add(minimumScheduledStartLead)
 	if requested.Before(minimum) {
