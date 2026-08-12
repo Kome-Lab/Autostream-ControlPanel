@@ -35,6 +35,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/version"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
 	"golang.org/x/oauth2"
+	"google.golang.org/api/googleapi"
 )
 
 const (
@@ -10228,7 +10229,14 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		}
 		current := currentFromContext(r.Context())
 		code := youtubeOutputCode(err)
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}})
+		metadata := map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}
+		for key, value := range youtubeLiveAPIPrepareFailureMetadata(err) {
+			metadata[key] = value
+		}
+		if _, ok := metadata["prepare_stage"]; ok {
+			log.Printf("youtube live api prepare failed: stream_id=%s output_id=%s stage=%s error_type=%s provider_status_code=%v provider_reason=%v", stream.ID, body.YouTubeOutputID, metadata["prepare_stage"], metadata["error_type"], metadata["provider_status_code"], metadata["provider_reason"])
+		}
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: metadata})
 		writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
 		return
 	}
@@ -10659,6 +10667,46 @@ var (
 	errOverlayProfileNotFound                        = errors.New("overlay_profile_not_found")
 	errEncoderInputURLBlocked                        = errors.New("encoder_input_url_blocked")
 )
+
+// youtubeLiveAPIPrepareError preserves the public error code while retaining
+// only safe, structured context for audit/log diagnostics. The underlying
+// provider error is never rendered directly because it may contain request
+// details that are not appropriate for durable records.
+type youtubeLiveAPIPrepareError struct {
+	stage string
+	cause error
+}
+
+func (e *youtubeLiveAPIPrepareError) Error() string {
+	return errYouTubeLiveAPIPrepareFailed.Error()
+}
+
+func (e *youtubeLiveAPIPrepareError) Unwrap() error {
+	return errYouTubeLiveAPIPrepareFailed
+}
+
+func newYouTubeLiveAPIPrepareError(stage string, cause error) error {
+	return &youtubeLiveAPIPrepareError{stage: stage, cause: cause}
+}
+
+func youtubeLiveAPIPrepareFailureMetadata(err error) map[string]any {
+	var prepareErr *youtubeLiveAPIPrepareError
+	if !errors.As(err, &prepareErr) || prepareErr == nil {
+		return nil
+	}
+	metadata := map[string]any{
+		"prepare_stage": prepareErr.stage,
+		"error_type":    fmt.Sprintf("%T", prepareErr.cause),
+	}
+	var apiErr *googleapi.Error
+	if errors.As(prepareErr.cause, &apiErr) && apiErr != nil {
+		metadata["provider_status_code"] = apiErr.Code
+		if len(apiErr.Errors) > 0 {
+			metadata["provider_reason"] = apiErr.Errors[0].Reason
+		}
+	}
+	return metadata
+}
 
 func (s *Server) applyDiscordConfig(ctx context.Context, assignments []store.RegisteredService, req *servicecall.StartRequest) error {
 	configID := strings.TrimSpace(req.DiscordConfigID)
@@ -11151,14 +11199,14 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		ReuseAccountStream: true,
 	})
 	if err != nil {
-		return errYouTubeLiveAPIPrepareFailed
+		return newYouTubeLiveAPIPrepareError("provider_prepare", err)
 	}
 	if !isSecureRTMPSURL(prepared.RTMPURL) || strings.TrimSpace(prepared.StreamKey) == "" || youtubeWatchURLForBroadcastID(prepared.BroadcastID) == "" {
-		return errYouTubeLiveAPIPrepareFailed
+		return newYouTubeLiveAPIPrepareError("prepared_output_validation", errYouTubeLiveAPIPrepareFailed)
 	}
 	streamKeySecretName := youtubeLiveAPIStreamKeySecretName(stream.ID, profile.ID, prepared.BroadcastID)
 	if _, err := s.secrets.UpdateSecret(ctx, streamKeySecretName, prepared.StreamKey); err != nil {
-		return errYouTubeLiveAPIPrepareFailed
+		return newYouTubeLiveAPIPrepareError("stream_key_secret_store", err)
 	}
 	req.EncoderRTMPURL = prepared.RTMPURL
 	req.EncoderStreamKeySecretName = streamKeySecretName
