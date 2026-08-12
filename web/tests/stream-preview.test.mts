@@ -80,15 +80,23 @@ test("preview timeout diagnostics map known HLS failures and never expose raw va
   );
 });
 
-test("external preview uses one custom control bar and exposes the participant overlay feed", () => {
+test("external preview uses one custom control bar and capability-gates the legacy visual participant overlay", () => {
   assert.equal(/<video[^>]*\bcontrols\b/i.test(previewPlayerSource), false);
+  assert.equal((previewPlayerSource.match(/<video\b/g) ?? []).length, 1);
   assert.match(previewPlayerSource, /stream-previews\/.*\/participants/);
+  assert.match(previewPlayerSource, /video_overlay_burn_in/);
+  assert.match(previewPlayerSource, /!videoOverlayBurnIn/);
+  assert.match(previewPlayerSource, /sr-only/);
+  assert.match(previewPlayerSource, /発言中/);
   assert.match(previewPlayerSource, /preview-playback/);
   assert.match(previewPlayerSource, /preview-skip-backward/);
 });
 
-test("in-panel preview also exposes the participant overlay feed", () => {
+test("in-panel preview retains an accessible participant feed and only uses the legacy visual overlay without burn-in", () => {
+  assert.equal((streamPreviewSource.match(/<video\b/g) ?? []).length, 1);
   assert.match(streamPreviewSource, /resolvePreviewParticipantsURL/);
-  assert.match(streamPreviewSource, /VC参加者/);
-  assert.match(streamPreviewSource, /ring-green-400/);
+  assert.match(streamPreviewSource, /video_overlay_burn_in/);
+  assert.match(streamPreviewSource, /!videoOverlayBurnIn/);
+  assert.match(streamPreviewSource, /sr-only/);
+  assert.match(streamPreviewSource, /発言中/);
 });

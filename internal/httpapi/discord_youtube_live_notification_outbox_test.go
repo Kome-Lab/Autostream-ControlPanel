@@ -96,6 +96,131 @@ func TestDiscordYouTubeLiveNotificationWaitsForTestingThenDispatchesOnce(t *test
 	}
 }
 
+func TestPrivateYouTubeLiveAPIStartQueuesWatchURLUntilProviderIsLive(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "private live api notification")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google", Name: "YouTube", Enabled: true, ClientID: "youtube-client", ClientSecret: "youtube-secret", RedirectURI: "https://control.example.test/oauth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID: provider.ID, ProviderType: "google", AccountLabel: "youtube", RefreshToken: "youtube-refresh", Scopes: []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	profiles := store.NewMemoryProfileStore()
+	discord, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "private notification discord", map[string]any{
+		"service_id":           "discord_bot-01",
+		"bot_token_configured": true,
+		"guild_id":             "guild-private",
+		"voice_channel_id":     "voice-private",
+		"text_channel_id":      "text-private",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "private live api output", map[string]any{
+		"mode":              "live_api",
+		"oauth_account_id":  account.ID,
+		"privacy_status":    "private",
+		"enable_auto_start": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dispatcher := &notificationFakeDispatcher{}
+	youtubeClient := &scriptedYouTubeLifecycleClient{
+		fakeYouTubeLiveClient: &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{
+			RTMPURL: "rtmps://youtube.example.test/live2", StreamKey: "private-runtime-key", BroadcastID: "private-broadcast", LiveStreamID: "private-live-stream",
+		}},
+		statuses: []string{"testing", "live"},
+	}
+	handler := NewServer(
+		streams,
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithProfileStore(profiles),
+		WithSecretStore(store.NewMemorySecretStore()),
+		WithIntegrationStore(integrations),
+		WithYouTubeLiveClient(youtubeClient),
+		WithServiceDispatcher(dispatcher),
+	)
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	body := fmt.Sprintf(`{"discord_config_id":%q,"discord_guild_id":"guild-private","discord_voice_channel_id":"voice-private","discord_text_channel_id":"text-private","youtube_output_id":%q}`, discord.ID, youtube.ID)
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(body))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("private live-api start status=%d body=%s", res.Code, res.Body.String())
+	}
+	if youtubeClient.prepareRequest.PrivacyStatus != "private" || !youtubeClient.prepareRequest.EnableAutoStart {
+		t.Fatalf("private auto-start settings were not sent to YouTube: %#v", youtubeClient.prepareRequest)
+	}
+	if dispatcher.notifyCalls != 0 {
+		t.Fatalf("start must enqueue instead of notifying before provider live: calls=%d", dispatcher.notifyCalls)
+	}
+
+	queued, err := streams.GetLatestDiscordYouTubeLiveNotification(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.State != store.DiscordYouTubeLiveNotificationStateAwaitingYouTubeLive ||
+		queued.WatchURL != "https://www.youtube.com/watch?v=private-broadcast" ||
+		queued.DiscordTextChannelID != "text-private" ||
+		queued.YouTubeMode != "live_api" ||
+		queued.YouTubeOAuthAccountID != account.ID ||
+		queued.YouTubeBroadcastID != "private-broadcast" {
+		t.Fatalf("private live-api start did not durably enqueue its watch URL: %#v", queued)
+	}
+
+	result, err := handler.DispatchDueDiscordYouTubeLiveNotifications(t.Context(), 1)
+	if err != nil || result["claimed"] != 1 || result["retry_scheduled"] != 1 || dispatcher.notifyCalls != 0 {
+		t.Fatalf("testing lifecycle must keep private notification pending: result=%#v calls=%d err=%v", result, dispatcher.notifyCalls, err)
+	}
+	pending, err := streams.GetLatestDiscordYouTubeLiveNotification(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.State != store.DiscordYouTubeLiveNotificationStateAwaitingYouTubeLive || pending.LifecycleStatus != "testing" || pending.NextAttemptAt == nil {
+		t.Fatalf("private notification was suppressed before provider live: %#v", pending)
+	}
+
+	claims, err := streams.ClaimDueDiscordYouTubeLiveNotifications(t.Context(), pending.NextAttemptAt.Add(time.Second), 2*time.Minute, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claim private notification after lifecycle poll: claims=%#v err=%v", claims, err)
+	}
+	if outcome := handler.dispatchClaimedDiscordYouTubeLiveNotification(t.Context(), streams, claims[0]); outcome != "delivered" {
+		t.Fatalf("private live lifecycle dispatch outcome=%q", outcome)
+	}
+	delivered, err := streams.GetLatestDiscordYouTubeLiveNotification(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivered.State != store.DiscordYouTubeLiveNotificationStateDelivered || delivered.LifecycleStatus != "live" ||
+		dispatcher.notifyCalls != 1 || dispatcher.notifiedURL != "https://www.youtube.com/watch?v=private-broadcast" {
+		t.Fatalf("private YouTube URL was not delivered after provider live: notification=%#v calls=%d url=%q", delivered, dispatcher.notifyCalls, dispatcher.notifiedURL)
+	}
+}
+
 func TestDiscordYouTubeLiveNotificationAcceptsLegacyStreamKeyMode(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()

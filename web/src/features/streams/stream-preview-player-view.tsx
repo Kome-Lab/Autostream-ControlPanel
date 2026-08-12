@@ -21,6 +21,11 @@ type PreviewParticipant = {
   speaking?: boolean;
 };
 
+type PreviewParticipantFeed = {
+  participants?: PreviewParticipant[];
+  video_overlay_burn_in?: boolean;
+};
+
 const emptySeekWindow: SeekWindow = { start: 0, end: 0, position: 0 };
 
 export function StreamPreviewPlayerView({ token }: { token: string }) {
@@ -29,8 +34,10 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
   const [message, setMessage] = useState(token ? "配信映像を読み込んでいます…" : "プレビューTokenがありません。");
   const [retry, setRetry] = useState(0);
   const [seekWindow, setSeekWindow] = useState<SeekWindow>(emptySeekWindow);
-  const [participants, setParticipants] = useState<PreviewParticipant[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [participants, setParticipants] = useState<PreviewParticipant[]>([]);
+  const [videoOverlayBurnIn, setVideoOverlayBurnIn] = useState(false);
+  const [participantFeedError, setParticipantFeedError] = useState(false);
 
   const refreshSeekWindow = useCallback(() => {
     const video = videoRef.current;
@@ -167,12 +174,18 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
     const refreshParticipants = async () => {
       try {
         const response = await fetch(endpoint, { cache: "no-store" });
-        if (!response.ok) return;
-        const body = (await response.json()) as { participants?: PreviewParticipant[] };
-        if (!cancelled) setParticipants(Array.isArray(body.participants) ? body.participants : []);
+        if (!response.ok) {
+          if (!cancelled) setParticipantFeedError(true);
+          return;
+        }
+        const body = (await response.json()) as PreviewParticipantFeed;
+        if (!cancelled) {
+          setParticipants(Array.isArray(body.participants) ? body.participants : []);
+          setVideoOverlayBurnIn(body.video_overlay_burn_in === true);
+          setParticipantFeedError(false);
+        }
       } catch {
-        // The HLS player remains usable when the optional participant overlay
-        // endpoint is temporarily unavailable.
+        if (!cancelled) setParticipantFeedError(true);
       }
     };
     void refreshParticipants();
@@ -195,32 +208,10 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
         </div>
         <div className="relative aspect-video overflow-hidden rounded-md border bg-black">
           <video ref={videoRef} className="h-full w-full object-contain" muted autoPlay playsInline preload="metadata" />
-          {participants.length > 0 ? (
-            <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-2" aria-label="VC参加者">
-              {participants.map((participant) => (
-                <div
-                  key={participant.user_id}
-                  className={`flex items-center gap-2 rounded-full bg-black/75 px-2 py-1 text-xs text-white shadow ${participant.speaking ? "ring-2 ring-green-400" : "ring-1 ring-white/20"}`}
-                >
-                  {safeDiscordAvatarURL(participant.avatar_url) ? (
-                    <span
-                      className="size-7 rounded-full bg-cover bg-center"
-                      style={{ backgroundImage: `url("${safeDiscordAvatarURL(participant.avatar_url)}")` }}
-                      role="img"
-                      aria-label={participant.display_name || participant.user_id}
-                    />
-                  ) : (
-                    <span className="flex size-7 items-center justify-center rounded-full bg-slate-600 font-semibold" aria-hidden="true">
-                      {(participant.display_name || "?").slice(0, 1).toUpperCase()}
-                    </span>
-                  )}
-                  <span className="max-w-40 truncate">{participant.display_name || participant.user_id}</span>
-                  {participant.is_bot ? <span className="rounded bg-indigo-500/80 px-1 text-[10px]">BOT</span> : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
+          {!videoOverlayBurnIn && participants.length > 0 ? <LegacyParticipantOverlay participants={participants} /> : null}
         </div>
+        <ParticipantAccessibilityList participants={participants} />
+        {participantFeedError ? <p className="text-xs text-amber-600 dark:text-amber-400" role="status">VC参加者情報を更新できません。映像の再生は継続します。</p> : null}
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2" aria-label="プレビュー操作">
           <Button type="button" variant="outline" size="sm" onClick={togglePlayback} disabled={seekWindow.end <= seekWindow.start} aria-label={isPlaying ? "一時停止" : "再生"} data-testid="preview-playback">
             {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
@@ -254,6 +245,47 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
         </div>
       </section>
     </main>
+  );
+}
+
+function ParticipantAccessibilityList({ participants }: { participants: PreviewParticipant[] }) {
+  if (participants.length === 0) return null;
+  return (
+    <div className="sr-only" aria-live="polite" aria-label="VC参加者">
+      {participants.map((participant) => (
+        <span key={participant.user_id}>
+          {participant.display_name || participant.user_id}
+          {participant.is_bot ? "（BOT）" : ""}
+          {participant.speaking ? "（発言中）" : ""}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function LegacyParticipantOverlay({ participants }: { participants: PreviewParticipant[] }) {
+  return (
+    <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-2" aria-hidden="true">
+      {participants.map((participant) => {
+        const avatarURL = safeDiscordAvatarURL(participant.avatar_url);
+        return (
+          <div
+            key={participant.user_id}
+            className={`flex items-center gap-2 rounded-full bg-black/75 px-2 py-1 text-xs text-white shadow ${participant.speaking ? "ring-2 ring-green-400" : "ring-1 ring-white/20"}`}
+          >
+            {avatarURL ? (
+              <span className="size-7 rounded-full bg-cover bg-center" style={{ backgroundImage: `url("${avatarURL}")` }} />
+            ) : (
+              <span className="flex size-7 items-center justify-center rounded-full bg-slate-600 font-semibold">
+                {(participant.display_name || "?").slice(0, 1).toUpperCase()}
+              </span>
+            )}
+            <span className="max-w-40 truncate">{participant.display_name || participant.user_id}</span>
+            {participant.is_bot ? <span className="rounded bg-indigo-500/80 px-1 text-[10px]">BOT</span> : null}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

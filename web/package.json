@@ -16,7 +16,7 @@
     "test:system-updates": "node --no-warnings --test tests/system-updates.test.mts",
     "test:stream-create": "node --no-warnings --test tests/stream-create.test.mts",
     "test:preview": "node --no-warnings --test tests/stream-preview.test.mts",
-    "test:stream-regressions": "node --no-warnings --test tests/stream-create.test.mts tests/stream-preview.test.mts tests/resource-page-observability-actions.test.mts tests/stream-static-relay-recovery.test.mts tests/youtube-output-static-relay.test.mts"
+    "test:stream-regressions": "node --no-warnings --test tests/stream-create.test.mts tests/stream-preview.test.mts tests/archive-artifact-refresh.test.mts tests/resource-page-observability-actions.test.mts tests/stream-static-relay-recovery.test.mts tests/youtube-output-static-relay.test.mts"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.23",

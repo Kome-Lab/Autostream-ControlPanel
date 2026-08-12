@@ -15,6 +15,7 @@ type MemoryStreamStore struct {
 	logs                                       map[string][]StreamLog
 	artifacts                                  map[string][]StreamArtifact
 	artifactShares                             map[string]StreamArtifactShare
+	mediaRuntimes                              map[string]StreamMediaRuntime
 	youtubeRuntimes                            map[string]StreamYouTubeRuntime
 	youtubeRelayBindingClaims                  map[string]YouTubeRelayBindingClaim
 	discordYouTubeLiveNotifications            map[string]DiscordYouTubeLiveNotification
@@ -30,6 +31,7 @@ func NewMemoryStreamStore() *MemoryStreamStore {
 		logs:                                 map[string][]StreamLog{},
 		artifacts:                            map[string][]StreamArtifact{},
 		artifactShares:                       map[string]StreamArtifactShare{},
+		mediaRuntimes:                        map[string]StreamMediaRuntime{},
 		youtubeRuntimes:                      map[string]StreamYouTubeRuntime{},
 		youtubeRelayBindingClaims:            map[string]YouTubeRelayBindingClaim{},
 		discordYouTubeLiveNotifications:      map[string]DiscordYouTubeLiveNotification{},
@@ -108,6 +110,7 @@ func (s *MemoryStreamStore) DeleteStream(ctx context.Context, id string) error {
 	}
 	delete(s.streams, id)
 	delete(s.logs, id)
+	delete(s.mediaRuntimes, id)
 	delete(s.youtubeRuntimes, id)
 	for notificationID, notification := range s.discordYouTubeLiveNotifications {
 		if notification.StreamID != id {
@@ -125,6 +128,35 @@ func (s *MemoryStreamStore) DeleteStream(ctx context.Context, id string) error {
 	}
 	delete(s.artifacts, id)
 	return nil
+}
+
+func (s *MemoryStreamStore) SetStreamVideoOverlayBurnIn(ctx context.Context, streamID string, enabled bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	streamID = strings.TrimSpace(streamID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.streams[streamID]; !ok {
+		return ErrNotFound
+	}
+	s.mediaRuntimes[streamID] = StreamMediaRuntime{
+		StreamID: streamID, VideoOverlayBurnIn: enabled, UpdatedAt: time.Now().UTC(),
+	}
+	return nil
+}
+
+func (s *MemoryStreamStore) GetStreamMediaRuntime(ctx context.Context, streamID string) (StreamMediaRuntime, error) {
+	if err := ctx.Err(); err != nil {
+		return StreamMediaRuntime{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runtime, ok := s.mediaRuntimes[strings.TrimSpace(streamID)]
+	if !ok {
+		return StreamMediaRuntime{}, ErrNotFound
+	}
+	return runtime, nil
 }
 
 func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string, settings StreamSettings) (Stream, error) {
@@ -384,16 +416,23 @@ func (s *MemoryStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 	}
 	current := append([]StreamArtifact(nil), s.artifacts[id]...)
 	for _, artifact := range NormalizeStreamArtifacts(id, artifacts) {
-		artifact.ID = newUUID()
-		artifact.CreatedAt = time.Now().UTC()
-		filtered := current[:0]
-		for _, existing := range current {
-			if existing.Kind == artifact.Kind && existing.Name == artifact.Name {
+		updated := false
+		for index, existing := range current {
+			if existing.Kind != artifact.Kind || existing.Name != artifact.Name {
 				continue
 			}
-			filtered = append(filtered, existing)
+			existing.RelativePath = artifact.RelativePath
+			existing.SizeBytes = artifact.SizeBytes
+			current[index] = existing
+			updated = true
+			break
 		}
-		current = append(filtered, artifact)
+		if updated {
+			continue
+		}
+		artifact.ID = newUUID()
+		artifact.CreatedAt = time.Now().UTC()
+		current = append(current, artifact)
 	}
 	s.artifacts[id] = current
 	return nil

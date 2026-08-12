@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,21 +43,28 @@ type Client struct {
 }
 
 type StartRequest struct {
-	DiscordConfigID            string         `json:"discord_config_id,omitempty"`
-	DiscordGuildID             string         `json:"discord_guild_id,omitempty"`
-	DiscordVoiceChannelID      string         `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextChannelID       string         `json:"discord_text_channel_id,omitempty"`
-	EncoderInputURL            string         `json:"encoder_input_url,omitempty"`
-	EncoderRTMPURL             string         `json:"encoder_rtmp_url,omitempty"`
-	EncoderStreamKey           string         `json:"-"`
-	EncoderStreamKeySecretName string         `json:"-"`
-	EncoderProfileID           string         `json:"encoder_profile_id,omitempty"`
-	CaptionProfileID           string         `json:"caption_profile_id,omitempty"`
-	OverlayProfileID           string         `json:"overlay_profile_id,omitempty"`
-	ArchiveProfileID           string         `json:"archive_profile_id,omitempty"`
-	YouTubeOutputID            string         `json:"youtube_output_id,omitempty"`
-	YouTubeRuntime             map[string]any `json:"-"`
-	ArchiveConfig              map[string]any `json:"-"`
+	DiscordConfigID            string `json:"discord_config_id,omitempty"`
+	DiscordGuildID             string `json:"discord_guild_id,omitempty"`
+	DiscordVoiceChannelID      string `json:"discord_voice_channel_id,omitempty"`
+	DiscordTextChannelID       string `json:"discord_text_channel_id,omitempty"`
+	EncoderInputURL            string `json:"encoder_input_url,omitempty"`
+	EncoderRTMPURL             string `json:"encoder_rtmp_url,omitempty"`
+	EncoderStreamKey           string `json:"-"`
+	EncoderStreamKeySecretName string `json:"-"`
+	EncoderProfileID           string `json:"encoder_profile_id,omitempty"`
+	// EncoderVideoWidth/Height/FPS are resolved from EncoderProfileID by the
+	// Control Panel. They are internal dispatch inputs, never operator-supplied
+	// fields, and let a negotiated Worker scene match the selected Encoder
+	// output before the final Encoder pass.
+	EncoderVideoWidth  int            `json:"-"`
+	EncoderVideoHeight int            `json:"-"`
+	EncoderVideoFPS    int            `json:"-"`
+	CaptionProfileID   string         `json:"caption_profile_id,omitempty"`
+	OverlayProfileID   string         `json:"overlay_profile_id,omitempty"`
+	ArchiveProfileID   string         `json:"archive_profile_id,omitempty"`
+	YouTubeOutputID    string         `json:"youtube_output_id,omitempty"`
+	YouTubeRuntime     map[string]any `json:"-"`
+	ArchiveConfig      map[string]any `json:"-"`
 }
 
 type WorkerEventRequest struct {
@@ -93,6 +101,27 @@ type DispatchResult struct {
 	Retryable   bool   `json:"retryable,omitempty"`
 	MessageID   string `json:"message_id,omitempty"`
 	AlreadySent bool   `json:"already_sent,omitempty"`
+	// VideoOverlayBurnInNegotiated is internal orchestration evidence. It is set
+	// only after the Encoder route was accepted and the Worker accepted that
+	// exact route; public/audit JSON must never infer this from advertisements.
+	VideoOverlayBurnInNegotiated bool `json:"-"`
+}
+
+// workerVideoIngestRoute is deliberately not embedded in DispatchResult. Its
+// credential is write-only orchestration state: it exists only between the
+// Encoder acknowledgement and the following Worker start request.
+type workerVideoIngestRoute struct {
+	URL        string `json:"url"`
+	Passphrase string `json:"passphrase"`
+	Credential string `json:"credential"`
+	PBKeyLen   int    `json:"pbkeylen"`
+}
+
+func (r workerVideoIngestRoute) secret() string {
+	if value := strings.TrimSpace(r.Passphrase); value != "" {
+		return value
+	}
+	return strings.TrimSpace(r.Credential)
 }
 
 type AudioStatusResult struct {
@@ -357,6 +386,9 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 	}
 	encoderURL := firstServiceURL(services, "encoder_recorder")
 	workerService := firstService(services, "worker")
+	if issue, mismatch := workerVideoCapabilityMismatch(services); mismatch {
+		issues = append(issues, issue)
+	}
 	for _, service := range services {
 		if _, _, ok := c.startPayload(store.Stream{}, service, req, encoderURL, workerService, now); !ok {
 			continue
@@ -456,15 +488,76 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 
 func (c Client) Start(ctx context.Context, stream store.Stream, services []store.RegisteredService, req StartRequest) []DispatchResult {
 	ordered := orderStartServices(services)
+	if issue, mismatch := workerVideoCapabilityMismatch(ordered); mismatch {
+		return []DispatchResult{{
+			ServiceID: issue.ServiceID, ServiceType: issue.ServiceType,
+			Code: issue.Code, FailurePhase: "pre_dispatch", Error: issue.Message,
+		}}
+	}
 	results := make([]DispatchResult, 0, len(ordered))
 	encoderURL := firstServiceURL(ordered, "encoder_recorder")
 	workerService := firstService(ordered, "worker")
+	workerVideoEnabled := workerVideoCapabilitiesEnabled(ordered)
+	now := time.Now().UTC()
+	workerVideoToken := ""
+	if workerVideoEnabled {
+		workerVideoToken = c.issueIngestTokenForAudience(stream.ID, workerService, "worker_video", "encoder_recorder", now)
+		if workerVideoToken == "" {
+			return []DispatchResult{{
+				ServiceID: workerService.ServiceID, ServiceType: workerService.ServiceType,
+				Code: "worker_video_ingest_token_unavailable", FailurePhase: "pre_dispatch",
+				Error: "job-scoped Worker video ingest credential is unavailable",
+			}}
+		}
+	}
+	var workerVideoRoute workerVideoIngestRoute
 	for _, service := range ordered {
-		endpoint, payload, ok := c.startPayload(stream, service, req, encoderURL, workerService, time.Now().UTC())
+		endpoint, payload, ok := c.startPayload(stream, service, req, encoderURL, workerService, now)
 		if !ok {
 			continue
 		}
-		result := c.post(ctx, service, endpoint, payload)
+		payloadMap, payloadMapOK := payload.(map[string]any)
+		if workerVideoEnabled && !payloadMapOK {
+			return append(results, DispatchResult{
+				ServiceID: service.ServiceID, ServiceType: service.ServiceType,
+				Code: "worker_video_start_payload_invalid", FailurePhase: "pre_dispatch",
+				Error: "Worker video start payload is invalid",
+			})
+		}
+		if workerVideoEnabled {
+			switch service.ServiceType {
+			case "encoder_recorder":
+				payloadMap["worker_video_ingest"] = true
+				delete(payloadMap, "input_url")
+				delete(payloadMap, "input_mode")
+				payloadMap["worker_video_ingest_token"] = workerVideoToken
+			case "worker":
+				payloadMap["video_ingest_url"] = workerVideoRoute.URL
+				payloadMap["video_ingest_passphrase"] = workerVideoRoute.secret()
+				payloadMap["video_ingest_pbkeylen"] = workerVideoRoute.PBKeyLen
+				payloadMap["encoder_profile_id"] = req.EncoderProfileID
+				payloadMap["video_width"] = req.EncoderVideoWidth
+				payloadMap["video_height"] = req.EncoderVideoHeight
+				payloadMap["video_fps"] = req.EncoderVideoFPS
+			}
+		}
+		var result DispatchResult
+		if workerVideoEnabled && service.ServiceType == "encoder_recorder" {
+			result = c.postCapturingWorkerVideoIngest(ctx, service, endpoint, payload, &workerVideoRoute)
+			if result.Success {
+				if err := validateWorkerVideoIngestRoute(workerVideoRoute); err != nil {
+					result.Success = false
+					result.Code = "worker_video_ingest_response_invalid"
+					result.FailurePhase = "protocol"
+					result.Error = "encoder returned an invalid Worker video ingest route"
+				}
+			}
+		} else {
+			result = c.post(ctx, service, endpoint, payload)
+		}
+		if workerVideoEnabled && service.ServiceType == "worker" && result.Success {
+			result.VideoOverlayBurnInNegotiated = true
+		}
 		results = append(results, result)
 		// Start dependencies are ordered encoder -> worker -> Discord Bot.
 		// Once a dependency rejects the start, continuing would create a
@@ -681,6 +774,10 @@ func (c Client) post(ctx context.Context, service store.RegisteredService, endpo
 	return c.serviceJSONAction(ctx, service, http.MethodPost, endpoint, payload)
 }
 
+func (c Client) postCapturingWorkerVideoIngest(ctx context.Context, service store.RegisteredService, endpoint string, payload any, route *workerVideoIngestRoute) DispatchResult {
+	return c.serviceJSONActionInternal(ctx, service, http.MethodPost, endpoint, payload, route)
+}
+
 // postWithTimeout uses a copied Client so the Encoder's bounded graceful stop
 // window cannot shorten other service calls or mutate a caller-supplied HTTP
 // client shared by them.
@@ -702,6 +799,10 @@ func encoderStopRequestTimeout(configured time.Duration) time.Duration {
 }
 
 func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredService, method, endpoint string, payload any) DispatchResult {
+	return c.serviceJSONActionInternal(ctx, service, method, endpoint, payload, nil)
+}
+
+func (c Client) serviceJSONActionInternal(ctx context.Context, service store.RegisteredService, method, endpoint string, payload any, workerVideoRoute *workerVideoIngestRoute) DispatchResult {
 	result := DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
 		result.FailurePhase = "pre_dispatch"
@@ -757,12 +858,16 @@ func (c Client) serviceJSONAction(ctx context.Context, service store.RegisteredS
 	result.StatusCode = response.StatusCode
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		var successBody struct {
-			MessageID   string `json:"message_id"`
-			AlreadySent bool   `json:"already_sent"`
+			MessageID   string                 `json:"message_id"`
+			AlreadySent bool                   `json:"already_sent"`
+			VideoIngest workerVideoIngestRoute `json:"video_ingest"`
 		}
-		if err := json.NewDecoder(response.Body).Decode(&successBody); err == nil {
+		if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&successBody); err == nil {
 			result.MessageID = sanitizeServiceErrorValue(successBody.MessageID)
 			result.AlreadySent = successBody.AlreadySent
+			if workerVideoRoute != nil {
+				*workerVideoRoute = successBody.VideoIngest
+			}
 		}
 		result.Success = true
 		return result
@@ -1274,6 +1379,76 @@ func firstService(services []store.RegisteredService, serviceType string) store.
 		}
 	}
 	return store.RegisteredService{}
+}
+
+func workerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
+	worker := firstService(services, "worker")
+	encoder := firstService(services, "encoder_recorder")
+	workerEnabled := reportedCapabilityTrue(worker.ReportedCapabilities, "scene_video_srt")
+	encoderEnabled := reportedCapabilityTrue(encoder.ReportedCapabilities, "worker_video_ingest_srt")
+	return workerEnabled && encoderEnabled
+}
+
+// WorkerVideoCapabilitiesEnabled reports whether the exact primary services
+// advertise the compatible ends of the new media path. A successful Worker
+// dispatch is still required before callers may persist an active contract.
+func WorkerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
+	return workerVideoCapabilitiesEnabled(services)
+}
+
+func workerVideoCapabilityMismatch(services []store.RegisteredService) (ReadinessIssue, bool) {
+	worker := firstService(services, "worker")
+	encoder := firstService(services, "encoder_recorder")
+	workerEnabled := reportedCapabilityTrue(worker.ReportedCapabilities, "scene_video_srt")
+	encoderEnabled := reportedCapabilityTrue(encoder.ReportedCapabilities, "worker_video_ingest_srt")
+	if workerEnabled == encoderEnabled {
+		return ReadinessIssue{}, false
+	}
+	missing := worker
+	if workerEnabled {
+		missing = encoder
+	}
+	return ReadinessIssue{
+		ServiceID: missing.ServiceID, ServiceType: missing.ServiceType,
+		Code:    "worker_video_capability_mismatch",
+		Message: "Worker scene video and Encoder video ingest capabilities must be upgraded together.",
+	}, true
+}
+
+func reportedCapabilityTrue(capabilities map[string]any, name string) bool {
+	value, ok := capabilities[name].(bool)
+	return ok && value
+}
+
+func validateWorkerVideoIngestRoute(route workerVideoIngestRoute) error {
+	rawURL := route.URL
+	if rawURL == "" || rawURL != strings.TrimSpace(rawURL) {
+		return errors.New("invalid SRT ingest URL")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "srt") || parsed.Opaque != "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return errors.New("invalid SRT ingest URL")
+	}
+	host, portText, err := net.SplitHostPort(parsed.Host)
+	port, portErr := strconv.Atoi(portText)
+	if err != nil || portErr != nil || strings.TrimSpace(host) == "" || port < 1 || port > 65535 {
+		return errors.New("invalid SRT ingest URL")
+	}
+	secret := route.secret()
+	if len(secret) < 32 || len(secret) > 79 || !isBase64URLCredential(secret) || route.PBKeyLen != 32 {
+		return errors.New("invalid SRT ingest credential")
+	}
+	return nil
+}
+
+func isBase64URLCredential(value string) bool {
+	for _, character := range []byte(value) {
+		if (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func capabilityBool(capabilities map[string]any, name string) (bool, bool) {

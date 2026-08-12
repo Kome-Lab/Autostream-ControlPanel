@@ -55,6 +55,7 @@ var requiredWorkerEventServiceTypes = []string{"worker"}
 const serviceHeartbeatWarningDefault = 60 * time.Second
 const serviceHeartbeatOfflineDefault = 180 * time.Second
 const runtimeSecretLeaseTTL = 60 * time.Second
+const criticalHeartbeatMismatchGrace = 60 * time.Second
 
 // streamStopLifecycleTimeout bounds the durable part of a stop after its
 // stopping/failed claim succeeds. A Discord Bot may cancel the originating
@@ -7093,7 +7094,7 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 	kinds := runtimeProfileKindsForService(service.ServiceType)
 	profiles := make(map[string][]store.Profile, len(kinds))
 	streamOverlayProfileIDs := make(map[string]struct{})
-	if service.ServiceType == "encoder_recorder" {
+	if service.ServiceType == "encoder_recorder" || service.ServiceType == "worker" {
 		for _, assignment := range assignments {
 			if assignment.ServiceID != service.ServiceID || assignment.ServiceType != service.ServiceType {
 				continue
@@ -7117,8 +7118,8 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 		}
 		for _, item := range items {
 			if kind != store.ProfileCaption && !runtimeProfileMatchesService(item.Config, service.ServiceID) &&
-				!(kind == store.ProfileOverlay && service.ServiceType == "encoder_recorder" &&
-					runtimeOverlayProfileMayFollowAssignedEncoder(item, streamOverlayProfileIDs)) {
+				!(kind == store.ProfileOverlay && (service.ServiceType == "encoder_recorder" || service.ServiceType == "worker") &&
+					runtimeOverlayProfileMayFollowAssignedMediaService(item, streamOverlayProfileIDs)) {
 				continue
 			}
 			item.Config = sanitizeRuntimeProfileConfigForKind(kind, item.Config)
@@ -7128,10 +7129,11 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 	return profiles, nil
 }
 
-// Watermark profiles are selected by stream settings, so an unscoped profile
-// referenced by a stream must follow that stream's assigned Encoder. Explicit
-// service bindings still win and are never overridden by the stream reference.
-func runtimeOverlayProfileMayFollowAssignedEncoder(profile store.Profile, streamOverlayProfileIDs map[string]struct{}) bool {
+// Overlay profiles are selected by stream settings, so an unscoped profile
+// referenced by a stream follows both its Worker scene renderer and its final
+// Encoder watermark pass. Explicit service bindings still win and are never
+// overridden by the stream reference.
+func runtimeOverlayProfileMayFollowAssignedMediaService(profile store.Profile, streamOverlayProfileIDs map[string]struct{}) bool {
 	if _, referenced := streamOverlayProfileIDs[profile.ID]; !referenced {
 		return false
 	}
@@ -7976,6 +7978,12 @@ func (s *Server) serviceStreamArtifacts(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	body.ServiceID = strings.TrimSpace(body.ServiceID)
+	if body.ServiceID == "" {
+		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "invalid_service_id", "artifact_count": len(body.Artifacts)})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_id"})
+		return
+	}
 	artifacts := serviceArtifactReportArtifacts(body.Artifacts)
 	if err := store.ValidateStreamArtifactReport(body.StreamID, artifacts); err != nil {
 		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "invalid_stream_artifact", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
@@ -8002,8 +8010,7 @@ func (s *Server) serviceStreamArtifacts(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "service_or_stream_not_found"})
 			return
 		} else if err != nil {
-			s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "stream_artifact_rejected", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "stream_artifact_rejected"})
+			s.writeServiceArtifactStoreFailure(w, r, token, body, len(artifacts), err)
 			return
 		}
 		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "success", map[string]any{"service_id": body.ServiceID, "artifact_count": len(artifacts)})
@@ -8018,9 +8025,12 @@ func (s *Server) serviceStreamArtifacts(w http.ResponseWriter, r *http.Request) 
 		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "service_not_registered", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "service_not_registered"})
 		return
+	} else if errors.Is(err, store.ErrInvalidServiceStreamEvent) {
+		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "invalid_stream_event_type", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stream_event_type"})
+		return
 	} else if err != nil {
-		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "stream_artifact_rejected", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "stream_artifact_rejected"})
+		s.writeServiceArtifactStoreFailure(w, r, token, body, len(artifacts), err)
 		return
 	}
 	if err := s.streams.UpsertStreamArtifacts(r.Context(), body.StreamID, artifacts); errors.Is(err, store.ErrNotFound) {
@@ -8028,12 +8038,27 @@ func (s *Server) serviceStreamArtifacts(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "stream_not_found"})
 		return
 	} else if err != nil {
-		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "stream_artifact_rejected", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "stream_artifact_rejected"})
+		s.writeServiceArtifactStoreFailure(w, r, token, body, len(artifacts), err)
 		return
 	}
 	s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "success", map[string]any{"service_id": body.ServiceID, "artifact_count": len(artifacts)})
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "artifact_count": len(artifacts)})
+}
+
+func (s *Server) writeServiceArtifactStoreFailure(w http.ResponseWriter, r *http.Request, token store.ServiceToken, body serviceArtifactReport, artifactCount int, err error) {
+	status := http.StatusInternalServerError
+	code := "stream_artifact_store_failed"
+	if store.IsTransientDatabaseConnectionError(err) {
+		status = http.StatusServiceUnavailable
+		code = "stream_artifact_store_unavailable"
+		w.Header().Set("Retry-After", "1")
+	}
+	s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{
+		"reason":         code,
+		"service_id":     body.ServiceID,
+		"artifact_count": artifactCount,
+	})
+	writeJSON(w, status, map[string]string{"code": code})
 }
 
 func serviceArtifactReportArtifacts(input []serviceArtifactReportArtifact) []store.StreamArtifact {
@@ -8108,7 +8133,42 @@ func (s *Server) serviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "heartbeat_failed"})
 		return
 	}
+	s.reconcileServiceHeartbeatStreamRuntime(r, token, service, body.CurrentStreamID)
 	writeJSON(w, http.StatusAccepted, service)
+}
+
+func (s *Server) reconcileServiceHeartbeatStreamRuntime(r *http.Request, token store.ServiceToken, service store.RegisteredService, reportedCurrentStreamID string) {
+	if service.ServiceType != "worker" && service.ServiceType != "encoder_recorder" {
+		return
+	}
+	assignmentRows, err := s.services.ListServiceAssignmentsForService(r.Context(), service.ServiceID)
+	if err != nil {
+		s.writeServiceAudit(r, token, "services.heartbeat.reconcile", "service", service.ServiceID, "failure", map[string]any{
+			"reason":       "list_service_assignments_failed",
+			"service_type": service.ServiceType,
+		})
+		return
+	}
+	reportedStreamID := strings.TrimSpace(reportedCurrentStreamID)
+	for _, assignment := range assignmentRows {
+		streamID := strings.TrimSpace(assignment.StreamID)
+		if streamID == "" || streamID == reportedStreamID || assignment.ServiceID != service.ServiceID || assignment.ServiceType != service.ServiceType || normalizeAssignmentRole(assignment.AssignmentRole) != "primary" {
+			continue
+		}
+		stream, err := s.streams.GetStream(r.Context(), streamID)
+		if err != nil || !heartbeatMismatchEligible(stream, time.Now().UTC()) {
+			// Starting is deliberately excluded. An empty heartbeat can have been
+			// sent immediately before an ordered Encoder -> Worker -> Bot start;
+			// the lifecycle lock below protects convergence, but cannot make that
+			// already-sent heartbeat describe the new runtime.
+			continue
+		}
+		s.convergeServiceMediaFailure(r, token, service, "service_heartbeat_runtime_missing", "service.heartbeat.current_stream_mismatch", streamID, stream.UpdatedAt)
+	}
+}
+
+func heartbeatMismatchEligible(stream store.Stream, now time.Time) bool {
+	return stream.Status == "live" && !now.Before(stream.UpdatedAt.Add(criticalHeartbeatMismatchGrace))
 }
 
 func (s *Server) persistServiceHeartbeat(
@@ -8296,12 +8356,6 @@ func (s *Server) serviceObservabilitySignal(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_token_not_registered"})
 		return
 	}
-	obs, configured, err := s.observabilityClient(r.Context())
-	if err != nil || !configured {
-		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "observability_not_configured"})
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
-		return
-	}
 	var payload map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "bad_request"})
@@ -8310,6 +8364,12 @@ func (s *Server) serviceObservabilitySignal(w http.ResponseWriter, r *http.Reque
 	}
 	payload["service_id"] = service.ServiceID
 	payload["service_type"] = service.ServiceType
+	obs, configured, err := s.observabilityClient(r.Context())
+	if err != nil || !configured {
+		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "observability_not_configured"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
+		return
+	}
 	body, err := obs.Post(r.Context(), "/signals", payload)
 	if err != nil {
 		s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "failure", map[string]any{"reason": "observability_request_failed", "signal_name": stringMapValue(payload, "name"), "stream_id": stringMapValue(payload, "stream_id")})
@@ -8318,6 +8378,132 @@ func (s *Server) serviceObservabilitySignal(w http.ResponseWriter, r *http.Reque
 	}
 	s.writeServiceAudit(r, token, "observability.signals.ingest", "service", service.ServiceID, "success", map[string]any{"signal_name": stringMapValue(payload, "name"), "stream_id": stringMapValue(payload, "stream_id")})
 	writeObservabilityJSON(w, http.StatusAccepted, "/signals", body)
+}
+
+func primaryAssignmentsContainService(assignments []store.RegisteredService, service store.RegisteredService) bool {
+	for _, assignment := range assignments {
+		if assignment.ServiceID == service.ServiceID && assignment.ServiceType == service.ServiceType && normalizeAssignmentRole(assignment.AssignmentRole) == "primary" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) convergeServiceMediaFailure(r *http.Request, token store.ServiceToken, service store.RegisteredService, trigger, signalName, streamID string, expectedStreamUpdatedAt time.Time) {
+	lifecycleRequest, cancel := detachedStopLifecycleRequest(r)
+	defer cancel()
+	unlockLifecycle := s.lockStreamLifecycle(streamID)
+	defer unlockLifecycle()
+	metadata := map[string]any{
+		"trigger":             trigger,
+		"signal_name":         signalName,
+		"source_service_id":   service.ServiceID,
+		"source_service_type": service.ServiceType,
+	}
+	// Re-read assignments while holding the lifecycle lock. The preflight
+	// matched an authenticated heartbeat to an exact primary assignment; this
+	// second check prevents a concurrent reassignment from turning that stale
+	// observation into a Stop against services the reporter no longer owns.
+	currentAssignments, assignmentErr := s.streamAssignments(lifecycleRequest.Context(), streamID)
+	if assignmentErr != nil {
+		metadata["lifecycle_outcome"] = "list_stream_assignments_failed"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "failure", metadata)
+		return
+	}
+	assignments := primaryStreamAssignments(currentAssignments)
+	if !primaryAssignmentsContainService(assignments, service) {
+		metadata["lifecycle_outcome"] = "assignment_changed"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "failure", metadata)
+		return
+	}
+	stream, err := s.streams.GetStream(lifecycleRequest.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		metadata["lifecycle_outcome"] = "stream_not_found"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "failure", metadata)
+		return
+	}
+	if err != nil {
+		metadata["lifecycle_outcome"] = "stream_read_failed"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "failure", metadata)
+		return
+	}
+	metadata["previous_status"] = stream.Status
+	if !stream.UpdatedAt.Equal(expectedStreamUpdatedAt) {
+		metadata["status"] = stream.Status
+		metadata["lifecycle_outcome"] = "heartbeat_observation_superseded"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "success", metadata)
+		return
+	}
+	if !heartbeatMismatchEligible(stream, time.Now().UTC()) {
+		metadata["status"] = stream.Status
+		metadata["lifecycle_outcome"] = "ignored_stream_status"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "success", metadata)
+		return
+	}
+	failed, transitioned, err := s.streams.TransitionStreamStatus(lifecycleRequest.Context(), streamID, stream.Status, "failed")
+	if err != nil {
+		metadata["lifecycle_outcome"] = "stream_transition_failed"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "failure", metadata)
+		return
+	}
+	metadata["status"] = failed.Status
+	if !transitioned {
+		metadata["lifecycle_outcome"] = "transition_superseded"
+		s.writeServiceAudit(lifecycleRequest, token, "streams.mark_failed", "stream", streamID, "success", metadata)
+		return
+	}
+	stopResults := sanitizeDispatchResults(s.dispatcher.Stop(lifecycleRequest.Context(), failed, assignments))
+	metadata["lifecycle_outcome"] = "failed"
+	metadata["stop_dispatch"] = stopResults
+	// Stop is allowed to consume its entire bounded lifecycle window. YouTube
+	// cleanup and its retry persistence need a fresh detached deadline so a
+	// timed-out service cannot also prevent durable provider recovery state.
+	cleanupRequest, cleanupCancel := detachedStopLifecycleRequest(r)
+	defer cleanupCancel()
+	if hasDispatchFailure(stopResults) {
+		metadata["stop_dispatch_warning"] = "one or more services did not acknowledge stop"
+		staticRuntime, recoveryErr := s.abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(cleanupRequest.Context(), streamID, trigger+"_stop_unconfirmed")
+		if recoveryErr != nil {
+			metadata["youtube_cleanup"] = "recovery_fence_failed"
+		} else if staticRuntime {
+			metadata["youtube_cleanup"] = "recovery_required"
+		} else if youtubeMetadata, err := s.completeYouTubeRuntime(cleanupRequest.Context(), streamID, true); err != nil {
+			metadata["youtube_cleanup"] = "retry_scheduled"
+			metadata["youtube_cleanup_error"] = youtubeCompleteRetryErrorCode(err)
+		} else if len(youtubeMetadata) > 0 {
+			metadata["youtube_cleanup"] = "completed"
+			metadata["youtube_mode"] = youtubeMetadata["mode"]
+		} else {
+			metadata["youtube_cleanup"] = "not_configured"
+		}
+		s.writeServiceAudit(cleanupRequest, token, "streams.mark_failed", "stream", streamID, "success", metadata)
+		return
+	}
+	staticRuntime, encoderStopConfirmed, receiptErr := s.markYouTubeRelayStaticEncoderStopConfirmed(cleanupRequest.Context(), streamID, assignments, stopResults)
+	if receiptErr != nil {
+		metadata["youtube_cleanup"] = "encoder_stop_receipt_failed"
+	}
+	if staticRuntime {
+		// A fixed relay remains fenced until the explicit recovery path can
+		// complete it from a confirmed terminal lifecycle. Abandoning the runtime
+		// marks the durable claim recovery_required without releasing the binding.
+		if _, recoveryErr := s.abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(cleanupRequest.Context(), streamID, trigger); recoveryErr != nil {
+			metadata["youtube_cleanup"] = "recovery_fence_failed"
+		} else if encoderStopConfirmed {
+			metadata["youtube_cleanup"] = "encoder_stop_confirmed_recovery_required"
+		} else {
+			metadata["youtube_cleanup"] = "recovery_required"
+		}
+	} else if youtubeMetadata, err := s.completeYouTubeRuntime(cleanupRequest.Context(), streamID, true); err != nil {
+		metadata["youtube_cleanup"] = "retry_scheduled"
+		metadata["youtube_cleanup_error"] = youtubeCompleteRetryErrorCode(err)
+	} else if len(youtubeMetadata) > 0 {
+		metadata["youtube_cleanup"] = "completed"
+		metadata["youtube_mode"] = youtubeMetadata["mode"]
+	} else {
+		metadata["youtube_cleanup"] = "not_configured"
+	}
+	s.writeServiceAudit(cleanupRequest, token, "streams.mark_failed", "stream", streamID, "success", metadata)
 }
 
 func stringMapValue(values map[string]any, key string) string {
@@ -9771,6 +9957,29 @@ func applyStreamSettingsDefaults(stream store.Stream, req *servicecall.StartRequ
 	}
 }
 
+func (s *Server) applyEncoderVideoProfile(ctx context.Context, req *servicecall.StartRequest) error {
+	if strings.TrimSpace(req.EncoderProfileID) == "" {
+		return errEncoderProfileNotFound
+	}
+	if s.profiles == nil {
+		return errEncoderProfileNotFound
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileEncoder, req.EncoderProfileID)
+	if err != nil {
+		return err
+	}
+	req.EncoderVideoWidth = configInt(profile.Config, "width")
+	req.EncoderVideoHeight = configInt(profile.Config, "height")
+	req.EncoderVideoFPS = configInt(profile.Config, "fps")
+	validSize := (req.EncoderVideoWidth == 1920 && req.EncoderVideoHeight == 1080) ||
+		(req.EncoderVideoWidth == 1280 && req.EncoderVideoHeight == 720) ||
+		(req.EncoderVideoWidth == 854 && req.EncoderVideoHeight == 480)
+	if !validSize || req.EncoderVideoFPS < 1 || req.EncoderVideoFPS > 60 {
+		return errors.New("encoder profile video dimensions are invalid")
+	}
+	return nil
+}
+
 func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 	token, ok := s.authenticateService(w, r, "streams.start")
 	if !ok {
@@ -10173,6 +10382,14 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if servicecall.WorkerVideoCapabilitiesEnabled(primaryAssignments) {
+		if err := s.applyEncoderVideoProfile(r.Context(), &body); err != nil {
+			current := currentFromContext(r.Context())
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "encoder_profile_resolution_failed", "encoder_profile_id": body.EncoderProfileID}})
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "encoder_profile_resolution_failed"})
+			return
+		}
+	}
 	if err := s.applyArchiveConfig(r.Context(), &body); err != nil {
 		current := currentFromContext(r.Context())
 		code := archiveConfigCode(err)
@@ -10317,38 +10534,63 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 			s.writeStartSupersededResponse(w, r, failed, results, primaryAssignments)
 			return
 		}
+		// Start dispatch is ordered Encoder -> Worker -> Discord Bot and stops at
+		// the first failure. A failure can therefore leave earlier services
+		// running even though the stream has already become terminal locally.
+		// Compensate every primary assignment on a detached, bounded context so a
+		// Discord-triggered caller disconnect cannot strand the Encoder or Worker.
+		stopRequest, cancelStopLifecycle := detachedStopLifecycleRequest(r)
+		defer cancelStopLifecycle()
+		stopResults := sanitizeDispatchResults(s.dispatcher.Stop(stopRequest.Context(), failed, primaryAssignments))
 		if relayStaticStartClaimed {
 			// An Encoder Start timeout or partial failure is not evidence that the
 			// Encoder never started pushing the fixed relay. Do not delete or
 			// complete the Broadcast in this branch: atomically remove the runtime
 			// from automatic completion and retain the binding for an explicit,
 			// stop-confirmed recovery flow.
-			staticRuntime, err := s.abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(r.Context(), stream.ID, "youtube_relay_static_start_dispatch_unconfirmed")
-			current := currentFromContext(r.Context())
+			staticRuntime, err := s.abandonYouTubeRelayStaticRuntimeForUnconfirmedDispatch(stopRequest.Context(), stream.ID, "youtube_relay_static_start_dispatch_unconfirmed")
+			current := currentFromContext(stopRequest.Context())
 			metadata := map[string]any{"trigger": "start_dispatch_failed", "mode": "live_api_relay_static"}
 			if err != nil {
 				metadata["reason"] = "youtube_relay_static_start_dispatch_recovery_fence_failed"
-				s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.relay_static_recovery", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: metadata})
+				s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.relay_static_recovery", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: metadata})
 			} else if staticRuntime {
 				metadata["recovery_required"] = true
-				s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.relay_static_recovery", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+				s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.relay_static_recovery", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
 			}
-		} else if metadata, err := s.completeYouTubeRuntime(r.Context(), stream.ID, true); err != nil {
+		} else if metadata, err := s.completeYouTubeRuntime(stopRequest.Context(), stream.ID, true); err != nil {
 			code := "complete_youtube_runtime_failed"
 			if errors.Is(err, errYouTubeLiveAPICompleteFailed) {
 				code = errYouTubeLiveAPICompleteFailed.Error()
 			}
-			current := currentFromContext(r.Context())
-			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "trigger": "start_dispatch_failed"}})
+			current := currentFromContext(stopRequest.Context())
+			s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "trigger": "start_dispatch_failed"}})
 		} else if len(metadata) > 0 {
-			current := currentFromContext(r.Context())
+			current := currentFromContext(stopRequest.Context())
 			metadata["trigger"] = "start_dispatch_failed"
-			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
+			s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube.complete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: metadata})
 		}
-		current := currentFromContext(r.Context())
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"dispatch": results}})
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "service_dispatch_failed", "stream": failed, "dispatch": results})
+		current := currentFromContext(stopRequest.Context())
+		s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"dispatch": results, "stop_dispatch": stopResults}})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "service_dispatch_failed", "stream": failed, "dispatch": results, "stop_dispatch": stopResults})
 		return
+	}
+	videoOverlayBurnIn := workerVideoOverlayBurnInNegotiated(results)
+	if mediaRuntimeStore, ok := s.streams.(store.StreamMediaRuntimeStore); ok {
+		if err := mediaRuntimeStore.SetStreamVideoOverlayBurnIn(r.Context(), stream.ID, videoOverlayBurnIn); err != nil {
+			failed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "failed")
+			if transitionErr != nil || !transitioned {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "save_stream_media_runtime_failed"})
+				return
+			}
+			stopRequest, cancel := detachedStopLifecycleRequest(r)
+			defer cancel()
+			stopResults := sanitizeDispatchResults(s.dispatcher.Stop(stopRequest.Context(), failed, primaryAssignments))
+			current := currentFromContext(stopRequest.Context())
+			s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "save_stream_media_runtime_failed", "dispatch": results, "stop_dispatch": stopResults}})
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "save_stream_media_runtime_failed", "stream": failed, "dispatch": results, "stop_dispatch": stopResults})
+			return
+		}
 	}
 	if err := s.ensureYouTubeBroadcastLive(r.Context(), body.YouTubeRuntime); err != nil {
 		s.failYouTubeLiveAPIStart(w, r, stream, primaryAssignments, results, err)
@@ -12618,6 +12860,14 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, discordConfigStatus(err), map[string]string{"code": discordConfigCode(err)})
 			return
 		}
+		if servicecall.WorkerVideoCapabilitiesEnabled(primaryAssignments) {
+			if err := s.applyEncoderVideoProfile(r.Context(), &body); err != nil {
+				issues = append(issues, servicecall.ReadinessIssue{
+					ServiceType: "worker", Code: "worker_video_encoder_profile_unsupported",
+					Message: "The selected Encoder profile is not supported by the Worker scene renderer.",
+				})
+			}
+		}
 		if err := s.validateYouTubeLiveAPIOutputRelay(r.Context(), primaryAssignments, &body); err != nil {
 			issues = append(issues, servicecall.ReadinessIssue{ServiceType: "encoder_recorder", Code: youtubeOutputCode(err), Message: youtubeOutputReadinessMessage(err)})
 		} else {
@@ -13527,6 +13777,15 @@ func sanitizeDispatchResults(results []servicecall.DispatchResult) []servicecall
 	return out
 }
 
+func workerVideoOverlayBurnInNegotiated(results []servicecall.DispatchResult) bool {
+	for _, result := range results {
+		if result.Success && result.VideoOverlayBurnInNegotiated {
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeDispatchError(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -13691,17 +13950,19 @@ func (s *Server) createStreamPreviewLink(w http.ResponseWriter, r *http.Request)
 	playerPath := "/stream-preview/?token=" + url.QueryEscape(token)
 	playbackURL := configuredStreamPreviewURL(playbackPath)
 	playerURL := configuredStreamPreviewURL(playerPath)
+	videoOverlayBurnIn := s.streamVideoOverlayBurnIn(r.Context(), stream.ID)
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.preview_link.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"expires_at": expiresAt, "assignment_count": len(assignments)}})
 	w.Header().Set("Cache-Control", "no-store")
 	// Keep url as the legacy HLS URL for API compatibility. New callers should
 	// display/copy player_url; playback_url is explicit for embedded players.
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"stream_id":    stream.ID,
-		"url":          playbackURL,
-		"playback_url": playbackURL,
-		"player_url":   playerURL,
-		"expires_at":   expiresAt,
+		"stream_id":             stream.ID,
+		"url":                   playbackURL,
+		"playback_url":          playbackURL,
+		"player_url":            playerURL,
+		"expires_at":            expiresAt,
+		"video_overlay_burn_in": videoOverlayBurnIn,
 	})
 }
 
@@ -13749,9 +14010,10 @@ type publicPreviewParticipant struct {
 }
 
 type publicPreviewParticipantsResponse struct {
-	Participants    []publicPreviewParticipant `json:"participants"`
-	ActiveSpeakerID string                     `json:"active_speaker_id,omitempty"`
-	UpdatedAt       time.Time                  `json:"updated_at,omitempty"`
+	Participants       []publicPreviewParticipant `json:"participants"`
+	ActiveSpeakerID    string                     `json:"active_speaker_id,omitempty"`
+	UpdatedAt          time.Time                  `json:"updated_at,omitempty"`
+	VideoOverlayBurnIn bool                       `json:"video_overlay_burn_in"`
 }
 
 // publicStreamPreviewParticipants exposes only the non-secret participant
@@ -13788,9 +14050,24 @@ func (s *Server) publicStreamPreviewParticipants(w http.ResponseWriter, r *http.
 		return
 	}
 	response := publicPreviewParticipantsFromEvents(result.Events)
+	response.VideoOverlayBurnIn = s.streamVideoOverlayBurnIn(r.Context(), stream.ID)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) streamVideoOverlayBurnIn(ctx context.Context, streamID string) bool {
+	mediaRuntimeStore, ok := s.streams.(store.StreamMediaRuntimeStore)
+	if !ok {
+		return false
+	}
+	runtime, err := mediaRuntimeStore.GetStreamMediaRuntime(ctx, streamID)
+	if err != nil {
+		// Missing/unknown must preserve the legacy DOM overlay. Never infer this
+		// value from mutable current service capabilities after a restart.
+		return false
+	}
+	return runtime.VideoOverlayBurnIn
 }
 
 func (s *Server) publicPreviewStreamID(token string) (string, bool) {

@@ -1,13 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Copy, Download, ExternalLink, Link2, Pencil, PlayCircle, Share2, Trash2 } from "lucide-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useRef, useState } from "react";
+import { Copy, Download, ExternalLink, Link2, Pencil, PlayCircle, RefreshCw, Share2, Trash2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { ResourcePanel } from "@/features/resources/resource-page";
 import { resourcePages } from "@/features/resources/resource-config";
 import { useAppSettings, useCurrentUser, useResourceData, useStreams } from "@/features/queries";
-import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
+import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
+import { archiveArtifactPollInterval } from "@/features/archive/archive-artifact-polling";
 
 type StreamArtifact = {
   id: string;
@@ -91,7 +92,12 @@ export function ArchiveView() {
               ) : (
                 <>
                   <StreamSelect streams={streamRows} value={selected} onChange={setSelectedStreamID} />
-                  <ArchiveArtifacts streamID={selected} canDownload={can("archives.download")} canModify={can("archives.delete")} />
+                  <ArchiveArtifacts
+                    key={selected}
+                    streamID={selected}
+                    canDownload={can("archives.download")}
+                    canModify={can("archives.delete")}
+                  />
                 </>
               )}
             </CardContent>
@@ -121,16 +127,57 @@ function StreamSelect({ streams, value, onChange }: { streams: Stream[]; value: 
   );
 }
 
-function ArchiveArtifacts({ streamID, canDownload, canModify }: { streamID: string; canDownload: boolean; canModify: boolean }) {
-  const query = useResourceData<StreamArtifact[]>(`/streams/${encodeURIComponent(streamID)}/artifacts`);
+function ArchiveArtifacts({
+  streamID,
+  canDownload,
+  canModify,
+}: {
+  streamID: string;
+  canDownload: boolean;
+  canModify: boolean;
+}) {
+  const emptyPollAttempts = useRef(0);
+  const artifactsPath = `/streams/${encodeURIComponent(streamID)}/artifacts`;
+
+  const query = useQuery({
+    queryKey: ["resource", artifactsPath],
+    queryFn: async () => {
+      const nextArtifacts = await apiGet<StreamArtifact[]>(artifactsPath);
+      emptyPollAttempts.current = nextArtifacts.length === 0 ? emptyPollAttempts.current + 1 : 0;
+      return nextArtifacts;
+    },
+    refetchInterval: (currentQuery) => archiveArtifactPollInterval({
+      artifactCount: currentQuery.state.status === "success" && Array.isArray(currentQuery.state.data)
+        ? currentQuery.state.data.length
+        : undefined,
+      emptyPollAttempts: emptyPollAttempts.current,
+    }),
+  });
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
   const artifacts = useMemo(() => query.data || [], [query.data]);
+  const refreshArtifacts = () => {
+    emptyPollAttempts.current = 0;
+    void query.refetch();
+  };
 
   if (query.isLoading) return <Skeleton className="h-36 w-full" />;
-  if (query.isError) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>録画成果物を取得できませんでした。Encoderの接続状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={() => query.refetch()}>再試行</Button></div>;
+  if (query.isError) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>録画成果物を取得できませんでした。Encoderの接続状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={refreshArtifacts}>再試行</Button></div>;
   if (artifacts.length === 0) {
-    return <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">この配信枠のローカル録画アーカイブはまだ報告されていません。</div>;
+    return (
+      <div className="space-y-3 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+        <div>
+          <div>この配信枠のローカル録画アーカイブはまだ報告されていません。</div>
+          <div className="mt-1 text-xs">完了直後は成果物の生成と報告に時間がかかるため、最初の約1分間は5秒ごと、その後も30秒ごとに自動更新します。</div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={refreshArtifacts} disabled={query.isFetching}>
+            <RefreshCw className={`size-4 ${query.isFetching ? "animate-spin" : ""}`} />
+            更新
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (

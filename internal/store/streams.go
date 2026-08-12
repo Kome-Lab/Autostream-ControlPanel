@@ -97,6 +97,15 @@ type StreamArtifactShare struct {
 	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
 }
 
+// StreamMediaRuntime records non-secret facts about the media path selected by
+// a successful start. It is durable so a Control Panel restart cannot infer a
+// burn-in contract from mutable service capability advertisements.
+type StreamMediaRuntime struct {
+	StreamID           string    `json:"stream_id"`
+	VideoOverlayBurnIn bool      `json:"video_overlay_burn_in"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
 type StreamYouTubeRuntime struct {
 	StreamID            string    `json:"stream_id"`
 	YouTubeOutput       string    `json:"youtube_output"`
@@ -152,6 +161,11 @@ type StreamArtifactShareStore interface {
 
 type StreamArtifactReportStore interface {
 	WriteStreamArtifactReport(ctx context.Context, token ServiceToken, event ServiceStreamEvent, artifacts []StreamArtifact) error
+}
+
+type StreamMediaRuntimeStore interface {
+	SetStreamVideoOverlayBurnIn(ctx context.Context, streamID string, enabled bool) error
+	GetStreamMediaRuntime(ctx context.Context, streamID string) (StreamMediaRuntime, error)
 }
 
 type StreamYouTubeRuntimeStore interface {
@@ -639,10 +653,8 @@ func (s MariaDBStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 	for _, artifact := range NormalizeStreamArtifacts(id, artifacts) {
 		artifact.ID = newUUID()
 		artifact.CreatedAt = time.Now().UTC()
-		if _, err := tx.ExecContext(ctx, `DELETE FROM stream_artifacts WHERE stream_id = ? AND kind = ? AND name = ?`, id, artifact.Kind, artifact.Name); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes)`,
 			artifact.ID, id, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt); err != nil {
 			return err
 		}
@@ -854,7 +866,7 @@ func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token
 		artifact.ID = newUUID()
 		artifact.CreatedAt = time.Now().UTC()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE id = VALUES(id), relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes), created_at = VALUES(created_at)`,
+ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes)`,
 			artifact.ID, event.StreamID, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt); err != nil {
 			return err
 		}

@@ -58,3 +58,11 @@ func isTransientDatabaseConnectionError(err error) bool {
 	}
 	return false
 }
+
+// IsTransientDatabaseConnectionError reports whether a database operation can
+// reasonably be retried because its connection failed transiently. It does not
+// expose driver error details and must not be used to classify validation or
+// authorization failures.
+func IsTransientDatabaseConnectionError(err error) bool {
+	return isTransientDatabaseConnectionError(err)
+}

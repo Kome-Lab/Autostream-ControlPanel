@@ -1954,6 +1954,89 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	}
 }
 
+func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "video discord", "discord_bot-01", "guild", "voice", "")
+	encoderProfile, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, "1080p60", map[string]any{"width": 1920, "height": 1080, "fps": 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := streams.CreateStream(t.Context(), "Worker scene")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		DiscordConfigID: discord.ID, DiscordGuildID: "guild", DiscordVoiceID: "voice", EncoderProfileID: encoderProfile.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, registration := range []store.ServiceRegistration{
+		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_video_ingest_srt": true}},
+		{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{"scene_video_srt": true}},
+		{ServiceID: "discord_bot-01", ServiceType: "discord_bot", ServiceName: "bot", PublicURL: "https://bot.example.com"},
+	} {
+		token, err := auth.CreateServiceToken(t.Context(), registration.ServiceType, []string{"service.register"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerServiceWithTokenForTest(t, auth, token, registration)
+		if _, err := auth.AssignServiceToStream(t.Context(), registration.ServiceID, stream.ID, "test-user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("start status=%d body=%s", res.Code, res.Body.String())
+	}
+	runtime, err := streams.GetStreamMediaRuntime(t.Context(), stream.ID)
+	if err != nil || !runtime.VideoOverlayBurnIn {
+		t.Fatalf("negotiated burn-in state was not persisted: runtime=%#v err=%v", runtime, err)
+	}
+	if dispatcher.startRequest.EncoderVideoWidth != 1920 || dispatcher.startRequest.EncoderVideoHeight != 1080 || dispatcher.startRequest.EncoderVideoFPS != 60 {
+		t.Fatalf("Encoder video profile was not resolved for dispatch: %#v", dispatcher.startRequest)
+	}
+}
+
+func TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry(t *testing.T) {
+	profiles := store.NewMemoryProfileStore()
+	profile, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, "unsupported", map[string]any{"width": 1024, "height": 576, "fps": 61})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{profiles: profiles}
+	req := servicecall.StartRequest{EncoderProfileID: profile.ID}
+	if err := server.applyEncoderVideoProfile(t.Context(), &req); err == nil {
+		t.Fatalf("unsupported Worker scene geometry was accepted: %#v", req)
+	}
+	for index, config := range []map[string]any{
+		{"width": 1920, "height": 1080, "fps": 60},
+		{"width": 1280, "height": 720, "fps": 30},
+		{"width": 854, "height": 480, "fps": 1},
+	} {
+		valid, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, fmt.Sprintf("valid-%d", index), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req = servicecall.StartRequest{EncoderProfileID: valid.ID}
+		if err := server.applyEncoderVideoProfile(t.Context(), &req); err != nil {
+			t.Fatalf("supported Worker scene geometry was rejected: config=%#v err=%v", config, err)
+		}
+	}
+}
+
 func TestStartDoesNotReviveStreamCompletedDuringDelayedDispatch(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {
@@ -3607,6 +3690,10 @@ func TestStreamStartStopDispatchesAssignedServices(t *testing.T) {
 	if dispatcher.startCalls != 1 || dispatcher.startedStream.ID != stream.ID || len(dispatcher.startedServices) != 3 {
 		t.Fatalf("dispatcher was not called correctly: %#v", dispatcher)
 	}
+	mediaRuntime, err := streams.GetStreamMediaRuntime(t.Context(), stream.ID)
+	if err != nil || mediaRuntime.VideoOverlayBurnIn {
+		t.Fatalf("legacy start did not persist false burn-in state: runtime=%#v err=%v", mediaRuntime, err)
+	}
 
 	stopReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
 	stopReq.AddCookie(cookie)
@@ -3621,6 +3708,79 @@ func TestStreamStartStopDispatchesAssignedServices(t *testing.T) {
 	}
 	if dispatcher.stopCalls != 1 || dispatcher.stoppedStream.ID != stream.ID || len(dispatcher.stoppedServices) != 3 {
 		t.Fatalf("stop dispatcher was not called correctly: %#v", dispatcher)
+	}
+}
+
+func TestStartStreamCompensatesPartialDispatchFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []servicecall.DispatchResult
+	}{
+		{
+			name: "worker fails after encoder starts",
+			results: []servicecall.DispatchResult{
+				{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/start", StatusCode: http.StatusAccepted, Success: true},
+				{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/start", StatusCode: http.StatusConflict, Code: "invalid_stream_state", Error: "service returned status 409: invalid_stream_state"},
+			},
+		},
+		{
+			name: "bot fails after encoder and worker start",
+			results: []servicecall.DispatchResult{
+				{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/start", StatusCode: http.StatusAccepted, Success: true},
+				{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/start", StatusCode: http.StatusAccepted, Success: true},
+				{ServiceID: "discord_bot-01", ServiceType: "discord_bot", Endpoint: "/jobs/start", StatusCode: http.StatusBadGateway, Error: "service returned status 502"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
+				t.Fatal(err)
+			}
+			streams := store.NewMemoryStreamStore()
+			stream, err := streams.CreateStream(t.Context(), "partial start failure")
+			if err != nil {
+				t.Fatal(err)
+			}
+			registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
+			profiles := store.NewMemoryProfileStore()
+			config := createDiscordConfigForTest(t, profiles, "partial failure discord", "discord_bot-01", "guild-01", "voice-01", "")
+
+			requestContext, cancelRequest := context.WithCancel(t.Context())
+			defer cancelRequest()
+			dispatcher := &cancelingRequestStopDispatcher{
+				fakeServiceDispatcher: fakeServiceDispatcher{startResultsOverride: tt.results},
+				cancelRequest:         cancelRequest,
+			}
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-01","discord_voice_channel_id":"voice-01","encoder_input_url":"srt://input.example.com:9000"}`)).WithContext(requestContext)
+			req.AddCookie(cookie)
+			req.Header.Set("X-CSRF-Token", csrf)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+
+			if res.Code != http.StatusBadGateway || !strings.Contains(res.Body.String(), `"code":"service_dispatch_failed"`) || !strings.Contains(res.Body.String(), `"stop_dispatch"`) {
+				t.Fatalf("partial failure response status=%d body=%s", res.Code, res.Body.String())
+			}
+			if dispatcher.startCalls != 1 || dispatcher.stopCalls != 1 || dispatcher.stopContextCancelled {
+				t.Fatalf("partial failure did not use one detached compensating stop: %#v", dispatcher)
+			}
+			if len(dispatcher.stoppedServices) != 3 || dispatcher.stoppedStream.ID != stream.ID || dispatcher.stoppedStream.Status != "failed" {
+				t.Fatalf("compensating stop did not cover failed stream primary assignments: %#v", dispatcher)
+			}
+			stored, err := streams.GetStream(t.Context(), stream.ID)
+			if err != nil || stored.Status != "failed" {
+				t.Fatalf("partial failure did not terminalize stream: stream=%#v err=%v", stored, err)
+			}
+			auditJSON := toJSONForTest(t, auth.AuditEvents())
+			if !strings.Contains(auditJSON, `"action":"streams.start"`) || !strings.Contains(auditJSON, `"stop_dispatch"`) {
+				t.Fatalf("partial failure audit omitted compensating stop: %s", auditJSON)
+			}
+		})
 	}
 }
 
@@ -8402,6 +8562,49 @@ func TestStreamStartReadinessEndpointReportsServerReadinessIssues(t *testing.T) 
 	}
 }
 
+func TestStreamStartReadinessRejectsUnsupportedNegotiatedWorkerVideoProfile(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "unsupported scene")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	discord := createDiscordConfigForTest(t, profiles, "scene discord", "discord_bot-01", "guild", "voice", "")
+	encoderProfile, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, "unsupported", map[string]any{"width": 1024, "height": 576, "fps": 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, registration := range []store.ServiceRegistration{
+		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_video_ingest_srt": true}},
+		{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{"scene_video_srt": true}},
+		{ServiceID: "discord_bot-01", ServiceType: "discord_bot", ServiceName: "bot", PublicURL: "https://bot.example.com"},
+	} {
+		token, err := auth.CreateServiceToken(t.Context(), registration.ServiceType, []string{"service.register"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerServiceWithTokenForTest(t, auth, token, registration)
+		if _, err := auth.AssignServiceToStream(t.Context(), registration.ServiceID, stream.ID, "test-user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(&fakeServiceDispatcher{}))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	body := fmt.Sprintf(`{"discord_config_id":%q,"discord_guild_id":"guild","discord_voice_channel_id":"voice","encoder_profile_id":%q}`, discord.ID, encoderProfile.ID)
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", strings.NewReader(body))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "worker_video_encoder_profile_unsupported") || !strings.Contains(res.Body.String(), `"ready":false`) {
+		t.Fatalf("readiness did not reject unsupported negotiated scene: status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestStreamStartReadinessEndpointReportsMissingYouTubeStreamKeyWithoutReadingSecret(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.start"}); err != nil {
@@ -9273,10 +9476,11 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 		t.Fatalf("preview link status=%d body=%s", res.Code, res.Body.String())
 	}
 	var link struct {
-		URL         string    `json:"url"`
-		PlaybackURL string    `json:"playback_url"`
-		PlayerURL   string    `json:"player_url"`
-		ExpiresAt   time.Time `json:"expires_at"`
+		URL                string    `json:"url"`
+		PlaybackURL        string    `json:"playback_url"`
+		PlayerURL          string    `json:"player_url"`
+		ExpiresAt          time.Time `json:"expires_at"`
+		VideoOverlayBurnIn bool      `json:"video_overlay_burn_in"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&link); err != nil {
 		t.Fatal(err)
@@ -9284,6 +9488,9 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 	parsed, err := url.Parse(link.URL)
 	if err != nil || parsed.Host != "panel.example.jp" || !strings.HasSuffix(parsed.Path, "/index.m3u8") || link.ExpiresAt.Before(time.Now().UTC().Add(11*time.Hour)) || link.PlaybackURL != link.URL || !strings.Contains(link.PlayerURL, "/stream-preview/?token=") || len(link.PlayerURL) >= len(link.URL) {
 		t.Fatalf("unexpected preview link: %#v err=%v", link, err)
+	}
+	if link.VideoOverlayBurnIn {
+		t.Fatalf("legacy/unknown media runtime must preserve DOM overlay: %#v", link)
 	}
 
 	publicReq := httptest.NewRequest(http.MethodGet, parsed.Path, nil)
@@ -9417,6 +9624,61 @@ func TestPublicStreamPreviewParticipantsReturnsNamesAvatarsAndSpeakerState(t *te
 		if !strings.Contains(body, expected) {
 			t.Fatalf("participants response missing %q: %s", expected, body)
 		}
+	}
+}
+
+func TestPreviewResponsesUsePersistedNegotiatedVideoOverlayBurnIn(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "burned-in preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	dispatcher := &previewFakeDispatcher{}
+	dispatcher.workerEvents = servicecall.WorkerEventsResult{StatusCode: http.StatusOK, Success: true}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher), WithPreviewSigningKey("preview-signing-key"))
+	cookie, csrf := loginForTest(t, handler, "viewer", "correct horse battery")
+	unknownLinkReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/preview-links", nil)
+	unknownLinkReq.AddCookie(cookie)
+	unknownLinkReq.Header.Set("X-CSRF-Token", csrf)
+	unknownLinkRes := httptest.NewRecorder()
+	handler.ServeHTTP(unknownLinkRes, unknownLinkReq)
+	if unknownLinkRes.Code != http.StatusCreated || !strings.Contains(unknownLinkRes.Body.String(), `"video_overlay_burn_in":false`) {
+		t.Fatalf("preview link did not use legacy fallback for unknown burn-in state: status=%d body=%s", unknownLinkRes.Code, unknownLinkRes.Body.String())
+	}
+	if err := streams.SetStreamVideoOverlayBurnIn(t.Context(), stream.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	linkReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/preview-links", nil)
+	linkReq.AddCookie(cookie)
+	linkReq.Header.Set("X-CSRF-Token", csrf)
+	linkRes := httptest.NewRecorder()
+	handler.ServeHTTP(linkRes, linkReq)
+	if linkRes.Code != http.StatusCreated || !strings.Contains(linkRes.Body.String(), `"video_overlay_burn_in":true`) {
+		t.Fatalf("preview link lost persisted burn-in state: status=%d body=%s", linkRes.Code, linkRes.Body.String())
+	}
+	var link struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(linkRes.Body).Decode(&link); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(link.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	participantsPath := strings.TrimSuffix(parsed.Path, "/index.m3u8") + "/participants"
+	participantsRes := httptest.NewRecorder()
+	handler.ServeHTTP(participantsRes, httptest.NewRequest(http.MethodGet, participantsPath, nil))
+	if participantsRes.Code != http.StatusOK || !strings.Contains(participantsRes.Body.String(), `"video_overlay_burn_in":true`) {
+		t.Fatalf("participants response lost persisted burn-in state: status=%d body=%s", participantsRes.Code, participantsRes.Body.String())
 	}
 }
 
@@ -10608,6 +10870,52 @@ func TestServiceRuntimeConfigIncludesStreamWatermarkForAssignedEncoder(t *testin
 	}
 	if overlayProfiles[0].Config["watermark_image_data_url"] != "data:image/png;base64,AA==" {
 		t.Fatalf("runtime watermark image was not preserved: %#v", overlayProfiles[0].Config)
+	}
+}
+
+func TestServiceRuntimeConfigIncludesSelectedOverlayForAssignedWorker(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	stream, err := streams.CreateStream(t.Context(), "Worker scene stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID: "worker-scene-01", ServiceType: "worker", ServiceName: "Worker Scene 01",
+		PublicURL: "https://worker-scene.example.com", Version: "0.1.0",
+	})
+	if _, err := auth.AssignServiceToStream(t.Context(), "worker-scene-01", stream.ID, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := profiles.CreateProfile(t.Context(), store.ProfileOverlay, "scene overlay", map[string]any{
+		"watermark_enabled": false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{OverlayProfileID: overlay.ID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
+	req := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=worker-scene-01", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("runtime config status=%d body=%s", res.Code, res.Body.String())
+	}
+	var body serviceRuntimeConfigResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	items := body.Profiles[string(store.ProfileOverlay)]
+	if len(items) != 1 || items[0].ID != overlay.ID {
+		t.Fatalf("assigned Worker runtime config omitted selected overlay: %#v", items)
 	}
 }
 
@@ -17309,6 +17617,140 @@ func TestServiceObservabilitySignalProxiesWithRegisteredNodeIdentity(t *testing.
 	}
 }
 
+func TestServiceObservabilityCriticalSignalIsObservabilityOnly(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	observabilityCalls := 0
+	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/notification-events" {
+			writeJSON(w, http.StatusAccepted, []map[string]string{{"status": "success"}})
+			return
+		}
+		if r.URL.Path != "/signals" {
+			http.NotFound(w, r)
+			return
+		}
+		observabilityCalls++
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"signal":{"id":"sig-critical"}}`))
+	}))
+	defer obs.Close()
+	registerObservabilityNodeForTest(t, auth, "admin-token", obs.URL)
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "critical Worker failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+	workerToken := createBoundServiceTokenForTest(t, handler, cookie, csrf, "worker", "worker-critical-01", []string{"service.register", "service.heartbeat", "observability.ingest"})
+	registerServiceForTest(t, handler, workerToken.RawToken, "worker-critical-01", "worker")
+	if _, err := auth.AssignServiceToStream(t.Context(), "worker-critical-01", stream.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "discord_bot")
+
+	req := httptest.NewRequest(http.MethodPost, "/services/observability/signals", bytes.NewBufferString(`{"type":"event","name":"worker.video.output_failed","stream_id":"`+stream.ID+`","status":"failed","attributes":{"secret":"must-not-enter-audit"}}`))
+	req.Header.Set("Authorization", "Bearer "+workerToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("critical signal status=%d body=%s", res.Code, res.Body.String())
+	}
+	stored, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil || stored.Status != "live" {
+		t.Fatalf("observability signal changed stream lifecycle: stream=%#v err=%v", stored, err)
+	}
+	if dispatcher.stopCalls != 0 {
+		t.Fatalf("observability signal dispatched a lifecycle stop: %#v", dispatcher)
+	}
+	if observabilityCalls != 1 {
+		t.Fatalf("critical signal was not proxied to Observability: calls=%d", observabilityCalls)
+	}
+	auditJSON := toJSONForTest(t, auth.AuditEvents())
+	for _, expected := range []string{`"action":"observability.signals.ingest"`, `"signal_name":"worker.video.output_failed"`} {
+		if !strings.Contains(auditJSON, expected) {
+			t.Fatalf("critical lifecycle audit missing %q: %s", expected, auditJSON)
+		}
+	}
+	if strings.Contains(auditJSON, "must-not-enter-audit") {
+		t.Fatalf("critical signal attributes leaked into audit: %s", auditJSON)
+	}
+}
+
+func TestServiceObservabilityCriticalSignalDoesNotAuthorizeLifecycleForUnassignedStream(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
+		t.Fatal(err)
+	}
+	observabilityCalls := 0
+	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/notification-events" {
+			writeJSON(w, http.StatusAccepted, []map[string]string{{"status": "success"}})
+			return
+		}
+		observabilityCalls++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer obs.Close()
+	registerObservabilityNodeForTest(t, auth, "admin-token", obs.URL)
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "unassigned critical target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+	workerToken := createBoundServiceTokenForTest(t, handler, cookie, csrf, "worker", "worker-unassigned-01", []string{"service.register", "service.heartbeat", "observability.ingest"})
+	registerServiceForTest(t, handler, workerToken.RawToken, "worker-unassigned-01", "worker")
+
+	req := httptest.NewRequest(http.MethodPost, "/services/observability/signals", bytes.NewBufferString(`{"type":"event","name":"worker.video.output_failed","stream_id":"`+stream.ID+`","status":"failed","attributes":{"secret":"unassigned-secret"}}`))
+	req.Header.Set("Authorization", "Bearer "+workerToken.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("unassigned critical signal status=%d body=%s", res.Code, res.Body.String())
+	}
+	stored, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil || stored.Status != "live" || dispatcher.stopCalls != 0 || observabilityCalls != 1 {
+		t.Fatalf("unassigned critical signal changed lifecycle: stream=%#v dispatcher=%#v obs_calls=%d err=%v", stored, dispatcher, observabilityCalls, err)
+	}
+	if auditJSON := toJSONForTest(t, auth.AuditEvents()); strings.Contains(auditJSON, "unassigned-secret") {
+		t.Fatalf("unassigned critical signal attributes leaked into audit: %s", auditJSON)
+	}
+}
+
+func TestHeartbeatMismatchEligibleGraceBoundary(t *testing.T) {
+	now := time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name   string
+		stream store.Stream
+		want   bool
+	}{
+		{name: "before grace", stream: store.Stream{Status: "live", UpdatedAt: now.Add(-criticalHeartbeatMismatchGrace + time.Nanosecond)}},
+		{name: "at grace", stream: store.Stream{Status: "live", UpdatedAt: now.Add(-criticalHeartbeatMismatchGrace)}, want: true},
+		{name: "after grace", stream: store.Stream{Status: "live", UpdatedAt: now.Add(-criticalHeartbeatMismatchGrace - time.Second)}, want: true},
+		{name: "starting is never eligible", stream: store.Stream{Status: "starting", UpdatedAt: now.Add(-2 * criticalHeartbeatMismatchGrace)}},
+		{name: "future update", stream: store.Stream{Status: "live", UpdatedAt: now.Add(time.Second)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := heartbeatMismatchEligible(test.stream, now); got != test.want {
+				t.Fatalf("heartbeat mismatch eligible=%t want=%t stream=%#v", got, test.want, test.stream)
+			}
+		})
+	}
+}
+
 func TestServiceRegisterRejectsWrongServiceType(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create"}); err != nil {
@@ -17629,6 +18071,89 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 	}
 	if successAuditCount != 2 {
 		t.Fatalf("expected artifact success audit for each accepted report, got %d events=%#v", successAuditCount, auth.AuditEvents())
+	}
+}
+
+type failingArtifactReportStreamStore struct {
+	*store.MemoryStreamStore
+	err error
+}
+
+func (s failingArtifactReportStreamStore) WriteStreamArtifactReport(context.Context, store.ServiceToken, store.ServiceStreamEvent, []store.StreamArtifact) error {
+	return s.err
+}
+
+func TestEncoderArtifactReportClassifiesStoreFailures(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(t.Context(), "encoder_recorder", []string{"service.register", "encoder.status.write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "Artifact report retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-01", stream.ID, "test-user"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/final.mp4","size_bytes":123}]}`
+	for _, test := range []struct {
+		name       string
+		err        error
+		status     int
+		code       string
+		retryAfter string
+	}{
+		{name: "transient connection", err: errors.New("write tcp: connection reset by peer"), status: http.StatusServiceUnavailable, code: "stream_artifact_store_unavailable", retryAfter: "1"},
+		{name: "non-transient database failure", err: errors.New("database write failed"), status: http.StatusInternalServerError, code: "stream_artifact_store_failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := NewServer(
+				failingArtifactReportStreamStore{MemoryStreamStore: streams, err: test.err},
+				WithAuditStore(auth),
+				WithServiceRegistryStore(auth),
+			)
+			req := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(body))
+			req.Header.Set("Authorization", "Bearer "+token.RawToken)
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+
+			if res.Code != test.status || !strings.Contains(res.Body.String(), test.code) {
+				t.Fatalf("artifact store failure status = %d body = %s", res.Code, res.Body.String())
+			}
+			if res.Header().Get("Retry-After") != test.retryAfter {
+				t.Fatalf("artifact store failure retry header = %q, want %q", res.Header().Get("Retry-After"), test.retryAfter)
+			}
+			var matched bool
+			for _, event := range auth.AuditEvents() {
+				if event.Action == "archive.artifacts.reported" && event.Result == "failure" && event.ResourceID == stream.ID && event.Metadata["reason"] == test.code {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Fatalf("artifact store failure audit missing for %s: %#v", test.code, auth.AuditEvents())
+			}
+		})
+	}
+
+	handler := NewServer(
+		failingArtifactReportStreamStore{MemoryStreamStore: streams, err: errors.New("must not be reached")},
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+	)
+	invalidReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(`{"service_id":" ","stream_id":"`+stream.ID+`","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/`+stream.ID+`/final.mp4","size_bytes":123}]}`))
+	invalidReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+	invalidRes := httptest.NewRecorder()
+	handler.ServeHTTP(invalidRes, invalidReq)
+	if invalidRes.Code != http.StatusBadRequest || !strings.Contains(invalidRes.Body.String(), "invalid_service_id") || invalidRes.Header().Get("Retry-After") != "" {
+		t.Fatalf("empty service id status = %d headers=%v body=%s", invalidRes.Code, invalidRes.Header(), invalidRes.Body.String())
 	}
 }
 
@@ -19125,6 +19650,7 @@ type fakeServiceDispatcher struct {
 	workerEvents             servicecall.WorkerEventsResult
 	encoderPreflight         servicecall.ServicePreflightResult
 	workerEventRequest       servicecall.WorkerEventRequest
+	startResultsOverride     []servicecall.DispatchResult
 	stopResultsOverride      []servicecall.DispatchResult
 	failStart                bool
 	failStop                 bool
@@ -19577,12 +20103,20 @@ func (f *fakeServiceDispatcher) Start(ctx context.Context, stream store.Stream, 
 	f.startedStream = stream
 	f.startRequest = req
 	f.startedServices = append([]store.RegisteredService(nil), services...)
+	if f.startResultsOverride != nil {
+		return append([]servicecall.DispatchResult(nil), f.startResultsOverride...)
+	}
 	if f.failStart {
 		return []servicecall.DispatchResult{{ServiceID: services[0].ServiceID, ServiceType: services[0].ServiceType, Endpoint: "/jobs/start", Success: false, Error: f.failureError()}}
 	}
 	results := make([]servicecall.DispatchResult, 0, len(services))
+	workerVideoNegotiated := servicecall.WorkerVideoCapabilitiesEnabled(services)
 	for _, service := range services {
-		results = append(results, servicecall.DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: "/start", StatusCode: http.StatusAccepted, Success: true})
+		result := servicecall.DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: "/start", StatusCode: http.StatusAccepted, Success: true}
+		if workerVideoNegotiated && service.ServiceType == "worker" {
+			result.VideoOverlayBurnInNegotiated = true
+		}
+		results = append(results, result)
 	}
 	return results
 }
