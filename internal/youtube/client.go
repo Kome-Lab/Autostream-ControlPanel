@@ -227,10 +227,15 @@ const reusableAccountStreamTitle = "AutoStream account ingest"
 
 var reusableAccountStreamMu sync.Mutex
 
-// minimumScheduledStartLead keeps an immediately requested broadcast just far
-// enough in the future for YouTube's liveBroadcasts.insert validation while
-// avoiding an operator-visible artificial wait.
+// minimumScheduledStartLead prevents an explicitly requested start time that
+// is only a few seconds away from being rejected by YouTube's validation. An
+// empty requested time is handled separately as YouTube's epoch-zero
+// no-schedule value.
 const minimumScheduledStartLead = 15 * time.Second
+
+func youtubeUnscheduledStart() time.Time {
+	return time.Unix(0, 0).UTC()
+}
 
 const (
 	relayStaticCleanupTimeout    = 5 * time.Second
@@ -432,6 +437,12 @@ func prepareBroadcast(ctx context.Context, service *youtubeapi.Service, req Prep
 		privacy = "private"
 	}
 	start := normalizedScheduledStart(req.ScheduledStart, time.Now())
+	// AutoStart broadcasts are intended to go directly live when YouTube sees
+	// ingest. The API defaults monitorStream.enableMonitorStream to true, which
+	// is only needed for a separate testing stage and would require a testing
+	// transition before live. Disable it explicitly for that direct-start path,
+	// while preserving the existing monitor/testing path for manual starts.
+	enableMonitorStream := !req.EnableAutoStart
 	return service.LiveBroadcasts.Insert([]string{"snippet", "status", "contentDetails"}, &youtubeapi.LiveBroadcast{
 		Snippet: &youtubeapi.LiveBroadcastSnippet{
 			Title:              title,
@@ -440,6 +451,7 @@ func prepareBroadcast(ctx context.Context, service *youtubeapi.Service, req Prep
 		},
 		Status: &youtubeapi.LiveBroadcastStatus{PrivacyStatus: privacy},
 		ContentDetails: &youtubeapi.LiveBroadcastContentDetails{
+			MonitorStream:   &youtubeapi.MonitorStreamInfo{EnableMonitorStream: &enableMonitorStream},
 			EnableAutoStart: req.EnableAutoStart,
 			EnableAutoStop:  req.EnableAutoStop,
 		},
@@ -463,11 +475,19 @@ func isYouTubeNotFound(err error) bool {
 }
 
 func normalizedScheduledStart(requested, now time.Time) time.Time {
-	minimum := now.UTC().Add(minimumScheduledStartLead)
-	if requested.IsZero() || !requested.UTC().After(minimum) {
+	if requested.IsZero() {
+		return youtubeUnscheduledStart()
+	}
+	requested = requested.UTC()
+	now = now.UTC()
+	if !requested.After(now) {
+		return youtubeUnscheduledStart()
+	}
+	minimum := now.Add(minimumScheduledStartLead)
+	if requested.Before(minimum) {
 		return minimum
 	}
-	return requested.UTC()
+	return requested
 }
 
 func rtmpsIngest(info *youtubeapi.IngestionInfo) (string, string, error) {

@@ -10351,8 +10351,8 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 
 // ensureYouTubeBroadcastLive handles the provider transition after a
 // successful Encoder dispatch. AutoStart-enabled immediate broadcasts are
-// intentionally left for YouTube to move through testing into live after it
-// observes ingest; the durable notification outbox polls that lifecycle.
+// intentionally left for YouTube to move directly into live after it observes
+// ingest; the durable notification outbox polls that lifecycle.
 // Explicit auto-start=false retains the operator-controlled transition path.
 // Scheduled broadcasts remain under YouTube's own schedule.
 func (s *Server) ensureYouTubeBroadcastLive(ctx context.Context, runtime map[string]any) error {
