@@ -28,6 +28,7 @@ type Stream struct {
 	EncoderProfileID          string     `json:"encoder_profile_id,omitempty"`
 	CaptionProfileID          string     `json:"caption_profile_id,omitempty"`
 	OverlayProfileID          string     `json:"overlay_profile_id,omitempty"`
+	EncoderAudioGainDB        float64    `json:"encoder_audio_gain_db"`
 	ArchiveProfileID          string     `json:"archive_profile_id,omitempty"`
 	ArchiveDriveDestinationID string     `json:"archive_drive_destination_id,omitempty"`
 	ArchiveOAuthAccountID     string     `json:"archive_oauth_account_id,omitempty"`
@@ -56,6 +57,7 @@ type StreamSettings struct {
 	EncoderProfileID          string     `json:"encoder_profile_id,omitempty"`
 	CaptionProfileID          string     `json:"caption_profile_id,omitempty"`
 	OverlayProfileID          string     `json:"overlay_profile_id,omitempty"`
+	EncoderAudioGainDB        float64    `json:"encoder_audio_gain_db"`
 	ArchiveProfileID          string     `json:"archive_profile_id,omitempty"`
 	ArchiveDriveDestinationID string     `json:"archive_drive_destination_id,omitempty"`
 	ArchiveOAuthAccountID     string     `json:"archive_oauth_account_id,omitempty"`
@@ -130,6 +132,7 @@ type StreamStore interface {
 	GetStream(ctx context.Context, id string) (Stream, error)
 	DeleteStream(ctx context.Context, id string) error
 	UpdateStreamSettings(ctx context.Context, id string, settings StreamSettings) (Stream, error)
+	UpdateStreamEncoderRuntimeSettings(ctx context.Context, id string, audioGainDB float64, overlayProfileID string) (Stream, error)
 	UpdateStreamStatus(ctx context.Context, id, status string) (Stream, error)
 	// TransitionStreamStatus updates a stream only when its persisted status still
 	// equals expectedStatus. It prevents an asynchronous lifecycle completion from
@@ -191,7 +194,7 @@ func (s MariaDBStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
   COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
   COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
-  COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
+  COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.encoder_audio_gain_db, 0), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
   COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
   CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
   COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
@@ -208,7 +211,7 @@ ORDER BY s.created_at DESC LIMIT 100`)
 	for rows.Next() {
 		var stream Stream
 		var scheduledStart, scheduledEnd sql.NullTime
-		if err := rows.Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt); err != nil {
+		if err := rows.Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt); err != nil {
 			return nil, err
 		}
 		stream.ScheduledStartAt = nullTimePtr(scheduledStart)
@@ -294,7 +297,7 @@ func (s MariaDBStreamStore) GetStream(ctx context.Context, id string) (Stream, e
 	err := s.db.QueryRowContext(ctx, `SELECT s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
   COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
   COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
-  COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
+  COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.encoder_audio_gain_db, 0), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
   COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
   CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
   COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
@@ -302,7 +305,7 @@ func (s MariaDBStreamStore) GetStream(ctx context.Context, id string) (Stream, e
 FROM streams s
 LEFT JOIN stream_settings ss ON ss.stream_id = s.id
 LEFT JOIN drive_destinations dd ON dd.id = ss.archive_drive_destination_id
-WHERE s.id = ?`, id).Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt)
+WHERE s.id = ?`, id).Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return Stream{}, ErrNotFound
 	}
@@ -344,10 +347,43 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	if _, err := tx.ExecContext(ctx, `UPDATE streams SET name = COALESCE(NULLIF(?, ''), name), scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(settings.Name), nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
 		return Stream{}, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), discord_guild_id = VALUES(discord_guild_id), discord_voice_channel_id = VALUES(discord_voice_channel_id), discord_text_channel_id = VALUES(discord_text_channel_id), auto_start_trigger = VALUES(auto_start_trigger), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), archive_profile_id = VALUES(archive_profile_id), archive_drive_destination_id = VALUES(archive_drive_destination_id), archive_oauth_account_id = VALUES(archive_oauth_account_id), archive_shared_drive = VALUES(archive_shared_drive), archive_shared_drive_id = VALUES(archive_shared_drive_id), archive_file_name = VALUES(archive_file_name), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
-		id, nullEmpty(settings.DiscordConfigID), nullEmpty(settings.DiscordGuildID), nullEmpty(settings.DiscordVoiceID), nullEmpty(settings.DiscordTextID), strings.TrimSpace(settings.AutoStartTrigger), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.ArchiveDriveDestinationID), nullEmpty(settings.ArchiveOAuthAccountID), settings.ArchiveSharedDrive, nullEmpty(settings.ArchiveSharedDriveID), nullEmpty(settings.ArchiveFileName), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, encoder_audio_gain_db, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), discord_guild_id = VALUES(discord_guild_id), discord_voice_channel_id = VALUES(discord_voice_channel_id), discord_text_channel_id = VALUES(discord_text_channel_id), auto_start_trigger = VALUES(auto_start_trigger), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), encoder_audio_gain_db = VALUES(encoder_audio_gain_db), archive_profile_id = VALUES(archive_profile_id), archive_drive_destination_id = VALUES(archive_drive_destination_id), archive_oauth_account_id = VALUES(archive_oauth_account_id), archive_shared_drive = VALUES(archive_shared_drive), archive_shared_drive_id = VALUES(archive_shared_drive_id), archive_file_name = VALUES(archive_file_name), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
+		id, nullEmpty(settings.DiscordConfigID), nullEmpty(settings.DiscordGuildID), nullEmpty(settings.DiscordVoiceID), nullEmpty(settings.DiscordTextID), strings.TrimSpace(settings.AutoStartTrigger), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), settings.EncoderAudioGainDB, nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.ArchiveDriveDestinationID), nullEmpty(settings.ArchiveOAuthAccountID), settings.ArchiveSharedDrive, nullEmpty(settings.ArchiveSharedDriveID), nullEmpty(settings.ArchiveFileName), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
+	if err != nil {
+		return Stream{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Stream{}, err
+	}
+	return s.GetStream(ctx, id)
+}
+
+func (s MariaDBStreamStore) UpdateStreamEncoderRuntimeSettings(ctx context.Context, id string, audioGainDB float64, overlayProfileID string) (Stream, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Stream{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Stream{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE streams SET updated_at = ? WHERE id = ?`, now, id)
+	if err != nil {
+		return Stream{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+		if err != nil {
+			return Stream{}, err
+		}
+		return Stream{}, ErrNotFound
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, overlay_profile_id, encoder_audio_gain_db, updated_at)
+VALUES (?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE overlay_profile_id = VALUES(overlay_profile_id), encoder_audio_gain_db = VALUES(encoder_audio_gain_db), updated_at = VALUES(updated_at)`, id, nullEmpty(overlayProfileID), audioGainDB, now)
 	if err != nil {
 		return Stream{}, err
 	}

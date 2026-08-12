@@ -11,6 +11,7 @@ export type StreamCreateValues = {
   captionProfileID: string;
   watermarkEnabled: boolean;
   overlayProfileID: string;
+  encoderAudioGainDB: number;
   // Undefined preserves a server-side assignment during an edit. An empty
   // string is an explicit "unassign" selected in the stream form.
   encoderServiceID?: string;
@@ -33,6 +34,7 @@ export function buildStreamCreatePayload(values: StreamCreateValues): Record<str
     encoder_profile_id: values.encoderProfileID,
     caption_profile_id: values.captionProfileID,
     overlay_profile_id: values.watermarkEnabled ? values.overlayProfileID : "",
+    encoder_audio_gain_db: values.encoderAudioGainDB,
     ...(values.encoderServiceID === undefined ? {} : { encoder_service_id: values.encoderServiceID }),
     ...(values.workerServiceID === undefined ? {} : { worker_service_id: values.workerServiceID }),
     scheduled_start_at: values.scheduledStartAt,
@@ -55,6 +57,7 @@ export function buildStreamSettingsPayload(values: StreamCreateValues): Record<s
     encoder_profile_id: values.encoderProfileID,
     caption_profile_id: values.captionProfileID,
     overlay_profile_id: values.watermarkEnabled ? values.overlayProfileID : "",
+    encoder_audio_gain_db: values.encoderAudioGainDB,
     ...(values.encoderServiceID === undefined ? {} : { encoder_service_id: values.encoderServiceID }),
     ...(values.workerServiceID === undefined ? {} : { worker_service_id: values.workerServiceID }),
     scheduled_start_at: values.scheduledStartAt || "",

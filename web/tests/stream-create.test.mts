@@ -16,6 +16,7 @@ const baseValues: StreamCreateValues = {
   captionProfileID: "caption-ja",
   watermarkEnabled: true,
   overlayProfileID: "overlay-logo",
+  encoderAudioGainDB: 3.5,
   encoderServiceID: "encoder-node-01",
   workerServiceID: "worker-node-01",
 };
@@ -25,6 +26,7 @@ test("stream creation sends the selected recording profile", () => {
 
   assert.equal(payload.archive_profile_id, "archive-shared-drive");
   assert.equal(payload.auto_start_trigger, "discord_voice_join");
+  assert.equal(payload.encoder_audio_gain_db, 3.5);
 });
 
 test("stream creation no longer sends direct archive settings or an external input URL", () => {

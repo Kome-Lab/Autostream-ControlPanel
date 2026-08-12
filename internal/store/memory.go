@@ -187,6 +187,7 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	stream.EncoderProfileID = strings.TrimSpace(settings.EncoderProfileID)
 	stream.CaptionProfileID = strings.TrimSpace(settings.CaptionProfileID)
 	stream.OverlayProfileID = strings.TrimSpace(settings.OverlayProfileID)
+	stream.EncoderAudioGainDB = settings.EncoderAudioGainDB
 	stream.ArchiveProfileID = strings.TrimSpace(settings.ArchiveProfileID)
 	stream.ArchiveDriveDestinationID = strings.TrimSpace(settings.ArchiveDriveDestinationID)
 	stream.ArchiveOAuthAccountID = strings.TrimSpace(settings.ArchiveOAuthAccountID)
@@ -198,6 +199,23 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	stream.EncoderInputURL = strings.TrimSpace(settings.EncoderInputURL)
 	stream.UpdatedAt = time.Now().UTC()
 	s.streams[id] = stream
+	return stream, nil
+}
+
+func (s *MemoryStreamStore) UpdateStreamEncoderRuntimeSettings(ctx context.Context, id string, audioGainDB float64, overlayProfileID string) (Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return Stream{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stream, ok := s.streams[strings.TrimSpace(id)]
+	if !ok {
+		return Stream{}, ErrNotFound
+	}
+	stream.EncoderAudioGainDB = audioGainDB
+	stream.OverlayProfileID = strings.TrimSpace(overlayProfileID)
+	stream.UpdatedAt = time.Now().UTC()
+	s.streams[stream.ID] = stream
 	return stream, nil
 }
 

@@ -62,10 +62,27 @@ type StartRequest struct {
 	EncoderVideoFPS    int            `json:"-"`
 	CaptionProfileID   string         `json:"caption_profile_id,omitempty"`
 	OverlayProfileID   string         `json:"overlay_profile_id,omitempty"`
+	EncoderAudioGainDB float64        `json:"encoder_audio_gain_db,omitempty"`
 	ArchiveProfileID   string         `json:"archive_profile_id,omitempty"`
 	YouTubeOutputID    string         `json:"youtube_output_id,omitempty"`
 	YouTubeRuntime     map[string]any `json:"-"`
 	ArchiveConfig      map[string]any `json:"-"`
+}
+
+func (c Client) UpdateEncoderRuntimeSettings(ctx context.Context, stream store.Stream, services []store.RegisteredService, audioGainDB float64, overlayProfileID string) DispatchResult {
+	for _, service := range services {
+		if service.ServiceType != "encoder_recorder" {
+			continue
+		}
+		if enabled, _ := service.Capabilities["live_encoder_runtime_settings"].(bool); !enabled {
+			return DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: "/streams/" + url.PathEscape(stream.ID) + "/runtime-settings", Code: "encoder_runtime_settings_not_supported", FailurePhase: "pre_dispatch", Error: "assigned Encoder does not support live runtime settings"}
+		}
+		return c.serviceJSONAction(ctx, service, http.MethodPut, "/streams/"+url.PathEscape(stream.ID)+"/runtime-settings", map[string]any{
+			"encoder_audio_gain_db": audioGainDB,
+			"overlay_profile_id":    strings.TrimSpace(overlayProfileID),
+		})
+	}
+	return DispatchResult{ServiceType: "encoder_recorder", Code: "assigned_encoder_not_found", FailurePhase: "pre_dispatch", Error: "assigned Encoder service not found"}
 }
 
 type WorkerEventRequest struct {
@@ -1280,13 +1297,14 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 	switch service.ServiceType {
 	case "encoder_recorder":
 		payload := map[string]any{
-			"stream_id":          stream.ID,
-			"name":               stream.Name,
-			"input_url":          req.EncoderInputURL,
-			"rtmp_url":           req.EncoderRTMPURL,
-			"encoder_profile_id": req.EncoderProfileID,
-			"overlay_profile_id": req.OverlayProfileID,
-			"archive_profile_id": req.ArchiveProfileID,
+			"stream_id":             stream.ID,
+			"name":                  stream.Name,
+			"input_url":             req.EncoderInputURL,
+			"rtmp_url":              req.EncoderRTMPURL,
+			"encoder_profile_id":    req.EncoderProfileID,
+			"overlay_profile_id":    req.OverlayProfileID,
+			"encoder_audio_gain_db": req.EncoderAudioGainDB,
+			"archive_profile_id":    req.ArchiveProfileID,
 		}
 		if req.EncoderStreamKey != "" {
 			payload["stream_key"] = req.EncoderStreamKey

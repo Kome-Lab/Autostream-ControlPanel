@@ -23,6 +23,15 @@ type scriptedYouTubeLifecycleClient struct {
 	calls    int
 }
 
+func TestDiscordYouTubeLiveNotificationConfirmedRetryableIncludesMissingConfig(t *testing.T) {
+	if !discordYouTubeLiveNotificationConfirmedRetryable(servicecall.DispatchResult{
+		StatusCode: http.StatusConflict,
+		Code:       "discord_config_not_found",
+	}) {
+		t.Fatal("a missing live runtime Discord config must be retried before suppressing the notification")
+	}
+}
+
 func (f *scriptedYouTubeLifecycleClient) BroadcastLifecycle(_ context.Context, _ ytlive.BroadcastLifecycleRequest) (string, error) {
 	index := f.calls
 	f.calls++

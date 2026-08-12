@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/mail"
@@ -157,6 +158,10 @@ type oauthAccessTokenRefresher interface {
 
 type discordLiveNotificationDispatcher interface {
 	NotifyDiscordYouTubeLive(ctx context.Context, stream store.Stream, services []store.RegisteredService, eventID, watchURL string) servicecall.DispatchResult
+}
+
+type encoderRuntimeSettingsDispatcher interface {
+	UpdateEncoderRuntimeSettings(ctx context.Context, stream store.Stream, services []store.RegisteredService, audioGainDB float64, overlayProfileID string) servicecall.DispatchResult
 }
 
 type ServerOption func(*Server)
@@ -585,6 +590,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /streams/{id}", s.requirePermission("streams.delete", s.deleteStream))
 	s.mux.HandleFunc("GET /streams/{id}/external-e2e-config", s.requirePermission("streams.read", s.externalE2EConfig))
 	s.mux.HandleFunc("PUT /streams/{id}/settings", s.requirePermission("streams.update", s.updateStreamSettings))
+	s.mux.HandleFunc("PUT /streams/{id}/runtime-settings", s.requirePermission("streams.update", s.updateStreamRuntimeSettings))
 	s.mux.HandleFunc("POST /streams/{id}/start-readiness", s.requirePermission("streams.start", s.startReadiness))
 	s.mux.HandleFunc("POST /streams/{id}/start", s.requirePermission("streams.start", s.startStream))
 	s.mux.HandleFunc("GET /streams/{id}/youtube-live-notification", s.requirePermission("streams.read", s.getDiscordYouTubeLiveNotification))
@@ -8670,18 +8676,19 @@ func (s *Server) listStreams(w http.ResponseWriter, r *http.Request) {
 }
 
 type streamSettingsRequest struct {
-	Name             string `json:"name,omitempty"`
-	ScheduledStartAt string `json:"scheduled_start_at,omitempty"`
-	ScheduledEndAt   string `json:"scheduled_end_at,omitempty"`
-	DiscordConfigID  string `json:"discord_config_id,omitempty"`
-	DiscordGuildID   string `json:"discord_guild_id,omitempty"`
-	DiscordVoiceID   string `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextID    string `json:"discord_text_channel_id,omitempty"`
-	AutoStartTrigger string `json:"auto_start_trigger,omitempty"`
-	EncoderProfileID string `json:"encoder_profile_id,omitempty"`
-	CaptionProfileID string `json:"caption_profile_id,omitempty"`
-	OverlayProfileID string `json:"overlay_profile_id,omitempty"`
-	ArchiveProfileID string `json:"archive_profile_id,omitempty"`
+	Name               string  `json:"name,omitempty"`
+	ScheduledStartAt   string  `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt     string  `json:"scheduled_end_at,omitempty"`
+	DiscordConfigID    string  `json:"discord_config_id,omitempty"`
+	DiscordGuildID     string  `json:"discord_guild_id,omitempty"`
+	DiscordVoiceID     string  `json:"discord_voice_channel_id,omitempty"`
+	DiscordTextID      string  `json:"discord_text_channel_id,omitempty"`
+	AutoStartTrigger   string  `json:"auto_start_trigger,omitempty"`
+	EncoderProfileID   string  `json:"encoder_profile_id,omitempty"`
+	CaptionProfileID   string  `json:"caption_profile_id,omitempty"`
+	OverlayProfileID   string  `json:"overlay_profile_id,omitempty"`
+	EncoderAudioGainDB float64 `json:"encoder_audio_gain_db"`
+	ArchiveProfileID   string  `json:"archive_profile_id,omitempty"`
 	// Direct archive fields predate archive_profile_id. Keep their presence so a
 	// normal profile-based edit can omit them without erasing legacy state, while
 	// an API caller can still deliberately clear a field with "" or false.
@@ -9240,6 +9247,9 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func streamSettingsFromRequest(body streamSettingsRequest) (store.StreamSettings, string) {
+	if math.IsNaN(body.EncoderAudioGainDB) || math.IsInf(body.EncoderAudioGainDB, 0) || body.EncoderAudioGainDB < -60 || body.EncoderAudioGainDB > 24 {
+		return store.StreamSettings{}, "invalid_encoder_audio_gain_db"
+	}
 	scheduledStart, code := parseStreamScheduleTime(body.ScheduledStartAt)
 	if code != "" {
 		return store.StreamSettings{}, code
@@ -9263,6 +9273,7 @@ func streamSettingsFromRequest(body streamSettingsRequest) (store.StreamSettings
 		EncoderProfileID:      strings.TrimSpace(body.EncoderProfileID),
 		CaptionProfileID:      strings.TrimSpace(body.CaptionProfileID),
 		OverlayProfileID:      strings.TrimSpace(body.OverlayProfileID),
+		EncoderAudioGainDB:    body.EncoderAudioGainDB,
 		ArchiveProfileID:      strings.TrimSpace(body.ArchiveProfileID),
 		ArchiveOAuthAccountID: archiveRequestString(body.ArchiveOAuthAccountID),
 		ArchiveSharedDrive:    archiveRequestBool(body.ArchiveSharedDrive),
@@ -9271,6 +9282,84 @@ func streamSettingsFromRequest(body streamSettingsRequest) (store.StreamSettings
 		YouTubeOutputID:       strings.TrimSpace(body.YouTubeOutputID),
 		EncoderInputURL:       strings.TrimSpace(body.EncoderInputURL),
 	}, ""
+}
+
+type streamRuntimeSettingsRequest struct {
+	EncoderAudioGainDB float64 `json:"encoder_audio_gain_db"`
+	OverlayProfileID   string  `json:"overlay_profile_id"`
+}
+
+func (s *Server) updateStreamRuntimeSettings(w http.ResponseWriter, r *http.Request) {
+	var body streamRuntimeSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	if math.IsNaN(body.EncoderAudioGainDB) || math.IsInf(body.EncoderAudioGainDB, 0) || body.EncoderAudioGainDB < -60 || body.EncoderAudioGainDB > 24 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_encoder_audio_gain_db"})
+		return
+	}
+	body.OverlayProfileID = strings.TrimSpace(body.OverlayProfileID)
+	if err := s.validateStreamSettingsReferences(r.Context(), store.StreamSettings{OverlayProfileID: body.OverlayProfileID, EncoderAudioGainDB: body.EncoderAudioGainDB}); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": streamSettingsReferenceCode(err)})
+		return
+	}
+	streamID := r.PathValue("id")
+	unlockLifecycle := s.lockStreamLifecycle(streamID)
+	defer unlockLifecycle()
+	existing, err := s.streams.GetStream(r.Context(), streamID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(existing.Status))
+	if status == "starting" || status == "stopping" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_runtime_settings_transition_in_progress"})
+		return
+	}
+	updated, err := s.streams.UpdateStreamEncoderRuntimeSettings(r.Context(), streamID, body.EncoderAudioGainDB, body.OverlayProfileID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_runtime_settings_failed"})
+		return
+	}
+	current := currentFromContext(r.Context())
+	metadata := map[string]any{"encoder_audio_gain_db": body.EncoderAudioGainDB, "overlay_profile_id": body.OverlayProfileID, "applied_live": false}
+	if status == "live" {
+		dispatcher, ok := s.dispatcher.(encoderRuntimeSettingsDispatcher)
+		if !ok {
+			metadata["reason"] = "encoder_runtime_settings_dispatch_not_supported"
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_runtime_settings", ResourceType: "stream", ResourceID: streamID, Result: "failure", Metadata: metadata})
+			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "encoder_runtime_settings_dispatch_not_supported"})
+			return
+		}
+		assignments, err := s.streamAssignments(r.Context(), streamID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+			return
+		}
+		result := dispatcher.UpdateEncoderRuntimeSettings(r.Context(), updated, primaryStreamAssignments(assignments), body.EncoderAudioGainDB, body.OverlayProfileID)
+		metadata["dispatch"] = sanitizeDispatchResults([]servicecall.DispatchResult{result})
+		if !result.Success {
+			metadata["reason"] = result.Code
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_runtime_settings", ResourceType: "stream", ResourceID: streamID, Result: "failure", Metadata: metadata})
+			writeJSON(w, http.StatusBadGateway, map[string]string{"code": "encoder_runtime_settings_apply_failed"})
+			return
+		}
+		metadata["applied_live"] = true
+	}
+	updated, err = s.streamWithAssignedNodes(r.Context(), updated)
+	if err != nil {
+		metadata["reason"] = "stream_assignment_resolution_failed"
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_runtime_settings", ResourceType: "stream", ResourceID: streamID, Result: "failure", Metadata: metadata})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "stream_assignment_resolution_failed"})
+		return
+	}
+	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_runtime_settings", ResourceType: "stream", ResourceID: streamID, Result: "success", Metadata: metadata})
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func parseStreamScheduleTime(value string) (*time.Time, string) {
@@ -9287,7 +9376,7 @@ func parseStreamScheduleTime(value string) (*time.Time, string) {
 }
 
 func streamSettingsConfigured(settings store.StreamSettings) bool {
-	return settings.Name != "" || settings.ScheduledStartAt != nil || settings.ScheduledEndAt != nil || settings.DiscordConfigID != "" || settings.DiscordGuildID != "" || settings.DiscordVoiceID != "" || settings.DiscordTextID != "" || settings.AutoStartTrigger != "" || settings.EncoderProfileID != "" || settings.CaptionProfileID != "" || settings.OverlayProfileID != "" || settings.ArchiveProfileID != "" || settings.ArchiveDriveDestinationID != "" || settings.ArchiveOAuthAccountID != "" || settings.ArchiveSharedDrive || settings.ArchiveSharedDriveID != "" || settings.ArchiveFileName != "" || settings.YouTubeOutputID != "" || settings.EncoderInputURL != ""
+	return settings.Name != "" || settings.ScheduledStartAt != nil || settings.ScheduledEndAt != nil || settings.DiscordConfigID != "" || settings.DiscordGuildID != "" || settings.DiscordVoiceID != "" || settings.DiscordTextID != "" || settings.AutoStartTrigger != "" || settings.EncoderProfileID != "" || settings.CaptionProfileID != "" || settings.OverlayProfileID != "" || settings.EncoderAudioGainDB != 0 || settings.ArchiveProfileID != "" || settings.ArchiveDriveDestinationID != "" || settings.ArchiveOAuthAccountID != "" || settings.ArchiveSharedDrive || settings.ArchiveSharedDriveID != "" || settings.ArchiveFileName != "" || settings.YouTubeOutputID != "" || settings.EncoderInputURL != ""
 }
 
 func normalizeAutoStartTrigger(value string) string {
@@ -9557,6 +9646,8 @@ func streamSettingsAuditMetadata(stream store.Stream) map[string]any {
 		"discord_text_channel_configured":    stream.DiscordTextID != "",
 		"auto_start_trigger":                 stream.AutoStartTrigger,
 		"youtube_output_id":                  stream.YouTubeOutputID,
+		"encoder_audio_gain_db":              stream.EncoderAudioGainDB,
+		"overlay_profile_id":                 stream.OverlayProfileID,
 		"archive_profile_id":                 stream.ArchiveProfileID,
 		"archive_drive_destination_id":       stream.ArchiveDriveDestinationID,
 		"archive_oauth_account_id":           stream.ArchiveOAuthAccountID,
@@ -9946,6 +10037,7 @@ func applyStreamSettingsDefaults(stream store.Stream, req *servicecall.StartRequ
 	if strings.TrimSpace(req.OverlayProfileID) == "" {
 		req.OverlayProfileID = stream.OverlayProfileID
 	}
+	req.EncoderAudioGainDB = stream.EncoderAudioGainDB
 	if strings.TrimSpace(req.ArchiveProfileID) == "" {
 		req.ArchiveProfileID = stream.ArchiveProfileID
 	}

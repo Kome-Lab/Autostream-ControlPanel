@@ -34,6 +34,7 @@ export type Stream = {
   encoder_profile_id?: string;
   caption_profile_id?: string;
   overlay_profile_id?: string;
+  encoder_audio_gain_db?: number;
   encoder_input_url?: string;
   youtube_output_id?: string;
   archive_profile_id?: string;

@@ -11,6 +11,28 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
+func TestMemoryStreamEncoderRuntimeSettingsPreserveOtherSettings(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "runtime settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, StreamSettings{EncoderProfileID: "encoder-01", CaptionProfileID: "caption-01", OverlayProfileID: "overlay-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := streams.UpdateStreamEncoderRuntimeSettings(t.Context(), stream.ID, 7.5, "overlay-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.EncoderAudioGainDB != 7.5 || updated.OverlayProfileID != "overlay-new" {
+		t.Fatalf("runtime settings not persisted: %#v", updated)
+	}
+	if updated.EncoderProfileID != "encoder-01" || updated.CaptionProfileID != "caption-01" {
+		t.Fatalf("unrelated settings changed: before=%#v after=%#v", stream, updated)
+	}
+}
+
 func TestMemoryStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 	streams := NewMemoryStreamStore()
 	stream, err := streams.CreateStream(t.Context(), "artifact identity")

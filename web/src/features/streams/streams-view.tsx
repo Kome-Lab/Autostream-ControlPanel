@@ -405,7 +405,7 @@ function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutpu
           <DetailGroup title="配信経路"><DetailLine label="入力URL" value={streamInputPresentation(stream)} mono /><DetailLine label="YouTube出力" value={optionLabel(youtubeOutputLabels, stream.youtube_output_id) || stream.output_target || "未設定"} /></DetailGroup>
           <DetailGroup title="録画保存"><DetailLine label="設定" value={optionLabel(archiveProfileLabels, stream.archive_profile_id) || "未設定"} /><DetailLine label="保存先" value={optionLabel(archiveDestinationLabels, stream.archive_drive_destination_id) || optionLabel(archiveAccountLabels, stream.archive_oauth_account_id) || "未設定"} /><DetailLine label="ファイル名" value={stream.archive_file_name || "自動命名"} /><DetailLine label="フォルダー" value={stream.archive_folder_id_configured ? stream.archive_masked_folder_id || "設定済み" : "未設定"} /></DetailGroup>
           <DetailGroup title="自動開始"><DetailLine label="方式" value={stream.auto_start_trigger === "discord_voice_join" ? "Discord VC参加で自動開始" : "手動開始"} /><DetailLine label="BOT" value={optionLabel(discordLabels, stream.discord_config_id) || "未設定"} /><DetailLine label="VC" value={stream.discord_voice_channel_id || "未設定"} /><DetailLine label="Chat" value={stream.discord_text_channel_id || "未設定"} /></DetailGroup>
-          <DetailGroup title="担当Node・映像設定"><DetailLine label="Worker" value={stream.assigned_worker_id || "未割当"} /><DetailLine label="Encoder" value={stream.assigned_encoder_id || "未割当"} /><DetailLine label="Watermark" value={optionLabel(overlayProfileLabels, stream.overlay_profile_id) || "OFF"} /></DetailGroup>
+          <DetailGroup title="担当Node・映像設定"><DetailLine label="Worker" value={stream.assigned_worker_id || "未割当"} /><DetailLine label="Encoder" value={stream.assigned_encoder_id || "未割当"} /><DetailLine label="Encoder音量" value={`${stream.encoder_audio_gain_db ?? 0} dB`} /><DetailLine label="Watermark" value={optionLabel(overlayProfileLabels, stream.overlay_profile_id) || "OFF"} /></DetailGroup>
         </div>
         {isPreviewableStreamStatus(stream.status) ? <StreamPreview stream={stream} /> : null}
         <div className="flex justify-end"><Button asChild variant="outline" size="sm"><Link href={`/admin/audit-logs/?q=${encodeURIComponent(stream.id)}`}>この配信枠の操作履歴を確認</Link></Button></div>
@@ -447,6 +447,7 @@ function StreamSlotForm({
   const encoderNodes = useServiceOptions("encoder_recorder");
   const workerNodes = useServiceOptions("worker");
   const editing = stream !== undefined && stream !== null;
+  const liveEditing = editing && stream?.status === "live";
   const [name, setName] = useState(stream?.name || "");
   const [discordConfigID, setDiscordConfigID] = useState(optionOrNone(stream?.discord_config_id));
   const [guildID, setGuildID] = useState(stream?.discord_guild_id || "");
@@ -459,6 +460,7 @@ function StreamSlotForm({
   const [captionProfileID, setCaptionProfileID] = useState(optionOrNone(stream?.caption_profile_id));
   const [watermarkEnabled, setWatermarkEnabled] = useState(Boolean(stream?.overlay_profile_id));
   const [overlayProfileID, setOverlayProfileID] = useState(optionOrNone(stream?.overlay_profile_id));
+  const [encoderAudioGainDB, setEncoderAudioGainDB] = useState(String(stream?.encoder_audio_gain_db ?? 0));
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(stream?.assigned_encoder_id || null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(stream?.assigned_worker_id || null);
   const [scheduledStartAt, setScheduledStartAt] = useState(() => streamScheduleInputValue(stream?.scheduled_start_at));
@@ -468,9 +470,9 @@ function StreamSlotForm({
   const effectiveWorkerServiceID = workerServiceID ?? singleOptionValue(workerNodes);
 
   const saveStream = useMutation<Stream, Error, Record<string, unknown>>({
-    mutationFn: (payload) => editing && stream ? apiPut<Stream>(`/streams/${stream.id}/settings`, payload) : apiPost<Stream>("/streams", payload),
+    mutationFn: (payload) => editing && stream ? apiPut<Stream>(liveEditing ? `/streams/${stream.id}/runtime-settings` : `/streams/${stream.id}/settings`, payload) : apiPost<Stream>("/streams", payload),
     onSuccess: (stream) => {
-      setMessage(editing ? `${stream.name} の設定を更新しました。` : `${stream.name} を配信枠として作成しました。`);
+      setMessage(liveEditing ? `${stream.name} のライブ設定を停止せず反映しました。` : editing ? `${stream.name} の設定を更新しました。` : `${stream.name} を配信枠として作成しました。`);
       onSaved(stream);
     },
     onError: (error) => {
@@ -480,7 +482,10 @@ function StreamSlotForm({
 
   const payload = useMemo(
     () =>
-      (editing ? buildStreamSettingsPayload : buildStreamCreatePayload)({
+      liveEditing ? {
+        encoder_audio_gain_db: Number(encoderAudioGainDB),
+        overlay_profile_id: watermarkEnabled ? selectedValue(overlayProfileID) : "",
+      } : (editing ? buildStreamSettingsPayload : buildStreamCreatePayload)({
         name,
         discordConfigID: selectedValue(discordConfigID),
         discordGuildID: guildID,
@@ -493,6 +498,7 @@ function StreamSlotForm({
         captionProfileID: selectedValue(captionProfileID),
         watermarkEnabled,
         overlayProfileID: selectedValue(overlayProfileID),
+        encoderAudioGainDB: Number(encoderAudioGainDB),
         // Omit assignments that this editor cannot manage. A selectable
         // "未選択" remains an explicit empty value and therefore unassigns.
         encoderServiceID: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : undefined,
@@ -501,12 +507,14 @@ function StreamSlotForm({
         scheduledEndAt: stream?.scheduled_end_at || "",
         encoderInputURL: stream?.encoder_input_url || "",
       }),
-    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderProfileID, guildID, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
+    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderAudioGainDB, encoderProfileID, guildID, liveEditing, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
   const autoStartReady = !autoStartFromDiscord || (selectedValue(discordConfigID) !== "" && guildID.trim() !== "" && voiceChannelID.trim() !== "");
   const watermarkReady = !watermarkEnabled || selectedValue(overlayProfileID) !== "";
+  const encoderAudioGainValue = Number(encoderAudioGainDB);
+  const encoderAudioGainReady = Number.isFinite(encoderAudioGainValue) && encoderAudioGainValue >= -60 && encoderAudioGainValue <= 24;
   const nodeAssignmentReady = !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
   const nodeAssignmentPermissionLimited = autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
 
@@ -517,7 +525,7 @@ function StreamSlotForm({
           {editing ? <Pencil className="size-5" /> : <Plus className="size-5" />}
           {editing ? "配信枠を編集" : "配信枠を作成"}
         </CardTitle>
-        <CardDescription>{editing ? "待機中または終了済みの枠だけを編集できます。稼働中の配信設定は停止後に変更してください。" : "Discord VCの開始条件、配信経路、録画保存先を確認してから待機を開始します。"}</CardDescription>
+        <CardDescription>{liveEditing ? "配信を止めずにEncoder音量とウォーターマークを変更できます。" : editing ? "待機中または終了済みの枠設定を編集します。" : "Discord VCの開始条件、配信経路、録画保存先を確認してから待機を開始します。"}</CardDescription>
       </CardHeader>
       <CardContent>
         <form
@@ -528,7 +536,7 @@ function StreamSlotForm({
             saveStream.mutate(payload);
           }}
         >
-          <FormSection title="基本情報" description="運用中に識別する配信枠名">
+          {!liveEditing ? <><FormSection title="基本情報" description="運用中に識別する配信枠名">
             <div className="max-w-xl">
               <TextField label="配信枠名" value={name} onChange={setName} placeholder="例: 商品発表会 メイン配信" required />
             </div>
@@ -564,22 +572,27 @@ function StreamSlotForm({
             {archiveProfiles.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">録画する場合は、先に<Link href="/admin/archive/" className="mx-1 underline underline-offset-2">録画・アーカイブ</Link>で録画プロファイルと保存先を作成してください。</p> : null}
           </FormSection>
 
-          <FormSection title="映像・字幕" description="配信品質と映像に適用する設定">
+          </> : null}
+
+          <FormSection title="Encoderライブ調整" description="音量とウォーターマークは配信中でも停止せず反映されます。">
             <div className="grid gap-3 md:grid-cols-2">
-              <SelectField label="エンコード設定" value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: "未選択" }, ...encoderProfiles]} />
-              <SelectField label="字幕設定" value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: "未選択" }, ...captionProfiles]} />
+              {!liveEditing ? <SelectField label="エンコード設定" value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: "未選択" }, ...encoderProfiles]} /> : null}
+              {!liveEditing ? <SelectField label="字幕設定" value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: "未選択" }, ...captionProfiles]} /> : null}
+              <TextField label="Encoder音量（dB）" type="number" value={encoderAudioGainDB} onChange={setEncoderAudioGainDB} min="-60" max="24" step="0.1" />
               <label className="flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={watermarkEnabled} onCheckedChange={(value) => setWatermarkEnabled(value === true)} />ウォーターマークを使用</label>
               <SelectField label="ウォーターマーク設定" value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: "未選択" }, ...overlayProfiles]} disabled={!watermarkEnabled} />
             </div>
           </FormSection>
 
-          {hasDiscordTarget && !discordReady ? (
+          {!encoderAudioGainReady ? <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><AlertCircle className="mt-0.5 size-4 shrink-0" />Encoder音量は -60 dB から +24 dB の範囲で指定してください。</div> : null}
+
+          {!liveEditing && hasDiscordTarget && !discordReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               Discordのサーバーやチャンネルを指定する場合は、使用するDiscord BOT設定も選択してください。
             </div>
           ) : null}
-          {autoStartFromDiscord && !autoStartReady ? (
+          {!liveEditing && autoStartFromDiscord && !autoStartReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               自動開始を使うには、Discord BOT設定、サーバーID、ボイスチャンネルIDが必要です。
@@ -591,13 +604,13 @@ function StreamSlotForm({
               ウォーターマークを使う場合は、ウォーターマーク設定を選択してください。
             </div>
           ) : null}
-          {autoStartFromDiscord && canAssignEncoder && canAssignWorker && !nodeAssignmentReady ? (
+          {!liveEditing && autoStartFromDiscord && canAssignEncoder && canAssignWorker && !nodeAssignmentReady ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               自動開始する配信枠には、担当Encoder Nodeと担当Worker Nodeを選択してください。
             </div>
           ) : null}
-          {nodeAssignmentPermissionLimited ? (
+          {!liveEditing && nodeAssignmentPermissionLimited ? (
             <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               Nodeを割り当てる権限がありません。管理者に依頼し、サービス稼働画面で割り当てを確認してください。
@@ -607,9 +620,9 @@ function StreamSlotForm({
           {editing && !canUpdate ? <p className="text-sm text-red-600">配信枠を更新する権限がありません。</p> : null}
           {!editing && !canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!(editing ? canUpdate : canCreate) || saveStream.isPending || name.trim() === "" || !discordReady || !autoStartReady || !watermarkReady || !nodeAssignmentReady}>
+            <Button type="submit" disabled={!(editing ? canUpdate : canCreate) || saveStream.isPending || (!liveEditing && name.trim() === "") || (!liveEditing && (!discordReady || !autoStartReady || !nodeAssignmentReady)) || !watermarkReady || !encoderAudioGainReady}>
               {editing ? <Pencil className="size-4" /> : <Plus className="size-4" />}
-              {saveStream.isPending ? (editing ? "更新中..." : "作成中...") : (editing ? "設定を保存" : "配信枠を作成")}
+              {saveStream.isPending ? (editing ? "更新中..." : "作成中...") : (liveEditing ? "ライブ設定を反映" : editing ? "設定を保存" : "配信枠を作成")}
             </Button>
           </div>
         </form>
@@ -636,6 +649,9 @@ function TextField({
   type = "text",
   required,
   error,
+  min,
+  max,
+  step,
 }: {
   label: string;
   value: string;
@@ -644,11 +660,14 @@ function TextField({
   type?: string;
   required?: boolean;
   error?: string;
+  min?: string;
+  max?: string;
+  step?: string;
 }) {
   return (
     <label className="grid gap-1.5 text-sm">
       <span className="font-medium">{label}</span>
-      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} aria-invalid={Boolean(error)} />
+      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} min={min} max={max} step={step} aria-invalid={Boolean(error)} />
       {error ? <span className="text-xs text-red-600 dark:text-red-300">{error}</span> : null}
     </label>
   );
@@ -831,6 +850,10 @@ function streamSaveErrorMessage(error: unknown, editing: boolean) {
       permission_denied: "配信枠を更新する権限がありません。",
       assign_service_failed: "担当Nodeの割り当て更新に失敗しました。",
       stream_status_not_editable: "開始中または配信中の枠は編集できません。停止後にもう一度お試しください。",
+      stream_runtime_settings_transition_in_progress: "開始処理または停止処理が完了してから、もう一度お試しください。",
+      invalid_encoder_audio_gain_db: "Encoder音量は -60 dB から +24 dB の範囲で指定してください。",
+      encoder_runtime_settings_apply_failed: "設定は保存されましたが、稼働中のEncoderへ反映できませんでした。Encoderの稼働状態を確認して再度保存してください。",
+      encoder_runtime_settings_dispatch_not_supported: "Control PanelまたはEncoderがライブ設定変更に未対応です。両方を同じリリースへ更新してください。",
     };
     return messages[error.code || ""] || `設定の更新に失敗しました。${error.code || error.message}`;
   }

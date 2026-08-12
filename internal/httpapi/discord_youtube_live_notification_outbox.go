@@ -321,7 +321,7 @@ func discordYouTubeLiveNotificationConfirmedRetryable(result servicecall.Dispatc
 		return true
 	}
 	switch strings.TrimSpace(result.Code) {
-	case "runtime_config_unavailable", "runtime_config_fetch_failed", "notification_capacity_reached", "live_job_not_active", "discord_rate_limited":
+	case "runtime_config_unavailable", "runtime_config_fetch_failed", "notification_capacity_reached", "live_job_not_active", "discord_config_not_found", "discord_rate_limited":
 		return true
 	default:
 		return false
