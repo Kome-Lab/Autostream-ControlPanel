@@ -94,7 +94,7 @@ export const resourcePages = {
         form: "caption-profile",
         deletable: true,
         permissions: { read: "caption_profiles.read", create: "caption_profiles.create", update: "caption_profiles.update", delete: "caption_profiles.delete" },
-        createTemplate: { name: "日本語ライブ字幕", config: { language: "ja", provider: "deepgram", model: "nova-3", api_key_secret_name: "deepgram_api_key", delay_ms: 800 } },
+        createTemplate: { name: "日本語ライブ字幕", config: { language: "ja", provider: "deepgram", model: "nova-3", api_key_secret_name: "deepgram_api_key", endpointing_ms: 300, utterance_end_ms: 1000, local_finalize_ms: 1500, speaker_idle_close_seconds: 8, keepalive_interval_seconds: 4, interim_results: true, smart_format: true, replay_buffer_max_ms: 2000, delay_ms: 800, caption_audio_flush_ms: 100, caption_audio_max_batch_packets: 5, unresolved_ssrc_buffer_ms: 1000, conversation_max_items: 12, conversation_reorder_window_ms: 500, voice_interim_ttl_seconds: 6, voice_final_ttl_seconds: 15, show_voice_transcripts: true, show_legacy_caption_bar: false } },
       },
     ],
   },

@@ -57,16 +57,20 @@ type StartRequest struct {
 	// Control Panel. They are internal dispatch inputs, never operator-supplied
 	// fields, and let a negotiated Worker scene match the selected Encoder
 	// output before the final Encoder pass.
-	EncoderVideoWidth  int            `json:"-"`
-	EncoderVideoHeight int            `json:"-"`
-	EncoderVideoFPS    int            `json:"-"`
-	CaptionProfileID   string         `json:"caption_profile_id,omitempty"`
-	OverlayProfileID   string         `json:"overlay_profile_id,omitempty"`
-	EncoderAudioGainDB float64        `json:"encoder_audio_gain_db,omitempty"`
-	ArchiveProfileID   string         `json:"archive_profile_id,omitempty"`
-	YouTubeOutputID    string         `json:"youtube_output_id,omitempty"`
-	YouTubeRuntime     map[string]any `json:"-"`
-	ArchiveConfig      map[string]any `json:"-"`
+	EncoderVideoWidth           int            `json:"-"`
+	EncoderVideoHeight          int            `json:"-"`
+	EncoderVideoFPS             int            `json:"-"`
+	CaptionProfileID            string         `json:"caption_profile_id,omitempty"`
+	WorkerJobGeneration         uint64         `json:"-"`
+	CaptionAudioFlushMS         int            `json:"-"`
+	CaptionAudioMaxBatchPackets int            `json:"-"`
+	UnresolvedSSRCBufferMS      int            `json:"-"`
+	OverlayProfileID            string         `json:"overlay_profile_id,omitempty"`
+	EncoderAudioGainDB          float64        `json:"encoder_audio_gain_db,omitempty"`
+	ArchiveProfileID            string         `json:"archive_profile_id,omitempty"`
+	YouTubeOutputID             string         `json:"youtube_output_id,omitempty"`
+	YouTubeRuntime              map[string]any `json:"-"`
+	ArchiveConfig               map[string]any `json:"-"`
 }
 
 func (c Client) UpdateEncoderRuntimeSettings(ctx context.Context, stream store.Stream, services []store.RegisteredService, audioGainDB float64, overlayProfileID string) DispatchResult {
@@ -116,9 +120,10 @@ type DispatchResult struct {
 	// Retryable is set only when the service explicitly confirms that it did
 	// not accept the notification. Transport errors and 5xx responses remain
 	// ambiguous delivery outcomes at the durable outbox boundary.
-	Retryable   bool   `json:"retryable,omitempty"`
-	MessageID   string `json:"message_id,omitempty"`
-	AlreadySent bool   `json:"already_sent,omitempty"`
+	Retryable     bool   `json:"retryable,omitempty"`
+	MessageID     string `json:"message_id,omitempty"`
+	AlreadySent   bool   `json:"already_sent,omitempty"`
+	JobGeneration uint64 `json:"-"`
 	// VideoOverlayBurnInNegotiated is internal orchestration evidence. It is set
 	// only after the Encoder route was accepted and the Worker accepted that
 	// exact route; public/audit JSON must never infer this from advertisements.
@@ -578,6 +583,9 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 		if workerVideoEnabled && service.ServiceType == "worker" && result.Success {
 			result.VideoOverlayBurnInNegotiated = true
 		}
+		if service.ServiceType == "worker" && result.Success && result.JobGeneration > 0 {
+			req.WorkerJobGeneration = result.JobGeneration
+		}
 		results = append(results, result)
 		// Start dependencies are ordered encoder -> worker -> Discord Bot.
 		// Once a dependency rejects the start, continuing would create a
@@ -878,13 +886,15 @@ func (c Client) serviceJSONActionInternal(ctx context.Context, service store.Reg
 	result.StatusCode = response.StatusCode
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		var successBody struct {
-			MessageID   string                 `json:"message_id"`
-			AlreadySent bool                   `json:"already_sent"`
-			VideoIngest workerVideoIngestRoute `json:"video_ingest"`
+			MessageID     string                 `json:"message_id"`
+			AlreadySent   bool                   `json:"already_sent"`
+			JobGeneration uint64                 `json:"job_generation"`
+			VideoIngest   workerVideoIngestRoute `json:"video_ingest"`
 		}
 		if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&successBody); err == nil {
 			result.MessageID = sanitizeServiceErrorValue(successBody.MessageID)
 			result.AlreadySent = successBody.AlreadySent
+			result.JobGeneration = successBody.JobGeneration
 			if workerVideoRoute != nil {
 				*workerVideoRoute = successBody.VideoIngest
 			}
@@ -1332,11 +1342,17 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		}
 		if strings.TrimSpace(workerService.PublicURL) != "" {
 			payload["worker_events_url"] = workerService.PublicURL
+			if req.WorkerJobGeneration > 0 {
+				payload["job_generation"] = req.WorkerJobGeneration
+			}
 			if token := c.issueIngestTokenForAudience(stream.ID, service, "worker_events", "worker", now); token != "" {
 				payload["worker_events_token"] = token
 			}
 			if strings.TrimSpace(req.CaptionProfileID) != "" {
 				payload["caption_audio_url"] = workerService.PublicURL
+				payload["caption_audio_flush_ms"] = req.CaptionAudioFlushMS
+				payload["caption_audio_max_batch_packets"] = req.CaptionAudioMaxBatchPackets
+				payload["unresolved_ssrc_buffer_ms"] = req.UnresolvedSSRCBufferMS
 				if token := c.issueIngestTokenForAudience(stream.ID, service, "caption_audio", "worker", now); token != "" {
 					payload["caption_audio_token"] = token
 				}

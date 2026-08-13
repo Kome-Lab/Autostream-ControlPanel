@@ -2960,21 +2960,45 @@ func normalizeProfileConfig(kind store.ProfileKind, config map[string]any) map[s
 		if endpointingMS < 10 || endpointingMS > 5000 {
 			endpointingMS = 300
 		}
+		captionInt := func(key string, fallback, min, max int) int {
+			value := configInt(config, key)
+			if value < min || value > max {
+				return fallback
+			}
+			return value
+		}
 		delayMS := configInt(config, "delay_ms")
 		if _, ok := config["delay_ms"]; !ok {
 			delayMS = 800
 		} else if delayMS < 0 || delayMS > 10000 {
 			delayMS = 800
 		}
+		keyterms := normalizedDeepgramKeyterms(config["keyterms"])
 		return map[string]any{
-			"provider":            "deepgram",
-			"model":               "nova-3",
-			"language":            normalizeDeepgramLanguage(configString(config, "language")),
-			"api_key_secret_name": "deepgram_api_key",
-			"endpointing_ms":      endpointingMS,
-			"interim_results":     configBoolDefault(config, "interim_results", true),
-			"smart_format":        configBoolDefault(config, "smart_format", true),
-			"delay_ms":            delayMS,
+			"provider":                        "deepgram",
+			"model":                           "nova-3",
+			"language":                        normalizeDeepgramLanguage(configString(config, "language")),
+			"api_key_secret_name":             "deepgram_api_key",
+			"endpointing_ms":                  endpointingMS,
+			"utterance_end_ms":                captionInt("utterance_end_ms", 1000, 100, 10000),
+			"local_finalize_ms":               captionInt("local_finalize_ms", 1500, 0, 10000),
+			"speaker_idle_close_seconds":      captionInt("speaker_idle_close_seconds", 8, 1, 120),
+			"keepalive_interval_seconds":      captionInt("keepalive_interval_seconds", 4, 1, 60),
+			"interim_results":                 configBoolDefault(config, "interim_results", true),
+			"smart_format":                    configBoolDefault(config, "smart_format", true),
+			"keyterms":                        keyterms,
+			"mip_opt_out":                     configBoolDefault(config, "mip_opt_out", false),
+			"replay_buffer_max_ms":            captionInt("replay_buffer_max_ms", 2000, 0, 10000),
+			"delay_ms":                        delayMS,
+			"caption_audio_flush_ms":          captionInt("caption_audio_flush_ms", 100, 10, 1000),
+			"caption_audio_max_batch_packets": captionInt("caption_audio_max_batch_packets", 5, 1, 100),
+			"unresolved_ssrc_buffer_ms":       captionInt("unresolved_ssrc_buffer_ms", 1000, 0, 5000),
+			"conversation_max_items":          captionInt("conversation_max_items", 12, 1, 64),
+			"conversation_reorder_window_ms":  captionInt("conversation_reorder_window_ms", 500, 0, 5000),
+			"voice_interim_ttl_seconds":       captionInt("voice_interim_ttl_seconds", 6, 1, 60),
+			"voice_final_ttl_seconds":         captionInt("voice_final_ttl_seconds", 15, 1, 300),
+			"show_voice_transcripts":          configBoolDefault(config, "show_voice_transcripts", true),
+			"show_legacy_caption_bar":         configBoolDefault(config, "show_legacy_caption_bar", false),
 		}
 	}
 	if kind != store.ProfileOverlay || config == nil {
@@ -2991,6 +3015,35 @@ func normalizeProfileConfig(kind store.ProfileKind, config map[string]any) map[s
 	out["watermark_canvas_height"] = 1080
 	out["watermark_fit_mode"] = "scale_to_output"
 	return out
+}
+
+func normalizedDeepgramKeyterms(value any) []string {
+	terms := make([]string, 0, 20)
+	appendTerm := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || len([]rune(raw)) > 128 || len(terms) >= 20 {
+			return
+		}
+		for _, existing := range terms {
+			if existing == raw {
+				return
+			}
+		}
+		terms = append(terms, raw)
+	}
+	switch typed := value.(type) {
+	case []string:
+		for _, term := range typed {
+			appendTerm(term)
+		}
+	case []any:
+		for _, item := range typed {
+			if term, ok := item.(string); ok {
+				appendTerm(term)
+			}
+		}
+	}
+	return terms
 }
 
 func normalizeDeepgramLanguage(value string) string {
@@ -10442,6 +10495,17 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, discordConfigStatus(err), map[string]string{"code": code})
 		return
 	}
+	if err := s.applyCaptionDispatchConfig(r.Context(), &body); err != nil {
+		current := currentFromContext(r.Context())
+		code := streamSettingsReferenceCode(err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, errCaptionProfileNotFound) {
+			status = http.StatusNotFound
+		}
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "caption_profile_id": body.CaptionProfileID}})
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
 	validateYouTubeReadiness := func() error {
 		if relayStaticOutput != nil {
 			return s.validateYouTubeOutputReadinessProfile(r.Context(), stream, relayStaticOutput.Profile, &body)
@@ -10689,6 +10753,33 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.completeStreamStart(w, r, stream, primaryAssignments, body, results)
+}
+
+func (s *Server) applyCaptionDispatchConfig(ctx context.Context, req *servicecall.StartRequest) error {
+	profileID := strings.TrimSpace(req.CaptionProfileID)
+	if profileID == "" {
+		return nil
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileCaption, profileID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errCaptionProfileNotFound
+	}
+	if err != nil {
+		return err
+	}
+	req.CaptionAudioFlushMS = configInt(profile.Config, "caption_audio_flush_ms")
+	if req.CaptionAudioFlushMS < 10 || req.CaptionAudioFlushMS > 1000 {
+		req.CaptionAudioFlushMS = 100
+	}
+	req.CaptionAudioMaxBatchPackets = configInt(profile.Config, "caption_audio_max_batch_packets")
+	if req.CaptionAudioMaxBatchPackets < 1 || req.CaptionAudioMaxBatchPackets > 100 {
+		req.CaptionAudioMaxBatchPackets = 5
+	}
+	req.UnresolvedSSRCBufferMS = configInt(profile.Config, "unresolved_ssrc_buffer_ms")
+	if req.UnresolvedSSRCBufferMS < 0 || req.UnresolvedSSRCBufferMS > 5000 {
+		req.UnresolvedSSRCBufferMS = 1000
+	}
+	return nil
 }
 
 // ensureYouTubeBroadcastLive handles the provider transition after a
