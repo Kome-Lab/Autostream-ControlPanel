@@ -42,6 +42,12 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 			dispatchOrder = append(dispatchOrder, "discord_bot")
 			payloads["discord_bot"] = payload
 		}
+		if payload["overlay_profile_id"] != nil && payload["encoder_profile_id"] == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"job_generation": 17})
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
@@ -100,6 +106,9 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	}
 	if payloads["discord_bot"]["worker_events_url"] != server.URL {
 		t.Fatalf("discord bot did not receive assigned worker event URL: %#v", payloads["discord_bot"])
+	}
+	if payloads["discord_bot"]["job_generation"] != float64(17) {
+		t.Fatalf("discord bot did not receive the Worker job generation: %#v", payloads["discord_bot"])
 	}
 	if payloads["discord_bot"]["caption_audio_url"] != server.URL {
 		t.Fatalf("discord bot did not receive assigned worker caption audio URL: %#v", payloads["discord_bot"])
