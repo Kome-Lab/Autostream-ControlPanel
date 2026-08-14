@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { ResourcePanel } from "@/features/resources/resource-page";
 import { resourcePages } from "@/features/resources/resource-config";
-import { useAppSettings, useCurrentUser, useResourceData, useStreams } from "@/features/queries";
+import { useAppSettings, useArchiveStreams, useCurrentUser, useResourceData } from "@/features/queries";
 import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
@@ -54,7 +54,7 @@ export function ArchiveView() {
   const superAdmin = currentUser.data?.user.roles?.includes("super_admin") === true;
   const can = (permission: string) => superAdmin || hasPermission(currentUser.data, permission);
   const canRead = can("archives.read");
-  const streams = useStreams(canRead);
+  const streams = useArchiveStreams(canRead);
   const [selectedStreamID, setSelectedStreamID] = useState("");
   const streamRows = streams.data || [];
   const selected = selectedStreamID || streamRows[0]?.id || "";
@@ -119,7 +119,7 @@ function StreamSelect({ streams, value, onChange }: { streams: Stream[]; value: 
         <SelectContent>
           {streams.map((stream) => (
             <SelectItem key={stream.id} value={stream.id}>
-              {stream.name || stream.id}
+              {stream.name || stream.id}{stream.deleted_at ? "（枠削除済み）" : ""}
             </SelectItem>
           ))}
         </SelectContent>
@@ -207,6 +207,7 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
   const shares = useResourceData<StreamArtifactShare[]>(sharesPath);
   const activeShares = useMemo(() => (shares.data || []).filter((share) => shareStatus(share) === "active"), [shares.data]);
   const invalidateArtifacts = () => queryClient.invalidateQueries({ queryKey: ["resource", `/streams/${encodeURIComponent(streamID)}/artifacts`] });
+  const invalidateArchiveStreams = () => queryClient.invalidateQueries({ queryKey: ["archive-streams"] });
   const invalidateShares = () => queryClient.invalidateQueries({ queryKey: ["resource", sharesPath] });
 
   const rename = useMutation({
@@ -222,6 +223,7 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
     onSuccess: async () => {
       setMessage("削除しました。");
       await invalidateArtifacts();
+      await invalidateArchiveStreams();
     },
     onError: (error) => setMessage(archiveErrorMessage(error, "削除できませんでした。")),
   });

@@ -585,6 +585,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /workers/{id}/assignment", s.requirePermission("workers.unassign", s.unassignWorker))
 	s.mux.HandleFunc("POST /workers/{id}/restart", s.requirePermission("workers.restart", s.restartWorker))
 	s.mux.HandleFunc("GET /streams", s.requirePermission("streams.read", s.listStreams))
+	s.mux.HandleFunc("GET /archive/streams", s.requirePermission("archives.read", s.listArchiveStreams))
 	s.mux.HandleFunc("POST /streams", s.requirePermission("streams.create", s.createStream))
 	s.mux.HandleFunc("GET /streams/{id}", s.requirePermission("streams.read", s.getStream))
 	s.mux.HandleFunc("DELETE /streams/{id}", s.requirePermission("streams.delete", s.deleteStream))
@@ -8092,6 +8093,9 @@ func (s *Server) serviceStreamArtifacts(w http.ResponseWriter, r *http.Request) 
 		s.writeServiceArtifactStoreFailure(w, r, token, body, len(artifacts), err)
 		return
 	}
+	for index := range artifacts {
+		artifacts[index].SourceServiceID = body.ServiceID
+	}
 	if err := s.streams.UpsertStreamArtifacts(r.Context(), body.StreamID, artifacts); errors.Is(err, store.ErrNotFound) {
 		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "stream_not_found", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "stream_not_found"})
@@ -8728,6 +8732,25 @@ func (s *Server) listStreams(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) listArchiveStreams(w http.ResponseWriter, r *http.Request) {
+	archiveStore, ok := s.streams.(store.ArchiveStreamStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "archive_stream_store_not_configured"})
+		return
+	}
+	items, err := archiveStore.ListArchiveStreams(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_archive_streams_failed"})
+		return
+	}
+	items, err = s.streamsWithAssignedNodes(r.Context(), items)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 type streamSettingsRequest struct {
 	Name               string  `json:"name,omitempty"`
 	ScheduledStartAt   string  `json:"scheduled_start_at,omitempty"`
@@ -8887,28 +8910,50 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
 		return
 	}
-	artifacts, err := s.streams.ListStreamArtifacts(r.Context(), stream.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		auditFailure("not_found")
-		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
-		return
-	}
-	if err != nil {
-		auditFailure("list_stream_artifacts_failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_artifacts_failed"})
-		return
-	}
-	if len(artifacts) > 0 {
-		auditFailure("stream_artifacts_exist")
-		writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_artifacts_exist", "artifact_count": len(artifacts)})
-		return
-	}
 	if s.services != nil {
 		assignments, err := s.services.ListStreamAssignments(r.Context(), stream.ID)
 		if err != nil {
 			auditFailure("list_stream_assignments_failed")
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 			return
+		}
+		archiveEncoderID := ""
+		for _, assignment := range primaryStreamAssignments(assignments) {
+			if strings.TrimSpace(assignment.ServiceType) == "encoder_recorder" {
+				archiveEncoderID = strings.TrimSpace(assignment.ServiceID)
+				break
+			}
+		}
+		if archiveEncoderID == "" {
+			for _, assignment := range assignments {
+				if strings.TrimSpace(assignment.ServiceType) == "encoder_recorder" {
+					archiveEncoderID = strings.TrimSpace(assignment.ServiceID)
+					break
+				}
+			}
+		}
+		if archiveEncoderID != "" {
+			artifacts, err := s.streams.ListStreamArtifacts(r.Context(), stream.ID)
+			if err != nil {
+				auditFailure("list_stream_artifacts_failed")
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_artifacts_failed"})
+				return
+			}
+			changed := false
+			for index := range artifacts {
+				if strings.TrimSpace(artifacts[index].SourceServiceID) != "" {
+					continue
+				}
+				artifacts[index].SourceServiceID = archiveEncoderID
+				changed = true
+			}
+			if changed {
+				if err := s.streams.UpsertStreamArtifacts(r.Context(), stream.ID, artifacts); err != nil {
+					auditFailure("remember_archive_source_failed")
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "remember_archive_source_failed"})
+					return
+				}
+			}
 		}
 		seen := make(map[string]struct{}, len(assignments))
 		for _, assignment := range assignments {
@@ -8934,10 +8979,6 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 	} else if errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {
 		auditFailure("youtube_relay_binding_release_pending")
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
-		return
-	} else if errors.Is(err, store.ErrStreamArtifactsExist) {
-		auditFailure("stream_artifacts_exist")
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_artifacts_exist"})
 		return
 	} else if err != nil {
 		auditFailure("delete_stream_failed")
@@ -13875,6 +13916,37 @@ func missingServiceTypes(assignments []store.RegisteredService, required []strin
 	return missing
 }
 
+func (s *Server) archiveArtifactAssignments(ctx context.Context, streamID string, artifact store.StreamArtifact) ([]store.RegisteredService, error) {
+	assignments, err := s.streamAssignments(ctx, streamID)
+	if err != nil {
+		return nil, err
+	}
+	primaryAssignments := primaryStreamAssignments(assignments)
+	if len(missingServiceTypes(primaryAssignments, requiredRetryUploadServiceTypes)) == 0 {
+		return primaryAssignments, nil
+	}
+	if s.services == nil || strings.TrimSpace(artifact.SourceServiceID) == "" {
+		return primaryAssignments, nil
+	}
+	service, err := s.services.GetService(ctx, strings.TrimSpace(artifact.SourceServiceID))
+	if errors.Is(err, store.ErrNotFound) {
+		return primaryAssignments, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(service.ServiceType) != "encoder_recorder" {
+		return primaryAssignments, nil
+	}
+	service.AssignmentRole = "primary"
+	for _, assigned := range primaryAssignments {
+		if assigned.ServiceID == service.ServiceID {
+			return primaryAssignments, nil
+		}
+	}
+	return append(primaryAssignments, service), nil
+}
+
 func hasDispatchFailure(results []servicecall.DispatchResult) bool {
 	for _, result := range results {
 		if !result.Success {
@@ -14839,12 +14911,11 @@ func (s *Server) downloadPublicArchiveShare(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "archive_share_download_disabled"})
 		return
 	}
-	assignments, err := s.streamAssignments(r.Context(), stream.ID)
+	primaryAssignments, err := s.archiveArtifactAssignments(r.Context(), stream.ID, artifact)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return
 	}
-	primaryAssignments := primaryStreamAssignments(assignments)
 	if missing := missingServiceTypes(primaryAssignments, requiredRetryUploadServiceTypes); len(missing) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
 		return
@@ -15002,12 +15073,11 @@ func (s *Server) prepareStreamArtifactAction(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return store.Stream{}, store.StreamArtifact{}, nil, false
 	}
-	assignments, err := s.streamAssignments(r.Context(), stream.ID)
+	primaryAssignments, err := s.archiveArtifactAssignments(r.Context(), stream.ID, artifact)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return store.Stream{}, store.StreamArtifact{}, nil, false
 	}
-	primaryAssignments := primaryStreamAssignments(assignments)
 	if missing := missingServiceTypes(primaryAssignments, requiredRetryUploadServiceTypes); len(missing) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
 		return store.Stream{}, store.StreamArtifact{}, nil, false

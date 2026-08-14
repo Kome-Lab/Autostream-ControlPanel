@@ -84,7 +84,7 @@ func TestMemoryStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 	}
 }
 
-func TestMemoryDeleteStreamRejectsExistingArtifacts(t *testing.T) {
+func TestMemoryDeleteStreamRetainsArchiveAndHidesOperationalStream(t *testing.T) {
 	streams := NewMemoryStreamStore()
 	stream, err := streams.CreateStream(t.Context(), "archive-protected")
 	if err != nil {
@@ -95,11 +95,30 @@ func TestMemoryDeleteStreamRejectsExistingArtifacts(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := streams.DeleteStream(t.Context(), stream.ID); !errors.Is(err, ErrStreamArtifactsExist) {
-		t.Fatalf("DeleteStream error = %v, want ErrStreamArtifactsExist", err)
+	if err := streams.DeleteStream(t.Context(), stream.ID); err != nil {
+		t.Fatalf("DeleteStream error = %v", err)
 	}
-	if _, err := streams.GetStream(t.Context(), stream.ID); err != nil {
-		t.Fatalf("stream was deleted despite existing artifacts: %v", err)
+	deleted, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatalf("retained stream lookup error: %v", err)
+	}
+	if deleted.DeletedAt == nil || deleted.Status != "completed" {
+		t.Fatalf("retained stream lifecycle = status=%q deleted_at=%v", deleted.Status, deleted.DeletedAt)
+	}
+	operational, err := streams.ListStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operational) != 0 {
+		t.Fatalf("deleted stream remains in operational list: %#v", operational)
+	}
+	archives, err := streams.ListArchiveStreams(t.Context())
+	if err != nil || len(archives) != 1 || archives[0].ID != stream.ID {
+		t.Fatalf("archive stream lookup = %#v err=%v", archives, err)
+	}
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("archive catalog was not retained: artifacts=%#v err=%v", artifacts, err)
 	}
 }
 

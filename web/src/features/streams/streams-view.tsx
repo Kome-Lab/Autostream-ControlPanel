@@ -894,7 +894,6 @@ function streamActionErrorMessage(error: unknown, actionLabel: string) {
         service_update_in_progress: `${actionLabel}できません。担当Nodeの更新処理が完了するまで待ってください。(code: service_update_in_progress)`,
         missing_stream_assignments: `${actionLabel}できません。配信枠に必要なNode割り当てが不足しています。(code: missing_stream_assignments)`,
         stream_start_not_ready: `${actionLabel}できません。開始前チェックに失敗しています。(code: stream_start_not_ready)`,
-        stream_artifacts_exist: `${actionLabel}できません。録画アーカイブが残っています。先にアーカイブ画面から成果物を削除してから再試行してください。(code: stream_artifacts_exist)`,
       };
       return conflictMessages[error.code || ""] || `${actionLabel}できない状態です。配信状態を更新し、開始中・停止中の処理が終わってから再試行してください。(code: ${error.code || "conflict"})`;
     }

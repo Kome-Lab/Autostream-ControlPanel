@@ -49,6 +49,25 @@ func (s *MemoryStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
 	defer s.mu.Unlock()
 	items := make([]Stream, 0, len(s.streams))
 	for _, stream := range s.streams {
+		if stream.DeletedAt != nil {
+			continue
+		}
+		items = append(items, stream)
+	}
+	return items, nil
+}
+
+func (s *MemoryStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := make([]Stream, 0, len(s.streams))
+	for _, stream := range s.streams {
+		if len(s.artifacts[stream.ID]) == 0 {
+			continue
+		}
 		items = append(items, stream)
 	}
 	return items, nil
@@ -108,10 +127,15 @@ func (s *MemoryStreamStore) DeleteStream(ctx context.Context, id string) error {
 			return ErrYouTubeRelayBindingClaimActive
 		}
 	}
-	if len(s.artifacts[id]) > 0 {
-		return ErrStreamArtifactsExist
+	now := time.Now().UTC()
+	stream := s.streams[id]
+	stream.Status = "completed"
+	if stream.DeletedAt == nil {
+		deletedAt := now
+		stream.DeletedAt = &deletedAt
 	}
-	delete(s.streams, id)
+	stream.UpdatedAt = now
+	s.streams[id] = stream
 	delete(s.logs, id)
 	delete(s.mediaRuntimes, id)
 	delete(s.youtubeRuntimes, id)
@@ -124,12 +148,6 @@ func (s *MemoryStreamStore) DeleteStream(ctx context.Context, id string) error {
 		delete(s.discordYouTubeLiveNotificationLeaseExpires, notificationID)
 		delete(s.discordYouTubeLiveNotifications, notificationID)
 	}
-	for artifactID, artifact := range s.artifactShares {
-		if artifact.StreamID == id {
-			delete(s.artifactShares, artifactID)
-		}
-	}
-	delete(s.artifacts, id)
 	return nil
 }
 
@@ -444,6 +462,9 @@ func (s *MemoryStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 			}
 			existing.RelativePath = artifact.RelativePath
 			existing.SizeBytes = artifact.SizeBytes
+			if sourceServiceID := strings.TrimSpace(artifact.SourceServiceID); sourceServiceID != "" {
+				existing.SourceServiceID = sourceServiceID
+			}
 			current[index] = existing
 			updated = true
 			break

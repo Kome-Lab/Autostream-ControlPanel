@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiGet } from "@/lib/api/client";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
-import { useAppSettings, useStreams } from "@/features/queries";
+import { useAppSettings, useArchiveStreams } from "@/features/queries";
 import { isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
 
 type StreamArtifact = {
@@ -26,7 +26,7 @@ export function ArchivePlayerView() {
   const searchParams = useSearchParams();
   const streamID = searchParams.get("stream") || "";
   const artifactID = searchParams.get("artifact") || "";
-  const streams = useStreams();
+  const streams = useArchiveStreams();
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
   const artifacts = useQuery({

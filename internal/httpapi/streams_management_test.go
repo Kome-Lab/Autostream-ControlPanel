@@ -94,8 +94,19 @@ func TestDeleteStreamReleasesAssignmentsAndRejectsActiveStream(t *testing.T) {
 	if deleteRes.Code != http.StatusOK {
 		t.Fatalf("delete stream status = %d body = %s", deleteRes.Code, deleteRes.Body.String())
 	}
-	if _, err := streams.GetStream(t.Context(), stream.ID); err != store.ErrNotFound {
-		t.Fatalf("deleted stream lookup error = %v", err)
+	deleted, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatalf("retained stream lookup error = %v", err)
+	}
+	if deleted.DeletedAt == nil || deleted.Status != "completed" {
+		t.Fatalf("retained stream lifecycle = status=%q deleted_at=%v", deleted.Status, deleted.DeletedAt)
+	}
+	operational, err := streams.ListStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operational) != 0 {
+		t.Fatalf("deleted stream remains in operational list = %#v", operational)
 	}
 	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
 	if err != nil {
@@ -125,9 +136,9 @@ func TestDeleteStreamReleasesAssignmentsAndRejectsActiveStream(t *testing.T) {
 	}
 }
 
-func TestDeleteStreamPreservesArchiveCatalogAndAssignments(t *testing.T) {
+func TestDeleteStreamRetainsArchiveCatalogAndReleasesAssignments(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.delete"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.delete", "archives.read", "archives.download"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -141,7 +152,8 @@ func TestDeleteStreamPreservesArchiveCatalogAndAssignments(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth))
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/streams/"+stream.ID, nil)
@@ -149,19 +161,50 @@ func TestDeleteStreamPreservesArchiveCatalogAndAssignments(t *testing.T) {
 	deleteReq.Header.Set("X-CSRF-Token", csrf)
 	deleteRes := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRes, deleteReq)
-	if deleteRes.Code != http.StatusConflict || !strings.Contains(deleteRes.Body.String(), `"stream_artifacts_exist"`) {
+	if deleteRes.Code != http.StatusOK {
 		t.Fatalf("delete stream with artifacts status = %d body = %s", deleteRes.Code, deleteRes.Body.String())
 	}
-	if _, err := streams.GetStream(t.Context(), stream.ID); err != nil {
-		t.Fatalf("stream was deleted despite archive artifacts: %v", err)
+	deleted, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatalf("retained stream lookup failed: %v", err)
+	}
+	if deleted.DeletedAt == nil || deleted.Status != "completed" {
+		t.Fatalf("retained stream lifecycle = status=%q deleted_at=%v", deleted.Status, deleted.DeletedAt)
 	}
 	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
 	if err != nil || len(artifacts) != 1 {
-		t.Fatalf("archive catalog changed after rejected delete: artifacts=%#v err=%v", artifacts, err)
+		t.Fatalf("archive catalog was not retained after delete: artifacts=%#v err=%v", artifacts, err)
+	}
+	if artifacts[0].SourceServiceID != "encoder_recorder-01" {
+		t.Fatalf("archive source encoder was not retained: %#v", artifacts[0])
 	}
 	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
-	if err != nil || len(assignments) != 2 {
-		t.Fatalf("assignments changed after rejected delete: assignments=%#v err=%v", assignments, err)
+	if err != nil || len(assignments) != 0 {
+		t.Fatalf("assignments were not released after delete: assignments=%#v err=%v", assignments, err)
+	}
+	archiveReq := httptest.NewRequest(http.MethodGet, "/archive/streams", nil)
+	archiveReq.AddCookie(cookie)
+	archiveRes := httptest.NewRecorder()
+	handler.ServeHTTP(archiveRes, archiveReq)
+	if archiveRes.Code != http.StatusOK {
+		t.Fatalf("archive stream list status = %d body = %s", archiveRes.Code, archiveRes.Body.String())
+	}
+	var archiveStreams []store.Stream
+	if err := json.Unmarshal(archiveRes.Body.Bytes(), &archiveStreams); err != nil {
+		t.Fatal(err)
+	}
+	if len(archiveStreams) != 1 || archiveStreams[0].ID != stream.ID || archiveStreams[0].DeletedAt == nil {
+		t.Fatalf("archive stream list = %#v", archiveStreams)
+	}
+	downloadReq := httptest.NewRequest(http.MethodGet, "/streams/"+stream.ID+"/artifacts/"+artifacts[0].ID+"/download", nil)
+	downloadReq.AddCookie(cookie)
+	downloadRes := httptest.NewRecorder()
+	handler.ServeHTTP(downloadRes, downloadReq)
+	if downloadRes.Code != http.StatusOK || downloadRes.Body.String() != "archive-bytes" {
+		t.Fatalf("archived download status = %d body = %q", downloadRes.Code, downloadRes.Body.String())
+	}
+	if dispatcher.archiveDownloadCalls != 1 || dispatcher.archiveStream.ID != stream.ID || dispatcher.archiveArtifact.ID != artifacts[0].ID {
+		t.Fatalf("archived download dispatch = calls=%d stream=%#v artifact=%#v", dispatcher.archiveDownloadCalls, dispatcher.archiveStream, dispatcher.archiveArtifact)
 	}
 }
 

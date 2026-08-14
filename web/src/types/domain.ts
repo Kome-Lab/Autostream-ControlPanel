@@ -26,6 +26,7 @@ export type Stream = {
   ended_at?: string;
   updated_at?: string;
   created_at?: string;
+  deleted_at?: string;
   discord_config_id?: string;
   discord_guild_id?: string;
   discord_voice_channel_id?: string;

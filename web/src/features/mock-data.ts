@@ -782,6 +782,9 @@ export function mockGet(path: string): unknown {
   if (streamArtifacts) {
     return mockStreamArtifacts[decodeURIComponent(streamArtifacts[1])] || [];
   }
+  if (normalizedPath === "/archive/streams") {
+    return mockStreams.filter((stream) => (mockStreamArtifacts[stream.id] || []).length > 0);
+  }
   const artifactShares = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares$/);
   if (artifactShares) {
     loadMockArchiveShares();

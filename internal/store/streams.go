@@ -43,6 +43,7 @@ type Stream struct {
 	AssignedEncoderID         string     `json:"assigned_encoder_id,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
+	DeletedAt                 *time.Time `json:"deleted_at,omitempty"`
 }
 
 type StreamSettings struct {
@@ -78,13 +79,14 @@ type StreamLog struct {
 }
 
 type StreamArtifact struct {
-	ID           string    `json:"id"`
-	StreamID     string    `json:"stream_id"`
-	Kind         string    `json:"kind"`
-	Name         string    `json:"name"`
-	RelativePath string    `json:"relative_path"`
-	SizeBytes    int64     `json:"size_bytes"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	StreamID        string    `json:"stream_id"`
+	Kind            string    `json:"kind"`
+	Name            string    `json:"name"`
+	RelativePath    string    `json:"relative_path"`
+	SizeBytes       int64     `json:"size_bytes"`
+	CreatedAt       time.Time `json:"created_at"`
+	SourceServiceID string    `json:"-"`
 }
 
 type StreamArtifactShare struct {
@@ -150,6 +152,13 @@ type ActiveStreamStore interface {
 	HasActiveStream(ctx context.Context) (bool, error)
 }
 
+// ArchiveStreamStore lists stream records that still have locally managed
+// artifacts, including records that were removed from the operational stream
+// list. The stream record is retained as the stable archive identity.
+type ArchiveStreamStore interface {
+	ListArchiveStreams(ctx context.Context) ([]Stream, error)
+}
+
 type StreamArtifactAdminStore interface {
 	DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error
 	RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error)
@@ -181,8 +190,7 @@ type StreamYouTubeRuntimeStore interface {
 }
 
 var (
-	ErrNotFound             = errors.New("not found")
-	ErrStreamArtifactsExist = errors.New("stream has archive artifacts")
+	ErrNotFound = errors.New("not found")
 )
 
 type MariaDBStreamStore struct {
@@ -194,34 +202,73 @@ func NewMariaDBStreamStore(db *sql.DB) MariaDBStreamStore {
 }
 
 func (s MariaDBStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
-  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
-  COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
-  COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.encoder_audio_gain_db, 0), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
-  COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
-  CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
-  COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
-  COALESCE(ss.archive_file_name, ''), COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at
-FROM streams s
-LEFT JOIN stream_settings ss ON ss.stream_id = s.id
-LEFT JOIN drive_destinations dd ON dd.id = ss.archive_drive_destination_id
-ORDER BY s.created_at DESC LIMIT 100`)
+	rows, err := s.db.QueryContext(ctx, streamListQuery("s.deleted_at IS NULL"))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var streams []Stream
 	for rows.Next() {
-		var stream Stream
-		var scheduledStart, scheduledEnd sql.NullTime
-		if err := rows.Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt); err != nil {
+		stream, err := scanStreamRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		stream.ScheduledStartAt = nullTimePtr(scheduledStart)
-		stream.ScheduledEndAt = nullTimePtr(scheduledEnd)
 		streams = append(streams, stream)
 	}
 	return streams, rows.Err()
+}
+
+func (s MariaDBStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, error) {
+	rows, err := s.db.QueryContext(ctx, streamListQuery(`EXISTS (SELECT 1 FROM stream_artifacts a WHERE a.stream_id = s.id)`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var streams []Stream
+	for rows.Next() {
+		stream, err := scanStreamRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		streams = append(streams, stream)
+	}
+	return streams, rows.Err()
+}
+
+const streamSelectFields = `s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
+  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
+  COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
+  COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.encoder_audio_gain_db, 0), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
+  COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
+  CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
+  COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
+  COALESCE(ss.archive_file_name, ''), COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at, s.deleted_at`
+
+func streamListQuery(where string) string {
+	query := `SELECT ` + streamSelectFields + `
+FROM streams s
+LEFT JOIN stream_settings ss ON ss.stream_id = s.id
+LEFT JOIN drive_destinations dd ON dd.id = ss.archive_drive_destination_id`
+	if strings.TrimSpace(where) != "" {
+		query += ` WHERE ` + where
+	}
+	return query + ` ORDER BY s.created_at DESC LIMIT 100`
+}
+
+type streamRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanStreamRow(scanner streamRowScanner) (Stream, error) {
+	var stream Stream
+	var scheduledStart, scheduledEnd, deletedAt sql.NullTime
+	if err := scanner.Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt, &deletedAt); err != nil {
+		return Stream{}, err
+	}
+	stream.ScheduledStartAt = nullTimePtr(scheduledStart)
+	stream.ScheduledEndAt = nullTimePtr(scheduledEnd)
+	stream.DeletedAt = nullTimePtr(deletedAt)
+	return stream, nil
 }
 
 func (s MariaDBStreamStore) HasActiveStream(ctx context.Context) (bool, error) {
@@ -262,29 +309,20 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
 	} else if hasClaim {
 		return ErrYouTubeRelayBindingClaimActive
 	}
-	var hasArtifacts bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stream_artifacts WHERE stream_id = ?)`, id).Scan(&hasArtifacts); err != nil {
-		return err
-	}
-	if hasArtifacts {
-		return ErrStreamArtifactsExist
-	}
 	for _, query := range []string{
 		`DELETE FROM runtime_secret_leases WHERE stream_id = ?`,
 		`DELETE FROM service_remediation_executions WHERE stream_id = ?`,
 		`DELETE FROM service_stream_events WHERE stream_id = ?`,
-		`DELETE FROM stream_artifact_shares WHERE stream_id = ?`,
-		`DELETE FROM stream_artifacts WHERE stream_id = ?`,
 		`DELETE FROM stream_logs WHERE stream_id = ?`,
 		`DELETE FROM stream_youtube_runtimes WHERE stream_id = ?`,
 		`DELETE FROM stream_service_assignments WHERE stream_id = ?`,
-		`DELETE FROM stream_settings WHERE stream_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, query, id); err != nil {
 			return err
 		}
 	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM streams WHERE id = ?`, id)
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE streams SET status = 'completed', deleted_at = COALESCE(deleted_at, ?), updated_at = ? WHERE id = ?`, now, now, id)
 	if err != nil {
 		return err
 	}
@@ -302,28 +340,13 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
 }
 
 func (s MariaDBStreamStore) GetStream(ctx context.Context, id string) (Stream, error) {
-	var stream Stream
-	var scheduledStart, scheduledEnd sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
-  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
-  COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
-  COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.encoder_audio_gain_db, 0), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
-  COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
-  CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
-  COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
-  COALESCE(ss.archive_file_name, ''), COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at
-FROM streams s
-LEFT JOIN stream_settings ss ON ss.stream_id = s.id
-LEFT JOIN drive_destinations dd ON dd.id = ss.archive_drive_destination_id
-WHERE s.id = ?`, id).Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt)
+	stream, err := scanStreamRow(s.db.QueryRowContext(ctx, streamListQuery("s.id = ?"), id))
 	if err == sql.ErrNoRows {
 		return Stream{}, ErrNotFound
 	}
 	if err != nil {
 		return Stream{}, err
 	}
-	stream.ScheduledStartAt = nullTimePtr(scheduledStart)
-	stream.ScheduledEndAt = nullTimePtr(scheduledEnd)
 	return stream, nil
 }
 
@@ -666,7 +689,7 @@ func (s MariaDBStreamStore) ListStreamArtifacts(ctx context.Context, id string) 
 	if _, err := s.GetStream(ctx, id); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, stream_id, kind, name, relative_path, size_bytes, created_at FROM stream_artifacts WHERE stream_id = ? ORDER BY created_at DESC`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id FROM stream_artifacts WHERE stream_id = ? ORDER BY created_at DESC`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -674,7 +697,7 @@ func (s MariaDBStreamStore) ListStreamArtifacts(ctx context.Context, id string) 
 	var artifacts []StreamArtifact
 	for rows.Next() {
 		var artifact StreamArtifact
-		if err := rows.Scan(&artifact.ID, &artifact.StreamID, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt); err != nil {
+		if err := rows.Scan(&artifact.ID, &artifact.StreamID, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.SourceServiceID); err != nil {
 			return nil, err
 		}
 		if isSafeRelativePath(artifact.RelativePath) {
@@ -699,9 +722,9 @@ func (s MariaDBStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 	for _, artifact := range NormalizeStreamArtifacts(id, artifacts) {
 		artifact.ID = newUUID()
 		artifact.CreatedAt = time.Now().UTC()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes)`,
-			artifact.ID, id, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes), source_service_id = IF(VALUES(source_service_id) <> '', VALUES(source_service_id), source_service_id)`,
+			artifact.ID, id, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt, strings.TrimSpace(artifact.SourceServiceID)); err != nil {
 			return err
 		}
 	}
@@ -848,7 +871,7 @@ func (s MariaDBStreamStore) streamArtifactByID(ctx context.Context, streamID, ar
 		return StreamArtifact{}, err
 	}
 	var artifact StreamArtifact
-	err := s.db.QueryRowContext(ctx, `SELECT id, stream_id, kind, name, relative_path, size_bytes, created_at FROM stream_artifacts WHERE stream_id = ? AND id = ?`, streamID, artifactID).Scan(&artifact.ID, &artifact.StreamID, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id FROM stream_artifacts WHERE stream_id = ? AND id = ?`, streamID, artifactID).Scan(&artifact.ID, &artifact.StreamID, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.SourceServiceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StreamArtifact{}, ErrNotFound
 	}
@@ -911,9 +934,10 @@ func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token
 	for _, artifact := range NormalizeStreamArtifacts(event.StreamID, artifacts) {
 		artifact.ID = newUUID()
 		artifact.CreatedAt = time.Now().UTC()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes)`,
-			artifact.ID, event.StreamID, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt); err != nil {
+		artifact.SourceServiceID = strings.TrimSpace(event.ServiceID)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes), source_service_id = IF(VALUES(source_service_id) <> '', VALUES(source_service_id), source_service_id)`,
+			artifact.ID, event.StreamID, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt, artifact.SourceServiceID); err != nil {
 			return err
 		}
 	}
