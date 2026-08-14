@@ -125,6 +125,46 @@ func TestDeleteStreamReleasesAssignmentsAndRejectsActiveStream(t *testing.T) {
 	}
 }
 
+func TestDeleteStreamPreservesArchiveCatalogAndAssignments(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive-protected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []store.StreamArtifact{{
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 123,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/streams/"+stream.ID, nil)
+	deleteReq.AddCookie(cookie)
+	deleteReq.Header.Set("X-CSRF-Token", csrf)
+	deleteRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusConflict || !strings.Contains(deleteRes.Body.String(), `"stream_artifacts_exist"`) {
+		t.Fatalf("delete stream with artifacts status = %d body = %s", deleteRes.Code, deleteRes.Body.String())
+	}
+	if _, err := streams.GetStream(t.Context(), stream.ID); err != nil {
+		t.Fatalf("stream was deleted despite archive artifacts: %v", err)
+	}
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("archive catalog changed after rejected delete: artifacts=%#v err=%v", artifacts, err)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil || len(assignments) != 2 {
+		t.Fatalf("assignments changed after rejected delete: assignments=%#v err=%v", assignments, err)
+	}
+}
+
 func TestForceStopRearmsDiscordVoiceStream(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.stop"}); err != nil {

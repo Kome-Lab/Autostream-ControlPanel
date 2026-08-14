@@ -180,7 +180,10 @@ type StreamYouTubeRuntimeStore interface {
 	DeleteStreamYouTubeRuntime(ctx context.Context, streamID string) error
 }
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound             = errors.New("not found")
+	ErrStreamArtifactsExist = errors.New("stream has archive artifacts")
+)
 
 type MariaDBStreamStore struct {
 	db *sql.DB
@@ -258,6 +261,13 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
 		return err
 	} else if hasClaim {
 		return ErrYouTubeRelayBindingClaimActive
+	}
+	var hasArtifacts bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stream_artifacts WHERE stream_id = ?)`, id).Scan(&hasArtifacts); err != nil {
+		return err
+	}
+	if hasArtifacts {
+		return ErrStreamArtifactsExist
 	}
 	for _, query := range []string{
 		`DELETE FROM runtime_secret_leases WHERE stream_id = ?`,

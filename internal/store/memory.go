@@ -108,6 +108,9 @@ func (s *MemoryStreamStore) DeleteStream(ctx context.Context, id string) error {
 			return ErrYouTubeRelayBindingClaimActive
 		}
 	}
+	if len(s.artifacts[id]) > 0 {
+		return ErrStreamArtifactsExist
+	}
 	delete(s.streams, id)
 	delete(s.logs, id)
 	delete(s.mediaRuntimes, id)

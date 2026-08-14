@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertCircle, Check, Copy, Eye, Pencil, Play, Plus, RadioTower, RotateCw, Square, Shuffle, Trash2, Video } from "lucide-react";
+import { AlertCircle, Check, Copy, Eye, Pencil, Play, Plus, RadioTower, RotateCw, SlidersHorizontal, Square, Shuffle, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -135,10 +135,23 @@ export function StreamsView() {
       header: t("actions"),
       cell: ({ row }) => (
         <div className="flex min-w-44 flex-nowrap gap-1">
-          <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={() => setSelectedStream(row.original)}>
-            <Eye />
-          </Button>
-          {streamStatusAllowsEdit(row.original.status) ? <RoleGuard allowed={canUpdate}>
+           <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={() => setSelectedStream(row.original)}>
+             <Eye />
+           </Button>
+           {String(row.original.status).toLowerCase() === "live" ? <RoleGuard allowed={canUpdate}>
+             <Button
+               variant="outline"
+               size="icon-sm"
+               aria-label={`${row.original.name} ライブ調整`}
+               title="ライブ調整"
+               onClick={() => setEditingStream(row.original)}
+               {...guardedButtonProps(canUpdate)}
+               disabled={!canUpdate || actionMutation.isPending}
+             >
+               <SlidersHorizontal />
+             </Button>
+           </RoleGuard> : null}
+           {streamStatusAllowsEdit(row.original.status) ? <RoleGuard allowed={canUpdate}>
             <Button variant="outline" size="icon-sm" aria-label={`${row.original.name} を編集`} onClick={() => setEditingStream(row.original)} {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
               <Pencil />
             </Button>
@@ -867,7 +880,11 @@ function streamActionErrorMessage(error: unknown, actionLabel: string) {
     if (staticRelayMessage) return staticRelayMessage;
     if (error.detailCode === "database_connection_transient") return `${actionLabel}を完了できませんでした。Control PanelとMariaDBの一時的な接続切断が発生しました。少し待ってから再試行してください。`;
     if (error.detailCode === "database_write_failed") return `${actionLabel}を完了できませんでした。配信ランタイム情報を保存できませんでした。Panelログを確認してください。`;
-    if (error.status === 403) return `${actionLabel}を実行する権限がありません。管理者に操作権限を確認してください。`;
+    if (error.code === "csrf_failed") return `${actionLabel}を実行できませんでした。セッション検証に失敗しました。ページを再読み込みし、必要なら再ログインしてください。(code: csrf_failed)`;
+    if (error.code === "password_change_required") return `${actionLabel}を実行できません。パスワード変更後に再試行してください。(code: password_change_required)`;
+    if (error.code === "permission_denied") return `${actionLabel}を実行する権限がありません。管理者に操作権限を確認してください。(code: permission_denied)`;
+    if (error.status === 401) return `${actionLabel}を実行できませんでした。ログインセッションが切れています。再ログインしてください。`;
+    if (error.status === 403) return `${actionLabel}を実行できませんでした。セッションまたは操作権限を確認してください。(code: ${error.code || "forbidden"})`;
     if (error.status === 404) return `対象の配信枠が見つかりません。一覧を更新してからもう一度確認してください。`;
     if (error.status === 409) {
       const conflictMessages: Record<string, string> = {
@@ -877,6 +894,7 @@ function streamActionErrorMessage(error: unknown, actionLabel: string) {
         service_update_in_progress: `${actionLabel}できません。担当Nodeの更新処理が完了するまで待ってください。(code: service_update_in_progress)`,
         missing_stream_assignments: `${actionLabel}できません。配信枠に必要なNode割り当てが不足しています。(code: missing_stream_assignments)`,
         stream_start_not_ready: `${actionLabel}できません。開始前チェックに失敗しています。(code: stream_start_not_ready)`,
+        stream_artifacts_exist: `${actionLabel}できません。録画アーカイブが残っています。先にアーカイブ画面から成果物を削除してから再試行してください。(code: stream_artifacts_exist)`,
       };
       return conflictMessages[error.code || ""] || `${actionLabel}できない状態です。配信状態を更新し、開始中・停止中の処理が終わってから再試行してください。(code: ${error.code || "conflict"})`;
     }

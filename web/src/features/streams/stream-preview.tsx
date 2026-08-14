@@ -504,9 +504,9 @@ function LegacyParticipantOverlay({ participants }: { participants: PreviewParti
             className={`flex items-center gap-2 rounded-full bg-black/75 px-2 py-1 text-xs text-white shadow ${participant.speaking ? "ring-2 ring-green-400" : "ring-1 ring-white/20"}`}
           >
             {avatarURL ? (
-              <span className="size-7 rounded-full bg-cover bg-center" style={{ backgroundImage: `url("${avatarURL}")` }} />
+              <span className={`size-7 rounded-full bg-cover bg-center ${participant.speaking ? "ring-2 ring-green-400 ring-offset-2 ring-offset-black/75" : ""}`} style={{ backgroundImage: `url("${avatarURL}")` }} />
             ) : (
-              <span className="flex size-7 items-center justify-center rounded-full bg-slate-600 font-semibold">
+              <span className={`flex size-7 items-center justify-center rounded-full bg-slate-600 font-semibold ${participant.speaking ? "ring-2 ring-green-400 ring-offset-2 ring-offset-black/75" : ""}`}>
                 {(participant.display_name || "?").slice(0, 1).toUpperCase()}
               </span>
             )}

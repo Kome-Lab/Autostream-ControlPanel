@@ -84,6 +84,25 @@ func TestMemoryStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 	}
 }
 
+func TestMemoryDeleteStreamRejectsExistingArtifacts(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive-protected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{{
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.DeleteStream(t.Context(), stream.ID); !errors.Is(err, ErrStreamArtifactsExist) {
+		t.Fatalf("DeleteStream error = %v, want ErrStreamArtifactsExist", err)
+	}
+	if _, err := streams.GetStream(t.Context(), stream.ID); err != nil {
+		t.Fatalf("stream was deleted despite existing artifacts: %v", err)
+	}
+}
+
 func TestNewUUIDShape(t *testing.T) {
 	id := newUUID()
 	if len(id) != 36 || strings.Count(id, "-") != 4 {

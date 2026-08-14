@@ -163,7 +163,7 @@ function ArchiveArtifacts({
   };
 
   if (query.isLoading) return <Skeleton className="h-36 w-full" />;
-  if (query.isError) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>録画成果物を取得できませんでした。Encoderの接続状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={refreshArtifacts}>再試行</Button></div>;
+  if (query.isError) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>{archiveListErrorMessage(query.error)}</span><Button variant="outline" size="sm" onClick={refreshArtifacts}>再試行</Button></div>;
   if (artifacts.length === 0) {
     return (
       <div className="space-y-3 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
@@ -352,6 +352,17 @@ function archiveErrorMessage(error: Error, fallback: string) {
     return messages[error.code || ""] || fallback;
   }
   return fallback;
+}
+
+function archiveListErrorMessage(error: unknown) {
+  if (error instanceof APIError) {
+    if (error.code === "not_found" || error.status === 404) return "配信枠が見つかりません。配信枠一覧を更新してから再試行してください。";
+    if (error.code === "unauthorized" || error.status === 401) return "ログインセッションが切れています。再ログインしてから再試行してください。";
+    if (error.code === "permission_denied" || error.status === 403) return "録画成果物を表示する権限がありません。管理者に権限を確認してください。";
+    if (error.code === "list_stream_artifacts_failed" || error.status >= 500) return "録画成果物を取得できませんでした。Control PanelまたはMariaDBの状態を確認して再試行してください。";
+    return `録画成果物を取得できませんでした。(code: ${error.code || "api_error"})`;
+  }
+  return "録画成果物を取得できませんでした。通信状態を確認して再試行してください。";
 }
 
 function artifactKindLabel(kind: string) {

@@ -8887,6 +8887,22 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
 		return
 	}
+	artifacts, err := s.streams.ListStreamArtifacts(r.Context(), stream.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		auditFailure("not_found")
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if err != nil {
+		auditFailure("list_stream_artifacts_failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_artifacts_failed"})
+		return
+	}
+	if len(artifacts) > 0 {
+		auditFailure("stream_artifacts_exist")
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_artifacts_exist", "artifact_count": len(artifacts)})
+		return
+	}
 	if s.services != nil {
 		assignments, err := s.services.ListStreamAssignments(r.Context(), stream.ID)
 		if err != nil {
@@ -8918,6 +8934,10 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 	} else if errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {
 		auditFailure("youtube_relay_binding_release_pending")
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
+		return
+	} else if errors.Is(err, store.ErrStreamArtifactsExist) {
+		auditFailure("stream_artifacts_exist")
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_artifacts_exist"})
 		return
 	} else if err != nil {
 		auditFailure("delete_stream_failed")

@@ -81,9 +81,11 @@ func safeDiscordYouTubeLiveNotification(notification store.DiscordYouTubeLiveNot
 }
 
 // discordYouTubeLiveNotificationForStart decides whether this stream actually
-// has a public YouTube URL and a text target to announce. It deliberately does
-// not fabricate a target for a stream without a configured Discord text
-// channel.
+// has a valid YouTube watch URL and a text target to announce. The URL is a
+// private capability for the configured YouTube account; provider visibility
+// (public, unlisted, or private) must never be used as a notification gate.
+// It deliberately does not fabricate a target for a stream without a
+// configured Discord text channel.
 func discordYouTubeLiveNotificationForStart(stream store.Stream, assignments []store.RegisteredService, req servicecall.StartRequest) (store.DiscordYouTubeLiveNotification, bool) {
 	watchURL, ok := normalizeYouTubeWatchURL(mapString(req.YouTubeRuntime, "watch_url"))
 	if !ok || mapBool(req.YouTubeRuntime, "dry_run") || strings.TrimSpace(req.DiscordTextChannelID) == "" {
