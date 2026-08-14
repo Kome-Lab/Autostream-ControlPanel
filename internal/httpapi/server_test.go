@@ -3827,6 +3827,44 @@ func TestStartStreamResolvesDiscordConfigForDispatch(t *testing.T) {
 	}
 }
 
+func TestStartStreamMaterializesConfiguredDiscordBotAssignment(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.start"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "implicit discord assignment stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
+	profiles := store.NewMemoryProfileStore()
+	config := createDiscordConfigForTest(t, profiles, "configured discord", "discord_bot-01", "guild-01", "voice-01", "text-01")
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-01","discord_voice_channel_id":"voice-01"}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("start status = %d body = %s", res.Code, res.Body.String())
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primaryServiceID(primaryStreamAssignments(assignments), "discord_bot") != "discord_bot-01" {
+		t.Fatalf("configured Discord Bot was not materialized as primary assignment: %#v", assignments)
+	}
+	if primaryServiceID(dispatcher.startedServices, "discord_bot") != "discord_bot-01" {
+		t.Fatalf("dispatcher did not receive the materialized Discord Bot: %#v", dispatcher.startedServices)
+	}
+}
+
 func TestStartStreamUsesSavedDiscordConfigSetting(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start"}); err != nil {

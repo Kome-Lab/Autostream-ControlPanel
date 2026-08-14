@@ -10369,6 +10369,60 @@ func (s *Server) discordServiceTokenConfiguredForStream(ctx context.Context, tok
 	return service, true, nil
 }
 
+func (s *Server) materializeConfiguredDiscordAssignment(ctx context.Context, streamID, discordConfigID, actorUserID string, assignments []store.RegisteredService) ([]store.RegisteredService, bool, error) {
+	if s.services == nil || primaryServiceID(primaryStreamAssignments(assignments), "discord_bot") != "" {
+		return assignments, false, nil
+	}
+	service, configured, err := s.configuredDiscordServiceForStream(ctx, streamID, discordConfigID)
+	if err != nil || !configured {
+		return assignments, false, err
+	}
+	if _, err := s.services.AssignServiceToStreamWithRole(ctx, service.ServiceID, streamID, actorUserID, "primary"); err != nil {
+		return nil, false, err
+	}
+	updated, err := s.streamAssignments(ctx, streamID)
+	if err != nil {
+		return nil, false, err
+	}
+	return updated, true, nil
+}
+
+func (s *Server) configuredDiscordServiceForStream(ctx context.Context, streamID, discordConfigID string) (store.RegisteredService, bool, error) {
+	if s.services == nil || s.profiles == nil || strings.TrimSpace(discordConfigID) == "" {
+		return store.RegisteredService{}, false, nil
+	}
+	profile, err := s.profiles.GetProfile(ctx, store.ProfileDiscordConfig, strings.TrimSpace(discordConfigID))
+	if errors.Is(err, store.ErrNotFound) {
+		return store.RegisteredService{}, false, nil
+	}
+	if err != nil {
+		return store.RegisteredService{}, false, err
+	}
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return store.RegisteredService{}, false, err
+	}
+	streamID = strings.TrimSpace(streamID)
+	matches := make([]store.RegisteredService, 0, 1)
+	for _, service := range services {
+		if !strings.EqualFold(strings.TrimSpace(service.ServiceType), "discord_bot") || !runtimeProfileMatchesService(profile.Config, strings.TrimSpace(service.ServiceID)) {
+			continue
+		}
+		// A start request must never silently take a Bot away from another
+		// stream. An already assigned Bot on this same stream can be promoted
+		// from standby by the store call below.
+		if currentStreamID := strings.TrimSpace(service.CurrentStreamID); currentStreamID != "" && currentStreamID != streamID {
+			continue
+		}
+		matches = append(matches, service)
+	}
+	if len(matches) != 1 {
+		return store.RegisteredService{}, false, nil
+	}
+	matches[0].AssignmentRole = "primary"
+	return matches[0], true, nil
+}
+
 func (s *Server) streamDiscordConfigMatchesService(ctx context.Context, stream store.Stream, serviceID string) (bool, error) {
 	if s.profiles == nil || strings.TrimSpace(stream.DiscordConfigID) == "" || strings.TrimSpace(serviceID) == "" {
 		return false, nil
@@ -10527,7 +10581,28 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	primaryAssignments := primaryStreamAssignments(assignments)
-	if missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes); len(missing) > 0 {
+	missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
+	// The stream form selects a Discord config, whose service_id identifies the
+	// Bot node, but historically only Worker/Encoder IDs were materialized as
+	// stream assignments. Auto-start has a service-token fallback for this
+	// configuration; operator start must converge to the same primary assignment
+	// before dispatch so later stop/runtime operations see the Bot as well.
+	if len(missing) == 1 && missing[0] == "discord_bot" {
+		current := currentFromContext(r.Context())
+		updatedAssignments, materialized, materializeErr := s.materializeConfiguredDiscordAssignment(r.Context(), stream.ID, body.DiscordConfigID, current.User.ID, assignments)
+		if materializeErr != nil {
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "assign_discord_service_failed", "error_type": fmt.Sprintf("%T", materializeErr)}})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_failed"})
+			return
+		}
+		if materialized {
+			assignments = updatedAssignments
+			primaryAssignments = primaryStreamAssignments(assignments)
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: primaryServiceID(primaryAssignments, "discord_bot"), Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": "discord_bot", "assignment_role": "primary", "source": "streams.start"}})
+			missing = missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
+		}
+	}
+	if len(missing) > 0 {
 		current := currentFromContext(r.Context())
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"missing_service_types": missing}})
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
@@ -11230,7 +11305,7 @@ func (s *Server) applyDiscordConfig(ctx context.Context, assignments []store.Reg
 
 func primaryServiceID(assignments []store.RegisteredService, serviceType string) string {
 	for _, service := range assignments {
-		if service.ServiceType == serviceType && service.AssignmentRole == "primary" {
+		if strings.EqualFold(strings.TrimSpace(service.ServiceType), strings.TrimSpace(serviceType)) && normalizeAssignmentRole(service.AssignmentRole) == "primary" {
 			return strings.TrimSpace(service.ServiceID)
 		}
 	}
@@ -13892,10 +13967,8 @@ func normalizeAssignmentRole(role string) string {
 func primaryStreamAssignments(assignments []store.RegisteredService) []store.RegisteredService {
 	out := make([]store.RegisteredService, 0, len(assignments))
 	for _, assignment := range assignments {
-		if assignment.AssignmentRole == "" || assignment.AssignmentRole == "primary" {
-			if assignment.AssignmentRole == "" {
-				assignment.AssignmentRole = "primary"
-			}
+		if normalizeAssignmentRole(assignment.AssignmentRole) == "primary" {
+			assignment.AssignmentRole = "primary"
 			out = append(out, assignment)
 		}
 	}
@@ -13905,11 +13978,11 @@ func primaryStreamAssignments(assignments []store.RegisteredService) []store.Reg
 func missingServiceTypes(assignments []store.RegisteredService, required []string) []string {
 	assigned := make(map[string]bool, len(assignments))
 	for _, service := range assignments {
-		assigned[service.ServiceType] = true
+		assigned[strings.ToLower(strings.TrimSpace(service.ServiceType))] = true
 	}
 	missing := make([]string, 0, len(required))
 	for _, serviceType := range required {
-		if !assigned[serviceType] {
+		if !assigned[strings.ToLower(strings.TrimSpace(serviceType))] {
 			missing = append(missing, serviceType)
 		}
 	}
