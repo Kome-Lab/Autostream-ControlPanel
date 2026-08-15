@@ -10743,7 +10743,7 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 			metadata[key] = value
 		}
 		if _, ok := metadata["prepare_stage"]; ok {
-			log.Printf("youtube live api prepare failed: stream_id=%s output_id=%s stage=%s error_type=%s provider_status_code=%v provider_reason=%v", stream.ID, body.YouTubeOutputID, metadata["prepare_stage"], metadata["error_type"], metadata["provider_status_code"], metadata["provider_reason"])
+			log.Printf("youtube live api prepare failed: stream_id=%s output_id=%s stage=%s error_type=%s error_class=%v transport_operation=%v provider_status_code=%v provider_reason=%v", stream.ID, body.YouTubeOutputID, metadata["prepare_stage"], metadata["error_type"], metadata["error_class"], metadata["transport_operation"], metadata["provider_status_code"], metadata["provider_reason"])
 		}
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: metadata})
 		writeJSON(w, youtubeOutputStatus(err), map[string]string{"code": code})
@@ -11258,15 +11258,90 @@ func youtubeLiveAPIPrepareFailureMetadata(err error) map[string]any {
 	metadata := map[string]any{
 		"prepare_stage": prepareErr.stage,
 		"error_type":    fmt.Sprintf("%T", prepareErr.cause),
+		"error_class":   youtubeLiveAPIPrepareErrorClass(prepareErr.cause),
+	}
+	if operation := youtubeLiveAPIPrepareTransportOperation(prepareErr.cause); operation != "" {
+		metadata["transport_operation"] = operation
 	}
 	var apiErr *googleapi.Error
 	if errors.As(prepareErr.cause, &apiErr) && apiErr != nil {
 		metadata["provider_status_code"] = apiErr.Code
 		if len(apiErr.Errors) > 0 {
-			metadata["provider_reason"] = apiErr.Errors[0].Reason
+			if reason := safeYouTubeProviderReason(apiErr.Errors[0].Reason); reason != "" {
+				metadata["provider_reason"] = reason
+			}
+		}
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(prepareErr.cause, &retrieveErr) && retrieveErr != nil {
+		if retrieveErr.Response != nil && retrieveErr.Response.StatusCode > 0 {
+			metadata["provider_status_code"] = retrieveErr.Response.StatusCode
+		}
+		if reason := safeYouTubeProviderReason(retrieveErr.ErrorCode); reason != "" {
+			metadata["provider_reason"] = reason
 		}
 	}
 	return metadata
+}
+
+func youtubeLiveAPIPrepareErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) {
+		return "oauth_token_exchange"
+	}
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) {
+		return "provider_http"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() {
+			return "timeout"
+		}
+		return "network"
+	}
+	var transportErr *url.Error
+	if errors.As(err, &transportErr) {
+		return "transport"
+	}
+	return "unknown"
+}
+
+func youtubeLiveAPIPrepareTransportOperation(err error) string {
+	var transportErr *url.Error
+	if !errors.As(err, &transportErr) || transportErr == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(transportErr.Op)) {
+	case "get", "post", "put", "patch", "delete", "head", "options":
+		return strings.ToLower(strings.TrimSpace(transportErr.Op))
+	default:
+		return "other"
+	}
+}
+
+func safeYouTubeProviderReason(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 {
+		return ""
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.' {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func (s *Server) applyDiscordConfig(ctx context.Context, assignments []store.RegisteredService, req *servicecall.StartRequest) error {
