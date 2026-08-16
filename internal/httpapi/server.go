@@ -7153,6 +7153,7 @@ func (s *Server) serviceRuntimeSecretResolve(w http.ResponseWriter, r *http.Requ
 func (s *Server) runtimeProfilesForService(ctx context.Context, service store.RegisteredService, assignments []store.StreamServiceAssignment) (map[string][]store.Profile, error) {
 	kinds := runtimeProfileKindsForService(service.ServiceType)
 	profiles := make(map[string][]store.Profile, len(kinds))
+	streamEncoderProfileIDs := make(map[string]struct{})
 	streamOverlayProfileIDs := make(map[string]struct{})
 	if service.ServiceType == "encoder_recorder" || service.ServiceType == "worker" {
 		for _, assignment := range assignments {
@@ -7166,6 +7167,11 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 			if err != nil {
 				return nil, err
 			}
+			if service.ServiceType == "encoder_recorder" {
+				if profileID := strings.TrimSpace(stream.EncoderProfileID); profileID != "" {
+					streamEncoderProfileIDs[profileID] = struct{}{}
+				}
+			}
 			if profileID := strings.TrimSpace(stream.OverlayProfileID); profileID != "" {
 				streamOverlayProfileIDs[profileID] = struct{}{}
 			}
@@ -7178,8 +7184,10 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 		}
 		for _, item := range items {
 			if kind != store.ProfileCaption && !runtimeProfileMatchesService(item.Config, service.ServiceID) &&
+				!(kind == store.ProfileEncoder && service.ServiceType == "encoder_recorder" &&
+					runtimeUnscopedProfileMayFollowAssignedMediaService(item, streamEncoderProfileIDs)) &&
 				!(kind == store.ProfileOverlay && (service.ServiceType == "encoder_recorder" || service.ServiceType == "worker") &&
-					runtimeOverlayProfileMayFollowAssignedMediaService(item, streamOverlayProfileIDs)) {
+					runtimeUnscopedProfileMayFollowAssignedMediaService(item, streamOverlayProfileIDs)) {
 				continue
 			}
 			item.Config = sanitizeRuntimeProfileConfigForKind(kind, item.Config)
@@ -7189,12 +7197,12 @@ func (s *Server) runtimeProfilesForService(ctx context.Context, service store.Re
 	return profiles, nil
 }
 
-// Overlay profiles are selected by stream settings, so an unscoped profile
-// referenced by a stream follows both its Worker scene renderer and its final
-// Encoder watermark pass. Explicit service bindings still win and are never
+// Encoder and overlay profiles are selected by stream settings, so an
+// unscoped profile referenced by an assigned stream follows the media service
+// that must apply it. Explicit service bindings still win and are never
 // overridden by the stream reference.
-func runtimeOverlayProfileMayFollowAssignedMediaService(profile store.Profile, streamOverlayProfileIDs map[string]struct{}) bool {
-	if _, referenced := streamOverlayProfileIDs[profile.ID]; !referenced {
+func runtimeUnscopedProfileMayFollowAssignedMediaService(profile store.Profile, selectedProfileIDs map[string]struct{}) bool {
+	if _, referenced := selectedProfileIDs[profile.ID]; !referenced {
 		return false
 	}
 	if _, configured := profile.Config["service_id"]; configured && strings.TrimSpace(configString(profile.Config, "service_id")) != "" {

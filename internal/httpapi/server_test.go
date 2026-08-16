@@ -10846,6 +10846,92 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 	}
 }
 
+func TestServiceRuntimeConfigIncludesSelectedUnscopedEncoderProfile(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	stream, err := streams.CreateStream(t.Context(), "encoder profile stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.CreateServiceToken(t.Context(), "encoder_recorder", []string{"service.register", "service.config.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID:   "encoder-01",
+		ServiceType: "encoder_recorder",
+		ServiceName: "Encoder 01",
+		PublicURL:   "https://encoder.example.com",
+		Version:     "0.1.0",
+	})
+	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-01", stream.ID, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, "selected encoder", map[string]any{
+		"width": 1280, "height": 720, "fps": 30, "video_bitrate_kbps": 4500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unselected, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, "unselected encoder", map[string]any{
+		"width": 1920, "height": 1080, "fps": 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restricted, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, "other encoder", map[string]any{
+		"service_id": "encoder-other-01", "width": 1920, "height": 1080, "fps": 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{EncoderProfileID: selected.ID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
+
+	req := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=encoder-01", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("runtime config status = %d body = %s", res.Code, res.Body.String())
+	}
+	var body serviceRuntimeConfigResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	encoderProfiles := body.Profiles[string(store.ProfileEncoder)]
+	if len(encoderProfiles) != 1 || encoderProfiles[0].ID != selected.ID {
+		t.Fatalf("assigned encoder runtime config must contain only its selected unscoped profile: selected=%s unselected=%s restricted=%s profiles=%#v", selected.ID, unselected.ID, restricted.ID, encoderProfiles)
+	}
+	if encoderProfiles[0].Config["width"] != float64(1280) || encoderProfiles[0].Config["height"] != float64(720) || encoderProfiles[0].Config["fps"] != float64(30) {
+		t.Fatalf("selected encoder profile config was not preserved: %#v", encoderProfiles[0].Config)
+	}
+}
+
+func TestRuntimeUnscopedProfileMayFollowAssignedMediaServiceRejectsExplicitBindings(t *testing.T) {
+	selected := map[string]struct{}{"profile-01": {}}
+	tests := []struct {
+		name    string
+		profile store.Profile
+		want    bool
+	}{
+		{name: "selected unscoped", profile: store.Profile{ID: "profile-01", Config: map[string]any{}}, want: true},
+		{name: "not selected", profile: store.Profile{ID: "profile-02", Config: map[string]any{}}, want: false},
+		{name: "bound to another service", profile: store.Profile{ID: "profile-01", Config: map[string]any{"service_id": "encoder-other-01"}}, want: false},
+		{name: "bound to service list", profile: store.Profile{ID: "profile-01", Config: map[string]any{"service_ids": []any{"encoder-other-01"}}}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runtimeUnscopedProfileMayFollowAssignedMediaService(tt.profile, selected); got != tt.want {
+				t.Fatalf("runtimeUnscopedProfileMayFollowAssignedMediaService() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestServiceRuntimeConfigIncludesStreamWatermarkForAssignedEncoder(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()
