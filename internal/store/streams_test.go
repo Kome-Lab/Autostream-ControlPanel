@@ -122,6 +122,51 @@ func TestMemoryDeleteStreamRetainsArchiveAndHidesOperationalStream(t *testing.T)
 	}
 }
 
+func TestMemoryArchiveStreamsHideDeletedStreamAfterLastRecordingArtifactIsDeleted(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive-with-sidecars")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{
+		{Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10},
+		{Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/metadata.json", SizeBytes: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.DeleteStream(t.Context(), stream.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	archives, err := streams.ListArchiveStreams(t.Context())
+	if err != nil || len(archives) != 1 || archives[0].ID != stream.ID {
+		t.Fatalf("archive stream before recording deletion = %#v err=%v", archives, err)
+	}
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range artifacts {
+		if artifact.Kind == "archive" {
+			if err := streams.DeleteStreamArtifact(t.Context(), stream.ID, artifact.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	archives, err = streams.ListArchiveStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("deleted stream without recording remains in archive selector: %#v", archives)
+	}
+	artifacts, err = streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 1 || artifacts[0].Kind != "metadata" {
+		t.Fatalf("non-recording sidecar retention = %#v err=%v", artifacts, err)
+	}
+}
+
 func TestNewUUIDShape(t *testing.T) {
 	id := newUUID()
 	if len(id) != 36 || strings.Count(id, "-") != 4 {

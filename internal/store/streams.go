@@ -152,9 +152,9 @@ type ActiveStreamStore interface {
 	HasActiveStream(ctx context.Context) (bool, error)
 }
 
-// ArchiveStreamStore lists stream records that still have locally managed
-// artifacts, including records that were removed from the operational stream
-// list. The stream record is retained as the stable archive identity.
+// ArchiveStreamStore lists stream records that still have a locally managed
+// recording artifact, including records that were removed from the operational
+// stream list. Sidecars alone do not keep an empty stream in the archive picker.
 type ArchiveStreamStore interface {
 	ListArchiveStreams(ctx context.Context) ([]Stream, error)
 }
@@ -219,7 +219,19 @@ func (s MariaDBStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
 }
 
 func (s MariaDBStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, error) {
-	rows, err := s.db.QueryContext(ctx, streamListQuery(`EXISTS (SELECT 1 FROM stream_artifacts a WHERE a.stream_id = s.id)`))
+	rows, err := s.db.QueryContext(ctx, streamListQuery(`EXISTS (
+  SELECT 1
+  FROM stream_artifacts a
+  WHERE a.stream_id = s.id
+    AND LOWER(TRIM(a.kind)) = 'archive'
+    AND (
+      LOWER(TRIM(a.name)) LIKE '%.mp4'
+      OR LOWER(TRIM(a.name)) LIKE '%.webm'
+      OR LOWER(TRIM(a.name)) LIKE '%.m4v'
+      OR LOWER(TRIM(a.name)) LIKE '%.mov'
+      OR LOWER(TRIM(a.name)) LIKE '%.mkv'
+    )
+)`))
 	if err != nil {
 		return nil, err
 	}
@@ -1007,6 +1019,18 @@ func ValidStreamArtifactFileName(name string) bool {
 		return false
 	}
 	return true
+}
+
+func isArchiveRecordingArtifact(artifact StreamArtifact) bool {
+	if !strings.EqualFold(strings.TrimSpace(artifact.Kind), "archive") {
+		return false
+	}
+	switch strings.ToLower(path.Ext(strings.TrimSpace(artifact.Name))) {
+	case ".mp4", ".webm", ".m4v", ".mov", ".mkv":
+		return true
+	default:
+		return false
+	}
 }
 
 func NormalizeStreamArtifacts(streamID string, artifacts []StreamArtifact) []StreamArtifact {

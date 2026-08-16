@@ -65,7 +65,14 @@ func (s *MemoryStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, e
 	defer s.mu.Unlock()
 	items := make([]Stream, 0, len(s.streams))
 	for _, stream := range s.streams {
-		if len(s.artifacts[stream.ID]) == 0 {
+		hasRecording := false
+		for _, artifact := range s.artifacts[stream.ID] {
+			if isArchiveRecordingArtifact(artifact) {
+				hasRecording = true
+				break
+			}
+		}
+		if !hasRecording {
 			continue
 		}
 		items = append(items, stream)

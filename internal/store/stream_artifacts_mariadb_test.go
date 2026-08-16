@@ -107,4 +107,42 @@ func TestMariaDBStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 	if err != nil || resolved.ArtifactID != second[0].ID {
 		t.Fatalf("artifact share no longer resolves: share=%#v err=%v", resolved, err)
 	}
+	if err := streams.UpsertStreamArtifacts(ctx, stream.ID, []store.StreamArtifact{{
+		Kind:         "metadata",
+		Name:         "metadata.json",
+		RelativePath: fmt.Sprintf("final/%s/metadata.json", stream.ID),
+		SizeBytes:    1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.DeleteStream(ctx, stream.ID); err != nil {
+		t.Fatal(err)
+	}
+	archiveStreams, err := streams.ListArchiveStreams(ctx)
+	if err != nil || !streamListContains(archiveStreams, stream.ID) {
+		t.Fatalf("deleted stream with recording missing from archive list: streams=%#v err=%v", archiveStreams, err)
+	}
+	if err := streams.DeleteStreamArtifact(ctx, stream.ID, second[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	archiveStreams, err = streams.ListArchiveStreams(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamListContains(archiveStreams, stream.ID) {
+		t.Fatalf("deleted stream with only metadata remains in archive list: %#v", archiveStreams)
+	}
+	remaining, err := streams.ListStreamArtifacts(ctx, stream.ID)
+	if err != nil || len(remaining) != 1 || remaining[0].Kind != "metadata" {
+		t.Fatalf("metadata retention after recording deletion: artifacts=%#v err=%v", remaining, err)
+	}
+}
+
+func streamListContains(streams []store.Stream, streamID string) bool {
+	for _, stream := range streams {
+		if stream.ID == streamID {
+			return true
+		}
+	}
+	return false
 }

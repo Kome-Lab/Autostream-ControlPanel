@@ -21,7 +21,7 @@ import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
 import { archiveArtifactPollInterval } from "@/features/archive/archive-artifact-polling";
-import { isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
+import { effectiveArchiveStreamID, isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
 
 type StreamArtifact = {
   id: string;
@@ -57,7 +57,7 @@ export function ArchiveView() {
   const streams = useArchiveStreams(canRead);
   const [selectedStreamID, setSelectedStreamID] = useState("");
   const streamRows = streams.data || [];
-  const selected = selectedStreamID || streamRows[0]?.id || "";
+  const selected = effectiveArchiveStreamID(streamRows, selectedStreamID);
 
   return (
     <div className="space-y-6">

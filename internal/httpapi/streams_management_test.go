@@ -208,6 +208,78 @@ func TestDeleteStreamRetainsArchiveCatalogAndReleasesAssignments(t *testing.T) {
 	}
 }
 
+func TestDeletedStreamLeavesArchivePickerAfterLastRecordingArtifactIsDeleted(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.delete", "archives.read", "archives.delete"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive-with-sidecars")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []store.StreamArtifact{
+		{Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10},
+		{Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/metadata.json", SizeBytes: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(&fakeServiceDispatcher{}))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+
+	deleteStreamReq := httptest.NewRequest(http.MethodDelete, "/streams/"+stream.ID, nil)
+	deleteStreamReq.AddCookie(cookie)
+	deleteStreamReq.Header.Set("X-CSRF-Token", csrf)
+	deleteStreamRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteStreamRes, deleteStreamReq)
+	if deleteStreamRes.Code != http.StatusOK {
+		t.Fatalf("delete stream status = %d body = %s", deleteStreamRes.Code, deleteStreamRes.Body.String())
+	}
+
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveArtifactID := ""
+	for _, artifact := range artifacts {
+		if artifact.Kind == "archive" {
+			archiveArtifactID = artifact.ID
+			break
+		}
+	}
+	if archiveArtifactID == "" {
+		t.Fatal("recording artifact was not retained after stream deletion")
+	}
+	deleteArtifactReq := httptest.NewRequest(http.MethodDelete, "/streams/"+stream.ID+"/artifacts/"+archiveArtifactID, nil)
+	deleteArtifactReq.AddCookie(cookie)
+	deleteArtifactReq.Header.Set("X-CSRF-Token", csrf)
+	deleteArtifactRes := httptest.NewRecorder()
+	handler.ServeHTTP(deleteArtifactRes, deleteArtifactReq)
+	if deleteArtifactRes.Code != http.StatusOK {
+		t.Fatalf("delete artifact status = %d body = %s", deleteArtifactRes.Code, deleteArtifactRes.Body.String())
+	}
+
+	archiveReq := httptest.NewRequest(http.MethodGet, "/archive/streams", nil)
+	archiveReq.AddCookie(cookie)
+	archiveRes := httptest.NewRecorder()
+	handler.ServeHTTP(archiveRes, archiveReq)
+	if archiveRes.Code != http.StatusOK {
+		t.Fatalf("archive stream list status = %d body = %s", archiveRes.Code, archiveRes.Body.String())
+	}
+	var archiveStreams []store.Stream
+	if err := json.Unmarshal(archiveRes.Body.Bytes(), &archiveStreams); err != nil {
+		t.Fatal(err)
+	}
+	if len(archiveStreams) != 0 {
+		t.Fatalf("archive picker retained deleted stream without a recording: %#v", archiveStreams)
+	}
+	artifacts, err = streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 1 || artifacts[0].Kind != "metadata" {
+		t.Fatalf("sidecar retention after recording deletion = %#v err=%v", artifacts, err)
+	}
+}
+
 func TestForceStopRearmsDiscordVoiceStream(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.stop"}); err != nil {

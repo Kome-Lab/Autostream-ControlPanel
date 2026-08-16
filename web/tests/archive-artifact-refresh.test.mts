@@ -7,7 +7,7 @@ import {
   ARCHIVE_ARTIFACT_EMPTY_POLL_MAX_ATTEMPTS,
   archiveArtifactPollInterval,
 } from "../src/features/archive/archive-artifact-polling.ts";
-import { isArchiveRecordingArtifact } from "../src/features/archive/archive-artifact.ts";
+import { effectiveArchiveStreamID, isArchiveRecordingArtifact } from "../src/features/archive/archive-artifact.ts";
 
 const archiveViewSource = fs.readFileSync(
   new URL("../src/features/archive/archive-view.tsx", import.meta.url),
@@ -57,6 +57,14 @@ test("archive management and player only expose recording artifacts", () => {
   assert.equal(isArchiveRecordingArtifact({ kind: "metadata", name: "metadata.json" }), false);
   assert.match(archiveViewSource, /filter\(isArchiveRecordingArtifact\)/);
   assert.match(archivePlayerSource, /isArchiveRecordingArtifact\(item\)/);
+});
+
+test("archive stream selection does not retain an option removed after its last recording is deleted", () => {
+  const streams = [{ id: "stream-b" }, { id: "stream-c" }];
+  assert.equal(effectiveArchiveStreamID(streams, "stream-c"), "stream-c");
+  assert.equal(effectiveArchiveStreamID(streams, "stream-a"), "stream-b");
+  assert.equal(effectiveArchiveStreamID([], "stream-a"), "");
+  assert.match(archiveViewSource, /effectiveArchiveStreamID\(streamRows, selectedStreamID\)/);
 });
 
 test("Drive destination UI uses the selected folder as the archive root", () => {
