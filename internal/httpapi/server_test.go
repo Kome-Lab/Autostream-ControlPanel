@@ -2037,6 +2037,50 @@ func TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry(t *testin
 	}
 }
 
+func TestApplyYouTubeLiveAPIOutputRejectsEncoderCDNFormatMismatchBeforeProviderPrepare(t *testing.T) {
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "youtube-client-secret",
+		RedirectURI:  "https://control.example.test/oauth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID: provider.ID, ProviderType: "google", AccountLabel: "youtube", RefreshToken: "youtube-refresh-token", Scopes: []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	youtubeClient := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{
+		RTMPURL: "rtmps://youtube.example.test/live2", StreamKey: "runtime-key", BroadcastID: "broadcast-4k", LiveStreamID: "live-stream-4k",
+	}}
+	server := &Server{
+		integrations: integrations,
+		secrets:      store.NewMemorySecretStore(),
+		youtubeLive:  youtubeClient,
+	}
+	req := &servicecall.StartRequest{EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60}
+	err = server.applyYouTubeLiveAPIOutput(t.Context(), store.Stream{ID: "stream-01", Name: "1080p source"}, store.Profile{
+		ID: "youtube-output-01",
+		Config: map[string]any{
+			"oauth_account_id": account.ID,
+			"resolution":       "2160p",
+			"frame_rate":       "60fps",
+		},
+	}, req)
+	if !errors.Is(err, errYouTubeOutputVideoFormatMismatch) {
+		t.Fatalf("1080p Encoder with 2160p YouTube CDN config error = %v, want %v", err, errYouTubeOutputVideoFormatMismatch)
+	}
+	if youtubeClient.prepareCalls != 0 {
+		t.Fatalf("provider prepare ran before video-format validation: calls=%d request=%#v", youtubeClient.prepareCalls, youtubeClient.prepareRequest)
+	}
+}
+
 func TestStartDoesNotReviveStreamCompletedDuringDelayedDispatch(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.start", "streams.stop"}); err != nil {

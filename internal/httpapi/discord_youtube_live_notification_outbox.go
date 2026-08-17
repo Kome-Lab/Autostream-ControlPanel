@@ -26,6 +26,8 @@ const (
 	discordYouTubeLiveNotificationLifecycleTimeout   = 25 * time.Second
 	discordYouTubeLiveNotificationDispatchTimeout    = 25 * time.Second
 	discordYouTubeLiveNotificationLifecyclePollDelay = 15 * time.Second
+	discordYouTubeLiveTransitionRequestedCode        = "youtube_live_transition_requested"
+	discordYouTubeLiveTransitionOutcomeUnknownCode   = "youtube_live_transition_outcome_unknown"
 	// Claims are processed synchronously because the same durable lease covers
 	// provider lookup, Bot dispatch, and receipt persistence. Taking more than
 	// one at a time would let a later item outlive its lease before its first
@@ -294,6 +296,45 @@ func (s *Server) discordYouTubeLiveNotificationLifecycle(ctx context.Context, no
 		return notification.LifecycleStatus, false, false, "youtube_broadcast_lifecycle_unavailable"
 	}
 	lifecycle = strings.ToLower(strings.TrimSpace(lifecycle))
+	if lifecycle == "livestarting" {
+		// AutoStart can remain at liveStarting even after the Encoder is already
+		// publishing. Reconcile that provider state once, then require a second
+		// lifecycle read to say `live` before dispatching Discord. Persisting the
+		// request/outcome code prevents an unbounded transition loop while the
+		// durable outbox continues its read-only lifecycle polling.
+		lastError := strings.TrimSpace(notification.LastError)
+		if lastError == discordYouTubeLiveTransitionRequestedCode || lastError == discordYouTubeLiveTransitionOutcomeUnknownCode {
+			return lifecycle, false, false, lastError
+		}
+		if transitionClient, ok := s.youtubeLive.(ytlive.BroadcastTransitionClient); ok && transitionClient != nil {
+			transitionErr := transitionClient.TransitionBroadcastLive(lookupCtx, ytlive.BroadcastTransitionRequest{
+				Credentials: credentials,
+				BroadcastID: notification.YouTubeBroadcastID,
+			})
+			reconciled, reconcileErr := lifecycleClient.BroadcastLifecycle(lookupCtx, ytlive.BroadcastLifecycleRequest{
+				Credentials: credentials,
+				BroadcastID: notification.YouTubeBroadcastID,
+			})
+			if reconcileErr == nil {
+				reconciled = strings.ToLower(strings.TrimSpace(reconciled))
+				switch reconciled {
+				case "live":
+					return reconciled, true, false, ""
+				case "complete", "revoked":
+					return reconciled, false, true, "youtube_lifecycle_" + reconciled
+				case "":
+				default:
+					lifecycle = reconciled
+				}
+			}
+			if transitionErr == nil {
+				return lifecycle, false, false, discordYouTubeLiveTransitionRequestedCode
+			}
+			// A failed HTTP call may still have reached YouTube. Do not issue a
+			// second mutating request without a receipt; subsequent claims only poll.
+			return lifecycle, false, false, discordYouTubeLiveTransitionOutcomeUnknownCode
+		}
+	}
 	switch lifecycle {
 	case "live":
 		return lifecycle, true, false, ""

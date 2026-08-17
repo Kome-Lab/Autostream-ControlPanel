@@ -211,6 +211,41 @@ func TestLiveAPIClientPrepareReusesOneAccountLiveStream(t *testing.T) {
 	}
 }
 
+func TestLiveAPIClientPrepareDoesNotReuseMismatchedAccountLiveStream(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{
+		accountReusableStreamResponse: `{"items":[{"id":"legacy-4k-stream","snippet":{"title":"AutoStream account ingest"},"contentDetails":{"isReusable":true},"cdn":{"resolution":"2160p","frameRate":"60fps","ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"legacy-4k-key"}}}]}`,
+	}
+	httpClient := &http.Client{Transport: transport}
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+	client := LiveAPIClient{HTTPClient: httpClient}
+
+	prepared, err := client.Prepare(ctx, PrepareRequest{
+		Credentials: OAuthCredentials{
+			ClientID:     "youtube-client-id",
+			ClientSecret: "youtube-client-secret",
+			RefreshToken: "youtube-refresh-token",
+		},
+		StreamID:           "stream-1080p",
+		StreamName:         "1080p Stream",
+		Resolution:         "1080p",
+		FrameRate:          "60fps",
+		ReuseAccountStream: true,
+	})
+	if err != nil {
+		t.Fatalf("prepare 1080p output with legacy 4K account stream: %v", err)
+	}
+	if prepared.LiveStreamID == "legacy-4k-stream" || prepared.StreamKey == "legacy-4k-key" {
+		t.Fatalf("mismatched 4K account stream was reused for 1080p output: %#v", prepared)
+	}
+	if transport.accountStreamInsertions != 1 {
+		t.Fatalf("expected one matching 1080p LiveStream insertion, got %d (steps=%#v)", transport.accountStreamInsertions, transport.steps)
+	}
+	if !strings.Contains(transport.accountStreamInsertBody, `"resolution":"1080p"`) ||
+		!strings.Contains(transport.accountStreamInsertBody, `"frameRate":"60fps"`) {
+		t.Fatalf("replacement LiveStream did not use requested video format: %s", transport.accountStreamInsertBody)
+	}
+}
+
 func TestLiveAPIClientPrepareRelayStaticBindsReusableLiveStreamWithoutIngestInfo(t *testing.T) {
 	transport := &fakeYouTubeRoundTripper{}
 	httpClient := &http.Client{Transport: transport}
@@ -644,6 +679,8 @@ type fakeYouTubeRoundTripper struct {
 	broadcastListStatus           int
 	broadcastListResponse         string
 	accountReusableStreamCreated  bool
+	accountReusableStreamResponse string
+	accountStreamInsertBody       string
 	accountStreamInsertions       int
 }
 
@@ -684,8 +721,11 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	switch {
 	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams" && req.URL.Query().Get("id") == "":
 		f.steps = append(f.steps, "list_account_reusable_streams")
+		if f.accountReusableStreamResponse != "" {
+			return fakeHTTPResponse(req, http.StatusOK, f.accountReusableStreamResponse), nil
+		}
 		if f.accountReusableStreamCreated {
-			return fakeHTTPResponse(req, http.StatusOK, `{"items":[{"id":"live-stream-01","snippet":{"title":"AutoStream account ingest"},"contentDetails":{"isReusable":true},"cdn":{"ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"runtime-stream-key"}}}]}`), nil
+			return fakeHTTPResponse(req, http.StatusOK, `{"items":[{"id":"live-stream-01","snippet":{"title":"AutoStream account ingest"},"contentDetails":{"isReusable":true},"cdn":{"resolution":"1080p","frameRate":"60fps","ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"runtime-stream-key"}}}]}`), nil
 		}
 		return fakeHTTPResponse(req, http.StatusOK, `{"items":[]}`), nil
 	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams":
@@ -713,6 +753,7 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	case req.Method == http.MethodPost && req.URL.Path == "/youtube/v3/liveStreams" && hasParts(req, "snippet", "cdn"):
 		f.steps = append(f.steps, "insert_stream")
 		f.accountReusableStreamCreated = true
+		f.accountStreamInsertBody = body
 		f.accountStreamInsertions++
 		return fakeHTTPResponse(req, http.StatusOK, `{"id":"live-stream-01","cdn":{"ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"runtime-stream-key"}}}`), nil
 	case req.Method == http.MethodPost && req.URL.Path == "/youtube/v3/liveBroadcasts/bind":

@@ -10928,8 +10928,9 @@ func (s *Server) applyCaptionDispatchConfig(ctx context.Context, req *servicecal
 
 // ensureYouTubeBroadcastLive handles the provider transition after a
 // successful Encoder dispatch. AutoStart-enabled immediate broadcasts are
-// intentionally left for YouTube to move directly into live after it observes
-// ingest; the durable notification outbox polls that lifecycle.
+// initially left for YouTube to move directly into live after it observes
+// ingest; the durable notification outbox polls that lifecycle and performs
+// one fenced reconciliation if the provider remains at liveStarting.
 // Explicit auto-start=false retains the operator-controlled transition path.
 // Scheduled broadcasts remain under YouTube's own schedule.
 func (s *Server) ensureYouTubeBroadcastLive(ctx context.Context, runtime map[string]any) error {
@@ -11202,6 +11203,7 @@ func (s *Server) writeStopSupersededResponse(w http.ResponseWriter, r *http.Requ
 var (
 	errYouTubeOutputNotFound                         = errors.New("youtube_output_not_found")
 	errYouTubeOutputInvalidConfig                    = errors.New("youtube_output_invalid_config")
+	errYouTubeOutputVideoFormatMismatch              = errors.New("youtube_output_video_format_mismatch")
 	errYouTubeOutputStreamKeyUnavailable             = errors.New("youtube_stream_key_unavailable")
 	errYouTubeLiveAPIUnavailable                     = errors.New("youtube_live_api_unavailable")
 	errYouTubeOAuthAccountUnavailable                = errors.New("youtube_oauth_account_unavailable")
@@ -11744,6 +11746,8 @@ func youtubeOutputReadinessMessage(err error) string {
 		return "selected YouTube output was not found."
 	case errors.Is(err, errYouTubeOutputInvalidConfig):
 		return "selected YouTube output is missing required RTMPS or mode settings."
+	case errors.Is(err, errYouTubeOutputVideoFormatMismatch):
+		return "selected YouTube output resolution or frame rate does not match the Encoder profile."
 	case errors.Is(err, errYouTubeOutputStreamKeyUnavailable):
 		return "selected YouTube output stream key is not configured."
 	case errors.Is(err, errYouTubeLiveAPIUnavailable):
@@ -11815,6 +11819,9 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	if s.youtubeLive == nil {
 		return errYouTubeLiveAPIUnavailable
 	}
+	if err := validateYouTubeEncoderVideoFormat(profile, req); err != nil {
+		return err
+	}
 	oauthAccountID := strings.TrimSpace(configString(profile.Config, "oauth_account_id"))
 	if oauthAccountID == "" {
 		oauthAccountID = strings.TrimSpace(configString(profile.Config, "youtube_oauth_account_id"))
@@ -11875,6 +11882,9 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 
 func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {
 	if err := s.validateYouTubeRelayStaticReadiness(ctx, stream, profile); err != nil {
+		return err
+	}
+	if err := validateYouTubeEncoderVideoFormat(profile, req); err != nil {
 		return err
 	}
 	relayStaticClient, ok := s.youtubeLive.(ytlive.RelayStaticLiveClient)
@@ -11997,6 +12007,37 @@ func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store
 		"live_stream_id":          claim.ReusableLiveStreamID,
 		"dry_run":                 false,
 		"complete_on_stop":        true,
+	}
+	return nil
+}
+
+func validateYouTubeEncoderVideoFormat(profile store.Profile, req *servicecall.StartRequest) error {
+	if req == nil || req.EncoderVideoWidth == 0 || req.EncoderVideoHeight == 0 || req.EncoderVideoFPS == 0 {
+		// Older Encoder/Worker capability sets do not carry resolved dimensions.
+		// Preserve that compatibility path; the provider client still rejects a
+		// mismatched reusable LiveStream against the output profile itself.
+		return nil
+	}
+	var expectedResolution string
+	switch {
+	case req.EncoderVideoWidth == 1920 && req.EncoderVideoHeight == 1080:
+		expectedResolution = "1080p"
+	case req.EncoderVideoWidth == 1280 && req.EncoderVideoHeight == 720:
+		expectedResolution = "720p"
+	case req.EncoderVideoWidth == 854 && req.EncoderVideoHeight == 480:
+		expectedResolution = "480p"
+	default:
+		return errYouTubeOutputVideoFormatMismatch
+	}
+	expectedFrameRate := "60fps"
+	if req.EncoderVideoFPS <= 30 {
+		expectedFrameRate = "30fps"
+	}
+	configuredResolution := defaultConfigString(profile.Config, "resolution", "1080p")
+	configuredFrameRate := defaultConfigString(profile.Config, "frame_rate", "60fps")
+	if !strings.EqualFold(strings.TrimSpace(configuredResolution), expectedResolution) ||
+		!strings.EqualFold(strings.TrimSpace(configuredFrameRate), expectedFrameRate) {
+		return errYouTubeOutputVideoFormatMismatch
 	}
 	return nil
 }
@@ -13187,7 +13228,7 @@ func youtubeOutputStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, errYouTubeRelayBindingStoreUnavailable):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed), errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay), errors.Is(err, errYouTubeRelayStaticUnavailable), errors.Is(err, errYouTubeRelayStaticBindingUnavailable), errors.Is(err, errYouTubeRelayBindingInUse), errors.Is(err, errYouTubeRelayStaticConfigChanged), errors.Is(err, errYouTubeRelayStaticRecoveryRequired), errors.Is(err, store.ErrSecretKeyRequired):
+	case errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputVideoFormatMismatch), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed), errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay), errors.Is(err, errYouTubeRelayStaticUnavailable), errors.Is(err, errYouTubeRelayStaticBindingUnavailable), errors.Is(err, errYouTubeRelayBindingInUse), errors.Is(err, errYouTubeRelayStaticConfigChanged), errors.Is(err, errYouTubeRelayStaticRecoveryRequired), errors.Is(err, store.ErrSecretKeyRequired):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
@@ -13196,7 +13237,7 @@ func youtubeOutputStatus(err error) int {
 
 func youtubeOutputCode(err error) string {
 	switch {
-	case errors.Is(err, errYouTubeOutputNotFound), errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed), errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay), errors.Is(err, errYouTubeRelayStaticUnavailable), errors.Is(err, errYouTubeRelayStaticBindingUnavailable), errors.Is(err, errYouTubeRelayBindingStoreUnavailable), errors.Is(err, errYouTubeRelayBindingInUse), errors.Is(err, errYouTubeRelayStaticConfigChanged), errors.Is(err, errYouTubeRelayStaticRecoveryRequired):
+	case errors.Is(err, errYouTubeOutputNotFound), errors.Is(err, errYouTubeOutputInvalidConfig), errors.Is(err, errYouTubeOutputVideoFormatMismatch), errors.Is(err, errYouTubeOutputStreamKeyUnavailable), errors.Is(err, errYouTubeLiveAPIUnavailable), errors.Is(err, errYouTubeOAuthAccountUnavailable), errors.Is(err, errYouTubeLiveAPIPrepareFailed), errors.Is(err, errYouTubeLiveAPIRequiresManagedOutputRelay), errors.Is(err, errYouTubeRelayStaticUnavailable), errors.Is(err, errYouTubeRelayStaticBindingUnavailable), errors.Is(err, errYouTubeRelayBindingStoreUnavailable), errors.Is(err, errYouTubeRelayBindingInUse), errors.Is(err, errYouTubeRelayStaticConfigChanged), errors.Is(err, errYouTubeRelayStaticRecoveryRequired):
 		return err.Error()
 	case errors.Is(err, store.ErrSecretKeyRequired):
 		return errYouTubeOutputStreamKeyUnavailable.Error()

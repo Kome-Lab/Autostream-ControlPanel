@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,8 +20,11 @@ import (
 
 type scriptedYouTubeLifecycleClient struct {
 	*fakeYouTubeLiveClient
-	statuses []string
-	calls    int
+	statuses          []string
+	calls             int
+	transitionCalls   int
+	transitionRequest ytlive.BroadcastTransitionRequest
+	transitionErr     error
 }
 
 func TestDiscordYouTubeLiveNotificationConfirmedRetryableIncludesMissingConfig(t *testing.T) {
@@ -42,6 +46,83 @@ func (f *scriptedYouTubeLifecycleClient) BroadcastLifecycle(_ context.Context, _
 		index = len(f.statuses) - 1
 	}
 	return f.statuses[index], nil
+}
+
+func (f *scriptedYouTubeLifecycleClient) TransitionBroadcastLive(_ context.Context, req ytlive.BroadcastTransitionRequest) error {
+	f.transitionCalls++
+	f.transitionRequest = req
+	return f.transitionErr
+}
+
+func TestDiscordYouTubeLiveNotificationReconcilesLiveStartingBeforeDispatch(t *testing.T) {
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google", Name: "YouTube", Enabled: true, ClientID: "youtube-client", ClientSecret: "youtube-secret", RedirectURI: "https://control.example.test/oauth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID: provider.ID, ProviderType: "google", AccountLabel: "youtube", RefreshToken: "youtube-refresh", Scopes: []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	youtubeClient := &scriptedYouTubeLifecycleClient{
+		fakeYouTubeLiveClient: &fakeYouTubeLiveClient{},
+		statuses:              []string{"livestarting", "live"},
+	}
+	server := &Server{integrations: integrations, youtubeLive: youtubeClient}
+	lifecycle, ready, terminal, code := server.discordYouTubeLiveNotificationLifecycle(t.Context(), store.DiscordYouTubeLiveNotification{
+		YouTubeMode:           "live_api",
+		YouTubeOAuthAccountID: account.ID,
+		YouTubeBroadcastID:    "broadcast-01",
+	})
+	if lifecycle != "live" || !ready || terminal || code != "" {
+		t.Fatalf("liveStarting reconciliation result = lifecycle=%q ready=%v terminal=%v code=%q", lifecycle, ready, terminal, code)
+	}
+	if youtubeClient.transitionCalls != 1 || youtubeClient.calls != 2 || youtubeClient.transitionRequest.BroadcastID != "broadcast-01" {
+		t.Fatalf("liveStarting reconciliation did not transition then re-read exactly once: %#v", youtubeClient)
+	}
+}
+
+func TestDiscordYouTubeLiveNotificationDoesNotRepeatUnknownLiveTransition(t *testing.T) {
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google", Name: "YouTube", Enabled: true, ClientID: "youtube-client", ClientSecret: "youtube-secret", RedirectURI: "https://control.example.test/oauth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID: provider.ID, ProviderType: "google", AccountLabel: "youtube", RefreshToken: "youtube-refresh", Scopes: []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	youtubeClient := &scriptedYouTubeLifecycleClient{
+		fakeYouTubeLiveClient: &fakeYouTubeLiveClient{},
+		statuses:              []string{"livestarting"},
+		transitionErr:         errors.New("simulated response loss"),
+	}
+	server := &Server{integrations: integrations, youtubeLive: youtubeClient}
+	notification := store.DiscordYouTubeLiveNotification{
+		YouTubeMode:           "live_api",
+		YouTubeOAuthAccountID: account.ID,
+		YouTubeBroadcastID:    "broadcast-01",
+	}
+	lifecycle, ready, terminal, code := server.discordYouTubeLiveNotificationLifecycle(t.Context(), notification)
+	if lifecycle != "livestarting" || ready || terminal || code != discordYouTubeLiveTransitionOutcomeUnknownCode {
+		t.Fatalf("unknown transition result = lifecycle=%q ready=%v terminal=%v code=%q", lifecycle, ready, terminal, code)
+	}
+	notification.LastError = code
+	_, ready, terminal, code = server.discordYouTubeLiveNotificationLifecycle(t.Context(), notification)
+	if ready || terminal || code != discordYouTubeLiveTransitionOutcomeUnknownCode {
+		t.Fatalf("unknown transition poll result = ready=%v terminal=%v code=%q", ready, terminal, code)
+	}
+	if youtubeClient.transitionCalls != 1 {
+		t.Fatalf("uncertain live transition was repeated: calls=%d", youtubeClient.transitionCalls)
+	}
 }
 
 func TestDiscordYouTubeLiveNotificationWaitsForTestingThenDispatchesOnce(t *testing.T) {

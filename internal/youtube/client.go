@@ -292,12 +292,14 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 
 func ensureReusableAccountLiveStream(ctx context.Context, service *youtubeapi.Service, req PrepareRequest) (*youtubeapi.LiveStream, error) {
 	var existingReusable *youtubeapi.LiveStream
+	wantedResolution := defaultString(req.Resolution, "1080p")
+	wantedFrameRate := defaultString(req.FrameRate, "60fps")
 	pageToken := ""
 	for {
 		query := service.LiveStreams.List([]string{"id", "snippet", "cdn", "contentDetails"}).
 			Mine(true).
 			MaxResults(50).
-			Fields("items(id,snippet/title,cdn/ingestionInfo,contentDetails/isReusable)").
+			Fields("items(id,snippet/title,cdn/resolution,cdn/frameRate,cdn/ingestionInfo,contentDetails/isReusable)").
 			Context(ctx)
 		if pageToken != "" {
 			query = query.PageToken(pageToken)
@@ -308,7 +310,9 @@ func ensureReusableAccountLiveStream(ctx context.Context, service *youtubeapi.Se
 		}
 		for _, stream := range streams.Items {
 			if stream == nil || stream.ContentDetails == nil || !stream.ContentDetails.IsReusable ||
-				stream.Cdn == nil || stream.Cdn.IngestionInfo == nil {
+				stream.Cdn == nil || stream.Cdn.IngestionInfo == nil ||
+				!strings.EqualFold(strings.TrimSpace(stream.Cdn.Resolution), wantedResolution) ||
+				!strings.EqualFold(strings.TrimSpace(stream.Cdn.FrameRate), wantedFrameRate) {
 				continue
 			}
 			if existingReusable == nil {
@@ -324,8 +328,10 @@ func ensureReusableAccountLiveStream(ctx context.Context, service *youtubeapi.Se
 		pageToken = streams.NextPageToken
 	}
 	// Older AutoStream installations may already have a reusable stream with a
-	// different title. Reuse the first valid account-owned stream instead of
-	// creating another key just to adopt the new canonical title.
+	// different title. Reuse the first account-owned stream only when its CDN
+	// format exactly matches the Encoder output. Binding a 1080p Encoder to an
+	// existing 2160p LiveStream makes YouTube advertise 4K and pillarbox the
+	// actual scene inside that larger canvas.
 	if existingReusable != nil {
 		return existingReusable, nil
 	}
@@ -333,9 +339,9 @@ func ensureReusableAccountLiveStream(ctx context.Context, service *youtubeapi.Se
 		Snippet:        &youtubeapi.LiveStreamSnippet{Title: reusableAccountStreamTitle},
 		ContentDetails: &youtubeapi.LiveStreamContentDetails{IsReusable: true},
 		Cdn: &youtubeapi.CdnSettings{
-			FrameRate:     defaultString(req.FrameRate, "60fps"),
+			FrameRate:     wantedFrameRate,
 			IngestionType: "rtmp",
-			Resolution:    defaultString(req.Resolution, "1080p"),
+			Resolution:    wantedResolution,
 		},
 	}).Context(ctx).Do()
 }
