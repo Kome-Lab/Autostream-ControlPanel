@@ -11835,16 +11835,19 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	}
 	scheduledStart := youtubeLiveAPIScheduledStart(stream, profile.Config)
 	prepared, err := s.youtubeLive.Prepare(ctx, ytlive.PrepareRequest{
-		Credentials:     credentials,
-		StreamID:        stream.ID,
-		StreamName:      stream.Name,
-		OutputID:        profile.ID,
-		Title:           youtubeLiveAPITitle(profile.Config, stream.Name),
-		Description:     configString(profile.Config, "broadcast_description"),
-		PrivacyStatus:   defaultConfigString(profile.Config, "privacy_status", "private"),
-		ScheduledStart:  youtubeLiveAPIScheduledStart(stream, profile.Config),
-		Resolution:      defaultConfigString(profile.Config, "resolution", "1080p"),
-		FrameRate:       defaultConfigString(profile.Config, "frame_rate", "60fps"),
+		Credentials:    credentials,
+		StreamID:       stream.ID,
+		StreamName:     stream.Name,
+		OutputID:       profile.ID,
+		Title:          youtubeLiveAPITitle(profile.Config, stream.Name),
+		Description:    configString(profile.Config, "broadcast_description"),
+		PrivacyStatus:  defaultConfigString(profile.Config, "privacy_status", "private"),
+		ScheduledStart: youtubeLiveAPIScheduledStart(stream, profile.Config),
+		// The Encoder profile is validated before provider preparation. Let YouTube
+		// detect the exact coded geometry so a provider-side 1080p template
+		// cannot turn a 1920x1080 feed into a square playback canvas.
+		Resolution:      "variable",
+		FrameRate:       "variable",
 		EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
 		EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
 		// Keep provider ingest format state scoped to this broadcast. Reusing an

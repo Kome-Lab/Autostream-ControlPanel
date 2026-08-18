@@ -464,6 +464,7 @@ func prepareBroadcast(ctx context.Context, service *youtubeapi.Service, req Prep
 			MonitorStream:   &youtubeapi.MonitorStreamInfo{EnableMonitorStream: &enableMonitorStream},
 			EnableAutoStart: req.EnableAutoStart,
 			EnableAutoStop:  req.EnableAutoStop,
+			Projection:      "rectangular",
 		},
 	}).Context(ctx).Do()
 }

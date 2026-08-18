@@ -59,6 +59,8 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 		Description:     "AutoStream private test",
 		PrivacyStatus:   "private",
 		ScheduledStart:  time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC),
+		Resolution:      "variable",
+		FrameRate:       "variable",
 		EnableAutoStart: true,
 		EnableAutoStop:  true,
 	})
@@ -95,8 +97,14 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 	if !strings.Contains(transport.broadcastInsertBody, `"enableMonitorStream":false`) {
 		t.Fatalf("direct AutoStart broadcast must disable the optional monitor stream: %s", transport.broadcastInsertBody)
 	}
+	if !strings.Contains(transport.broadcastInsertBody, `"projection":"rectangular"`) {
+		t.Fatalf("broadcast insert body must force rectangular playback projection: %s", transport.broadcastInsertBody)
+	}
 	if !strings.Contains(transport.accountStreamInsertBody, `"isReusable":false`) {
 		t.Fatalf("stream-scoped ingest must explicitly disable provider reuse: %s", transport.accountStreamInsertBody)
+	}
+	if !strings.Contains(transport.accountStreamInsertBody, `"resolution":"variable"`) || !strings.Contains(transport.accountStreamInsertBody, `"frameRate":"variable"`) {
+		t.Fatalf("stream-scoped ingest must let YouTube detect the exact Encoder geometry: %s", transport.accountStreamInsertBody)
 	}
 }
 
