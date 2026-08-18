@@ -15374,6 +15374,121 @@ func TestProfileCRUDAPI(t *testing.T) {
 	}
 }
 
+func TestUpdateCaptionProfileAppliesImmediatelyToReferencingLiveStream(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"admin"}}, "correct horse battery", []string{"caption_profiles.update"}); err != nil {
+		t.Fatal(err)
+	}
+	registerServiceInstanceWithCapabilities(t, auth, "worker-caption-01", "worker", map[string]any{"live_caption_runtime_settings": true})
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	profile, err := profiles.CreateProfile(t.Context(), store.ProfileCaption, "Live captions", map[string]any{
+		"provider": "deepgram", "model": "nova-3", "language": "ja", "api_key_secret_name": "deepgram_api_key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := streams.CreateStream(t.Context(), "Live stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{CaptionProfileID: profile.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = streams.UpdateStreamStatus(t.Context(), stream.ID, "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.AssignServiceToStream(t.Context(), "worker-caption-01", stream.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &captionRuntimeServiceDispatcher{}
+	handler := NewServer(streams,
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithProfileStore(profiles),
+		WithServiceDispatcher(dispatcher),
+	)
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/profiles/caption/"+profile.ID, bytes.NewBufferString(`{"name":"Live captions updated","config":{"provider":"deepgram","model":"nova-3","language":"en","api_key_secret_name":"deepgram_api_key","endpointing_ms":450}}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("caption profile update status = %d body = %s", res.Code, res.Body.String())
+	}
+	if dispatcher.captionRuntimeCalls != 1 || dispatcher.captionRuntimeStream.ID != stream.ID || dispatcher.captionRuntimeProfileID != profile.ID {
+		t.Fatalf("live caption runtime update was not dispatched: %#v", dispatcher)
+	}
+	if len(dispatcher.captionRuntimeServices) != 1 || dispatcher.captionRuntimeServices[0].ServiceID != "worker-caption-01" {
+		t.Fatalf("caption runtime dispatch did not use the primary Worker: %#v", dispatcher.captionRuntimeServices)
+	}
+	updated, err := profiles.GetProfile(t.Context(), store.ProfileCaption, profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Config["language"] != "en" {
+		t.Fatalf("caption profile was not persisted: %#v", updated.Config)
+	}
+	if !strings.Contains(toJSONForTest(t, auth.AuditEvents()), `"applied_live":true`) {
+		t.Fatalf("live caption update audit evidence missing: %#v", auth.AuditEvents())
+	}
+}
+
+func TestUpdateCaptionProfileReportsSavedButLiveApplyFailed(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"admin"}}, "correct horse battery", []string{"caption_profiles.update"}); err != nil {
+		t.Fatal(err)
+	}
+	registerServiceInstanceWithCapabilities(t, auth, "worker-caption-01", "worker", map[string]any{"live_caption_runtime_settings": true})
+	streams := store.NewMemoryStreamStore()
+	profiles := store.NewMemoryProfileStore()
+	profile, err := profiles.CreateProfile(t.Context(), store.ProfileCaption, "Live captions", map[string]any{
+		"provider": "deepgram", "model": "nova-3", "language": "ja", "api_key_secret_name": "deepgram_api_key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := streams.CreateStream(t.Context(), "Live stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{CaptionProfileID: profile.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.AssignServiceToStream(t.Context(), "worker-caption-01", stream.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &captionRuntimeServiceDispatcher{captionRuntimeResult: servicecall.DispatchResult{ServiceID: "worker-caption-01", ServiceType: "worker", Code: "caption_runtime_unavailable", FailurePhase: "response", Success: false}}
+	handler := NewServer(streams,
+		WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher),
+	)
+	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
+
+	req := httptest.NewRequest(http.MethodPut, "/profiles/caption/"+profile.ID, bytes.NewBufferString(`{"name":"Saved profile","config":{"provider":"deepgram","model":"nova-3","language":"en","api_key_secret_name":"deepgram_api_key"}}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadGateway || !strings.Contains(res.Body.String(), "caption_profile_saved_runtime_apply_failed") {
+		t.Fatalf("caption live apply failure status = %d body = %s", res.Code, res.Body.String())
+	}
+	updated, err := profiles.GetProfile(t.Context(), store.ProfileCaption, profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Saved profile" || updated.Config["language"] != "en" {
+		t.Fatalf("profile save was rolled back or lost after live apply failure: %#v", updated)
+	}
+}
+
 func TestDeleteProfileRejectsStreamReferences(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -18297,6 +18412,27 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 	if len(artifacts) != 1 || artifacts[0].SizeBytes != 456 || artifacts[0].RelativePath != "final/"+stream.ID+"/final.mp4" {
 		t.Fatalf("artifact report was not upserted safely: %#v", artifacts)
 	}
+	runBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"run-01","archive_started_at":"2026-08-18T05:06:29Z","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/run-01/final.mp4","size_bytes":789}]}`
+	runReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(runBody))
+	runReq.Header.Set("Authorization", "Bearer "+token.RawToken)
+	runRes := httptest.NewRecorder()
+	handler.ServeHTTP(runRes, runReq)
+	if runRes.Code != http.StatusAccepted {
+		t.Fatalf("run-scoped artifact report status = %d body = %s", runRes.Code, runRes.Body.String())
+	}
+	artifacts, err = streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 2 {
+		t.Fatalf("run-scoped artifact history = %#v err=%v", artifacts, err)
+	}
+	var runArtifact *store.StreamArtifact
+	for index := range artifacts {
+		if artifacts[index].ArchiveRunID == "run-01" {
+			runArtifact = &artifacts[index]
+		}
+	}
+	if runArtifact == nil || runArtifact.ArchiveStartedAt == nil || runArtifact.RelativePath != "final/"+stream.ID+"/run-01/final.mp4" {
+		t.Fatalf("run-scoped artifact metadata was not retained: %#v", artifacts)
+	}
 	var successAuditCount int
 	for _, event := range auth.AuditEvents() {
 		if event.Action == "archive.artifacts.reported" && event.Result == "success" && event.ResourceID == stream.ID {
@@ -18306,8 +18442,15 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 			}
 		}
 	}
-	if successAuditCount != 2 {
+	if successAuditCount != 3 {
 		t.Fatalf("expected artifact success audit for each accepted report, got %d events=%#v", successAuditCount, auth.AuditEvents())
+	}
+}
+
+func TestArchiveRunIDForStartUsesJSTAndNanoseconds(t *testing.T) {
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 123456789, time.UTC)
+	if got, want := archiveRunIDForStart(startedAt), "20260818_140629_123456789_JST"; got != want {
+		t.Fatalf("archive run id = %q, want %q", got, want)
 	}
 }
 
@@ -19899,6 +20042,26 @@ type fakeServiceDispatcher struct {
 	failWorkerEventSend      bool
 	failArchiveAction        bool
 	dispatchFailureError     string
+}
+
+type captionRuntimeServiceDispatcher struct {
+	fakeServiceDispatcher
+	captionRuntimeCalls     int
+	captionRuntimeStream    store.Stream
+	captionRuntimeServices  []store.RegisteredService
+	captionRuntimeProfileID string
+	captionRuntimeResult    servicecall.DispatchResult
+}
+
+func (f *captionRuntimeServiceDispatcher) UpdateWorkerCaptionRuntimeSettings(_ context.Context, stream store.Stream, services []store.RegisteredService, captionProfileID string) servicecall.DispatchResult {
+	f.captionRuntimeCalls++
+	f.captionRuntimeStream = stream
+	f.captionRuntimeServices = append([]store.RegisteredService(nil), services...)
+	f.captionRuntimeProfileID = captionProfileID
+	if f.captionRuntimeResult.ServiceType != "" || f.captionRuntimeResult.Code != "" || f.captionRuntimeResult.Success {
+		return f.captionRuntimeResult
+	}
+	return servicecall.DispatchResult{ServiceID: "worker-caption-01", ServiceType: "worker", Endpoint: "/jobs/" + stream.ID + "/caption-runtime-settings", StatusCode: http.StatusOK, Success: true}
 }
 
 type blockingStartDispatcher struct {

@@ -10,11 +10,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiGet } from "@/lib/api/client";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { useAppSettings, useArchiveStreams } from "@/features/queries";
-import { isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
+import { archiveRunStartedAt, isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
 
 type StreamArtifact = {
   id: string;
   stream_id: string;
+  archive_run_id?: string;
+  archive_started_at?: string | null;
   kind: string;
   name: string;
   relative_path: string;
@@ -94,7 +96,9 @@ function ArchivePlayer({ streamName, streamID, artifact, timezone }: { streamNam
           <CardContent className="space-y-3 text-sm">
             <InfoRow label="種別" value={artifactKindLabel(artifact.kind)} />
             <InfoRow label="サイズ" value={formatBytes(artifact.size_bytes)} />
-            <InfoRow label="作成日時" value={formatDateTime(artifact.created_at, timezone)} />
+            <InfoRow label="配信開始日時" value={formatDateTime(archiveRunStartedAt(artifact), timezone)} />
+            <InfoRow label="成果物作成日時" value={formatDateTime(artifact.created_at, timezone)} />
+            <InfoRow label="保存形式" value={artifact.archive_run_id ? "配信回別" : "従来形式"} />
             <div className="grid gap-2 pt-2">
               <Button asChild>
                 <a href={downloadURL}>

@@ -60,6 +60,26 @@ func TestArchiveProcessingEventLookupMigrationIndexesStreamAndEventType(t *testi
 	}
 }
 
+func TestStreamArchiveRunsMigrationScopesArtifactUniquenessByRun(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/075_stream_archive_runs.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(body))
+	for _, required := range []string{
+		"archive_run_id varchar(128) not null default ''",
+		"archive_started_at datetime(6) null",
+		"archive_reported_at datetime(6) null",
+		"drop index if exists uniq_stream_artifacts_stream_kind_name",
+		"uniq_stream_artifacts_stream_run_kind_name",
+		"(stream_id, archive_run_id, kind, name)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("stream archive run migration is missing %q:\n%s", required, string(body))
+		}
+	}
+}
+
 func TestPasskeyCeremonySessionUserForeignKeyMatchesUsersTable(t *testing.T) {
 	initBody, err := embeddedMigrations.ReadFile("migrations/001_init.sql")
 	if err != nil {

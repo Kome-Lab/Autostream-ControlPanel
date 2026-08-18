@@ -154,6 +154,45 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	}
 }
 
+func TestStartDispatchesArchiveRunOnlyToCapableEncoder(t *testing.T) {
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 123456789, time.UTC)
+	for _, test := range []struct {
+		name    string
+		capable bool
+	}{
+		{name: "capable", capable: true},
+		{name: "legacy", capable: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var payload map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			defer server.Close()
+			service := store.RegisteredService{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}
+			if test.capable {
+				service.ReportedCapabilities = map[string]any{"archive_runs": true}
+			}
+			results := testClient().Start(t.Context(), store.Stream{ID: "stream-01", Name: "History"}, []store.RegisteredService{service}, StartRequest{
+				ArchiveProfileID: "archive-01", ArchiveRunID: "run-01", ArchiveStartedAt: startedAt,
+			})
+			if len(results) != 1 || !results[0].Success {
+				t.Fatalf("start result = %#v", results)
+			}
+			if test.capable {
+				if payload["archive_run_id"] != "run-01" || payload["started_at"] != startedAt.Format(time.RFC3339Nano) {
+					t.Fatalf("capable Encoder archive payload = %#v", payload)
+				}
+			} else if payload["archive_run_id"] != nil || payload["started_at"] != nil {
+				t.Fatalf("legacy Encoder received unsupported archive fields: %#v", payload)
+			}
+		})
+	}
+}
+
 func TestStartNegotiatesWorkerVideoIngestWithoutLeakingCredential(t *testing.T) {
 	const (
 		videoURL        = "srt://encoder-media.example.com:19000"
@@ -984,6 +1023,25 @@ func TestDownloadArchiveArtifactForwardsRangeAndKeepsStreamingBodyAlive(t *testi
 	}
 }
 
+func TestDownloadArchiveArtifactUsesRunScopedEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/streams/stream-01/archive-runs/run-01/artifacts/final.mp4" {
+			t.Fatalf("unexpected archive path: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+	result := testClient().DownloadArchiveArtifact(
+		t.Context(), store.Stream{ID: "stream-01"},
+		[]store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}},
+		store.StreamArtifact{ID: "artifact-01", StreamID: "stream-01", ArchiveRunID: "run-01", Kind: "archive", Name: "final.mp4"}, "",
+	)
+	if !result.Success || result.Body == nil {
+		t.Fatalf("run-scoped archive result = %#v", result)
+	}
+	defer result.Body.Close()
+}
+
 func TestNotifyDiscordYouTubeLiveDoesNotRetryAmbiguousFailure(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1089,6 +1147,44 @@ func TestStartReadinessBlocksUnavailableCaptionPipelineCapabilities(t *testing.T
 		if !hasIssueCode(issues, want) {
 			t.Fatalf("missing caption readiness issue %s in %#v", want, issues)
 		}
+	}
+}
+
+func TestUpdateWorkerCaptionRuntimeSettingsUsesCapabilityAndProfileReferenceOnly(t *testing.T) {
+	var method, path, authorization string
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		authorization = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"caption_session_generation": 2})
+	}))
+	defer server.Close()
+
+	result := testClient().UpdateWorkerCaptionRuntimeSettings(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, Capabilities: map[string]any{"live_caption_runtime_settings": true}},
+	}, "caption-profile-01")
+	if !result.Success || result.StatusCode != http.StatusOK {
+		t.Fatalf("caption runtime dispatch failed: %#v", result)
+	}
+	if method != http.MethodPut || path != "/jobs/stream-01/caption-runtime-settings" || authorization != "Bearer service-token" {
+		t.Fatalf("unexpected request: method=%s path=%s authorization=%s", method, path, authorization)
+	}
+	if len(body) != 1 || body["caption_profile_id"] != "caption-profile-01" {
+		t.Fatalf("caption runtime payload must contain only the profile reference: %#v", body)
+	}
+}
+
+func TestUpdateWorkerCaptionRuntimeSettingsRejectsUnsupportedWorkerBeforeDispatch(t *testing.T) {
+	result := testClient().UpdateWorkerCaptionRuntimeSettings(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
+		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "http://127.0.0.1:1", Capabilities: map[string]any{}},
+	}, "caption-profile-01")
+	if result.Success || result.Code != "worker_caption_runtime_settings_not_supported" || result.FailurePhase != "pre_dispatch" {
+		t.Fatalf("unsupported worker was not rejected before dispatch: %#v", result)
 	}
 }
 

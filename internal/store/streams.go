@@ -18,6 +18,9 @@ type Stream struct {
 	ID                        string     `json:"id"`
 	Name                      string     `json:"name"`
 	Status                    string     `json:"status"`
+	ArchiveRunID              string     `json:"archive_run_id,omitempty"`
+	ArchiveStartedAt          *time.Time `json:"archive_started_at,omitempty"`
+	ArchiveReportedAt         *time.Time `json:"archive_reported_at,omitempty"`
 	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`
 	ScheduledEndAt            *time.Time `json:"scheduled_end_at,omitempty"`
 	DiscordConfigID           string     `json:"discord_config_id,omitempty"`
@@ -79,14 +82,16 @@ type StreamLog struct {
 }
 
 type StreamArtifact struct {
-	ID              string    `json:"id"`
-	StreamID        string    `json:"stream_id"`
-	Kind            string    `json:"kind"`
-	Name            string    `json:"name"`
-	RelativePath    string    `json:"relative_path"`
-	SizeBytes       int64     `json:"size_bytes"`
-	CreatedAt       time.Time `json:"created_at"`
-	SourceServiceID string    `json:"-"`
+	ID               string     `json:"id"`
+	StreamID         string     `json:"stream_id"`
+	ArchiveRunID     string     `json:"archive_run_id,omitempty"`
+	ArchiveStartedAt *time.Time `json:"archive_started_at,omitempty"`
+	Kind             string     `json:"kind"`
+	Name             string     `json:"name"`
+	RelativePath     string     `json:"relative_path"`
+	SizeBytes        int64      `json:"size_bytes"`
+	CreatedAt        time.Time  `json:"created_at"`
+	SourceServiceID  string     `json:"-"`
 }
 
 type StreamArtifactShare struct {
@@ -165,6 +170,10 @@ type ArchiveStreamStore interface {
 // deliberately deletes its last recording.
 type ArchiveProcessingStreamStore interface {
 	ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error)
+}
+
+type StreamArchiveRunStore interface {
+	PrepareStreamArchiveRun(ctx context.Context, id, archiveRunID string, startedAt time.Time) (Stream, error)
 }
 
 type StreamArtifactAdminStore interface {
@@ -261,12 +270,18 @@ func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 	rows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL
   AND LOWER(TRIM(s.status)) IN ('stopping', 'completed')
   AND COALESCE(TRIM(ss.archive_profile_id), '') <> ''
-  AND NOT (`+archiveRecordingArtifactExistsCondition+`)
-  AND NOT EXISTS (
-    SELECT 1
-    FROM service_stream_events e
-    WHERE e.stream_id = s.id
-      AND e.event_type = 'archive.artifacts.reported'
+  AND (
+    (s.archive_started_at IS NOT NULL AND s.archive_reported_at IS NULL)
+    OR (
+      s.archive_started_at IS NULL
+      AND NOT (`+archiveRecordingArtifactExistsCondition+`)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM service_stream_events e
+        WHERE e.stream_id = s.id
+          AND e.event_type = 'archive.artifacts.reported'
+      )
+    )
   )`))
 	if err != nil {
 		return nil, err
@@ -283,7 +298,7 @@ func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 	return streams, rows.Err()
 }
 
-const streamSelectFields = `s.id, s.name, s.status, s.scheduled_start_at, s.scheduled_end_at,
+const streamSelectFields = `s.id, s.name, s.status, COALESCE(s.archive_run_id, ''), s.archive_started_at, s.archive_reported_at, s.scheduled_start_at, s.scheduled_end_at,
   COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
   COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
   COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.encoder_audio_gain_db, 0), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
@@ -309,14 +324,35 @@ type streamRowScanner interface {
 
 func scanStreamRow(scanner streamRowScanner) (Stream, error) {
 	var stream Stream
-	var scheduledStart, scheduledEnd, deletedAt sql.NullTime
-	if err := scanner.Scan(&stream.ID, &stream.Name, &stream.Status, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt, &deletedAt); err != nil {
+	var archiveStartedAt, archiveReportedAt, scheduledStart, scheduledEnd, deletedAt sql.NullTime
+	if err := scanner.Scan(&stream.ID, &stream.Name, &stream.Status, &stream.ArchiveRunID, &archiveStartedAt, &archiveReportedAt, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt, &deletedAt); err != nil {
 		return Stream{}, err
 	}
 	stream.ScheduledStartAt = nullTimePtr(scheduledStart)
 	stream.ScheduledEndAt = nullTimePtr(scheduledEnd)
+	stream.ArchiveStartedAt = nullTimePtr(archiveStartedAt)
+	stream.ArchiveReportedAt = nullTimePtr(archiveReportedAt)
 	stream.DeletedAt = nullTimePtr(deletedAt)
 	return stream, nil
+}
+
+func (s MariaDBStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, archiveRunID string, startedAt time.Time) (Stream, error) {
+	archiveRunID = strings.TrimSpace(archiveRunID)
+	if archiveRunID != "" && !validArchiveRunID(archiveRunID) {
+		return Stream{}, ErrInvalidStreamArtifact
+	}
+	var started any
+	if !startedAt.IsZero() {
+		started = startedAt.UTC()
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE streams SET archive_run_id = ?, archive_started_at = ?, archive_reported_at = NULL, updated_at = ? WHERE id = ?`, archiveRunID, started, time.Now().UTC(), id)
+	if err != nil {
+		return Stream{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return s.GetStream(ctx, id)
+	}
+	return s.GetStream(ctx, id)
 }
 
 func (s MariaDBStreamStore) HasActiveStream(ctx context.Context) (bool, error) {
@@ -737,15 +773,15 @@ func (s MariaDBStreamStore) ListStreamArtifacts(ctx context.Context, id string) 
 	if _, err := s.GetStream(ctx, id); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id FROM stream_artifacts WHERE stream_id = ? ORDER BY created_at DESC`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, stream_id, archive_run_id, archive_started_at, kind, name, relative_path, size_bytes, created_at, source_service_id FROM stream_artifacts WHERE stream_id = ? ORDER BY COALESCE(archive_started_at, created_at) DESC, created_at DESC`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var artifacts []StreamArtifact
 	for rows.Next() {
-		var artifact StreamArtifact
-		if err := rows.Scan(&artifact.ID, &artifact.StreamID, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.SourceServiceID); err != nil {
+		artifact, err := scanStreamArtifact(rows)
+		if err != nil {
 			return nil, err
 		}
 		if isSafeRelativePath(artifact.RelativePath) {
@@ -767,14 +803,18 @@ func (s MariaDBStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 		return err
 	}
 	defer tx.Rollback()
-	for _, artifact := range NormalizeStreamArtifacts(id, artifacts) {
+	normalized := NormalizeStreamArtifacts(id, artifacts)
+	for _, artifact := range normalized {
 		artifact.ID = newUUID()
 		artifact.CreatedAt = time.Now().UTC()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, archive_run_id, archive_started_at, kind, name, relative_path, size_bytes, created_at, source_service_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes), source_service_id = IF(VALUES(source_service_id) <> '', VALUES(source_service_id), source_service_id)`,
-			artifact.ID, id, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt, strings.TrimSpace(artifact.SourceServiceID)); err != nil {
+			artifact.ID, id, artifact.ArchiveRunID, artifact.ArchiveStartedAt, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt, strings.TrimSpace(artifact.SourceServiceID)); err != nil {
 			return err
 		}
+	}
+	if err := markStreamArchiveRunReported(ctx, tx, id, normalized); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -805,13 +845,13 @@ func (s MariaDBStreamStore) RenameStreamArtifact(ctx context.Context, streamID, 
 		return artifact, nil
 	}
 	var conflict string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM stream_artifacts WHERE stream_id = ? AND kind = ? AND name = ? LIMIT 1`, streamID, artifact.Kind, name).Scan(&conflict); err == nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM stream_artifacts WHERE stream_id = ? AND archive_run_id = ? AND kind = ? AND name = ? LIMIT 1`, streamID, artifact.ArchiveRunID, artifact.Kind, name).Scan(&conflict); err == nil {
 		return StreamArtifact{}, ErrAlreadyExists
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return StreamArtifact{}, err
 	}
 	artifact.Name = name
-	artifact.RelativePath = path.Join("final", streamID, name)
+	artifact.RelativePath = streamArtifactRelativePath(streamID, artifact.ArchiveRunID, name)
 	if !isSafeRelativePath(artifact.RelativePath) {
 		return StreamArtifact{}, ErrInvalidStreamArtifact
 	}
@@ -918,8 +958,7 @@ func (s MariaDBStreamStore) streamArtifactByID(ctx context.Context, streamID, ar
 	if _, err := s.GetStream(ctx, streamID); err != nil {
 		return StreamArtifact{}, err
 	}
-	var artifact StreamArtifact
-	err := s.db.QueryRowContext(ctx, `SELECT id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id FROM stream_artifacts WHERE stream_id = ? AND id = ?`, streamID, artifactID).Scan(&artifact.ID, &artifact.StreamID, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.SourceServiceID)
+	artifact, err := scanStreamArtifact(s.db.QueryRowContext(ctx, `SELECT id, stream_id, archive_run_id, archive_started_at, kind, name, relative_path, size_bytes, created_at, source_service_id FROM stream_artifacts WHERE stream_id = ? AND id = ?`, streamID, artifactID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return StreamArtifact{}, ErrNotFound
 	}
@@ -979,17 +1018,48 @@ func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_stream_events (id, service_id, stream_id, event_type, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)`, newUUID(), event.ServiceID, event.StreamID, event.EventType, string(body), time.Now().UTC()); err != nil {
 		return err
 	}
-	for _, artifact := range NormalizeStreamArtifacts(event.StreamID, artifacts) {
+	normalized := NormalizeStreamArtifacts(event.StreamID, artifacts)
+	for _, artifact := range normalized {
 		artifact.ID = newUUID()
 		artifact.CreatedAt = time.Now().UTC()
 		artifact.SourceServiceID = strings.TrimSpace(event.ServiceID)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, kind, name, relative_path, size_bytes, created_at, source_service_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_artifacts (id, stream_id, archive_run_id, archive_started_at, kind, name, relative_path, size_bytes, created_at, source_service_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALUES(size_bytes), source_service_id = IF(VALUES(source_service_id) <> '', VALUES(source_service_id), source_service_id)`,
-			artifact.ID, event.StreamID, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt, artifact.SourceServiceID); err != nil {
+			artifact.ID, event.StreamID, artifact.ArchiveRunID, artifact.ArchiveStartedAt, artifact.Kind, artifact.Name, artifact.RelativePath, artifact.SizeBytes, artifact.CreatedAt, artifact.SourceServiceID); err != nil {
 			return err
 		}
 	}
+	if err := markStreamArchiveRunReported(ctx, tx, event.StreamID, normalized); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+type streamArtifactScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanStreamArtifact(scanner streamArtifactScanner) (StreamArtifact, error) {
+	var artifact StreamArtifact
+	var archiveStartedAt sql.NullTime
+	if err := scanner.Scan(&artifact.ID, &artifact.StreamID, &artifact.ArchiveRunID, &archiveStartedAt, &artifact.Kind, &artifact.Name, &artifact.RelativePath, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.SourceServiceID); err != nil {
+		return StreamArtifact{}, err
+	}
+	artifact.ArchiveStartedAt = nullTimePtr(archiveStartedAt)
+	return artifact, nil
+}
+
+type streamArchiveRunReporter interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func markStreamArchiveRunReported(ctx context.Context, reporter streamArchiveRunReporter, streamID string, artifacts []StreamArtifact) error {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	_, err := reporter.ExecContext(ctx, `UPDATE streams SET archive_reported_at = ?, updated_at = ? WHERE id = ? AND archive_started_at IS NOT NULL AND archive_run_id = ?`, now, now, streamID, artifacts[0].ArchiveRunID)
+	return err
 }
 
 func ValidateStreamArtifactReport(streamID string, artifacts []StreamArtifact) error {
@@ -1007,6 +1077,9 @@ func ValidateStreamArtifactReport(streamID string, artifacts []StreamArtifact) e
 		"logs":       "logs.jsonl",
 	}
 	seen := map[string]bool{}
+	reportRunID := ""
+	var reportStartedAt *time.Time
+	reportRunSet := false
 	for _, artifact := range NormalizeStreamArtifacts(streamID, artifacts) {
 		kind := artifact.Kind
 		name := artifact.Name
@@ -1019,8 +1092,22 @@ func ValidateStreamArtifactReport(streamID string, artifacts []StreamArtifact) e
 		if artifact.SizeBytes < 0 || len(artifact.RelativePath) > 1024 || !isSafeRelativePath(artifact.RelativePath) {
 			return errors.New("unsafe artifact path")
 		}
-		if artifact.RelativePath != path.Join("final", streamID, name) {
+		if artifact.ArchiveRunID == "" {
+			if artifact.ArchiveStartedAt != nil {
+				return errors.New("archive start time requires run id")
+			}
+		} else if !validArchiveRunID(artifact.ArchiveRunID) || artifact.ArchiveStartedAt == nil || artifact.ArchiveStartedAt.IsZero() {
+			return errors.New("invalid archive run metadata")
+		}
+		if artifact.RelativePath != streamArtifactRelativePath(streamID, artifact.ArchiveRunID, name) {
 			return errors.New("artifact path does not match stream and name")
+		}
+		if !reportRunSet {
+			reportRunID = artifact.ArchiveRunID
+			reportStartedAt = artifact.ArchiveStartedAt
+			reportRunSet = true
+		} else if reportRunID != artifact.ArchiveRunID || !sameOptionalTime(reportStartedAt, artifact.ArchiveStartedAt) {
+			return errors.New("mixed archive runs in one report")
 		}
 		key := kind + "\x00" + name
 		if seen[key] {
@@ -1057,6 +1144,38 @@ func ValidStreamArtifactFileName(name string) bool {
 	return true
 }
 
+func validArchiveRunID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 128 || strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) || !isASCIIAlphaNumeric(id[0]) {
+		return false
+	}
+	for _, r := range id {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9'
+}
+
+func streamArtifactRelativePath(streamID, archiveRunID, name string) string {
+	if archiveRunID == "" {
+		return path.Join("final", streamID, name)
+	}
+	return path.Join("final", streamID, archiveRunID, name)
+}
+
+func sameOptionalTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
 func isArchiveRecordingArtifact(artifact StreamArtifact) bool {
 	if !strings.EqualFold(strings.TrimSpace(artifact.Kind), "archive") {
 		return false
@@ -1077,6 +1196,11 @@ func NormalizeStreamArtifacts(streamID string, artifacts []StreamArtifact) []Str
 		artifact.Kind = strings.TrimSpace(artifact.Kind)
 		artifact.Name = strings.TrimSpace(artifact.Name)
 		artifact.RelativePath = strings.TrimSpace(artifact.RelativePath)
+		artifact.ArchiveRunID = strings.TrimSpace(artifact.ArchiveRunID)
+		if artifact.ArchiveStartedAt != nil {
+			startedAt := artifact.ArchiveStartedAt.UTC()
+			artifact.ArchiveStartedAt = &startedAt
+		}
 		artifact.CreatedAt = time.Time{}
 		normalized = append(normalized, artifact)
 	}

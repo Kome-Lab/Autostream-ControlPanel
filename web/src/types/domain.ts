@@ -16,6 +16,9 @@ export type Stream = {
   id: string;
   name: string;
   status: StreamStatus | string;
+  archive_run_id?: string;
+  archive_started_at?: string;
+  archive_reported_at?: string;
   input_source?: string;
   output_target?: string;
   assigned_worker_id?: string;

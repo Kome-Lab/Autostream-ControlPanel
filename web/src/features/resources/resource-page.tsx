@@ -2255,7 +2255,12 @@ function EditResourceButton({ resource, row, disabled }: { resource: ResourceDef
       setMessage("更新しました。");
       await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
     },
-    onError: (error) => setMessage(resourceWriteErrorMessage(resource, error, "更新")),
+    onError: async (error) => {
+      setMessage(resourceWriteErrorMessage(resource, error, "更新"));
+      if (error instanceof APIError && error.code === "caption_profile_saved_runtime_apply_failed") {
+        await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+      }
+    },
   });
   const submit: SubmitResource = (payload) => {
     setMessage("");
@@ -2300,6 +2305,9 @@ function resourceWriteErrorMessage(resource: ResourceDefinition, error: Error, a
     permission_denied: "ロールを変更する権限がありません。",
   };
   if (common[error.code || ""]) return common[error.code || ""];
+  if (resource.path === "/profiles/caption" && error.code === "caption_profile_saved_runtime_apply_failed") {
+    return "字幕設定は保存されましたが、配信中のWorkerへの即時反映に失敗しました。Workerのバージョン、割り当て、接続状態を確認してから設定を再保存してください。";
+  }
   if (resource.path === "/users") {
     const messages: Record<string, string> = {
       cannot_update_own_roles: "ログイン中のユーザー自身のロールは変更できません。ユーザー名またはメールアドレスだけを更新してください。",

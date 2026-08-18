@@ -7,7 +7,7 @@ import {
   ARCHIVE_ARTIFACT_EMPTY_POLL_MAX_ATTEMPTS,
   archiveArtifactPollInterval,
 } from "../src/features/archive/archive-artifact-polling.ts";
-import { effectiveArchiveStreamID, isArchiveRecordingArtifact } from "../src/features/archive/archive-artifact.ts";
+import { archiveRunStartedAt, effectiveArchiveStreamID, isArchiveRecordingArtifact, sortArchiveArtifactsNewest } from "../src/features/archive/archive-artifact.ts";
 
 const archiveViewSource = fs.readFileSync(
   new URL("../src/features/archive/archive-view.tsx", import.meta.url),
@@ -77,6 +77,19 @@ test("archive finalization is shown separately from selectable completed recordi
   assert.match(archiveViewSource, /アーカイブ処理中/);
   assert.match(archiveViewSource, /完了すると下の選択肢に自動で追加されます/);
   assert.match(archiveViewSource, /<StreamSelect streams=\{streamRows\}/);
+});
+
+test("local archive history is ordered and labelled by broadcast run", () => {
+  const artifacts = sortArchiveArtifactsNewest([
+    { id: "legacy", created_at: "2026-08-18T05:00:00Z" },
+    { id: "new", archive_started_at: "2026-08-18T06:00:00Z", created_at: "2026-08-18T06:05:00Z" },
+  ]);
+  assert.deepEqual(artifacts.map((artifact) => artifact.id), ["new", "legacy"]);
+  assert.equal(archiveRunStartedAt(artifacts[0]), "2026-08-18T06:00:00Z");
+  assert.equal(archiveRunStartedAt(artifacts[1]), "2026-08-18T05:00:00Z");
+  assert.match(archiveViewSource, /配信枠・配信回ごと/);
+  assert.match(archiveViewSource, /配信回別保存/);
+  assert.match(archivePlayerSource, /配信開始日時/);
 });
 
 test("Drive destination UI uses the selected folder as the archive root", () => {

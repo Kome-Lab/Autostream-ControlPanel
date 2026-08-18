@@ -84,6 +84,64 @@ func TestMemoryStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 	}
 }
 
+func TestMemoryStreamArtifactsPreserveRunsAndFenceProcessingCompletion(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, StreamSettings{ArchiveProfileID: "archive-01"}); err != nil {
+		t.Fatal(err)
+	}
+	runOneStarted := time.Date(2026, 8, 18, 5, 6, 29, 1, time.UTC)
+	runTwoStarted := runOneStarted.Add(time.Hour)
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-01", runOneStarted); err != nil {
+		t.Fatal(err)
+	}
+	runOne := StreamArtifact{
+		ArchiveRunID: "run-01", ArchiveStartedAt: &runOneStarted,
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-01/final.mp4", SizeBytes: 123,
+	}
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{runOne}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-02", runTwoStarted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A delayed report from the previous run may still be catalogued, but must
+	// not complete the currently processing run.
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{runOne}); err != nil {
+		t.Fatal(err)
+	}
+	processing, err := streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 1 || processing[0].ArchiveRunID != "run-02" || processing[0].ArchiveReportedAt != nil {
+		t.Fatalf("stale run report completed current run: processing=%#v err=%v", processing, err)
+	}
+
+	runTwo := StreamArtifact{
+		ArchiveRunID: "run-02", ArchiveStartedAt: &runTwoStarted,
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-02/final.mp4", SizeBytes: 456,
+	}
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{runTwo}); err != nil {
+		t.Fatal(err)
+	}
+	processing, err = streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 0 {
+		t.Fatalf("matching run report did not complete processing: processing=%#v err=%v", processing, err)
+	}
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 2 {
+		t.Fatalf("archive run history = %#v err=%v", artifacts, err)
+	}
+	if artifacts[0].ID == artifacts[1].ID || artifacts[0].ArchiveRunID == artifacts[1].ArchiveRunID {
+		t.Fatalf("archive runs were overwritten: %#v", artifacts)
+	}
+}
+
 func TestMemoryDeleteStreamRetainsArchiveAndHidesOperationalStream(t *testing.T) {
 	streams := NewMemoryStreamStore()
 	stream, err := streams.CreateStream(t.Context(), "archive-protected")

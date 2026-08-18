@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -91,7 +90,16 @@ func (s *MemoryStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 	items := make([]Stream, 0, len(s.streams))
 	for _, stream := range s.streams {
 		status := strings.ToLower(strings.TrimSpace(stream.Status))
-		if stream.DeletedAt != nil || strings.TrimSpace(stream.ArchiveProfileID) == "" || (status != "stopping" && status != "completed") || s.artifactReports[stream.ID] {
+		if stream.DeletedAt != nil || strings.TrimSpace(stream.ArchiveProfileID) == "" || (status != "stopping" && status != "completed") {
+			continue
+		}
+		if stream.ArchiveStartedAt != nil {
+			if stream.ArchiveReportedAt == nil {
+				items = append(items, stream)
+			}
+			continue
+		}
+		if s.artifactReports[stream.ID] {
 			continue
 		}
 		hasRecording := false
@@ -318,6 +326,33 @@ func (s *MemoryStreamStore) TransitionStreamStatus(ctx context.Context, id, expe
 	return stream, true, nil
 }
 
+func (s *MemoryStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, archiveRunID string, startedAt time.Time) (Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return Stream{}, err
+	}
+	archiveRunID = strings.TrimSpace(archiveRunID)
+	if archiveRunID != "" && !validArchiveRunID(archiveRunID) {
+		return Stream{}, ErrInvalidStreamArtifact
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stream, ok := s.streams[id]
+	if !ok {
+		return Stream{}, ErrNotFound
+	}
+	stream.ArchiveRunID = archiveRunID
+	stream.ArchiveStartedAt = nil
+	if !startedAt.IsZero() {
+		value := startedAt.UTC()
+		stream.ArchiveStartedAt = &value
+	}
+	stream.ArchiveReportedAt = nil
+	stream.UpdatedAt = time.Now().UTC()
+	s.streams[id] = stream
+	s.artifactReports[id] = false
+	return stream, nil
+}
+
 func (s *MemoryStreamStore) SaveStreamYouTubeRuntime(ctx context.Context, runtime StreamYouTubeRuntime) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -489,10 +524,11 @@ func (s *MemoryStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 		return err
 	}
 	current := append([]StreamArtifact(nil), s.artifacts[id]...)
-	for _, artifact := range NormalizeStreamArtifacts(id, artifacts) {
+	normalized := NormalizeStreamArtifacts(id, artifacts)
+	for _, artifact := range normalized {
 		updated := false
 		for index, existing := range current {
-			if existing.Kind != artifact.Kind || existing.Name != artifact.Name {
+			if existing.ArchiveRunID != artifact.ArchiveRunID || existing.Kind != artifact.Kind || existing.Name != artifact.Name {
 				continue
 			}
 			existing.RelativePath = artifact.RelativePath
@@ -513,6 +549,13 @@ func (s *MemoryStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 	}
 	s.artifacts[id] = current
 	s.artifactReports[id] = true
+	stream := s.streams[id]
+	if stream.ArchiveStartedAt != nil && len(normalized) > 0 && stream.ArchiveRunID == normalized[0].ArchiveRunID {
+		reportedAt := time.Now().UTC()
+		stream.ArchiveReportedAt = &reportedAt
+		stream.UpdatedAt = reportedAt
+		s.streams[id] = stream
+	}
 	return nil
 }
 
@@ -554,8 +597,20 @@ func (s *MemoryStreamStore) RenameStreamArtifact(ctx context.Context, streamID, 
 	if _, ok := s.streams[streamID]; !ok {
 		return StreamArtifact{}, ErrNotFound
 	}
+	targetRunID := ""
+	targetFound := false
 	for _, artifact := range s.artifacts[streamID] {
-		if artifact.ID != artifactID && artifact.Name == name {
+		if artifact.ID == artifactID {
+			targetRunID = artifact.ArchiveRunID
+			targetFound = true
+			break
+		}
+	}
+	if !targetFound {
+		return StreamArtifact{}, ErrNotFound
+	}
+	for _, artifact := range s.artifacts[streamID] {
+		if artifact.ID != artifactID && artifact.ArchiveRunID == targetRunID && artifact.Name == name {
 			return StreamArtifact{}, ErrAlreadyExists
 		}
 	}
@@ -564,7 +619,7 @@ func (s *MemoryStreamStore) RenameStreamArtifact(ctx context.Context, streamID, 
 			continue
 		}
 		artifact.Name = name
-		artifact.RelativePath = path.Join("final", streamID, name)
+		artifact.RelativePath = streamArtifactRelativePath(streamID, artifact.ArchiveRunID, name)
 		if !isSafeRelativePath(artifact.RelativePath) {
 			return StreamArtifact{}, ErrInvalidStreamArtifact
 		}

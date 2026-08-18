@@ -68,6 +68,8 @@ type StartRequest struct {
 	OverlayProfileID            string         `json:"overlay_profile_id,omitempty"`
 	EncoderAudioGainDB          float64        `json:"encoder_audio_gain_db,omitempty"`
 	ArchiveProfileID            string         `json:"archive_profile_id,omitempty"`
+	ArchiveRunID                string         `json:"-"`
+	ArchiveStartedAt            time.Time      `json:"-"`
 	YouTubeOutputID             string         `json:"youtube_output_id,omitempty"`
 	YouTubeRuntime              map[string]any `json:"-"`
 	ArchiveConfig               map[string]any `json:"-"`
@@ -87,6 +89,26 @@ func (c Client) UpdateEncoderRuntimeSettings(ctx context.Context, stream store.S
 		})
 	}
 	return DispatchResult{ServiceType: "encoder_recorder", Code: "assigned_encoder_not_found", FailurePhase: "pre_dispatch", Error: "assigned Encoder service not found"}
+}
+
+func (c Client) UpdateWorkerCaptionRuntimeSettings(ctx context.Context, stream store.Stream, services []store.RegisteredService, captionProfileID string) DispatchResult {
+	endpoint := "/jobs/" + url.PathEscape(strings.TrimSpace(stream.ID)) + "/caption-runtime-settings"
+	captionProfileID = strings.TrimSpace(captionProfileID)
+	if captionProfileID == "" {
+		return DispatchResult{ServiceType: "worker", Endpoint: endpoint, Code: "caption_profile_id_required", FailurePhase: "pre_dispatch", Error: "caption profile is required for a live runtime refresh"}
+	}
+	for _, service := range services {
+		if service.ServiceType != "worker" {
+			continue
+		}
+		if enabled, _ := service.Capabilities["live_caption_runtime_settings"].(bool); !enabled {
+			return DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint, Code: "worker_caption_runtime_settings_not_supported", FailurePhase: "pre_dispatch", Error: "assigned Worker does not support live caption runtime settings"}
+		}
+		return c.serviceJSONAction(ctx, service, http.MethodPut, endpoint, map[string]any{
+			"caption_profile_id": captionProfileID,
+		})
+	}
+	return DispatchResult{ServiceType: "worker", Endpoint: endpoint, Code: "assigned_worker_not_found", FailurePhase: "pre_dispatch", Error: "assigned Worker service not found"}
 }
 
 type WorkerEventRequest struct {
@@ -672,11 +694,18 @@ func (c Client) RetryArchiveUpload(ctx context.Context, stream store.Stream, ser
 		if service.ServiceType != "encoder_recorder" {
 			continue
 		}
+		startedAt := stream.CreatedAt
+		if stream.ArchiveStartedAt != nil {
+			startedAt = *stream.ArchiveStartedAt
+		}
 		payload := map[string]any{
 			"stream_id":  stream.ID,
 			"name":       stream.Name,
-			"started_at": stream.CreatedAt,
+			"started_at": startedAt,
 			"dry_run":    false,
+		}
+		if reportedCapabilityTrue(service.ReportedCapabilities, "archive_runs") && strings.TrimSpace(stream.ArchiveRunID) != "" {
+			payload["archive_run_id"] = stream.ArchiveRunID
 		}
 		if len(archiveConfig) > 0 {
 			payload["archive_config"] = archiveConfig
@@ -742,7 +771,7 @@ func (c Client) NotifyDiscordYouTubeLive(ctx context.Context, stream store.Strea
 func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, byteRange string) ArchiveArtifactDownloadResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
-			return c.getArchiveArtifact(ctx, service, archiveArtifactEndpoint(stream.ID, artifact.Name), artifact.Name, byteRange)
+			return c.getArchiveArtifact(ctx, service, archiveArtifactEndpoint(stream.ID, artifact.ArchiveRunID, artifact.Name), artifact.Name, byteRange)
 		}
 	}
 	return ArchiveArtifactDownloadResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
@@ -751,7 +780,7 @@ func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream
 func (c Client) DeleteArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) DispatchResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
-			return c.serviceJSONAction(ctx, service, http.MethodDelete, archiveArtifactEndpoint(stream.ID, artifact.Name), nil)
+			return c.serviceJSONAction(ctx, service, http.MethodDelete, archiveArtifactEndpoint(stream.ID, artifact.ArchiveRunID, artifact.Name), nil)
 		}
 	}
 	return DispatchResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
@@ -760,7 +789,7 @@ func (c Client) DeleteArchiveArtifact(ctx context.Context, stream store.Stream, 
 func (c Client) RenameArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, name string) DispatchResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
-			return c.serviceJSONAction(ctx, service, http.MethodPut, archiveArtifactEndpoint(stream.ID, artifact.Name), map[string]string{"name": name})
+			return c.serviceJSONAction(ctx, service, http.MethodPut, archiveArtifactEndpoint(stream.ID, artifact.ArchiveRunID, artifact.Name), map[string]string{"name": name})
 		}
 	}
 	return DispatchResult{ServiceType: "encoder_recorder", Error: "assigned encoder_recorder service not found"}
@@ -1328,6 +1357,10 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		if len(req.ArchiveConfig) > 0 {
 			payload["archive_config"] = req.ArchiveConfig
 		}
+		if reportedCapabilityTrue(service.ReportedCapabilities, "archive_runs") && strings.TrimSpace(req.ArchiveRunID) != "" && !req.ArchiveStartedAt.IsZero() {
+			payload["archive_run_id"] = req.ArchiveRunID
+			payload["started_at"] = req.ArchiveStartedAt.UTC()
+		}
 		return "/streams/start", payload, true
 	case "discord_bot":
 		payload := map[string]any{
@@ -1413,7 +1446,10 @@ func stopPayload(stream store.Stream, service store.RegisteredService) (string, 
 	}
 }
 
-func archiveArtifactEndpoint(streamID, name string) string {
+func archiveArtifactEndpoint(streamID, archiveRunID, name string) string {
+	if strings.TrimSpace(archiveRunID) != "" {
+		return "/streams/" + url.PathEscape(streamID) + "/archive-runs/" + url.PathEscape(archiveRunID) + "/artifacts/" + url.PathEscape(name)
+	}
 	return "/streams/" + url.PathEscape(streamID) + "/artifacts/" + url.PathEscape(name)
 }
 
@@ -1461,6 +1497,11 @@ func workerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
 // dispatch is still required before callers may persist an active contract.
 func WorkerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
 	return workerVideoCapabilitiesEnabled(services)
+}
+
+func ArchiveRunsEnabled(services []store.RegisteredService) bool {
+	encoder := firstService(services, "encoder_recorder")
+	return strings.TrimSpace(encoder.ServiceID) != "" && reportedCapabilityTrue(encoder.ReportedCapabilities, "archive_runs")
 }
 
 func workerVideoCapabilityMismatch(services []store.RegisteredService) (ReadinessIssue, bool) {

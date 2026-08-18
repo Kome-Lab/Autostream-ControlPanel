@@ -164,6 +164,10 @@ type encoderRuntimeSettingsDispatcher interface {
 	UpdateEncoderRuntimeSettings(ctx context.Context, stream store.Stream, services []store.RegisteredService, audioGainDB float64, overlayProfileID string) servicecall.DispatchResult
 }
 
+type workerCaptionRuntimeSettingsDispatcher interface {
+	UpdateWorkerCaptionRuntimeSettings(ctx context.Context, stream store.Stream, services []store.RegisteredService, captionProfileID string) servicecall.DispatchResult
+}
+
 type ServerOption func(*Server)
 
 func WithAuthStore(auth store.AuthStore) ServerOption {
@@ -2871,9 +2875,94 @@ func (s *Server) updateProfile(kind store.ProfileKind, action string) http.Handl
 			return
 		}
 		current := currentFromContext(r.Context())
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: action, ResourceType: string(kind), ResourceID: profile.ID, Result: "success", Metadata: map[string]any{"name": profile.Name}})
+		metadata := map[string]any{"name": profile.Name}
+		if kind == store.ProfileCaption {
+			results, affected, reason, statusCode := s.applyCaptionProfileToLiveStreams(r.Context(), profile.ID)
+			metadata["affected_live_streams"] = affected
+			metadata["applied_live"] = affected > 0 && reason == ""
+			if len(results) > 0 {
+				metadata["dispatch"] = sanitizeDispatchResults(results)
+			}
+			if reason != "" {
+				metadata["profile_saved"] = true
+				metadata["reason"] = reason
+				s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: action, ResourceType: string(kind), ResourceID: profile.ID, Result: "failure", Metadata: metadata})
+				writeJSON(w, statusCode, map[string]string{"code": "caption_profile_saved_runtime_apply_failed", "reason": reason})
+				return
+			}
+		}
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: action, ResourceType: string(kind), ResourceID: profile.ID, Result: "success", Metadata: metadata})
 		writeJSON(w, http.StatusOK, profile)
 	}
+}
+
+func (s *Server) applyCaptionProfileToLiveStreams(ctx context.Context, profileID string) ([]servicecall.DispatchResult, int, string, int) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" || s.streams == nil {
+		return nil, 0, "", http.StatusOK
+	}
+	streams, err := s.streams.ListStreams(ctx)
+	if err != nil {
+		return nil, 0, "list_streams_failed", http.StatusInternalServerError
+	}
+	candidates := make([]store.Stream, 0)
+	for _, stream := range streams {
+		status := strings.ToLower(strings.TrimSpace(stream.Status))
+		if stream.CaptionProfileID == profileID && (status == "live" || status == "starting") {
+			candidates = append(candidates, stream)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, 0, "", http.StatusOK
+	}
+	dispatcher, ok := s.dispatcher.(workerCaptionRuntimeSettingsDispatcher)
+	if !ok {
+		return nil, len(candidates), "worker_caption_runtime_settings_dispatch_not_supported", http.StatusBadGateway
+	}
+
+	results := make([]servicecall.DispatchResult, 0, len(candidates))
+	affected := 0
+	failureReason := ""
+	failureStatus := http.StatusBadGateway
+	for _, candidate := range candidates {
+		unlockLifecycle := s.lockStreamLifecycle(candidate.ID)
+		stream, err := s.streams.GetStream(ctx, candidate.ID)
+		if err != nil {
+			unlockLifecycle()
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			if failureReason == "" {
+				failureReason = "get_stream_failed"
+				failureStatus = http.StatusInternalServerError
+			}
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(stream.Status)) != "live" || stream.CaptionProfileID != profileID {
+			unlockLifecycle()
+			continue
+		}
+		assignments, err := s.streamAssignments(ctx, stream.ID)
+		if err != nil {
+			unlockLifecycle()
+			if failureReason == "" {
+				failureReason = "list_stream_assignments_failed"
+				failureStatus = http.StatusInternalServerError
+			}
+			continue
+		}
+		result := dispatcher.UpdateWorkerCaptionRuntimeSettings(ctx, stream, primaryStreamAssignments(assignments), profileID)
+		unlockLifecycle()
+		affected++
+		results = append(results, result)
+		if !result.Success && failureReason == "" {
+			failureReason = strings.TrimSpace(result.Code)
+			if failureReason == "" {
+				failureReason = "worker_caption_runtime_settings_apply_failed"
+			}
+		}
+	}
+	return results, affected, failureReason, failureStatus
 }
 
 func (s *Server) deleteProfile(kind store.ProfileKind, action string) http.HandlerFunc {
@@ -8015,9 +8104,11 @@ func (s *Server) serviceStreamEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 type serviceArtifactReport struct {
-	ServiceID string                          `json:"service_id"`
-	StreamID  string                          `json:"stream_id"`
-	Artifacts []serviceArtifactReportArtifact `json:"artifacts"`
+	ServiceID        string                          `json:"service_id"`
+	StreamID         string                          `json:"stream_id"`
+	ArchiveRunID     string                          `json:"archive_run_id,omitempty"`
+	ArchiveStartedAt *time.Time                      `json:"archive_started_at,omitempty"`
+	Artifacts        []serviceArtifactReportArtifact `json:"artifacts"`
 }
 
 type serviceArtifactReportArtifact struct {
@@ -8048,22 +8139,31 @@ func (s *Server) serviceStreamArtifacts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	body.ServiceID = strings.TrimSpace(body.ServiceID)
+	body.StreamID = strings.TrimSpace(body.StreamID)
+	body.ArchiveRunID = strings.TrimSpace(body.ArchiveRunID)
 	if body.ServiceID == "" {
 		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "invalid_service_id", "artifact_count": len(body.Artifacts)})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_id"})
 		return
 	}
-	artifacts := serviceArtifactReportArtifacts(body.Artifacts)
+	artifacts := serviceArtifactReportArtifacts(body.Artifacts, body.ArchiveRunID, body.ArchiveStartedAt)
 	if err := store.ValidateStreamArtifactReport(body.StreamID, artifacts); err != nil {
 		s.writeServiceAudit(r, token, "archive.artifacts.reported", "stream", body.StreamID, "failure", map[string]any{"reason": "invalid_stream_artifact", "service_id": body.ServiceID, "artifact_count": len(artifacts)})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stream_artifact"})
 		return
 	}
+	eventPayload := map[string]any{"artifact_count": len(artifacts)}
+	if body.ArchiveRunID != "" {
+		eventPayload["archive_run_id"] = body.ArchiveRunID
+		if body.ArchiveStartedAt != nil {
+			eventPayload["archive_started_at"] = body.ArchiveStartedAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
 	event := store.ServiceStreamEvent{
 		ServiceID: body.ServiceID,
 		StreamID:  body.StreamID,
 		EventType: "archive.artifacts.reported",
-		Payload:   map[string]any{"artifact_count": len(artifacts)},
+		Payload:   eventPayload,
 	}
 	if reporter, ok := s.streams.(store.StreamArtifactReportStore); ok {
 		if err := reporter.WriteStreamArtifactReport(r.Context(), token, event, artifacts); errors.Is(err, store.ErrForbidden) {
@@ -8133,14 +8233,16 @@ func (s *Server) writeServiceArtifactStoreFailure(w http.ResponseWriter, r *http
 	writeJSON(w, status, map[string]string{"code": code})
 }
 
-func serviceArtifactReportArtifacts(input []serviceArtifactReportArtifact) []store.StreamArtifact {
+func serviceArtifactReportArtifacts(input []serviceArtifactReportArtifact, archiveRunID string, archiveStartedAt *time.Time) []store.StreamArtifact {
 	artifacts := make([]store.StreamArtifact, 0, len(input))
 	for _, artifact := range input {
 		artifacts = append(artifacts, store.StreamArtifact{
-			Kind:         artifact.Kind,
-			Name:         artifact.Name,
-			RelativePath: artifact.RelativePath,
-			SizeBytes:    artifact.SizeBytes,
+			ArchiveRunID:     archiveRunID,
+			ArchiveStartedAt: archiveStartedAt,
+			Kind:             artifact.Kind,
+			Name:             artifact.Name,
+			RelativePath:     artifact.RelativePath,
+			SizeBytes:        artifact.SizeBytes,
 		})
 	}
 	return artifacts
@@ -10717,6 +10819,26 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, archiveConfigStatus(err), map[string]string{"code": code})
 		return
 	}
+	if archiveRuns, ok := s.streams.(store.StreamArchiveRunStore); ok {
+		archiveStartedAt := time.Time{}
+		archiveRunID := ""
+		if strings.TrimSpace(body.ArchiveProfileID) != "" {
+			archiveStartedAt = time.Now().UTC()
+			if servicecall.ArchiveRunsEnabled(primaryAssignments) {
+				archiveRunID = archiveRunIDForStart(archiveStartedAt)
+			}
+		}
+		prepared, err := archiveRuns.PrepareStreamArchiveRun(r.Context(), stream.ID, archiveRunID, archiveStartedAt)
+		if err != nil {
+			current := currentFromContext(r.Context())
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "prepare_archive_run_failed", "archive_profile_id": body.ArchiveProfileID}})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "prepare_archive_run_failed"})
+			return
+		}
+		stream = prepared
+		body.ArchiveRunID = archiveRunID
+		body.ArchiveStartedAt = archiveStartedAt
+	}
 	// The static fixed relay reserves a pre-provisioned YouTube LiveStream. Claim
 	// the stream lifecycle before the external Prepare call so a stale
 	// created/failed CAS cannot leave a successfully created Broadcast, runtime,
@@ -10917,6 +11039,12 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.completeStreamStart(w, r, stream, primaryAssignments, body, results)
+}
+
+func archiveRunIDForStart(startedAt time.Time) string {
+	jst := time.FixedZone("JST", 9*60*60)
+	local := startedAt.In(jst)
+	return fmt.Sprintf("%s_%09d_%s", local.Format("20060102_150405"), local.Nanosecond(), local.Format("MST"))
 }
 
 func (s *Server) applyCaptionDispatchConfig(ctx context.Context, req *servicecall.StartRequest) error {

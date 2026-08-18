@@ -21,11 +21,13 @@ import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
 import { archiveArtifactPollInterval } from "@/features/archive/archive-artifact-polling";
-import { effectiveArchiveStreamID, isArchiveRecordingArtifact } from "@/features/archive/archive-artifact";
+import { archiveRunStartedAt, effectiveArchiveStreamID, isArchiveRecordingArtifact, sortArchiveArtifactsNewest } from "@/features/archive/archive-artifact";
 
 type StreamArtifact = {
   id: string;
   stream_id: string;
+  archive_run_id?: string;
+  archive_started_at?: string | null;
   kind: string;
   name: string;
   relative_path: string;
@@ -87,7 +89,7 @@ export function ArchiveView() {
           <Card>
             <CardHeader className="border-b">
               <CardTitle>ローカル録画アーカイブ</CardTitle>
-              <CardDescription>Encoderに一定期間残る録画成果物を、配信枠ごとに管理します。</CardDescription>
+              <CardDescription>Encoderに一定期間残る録画成果物を、配信枠・配信回ごとに管理します。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               {!canRead ? (
@@ -171,8 +173,11 @@ function ArchiveProcessingNotice({
       </div>
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         {items.map((stream) => (
-          <div key={stream.id} className="flex items-center justify-between gap-3 rounded-md border border-sky-200 bg-background/70 px-3 py-2 text-sm dark:border-sky-900">
-            <span className="min-w-0 truncate font-medium" title={stream.name || stream.id}>{stream.name || stream.id}</span>
+          <div key={`${stream.id}:${stream.archive_run_id || stream.archive_started_at || "legacy"}`} className="flex items-center justify-between gap-3 rounded-md border border-sky-200 bg-background/70 px-3 py-2 text-sm dark:border-sky-900">
+            <div className="min-w-0">
+              <div className="truncate font-medium" title={stream.name || stream.id}>{stream.name || stream.id}</div>
+              {stream.archive_started_at ? <div className="mt-0.5 text-xs text-muted-foreground">配信開始 {formatDateTime(stream.archive_started_at)}</div> : null}
+            </div>
             <span className="shrink-0 text-xs text-muted-foreground">{String(stream.status).toLowerCase() === "stopping" ? "停止処理中" : "成果物の報告待ち"}</span>
           </div>
         ))}
@@ -228,7 +233,7 @@ function ArchiveArtifacts({
   });
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
-  const artifacts = useMemo(() => query.data || [], [query.data]);
+  const artifacts = useMemo(() => sortArchiveArtifactsNewest(query.data || []), [query.data]);
   const refreshArtifacts = () => {
     emptyPollAttempts.current = 0;
     void query.refetch();
@@ -337,7 +342,9 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
           <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
             <span className="rounded-md bg-muted px-2 py-1">{artifactKindLabel(artifact.kind)}</span>
             <span className="rounded-md bg-muted px-2 py-1">{formatBytes(artifact.size_bytes)}</span>
-            <span className="rounded-md bg-muted px-2 py-1">{formatDateTime(artifact.created_at, timezone)}</span>
+            <span className="rounded-md bg-muted px-2 py-1">配信開始 {formatDateTime(archiveRunStartedAt(artifact), timezone)}</span>
+            <span className="rounded-md bg-muted px-2 py-1">成果物作成 {formatDateTime(artifact.created_at, timezone)}</span>
+            <span className="rounded-md bg-muted px-2 py-1" title={artifact.archive_run_id || "従来形式"}>{artifact.archive_run_id ? "配信回別保存" : "従来形式"}</span>
           </div>
           {message ? <div className="mt-2 text-xs text-muted-foreground">{message}</div> : null}
         </div>
