@@ -4875,8 +4875,8 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if youtubeLive.prepareRequest.ReuseAccountStream {
 		t.Fatalf("youtube live api must create a stream-scoped ingest instead of reusing account-wide format state: %#v", youtubeLive.prepareRequest)
 	}
-	if youtubeLive.prepareRequest.Resolution != "variable" || youtubeLive.prepareRequest.FrameRate != "variable" {
-		t.Fatalf("youtube live api must detect the exact Encoder geometry instead of preselecting a provider canvas: %#v", youtubeLive.prepareRequest)
+	if youtubeLive.prepareRequest.Resolution != "1080p" || youtubeLive.prepareRequest.FrameRate != "60fps" {
+		t.Fatalf("youtube live api must bind the fresh ingest to the validated Encoder format: %#v", youtubeLive.prepareRequest)
 	}
 	if youtubeLive.prepareRequest.Title != "配信: real youtube stream" {
 		t.Fatalf("youtube live api title was not expanded from the stream name: %#v", youtubeLive.prepareRequest)
