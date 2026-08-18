@@ -259,8 +259,12 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		defer reusableAccountStreamMu.Unlock()
 		stream, err = ensureReusableAccountLiveStream(ctx, service, req)
 	} else {
-		stream, err = service.LiveStreams.Insert([]string{"snippet", "cdn"}, &youtubeapi.LiveStream{
+		stream, err = service.LiveStreams.Insert([]string{"snippet", "cdn", "contentDetails"}, &youtubeapi.LiveStream{
 			Snippet: &youtubeapi.LiveStreamSnippet{Title: broadcastTitle(req) + " input"},
+			ContentDetails: &youtubeapi.LiveStreamContentDetails{
+				IsReusable:      false,
+				ForceSendFields: []string{"IsReusable"},
+			},
 			Cdn: &youtubeapi.CdnSettings{
 				FrameRate:     defaultString(req.FrameRate, "60fps"),
 				IngestionType: "rtmp",

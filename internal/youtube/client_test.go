@@ -95,6 +95,9 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 	if !strings.Contains(transport.broadcastInsertBody, `"enableMonitorStream":false`) {
 		t.Fatalf("direct AutoStart broadcast must disable the optional monitor stream: %s", transport.broadcastInsertBody)
 	}
+	if !strings.Contains(transport.accountStreamInsertBody, `"isReusable":false`) {
+		t.Fatalf("stream-scoped ingest must explicitly disable provider reuse: %s", transport.accountStreamInsertBody)
+	}
 }
 
 func TestLiveAPIClientPrepareUsesNearTermStartWhenUnscheduled(t *testing.T) {
