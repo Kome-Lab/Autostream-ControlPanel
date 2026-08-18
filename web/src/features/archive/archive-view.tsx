@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { ResourcePanel } from "@/features/resources/resource-page";
 import { resourcePages } from "@/features/resources/resource-config";
-import { useAppSettings, useArchiveStreams, useCurrentUser, useResourceData } from "@/features/queries";
+import { useAppSettings, useArchiveProcessingStreams, useArchiveStreams, useCurrentUser, useResourceData } from "@/features/queries";
 import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
@@ -55,9 +55,17 @@ export function ArchiveView() {
   const can = (permission: string) => superAdmin || hasPermission(currentUser.data, permission);
   const canRead = can("archives.read");
   const streams = useArchiveStreams(canRead);
+  const processingStreams = useArchiveProcessingStreams(canRead);
   const [selectedStreamID, setSelectedStreamID] = useState("");
-  const streamRows = streams.data || [];
+  const streamRows = useMemo(() => streams.data || [], [streams.data]);
+  const processingRows = useMemo(() => {
+    const completedStreamIDs = new Set(streamRows.map((stream) => stream.id));
+    return (processingStreams.data || []).filter((stream) => !completedStreamIDs.has(stream.id));
+  }, [processingStreams.data, streamRows]);
   const selected = effectiveArchiveStreamID(streamRows, selectedStreamID);
+  const refreshArchiveState = () => {
+    void Promise.all([streams.refetch(), processingStreams.refetch()]);
+  };
 
   return (
     <div className="space-y-6">
@@ -84,28 +92,92 @@ export function ArchiveView() {
             <CardContent className="space-y-4">
               {!canRead ? (
                 <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">録画成果物を確認する権限がありません。管理者に「録画の閲覧」権限を依頼してください。</div>
-              ) : streams.isError ? (
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>配信枠を取得できませんでした。通信状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={() => streams.refetch()}>再試行</Button></div>
-              ) : streams.isLoading ? (
-                <Skeleton className="h-12 w-full" />
-              ) : streamRows.length === 0 ? (
-                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">配信枠がまだありません。</div>
               ) : (
-                <>
-                  <StreamSelect streams={streamRows} value={selected} onChange={setSelectedStreamID} />
-                  <ArchiveArtifacts
-                    key={selected}
-                    streamID={selected}
-                    canDownload={can("archives.download")}
-                    canModify={can("archives.delete")}
+                <div className="space-y-4">
+                  <ArchiveProcessingNotice
+                    items={processingRows}
+                    isLoading={processingStreams.isLoading}
+                    isError={processingStreams.isError}
+                    isFetching={processingStreams.isFetching || streams.isFetching}
+                    onRefresh={refreshArchiveState}
                   />
-                </>
+                  {streams.isError ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>配信枠を取得できませんでした。通信状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={refreshArchiveState}>再試行</Button></div>
+                  ) : streams.isLoading ? (
+                    <Skeleton className="h-12 w-full" />
+                  ) : streamRows.length === 0 ? (
+                    <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                      {processingRows.length > 0 ? "完成済みのローカル録画アーカイブはまだありません。処理完了後に自動で表示されます。" : "ローカル録画アーカイブはまだありません。"}
+                    </div>
+                  ) : (
+                    <>
+                      <StreamSelect streams={streamRows} value={selected} onChange={setSelectedStreamID} />
+                      <ArchiveArtifacts
+                        key={selected}
+                        streamID={selected}
+                        canDownload={can("archives.download")}
+                        canModify={can("archives.delete")}
+                      />
+                    </>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+function ArchiveProcessingNotice({
+  items,
+  isLoading,
+  isError,
+  isFetching,
+  onRefresh,
+}: {
+  items: Stream[];
+  isLoading: boolean;
+  isError: boolean;
+  isFetching: boolean;
+  onRefresh: () => void;
+}) {
+  if (isLoading) return <Skeleton className="h-20 w-full" />;
+  if (isError) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
+        <span>アーカイブの処理状況を取得できませんでした。完成済み成果物の一覧は引き続き利用できます。</span>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={isFetching}>再試行</Button>
+      </div>
+    );
+  }
+  if (items.length === 0) return null;
+
+  return (
+    <section className="rounded-md border border-sky-300 bg-sky-50 p-4 text-sky-950 dark:border-sky-800 dark:bg-sky-950/35 dark:text-sky-100" aria-live="polite">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <RefreshCw className="mt-0.5 size-4 shrink-0 animate-spin" aria-hidden="true" />
+          <div>
+            <div className="text-sm font-medium">アーカイブ処理中 {items.length}件</div>
+            <p className="mt-1 text-xs text-sky-800 dark:text-sky-200">Encoderで録画成果物を生成・報告しています。完了すると下の選択肢に自動で追加されます。</p>
+          </div>
+        </div>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={isFetching}>
+          <RefreshCw className={`size-4 ${isFetching ? "animate-spin" : ""}`} />
+          更新
+        </Button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {items.map((stream) => (
+          <div key={stream.id} className="flex items-center justify-between gap-3 rounded-md border border-sky-200 bg-background/70 px-3 py-2 text-sm dark:border-sky-900">
+            <span className="min-w-0 truncate font-medium" title={stream.name || stream.id}>{stream.name || stream.id}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{String(stream.status).toLowerCase() === "stopping" ? "停止処理中" : "成果物の報告待ち"}</span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

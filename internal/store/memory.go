@@ -14,6 +14,7 @@ type MemoryStreamStore struct {
 	streams                                    map[string]Stream
 	logs                                       map[string][]StreamLog
 	artifacts                                  map[string][]StreamArtifact
+	artifactReports                            map[string]bool
 	artifactShares                             map[string]StreamArtifactShare
 	mediaRuntimes                              map[string]StreamMediaRuntime
 	youtubeRuntimes                            map[string]StreamYouTubeRuntime
@@ -30,6 +31,7 @@ func NewMemoryStreamStore() *MemoryStreamStore {
 		streams:                              map[string]Stream{},
 		logs:                                 map[string][]StreamLog{},
 		artifacts:                            map[string][]StreamArtifact{},
+		artifactReports:                      map[string]bool{},
 		artifactShares:                       map[string]StreamArtifactShare{},
 		mediaRuntimes:                        map[string]StreamMediaRuntime{},
 		youtubeRuntimes:                      map[string]StreamYouTubeRuntime{},
@@ -76,6 +78,32 @@ func (s *MemoryStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, e
 			continue
 		}
 		items = append(items, stream)
+	}
+	return items, nil
+}
+
+func (s *MemoryStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := make([]Stream, 0, len(s.streams))
+	for _, stream := range s.streams {
+		status := strings.ToLower(strings.TrimSpace(stream.Status))
+		if stream.DeletedAt != nil || strings.TrimSpace(stream.ArchiveProfileID) == "" || (status != "stopping" && status != "completed") || s.artifactReports[stream.ID] {
+			continue
+		}
+		hasRecording := false
+		for _, artifact := range s.artifacts[stream.ID] {
+			if isArchiveRecordingArtifact(artifact) {
+				hasRecording = true
+				break
+			}
+		}
+		if !hasRecording {
+			items = append(items, stream)
+		}
 	}
 	return items, nil
 }
@@ -484,6 +512,7 @@ func (s *MemoryStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 		current = append(current, artifact)
 	}
 	s.artifacts[id] = current
+	s.artifactReports[id] = true
 	return nil
 }
 

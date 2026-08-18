@@ -159,6 +159,14 @@ type ArchiveStreamStore interface {
 	ListArchiveStreams(ctx context.Context) ([]Stream, error)
 }
 
+// ArchiveProcessingStreamStore lists completed or stopping streams whose
+// configured recording has not been reported by the Encoder yet. A stream
+// that reported artifacts once must not re-enter this list after an operator
+// deliberately deletes its last recording.
+type ArchiveProcessingStreamStore interface {
+	ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error)
+}
+
 type StreamArtifactAdminStore interface {
 	DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error
 	RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error)
@@ -218,8 +226,7 @@ func (s MariaDBStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
 	return streams, rows.Err()
 }
 
-func (s MariaDBStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, error) {
-	rows, err := s.db.QueryContext(ctx, streamListQuery(`EXISTS (
+const archiveRecordingArtifactExistsCondition = `EXISTS (
   SELECT 1
   FROM stream_artifacts a
   WHERE a.stream_id = s.id
@@ -231,7 +238,36 @@ func (s MariaDBStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, e
       OR LOWER(TRIM(a.name)) LIKE '%.mov'
       OR LOWER(TRIM(a.name)) LIKE '%.mkv'
     )
-)`))
+)`
+
+func (s MariaDBStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, error) {
+	rows, err := s.db.QueryContext(ctx, streamListQuery(archiveRecordingArtifactExistsCondition))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var streams []Stream
+	for rows.Next() {
+		stream, err := scanStreamRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		streams = append(streams, stream)
+	}
+	return streams, rows.Err()
+}
+
+func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {
+	rows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL
+  AND LOWER(TRIM(s.status)) IN ('stopping', 'completed')
+  AND COALESCE(TRIM(ss.archive_profile_id), '') <> ''
+  AND NOT (`+archiveRecordingArtifactExistsCondition+`)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM service_stream_events e
+    WHERE e.stream_id = s.id
+      AND e.event_type = 'archive.artifacts.reported'
+  )`))
 	if err != nil {
 		return nil, err
 	}

@@ -167,6 +167,46 @@ func TestMemoryArchiveStreamsHideDeletedStreamAfterLastRecordingArtifactIsDelete
 	}
 }
 
+func TestMemoryArchiveProcessingStreamsStopWaitingAfterArtifactReport(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive-processing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, StreamSettings{ArchiveProfileID: "archive-01"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+
+	processing, err := streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 1 || processing[0].ID != stream.ID {
+		t.Fatalf("processing streams before artifact report = %#v err=%v", processing, err)
+	}
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{{
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	processing, err = streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 0 {
+		t.Fatalf("processing streams after artifact report = %#v err=%v", processing, err)
+	}
+
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("reported artifacts = %#v err=%v", artifacts, err)
+	}
+	if err := streams.DeleteStreamArtifact(t.Context(), stream.ID, artifacts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	processing, err = streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 0 {
+		t.Fatalf("deleted reported artifact returned to processing = %#v err=%v", processing, err)
+	}
+}
+
 func TestNewUUIDShape(t *testing.T) {
 	id := newUUID()
 	if len(id) != 36 || strings.Count(id, "-") != 4 {

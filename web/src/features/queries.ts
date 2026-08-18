@@ -119,6 +119,17 @@ export function useArchiveStreams(enabled = true) {
   });
 }
 
+export function useArchiveProcessingStreams(enabled = true) {
+  return useQuery({
+    queryKey: ["archive-processing-streams"],
+    queryFn: () => apiGet<Stream[]>("/archive/processing-streams"),
+    enabled,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
+  });
+}
+
 export function useWorkers(enabled = true) {
   return useQuery({
     queryKey: ["workers"],

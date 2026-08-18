@@ -17,6 +17,10 @@ const archivePlayerSource = fs.readFileSync(
   new URL("../src/features/archive/archive-player-view.tsx", import.meta.url),
   "utf8",
 );
+const queriesSource = fs.readFileSync(
+  new URL("../src/features/queries.ts", import.meta.url),
+  "utf8",
+);
 const resourcePageSource = fs.readFileSync(
   new URL("../src/features/resources/resource-page.tsx", import.meta.url),
   "utf8",
@@ -65,6 +69,14 @@ test("archive stream selection does not retain an option removed after its last 
   assert.equal(effectiveArchiveStreamID(streams, "stream-a"), "stream-b");
   assert.equal(effectiveArchiveStreamID([], "stream-a"), "");
   assert.match(archiveViewSource, /effectiveArchiveStreamID\(streamRows, selectedStreamID\)/);
+});
+
+test("archive finalization is shown separately from selectable completed recordings", () => {
+  assert.match(queriesSource, /useArchiveProcessingStreams/);
+  assert.match(queriesSource, /\/archive\/processing-streams/);
+  assert.match(archiveViewSource, /アーカイブ処理中/);
+  assert.match(archiveViewSource, /完了すると下の選択肢に自動で追加されます/);
+  assert.match(archiveViewSource, /<StreamSelect streams=\{streamRows\}/);
 });
 
 test("Drive destination UI uses the selected folder as the archive root", () => {

@@ -44,6 +44,22 @@ func TestStreamArtifactUniqueMigrationDeduplicatesBeforeIndex(t *testing.T) {
 	}
 }
 
+func TestArchiveProcessingEventLookupMigrationIndexesStreamAndEventType(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/074_archive_processing_event_lookup.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(body))
+	for _, required := range []string{
+		"create index if not exists idx_service_stream_events_stream_type",
+		"on service_stream_events (stream_id, event_type)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("archive processing event lookup migration is missing %q:\n%s", required, string(body))
+		}
+	}
+}
+
 func TestPasskeyCeremonySessionUserForeignKeyMatchesUsersTable(t *testing.T) {
 	initBody, err := embeddedMigrations.ReadFile("migrations/001_init.sql")
 	if err != nil {

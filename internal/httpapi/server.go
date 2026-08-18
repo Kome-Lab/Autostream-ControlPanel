@@ -586,6 +586,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /workers/{id}/restart", s.requirePermission("workers.restart", s.restartWorker))
 	s.mux.HandleFunc("GET /streams", s.requirePermission("streams.read", s.listStreams))
 	s.mux.HandleFunc("GET /archive/streams", s.requirePermission("archives.read", s.listArchiveStreams))
+	s.mux.HandleFunc("GET /archive/processing-streams", s.requirePermission("archives.read", s.listArchiveProcessingStreams))
 	s.mux.HandleFunc("POST /streams", s.requirePermission("streams.create", s.createStream))
 	s.mux.HandleFunc("GET /streams/{id}", s.requirePermission("streams.read", s.getStream))
 	s.mux.HandleFunc("DELETE /streams/{id}", s.requirePermission("streams.delete", s.deleteStream))
@@ -8759,6 +8760,25 @@ func (s *Server) listArchiveStreams(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) listArchiveProcessingStreams(w http.ResponseWriter, r *http.Request) {
+	processingStore, ok := s.streams.(store.ArchiveProcessingStreamStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "archive_processing_stream_store_not_configured"})
+		return
+	}
+	items, err := processingStore.ListArchiveProcessingStreams(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_archive_processing_streams_failed"})
+		return
+	}
+	items, err = s.streamsWithAssignedNodes(r.Context(), items)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 type streamSettingsRequest struct {
 	Name               string  `json:"name,omitempty"`
 	ScheduledStartAt   string  `json:"scheduled_start_at,omitempty"`
@@ -11822,6 +11842,8 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	if err := validateYouTubeEncoderVideoFormat(profile, req); err != nil {
 		return err
 	}
+	resolution := defaultConfigString(profile.Config, "resolution", "1080p")
+	frameRate := defaultConfigString(profile.Config, "frame_rate", "60fps")
 	oauthAccountID := strings.TrimSpace(configString(profile.Config, "oauth_account_id"))
 	if oauthAccountID == "" {
 		oauthAccountID = strings.TrimSpace(configString(profile.Config, "youtube_oauth_account_id"))
@@ -11843,11 +11865,12 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		Description:    configString(profile.Config, "broadcast_description"),
 		PrivacyStatus:  defaultConfigString(profile.Config, "privacy_status", "private"),
 		ScheduledStart: youtubeLiveAPIScheduledStart(stream, profile.Config),
-		// The Encoder profile is validated before provider preparation. Let YouTube
-		// detect the exact coded geometry so a provider-side 1080p template
-		// cannot turn a 1920x1080 feed into a square playback canvas.
-		Resolution:      "variable",
-		FrameRate:       "variable",
+		// The Encoder profile is validated before provider preparation. Bind the
+		// fresh LiveStream to that exact supported format instead of relying on
+		// provider auto-detection, so provider metadata remains deterministic and
+		// matches the coded Encoder contract.
+		Resolution:      resolution,
+		FrameRate:       frameRate,
 		EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
 		EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
 		// Keep provider ingest format state scoped to this broadcast. Reusing an

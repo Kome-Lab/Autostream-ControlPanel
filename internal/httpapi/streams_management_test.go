@@ -45,6 +45,64 @@ func TestStreamListIncludesPrimaryAssignedNodes(t *testing.T) {
 	_ = csrf
 }
 
+func TestArchiveProcessingStreamsExposeOnlyUnreportedCompletedRecordings(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "archive-operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"archives.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "archive-processing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{ArchiveProfileID: "archive-01"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth))
+	cookie, _ := loginForTest(t, handler, "archive-operator", "correct horse battery")
+
+	listProcessing := func() []store.Stream {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/archive/processing-streams", nil)
+		req.AddCookie(cookie)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusOK {
+			t.Fatalf("archive processing stream list status = %d body = %s", res.Code, res.Body.String())
+		}
+		var items []store.Stream
+		if err := json.Unmarshal(res.Body.Bytes(), &items); err != nil {
+			t.Fatal(err)
+		}
+		return items
+	}
+
+	if items := listProcessing(); len(items) != 1 || items[0].ID != stream.ID {
+		t.Fatalf("processing streams before artifact report = %#v", items)
+	}
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []store.StreamArtifact{{
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("reported artifacts = %#v err=%v", artifacts, err)
+	}
+	if items := listProcessing(); len(items) != 0 {
+		t.Fatalf("processing streams after artifact report = %#v", items)
+	}
+	if err := streams.DeleteStreamArtifact(t.Context(), stream.ID, artifacts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if items := listProcessing(); len(items) != 0 {
+		t.Fatalf("deleted reported recording returned to processing = %#v", items)
+	}
+}
+
 func TestCreateStreamReturnsPrimaryAssignedNodes(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {

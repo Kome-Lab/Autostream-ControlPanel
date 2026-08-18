@@ -785,6 +785,14 @@ export function mockGet(path: string): unknown {
   if (normalizedPath === "/archive/streams") {
     return mockStreams.filter((stream) => (mockStreamArtifacts[stream.id] || []).length > 0);
   }
+  if (normalizedPath === "/archive/processing-streams") {
+    return mockStreams.filter((stream) =>
+      ["stopping", "completed"].includes(String(stream.status).toLowerCase())
+      && Boolean(stream.archive_profile_id)
+      && !stream.deleted_at
+      && (mockStreamArtifacts[stream.id] || []).length === 0,
+    );
+  }
   const artifactShares = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts\/([^/]+)\/shares$/);
   if (artifactShares) {
     loadMockArchiveShares();
