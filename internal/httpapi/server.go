@@ -11973,8 +11973,6 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	if err := validateYouTubeEncoderVideoFormat(profile, req); err != nil {
 		return err
 	}
-	resolution := defaultConfigString(profile.Config, "resolution", "1080p")
-	frameRate := defaultConfigString(profile.Config, "frame_rate", "60fps")
 	oauthAccountID := strings.TrimSpace(configString(profile.Config, "oauth_account_id"))
 	if oauthAccountID == "" {
 		oauthAccountID = strings.TrimSpace(configString(profile.Config, "youtube_oauth_account_id"))
@@ -11996,12 +11994,12 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		Description:    configString(profile.Config, "broadcast_description"),
 		PrivacyStatus:  defaultConfigString(profile.Config, "privacy_status", "private"),
 		ScheduledStart: youtubeLiveAPIScheduledStart(stream, profile.Config),
-		// The Encoder profile is validated before provider preparation. Bind the
-		// fresh LiveStream to that exact supported format instead of relying on
-		// provider auto-detection, so provider metadata remains deterministic and
-		// matches the coded Encoder contract.
-		Resolution:      resolution,
-		FrameRate:       frameRate,
+		// The Encoder profile is validated before provider preparation. Let each
+		// fresh, non-reusable LiveStream detect that validated coded format from
+		// the actual ingest. This prevents a fixed provider hint from producing a
+		// square CDN canvas while the Encoder's shared tee output is 16:9.
+		Resolution:      "variable",
+		FrameRate:       "variable",
 		EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
 		EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
 		// Keep provider ingest format state scoped to this broadcast. Reusing an

@@ -2081,7 +2081,7 @@ func TestApplyYouTubeLiveAPIOutputRejectsEncoderCDNFormatMismatchBeforeProviderP
 	}
 }
 
-func TestApplyYouTubeLiveAPIOutputUsesValidatedEncoderCDNFormatForFreshStream(t *testing.T) {
+func TestApplyYouTubeLiveAPIOutputUsesProviderAutoDetectionAfterValidatingEncoderFormat(t *testing.T) {
 	integrations := store.NewMemoryIntegrationStore()
 	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
 		ProviderType: "google",
@@ -2119,11 +2119,11 @@ func TestApplyYouTubeLiveAPIOutputUsesValidatedEncoderCDNFormatForFreshStream(t 
 	if youtubeClient.prepareCalls != 1 {
 		t.Fatalf("provider prepare calls = %d, want 1", youtubeClient.prepareCalls)
 	}
-	if got := youtubeClient.prepareRequest.Resolution; got != "1080p" {
-		t.Fatalf("provider CDN resolution = %q, want 1080p", got)
+	if got := youtubeClient.prepareRequest.Resolution; got != "variable" {
+		t.Fatalf("provider CDN resolution = %q, want variable", got)
 	}
-	if got := youtubeClient.prepareRequest.FrameRate; got != "60fps" {
-		t.Fatalf("provider CDN frame rate = %q, want 60fps", got)
+	if got := youtubeClient.prepareRequest.FrameRate; got != "variable" {
+		t.Fatalf("provider CDN frame rate = %q, want variable", got)
 	}
 	if youtubeClient.prepareRequest.ReuseAccountStream {
 		t.Fatal("stream-scoped provider ingest unexpectedly enabled account-wide reuse")
@@ -4875,8 +4875,8 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if youtubeLive.prepareRequest.ReuseAccountStream {
 		t.Fatalf("youtube live api must create a stream-scoped ingest instead of reusing account-wide format state: %#v", youtubeLive.prepareRequest)
 	}
-	if youtubeLive.prepareRequest.Resolution != "1080p" || youtubeLive.prepareRequest.FrameRate != "60fps" {
-		t.Fatalf("youtube live api must bind the fresh ingest to the validated Encoder format: %#v", youtubeLive.prepareRequest)
+	if youtubeLive.prepareRequest.Resolution != "variable" || youtubeLive.prepareRequest.FrameRate != "variable" {
+		t.Fatalf("youtube live api must let the provider detect the already-validated Encoder format: %#v", youtubeLive.prepareRequest)
 	}
 	if youtubeLive.prepareRequest.Title != "配信: real youtube stream" {
 		t.Fatalf("youtube live api title was not expanded from the stream name: %#v", youtubeLive.prepareRequest)
