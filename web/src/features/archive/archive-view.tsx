@@ -21,7 +21,7 @@ import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
 import { archiveArtifactPollInterval } from "@/features/archive/archive-artifact-polling";
-import { archiveRunStartedAt, effectiveArchiveStreamID, isArchiveRecordingArtifact, sortArchiveArtifactsNewest } from "@/features/archive/archive-artifact";
+import { archiveRunStartedAt, effectiveArchiveStreamID, isArchiveRecordingArtifact, sortArchiveArtifactsNewest, visibleArchiveProcessingStreams } from "@/features/archive/archive-artifact";
 
 type StreamArtifact = {
   id: string;
@@ -60,10 +60,10 @@ export function ArchiveView() {
   const processingStreams = useArchiveProcessingStreams(canRead);
   const [selectedStreamID, setSelectedStreamID] = useState("");
   const streamRows = useMemo(() => streams.data || [], [streams.data]);
-  const processingRows = useMemo(() => {
-    const completedStreamIDs = new Set(streamRows.map((stream) => stream.id));
-    return (processingStreams.data || []).filter((stream) => !completedStreamIDs.has(stream.id));
-  }, [processingStreams.data, streamRows]);
+  const processingRows = useMemo(
+    () => visibleArchiveProcessingStreams(processingStreams.data || [], streamRows),
+    [processingStreams.data, streamRows],
+  );
   const selected = effectiveArchiveStreamID(streamRows, selectedStreamID);
   const refreshArchiveState = () => {
     void Promise.all([streams.refetch(), processingStreams.refetch()]);

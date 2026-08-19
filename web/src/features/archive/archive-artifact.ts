@@ -7,6 +7,12 @@ export type ArchiveStreamIdentity = {
   id: string;
 };
 
+export type ArchiveProcessingStreamIdentity = ArchiveStreamIdentity & {
+  archive_run_id?: string | null;
+  archive_started_at?: string | null;
+  archive_reported_at?: string | null;
+};
+
 export type ArchiveRunArtifact = {
   archive_started_at?: string | null;
   created_at: string;
@@ -20,6 +26,27 @@ export function effectiveArchiveStreamID(streams: ArchiveStreamIdentity[], selec
   const selected = selectedStreamID.trim();
   if (selected && streams.some((stream) => stream.id === selected)) return selected;
   return streams[0]?.id || "";
+}
+
+function archiveProcessingRunKey(stream: ArchiveProcessingStreamIdentity): string {
+  const streamID = stream.id.trim();
+  const archiveRunID = stream.archive_run_id?.trim();
+  if (archiveRunID) return `${streamID}:run:${archiveRunID}`;
+  const archiveStartedAt = stream.archive_started_at?.trim();
+  if (archiveStartedAt) return `${streamID}:started:${archiveStartedAt}`;
+  return `${streamID}:legacy`;
+}
+
+export function visibleArchiveProcessingStreams<T extends ArchiveProcessingStreamIdentity>(
+  processingStreams: T[],
+  archiveStreams: ArchiveProcessingStreamIdentity[],
+): T[] {
+  const completedRuns = new Set(
+    archiveStreams
+      .filter((stream) => stream.archive_reported_at?.trim() || archiveProcessingRunKey(stream).endsWith(":legacy"))
+      .map(archiveProcessingRunKey),
+  );
+  return processingStreams.filter((stream) => !completedRuns.has(archiveProcessingRunKey(stream)));
 }
 
 export function archiveRunStartedAt(artifact: ArchiveRunArtifact): string {

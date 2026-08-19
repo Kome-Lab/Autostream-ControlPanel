@@ -7,7 +7,13 @@ import {
   ARCHIVE_ARTIFACT_EMPTY_POLL_MAX_ATTEMPTS,
   archiveArtifactPollInterval,
 } from "../src/features/archive/archive-artifact-polling.ts";
-import { archiveRunStartedAt, effectiveArchiveStreamID, isArchiveRecordingArtifact, sortArchiveArtifactsNewest } from "../src/features/archive/archive-artifact.ts";
+import {
+  archiveRunStartedAt,
+  effectiveArchiveStreamID,
+  isArchiveRecordingArtifact,
+  sortArchiveArtifactsNewest,
+  visibleArchiveProcessingStreams,
+} from "../src/features/archive/archive-artifact.ts";
 
 const archiveViewSource = fs.readFileSync(
   new URL("../src/features/archive/archive-view.tsx", import.meta.url),
@@ -77,6 +83,38 @@ test("archive finalization is shown separately from selectable completed recordi
   assert.match(archiveViewSource, /アーカイブ処理中/);
   assert.match(archiveViewSource, /完了すると下の選択肢に自動で追加されます/);
   assert.match(archiveViewSource, /<StreamSelect streams=\{streamRows\}/);
+});
+
+test("a new archive run stays in processing while only an older recording is available", () => {
+  assert.match(archiveViewSource, /visibleArchiveProcessingStreams/);
+  assert.doesNotMatch(archiveViewSource, /completedStreamIDs/);
+
+  const processing = [{
+    id: "stream-a",
+    archive_run_id: "run-02",
+    archive_started_at: "2026-08-18T06:00:00Z",
+  }];
+
+  // /archive/streams returns the current stream row when any older recording
+  // exists. The current run is not complete until archive_reported_at is set.
+  const archiveRowsWithOnlyPriorRecording = [{
+    id: "stream-a",
+    archive_run_id: "run-02",
+    archive_started_at: "2026-08-18T06:00:00Z",
+  }];
+  assert.deepEqual(
+    visibleArchiveProcessingStreams(processing, archiveRowsWithOnlyPriorRecording),
+    processing,
+  );
+
+  const archiveRowsWithCurrentRunReported = [{
+    ...archiveRowsWithOnlyPriorRecording[0],
+    archive_reported_at: "2026-08-18T06:05:00Z",
+  }];
+  assert.deepEqual(
+    visibleArchiveProcessingStreams(processing, archiveRowsWithCurrentRunReported),
+    [],
+  );
 });
 
 test("local archive history is ordered and labelled by broadcast run", () => {
