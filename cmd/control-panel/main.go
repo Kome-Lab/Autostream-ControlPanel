@@ -83,6 +83,7 @@ func main() {
 		errCh <- err
 	}()
 	go srv.RunYouTubeCompletionRetryLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_COMPLETE_RETRY_INTERVAL", time.Minute))
+	go srv.RunYouTubeIngestHealthLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_INGEST_HEALTH_INTERVAL", 30*time.Second))
 	go srv.RunDiscordYouTubeLiveNotificationOutboxLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_LIVE_NOTIFICATION_RETRY_INTERVAL", 15*time.Second))
 	go srv.RunOAuthTokenRefreshLoop(runCtx, durationFromEnv("AUTOSTREAM_OAUTH_TOKEN_REFRESH_INTERVAL", 45*time.Minute))
 	select {

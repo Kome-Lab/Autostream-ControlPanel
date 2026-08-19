@@ -651,6 +651,79 @@ func TestLiveAPIClientCompleteRelayStaticBroadcastRetainsUnconfirmedTransition(t
 	}
 }
 
+func TestLiveAPIClientBroadcastIngestHealthReadsOnlySafeBoundStreamFields(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{}
+	httpClient := &http.Client{Transport: transport}
+	client := LiveAPIClient{HTTPClient: httpClient}
+
+	snapshot, err := client.BroadcastIngestHealth(context.Background(), BroadcastIngestHealthRequest{
+		Credentials: OAuthCredentials{
+			ClientID:     "youtube-client-id",
+			ClientSecret: "youtube-client-secret",
+			RefreshToken: "youtube-refresh-token",
+		},
+		BroadcastID: "broadcast-01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BroadcastID != "broadcast-01" || snapshot.LiveStreamID != "live-stream-01" {
+		t.Fatalf("unexpected ingest binding: %#v", snapshot)
+	}
+	if snapshot.ConfiguredResolution != "1080p" || snapshot.ConfiguredFrameRate != "60fps" || snapshot.StreamStatus != "active" || snapshot.HealthStatus != "bad" {
+		t.Fatalf("unexpected ingest status: %#v", snapshot)
+	}
+	if snapshot.LastUpdateTimeSeconds != 1787029583 || len(snapshot.ConfigurationIssues) != 2 {
+		t.Fatalf("unexpected ingest health details: %#v", snapshot)
+	}
+	if snapshot.ConfigurationIssues[0].Type != "noAudioStream" || snapshot.ConfigurationIssues[1].Type != "videoResolutionSuboptimal" {
+		t.Fatalf("configuration issues were not normalized deterministically: %#v", snapshot.ConfigurationIssues)
+	}
+	if got := strings.Join(snapshot.ConfigurationIssues[1].Dimensions, ","); got != "1080x1080,1920x1080" {
+		t.Fatalf("safe dimensions were not extracted from the provider issue: %q", got)
+	}
+	if !transport.saw("get_broadcast_binding") || !transport.saw("get_ingest_health") {
+		t.Fatalf("expected exact broadcast binding and LiveStream health reads, got %#v", transport.steps)
+	}
+	for _, request := range transport.apiRequests {
+		lowerQuery := strings.ToLower(request.RawQuery)
+		for _, forbidden := range []string{"ingestioninfo", "streamname", "ingestionaddress", "rtmpsingestionaddress"} {
+			if strings.Contains(lowerQuery, forbidden) {
+				t.Fatalf("secret-bearing YouTube field %q was requested: %#v", forbidden, request)
+			}
+		}
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "provider free-form details") {
+		t.Fatalf("free-form provider description leaked into snapshot: %s", encoded)
+	}
+}
+
+func TestLiveAPIClientBroadcastIngestHealthRejectsMissingBoundStream(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{
+		ingestHealthBroadcastResponse: `{"items":[{"id":"broadcast-01","contentDetails":{}}]}`,
+	}
+	httpClient := &http.Client{Transport: transport}
+	client := LiveAPIClient{HTTPClient: httpClient}
+
+	_, err := client.BroadcastIngestHealth(context.Background(), BroadcastIngestHealthRequest{
+		Credentials: OAuthCredentials{ClientID: "youtube-client-id", ClientSecret: "youtube-client-secret", RefreshToken: "youtube-refresh-token"},
+		BroadcastID: "broadcast-01",
+	})
+	if !errors.Is(err, ErrBroadcastLiveStreamUnavailable) {
+		t.Fatalf("missing bound stream error = %v", err)
+	}
+	if got := RedactedError(err); got != ErrBroadcastLiveStreamUnavailable.Error() {
+		t.Fatalf("missing bound stream redacted error = %q", got)
+	}
+	if transport.saw("get_ingest_health") {
+		t.Fatalf("LiveStream health was queried without a provider binding: %#v", transport.steps)
+	}
+}
+
 func TestLiveAPIClientRefreshAccessTokenUsesProviderRefreshToken(t *testing.T) {
 	transport := &fakeYouTubeRoundTripper{}
 	httpClient := &http.Client{Transport: transport}
@@ -689,6 +762,10 @@ type fakeYouTubeRoundTripper struct {
 	completeBroadcastResponseLost bool
 	broadcastListStatus           int
 	broadcastListResponse         string
+	ingestHealthBroadcastStatus   int
+	ingestHealthBroadcastResponse string
+	ingestHealthStreamStatus      int
+	ingestHealthStreamResponse    string
 	accountReusableStreamCreated  bool
 	accountReusableStreamResponse string
 	accountStreamInsertBody       string
@@ -698,6 +775,7 @@ type fakeYouTubeRoundTripper struct {
 type fakeYouTubeAPIRequest struct {
 	Method        string
 	Path          string
+	RawQuery      string
 	Authorization string
 }
 
@@ -728,7 +806,7 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 		return fakeHTTPResponse(req, http.StatusOK, `{"access_token":"ya29.fake-youtube-access-token","token_type":"Bearer","expires_in":3600}`), nil
 	}
 
-	f.apiRequests = append(f.apiRequests, fakeYouTubeAPIRequest{Method: req.Method, Path: req.URL.Path, Authorization: req.Header.Get("Authorization")})
+	f.apiRequests = append(f.apiRequests, fakeYouTubeAPIRequest{Method: req.Method, Path: req.URL.Path, RawQuery: req.URL.RawQuery, Authorization: req.Header.Get("Authorization")})
 	switch {
 	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams" && req.URL.Query().Get("id") == "":
 		f.steps = append(f.steps, "list_account_reusable_streams")
@@ -739,6 +817,17 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 			return fakeHTTPResponse(req, http.StatusOK, `{"items":[{"id":"live-stream-01","snippet":{"title":"AutoStream account ingest"},"contentDetails":{"isReusable":true},"cdn":{"resolution":"1080p","frameRate":"60fps","ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"runtime-stream-key"}}}]}`), nil
 		}
 		return fakeHTTPResponse(req, http.StatusOK, `{"items":[]}`), nil
+	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams" && req.URL.Query().Get("id") == "live-stream-01" && hasParts(req, "id", "cdn", "status"):
+		f.steps = append(f.steps, "get_ingest_health")
+		status := f.ingestHealthStreamStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		response := f.ingestHealthStreamResponse
+		if response == "" {
+			response = `{"items":[{"id":"live-stream-01","cdn":{"resolution":"1080p","frameRate":"60fps"},"status":{"streamStatus":"active","healthStatus":{"status":"bad","lastUpdateTimeSeconds":"1787029583","configurationIssues":[{"type":"noAudioStream","severity":"error","description":"provider free-form details must not be retained"},{"type":"videoResolutionSuboptimal","severity":"warning","description":"Current resolution 1080x1080; expected 1920x1080. provider free-form details must not be retained"}]}}}]}`
+		}
+		return fakeHTTPResponse(req, status, response), nil
 	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams":
 		f.steps = append(f.steps, "get_reusable_stream")
 		f.reusableLiveStreamQuery = req.URL.RawQuery
@@ -789,6 +878,20 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 			return nil, errors.New("simulated response loss after liveBroadcasts.delete accepted request")
 		}
 		return fakeHTTPResponse(req, http.StatusNoContent, ""), nil
+	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveBroadcasts" && hasParts(req, "id", "contentDetails"):
+		f.steps = append(f.steps, "get_broadcast_binding")
+		if req.URL.Query().Get("id") != "broadcast-01" {
+			return fakeHTTPResponse(req, http.StatusBadRequest, `{"error":{"message":"bad broadcast binding lookup"}}`), nil
+		}
+		status := f.ingestHealthBroadcastStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		response := f.ingestHealthBroadcastResponse
+		if response == "" {
+			response = `{"items":[{"id":"broadcast-01","contentDetails":{"boundStreamId":"live-stream-01"}}]}`
+		}
+		return fakeHTTPResponse(req, status, response), nil
 	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveBroadcasts":
 		f.steps = append(f.steps, "get_broadcast_status")
 		if req.URL.Query().Get("id") != "broadcast-01" || !hasParts(req, "id", "status") {

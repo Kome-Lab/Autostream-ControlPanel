@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -158,6 +160,37 @@ type BroadcastLifecycleRequest struct {
 	BroadcastID string
 }
 
+// BroadcastIngestHealthRequest identifies one exact Broadcast whose bound
+// LiveStream health should be inspected. The request deliberately excludes
+// ingest addresses and stream keys.
+type BroadcastIngestHealthRequest struct {
+	Credentials OAuthCredentials
+	BroadcastID string
+}
+
+// BroadcastIngestHealthIssue contains only bounded provider codes and numeric
+// dimensions derived from a provider description. The free-form description
+// itself is never returned or persisted.
+type BroadcastIngestHealthIssue struct {
+	Type       string   `json:"type"`
+	Severity   string   `json:"severity"`
+	Dimensions []string `json:"dimensions,omitempty"`
+}
+
+// BroadcastIngestHealthSnapshot is a secret-free view of the exact LiveStream
+// bound to a Broadcast. Resolution and frame rate are the provider LiveStream
+// configuration; ConfigurationIssues reports what YouTube observed at ingest.
+type BroadcastIngestHealthSnapshot struct {
+	BroadcastID           string                       `json:"broadcast_id"`
+	LiveStreamID          string                       `json:"live_stream_id"`
+	ConfiguredResolution  string                       `json:"configured_resolution,omitempty"`
+	ConfiguredFrameRate   string                       `json:"configured_frame_rate,omitempty"`
+	StreamStatus          string                       `json:"stream_status,omitempty"`
+	HealthStatus          string                       `json:"health_status,omitempty"`
+	LastUpdateTimeSeconds uint64                       `json:"last_update_time_seconds,omitempty"`
+	ConfigurationIssues   []BroadcastIngestHealthIssue `json:"configuration_issues,omitempty"`
+}
+
 type LiveClient interface {
 	Prepare(ctx context.Context, req PrepareRequest) (PreparedOutput, error)
 	Complete(ctx context.Context, req CompleteRequest) error
@@ -168,6 +201,13 @@ type LiveClient interface {
 // the provider's `live` lifecycle before announcing a live-api broadcast.
 type BroadcastLifecycleClient interface {
 	BroadcastLifecycle(ctx context.Context, req BroadcastLifecycleRequest) (string, error)
+}
+
+// BroadcastIngestHealthClient is an optional read-only extension so existing
+// LiveClient fakes remain source-compatible. Implementations must not request
+// or return ingestionInfo because it contains the stream key.
+type BroadcastIngestHealthClient interface {
+	BroadcastIngestHealth(ctx context.Context, req BroadcastIngestHealthRequest) (BroadcastIngestHealthSnapshot, error)
 }
 
 // BroadcastTransitionClient is an optional extension so existing LiveClient
@@ -210,6 +250,8 @@ var (
 	ErrMissingBroadcastID                      = errors.New("youtube_broadcast_id_missing")
 	ErrBroadcastNotFound                       = errors.New("youtube_broadcast_not_found")
 	ErrBroadcastLifecycleUnavailable           = errors.New("youtube_broadcast_lifecycle_unavailable")
+	ErrBroadcastLiveStreamUnavailable          = errors.New("youtube_broadcast_live_stream_unavailable")
+	ErrLiveStreamNotFound                      = errors.New("youtube_live_stream_not_found")
 	ErrMissingIngestInfo                       = errors.New("youtube_ingest_info_missing")
 	ErrMissingReusableLiveStreamID             = errors.New("youtube_reusable_live_stream_id_missing")
 	ErrReusableLiveStreamNotFound              = errors.New("youtube_reusable_live_stream_not_found")
@@ -586,6 +628,107 @@ func (c LiveAPIClient) BroadcastLifecycle(ctx context.Context, req BroadcastLife
 	return "", ErrBroadcastLifecycleUnavailable
 }
 
+// BroadcastIngestHealth resolves the LiveStream currently bound to one exact
+// Broadcast and returns only secret-free CDN/status fields. In particular, the
+// partial-response field mask omits cdn.ingestionInfo, which contains the
+// provider stream key and ingest addresses.
+func (c LiveAPIClient) BroadcastIngestHealth(ctx context.Context, req BroadcastIngestHealthRequest) (BroadcastIngestHealthSnapshot, error) {
+	if err := validateCredentials(req.Credentials); err != nil {
+		return BroadcastIngestHealthSnapshot{}, err
+	}
+	broadcastID := strings.TrimSpace(req.BroadcastID)
+	if broadcastID == "" {
+		return BroadcastIngestHealthSnapshot{}, ErrMissingBroadcastID
+	}
+	service, err := c.service(ctx, req.Credentials)
+	if err != nil {
+		return BroadcastIngestHealthSnapshot{}, err
+	}
+	broadcasts, err := service.LiveBroadcasts.List([]string{"id", "contentDetails"}).
+		Id(broadcastID).
+		Fields("items(id,contentDetails/boundStreamId)").
+		Context(ctx).
+		Do()
+	if err != nil {
+		if isYouTubeNotFound(err) {
+			return BroadcastIngestHealthSnapshot{}, ErrBroadcastNotFound
+		}
+		return BroadcastIngestHealthSnapshot{}, err
+	}
+	liveStreamID := ""
+	broadcastFound := false
+	for _, broadcast := range broadcasts.Items {
+		if broadcast == nil || strings.TrimSpace(broadcast.Id) != broadcastID {
+			continue
+		}
+		broadcastFound = true
+		if broadcast.ContentDetails != nil {
+			liveStreamID = strings.TrimSpace(broadcast.ContentDetails.BoundStreamId)
+		}
+		break
+	}
+	if !broadcastFound {
+		return BroadcastIngestHealthSnapshot{}, ErrBroadcastNotFound
+	}
+	if liveStreamID == "" {
+		return BroadcastIngestHealthSnapshot{}, ErrBroadcastLiveStreamUnavailable
+	}
+
+	streams, err := service.LiveStreams.List([]string{"id", "cdn", "status"}).
+		Id(liveStreamID).
+		Fields("items(id,cdn(resolution,frameRate),status(streamStatus,healthStatus(status,lastUpdateTimeSeconds,configurationIssues(type,severity,description))))").
+		Context(ctx).
+		Do()
+	if err != nil {
+		if isYouTubeNotFound(err) {
+			return BroadcastIngestHealthSnapshot{}, ErrLiveStreamNotFound
+		}
+		return BroadcastIngestHealthSnapshot{}, err
+	}
+	for _, stream := range streams.Items {
+		if stream == nil || strings.TrimSpace(stream.Id) != liveStreamID {
+			continue
+		}
+		snapshot := BroadcastIngestHealthSnapshot{
+			BroadcastID:  broadcastID,
+			LiveStreamID: liveStreamID,
+		}
+		if stream.Cdn != nil {
+			snapshot.ConfiguredResolution = safeYouTubeHealthCode(strings.ToLower(stream.Cdn.Resolution))
+			snapshot.ConfiguredFrameRate = safeYouTubeHealthCode(strings.ToLower(stream.Cdn.FrameRate))
+		}
+		if stream.Status != nil {
+			snapshot.StreamStatus = safeYouTubeHealthCode(strings.ToLower(stream.Status.StreamStatus))
+			if health := stream.Status.HealthStatus; health != nil {
+				snapshot.HealthStatus = safeYouTubeHealthCode(strings.ToLower(health.Status))
+				snapshot.LastUpdateTimeSeconds = health.LastUpdateTimeSeconds
+				for _, issue := range health.ConfigurationIssues {
+					if issue == nil {
+						continue
+					}
+					snapshot.ConfigurationIssues = append(snapshot.ConfigurationIssues, BroadcastIngestHealthIssue{
+						Type:       safeYouTubeHealthCode(issue.Type),
+						Severity:   safeYouTubeHealthCode(strings.ToLower(issue.Severity)),
+						Dimensions: youtubeHealthDimensions(issue.Description),
+					})
+				}
+			}
+		}
+		sort.Slice(snapshot.ConfigurationIssues, func(i, j int) bool {
+			left, right := snapshot.ConfigurationIssues[i], snapshot.ConfigurationIssues[j]
+			if left.Type != right.Type {
+				return left.Type < right.Type
+			}
+			if left.Severity != right.Severity {
+				return left.Severity < right.Severity
+			}
+			return strings.Join(left.Dimensions, ",") < strings.Join(right.Dimensions, ",")
+		})
+		return snapshot, nil
+	}
+	return BroadcastIngestHealthSnapshot{}, ErrLiveStreamNotFound
+}
+
 // CompleteRelayStaticBroadcast is the fixed-relay completion boundary. A
 // transport error or redundant transition can mean that YouTube already
 // accepted the requested completion. In that case it reads only the safe
@@ -684,11 +827,55 @@ func defaultString(value, fallback string) string {
 	return value
 }
 
+var youtubeHealthDimensionsPattern = regexp.MustCompile(`(?i)\b([1-9][0-9]{1,4})\s*[x×]\s*([1-9][0-9]{1,4})\b`)
+
+// safeYouTubeHealthCode keeps only the token-shaped values documented for
+// LiveStream CDN/status fields. Unexpected free-form provider content is
+// replaced instead of being copied into logs or audit metadata.
+func safeYouTubeHealthCode(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) > 64 {
+		return "unknown"
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.' {
+			continue
+		}
+		return "unknown"
+	}
+	return value
+}
+
+// youtubeHealthDimensions extracts only numeric WxH tokens from a provider
+// description. It never retains the surrounding free-form text.
+func youtubeHealthDimensions(description string) []string {
+	matches := youtubeHealthDimensionsPattern.FindAllStringSubmatch(description, 4)
+	seen := make(map[string]bool, len(matches))
+	dimensions := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) != 3 {
+			continue
+		}
+		dimension := match[1] + "x" + match[2]
+		if seen[dimension] {
+			continue
+		}
+		seen[dimension] = true
+		dimensions = append(dimensions, dimension)
+	}
+	sort.Strings(dimensions)
+	return dimensions
+}
+
 func RedactedError(err error) string {
 	if err == nil {
 		return ""
 	}
-	if errors.Is(err, ErrMissingCredentials) || errors.Is(err, ErrMissingBroadcastID) || errors.Is(err, ErrBroadcastNotFound) || errors.Is(err, ErrBroadcastLifecycleUnavailable) || errors.Is(err, ErrMissingIngestInfo) ||
+	if errors.Is(err, ErrMissingCredentials) || errors.Is(err, ErrMissingBroadcastID) || errors.Is(err, ErrBroadcastNotFound) || errors.Is(err, ErrBroadcastLifecycleUnavailable) ||
+		errors.Is(err, ErrBroadcastLiveStreamUnavailable) || errors.Is(err, ErrLiveStreamNotFound) || errors.Is(err, ErrMissingIngestInfo) ||
 		errors.Is(err, ErrMissingReusableLiveStreamID) || errors.Is(err, ErrReusableLiveStreamNotFound) || errors.Is(err, ErrReusableLiveStreamNotReusable) ||
 		errors.Is(err, ErrRelayStaticBroadcastCreateUncertain) || errors.Is(err, ErrRelayStaticBindFailed) || errors.Is(err, ErrRelayStaticBindCleanupUncertain) ||
 		errors.Is(err, ErrRelayStaticBroadcastCleanupFailed) || errors.Is(err, ErrRelayStaticBroadcastCleanupUncertain) ||

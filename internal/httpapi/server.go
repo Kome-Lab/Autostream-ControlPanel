@@ -84,44 +84,46 @@ const (
 )
 
 type Server struct {
-	mux                     *http.ServeMux
-	handler                 http.Handler
-	streams                 store.StreamStore
-	auth                    store.AuthStore
-	audit                   store.AuditStore
-	users                   store.UserAdminStore
-	roles                   store.RoleStore
-	services                store.ServiceRegistryStore
-	profiles                store.ProfileStore
-	integrations            store.IntegrationStore
-	settings                store.SecuritySettingsStore
-	appSettings             store.AppSettingsStore
-	secrets                 store.SecretStore
-	runtimeLeases           store.RuntimeSecretLeaseStore
-	remediation             store.RemediationExecutionStore
-	systemUpdates           store.SystemUpdateStore
-	updaterPolicies         store.UpdaterPolicyAdminStore
-	hostSelfUpdateReleases  HostSelfUpdateReleaseResolver
-	updateHostBootstrapJobs *UpdateHostBootstrapBroker
-	systemUpdateOperationMu sync.Mutex
-	streamLifecycleMu       sync.Mutex
-	streamLifecycleLocks    map[string]*streamLifecycleLock
-	mfa                     store.MFAStore
-	emailChanges            store.EmailChangeStore
-	passkeys                store.PasskeyStore
-	avatars                 store.UserAvatarStore
-	oauthLogin              store.OAuthLoginStore
-	oauthVerifier           oauthlogin.Verifier
-	oauthConnector          oauthlogin.Connector
-	mailer                  Mailer
-	turnstile               TurnstileVerifier
-	obs                     observability.Client
-	dispatcher              serviceDispatcher
-	youtubeLive             ytlive.LiveClient
-	setupToken              string
-	previewSigningKey       string
-	loginFailures           *loginFailureLimiter
-	serviceEmailLimiter     *serviceEmailRateLimiter
+	mux                      *http.ServeMux
+	handler                  http.Handler
+	streams                  store.StreamStore
+	auth                     store.AuthStore
+	audit                    store.AuditStore
+	users                    store.UserAdminStore
+	roles                    store.RoleStore
+	services                 store.ServiceRegistryStore
+	profiles                 store.ProfileStore
+	integrations             store.IntegrationStore
+	settings                 store.SecuritySettingsStore
+	appSettings              store.AppSettingsStore
+	secrets                  store.SecretStore
+	runtimeLeases            store.RuntimeSecretLeaseStore
+	remediation              store.RemediationExecutionStore
+	systemUpdates            store.SystemUpdateStore
+	updaterPolicies          store.UpdaterPolicyAdminStore
+	hostSelfUpdateReleases   HostSelfUpdateReleaseResolver
+	updateHostBootstrapJobs  *UpdateHostBootstrapBroker
+	systemUpdateOperationMu  sync.Mutex
+	streamLifecycleMu        sync.Mutex
+	streamLifecycleLocks     map[string]*streamLifecycleLock
+	youtubeIngestHealthMu    sync.Mutex
+	youtubeIngestHealthState map[string]string
+	mfa                      store.MFAStore
+	emailChanges             store.EmailChangeStore
+	passkeys                 store.PasskeyStore
+	avatars                  store.UserAvatarStore
+	oauthLogin               store.OAuthLoginStore
+	oauthVerifier            oauthlogin.Verifier
+	oauthConnector           oauthlogin.Connector
+	mailer                   Mailer
+	turnstile                TurnstileVerifier
+	obs                      observability.Client
+	dispatcher               serviceDispatcher
+	youtubeLive              ytlive.LiveClient
+	setupToken               string
+	previewSigningKey        string
+	loginFailures            *loginFailureLimiter
+	serviceEmailLimiter      *serviceEmailRateLimiter
 }
 
 // streamLifecycleLock serializes one stream's externally visible lifecycle
@@ -295,6 +297,7 @@ func WithPreviewSigningKey(key string) ServerOption {
 func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	defaultOAuth := oauthlogin.HTTPVerifier{}
 	s := &Server{mux: http.NewServeMux(), streams: streams, obs: observability.FromEnv(), dispatcher: servicecall.FromEnv(), youtubeLive: ytlive.LiveAPIClient{}, oauthVerifier: defaultOAuth, oauthConnector: defaultOAuth, turnstile: HTTPSTurnstileVerifier{}, setupToken: os.Getenv("AUTOSTREAM_SETUP_TOKEN"), previewSigningKey: strings.TrimSpace(os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY")), loginFailures: newLoginFailureLimiter(), serviceEmailLimiter: newServiceEmailRateLimiter(serviceEmailRateLimit, serviceEmailRateWindow)}
+	s.youtubeIngestHealthState = make(map[string]string)
 	for _, opt := range opts {
 		opt(s)
 	}
