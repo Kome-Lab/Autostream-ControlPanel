@@ -500,12 +500,14 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
   const [latencyPreference, setLatencyPreference] = useState(() => rowString(row, ["latency_preference", "config.latency_preference"]) || "low");
   const [titleTemplate, setTitleTemplate] = useState(() => rowString(row, ["broadcast_title_template", "title_template", "config.broadcast_title_template", "config.title_template"]) || "{{program_title}}");
   const [description, setDescription] = useState(() => rowString(row, ["broadcast_description", "description", "config.broadcast_description", "config.description"]));
+  const [useConfiguredStreamKey, setUseConfiguredStreamKey] = useState(() => rowValue(row, ["use_configured_stream_key", "config.use_configured_stream_key"]) === true);
   const [relayBindingID, setRelayBindingID] = useState(() => rowString(row, ["relay_binding_id", "config.relay_binding_id"]));
   const [reusableLiveStreamID, setReusableLiveStreamID] = useState(() => rowString(row, ["reusable_live_stream_id", "config.reusable_live_stream_id"]));
   const [autoStart, setAutoStart] = useState(() => rowValue(row, ["enable_auto_start", "config.enable_auto_start"]) !== false);
   const [autoStop, setAutoStop] = useState(() => rowValue(row, ["enable_auto_stop", "config.enable_auto_stop"]) !== false);
   const [completeOnStop, setCompleteOnStop] = useState(() => rowValue(row, ["complete_on_stop", "config.complete_on_stop"]) !== false);
   const staticRelayMode = mode === "live_api_relay_static";
+  const configuredLiveAPIKeyMode = mode === "live_api" && useConfiguredStreamKey;
   const outputModeOptions = [
     { value: "live_api", label: "YouTube Live API（本番・通常）", description: "通常はこちら。Control Panelが配信枠を作成し、EncoderからYouTubeへ直接送信します。固定Relayは不要です。" },
     { value: "live_api_dry_run", label: "YouTube Live API（検証）", description: "接続確認用です。実際に配信を開始する場合は本番・通常を選択してください。" },
@@ -537,6 +539,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
             // for the non-secret relay binding flow.
             watch_url: staticRelayMode ? "" : watchURL,
             oauth_account_id: effectiveOAuthAccountID === noneValue ? "" : effectiveOAuthAccountID,
+            use_configured_stream_key: configuredLiveAPIKeyMode,
             broadcast_title_template: titleTemplate,
             broadcast_description: description,
             privacy_status: privacyStatus,
@@ -567,7 +570,17 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
               <p className="mt-1">1つの固定Relayは同時に1配信枠だけを処理できます。Relayの設定と同じバインディングID・Live Stream IDを指定してください。</p>
             </div>
           </>
-        ) : <TextField label="ストリームキー" value={streamKey} onChange={setStreamKey} type="password" description="既存ストリームキー方式で使う場合だけ入力します。" />}
+        ) : mode === "stream_key" || configuredLiveAPIKeyMode ? (
+          <TextField
+            label="ストリームキー"
+            value={streamKey}
+            onChange={setStreamKey}
+            type="password"
+            description={configuredLiveAPIKeyMode
+              ? "YouTube Studioで作成した再利用可能なカスタムキーを入力します。保存済みなら空欄のままで構いません。"
+              : "既存ストリームキー方式で使うキーを入力します。"}
+          />
+        ) : null}
         {mode === "stream_key" ? <TextField label="YouTube視聴URL" value={watchURL} onChange={setWatchURL} placeholder="https://www.youtube.com/watch?v=..." description="配信開始時のDiscord通知に使用します。" required /> : null}
         <TextField label="番組タイトルテンプレート" value={titleTemplate} onChange={setTitleTemplate} />
         <SelectField
@@ -595,6 +608,9 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
         <Textarea value={description} onChange={(event) => setDescription(event.target.value)} className="min-h-24" />
       </Field>
       <div className="grid gap-3 md:grid-cols-3">
+        {mode === "live_api" ? (
+          <SwitchField label="Studioのカスタムキーを固定利用" checked={useConfiguredStreamKey} onCheckedChange={setUseConfiguredStreamKey} />
+        ) : null}
         <SwitchField label="自動開始" checked={autoStart} onCheckedChange={setAutoStart} />
         <SwitchField label="自動停止" checked={autoStop} onCheckedChange={setAutoStop} />
         {staticRelayMode ? (
@@ -604,6 +620,11 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
           </div>
         ) : <SwitchField label="停止時に完了扱い" checked={completeOnStop} onCheckedChange={setCompleteOnStop} />}
       </div>
+      {configuredLiveAPIKeyMode ? (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          YouTube Studioでカスタムキーの解像度を手動1080p60、デュアルストリームをOFFに設定してください。1つのキーを同時に複数枠へ割り当てることはできません。Control Panelは配信枠を自動作成し、このキーのLiveStreamへバインドします。
+        </div>
+      ) : null}
       {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、YouTube Live用途でGoogleアカウントを接続してください。</p> : null}
       <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue) || (staticRelayMode && !staticRelayReady)} />
     </form>

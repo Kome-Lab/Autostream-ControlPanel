@@ -2,6 +2,7 @@ package youtube
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,6 +38,13 @@ type PrepareRequest struct {
 	FrameRate       string
 	EnableAutoStart bool
 	EnableAutoStop  bool
+	// PreferredStreamKey selects an operator-created reusable LiveStream by its
+	// secret stream name. This keeps Studio-only stream settings (for example
+	// manual 16:9 resolution and dual-stream selection) while the Control Panel
+	// continues to create and bind each Broadcast through the Live API. The
+	// value is used only for a constant-time in-memory comparison and must never
+	// be logged or returned by diagnostic surfaces.
+	PreferredStreamKey string
 	// ReuseAccountStream asks the provider client to bind each broadcast to
 	// one reusable LiveStream owned by this OAuth account. It keeps the
 	// account from accumulating a new stream key for every broadcast.
@@ -257,6 +265,7 @@ var (
 	ErrReusableLiveStreamNotFound              = errors.New("youtube_reusable_live_stream_not_found")
 	ErrReusableLiveStreamNotReusable           = errors.New("youtube_reusable_live_stream_not_reusable")
 	ErrReusableLiveStreamFormatMismatch        = errors.New("youtube_reusable_live_stream_format_mismatch")
+	ErrPreferredStreamKeyNotFound              = errors.New("youtube_preferred_stream_key_not_found")
 	ErrRelayStaticBroadcastCreateUncertain     = errors.New("youtube_relay_static_broadcast_create_uncertain")
 	ErrRelayStaticBindFailed                   = errors.New("youtube_relay_static_bind_failed")
 	ErrRelayStaticBindCleanupUncertain         = errors.New("youtube_relay_static_bind_cleanup_uncertain")
@@ -294,7 +303,9 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		return PreparedOutput{}, err
 	}
 	var stream *youtubeapi.LiveStream
-	if req.ReuseAccountStream {
+	if strings.TrimSpace(req.PreferredStreamKey) != "" {
+		stream, err = findReusableAccountLiveStreamByKey(ctx, service, req)
+	} else if req.ReuseAccountStream {
 		// The provider has no idempotency key for liveStreams.insert. Serialize
 		// the find-or-create section in this process so concurrent starts do not
 		// create two account streams before either response is observed.
@@ -335,6 +346,52 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		return PreparedOutput{}, ErrMissingIngestInfo
 	}
 	return PreparedOutput{RTMPURL: rtmpURL, StreamKey: streamKey, BroadcastID: broadcast.Id, LiveStreamID: stream.Id}, nil
+}
+
+func findReusableAccountLiveStreamByKey(ctx context.Context, service *youtubeapi.Service, req PrepareRequest) (*youtubeapi.LiveStream, error) {
+	preferredKey := strings.TrimSpace(req.PreferredStreamKey)
+	if preferredKey == "" {
+		return nil, ErrPreferredStreamKeyNotFound
+	}
+	wantedResolution := defaultString(req.Resolution, "1080p")
+	wantedFrameRate := defaultString(req.FrameRate, "60fps")
+	pageToken := ""
+	for {
+		query := service.LiveStreams.List([]string{"id", "cdn", "contentDetails"}).
+			Mine(true).
+			MaxResults(50).
+			Fields("items(id,cdn/resolution,cdn/frameRate,cdn/ingestionInfo,contentDetails/isReusable),nextPageToken").
+			Context(ctx)
+		if pageToken != "" {
+			query = query.PageToken(pageToken)
+		}
+		streams, err := query.Do()
+		if err != nil {
+			return nil, err
+		}
+		for _, stream := range streams.Items {
+			if stream == nil || stream.Cdn == nil || stream.Cdn.IngestionInfo == nil {
+				continue
+			}
+			candidateKey := strings.TrimSpace(stream.Cdn.IngestionInfo.StreamName)
+			if subtle.ConstantTimeCompare([]byte(candidateKey), []byte(preferredKey)) != 1 {
+				continue
+			}
+			if stream.ContentDetails == nil || !stream.ContentDetails.IsReusable {
+				return nil, ErrReusableLiveStreamNotReusable
+			}
+			if !strings.EqualFold(strings.TrimSpace(stream.Cdn.Resolution), wantedResolution) ||
+				!strings.EqualFold(strings.TrimSpace(stream.Cdn.FrameRate), wantedFrameRate) {
+				return nil, ErrReusableLiveStreamFormatMismatch
+			}
+			return stream, nil
+		}
+		if streams.NextPageToken == "" {
+			break
+		}
+		pageToken = streams.NextPageToken
+	}
+	return nil, ErrPreferredStreamKeyNotFound
 }
 
 func ensureReusableAccountLiveStream(ctx context.Context, service *youtubeapi.Service, req PrepareRequest) (*youtubeapi.LiveStream, error) {
@@ -885,7 +942,7 @@ func RedactedError(err error) string {
 	}
 	if errors.Is(err, ErrMissingCredentials) || errors.Is(err, ErrMissingBroadcastID) || errors.Is(err, ErrBroadcastNotFound) || errors.Is(err, ErrBroadcastLifecycleUnavailable) ||
 		errors.Is(err, ErrBroadcastLiveStreamUnavailable) || errors.Is(err, ErrLiveStreamNotFound) || errors.Is(err, ErrMissingIngestInfo) ||
-		errors.Is(err, ErrMissingReusableLiveStreamID) || errors.Is(err, ErrReusableLiveStreamNotFound) || errors.Is(err, ErrReusableLiveStreamNotReusable) || errors.Is(err, ErrReusableLiveStreamFormatMismatch) ||
+		errors.Is(err, ErrMissingReusableLiveStreamID) || errors.Is(err, ErrReusableLiveStreamNotFound) || errors.Is(err, ErrReusableLiveStreamNotReusable) || errors.Is(err, ErrReusableLiveStreamFormatMismatch) || errors.Is(err, ErrPreferredStreamKeyNotFound) ||
 		errors.Is(err, ErrRelayStaticBroadcastCreateUncertain) || errors.Is(err, ErrRelayStaticBindFailed) || errors.Is(err, ErrRelayStaticBindCleanupUncertain) ||
 		errors.Is(err, ErrRelayStaticBroadcastCleanupFailed) || errors.Is(err, ErrRelayStaticBroadcastCleanupUncertain) ||
 		errors.Is(err, ErrRelayStaticBroadcastCompletionFailed) || errors.Is(err, ErrRelayStaticBroadcastCompletionUncertain) {

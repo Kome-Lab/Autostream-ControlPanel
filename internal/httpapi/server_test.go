@@ -2145,6 +2145,53 @@ func TestApplyYouTubeLiveAPIOutputBindsFreshStreamToValidatedEncoderFormat(t *te
 	}
 }
 
+func TestApplyYouTubeLiveAPIOutputUsesConfiguredReusableStreamKey(t *testing.T) {
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google", Name: "YouTube", Enabled: true, ClientID: "youtube-client-id", ClientSecret: "youtube-client-secret", RedirectURI: "https://control.example.test/oauth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID: provider.ID, ProviderType: "google", AccountLabel: "youtube", RefreshToken: "youtube-refresh-token", Scopes: []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	const secretName = "youtube_stream_key_configured_reusable"
+	const configuredKey = "operator-custom-key"
+	if _, err := secrets.UpdateSecret(t.Context(), secretName, configuredKey); err != nil {
+		t.Fatal(err)
+	}
+	youtubeClient := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{
+		RTMPURL: "rtmps://youtube.example.test/live2", StreamKey: configuredKey, BroadcastID: "broadcast-custom", LiveStreamID: "live-stream-custom",
+	}}
+	server := &Server{integrations: integrations, secrets: secrets, youtubeLive: youtubeClient}
+	req := &servicecall.StartRequest{EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60}
+	profile := store.Profile{ID: "youtube-output-custom", Config: map[string]any{
+		"oauth_account_id":          account.ID,
+		"stream_key_secret_name":    secretName,
+		"use_configured_stream_key": true,
+	}}
+	if err := server.applyYouTubeLiveAPIOutput(t.Context(), store.Stream{ID: "stream-custom", Name: "custom key source"}, profile, req); err != nil {
+		t.Fatal(err)
+	}
+	if youtubeClient.prepareRequest.PreferredStreamKey != configuredKey {
+		t.Fatal("configured reusable stream key was not passed to the provider client")
+	}
+	if youtubeClient.prepareRequest.ReuseAccountStream {
+		t.Fatal("configured key selection must not use heuristic account-stream reuse")
+	}
+	if got := mapString(req.YouTubeRuntime, "ingest_selection"); got != "configured_reusable_stream" {
+		t.Fatalf("ingest selection=%q runtime=%#v", got, req.YouTubeRuntime)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", req.YouTubeRuntime), configuredKey) {
+		t.Fatalf("configured stream key leaked into runtime metadata: %#v", req.YouTubeRuntime)
+	}
+}
+
 func TestApplyYouTubeLiveAPIOutputResolvesEncoderProfileWithoutVideoCapabilities(t *testing.T) {
 	integrations := store.NewMemoryIntegrationStore()
 	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
@@ -5174,6 +5221,35 @@ func TestYouTubeOutputConfigAcceptsRelayStaticWithoutIngestSecrets(t *testing.T)
 	}
 	if !youtubeCompleteOnStop(config) {
 		t.Fatal("relay static config must force complete_on_stop")
+	}
+}
+
+func TestYouTubeOutputConfigScopesConfiguredStreamKeyReuseToLiveAPI(t *testing.T) {
+	config, err := youtubeOutputConfigFromRequest(youtubeOutputRequest{
+		Name:                   "managed custom key",
+		Mode:                   "live_api",
+		OAuthAccountID:         "youtube-oauth-account",
+		UseConfiguredStreamKey: true,
+	}, "youtube-output-custom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configBool(config, "use_configured_stream_key") {
+		t.Fatalf("configured-key selection was not persisted: %#v", config)
+	}
+	for _, mode := range []string{"stream_key", "live_api_dry_run", "live_api_relay_static"} {
+		request := youtubeOutputRequest{Name: "invalid configured key", Mode: mode, UseConfiguredStreamKey: true}
+		if mode == "live_api_dry_run" {
+			request.OAuthAccountID = "youtube-oauth-account"
+		}
+		if mode == "live_api_relay_static" {
+			request.OAuthAccountID = "youtube-oauth-account"
+			request.RelayBindingID = "relay-00000000-0000-4000-8000-000000000001"
+			request.ReusableLiveStreamID = "youtube-live-stream-primary"
+		}
+		if _, err := youtubeOutputConfigFromRequest(request, "youtube-output-invalid"); err == nil {
+			t.Fatalf("mode %q accepted configured-key reuse", mode)
+		}
 	}
 }
 

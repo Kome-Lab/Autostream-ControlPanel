@@ -3542,6 +3542,7 @@ type youtubeOutputRequest struct {
 	StreamKey              string `json:"stream_key"`
 	WatchURL               string `json:"watch_url"`
 	OAuthAccountID         string `json:"oauth_account_id"`
+	UseConfiguredStreamKey bool   `json:"use_configured_stream_key"`
 	RelayBindingID         string `json:"relay_binding_id"`
 	ReusableLiveStreamID   string `json:"reusable_live_stream_id"`
 	BroadcastTitleTemplate string `json:"broadcast_title_template"`
@@ -3563,6 +3564,7 @@ type youtubeOutputResponse struct {
 	StreamKeyFingerprint   string    `json:"stream_key_fingerprint,omitempty"`
 	WatchURL               string    `json:"watch_url,omitempty"`
 	OAuthAccountID         string    `json:"oauth_account_id,omitempty"`
+	UseConfiguredStreamKey bool      `json:"use_configured_stream_key,omitempty"`
 	RelayBindingID         string    `json:"relay_binding_id,omitempty"`
 	ReusableLiveStreamID   string    `json:"reusable_live_stream_id,omitempty"`
 	BroadcastTitleTemplate string    `json:"broadcast_title_template,omitempty"`
@@ -3786,6 +3788,12 @@ func youtubeOutputConfigFromRequest(body youtubeOutputRequest, id string) (map[s
 	config := map[string]any{
 		"mode": mode,
 	}
+	if body.UseConfiguredStreamKey {
+		if mode != "live_api" {
+			return nil, errors.New("configured stream key reuse requires live_api mode")
+		}
+		config["use_configured_stream_key"] = true
+	}
 	if rtmpURL != "" {
 		config["rtmp_url"] = rtmpURL
 	}
@@ -3934,6 +3942,7 @@ func youtubeOutputFromProfile(profile store.Profile, statuses []store.SecretStat
 		StreamKeyFingerprint:   status.Fingerprint,
 		WatchURL:               configString(profile.Config, "watch_url"),
 		OAuthAccountID:         configString(profile.Config, "oauth_account_id"),
+		UseConfiguredStreamKey: configBool(profile.Config, "use_configured_stream_key"),
 		RelayBindingID:         relayBindingID,
 		ReusableLiveStreamID:   configString(profile.Config, "reusable_live_stream_id"),
 		BroadcastTitleTemplate: firstNonEmpty(configString(profile.Config, "broadcast_title_template"), configString(profile.Config, "broadcast_title")),
@@ -11866,6 +11875,19 @@ func (s *Server) validateYouTubeLiveAPIReadiness(ctx context.Context, stream sto
 	if !store.OAuthAccountAllowsPurpose(account, store.OAuthAccountPurposeYouTube) {
 		return errYouTubeOAuthAccountUnavailable
 	}
+	if configBool(profile.Config, "use_configured_stream_key") {
+		secretName := firstNonEmpty(configString(profile.Config, "stream_key_secret_name"), configString(profile.Config, "streamKeySecretName"))
+		if strings.TrimSpace(secretName) == "" {
+			return errYouTubeOutputInvalidConfig
+		}
+		statuses, err := s.secrets.ListSecretStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if status := secretStatusByName(statuses, secretName); !status.Configured {
+			return errYouTubeOutputStreamKeyUnavailable
+		}
+	}
 	return nil
 }
 
@@ -11985,6 +12007,15 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	if err != nil {
 		return err
 	}
+	preferredStreamKey := ""
+	ingestSelection := "fresh_stream"
+	if configBool(profile.Config, "use_configured_stream_key") {
+		preferredStreamKey, err = s.youtubeOutputConfiguredStreamKey(ctx, profile)
+		if err != nil {
+			return err
+		}
+		ingestSelection = "configured_reusable_stream"
+	}
 	scheduledStart := youtubeLiveAPIScheduledStart(stream, profile.Config)
 	prepared, err := s.youtubeLive.Prepare(ctx, ytlive.PrepareRequest{
 		Credentials:    credentials,
@@ -11999,10 +12030,11 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		// auto-detection can classify a valid 16:9 ingest as a square CDN canvas;
 		// the explicit supported format keeps provider metadata and coded output
 		// on the same contract.
-		Resolution:      resolution,
-		FrameRate:       frameRate,
-		EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
-		EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
+		Resolution:         resolution,
+		FrameRate:          frameRate,
+		EnableAutoStart:    youtubeOutputAutoStartEnabled(profile.Config),
+		EnableAutoStop:     configBool(profile.Config, "enable_auto_stop"),
+		PreferredStreamKey: preferredStreamKey,
 		// Keep provider ingest format state scoped to this broadcast. Reusing an
 		// account-wide LiveStream can preserve stale dimensions (for example a
 		// prior 4K or square ingest) even after the Encoder returns to 1080p.
@@ -12029,6 +12061,7 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		"live_stream_id":         prepared.LiveStreamID,
 		"rtmp_url":               prepared.RTMPURL,
 		"stream_key_secret_name": streamKeySecretName,
+		"ingest_selection":       ingestSelection,
 		"dry_run":                false,
 		"enable_auto_start":      youtubeOutputAutoStartEnabled(profile.Config),
 		"complete_on_stop":       youtubeCompleteOnStop(profile.Config),
@@ -12356,22 +12389,9 @@ func (s *Server) applyYouTubeStreamKeyOutput(ctx context.Context, profile store.
 	if !isSecureRTMPSURL(req.EncoderRTMPURL) {
 		return errYouTubeOutputInvalidConfig
 	}
-	secretName := strings.TrimSpace(configString(profile.Config, "stream_key_secret_name"))
-	if secretName == "" {
-		secretName = strings.TrimSpace(configString(profile.Config, "streamKeySecretName"))
-	}
-	if secretName == "" {
-		return errYouTubeOutputInvalidConfig
-	}
-	streamKey, err := s.secrets.GetSecretValue(ctx, secretName)
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrUnknownSecret) {
-		return errYouTubeOutputStreamKeyUnavailable
-	}
-	if err != nil {
+	secretName := firstNonEmpty(configString(profile.Config, "stream_key_secret_name"), configString(profile.Config, "streamKeySecretName"))
+	if _, err := s.youtubeOutputConfiguredStreamKey(ctx, profile); err != nil {
 		return err
-	}
-	if strings.TrimSpace(streamKey) == "" {
-		return errYouTubeOutputStreamKeyUnavailable
 	}
 	req.EncoderStreamKeySecretName = secretName
 	if watchURL, ok := normalizeYouTubeWatchURL(configString(profile.Config, "watch_url")); ok {
@@ -12384,6 +12404,24 @@ func (s *Server) applyYouTubeStreamKeyOutput(ctx context.Context, profile store.
 		}
 	}
 	return nil
+}
+
+func (s *Server) youtubeOutputConfiguredStreamKey(ctx context.Context, profile store.Profile) (string, error) {
+	secretName := firstNonEmpty(configString(profile.Config, "stream_key_secret_name"), configString(profile.Config, "streamKeySecretName"))
+	if strings.TrimSpace(secretName) == "" {
+		return "", errYouTubeOutputInvalidConfig
+	}
+	streamKey, err := s.secrets.GetSecretValue(ctx, secretName)
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrUnknownSecret) {
+		return "", errYouTubeOutputStreamKeyUnavailable
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(streamKey) == "" {
+		return "", errYouTubeOutputStreamKeyUnavailable
+	}
+	return streamKey, nil
 }
 
 func (s *Server) applyYouTubeLiveAPIDryRunOutput(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {

@@ -222,6 +222,84 @@ func TestLiveAPIClientPrepareReusesOneAccountLiveStream(t *testing.T) {
 	}
 }
 
+func TestLiveAPIClientPrepareBindsConfiguredReusableStreamKey(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{
+		accountReusableStreamResponse: `{"items":[{"id":"live-stream-custom","contentDetails":{"isReusable":true},"cdn":{"resolution":"1080p","frameRate":"60fps","ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"operator-custom-key"}}}]}`,
+	}
+	httpClient := &http.Client{Transport: transport}
+	client := LiveAPIClient{HTTPClient: httpClient}
+
+	prepared, err := client.Prepare(context.Background(), PrepareRequest{
+		Credentials: OAuthCredentials{
+			ClientID:     "youtube-client-id",
+			ClientSecret: "youtube-client-secret",
+			RefreshToken: "youtube-refresh-token",
+		},
+		StreamID:           "stream-custom-key",
+		StreamName:         "Custom key stream",
+		Resolution:         "1080p",
+		FrameRate:          "60fps",
+		PreferredStreamKey: "operator-custom-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.LiveStreamID != "live-stream-custom" || prepared.StreamKey != "operator-custom-key" {
+		t.Fatalf("configured reusable stream was not selected: %#v", prepared)
+	}
+	if transport.accountStreamInsertions != 0 || transport.saw("insert_stream") {
+		t.Fatalf("configured reusable stream unexpectedly created another key: %#v", transport.steps)
+	}
+	if transport.boundStreamID != "live-stream-custom" {
+		t.Fatalf("broadcast bound stream=%q", transport.boundStreamID)
+	}
+}
+
+func TestLiveAPIClientPrepareConfiguredStreamKeyFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response string
+		want     error
+	}{
+		{
+			name:     "missing",
+			response: `{"items":[]}`,
+			want:     ErrPreferredStreamKeyNotFound,
+		},
+		{
+			name:     "not reusable",
+			response: `{"items":[{"id":"live-stream-custom","contentDetails":{"isReusable":false},"cdn":{"resolution":"1080p","frameRate":"60fps","ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"operator-custom-key"}}}]}`,
+			want:     ErrReusableLiveStreamNotReusable,
+		},
+		{
+			name:     "format mismatch",
+			response: `{"items":[{"id":"live-stream-custom","contentDetails":{"isReusable":true},"cdn":{"resolution":"720p","frameRate":"30fps","ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"operator-custom-key"}}}]}`,
+			want:     ErrReusableLiveStreamFormatMismatch,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &fakeYouTubeRoundTripper{accountReusableStreamResponse: test.response}
+			client := LiveAPIClient{HTTPClient: &http.Client{Transport: transport}}
+			_, err := client.Prepare(context.Background(), PrepareRequest{
+				Credentials: OAuthCredentials{ClientID: "youtube-client-id", ClientSecret: "youtube-client-secret", RefreshToken: "youtube-refresh-token"},
+				Resolution:  "1080p", FrameRate: "60fps", PreferredStreamKey: "operator-custom-key",
+			})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error=%v want=%v", err, test.want)
+			}
+			if got := RedactedError(err); got != test.want.Error() {
+				t.Fatalf("redacted error=%q want=%q", got, test.want.Error())
+			}
+			if strings.Contains(err.Error(), "operator-custom-key") || strings.Contains(RedactedError(err), "operator-custom-key") {
+				t.Fatalf("configured stream key leaked through error: %v", err)
+			}
+			if transport.saw("insert_stream") || transport.saw("insert_broadcast") || transport.saw("bind_broadcast") {
+				t.Fatalf("failed configured-key lookup mutated provider state: %#v", transport.steps)
+			}
+		})
+	}
+}
+
 func TestLiveAPIClientPrepareDoesNotReuseMismatchedAccountLiveStream(t *testing.T) {
 	transport := &fakeYouTubeRoundTripper{
 		accountReusableStreamResponse: `{"items":[{"id":"legacy-4k-stream","snippet":{"title":"AutoStream account ingest"},"contentDetails":{"isReusable":true},"cdn":{"resolution":"2160p","frameRate":"60fps","ingestionInfo":{"rtmpsIngestionAddress":"rtmps://a.rtmps.youtube.com/live2","streamName":"legacy-4k-key"}}}]}`,
@@ -891,7 +969,7 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	case req.Method == http.MethodPost && req.URL.Path == "/youtube/v3/liveBroadcasts/bind":
 		f.steps = append(f.steps, "bind_broadcast")
 		f.boundStreamID = req.URL.Query().Get("streamId")
-		if req.URL.Query().Get("id") != "broadcast-01" || (f.boundStreamID != "live-stream-01" && f.boundStreamID != "live-stream-static") {
+		if req.URL.Query().Get("id") != "broadcast-01" || (f.boundStreamID != "live-stream-01" && f.boundStreamID != "live-stream-static" && f.boundStreamID != "live-stream-custom") {
 			return fakeHTTPResponse(req, http.StatusBadRequest, `{"error":{"message":"bad bind"}}`), nil
 		}
 		if f.bindStatus != 0 {
