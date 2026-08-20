@@ -90,13 +90,16 @@ func (s *MemoryStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 	items := make([]Stream, 0, len(s.streams))
 	for _, stream := range s.streams {
 		status := strings.ToLower(strings.TrimSpace(stream.Status))
-		if stream.DeletedAt != nil || strings.TrimSpace(stream.ArchiveProfileID) == "" || (status != "stopping" && status != "completed") {
+		if stream.DeletedAt != nil || strings.TrimSpace(stream.ArchiveProfileID) == "" {
 			continue
 		}
 		if stream.ArchiveStartedAt != nil {
-			if stream.ArchiveReportedAt == nil {
+			if stream.ArchiveReportedAt == nil && (status == "stopping" || status == "completed" || status == "ready") {
 				items = append(items, stream)
 			}
+			continue
+		}
+		if status != "stopping" && status != "completed" {
 			continue
 		}
 		if s.artifactReports[stream.ID] {

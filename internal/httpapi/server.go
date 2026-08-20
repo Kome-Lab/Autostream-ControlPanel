@@ -11970,7 +11970,8 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	if s.youtubeLive == nil {
 		return errYouTubeLiveAPIUnavailable
 	}
-	if err := validateYouTubeEncoderVideoFormat(profile, req); err != nil {
+	resolution, frameRate, err := s.validatedYouTubeEncoderVideoFormat(ctx, profile, req)
+	if err != nil {
 		return err
 	}
 	oauthAccountID := strings.TrimSpace(configString(profile.Config, "oauth_account_id"))
@@ -11994,12 +11995,12 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 		Description:    configString(profile.Config, "broadcast_description"),
 		PrivacyStatus:  defaultConfigString(profile.Config, "privacy_status", "private"),
 		ScheduledStart: youtubeLiveAPIScheduledStart(stream, profile.Config),
-		// The Encoder profile is validated before provider preparation. Let each
-		// fresh, non-reusable LiveStream detect that validated coded format from
-		// the actual ingest. This prevents a fixed provider hint from producing a
-		// square CDN canvas while the Encoder's shared tee output is 16:9.
-		Resolution:      "variable",
-		FrameRate:       "variable",
+		// Bind each fresh LiveStream to the resolved Encoder profile. Provider
+		// auto-detection can classify a valid 16:9 ingest as a square CDN canvas;
+		// the explicit supported format keeps provider metadata and coded output
+		// on the same contract.
+		Resolution:      resolution,
+		FrameRate:       frameRate,
 		EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
 		EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
 		// Keep provider ingest format state scoped to this broadcast. Reusing an
@@ -12042,7 +12043,8 @@ func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store
 	if err := s.validateYouTubeRelayStaticReadiness(ctx, stream, profile); err != nil {
 		return err
 	}
-	if err := validateYouTubeEncoderVideoFormat(profile, req); err != nil {
+	resolution, frameRate, err := s.validatedYouTubeEncoderVideoFormat(ctx, profile, req)
+	if err != nil {
 		return err
 	}
 	relayStaticClient, ok := s.youtubeLive.(ytlive.RelayStaticLiveClient)
@@ -12097,8 +12099,8 @@ func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store
 			Description:     configString(profile.Config, "broadcast_description"),
 			PrivacyStatus:   defaultConfigString(profile.Config, "privacy_status", "private"),
 			ScheduledStart:  youtubeLiveAPIScheduledStart(stream, profile.Config),
-			Resolution:      defaultConfigString(profile.Config, "resolution", "1080p"),
-			FrameRate:       defaultConfigString(profile.Config, "frame_rate", "60fps"),
+			Resolution:      resolution,
+			FrameRate:       frameRate,
 			EnableAutoStart: youtubeOutputAutoStartEnabled(profile.Config),
 			EnableAutoStop:  configBool(profile.Config, "enable_auto_stop"),
 		},
@@ -12169,12 +12171,35 @@ func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store
 	return nil
 }
 
-func validateYouTubeEncoderVideoFormat(profile store.Profile, req *servicecall.StartRequest) error {
-	if req == nil || req.EncoderVideoWidth == 0 || req.EncoderVideoHeight == 0 || req.EncoderVideoFPS == 0 {
-		// Older Encoder/Worker capability sets do not carry resolved dimensions.
-		// Preserve that compatibility path; the provider client still rejects a
-		// mismatched reusable LiveStream against the output profile itself.
-		return nil
+func (s *Server) validatedYouTubeEncoderVideoFormat(ctx context.Context, profile store.Profile, req *servicecall.StartRequest) (string, string, error) {
+	if req == nil {
+		return "", "", errYouTubeOutputVideoFormatMismatch
+	}
+	if req.EncoderVideoWidth == 0 || req.EncoderVideoHeight == 0 || req.EncoderVideoFPS == 0 {
+		if strings.TrimSpace(req.EncoderProfileID) == "" {
+			// Streams created before Encoder profiles became mandatory have no
+			// selected format to resolve. Preserve that compatibility path with a
+			// fixed output hint, but never return to provider auto-detection.
+			resolution := defaultConfigString(profile.Config, "resolution", "1080p")
+			frameRate := defaultConfigString(profile.Config, "frame_rate", "60fps")
+			if strings.EqualFold(strings.TrimSpace(resolution), "variable") {
+				resolution = "1080p"
+			}
+			if strings.EqualFold(strings.TrimSpace(frameRate), "variable") {
+				frameRate = "60fps"
+			}
+			return resolution, frameRate, nil
+		}
+		// Mixed-version assignments may not advertise Worker video capabilities,
+		// so the normal start path may not have populated these internal fields.
+		// Resolve the selected Encoder profile in the Panel instead of guessing a
+		// provider default; an unresolved profile must fail before YouTube prepare.
+		if err := s.applyEncoderVideoProfile(ctx, req); err != nil {
+			return "", "", errYouTubeOutputVideoFormatMismatch
+		}
+	}
+	if req.EncoderVideoFPS < 1 || req.EncoderVideoFPS > 60 {
+		return "", "", errYouTubeOutputVideoFormatMismatch
 	}
 	var expectedResolution string
 	switch {
@@ -12185,19 +12210,21 @@ func validateYouTubeEncoderVideoFormat(profile store.Profile, req *servicecall.S
 	case req.EncoderVideoWidth == 854 && req.EncoderVideoHeight == 480:
 		expectedResolution = "480p"
 	default:
-		return errYouTubeOutputVideoFormatMismatch
+		return "", "", errYouTubeOutputVideoFormatMismatch
 	}
 	expectedFrameRate := "60fps"
 	if req.EncoderVideoFPS <= 30 {
 		expectedFrameRate = "30fps"
 	}
-	configuredResolution := defaultConfigString(profile.Config, "resolution", "1080p")
-	configuredFrameRate := defaultConfigString(profile.Config, "frame_rate", "60fps")
-	if !strings.EqualFold(strings.TrimSpace(configuredResolution), expectedResolution) ||
-		!strings.EqualFold(strings.TrimSpace(configuredFrameRate), expectedFrameRate) {
-		return errYouTubeOutputVideoFormatMismatch
+	configuredResolution := strings.TrimSpace(configString(profile.Config, "resolution"))
+	configuredFrameRate := strings.TrimSpace(configString(profile.Config, "frame_rate"))
+	if configuredResolution != "" && !strings.EqualFold(configuredResolution, "variable") && !strings.EqualFold(configuredResolution, expectedResolution) {
+		return "", "", errYouTubeOutputVideoFormatMismatch
 	}
-	return nil
+	if configuredFrameRate != "" && !strings.EqualFold(configuredFrameRate, "variable") && !strings.EqualFold(configuredFrameRate, expectedFrameRate) {
+		return "", "", errYouTubeOutputVideoFormatMismatch
+	}
+	return expectedResolution, expectedFrameRate, nil
 }
 
 func (s *Server) relayStaticFinalizeCommitWasObserved(ctx context.Context, claimStore store.StreamYouTubeRelayBindingClaimStore, expectedClaim store.YouTubeRelayBindingClaim, expectedRuntime store.StreamYouTubeRuntime) bool {

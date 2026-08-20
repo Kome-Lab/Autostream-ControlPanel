@@ -142,6 +142,43 @@ func TestMemoryStreamArtifactsPreserveRunsAndFenceProcessingCompletion(t *testin
 	}
 }
 
+func TestMemoryArchiveProcessingStreamsKeepRearmedPendingRunVisible(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "rearmed archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, StreamSettings{ArchiveProfileID: "archive-01"}); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Date(2026, 8, 20, 2, 15, 57, 0, time.UTC)
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-01", startedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "ready"); err != nil {
+		t.Fatal(err)
+	}
+
+	processing, err := streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 1 || processing[0].ID != stream.ID || processing[0].ArchiveRunID != "run-01" {
+		t.Fatalf("rearmed pending archive disappeared: processing=%#v err=%v", processing, err)
+	}
+
+	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{{
+		ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt,
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-01/final.mp4", SizeBytes: 456,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	processing, err = streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 0 {
+		t.Fatalf("reported rearmed archive remained in processing: processing=%#v err=%v", processing, err)
+	}
+}
+
 func TestMemoryDeleteStreamRetainsArchiveAndHidesOperationalStream(t *testing.T) {
 	streams := NewMemoryStreamStore()
 	stream, err := streams.CreateStream(t.Context(), "archive-protected")

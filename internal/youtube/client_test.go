@@ -299,7 +299,7 @@ func TestLiveAPIClientPrepareRelayStaticBindsReusableLiveStreamWithoutIngestInfo
 		t.Fatalf("relay-static prepare must not create a live stream: %#v", transport.steps)
 	}
 	if !strings.Contains(transport.reusableLiveStreamQuery, "contentDetails") ||
-		strings.Contains(transport.reusableLiveStreamQuery, "cdn") ||
+		!strings.Contains(transport.reusableLiveStreamQuery, "cdn") ||
 		strings.Contains(transport.reusableLiveStreamQuery, "ingestion") {
 		t.Fatalf("reusable stream validation requested unsafe fields: %q", transport.reusableLiveStreamQuery)
 	}
@@ -372,6 +372,38 @@ func TestLiveAPIClientPrepareRelayStaticRejectsInvalidReusableLiveStream(t *test
 				t.Fatalf("expected safe error %q, got %q", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestLiveAPIClientPrepareRelayStaticRejectsReusableLiveStreamFormatMismatch(t *testing.T) {
+	transport := &fakeYouTubeRoundTripper{
+		liveStreamListResponse: `{
+			"items": [{
+				"id":"live-stream-static",
+				"contentDetails":{"isReusable":true},
+				"cdn":{"resolution":"2160p","frameRate":"60fps"}
+			}]
+		}`,
+	}
+	client := LiveAPIClient{HTTPClient: &http.Client{Transport: transport}}
+
+	_, err := client.PrepareRelayStatic(context.Background(), RelayStaticPrepareRequest{
+		PrepareRequest: PrepareRequest{
+			Credentials: OAuthCredentials{
+				ClientID:     "youtube-client-id",
+				ClientSecret: "youtube-client-secret",
+				RefreshToken: "youtube-refresh-token",
+			},
+			Resolution: "1080p",
+			FrameRate:  "60fps",
+		},
+		ReusableLiveStreamID: "live-stream-static",
+	})
+	if err == nil || err.Error() != "youtube_reusable_live_stream_format_mismatch" {
+		t.Fatalf("mismatched reusable stream format error = %v", err)
+	}
+	if transport.saw("insert_broadcast") || transport.saw("bind_broadcast") {
+		t.Fatalf("format mismatch created or bound a Broadcast: %#v", transport.steps)
 	}
 }
 
@@ -831,7 +863,7 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	case req.Method == http.MethodGet && req.URL.Path == "/youtube/v3/liveStreams":
 		f.steps = append(f.steps, "get_reusable_stream")
 		f.reusableLiveStreamQuery = req.URL.RawQuery
-		if req.URL.Query().Get("id") != "live-stream-static" || !hasParts(req, "id", "contentDetails") {
+		if req.URL.Query().Get("id") != "live-stream-static" || !hasParts(req, "id", "contentDetails", "cdn") {
 			return fakeHTTPResponse(req, http.StatusBadRequest, `{"error":{"message":"bad reusable stream lookup"}}`), nil
 		}
 		status := f.liveStreamListStatus
@@ -840,7 +872,7 @@ func (f *fakeYouTubeRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 		}
 		body := f.liveStreamListResponse
 		if body == "" {
-			body = `{"items":[{"id":"live-stream-static","contentDetails":{"isReusable":true}}]}`
+			body = `{"items":[{"id":"live-stream-static","contentDetails":{"isReusable":true},"cdn":{"resolution":"1080p","frameRate":"60fps"}}]}`
 		}
 		return fakeHTTPResponse(req, status, body), nil
 	case req.Method == http.MethodPost && req.URL.Path == "/youtube/v3/liveBroadcasts" && hasParts(req, "snippet", "status", "contentDetails"):

@@ -2081,7 +2081,7 @@ func TestApplyYouTubeLiveAPIOutputRejectsEncoderCDNFormatMismatchBeforeProviderP
 	}
 }
 
-func TestApplyYouTubeLiveAPIOutputUsesProviderAutoDetectionAfterValidatingEncoderFormat(t *testing.T) {
+func TestApplyYouTubeLiveAPIOutputBindsFreshStreamToValidatedEncoderFormat(t *testing.T) {
 	integrations := store.NewMemoryIntegrationStore()
 	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
 		ProviderType: "google",
@@ -2100,33 +2100,96 @@ func TestApplyYouTubeLiveAPIOutputUsesProviderAutoDetectionAfterValidatingEncode
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, test := range []struct {
+		name       string
+		width      int
+		height     int
+		fps        int
+		resolution string
+		frameRate  string
+	}{
+		{name: "1080p60", width: 1920, height: 1080, fps: 60, resolution: "1080p", frameRate: "60fps"},
+		{name: "720p30", width: 1280, height: 720, fps: 30, resolution: "720p", frameRate: "30fps"},
+		{name: "480p60", width: 854, height: 480, fps: 60, resolution: "480p", frameRate: "60fps"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			youtubeClient := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{
+				RTMPURL: "rtmps://youtube.example.test/live2", StreamKey: "runtime-key", BroadcastID: "broadcast-" + test.name, LiveStreamID: "live-stream-" + test.name,
+			}}
+			server := &Server{
+				integrations: integrations,
+				secrets:      store.NewMemorySecretStore(),
+				youtubeLive:  youtubeClient,
+			}
+			req := &servicecall.StartRequest{EncoderVideoWidth: test.width, EncoderVideoHeight: test.height, EncoderVideoFPS: test.fps}
+			err := server.applyYouTubeLiveAPIOutput(t.Context(), store.Stream{ID: "stream-" + test.name, Name: test.name + " source"}, store.Profile{
+				ID:     "youtube-output-01",
+				Config: map[string]any{"oauth_account_id": account.ID},
+			}, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if youtubeClient.prepareCalls != 1 {
+				t.Fatalf("provider prepare calls = %d, want 1", youtubeClient.prepareCalls)
+			}
+			if got := youtubeClient.prepareRequest.Resolution; got != test.resolution {
+				t.Fatalf("provider CDN resolution = %q, want %s", got, test.resolution)
+			}
+			if got := youtubeClient.prepareRequest.FrameRate; got != test.frameRate {
+				t.Fatalf("provider CDN frame rate = %q, want %s", got, test.frameRate)
+			}
+			if youtubeClient.prepareRequest.ReuseAccountStream {
+				t.Fatal("stream-scoped provider ingest unexpectedly enabled account-wide reuse")
+			}
+		})
+	}
+}
+
+func TestApplyYouTubeLiveAPIOutputResolvesEncoderProfileWithoutVideoCapabilities(t *testing.T) {
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "YouTube",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "youtube-client-secret",
+		RedirectURI:  "https://control.example.test/oauth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID: provider.ID, ProviderType: "google", AccountLabel: "youtube", RefreshToken: "youtube-refresh-token", Scopes: []string{"https://www.googleapis.com/auth/youtube"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	encoderProfile, err := profiles.CreateProfile(t.Context(), store.ProfileEncoder, "legacy-capability-720p30", map[string]any{
+		"width": 1280, "height": 720, "fps": 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	youtubeClient := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{
-		RTMPURL: "rtmps://youtube.example.test/live2", StreamKey: "runtime-key", BroadcastID: "broadcast-1080p", LiveStreamID: "live-stream-1080p",
+		RTMPURL: "rtmps://youtube.example.test/live2", StreamKey: "runtime-key", BroadcastID: "broadcast-720p", LiveStreamID: "live-stream-720p",
 	}}
 	server := &Server{
+		profiles:     profiles,
 		integrations: integrations,
 		secrets:      store.NewMemorySecretStore(),
 		youtubeLive:  youtubeClient,
 	}
-	req := &servicecall.StartRequest{EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60}
-	err = server.applyYouTubeLiveAPIOutput(t.Context(), store.Stream{ID: "stream-01", Name: "1080p source"}, store.Profile{
+	req := &servicecall.StartRequest{EncoderProfileID: encoderProfile.ID}
+	err = server.applyYouTubeLiveAPIOutput(t.Context(), store.Stream{ID: "stream-legacy", Name: "legacy capability"}, store.Profile{
 		ID:     "youtube-output-01",
 		Config: map[string]any{"oauth_account_id": account.ID},
 	}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if youtubeClient.prepareCalls != 1 {
-		t.Fatalf("provider prepare calls = %d, want 1", youtubeClient.prepareCalls)
-	}
-	if got := youtubeClient.prepareRequest.Resolution; got != "variable" {
-		t.Fatalf("provider CDN resolution = %q, want variable", got)
-	}
-	if got := youtubeClient.prepareRequest.FrameRate; got != "variable" {
-		t.Fatalf("provider CDN frame rate = %q, want variable", got)
-	}
-	if youtubeClient.prepareRequest.ReuseAccountStream {
-		t.Fatal("stream-scoped provider ingest unexpectedly enabled account-wide reuse")
+	if youtubeClient.prepareRequest.Resolution != "720p" || youtubeClient.prepareRequest.FrameRate != "30fps" {
+		t.Fatalf("provider format did not resolve the selected Encoder profile: %#v", youtubeClient.prepareRequest)
 	}
 }
 
@@ -4875,8 +4938,8 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if youtubeLive.prepareRequest.ReuseAccountStream {
 		t.Fatalf("youtube live api must create a stream-scoped ingest instead of reusing account-wide format state: %#v", youtubeLive.prepareRequest)
 	}
-	if youtubeLive.prepareRequest.Resolution != "variable" || youtubeLive.prepareRequest.FrameRate != "variable" {
-		t.Fatalf("youtube live api must let the provider detect the already-validated Encoder format: %#v", youtubeLive.prepareRequest)
+	if youtubeLive.prepareRequest.Resolution != "1080p" || youtubeLive.prepareRequest.FrameRate != "60fps" {
+		t.Fatalf("youtube live api must bind the fresh ingest to the validated Encoder format: %#v", youtubeLive.prepareRequest)
 	}
 	if youtubeLive.prepareRequest.Title != "配信: real youtube stream" {
 		t.Fatalf("youtube live api title was not expanded from the stream name: %#v", youtubeLive.prepareRequest)
@@ -5651,6 +5714,9 @@ func TestStartStreamPreparesRelayStaticYouTubeAndReleasesClaimOnlyAfterCompletio
 		youtubeLive.relayStaticRequest.Credentials.RefreshToken != "raw-youtube-refresh-token" ||
 		!youtubeLive.relayStaticRequest.EnableAutoStart {
 		t.Fatalf("relay static prepare request did not use the bound reusable stream and OAuth account: %#v", youtubeLive.relayStaticRequest)
+	}
+	if youtubeLive.relayStaticRequest.Resolution != "1080p" || youtubeLive.relayStaticRequest.FrameRate != "60fps" {
+		t.Fatalf("relay static prepare request did not use the resolved Encoder format: %#v", youtubeLive.relayStaticRequest)
 	}
 	if dispatcher.startCalls != 1 || dispatcher.startRequest.EncoderRTMPURL != "" || dispatcher.startRequest.EncoderStreamKey != "" || dispatcher.startRequest.EncoderStreamKeySecretName != "" {
 		t.Fatalf("relay static dispatch leaked an ingest endpoint or key: calls=%d request=%#v", dispatcher.startCalls, dispatcher.startRequest)

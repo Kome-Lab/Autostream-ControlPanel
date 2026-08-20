@@ -256,6 +256,7 @@ var (
 	ErrMissingReusableLiveStreamID             = errors.New("youtube_reusable_live_stream_id_missing")
 	ErrReusableLiveStreamNotFound              = errors.New("youtube_reusable_live_stream_not_found")
 	ErrReusableLiveStreamNotReusable           = errors.New("youtube_reusable_live_stream_not_reusable")
+	ErrReusableLiveStreamFormatMismatch        = errors.New("youtube_reusable_live_stream_format_mismatch")
 	ErrRelayStaticBroadcastCreateUncertain     = errors.New("youtube_relay_static_broadcast_create_uncertain")
 	ErrRelayStaticBindFailed                   = errors.New("youtube_relay_static_bind_failed")
 	ErrRelayStaticBindCleanupUncertain         = errors.New("youtube_relay_static_bind_cleanup_uncertain")
@@ -394,8 +395,8 @@ func ensureReusableAccountLiveStream(ctx context.Context, service *youtubeapi.Se
 
 // PrepareRelayStatic creates a broadcast and binds it to the fixed
 // pre-provisioned LiveStream used by a managed static output relay. It requests
-// only the stream's ID and reusable flag, and never reads or returns ingestion
-// details.
+// only the stream's ID, reusable flag, and non-secret CDN format; it never reads
+// or returns ingestion details.
 func (c LiveAPIClient) PrepareRelayStatic(ctx context.Context, req RelayStaticPrepareRequest) (PreparedOutput, error) {
 	if err := validateCredentials(req.Credentials); err != nil {
 		return PreparedOutput{}, err
@@ -408,9 +409,9 @@ func (c LiveAPIClient) PrepareRelayStatic(ctx context.Context, req RelayStaticPr
 	if err != nil {
 		return PreparedOutput{}, err
 	}
-	liveStreams, err := service.LiveStreams.List([]string{"id", "contentDetails"}).
+	liveStreams, err := service.LiveStreams.List([]string{"id", "contentDetails", "cdn"}).
 		Id(reusableLiveStreamID).
-		Fields("items(id,contentDetails/isReusable)").
+		Fields("items(id,contentDetails/isReusable,cdn/resolution,cdn/frameRate)").
 		Context(ctx).
 		Do()
 	if err != nil {
@@ -422,8 +423,16 @@ func (c LiveAPIClient) PrepareRelayStatic(ctx context.Context, req RelayStaticPr
 	if len(liveStreams.Items) != 1 || liveStreams.Items[0] == nil || strings.TrimSpace(liveStreams.Items[0].Id) != reusableLiveStreamID {
 		return PreparedOutput{}, ErrReusableLiveStreamNotFound
 	}
-	if liveStreams.Items[0].ContentDetails == nil || !liveStreams.Items[0].ContentDetails.IsReusable {
+	liveStream := liveStreams.Items[0]
+	if liveStream.ContentDetails == nil || !liveStream.ContentDetails.IsReusable {
 		return PreparedOutput{}, ErrReusableLiveStreamNotReusable
+	}
+	wantedResolution := defaultString(req.Resolution, "1080p")
+	wantedFrameRate := defaultString(req.FrameRate, "60fps")
+	if liveStream.Cdn == nil ||
+		!strings.EqualFold(strings.TrimSpace(liveStream.Cdn.Resolution), wantedResolution) ||
+		!strings.EqualFold(strings.TrimSpace(liveStream.Cdn.FrameRate), wantedFrameRate) {
+		return PreparedOutput{}, ErrReusableLiveStreamFormatMismatch
 	}
 	broadcast, err := prepareBroadcast(ctx, service, req.PrepareRequest)
 	if err != nil {
@@ -876,7 +885,7 @@ func RedactedError(err error) string {
 	}
 	if errors.Is(err, ErrMissingCredentials) || errors.Is(err, ErrMissingBroadcastID) || errors.Is(err, ErrBroadcastNotFound) || errors.Is(err, ErrBroadcastLifecycleUnavailable) ||
 		errors.Is(err, ErrBroadcastLiveStreamUnavailable) || errors.Is(err, ErrLiveStreamNotFound) || errors.Is(err, ErrMissingIngestInfo) ||
-		errors.Is(err, ErrMissingReusableLiveStreamID) || errors.Is(err, ErrReusableLiveStreamNotFound) || errors.Is(err, ErrReusableLiveStreamNotReusable) ||
+		errors.Is(err, ErrMissingReusableLiveStreamID) || errors.Is(err, ErrReusableLiveStreamNotFound) || errors.Is(err, ErrReusableLiveStreamNotReusable) || errors.Is(err, ErrReusableLiveStreamFormatMismatch) ||
 		errors.Is(err, ErrRelayStaticBroadcastCreateUncertain) || errors.Is(err, ErrRelayStaticBindFailed) || errors.Is(err, ErrRelayStaticBindCleanupUncertain) ||
 		errors.Is(err, ErrRelayStaticBroadcastCleanupFailed) || errors.Is(err, ErrRelayStaticBroadcastCleanupUncertain) ||
 		errors.Is(err, ErrRelayStaticBroadcastCompletionFailed) || errors.Is(err, ErrRelayStaticBroadcastCompletionUncertain) {

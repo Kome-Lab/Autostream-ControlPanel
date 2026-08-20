@@ -164,9 +164,10 @@ type ArchiveStreamStore interface {
 	ListArchiveStreams(ctx context.Context) ([]Stream, error)
 }
 
-// ArchiveProcessingStreamStore lists completed or stopping streams whose
-// configured recording has not been reported by the Encoder yet. A stream
-// that reported artifacts once must not re-enter this list after an operator
+// ArchiveProcessingStreamStore lists stopped streams whose configured
+// recording has not been reported by the Encoder yet. This includes a
+// Discord VC stream already re-armed to ready for its next run. A stream that
+// reported artifacts once must not re-enter this list after an operator
 // deliberately deletes its last recording.
 type ArchiveProcessingStreamStore interface {
 	ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error)
@@ -268,12 +269,16 @@ func (s MariaDBStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, e
 
 func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {
 	rows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL
-  AND LOWER(TRIM(s.status)) IN ('stopping', 'completed')
   AND COALESCE(TRIM(ss.archive_profile_id), '') <> ''
   AND (
-    (s.archive_started_at IS NOT NULL AND s.archive_reported_at IS NULL)
+    (
+      s.archive_started_at IS NOT NULL
+      AND s.archive_reported_at IS NULL
+      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')
+    )
     OR (
       s.archive_started_at IS NULL
+      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed')
       AND NOT (`+archiveRecordingArtifactExistsCondition+`)
       AND NOT EXISTS (
         SELECT 1
