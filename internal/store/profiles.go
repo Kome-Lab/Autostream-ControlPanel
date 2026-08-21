@@ -385,7 +385,7 @@ func containsRawSecretConfig(path string, value any) bool {
 			if path != "" {
 				nestedPath = path + "." + key
 			}
-			if secretLikeKeyRequiresWriteOnly(key) {
+			if secretLikeKeyRequiresWriteOnly(key) && !allowedNonSecretProfileConfigValue(key, nested) {
 				return true
 			}
 			if containsRawSecretConfig(nestedPath, nested) {
@@ -402,6 +402,18 @@ func containsRawSecretConfig(path string, value any) bool {
 		if secretLikeValue(typed) {
 			return true
 		}
+	}
+	return false
+}
+
+func allowedNonSecretProfileConfigValue(key string, value any) bool {
+	// This field selects whether a separately stored stream-key secret is
+	// reused by the managed Live API flow. It never contains the key itself.
+	// Keep the exemption type-bound so a raw string cannot bypass write-only
+	// secret validation by using the selector's name.
+	if strings.EqualFold(strings.TrimSpace(key), "use_configured_stream_key") {
+		_, ok := value.(bool)
+		return ok
 	}
 	return false
 }

@@ -5253,6 +5253,86 @@ func TestYouTubeOutputConfigScopesConfiguredStreamKeyReuseToLiveAPI(t *testing.T
 	}
 }
 
+func TestUpdateYouTubeOutputEnablesConfiguredStreamKey(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"youtube_outputs.update"}); err != nil {
+		t.Fatal(err)
+	}
+	integrations := store.NewMemoryIntegrationStore()
+	provider, err := integrations.CreateOAuthProvider(t.Context(), store.OAuthProvider{
+		ProviderType: "google",
+		Name:         "Google YouTube",
+		Enabled:      true,
+		ClientID:     "youtube-client-id",
+		ClientSecret: "test-client-secret",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RedirectURI:  "https://control.example.com/integrations/oauth-accounts/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := integrations.CreateOAuthAccount(t.Context(), store.OAuthAccount{
+		ProviderID:   provider.ID,
+		ProviderType: "google",
+		AccountLabel: "YouTube Account",
+		Scopes:       []string{"https://www.googleapis.com/auth/youtube"},
+		RefreshToken: "test-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := store.NewMemoryProfileStore()
+	output, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "Autostream_Develop", map[string]any{
+		"mode":              "live_api",
+		"oauth_account_id":  account.ID,
+		"privacy_status":    "private",
+		"enable_auto_start": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := store.NewMemorySecretStore()
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithProfileStore(profiles),
+		WithIntegrationStore(integrations),
+		WithSecretStore(secrets),
+	)
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	const configuredKey = "test-configured-youtube-key"
+	req := httptest.NewRequest(http.MethodPut, "/youtube/outputs/"+output.ID, bytes.NewBufferString(`{"name":"Autostream_Develop","mode":"live_api","rtmp_url":"rtmps://a.rtmps.youtube.com/live2","stream_key":"`+configuredKey+`","oauth_account_id":"`+account.ID+`","use_configured_stream_key":true,"privacy_status":"private","latency_preference":"low","enable_auto_start":true,"enable_auto_stop":true,"complete_on_stop":true}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("configured-key update status=%d body=%s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), configuredKey) || strings.Contains(res.Body.String(), `"stream_key":"`) {
+		t.Fatalf("configured key leaked in response: %s", res.Body.String())
+	}
+	updated, err := profiles.GetProfile(t.Context(), store.ProfileYouTubeOutput, output.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configBool(updated.Config, "use_configured_stream_key") {
+		t.Fatalf("configured-key selection was not persisted: %#v", updated.Config)
+	}
+	secretName := configString(updated.Config, "stream_key_secret_name")
+	if secretName != youtubeOutputSecretName(output.ID) {
+		t.Fatalf("stream key secret reference=%q", secretName)
+	}
+	storedKey, err := secrets.GetSecretValue(t.Context(), secretName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedKey != configuredKey {
+		t.Fatal("configured key was not stored")
+	}
+}
+
 func TestYouTubeOutputAutoStartDefaultsManagedLiveAPIOnly(t *testing.T) {
 	disabled := false
 	enabled := true
