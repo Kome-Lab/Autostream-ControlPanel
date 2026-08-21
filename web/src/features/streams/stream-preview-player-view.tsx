@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Hls, { ErrorTypes } from "hls.js";
-import { LoaderCircle, MonitorPlay, Pause, Play } from "lucide-react";
+import { LoaderCircle, MonitorPlay, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type PlayerState = "waiting" | "playing" | "retrying" | "error";
@@ -35,6 +35,7 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
   const [retry, setRetry] = useState(0);
   const [seekWindow, setSeekWindow] = useState<SeekWindow>(emptySeekWindow);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
   const [participants, setParticipants] = useState<PreviewParticipant[]>([]);
   const [videoOverlayBurnIn, setVideoOverlayBurnIn] = useState(false);
   const [participantFeedError, setParticipantFeedError] = useState(false);
@@ -76,6 +77,13 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
     } else {
       video.pause();
     }
+  }, []);
+
+  const toggleMuted = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setIsMuted(video.muted);
   }, []);
 
   useEffect(() => {
@@ -122,9 +130,11 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       setMessage("配信映像を再生中です。");
     };
     const onPause = () => setIsPlaying(false);
+    const onVolumeChange = () => setIsMuted(video.muted);
     const onError = () => fail("映像のデコードに失敗しました。Encoderの出力を確認してください。");
     video.addEventListener("playing", onPlaying);
     video.addEventListener("pause", onPause);
+    video.addEventListener("volumechange", onVolumeChange);
     video.addEventListener("error", onError);
     video.addEventListener("loadedmetadata", refreshSeekWindow);
     video.addEventListener("durationchange", refreshSeekWindow);
@@ -156,6 +166,7 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       window.clearTimeout(retryTimer);
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("pause", onPause);
+      video.removeEventListener("volumechange", onVolumeChange);
       video.removeEventListener("error", onError);
       video.removeEventListener("loadedmetadata", refreshSeekWindow);
       video.removeEventListener("durationchange", refreshSeekWindow);
@@ -207,7 +218,7 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
           </div>
         </div>
         <div className="relative aspect-video overflow-hidden rounded-md border bg-black">
-          <video ref={videoRef} className="h-full w-full object-contain" muted autoPlay playsInline preload="metadata" />
+          <video ref={videoRef} className="h-full w-full object-contain" muted={isMuted} autoPlay playsInline preload="metadata" />
           {!videoOverlayBurnIn && participants.length > 0 ? <LegacyParticipantOverlay participants={participants} /> : null}
         </div>
         <ParticipantAccessibilityList participants={participants} />
@@ -215,6 +226,19 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2" aria-label="プレビュー操作">
           <Button type="button" variant="outline" size="sm" onClick={togglePlayback} disabled={seekWindow.end <= seekWindow.start} aria-label={isPlaying ? "一時停止" : "再生"} data-testid="preview-playback">
             {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={toggleMuted}
+            disabled={!token}
+            aria-label="プレビュー音声をミュート"
+            aria-pressed={isMuted}
+            data-testid="preview-mute"
+          >
+            {isMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
+            {isMuted ? "音声をオン" : "ミュート"}
           </Button>
           <Button type="button" variant="outline" size="sm" onClick={() => seekBy(-10)} disabled={seekWindow.end <= seekWindow.start} aria-label="10秒戻る" data-testid="preview-skip-backward">
             −10秒

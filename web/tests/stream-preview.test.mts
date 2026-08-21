@@ -90,6 +90,9 @@ test("external preview uses one custom control bar and capability-gates the lega
   assert.match(previewPlayerSource, /発言中/);
   assert.match(previewPlayerSource, /preview-playback/);
   assert.match(previewPlayerSource, /preview-skip-backward/);
+  assert.match(previewPlayerSource, /preview-mute/);
+  assert.match(previewPlayerSource, /aria-label="プレビュー音声をミュート"/);
+  assert.match(previewPlayerSource, /aria-pressed=\{isMuted\}/);
 });
 
 test("in-panel preview retains an accessible participant feed and only uses the legacy visual overlay without burn-in", () => {

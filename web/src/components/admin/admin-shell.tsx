@@ -58,7 +58,10 @@ import { loginPathForLocation } from "@/lib/auth/post-login-redirect";
 import {
   createNavigationSectionsState,
   isNavigationSectionOpen,
+  navigationSectionsStorageKey,
   navigationSectionStateKey,
+  restoreNavigationSectionsState,
+  serializeNavigationSectionsState,
   synchronizeNavigationSectionsState,
   toggleNavigationSection,
   type NavigationSectionsState,
@@ -152,9 +155,11 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const authenticated = Boolean(currentUser.data);
   const sessionExpired = currentUser.error instanceof APIError && currentUser.error.status === 401 && currentUser.error.code === "unauthorized";
   const activeSectionKey = activeNavigationSectionKey(pathname);
+  const initialActiveSectionKey = useRef(activeSectionKey);
   const [navigationSectionsState, setNavigationSectionsState] = useState(() =>
     createNavigationSectionsState(navSectionKeys, navSectionKeys[0] || null, activeSectionKey),
   );
+  const [navigationSectionsStateLoaded, setNavigationSectionsStateLoaded] = useState(false);
   const synchronizedNavigationSectionsState = synchronizeNavigationSectionsState(navigationSectionsState, activeSectionKey);
   if (synchronizedNavigationSectionsState !== navigationSectionsState) {
     setNavigationSectionsState(synchronizedNavigationSectionsState);
@@ -170,6 +175,37 @@ export function AdminShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (currentUser.data) authenticatedSessionSeen.current = true;
   }, [currentUser.data]);
+
+  useEffect(() => {
+    if (!navigationSectionsStateLoaded) return;
+    try {
+      window.localStorage.setItem(
+        navigationSectionsStorageKey,
+        serializeNavigationSectionsState(synchronizedNavigationSectionsState, navSectionKeys),
+      );
+    } catch {
+      // Browser privacy settings can disable storage; navigation remains usable
+      // for the current page lifecycle in that case.
+    }
+  }, [navigationSectionsStateLoaded, synchronizedNavigationSectionsState]);
+
+  useEffect(() => {
+    let serialized: string | null = null;
+    try {
+      serialized = window.localStorage.getItem(navigationSectionsStorageKey);
+    } catch {
+      // Fall back to the default state when browser storage is unavailable.
+    }
+    setNavigationSectionsState(
+      restoreNavigationSectionsState(
+        navSectionKeys,
+        serialized,
+        navSectionKeys[0] || null,
+        initialActiveSectionKey.current,
+      ),
+    );
+    setNavigationSectionsStateLoaded(true);
+  }, []);
 
   const toggleNavigationSectionByKey = (sectionKey: string) => {
     setNavigationSectionsState((state) =>

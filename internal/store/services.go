@@ -254,7 +254,7 @@ type ServiceRegistryStore interface {
 	ActivateServiceNodeConfiguration(ctx context.Context, serviceID, configurationID, rawActivationToken string, now time.Time, report ServiceRuntimeReport) (ServiceToken, RegisteredService, bool, error)
 	SetServiceNodeTokenSecret(ctx context.Context, serviceID, ciphertext, nonce string) (RegisteredService, error)
 	ListServices(ctx context.Context) ([]RegisteredService, error)
-	ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error)
+	ListServiceMetricSnapshots(ctx context.Context, since time.Time, maxPointsPerSeries int) ([]ServiceMetricSnapshot, error)
 	ListWorkers(ctx context.Context) ([]RegisteredService, error)
 	GetService(ctx context.Context, id string) (RegisteredService, error)
 	UpdateServiceMetadata(ctx context.Context, serviceID string, update ServiceMetadataUpdate) (RegisteredService, error)
@@ -924,11 +924,25 @@ func (s MariaDBAuthStore) recordServiceMetricSnapshots(ctx context.Context, serv
 	return err
 }
 
-func (s MariaDBAuthStore) ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error) {
+func (s MariaDBAuthStore) ListServiceMetricSnapshots(ctx context.Context, since time.Time, maxPointsPerSeries int) ([]ServiceMetricSnapshot, error) {
 	if since.IsZero() {
 		since = time.Now().UTC().Add(-3 * time.Hour)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT metric_name, service_id, service_type, status, value, observed_at FROM service_metric_snapshots WHERE observed_at >= ? ORDER BY observed_at ASC`, since.UTC())
+	if maxPointsPerSeries <= 0 {
+		maxPointsPerSeries = 360
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT metric_name, service_id, service_type, status, value, observed_at
+FROM (
+  SELECT id, metric_name, service_id, service_type, status, value, observed_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY service_id, service_type, metric_name
+      ORDER BY observed_at DESC, id DESC
+    ) AS series_rank
+  FROM service_metric_snapshots
+  WHERE observed_at >= ?
+) ranked
+WHERE series_rank <= ?
+ORDER BY observed_at ASC, service_id ASC, metric_name ASC`, since.UTC(), maxPointsPerSeries)
 	if err != nil {
 		return nil, err
 	}

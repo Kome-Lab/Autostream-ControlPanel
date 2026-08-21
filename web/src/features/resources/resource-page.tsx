@@ -16,7 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
+import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { auditActionLabel } from "@/lib/audit-action";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
@@ -148,11 +148,45 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
   const query = useResourceData<unknown>(resource.path, access.read);
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
-  const rows = useMemo(() => normalizeRows(query.data).map((row) => enrichResourceRow(resource, row)), [query.data, resource]);
+  const historyConfig = useMemo(() => resourceHistoryConfig(resource.path), [resource.path]);
+  const [historyState, setHistoryState] = useState<{ path: string; rows: ResourceRow[]; exhausted: boolean }>({ path: resource.path, rows: [], exhausted: false });
+  const historyExhausted = historyState.path === resource.path && historyState.exhausted;
+  const baseRows = useMemo(() => normalizeRows(query.data), [query.data]);
+  const historyHasMore = Boolean(historyConfig) && !historyExhausted && baseRows.length >= (historyConfig?.initialLimit || 0);
+  const rows = useMemo(() => {
+    const olderHistoryRows = historyState.path === resource.path ? historyState.rows : [];
+    const unique = new Map<string, ResourceRow>();
+    for (const row of [...baseRows, ...olderHistoryRows]) {
+      const id = typeof row.id === "string" ? row.id : JSON.stringify(row);
+      if (!unique.has(id)) unique.set(id, row);
+    }
+    return [...unique.values()].map((row) => enrichResourceRow(resource, row));
+  }, [baseRows, historyState.path, historyState.rows, resource]);
   const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
   const showTable = resource.form !== "security-settings";
   const [deleteMessage, setDeleteMessage] = useState("");
   const [actionMessage, setActionMessage] = useState("");
+  const historyMutation = useMutation<ResourceRow[], Error, void>({
+    mutationFn: async () => {
+      if (!historyConfig || rows.length === 0) return [];
+      const oldest = rows[rows.length - 1];
+      const rawBefore = oldest[historyConfig.timestampField];
+      const before = typeof rawBefore === "string" ? rawBefore : "";
+      const beforeID = typeof oldest.id === "string" ? oldest.id : "";
+      if (!before || !beforeID) throw new Error("history cursor is missing");
+      const params = new URLSearchParams({ limit: String(historyConfig.pageSize), before, before_id: beforeID });
+      const response = await apiGet<unknown>(`${resource.path}?${params.toString()}`);
+      return normalizeRows(response);
+    },
+    onSuccess: (page) => {
+      setHistoryState((current) => ({
+        path: resource.path,
+        rows: [...(current.path === resource.path ? current.rows : []), ...page],
+        exhausted: page.length < (historyConfig?.pageSize || 200),
+      }));
+    },
+    onError: () => setActionMessage("過去の履歴を取得できませんでした。通信状態を確認して再試行してください。"),
+  });
   const actionMutation = useMutation<unknown, Error, { path: string; label: string }>({
     mutationFn: async ({ path }) => apiPost(path),
     onSuccess: async (response, action) => {
@@ -233,12 +267,26 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
             />
           )
         ) : null}
+        {showTable && historyConfig && rows.length > 0 && historyHasMore ? (
+          <div className="flex justify-center border-t pt-4">
+            <Button variant="outline" size="sm" disabled={historyMutation.isPending} onClick={() => historyMutation.mutate()}>
+              {historyMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              さらに過去の履歴を読み込む
+            </Button>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
 }
 
 type ResourceRow = Record<string, unknown>;
+
+function resourceHistoryConfig(path: string) {
+  if (path === "/stream-logs") return { timestampField: "created_at", initialLimit: 500, pageSize: 200 } as const;
+  if (path === "/observability/incidents") return { timestampField: "updated_at", initialLimit: 200, pageSize: 200 } as const;
+  return null;
+}
 type SelectOption = { value: string; label: string; description?: string; group?: string };
 type SubmitOptions = {
   path?: string;
@@ -2594,6 +2642,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path === "/roles") return ["name", "permissions", "updated_at"];
   if (resource.path === "/permissions") return ["name", "group", "description"];
   if (resource.path === "/streams") return ["name", "status", "auto_start_trigger", "discord_voice_channel_id", "updated_at"];
+  if (resource.path === "/stream-logs") return ["stream_name", "level", "message", "created_at", "stream_deleted_at"];
   if (resource.path === "/audit-logs") return ["timestamp", "actor_username", "action", "result", "resource_type"];
   if (resource.path === "/service-health") return ["service_name", "service_type", "status", "health_status", "last_heartbeat_at"];
   if (resource.path === "/observability/incidents") return ["title", "severity", "status", "updated_at"];
@@ -2919,6 +2968,10 @@ const columnLabels: Record<string, string> = {
   check: "チェック",
   rule: "検知ルール",
   stream_id: "配信枠ID",
+  stream_name: "配信枠",
+  stream_deleted_at: "配信枠削除日時",
+  level: "レベル",
+  message: "内容",
   report: "診断内容",
   diagnostic_report: "診断内容",
   mode: "復旧モード",

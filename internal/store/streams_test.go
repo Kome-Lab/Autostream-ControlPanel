@@ -217,6 +217,73 @@ func TestMemoryDeleteStreamRetainsArchiveAndHidesOperationalStream(t *testing.T)
 	}
 }
 
+func TestMemoryDeleteStreamRetainsLogsAndListsHistoricalLogs(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "deleted stream log history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := streams.AppendStreamLog(t.Context(), StreamLog{
+		StreamID: stream.ID,
+		Level:    "warning",
+		Message:  "encoder input recovered",
+		Fields:   map[string]any{"event_type": "encoder.input.recovered"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.DeleteStream(t.Context(), stream.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	logs, err := streams.ListStreamLogs(t.Context(), stream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || logs[0].ID != created.ID {
+		t.Fatalf("deleted stream logs = %#v, want retained log %q", logs, created.ID)
+	}
+	history, err := streams.ListStreamLogHistory(t.Context(), 100, time.Time{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].StreamName != stream.Name || history[0].StreamDeletedAt == nil {
+		t.Fatalf("historical stream logs = %#v, want deleted stream context", history)
+	}
+}
+
+func TestMemoryStreamLogHistoryUsesStableCursor(t *testing.T) {
+	streams := NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "paged history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	for _, entry := range []StreamLog{
+		{ID: "log-c", StreamID: stream.ID, Message: "c", CreatedAt: newest},
+		{ID: "log-b", StreamID: stream.ID, Message: "b", CreatedAt: newest},
+		{ID: "log-a", StreamID: stream.ID, Message: "a", CreatedAt: newest.Add(-time.Second)},
+	} {
+		if _, err := streams.AppendStreamLog(t.Context(), entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := streams.ListStreamLogHistory(t.Context(), 2, time.Time{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].ID != "log-c" || first[1].ID != "log-b" {
+		t.Fatalf("unexpected first stream-log page: %#v", first)
+	}
+	second, err := streams.ListStreamLogHistory(t.Context(), 2, first[1].CreatedAt, first[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].ID != "log-a" {
+		t.Fatalf("unexpected second stream-log page: %#v", second)
+	}
+}
+
 func TestMemoryArchiveStreamsHideDeletedStreamAfterLastRecordingArtifactIsDeleted(t *testing.T) {
 	streams := NewMemoryStreamStore()
 	stream, err := streams.CreateStream(t.Context(), "archive-with-sidecars")

@@ -162,9 +162,9 @@ export const resourcePages = {
   },
   logs: {
     titleKey: "logs",
-    description: "配信ログを確認します。ストリーム別ログは各配信詳細のAPIと連動します。",
+    description: "現在および削除済みの配信枠について、運用・障害・操作ログを確認します。",
     resources: [
-      { title: "配信", path: "/streams", description: "ログ確認対象となる配信です。", permissions: { read: "streams.read", create: "streams.create", update: "streams.update", delete: "streams.delete" } },
+      { title: "配信ログ", path: "/stream-logs", description: "配信枠を削除した後も保持される時系列ログです。", permissions: { read: "logs.read" } },
     ],
   },
   users: {

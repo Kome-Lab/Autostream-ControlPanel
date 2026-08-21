@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { APIError, apiGet } from "@/lib/api/client";
+import { isLiveResourcePath, liveStatusRefreshIntervalMs } from "@/lib/resource-query-refresh";
 import {
   activeUpdaterHostBootstrapStatus,
   emptyUpdaterSettings,
@@ -9,6 +10,12 @@ import {
   normalizeUpdaterSettingsResponse,
 } from "@/lib/system-updates";
 import type { AppSettings, AppVersion, AuditLog, CurrentUser, ManagedAppSettings, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
+
+const liveStatusQueryOptions = {
+  refetchInterval: liveStatusRefreshIntervalMs,
+  refetchIntervalInBackground: true,
+  refetchOnWindowFocus: "always" as const,
+};
 
 export function useCurrentUser() {
   return useQuery({
@@ -102,9 +109,7 @@ export function useStreams(enabled = true) {
     // Stream lifecycle transitions happen in the service dispatch path, so
     // keep the list in sync while a start/stop request is settling instead
     // of leaving the operator with a stale status until a manual reload.
-    refetchInterval: 10_000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: "always",
+    ...liveStatusQueryOptions,
   });
 }
 
@@ -113,9 +118,7 @@ export function useArchiveStreams(enabled = true) {
     queryKey: ["archive-streams"],
     queryFn: () => apiGet<Stream[]>("/archive/streams"),
     enabled,
-    refetchInterval: 10_000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: "always",
+    ...liveStatusQueryOptions,
   });
 }
 
@@ -124,9 +127,7 @@ export function useArchiveProcessingStreams(enabled = true) {
     queryKey: ["archive-processing-streams"],
     queryFn: () => apiGet<Stream[]>("/archive/processing-streams"),
     enabled,
-    refetchInterval: 10_000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: "always",
+    ...liveStatusQueryOptions,
   });
 }
 
@@ -134,7 +135,7 @@ export function useWorkers(enabled = true) {
   return useQuery({
     queryKey: ["workers"],
     queryFn: () => apiGet<WorkerNode[]>("/workers"),
-    refetchInterval: 10_000,
+    ...liveStatusQueryOptions,
     enabled,
   });
 }
@@ -143,7 +144,7 @@ export function useServiceHealth(enabled = true) {
   return useQuery({
     queryKey: ["service-health"],
     queryFn: () => apiGet<WorkerNode[]>("/service-health"),
-    refetchInterval: 10_000,
+    ...liveStatusQueryOptions,
     enabled,
   });
 }
@@ -152,7 +153,7 @@ export function useNodes(enabled = true) {
   return useQuery({
     queryKey: ["nodes"],
     queryFn: () => apiGet<WorkerNode[]>("/nodes"),
-    refetchInterval: 10_000,
+    ...liveStatusQueryOptions,
     enabled,
   });
 }
@@ -173,11 +174,12 @@ export function useAuditLogs(params?: { from?: string; to?: string; action?: str
   });
 }
 
-export function useWorkerMetrics() {
+export function useWorkerMetrics(rangeMs = 3 * 60 * 60 * 1000) {
+  const rangeSeconds = Math.max(15 * 60, Math.min(3 * 60 * 60, Math.floor(rangeMs / 1000)));
   return useQuery({
-    queryKey: ["observability", "metrics"],
-    queryFn: () => apiGet<MetricSnapshot[]>("/observability/metrics"),
-    refetchInterval: 10_000,
+    queryKey: ["observability", "metrics", rangeSeconds],
+    queryFn: () => apiGet<MetricSnapshot[]>(`/observability/metrics?range_sec=${rangeSeconds}`),
+    ...liveStatusQueryOptions,
   });
 }
 
@@ -186,5 +188,6 @@ export function useResourceData<T = unknown>(path: string, enabled = true) {
     queryKey: ["resource", path],
     queryFn: () => apiGet<T>(path),
     enabled,
+    ...(isLiveResourcePath(path) ? liveStatusQueryOptions : {}),
   });
 }

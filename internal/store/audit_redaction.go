@@ -59,10 +59,26 @@ func redactedAuditMetadata(value any) any {
 			out[key] = redactedAuditMetadata(nested)
 		}
 		return out
+	case map[string]string:
+		out := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			if auditSecretKey(key) {
+				out[key] = "<redacted>"
+				continue
+			}
+			out[key] = redactedAuditMetadata(nested)
+		}
+		return out
 	case []any:
 		out := make([]any, 0, len(typed))
 		for _, nested := range typed {
 			out = append(out, redactedAuditMetadata(nested))
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, nested := range typed {
+			out = append(out, redactedAuditMetadata(nested).(string))
 		}
 		return out
 	case string:

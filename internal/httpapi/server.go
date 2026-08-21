@@ -621,6 +621,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /streams/{id}/worker-events", s.requirePermission("streams.read", s.streamWorkerEvents))
 	s.mux.HandleFunc("POST /streams/{id}/worker-events/test", s.requirePermission("streams.update", s.sendWorkerTestEvent))
 	s.mux.HandleFunc("GET /streams/{id}/logs", s.requirePermission("logs.read", s.streamLogs))
+	s.mux.HandleFunc("GET /stream-logs", s.requirePermission("logs.read", s.streamLogHistory))
 	s.mux.HandleFunc("GET /streams/{id}/artifacts", s.requirePermission("archives.read", s.streamArtifacts))
 	s.mux.HandleFunc("GET /streams/{id}/artifacts/{artifact_id}/download", s.requirePermission("archives.download", s.downloadStreamArtifact))
 	s.mux.HandleFunc("GET /streams/{id}/artifacts/{artifact_id}/shares", s.requirePermission("archives.read", s.listStreamArtifactShares))
@@ -15135,6 +15136,45 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, logs)
 }
 
+func (s *Server) streamLogHistory(w http.ResponseWriter, r *http.Request) {
+	limit := 500
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_limit"})
+			return
+		}
+		limit = parsed
+	}
+	before, beforeID, err := parseStreamLogHistoryCursor(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_history_cursor"})
+		return
+	}
+	logs, err := s.streams.ListStreamLogHistory(r.Context(), limit, before, beforeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_logs_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, logs)
+}
+
+func parseStreamLogHistoryCursor(r *http.Request) (time.Time, string, error) {
+	rawBefore := strings.TrimSpace(r.URL.Query().Get("before"))
+	beforeID := strings.TrimSpace(r.URL.Query().Get("before_id"))
+	if rawBefore == "" && beforeID == "" {
+		return time.Time{}, "", nil
+	}
+	if rawBefore == "" || beforeID == "" {
+		return time.Time{}, "", errors.New("before and before_id are both required")
+	}
+	before, err := time.Parse(time.RFC3339Nano, rawBefore)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return before.UTC(), beforeID, nil
+}
+
 func (s *Server) streamArtifacts(w http.ResponseWriter, r *http.Request) {
 	artifacts, err := s.streams.ListStreamArtifacts(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
@@ -15702,6 +15742,7 @@ var auditActionGroups = map[string][]string{
 	// Keep it with runtime configuration reads so the operations view does not
 	// fill up with periodic Host Agent/Node registration traffic.
 	"service_runtime_reads": {"services.register", "services.runtime_config.read"},
+	"node_activity":         {"services.register", "services.runtime_config.read", "services.heartbeat", "observability.signals.ingest", "archive.artifacts.reported"},
 	"stream_lifecycle":      {"streams.create", "streams.start", "streams.stop", "streams.mark_failed", "streams.retry_upload"},
 	"security":              {"auth.login", "auth.logout", "auth.change_password", "users.create", "users.update", "users.disable", "users.lock", "users.unlock", "users.reset_password", "users.force_password_change", "roles.create", "roles.update", "roles.delete"},
 	"secrets":               {"secrets.update", "security.settings.update", "api_tokens.create", "api_tokens.revoke", "api_tokens.rotate"},
@@ -15784,10 +15825,26 @@ func redactAuditResponseValue(value any) any {
 			out[key] = redactAuditResponseValue(nested)
 		}
 		return out
+	case map[string]string:
+		out := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			if secretResponseKey(key) {
+				out[key] = "<redacted>"
+				continue
+			}
+			out[key] = redactAuditResponseValue(nested)
+		}
+		return out
 	case []any:
 		out := make([]any, 0, len(typed))
 		for _, nested := range typed {
 			out = append(out, redactAuditResponseValue(nested))
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, nested := range typed {
+			out = append(out, redactAuditResponseString(nested))
 		}
 		return out
 	case string:
@@ -16975,7 +17032,17 @@ func (s *Server) observabilityGet(endpoint string) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		body, err := obs.Get(r.Context(), endpoint)
+		proxyEndpoint := endpoint
+		query := url.Values{}
+		for _, key := range []string{"limit", "before", "before_id", "status"} {
+			if value := strings.TrimSpace(r.URL.Query().Get(key)); value != "" {
+				query.Set(key, value)
+			}
+		}
+		if encoded := query.Encode(); encoded != "" {
+			proxyEndpoint += "?" + encoded
+		}
+		body, err := obs.Get(r.Context(), proxyEndpoint)
 		if err != nil {
 			writeObservabilityProxyError(w, err)
 			return
@@ -16985,7 +17052,13 @@ func (s *Server) observabilityGet(endpoint string) http.HandlerFunc {
 }
 
 func (s *Server) observabilityMetrics(w http.ResponseWriter, r *http.Request) {
-	localMetrics, localErr := s.serviceMetricSnapshots(r.Context())
+	rangeDuration, err := observabilityMetricRange(r.URL.Query().Get("range_sec"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_metric_range"})
+		return
+	}
+	rangeSeconds := int(rangeDuration / time.Second)
+	localMetrics, localErr := s.serviceMetricSnapshots(r.Context(), time.Now().UTC().Add(-rangeDuration))
 	obs, configured, err := s.observabilityClient(r.Context())
 	if err != nil {
 		if localErr == nil && len(localMetrics) > 0 {
@@ -17003,7 +17076,7 @@ func (s *Server) observabilityMetrics(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "observability_not_configured"})
 		return
 	}
-	body, err := obs.Get(r.Context(), "/metrics")
+	body, err := obs.Get(r.Context(), "/metrics?range_sec="+strconv.Itoa(rangeSeconds))
 	if err != nil {
 		if localErr == nil && len(localMetrics) > 0 {
 			writeJSON(w, http.StatusOK, localMetrics)
@@ -17024,15 +17097,30 @@ func (s *Server) observabilityMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, merged)
 }
 
-func (s *Server) serviceMetricSnapshots(ctx context.Context) ([]map[string]any, error) {
+func observabilityMetricRange(raw string) (time.Duration, error) {
+	const (
+		minimum = 15 * time.Minute
+		maximum = 3 * time.Hour
+	)
+	if strings.TrimSpace(raw) == "" {
+		return maximum, nil
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, err
+	}
+	duration := time.Duration(seconds) * time.Second
+	if duration < minimum || duration > maximum {
+		return 0, fmt.Errorf("metric range must be between %s and %s", minimum, maximum)
+	}
+	return duration, nil
+}
+
+func (s *Server) serviceMetricSnapshots(ctx context.Context, since time.Time) ([]map[string]any, error) {
 	if s.services == nil {
 		return nil, nil
 	}
-	services, err := s.services.ListServices(ctx)
-	if err != nil {
-		return nil, err
-	}
-	history, err := s.services.ListServiceMetricSnapshots(ctx, time.Now().UTC().Add(-3*time.Hour))
+	history, err := s.services.ListServiceMetricSnapshots(ctx, since.UTC(), 360)
 	if err == nil && len(history) > 0 {
 		out := make([]map[string]any, 0, len(history))
 		for _, snapshot := range history {
@@ -17046,6 +17134,10 @@ func (s *Server) serviceMetricSnapshots(ctx context.Context) ([]map[string]any, 
 			})
 		}
 		return out, nil
+	}
+	services, err := s.services.ListServices(ctx)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]map[string]any, 0)
 	for _, service := range services {
@@ -18400,6 +18492,7 @@ func (s *Server) writeAudit(r *http.Request, event store.AuditEvent) {
 		log.Printf("audit write failed: action=%s resource_type=%s result=%s error=%v", event.Action, event.ResourceType, event.Result, err)
 		return
 	}
+	s.appendStreamAuditLog(r.Context(), event)
 	s.notifyAdminAuditEvent(event)
 }
 
@@ -18423,7 +18516,101 @@ func (s *Server) writeSystemAudit(ctx context.Context, event store.AuditEvent) {
 		log.Printf("system audit write failed: action=%s resource_type=%s result=%s error=%v", event.Action, event.ResourceType, event.Result, err)
 		return
 	}
+	s.appendStreamAuditLog(ctx, event)
 	s.notifyAdminAuditEvent(event)
+}
+
+func (s *Server) appendStreamAuditLog(ctx context.Context, event store.AuditEvent) {
+	if s.streams == nil || strings.ToLower(strings.TrimSpace(event.ResourceType)) != "stream" || strings.TrimSpace(event.ResourceID) == "" {
+		return
+	}
+	redacted := store.RedactAuditEvent(event)
+	// RetryArchiveUpload already persists its successful request as the
+	// canonical stream log. Keep failed audit attempts here, but do not create a
+	// second success row for the same operator action.
+	if strings.TrimSpace(redacted.Action) == "streams.retry_upload" && strings.EqualFold(strings.TrimSpace(redacted.Result), "success") {
+		return
+	}
+	level := "info"
+	if result := strings.ToLower(strings.TrimSpace(redacted.Result)); result != "" && result != "success" && result != "ok" {
+		level = "error"
+	}
+	fields := map[string]any{
+		"source":         "audit",
+		"action":         strings.TrimSpace(redacted.Action),
+		"result":         strings.TrimSpace(redacted.Result),
+		"actor_username": strings.TrimSpace(redacted.ActorUsername),
+		"request_id":     strings.TrimSpace(redacted.RequestID),
+	}
+	if metadata := safeStreamLogMetadata(redacted.Metadata); len(metadata) > 0 {
+		fields["metadata"] = metadata
+	}
+	if _, err := s.streams.AppendStreamLog(ctx, store.StreamLog{
+		StreamID:  redacted.ResourceID,
+		Level:     level,
+		Message:   redacted.Action,
+		Fields:    fields,
+		CreatedAt: redacted.Timestamp,
+	}); err != nil && !errors.Is(err, store.ErrNotFound) {
+		log.Printf("stream log append failed: action=%s stream_id=%s error=%v", redacted.Action, redacted.ResourceID, err)
+	}
+}
+
+func safeStreamLogMetadata(metadata map[string]any) map[string]any {
+	filtered := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		if streamLogSensitiveKey(key) {
+			continue
+		}
+		if safe, ok := safeStreamLogValue(value); ok {
+			filtered[key] = safe
+		}
+	}
+	return filtered
+}
+
+func safeStreamLogValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		return safeStreamLogMetadata(typed), true
+	case map[string]string:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if streamLogSensitiveKey(key) {
+				continue
+			}
+			if safe, ok := safeStreamLogValue(item); ok {
+				out[key] = safe
+			}
+		}
+		return out, true
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if safe, ok := safeStreamLogValue(item); ok {
+				out = append(out, safe)
+			}
+		}
+		return out, true
+	case []string:
+		return append([]string(nil), typed...), true
+	case time.Time:
+		return typed.UTC().Format(time.RFC3339Nano), true
+	case string, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, nil:
+		return typed, true
+	default:
+		return nil, false
+	}
+}
+
+func streamLogSensitiveKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	for _, fragment := range []string{"authorization", "cookie", "credential", "password", "secret", "token", "webhook", "url"} {
+		if strings.Contains(normalized, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) notifyAdminAuditEvent(event store.AuditEvent) {
@@ -18463,6 +18650,11 @@ func (s *Server) notifyAdminAuditEvent(event store.AuditEvent) {
 func adminAuditEventNotificationAllowed(event store.AuditEvent) bool {
 	action := strings.ToLower(strings.TrimSpace(event.Action))
 	if action == "" {
+		return false
+	}
+	// The test endpoint already sends its own canonical notification. Forwarding
+	// its audit record would make every destination receive the same test twice.
+	if action == "notification_channels.test" {
 		return false
 	}
 	actorUserID := strings.ToLower(strings.TrimSpace(event.ActorUserID))

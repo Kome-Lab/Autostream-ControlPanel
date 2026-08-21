@@ -17,8 +17,8 @@ import { auditActionLabel } from "@/lib/audit-action";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { AuditLog } from "@/types/domain";
 
-const serviceRuntimeReadActionGroup = "service_runtime_reads";
-type AuditView = "operations" | "service-runtime-reads";
+const nodeActivityActionGroup = "node_activity";
+type AuditView = "operations" | "node-activity";
 
 export function AuditLogsView() {
   const { t } = useI18n();
@@ -28,16 +28,16 @@ export function AuditLogsView() {
   const [result, setResult] = useState("all");
   const [queryInput, setQueryInput] = useState(() => searchParams.get("q") || "");
   const [query, setQuery] = useState(() => searchParams.get("q") || "");
-  const [view, setView] = useState<AuditView>(() => searchParams.get("tab") === "service-runtime-reads" ? "service-runtime-reads" : "operations");
-  const serviceRuntimeReadView = view === "service-runtime-reads";
+  const [view, setView] = useState<AuditView>(() => ["node-activity", "service-runtime-reads"].includes(searchParams.get("tab") || "") ? "node-activity" : "operations");
+  const nodeActivityView = view === "node-activity";
   const auditLogs = useAuditLogs({
     from,
     to,
     result,
     q: query,
-    ...(serviceRuntimeReadView
-      ? { actionGroup: serviceRuntimeReadActionGroup }
-      : { excludeActionGroup: serviceRuntimeReadActionGroup }),
+    ...(nodeActivityView
+      ? { actionGroup: nodeActivityActionGroup }
+      : { excludeActionGroup: nodeActivityActionGroup }),
   });
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
@@ -97,9 +97,9 @@ export function AuditLogsView() {
     ...(to ? { to } : {}),
     ...(result !== "all" ? { result } : {}),
     ...(query ? { q: query } : {}),
-    ...(serviceRuntimeReadView
-      ? { action_group: serviceRuntimeReadActionGroup }
-      : { exclude_action_group: serviceRuntimeReadActionGroup }),
+    ...(nodeActivityView
+      ? { action_group: nodeActivityActionGroup }
+      : { exclude_action_group: nodeActivityActionGroup }),
   });
   const exportURL = `/audit-logs/export?${exportParams.toString()}`;
 
@@ -108,31 +108,31 @@ export function AuditLogsView() {
       <section className="border-b pb-5">
         <div className="text-sm font-medium text-primary">監視・対応</div>
         <h1 className="mt-1 text-xl font-semibold">監査ログ</h1>
-        <p className="mt-1 text-sm text-muted-foreground">担当者の操作と、Node / Host Agentが送信した登録・設定参照を分けて確認できます。</p>
+        <p className="mt-1 text-sm text-muted-foreground">担当者の操作と、Node / Host Agentからの定期報告・設定参照・Observability送信を分けて確認できます。</p>
       </section>
       {auditLogs.isError ? (
         <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
-          <div><div className="text-sm font-semibold">{serviceRuntimeReadView ? "Node報告・設定参照を取得できませんでした" : "操作履歴を取得できませんでした"}</div><p className="mt-0.5 text-xs">通信状態と権限を確認し、再試行してください。</p></div>
+          <div><div className="text-sm font-semibold">{nodeActivityView ? "Node報告・通信を取得できませんでした" : "操作履歴を取得できませんでした"}</div><p className="mt-0.5 text-xs">通信状態と権限を確認し、再試行してください。</p></div>
           <Button variant="outline" size="sm" onClick={() => auditLogs.refetch()}><RefreshCcw className="size-4" />再試行</Button>
         </div>
       ) : null}
       <Tabs value={view} onValueChange={(value) => setView(value as AuditView)} className="space-y-4">
         <TabsList variant="line" className="h-auto w-full justify-start border-b pb-1">
           <TabsTrigger value="operations">操作履歴</TabsTrigger>
-          <TabsTrigger value="service-runtime-reads">Node報告・設定参照</TabsTrigger>
+          <TabsTrigger value="node-activity">Node報告・通信</TabsTrigger>
         </TabsList>
         <TabsContent value={view}>
           <Card>
             <CardHeader className="gap-3 border-b md:flex-row md:items-center md:justify-between">
               <div>
-                <CardTitle>{serviceRuntimeReadView ? "Node報告・設定参照" : "操作履歴"}</CardTitle>
-                <CardDescription className="mt-1">{serviceRuntimeReadView ? "Node / Host Agentが登録情報や実行設定を送信した記録です。" : "担当者とシステムによる変更・操作の記録です。"}</CardDescription>
+                <CardTitle>{nodeActivityView ? "Node報告・通信" : "操作履歴"}</CardTitle>
+                <CardDescription className="mt-1">{nodeActivityView ? "Node / Host Agentの登録、Heartbeat、設定参照、Observability Signals送信の記録です。" : "担当者とシステムによる変更・操作の記録です。"}</CardDescription>
               </div>
               <Button asChild variant="outline" size="sm"><a href={exportURL}><Download />CSV</a></Button>
             </CardHeader>
             <CardContent className="space-y-4">
               <form className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_180px_180px_160px_auto]" onSubmit={(event) => { event.preventDefault(); setQuery(queryInput.trim()); }}>
-                <label className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={queryInput} onChange={(event) => setQueryInput(event.target.value)} placeholder={serviceRuntimeReadView ? "Node ID・結果" : "配信枠ID・操作名・ユーザー"} className="pl-9" aria-label="監査ログの検索語" /></label>
+                <label className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={queryInput} onChange={(event) => setQueryInput(event.target.value)} placeholder={nodeActivityView ? "Node ID・シグナル・結果" : "配信枠ID・操作名・ユーザー"} className="pl-9" aria-label="監査ログの検索語" /></label>
                 <Input type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} aria-label="開始日時" />
                 <Input type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} aria-label="終了日時" />
                 <Select value={result} onValueChange={setResult}><SelectTrigger aria-label="操作結果"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">すべての結果</SelectItem><SelectItem value="success">成功</SelectItem><SelectItem value="failure">失敗</SelectItem></SelectContent></Select>

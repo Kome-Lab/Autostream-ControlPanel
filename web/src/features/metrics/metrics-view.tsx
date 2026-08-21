@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Activity, AlertCircle, CheckCircle2, Database, Gauge, HardDrive, Network, RadioTower, RefreshCw, Server } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,14 +44,14 @@ const timeRangeOptions = [
 
 export function MetricsView() {
   const appSettings = useAppSettings();
-  const metrics = useWorkerMetrics();
-  const services = useServiceHealth();
-  const timezone = appSettings.data?.timezone;
   const [selectedNode, setSelectedNode] = useState("");
   const [timeRange, setTimeRange] = useState(String(3 * 60 * 60 * 1000));
+  const metrics = useWorkerMetrics(Number.parseInt(timeRange, 10));
+  const services = useServiceHealth();
+  const timezone = appSettings.data?.timezone;
   const numericMetrics = useMemo(() => numericMetricSnapshots(metrics.data || []), [metrics.data]);
   const serviceLabels = useMemo(() => serviceLabelMap(services.data || []), [services.data]);
-  const history = useMetricHistory(numericMetrics, serviceLabels);
+  const history = useMemo(() => metricSeriesFromSnapshots(numericMetrics, serviceLabels), [numericMetrics, serviceLabels]);
   const allSeries = useMemo(() => latestSeries(history), [history]);
   const nodeOptions = useMemo(() => metricNodeOptions(allSeries), [allSeries]);
   const selectedNodeIsValid = nodeOptions.some((option) => option.value === selectedNode);
@@ -115,10 +115,10 @@ export function MetricsView() {
       </section>
 
       <section className="flex flex-wrap items-end gap-4 rounded-md border bg-muted/20 p-4">
-        <div className="min-w-64 flex-1 space-y-2">
+        <div className="min-w-0 flex-[1_1_16rem] space-y-2">
           <label className="text-sm font-medium">表示Node</label>
           <Select value={effectiveNode || "__none__"} onValueChange={setSelectedNode}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full min-w-0 [&>span]:truncate">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -131,10 +131,10 @@ export function MetricsView() {
             </SelectContent>
           </Select>
         </div>
-        <div className="min-w-48 flex-1 space-y-2 sm:flex-none">
+        <div className="w-48 shrink-0 space-y-2">
           <label className="text-sm font-medium">表示範囲</label>
           <Select value={timeRange} onValueChange={setTimeRange}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -185,48 +185,32 @@ export function MetricsView() {
   );
 }
 
-function useMetricHistory(metrics: MetricSnapshot[], serviceLabels: Map<string, string>) {
-  const historyRef = useRef<Map<string, MetricSeries>>(new Map());
-  const [history, setHistory] = useState<MetricSeries[]>([]);
-
-  useEffect(() => {
-    if (metrics.length === 0) return;
-    const now = Date.now();
-    const next = new Map(historyRef.current);
-    for (const metric of metrics) {
-      if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) continue;
-      const key = metricKey(metric);
-      const time = normalizedMetricTime(metric.updated_at, now);
-      const existing = next.get(key);
-      const point = { time, value: metric.value, updatedAt: metric.updated_at };
-      const previousPoints = existing?.points || [];
-      const cutoff = now - historyWindowMs;
-      const mergedPoints = new Map<number, MetricPoint>();
-      for (const previousPoint of previousPoints) {
-        if (previousPoint.time >= cutoff) mergedPoints.set(previousPoint.time, previousPoint);
-      }
-      if (point.time >= cutoff) mergedPoints.set(point.time, point);
-      const points = Array.from(mergedPoints.values())
-        .sort((a, b) => a.time - b.time)
-        .slice(-maxPointsPerSeries);
-      next.set(key, {
-        key,
-        label: metricSeriesLabel(metric, serviceLabels),
-        serviceID: metric.service_id,
-        serviceLabel: serviceLabel(metric.service_id, metric.service_type, serviceLabels),
-        serviceType: metric.service_type,
-        name: metric.name,
-        unit: metricUnit(metric.name),
-        status: metric.status,
-        points,
-      });
-    }
-    historyRef.current = next;
-    const handle = window.setTimeout(() => setHistory(Array.from(next.values())), 0);
-    return () => window.clearTimeout(handle);
-  }, [metrics, serviceLabels]);
-
-  return history;
+function metricSeriesFromSnapshots(metrics: MetricSnapshot[], serviceLabels: Map<string, string>) {
+  const now = Date.now();
+  const cutoff = now - historyWindowMs;
+  const series = new Map<string, MetricSeries>();
+  for (const metric of metrics) {
+    if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) continue;
+    const key = metricKey(metric);
+    const time = normalizedMetricTime(metric.updated_at, now);
+    if (time < cutoff) continue;
+    const existing = series.get(key);
+    const points = new Map<number, MetricPoint>();
+    for (const point of existing?.points || []) points.set(point.time, point);
+    points.set(time, { time, value: metric.value, updatedAt: metric.updated_at });
+    series.set(key, {
+      key,
+      label: metricSeriesLabel(metric, serviceLabels),
+      serviceID: metric.service_id,
+      serviceLabel: serviceLabel(metric.service_id, metric.service_type, serviceLabels),
+      serviceType: metric.service_type,
+      name: metric.name,
+      unit: metricUnit(metric.name),
+      status: metric.status,
+      points: Array.from(points.values()).sort((a, b) => a.time - b.time).slice(-maxPointsPerSeries),
+    });
+  }
+  return Array.from(series.values());
 }
 
 function LatestMetricsTable({ series, timezone }: { series: MetricSeries[]; timezone?: string }) {

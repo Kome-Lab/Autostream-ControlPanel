@@ -427,7 +427,7 @@ func (s *MemoryAuthStore) recordMetricHistoryLocked(service RegisteredService, o
 	s.metricHistory = next
 }
 
-func (s *MemoryAuthStore) ListServiceMetricSnapshots(ctx context.Context, since time.Time) ([]ServiceMetricSnapshot, error) {
+func (s *MemoryAuthStore) ListServiceMetricSnapshots(ctx context.Context, since time.Time, maxPointsPerSeries int) ([]ServiceMetricSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -436,13 +436,38 @@ func (s *MemoryAuthStore) ListServiceMetricSnapshots(ctx context.Context, since 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]ServiceMetricSnapshot, 0, len(s.metricHistory))
+	series := map[string][]ServiceMetricSnapshot{}
 	for _, snapshot := range s.metricHistory {
 		if snapshot.ObservedAt.Before(since) {
 			continue
 		}
-		out = append(out, snapshot)
+		key := strings.Join([]string{snapshot.ServiceID, snapshot.ServiceType, snapshot.Name}, "\x00")
+		series[key] = append(series[key], snapshot)
 	}
+	if maxPointsPerSeries <= 0 {
+		maxPointsPerSeries = 360
+	}
+	out := make([]ServiceMetricSnapshot, 0)
+	for _, points := range series {
+		sort.SliceStable(points, func(i, j int) bool { return points[i].ObservedAt.Before(points[j].ObservedAt) })
+		if len(points) <= maxPointsPerSeries {
+			out = append(out, points...)
+			continue
+		}
+		for bucket := 0; bucket < maxPointsPerSeries; bucket++ {
+			end := (bucket + 1) * len(points) / maxPointsPerSeries
+			start := bucket * len(points) / maxPointsPerSeries
+			if end > start {
+				out = append(out, points[end-1])
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].ObservedAt.Equal(out[j].ObservedAt) {
+			return out[i].ServiceID+out[i].Name < out[j].ServiceID+out[j].Name
+		}
+		return out[i].ObservedAt.Before(out[j].ObservedAt)
+	})
 	return out, nil
 }
 

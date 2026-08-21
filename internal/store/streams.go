@@ -73,12 +73,14 @@ type StreamSettings struct {
 }
 
 type StreamLog struct {
-	ID        string         `json:"id"`
-	StreamID  string         `json:"stream_id"`
-	Level     string         `json:"level"`
-	Message   string         `json:"message"`
-	Fields    map[string]any `json:"fields"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID              string         `json:"id"`
+	StreamID        string         `json:"stream_id"`
+	StreamName      string         `json:"stream_name,omitempty"`
+	StreamDeletedAt *time.Time     `json:"stream_deleted_at,omitempty"`
+	Level           string         `json:"level"`
+	Message         string         `json:"message"`
+	Fields          map[string]any `json:"fields"`
+	CreatedAt       time.Time      `json:"created_at"`
 }
 
 type StreamArtifact struct {
@@ -146,7 +148,9 @@ type StreamStore interface {
 	// overwriting a newer transition for the same stream.
 	TransitionStreamStatus(ctx context.Context, id, expectedStatus, status string) (stream Stream, transitioned bool, err error)
 	RetryArchiveUpload(ctx context.Context, id, actorUserID string) (StreamLog, error)
+	AppendStreamLog(ctx context.Context, log StreamLog) (StreamLog, error)
 	ListStreamLogs(ctx context.Context, id string) ([]StreamLog, error)
+	ListStreamLogHistory(ctx context.Context, limit int, before time.Time, beforeID string) ([]StreamLog, error)
 	ListStreamArtifacts(ctx context.Context, id string) ([]StreamArtifact, error)
 	UpsertStreamArtifacts(ctx context.Context, id string, artifacts []StreamArtifact) error
 }
@@ -402,7 +406,6 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
 		`DELETE FROM runtime_secret_leases WHERE stream_id = ?`,
 		`DELETE FROM service_remediation_executions WHERE stream_id = ?`,
 		`DELETE FROM service_stream_events WHERE stream_id = ?`,
-		`DELETE FROM stream_logs WHERE stream_id = ?`,
 		`DELETE FROM stream_youtube_runtimes WHERE stream_id = ?`,
 		`DELETE FROM stream_service_assignments WHERE stream_id = ?`,
 	} {
@@ -734,13 +737,17 @@ func scanStreamYouTubeRuntime(scanner streamYouTubeRuntimeScanner, runtime *Stre
 }
 
 func (s MariaDBStreamStore) RetryArchiveUpload(ctx context.Context, id, actorUserID string) (StreamLog, error) {
-	if _, err := s.GetStream(ctx, id); err != nil {
-		return StreamLog{}, err
-	}
-	log := StreamLog{
+	return s.AppendStreamLog(ctx, StreamLog{
 		ID: newUUID(), StreamID: id, Level: "info", Message: "archive upload retry requested",
 		Fields: map[string]any{"actor_user_id": actorUserID}, CreatedAt: time.Now().UTC(),
+	})
+}
+
+func (s MariaDBStreamStore) AppendStreamLog(ctx context.Context, log StreamLog) (StreamLog, error) {
+	if _, err := s.GetStream(ctx, strings.TrimSpace(log.StreamID)); err != nil {
+		return StreamLog{}, err
 	}
+	log = normalizeStreamLog(log)
 	fields, err := json.Marshal(log.Fields)
 	if err != nil {
 		return StreamLog{}, err
@@ -753,7 +760,12 @@ func (s MariaDBStreamStore) ListStreamLogs(ctx context.Context, id string) ([]St
 	if _, err := s.GetStream(ctx, id); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, stream_id, level, message, fields, created_at FROM stream_logs WHERE stream_id = ? ORDER BY created_at DESC LIMIT 500`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT l.id, l.stream_id, COALESCE(s.name, ''), s.deleted_at, l.level, l.message, l.fields, l.created_at
+FROM stream_logs l
+LEFT JOIN streams s ON s.id = l.stream_id
+WHERE l.stream_id = ?
+ORDER BY l.created_at DESC
+LIMIT 500`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -762,8 +774,13 @@ func (s MariaDBStreamStore) ListStreamLogs(ctx context.Context, id string) ([]St
 	for rows.Next() {
 		var log StreamLog
 		var fields string
-		if err := rows.Scan(&log.ID, &log.StreamID, &log.Level, &log.Message, &fields, &log.CreatedAt); err != nil {
+		var deletedAt sql.NullTime
+		if err := rows.Scan(&log.ID, &log.StreamID, &log.StreamName, &deletedAt, &log.Level, &log.Message, &fields, &log.CreatedAt); err != nil {
 			return nil, err
+		}
+		if deletedAt.Valid {
+			value := deletedAt.Time
+			log.StreamDeletedAt = &value
 		}
 		_ = json.Unmarshal([]byte(fields), &log.Fields)
 		if log.Fields == nil {
@@ -772,6 +789,76 @@ func (s MariaDBStreamStore) ListStreamLogs(ctx context.Context, id string) ([]St
 		logs = append(logs, log)
 	}
 	return logs, rows.Err()
+}
+
+func (s MariaDBStreamStore) ListStreamLogHistory(ctx context.Context, limit int, before time.Time, beforeID string) ([]StreamLog, error) {
+	limit = boundedStreamLogLimit(limit)
+	const columns = `SELECT l.id, l.stream_id, COALESCE(s.name, ''), s.deleted_at, l.level, l.message, l.fields, l.created_at
+FROM stream_logs l
+LEFT JOIN streams s ON s.id = l.stream_id`
+	var rows *sql.Rows
+	var err error
+	if before.IsZero() {
+		rows, err = s.db.QueryContext(ctx, columns+` ORDER BY l.created_at DESC, l.id DESC LIMIT ?`, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, columns+` WHERE l.created_at < ? OR (l.created_at = ? AND l.id < ?) ORDER BY l.created_at DESC, l.id DESC LIMIT ?`, before.UTC(), before.UTC(), strings.TrimSpace(beforeID), limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	logs := make([]StreamLog, 0, limit)
+	for rows.Next() {
+		var log StreamLog
+		var fields string
+		var deletedAt sql.NullTime
+		if err := rows.Scan(&log.ID, &log.StreamID, &log.StreamName, &deletedAt, &log.Level, &log.Message, &fields, &log.CreatedAt); err != nil {
+			return nil, err
+		}
+		if deletedAt.Valid {
+			value := deletedAt.Time
+			log.StreamDeletedAt = &value
+		}
+		_ = json.Unmarshal([]byte(fields), &log.Fields)
+		if log.Fields == nil {
+			log.Fields = map[string]any{}
+		}
+		logs = append(logs, log)
+	}
+	return logs, rows.Err()
+}
+
+func normalizeStreamLog(log StreamLog) StreamLog {
+	log.StreamID = strings.TrimSpace(log.StreamID)
+	if strings.TrimSpace(log.ID) == "" {
+		log.ID = newUUID()
+	}
+	log.Level = strings.ToLower(strings.TrimSpace(log.Level))
+	switch log.Level {
+	case "debug", "info", "warning", "error":
+	default:
+		log.Level = "info"
+	}
+	log.Message = strings.TrimSpace(log.Message)
+	if log.Fields == nil {
+		log.Fields = map[string]any{}
+	}
+	if log.CreatedAt.IsZero() {
+		log.CreatedAt = time.Now().UTC()
+	} else {
+		log.CreatedAt = log.CreatedAt.UTC()
+	}
+	return log
+}
+
+func boundedStreamLogLimit(limit int) int {
+	if limit <= 0 {
+		return 500
+	}
+	if limit > 1000 {
+		return 1000
+	}
+	return limit
 }
 
 func (s MariaDBStreamStore) ListStreamArtifacts(ctx context.Context, id string) ([]StreamArtifact, error) {

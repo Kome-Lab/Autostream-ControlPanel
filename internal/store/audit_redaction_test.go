@@ -100,6 +100,34 @@ func TestMemoryAuditStoreRedactsQuerySecretValues(t *testing.T) {
 	}
 }
 
+func TestMemoryAuditStoreRedactsTypedCollections(t *testing.T) {
+	st := NewMemoryAuthStore()
+	if err := st.WriteAudit(t.Context(), AuditEvent{
+		Action:       "typed.metadata",
+		ResourceType: "stream",
+		ResourceID:   "stream-01",
+		Result:       "failure",
+		Metadata: map[string]any{
+			"typed_map": map[string]string{
+				"detail":       "refresh_token=raw-typed-refresh-token",
+				"access_token": "raw-typed-access-token",
+			},
+			"typed_list": []string{"smtp_password=raw-typed-smtp-password"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(st.AuditEvents())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"raw-typed-refresh-token", "raw-typed-access-token", "raw-typed-smtp-password"} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("typed audit metadata leaked %q in %s", secret, body)
+		}
+	}
+}
+
 func TestMemoryAuditStoreRedactsIntegrationSecretsInFreeText(t *testing.T) {
 	st := NewMemoryAuthStore()
 	if err := st.WriteAudit(t.Context(), AuditEvent{

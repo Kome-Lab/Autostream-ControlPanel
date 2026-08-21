@@ -769,15 +769,19 @@ export function mockGet(path: string): unknown {
     const result = String(params.get("result") || "").trim().toLowerCase();
     const actionGroup = String(params.get("action_group") || "").trim();
     const excludedActionGroup = String(params.get("exclude_action_group") || "").trim();
+    const nodeActivityActions = ["services.register", "services.runtime_config.read", "services.heartbeat", "observability.signals.ingest", "archive.artifacts.reported"];
     return mockAuditLogs.filter((event) => {
       if (actionGroup === "service_runtime_reads" && !["services.register", "services.runtime_config.read"].includes(event.action)) return false;
       if (excludedActionGroup === "service_runtime_reads" && ["services.register", "services.runtime_config.read"].includes(event.action)) return false;
+      if (actionGroup === "node_activity" && !nodeActivityActions.includes(event.action)) return false;
+      if (excludedActionGroup === "node_activity" && nodeActivityActions.includes(event.action)) return false;
       if (result && String(event.result || "").toLowerCase() !== result) return false;
       if (!search) return true;
       return [event.id, event.action, event.actor_username, event.actor_ip, event.user_agent, event.result, event.resource_type, event.resource_id]
         .some((value) => String(value || "").toLowerCase().includes(search));
     });
   }
+  if (normalizedPath === "/stream-logs") return [];
   const streamArtifacts = normalizedPath.match(/^\/streams\/([^/]+)\/artifacts$/);
   if (streamArtifacts) {
     return mockStreamArtifacts[decodeURIComponent(streamArtifacts[1])] || [];

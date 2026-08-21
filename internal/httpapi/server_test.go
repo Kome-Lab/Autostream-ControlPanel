@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -269,6 +270,7 @@ func TestAdminAuditEventNotificationPolicy(t *testing.T) {
 	}{
 		{name: "oauth account update", event: store.AuditEvent{Action: "oauth_accounts.update", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
 		{name: "notification channel create", event: store.AuditEvent{Action: "notification_channels.create", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
+		{name: "notification channel test is already delivered directly", event: store.AuditEvent{Action: "notification_channels.test", ActorUserID: "user-01", ActorUsername: "ops"}, want: false},
 		{name: "stream start", event: store.AuditEvent{Action: "streams.start", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
 		{name: "authenticated login", event: store.AuditEvent{Action: "auth.login", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
 		{name: "mfa", event: store.AuditEvent{Action: "mfa.enroll", ActorUserID: "user-01", ActorUsername: "ops"}, want: true},
@@ -1938,6 +1940,9 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	if logsRes.Code != http.StatusOK || !strings.Contains(logsRes.Body.String(), "archive upload retry requested") {
 		t.Fatalf("logs status = %d body = %s", logsRes.Code, logsRes.Body.String())
 	}
+	if strings.Contains(logsRes.Body.String(), `"message":"streams.retry_upload"`) {
+		t.Fatalf("successful retry audit was duplicated in stream logs: %s", logsRes.Body.String())
+	}
 
 	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: created.ID, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + created.ID + "/final.mp4", SizeBytes: 123}); err != nil {
 		t.Fatal(err)
@@ -1951,6 +1956,35 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	handler.ServeHTTP(artifactsRes, artifactsReq)
 	if artifactsRes.Code != http.StatusOK || !strings.Contains(artifactsRes.Body.String(), "final/"+created.ID+"/final.mp4") || strings.Contains(artifactsRes.Body.String(), "secret") {
 		t.Fatalf("artifacts status = %d body = %s", artifactsRes.Code, artifactsRes.Body.String())
+	}
+}
+
+func TestSafeStreamLogMetadataPreservesTypedCollectionsAndRedactsSecrets(t *testing.T) {
+	when := time.Date(2026, time.August, 21, 12, 0, 0, 123, time.FixedZone("JST", 9*60*60))
+	got := safeStreamLogMetadata(map[string]any{
+		"missing_service_types": []string{"worker", "encoder_recorder"},
+		"labels": map[string]string{
+			"node":         "worker-01",
+			"secret_token": "must-not-leak",
+			"callback_url": "https://secret.invalid",
+		},
+		"occurred_at":   when,
+		"authorization": "must-not-leak",
+	})
+
+	missing, ok := got["missing_service_types"].([]string)
+	if !ok || !reflect.DeepEqual(missing, []string{"worker", "encoder_recorder"}) {
+		t.Fatalf("typed string slice was not preserved: %#v", got)
+	}
+	labels, ok := got["labels"].(map[string]any)
+	if !ok || !reflect.DeepEqual(labels, map[string]any{"node": "worker-01"}) {
+		t.Fatalf("typed map was not safely filtered: %#v", got)
+	}
+	if got["occurred_at"] != when.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("timestamp was not normalized: %#v", got)
+	}
+	if _, exists := got["authorization"]; exists {
+		t.Fatalf("authorization leaked into stream log metadata: %#v", got)
 	}
 }
 
@@ -9676,6 +9710,43 @@ func TestRetryUploadRequiresAssignedEncoder(t *testing.T) {
 	}
 }
 
+func TestHistoricalStreamLogsIncludeDeletedStreamsAndRedactedAuditContext(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "auditor"}, "correct horse battery", []string{"logs.read"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "historical stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
+	handler.writeSystemAudit(t.Context(), store.AuditEvent{
+		Action:       "streams.stop",
+		ResourceType: "stream",
+		ResourceID:   stream.ID,
+		Result:       "failure",
+		Metadata:     map[string]any{"reason": "encoder_timeout", "authorization": "Bearer must-not-leak"},
+	})
+	if err := streams.DeleteStream(t.Context(), stream.ID); err != nil {
+		t.Fatal(err)
+	}
+	cookie, _ := loginForTest(t, handler, "auditor", "correct horse battery")
+	req := httptest.NewRequest(http.MethodGet, "/stream-logs", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("historical stream logs status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), stream.ID) || !strings.Contains(res.Body.String(), "historical stream") || !strings.Contains(res.Body.String(), "streams.stop") || !strings.Contains(res.Body.String(), "encoder_timeout") {
+		t.Fatalf("historical stream log context missing: %s", res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "must-not-leak") || strings.Contains(strings.ToLower(res.Body.String()), "authorization") {
+		t.Fatalf("historical stream log leaked sensitive audit metadata: %s", res.Body.String())
+	}
+}
+
 func TestStreamAudioStatusRequiresAssignedEncoder(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "viewer"}, "correct horse battery", []string{"streams.read"}); err != nil {
@@ -13205,6 +13276,9 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "services.register", ResourceType: "service", ResourceID: "updater-01", Result: "success", Metadata: map[string]any{"service_type": "update_agent"}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "observability.signals.ingest", ResourceType: "service", ResourceID: "worker-01", Result: "success", Metadata: map[string]any{"signal_count": 12}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.WriteAudit(t.Context(), store.AuditEvent{Action: "streams.start", ResourceType: "stream", ResourceID: "stream-01", Result: "failure", Metadata: map[string]any{"missing_service_types": []string{"worker"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -13249,7 +13323,21 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if len(runtimeReads) != 2 || runtimeReads[0].Action != "services.register" || runtimeReads[1].Action != "services.runtime_config.read" {
 		t.Fatalf("unexpected runtime read audit events: %#v", runtimeReads)
 	}
-	operationsReq := httptest.NewRequest(http.MethodGet, "/audit-logs?exclude_action_group=service_runtime_reads", nil)
+	nodeActivityReq := httptest.NewRequest(http.MethodGet, "/audit-logs?action_group=node_activity", nil)
+	nodeActivityReq.AddCookie(cookie)
+	nodeActivityRes := httptest.NewRecorder()
+	handler.ServeHTTP(nodeActivityRes, nodeActivityReq)
+	if nodeActivityRes.Code != http.StatusOK {
+		t.Fatalf("node activity audit status = %d body = %s", nodeActivityRes.Code, nodeActivityRes.Body.String())
+	}
+	var nodeActivity []store.AuditEvent
+	if err := json.NewDecoder(nodeActivityRes.Body).Decode(&nodeActivity); err != nil {
+		t.Fatal(err)
+	}
+	if len(nodeActivity) != 3 || nodeActivity[0].Action != "observability.signals.ingest" || nodeActivity[1].Action != "services.register" || nodeActivity[2].Action != "services.runtime_config.read" {
+		t.Fatalf("unexpected node activity audit events: %#v", nodeActivity)
+	}
+	operationsReq := httptest.NewRequest(http.MethodGet, "/audit-logs?exclude_action_group=node_activity", nil)
 	operationsReq.AddCookie(cookie)
 	operationsRes := httptest.NewRecorder()
 	handler.ServeHTTP(operationsRes, operationsReq)
@@ -13264,7 +13352,7 @@ func TestAuditLogsListAndExport(t *testing.T) {
 		t.Fatal("operations audit unexpectedly returned no events")
 	}
 	for _, event := range operations {
-		if event.Action == "services.runtime_config.read" || event.Action == "services.register" {
+		if event.Action == "services.runtime_config.read" || event.Action == "services.register" || event.Action == "observability.signals.ingest" {
 			t.Fatalf("operations audit included runtime read event: %#v", operations)
 		}
 	}
@@ -13301,7 +13389,7 @@ func TestAuditLogsListAndExport(t *testing.T) {
 	if strings.Contains(exportRes.Body.String(), "raw-secret-token") || strings.Contains(exportRes.Body.String(), "super-raw-discord-token") {
 		t.Fatalf("audit export leaked metadata secret: %s", exportRes.Body.String())
 	}
-	operationsExportReq := httptest.NewRequest(http.MethodGet, "/audit-logs/export?exclude_action_group=service_runtime_reads", nil)
+	operationsExportReq := httptest.NewRequest(http.MethodGet, "/audit-logs/export?exclude_action_group=node_activity", nil)
 	operationsExportReq.AddCookie(cookie)
 	operationsExportRes := httptest.NewRecorder()
 	handler.ServeHTTP(operationsExportRes, operationsExportReq)
@@ -18833,6 +18921,7 @@ func TestPreferredObservabilityServiceUsesHealthHeartbeatAndNameOrder(t *testing
 
 func TestObservabilityProxyEndpoints(t *testing.T) {
 	var gotAuth string
+	var gotMetricsRange string
 	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		switch r.URL.Path {
@@ -18841,6 +18930,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 		case "/diagnostics":
 			_, _ = w.Write([]byte(`[{"incident_id":"inc-1","rule":"encoder_process_exited","diagnostic_report":{"summary":"Encoder stopped"}}]`))
 		case "/metrics":
+			gotMetricsRange = r.URL.Query().Get("range_sec")
 			_, _ = w.Write([]byte(`[{"name":"encoder.output_fps","service_id":"enc-1","value":60},{"name":"discord.audio_receiving","service_id":"enc-1","value":1},{"name":"encoder.audio_silence_sec","service_id":"enc-1","value":0},{"name":"encoder.audio_clipping_total","service_id":"enc-1","value":0}]`))
 		case "/remediation-actions":
 			_, _ = w.Write([]byte(`[{"id":"rem-1","status":"suggested"}]`))
@@ -18902,7 +18992,11 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
 	for _, path := range []string{"/observability/incidents", "/observability/diagnostics", "/observability/metrics", "/observability/remediation-actions", "/observability/notification-deliveries", "/observability/notification-channels"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+		requestPath := path
+		if path == "/observability/metrics" {
+			requestPath += "?range_sec=900"
+		}
+		req := httptest.NewRequest(http.MethodGet, requestPath, nil)
 		req.AddCookie(cookie)
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, req)
@@ -18927,6 +19021,9 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 		if path == "/observability/notification-deliveries" && (!strings.Contains(res.Body.String(), `"rule":"secrets.update"`) || !strings.Contains(res.Body.String(), `"summary":"シークレットを更新\n実行者: ops"`) || !strings.Contains(res.Body.String(), `"created_at":"2026-07-18T01:32:00Z"`)) {
 			t.Fatalf("notification delivery operation context was not preserved: %s", res.Body.String())
 		}
+	}
+	if gotMetricsRange != "900" {
+		t.Fatalf("metrics range was not forwarded to observability: %q", gotMetricsRange)
 	}
 	createReq := httptest.NewRequest(http.MethodPost, "/observability/notification-channels", bytes.NewBufferString(`{"name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/slack-secret-token","enabled":true}`))
 	createReq.AddCookie(cookie)
@@ -19030,6 +19127,37 @@ func TestObservabilityProxyDoesNotLeakTokenOnUpstreamError(t *testing.T) {
 	}
 	if strings.Contains(res.Body.String(), "secret-token") {
 		t.Fatalf("token leaked in response: %s", res.Body.String())
+	}
+}
+
+func TestObservabilityIncidentProxyForwardsOnlySupportedHistoryQuery(t *testing.T) {
+	var upstreamQuery url.Values
+	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer obs.Close()
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"incidents.read"}); err != nil {
+		t.Fatal(err)
+	}
+	registerObservabilityNodeForTest(t, auth, "query-token", obs.URL)
+	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	cookie, _ := loginForTest(t, handler, "admin", "correct horse battery")
+	before := "2026-08-21T12:00:00.123456789Z"
+	req := httptest.NewRequest(http.MethodGet, "/observability/incidents?limit=25&before="+url.QueryEscape(before)+"&before_id=inc-25&status=resolved&token=must-not-forward", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
+	}
+	if upstreamQuery.Get("limit") != "25" || upstreamQuery.Get("before") != before || upstreamQuery.Get("before_id") != "inc-25" || upstreamQuery.Get("status") != "resolved" {
+		t.Fatalf("history query was not forwarded: %#v", upstreamQuery)
+	}
+	if upstreamQuery.Has("token") {
+		t.Fatalf("unsupported query parameter reached observability: %#v", upstreamQuery)
 	}
 }
 

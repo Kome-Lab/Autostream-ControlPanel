@@ -5,10 +5,15 @@ import test from "node:test";
 import {
   createNavigationSectionsState,
   isNavigationSectionOpen,
+  navigationSectionsStorageKey,
   navigationSectionStateKey,
+  restoreNavigationSectionsState,
+  serializeNavigationSectionsState,
   synchronizeNavigationSectionsState,
   toggleNavigationSection,
 } from "../src/lib/navigation-section-state.ts";
+
+const adminShellSource = readFileSync(new URL("../src/components/admin/admin-shell.tsx", import.meta.url), "utf8");
 
 test("an active navigation section can be closed and reopened explicitly", () => {
   const active = createNavigationSectionsState(["operations", "monitoring"], "operations", "monitoring");
@@ -55,6 +60,37 @@ test("mobile navigation remounts can reuse the lifted section state", () => {
 
 test("a section keeps the same React key when its active route changes", () => {
   assert.equal(navigationSectionStateKey("monitoring"), "monitoring");
+});
+
+test("admin navigation restores and persists section state across reloads", () => {
+  assert.match(adminShellSource, /navigationSectionsStorageKey/);
+  assert.match(adminShellSource, /localStorage\.getItem/);
+  assert.match(adminShellSource, /localStorage\.setItem/);
+  assert.match(navigationSectionsStorageKey, /:v1$/);
+
+  const initial = createNavigationSectionsState(["operations", "monitoring", "administration"], "operations", "operations");
+  const opened = toggleNavigationSection(initial, "monitoring");
+  const restored = restoreNavigationSectionsState(
+    ["operations", "monitoring", "administration"],
+    serializeNavigationSectionsState(opened, ["operations", "monitoring", "administration"]),
+    "operations",
+    "operations",
+  );
+  assert.equal(isNavigationSectionOpen(restored, "monitoring"), true);
+});
+
+test("invalid or stale navigation storage falls back without adding unknown sections", () => {
+  const malformed = restoreNavigationSectionsState(["operations", "monitoring"], "not-json", "operations", "monitoring");
+  assert.equal(isNavigationSectionOpen(malformed, "operations"), true);
+  assert.equal(isNavigationSectionOpen(malformed, "monitoring"), true);
+
+  const restored = restoreNavigationSectionsState(
+    ["operations", "monitoring"],
+    JSON.stringify({ openByKey: { operations: false, unknown: true } }),
+    "operations",
+    "monitoring",
+  );
+  assert.deepEqual(restored.openByKey, { operations: false, monitoring: true });
 });
 
 test("responsive admin surfaces do not depend on a bare hidden utility", () => {

@@ -3,6 +3,8 @@ export type NavigationSectionsState = Readonly<{
   activeKey: string | null;
 }>;
 
+export const navigationSectionsStorageKey = "autostream.admin.navigation-sections:v1";
+
 export function createNavigationSectionsState(
   sectionKeys: readonly string[],
   initiallyOpenKey: string | null,
@@ -35,4 +37,36 @@ export function isNavigationSectionOpen(state: NavigationSectionsState, sectionK
 
 export function navigationSectionStateKey(sectionKey: string) {
   return sectionKey;
+}
+
+export function serializeNavigationSectionsState(state: NavigationSectionsState, sectionKeys: readonly string[]) {
+  const openByKey: Record<string, boolean> = {};
+  for (const sectionKey of sectionKeys) openByKey[sectionKey] = state.openByKey[sectionKey] === true;
+  return JSON.stringify({ openByKey });
+}
+
+export function restoreNavigationSectionsState(
+  sectionKeys: readonly string[],
+  serialized: string | null,
+  initiallyOpenKey: string | null,
+  activeKey: string | null,
+): NavigationSectionsState {
+  const fallback = createNavigationSectionsState(sectionKeys, initiallyOpenKey, activeKey);
+  if (!serialized) return fallback;
+  try {
+    const parsed = JSON.parse(serialized) as unknown;
+    if (!isRecord(parsed) || !isRecord(parsed.openByKey)) return fallback;
+    const openByKey: Record<string, boolean> = {};
+    for (const sectionKey of sectionKeys) {
+      const stored = parsed.openByKey[sectionKey];
+      openByKey[sectionKey] = typeof stored === "boolean" ? stored : fallback.openByKey[sectionKey] === true;
+    }
+    return { openByKey, activeKey };
+  } catch {
+    return fallback;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

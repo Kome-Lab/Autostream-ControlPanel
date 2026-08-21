@@ -62,6 +62,7 @@ const auditActionLabels: Record<string, string> = {
   "nodes.registration_token.create": "Node登録トークンを発行",
   "nodes.runtime_token.rotate": "Node Runtime Tokenを再生成",
   "nodes.update": "Nodeを更新",
+  "observability.signals.ingest": "Observabilityへシグナルを送信",
   "notification_channels.create": "通知先を作成",
   "notification_channels.delete": "通知先を削除",
   "notification_channels.test": "通知テストを送信",
