@@ -81,6 +81,10 @@ func TestLiveAPIClientPrepareUsesOAuthAndBindsRTMPSStream(t *testing.T) {
 			t.Fatalf("missing YouTube API step %q in %#v", step, transport.steps)
 		}
 	}
+	wantSteps := []string{"insert_broadcast", "insert_stream", "bind_broadcast"}
+	if fmt.Sprint(transport.steps) != fmt.Sprint(wantSteps) {
+		t.Fatalf("fresh Live API lifecycle order=%#v want=%#v", transport.steps, wantSteps)
+	}
 	for _, request := range transport.apiRequests {
 		if request.Authorization != "Bearer ya29.fake-youtube-access-token" {
 			t.Fatalf("YouTube API request did not use refreshed bearer token: %#v", request)

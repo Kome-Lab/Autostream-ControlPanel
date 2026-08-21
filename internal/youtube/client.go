@@ -303,6 +303,7 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		return PreparedOutput{}, err
 	}
 	var stream *youtubeapi.LiveStream
+	var broadcast *youtubeapi.LiveBroadcast
 	if strings.TrimSpace(req.PreferredStreamKey) != "" {
 		stream, err = findReusableAccountLiveStreamByKey(ctx, service, req)
 	} else if req.ReuseAccountStream {
@@ -313,6 +314,15 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 		defer reusableAccountStreamMu.Unlock()
 		stream, err = ensureReusableAccountLiveStream(ctx, service, req)
 	} else {
+		// Preserve the provider lifecycle used by the stable v1.9.0-v1.9.37
+		// direct Live API path and documented by YouTube: create the Broadcast,
+		// create a fresh Stream, then bind.
+		// Reusable-key modes deliberately remain separate and resolve their
+		// existing Stream before mutating provider state.
+		broadcast, err = prepareBroadcast(ctx, service, req)
+		if err != nil {
+			return PreparedOutput{}, err
+		}
 		stream, err = service.LiveStreams.Insert([]string{"snippet", "cdn", "contentDetails"}, &youtubeapi.LiveStream{
 			Snippet: &youtubeapi.LiveStreamSnippet{Title: broadcastTitle(req) + " input"},
 			ContentDetails: &youtubeapi.LiveStreamContentDetails{
@@ -331,9 +341,11 @@ func (c LiveAPIClient) Prepare(ctx context.Context, req PrepareRequest) (Prepare
 	if err != nil {
 		return PreparedOutput{}, err
 	}
-	broadcast, err := prepareBroadcast(ctx, service, req)
-	if err != nil {
-		return PreparedOutput{}, err
+	if broadcast == nil {
+		broadcast, err = prepareBroadcast(ctx, service, req)
+		if err != nil {
+			return PreparedOutput{}, err
+		}
 	}
 	if _, err := service.LiveBroadcasts.Bind(broadcast.Id, []string{"id", "contentDetails"}).StreamId(stream.Id).Context(ctx).Do(); err != nil {
 		return PreparedOutput{}, err
