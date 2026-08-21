@@ -19131,9 +19131,11 @@ func TestObservabilityProxyDoesNotLeakTokenOnUpstreamError(t *testing.T) {
 }
 
 func TestObservabilityIncidentProxyForwardsOnlySupportedHistoryQuery(t *testing.T) {
-	var upstreamQuery url.Values
+	upstreamQueries := make(chan url.Values, 1)
 	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamQuery = r.URL.Query()
+		if r.Method == http.MethodGet && r.URL.Path == "/incidents" {
+			upstreamQueries <- r.URL.Query()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[]`))
 	}))
@@ -19152,6 +19154,12 @@ func TestObservabilityIncidentProxyForwardsOnlySupportedHistoryQuery(t *testing.
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
+	}
+	var upstreamQuery url.Values
+	select {
+	case upstreamQuery = <-upstreamQueries:
+	default:
+		t.Fatal("incidents request did not reach observability")
 	}
 	if upstreamQuery.Get("limit") != "25" || upstreamQuery.Get("before") != before || upstreamQuery.Get("before_id") != "inc-25" || upstreamQuery.Get("status") != "resolved" {
 		t.Fatalf("history query was not forwarded: %#v", upstreamQuery)
