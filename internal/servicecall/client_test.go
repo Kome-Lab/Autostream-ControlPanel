@@ -16,6 +16,19 @@ import (
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
+const expectedWorkerStartResponseLimitBytes = 1_048_576
+const expectedWorkerStartResponseLimitPlusOneBytes = 1_048_577
+
+func TestWorkerStartResponseLimitIsOneMiB(t *testing.T) {
+	if maxWorkerStartResponseBytes != expectedWorkerStartResponseLimitBytes {
+		t.Fatalf(
+			"maxWorkerStartResponseBytes = %d, want %d",
+			maxWorkerStartResponseBytes,
+			expectedWorkerStartResponseLimitBytes,
+		)
+	}
+}
+
 func TestStartDispatchesToAssignedServices(t *testing.T) {
 	var paths []string
 	var dispatchOrder []string
@@ -154,6 +167,199 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	}
 }
 
+func TestStartFailsClosedWithoutWorkerJobGeneration(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		workerResult string
+	}{
+		{name: "missing generation", workerResult: `{"status":"accepted"}`},
+		{name: "zero generation", workerResult: `{"job_generation":0}`},
+		{name: "negative generation", workerResult: `{"job_generation":-1}`},
+		{name: "fractional generation", workerResult: `{"job_generation":1.5}`},
+		{name: "string generation", workerResult: `{"job_generation":"17"}`},
+		{name: "uint64 overflow generation", workerResult: `{"job_generation":18446744073709551616}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := map[string]int{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				switch {
+				case payload["overlay_profile_id"] != nil:
+					requests["worker"]++
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = io.WriteString(w, test.workerResult)
+				case payload["guild_id"] != nil:
+					requests["discord_bot"]++
+					w.WriteHeader(http.StatusAccepted)
+				default:
+					t.Fatalf("unexpected start payload: %#v", payload)
+				}
+			}))
+			defer server.Close()
+
+			client := testClient()
+			results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
+				{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
+				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+			}, StartRequest{DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01"})
+
+			if requests["worker"] != 1 || requests["discord_bot"] != 0 {
+				t.Fatalf("invalid Worker generation dispatch count = %#v, want worker=1 discord_bot=0", requests)
+			}
+			if len(results) != 1 || results[0].Success || results[0].ServiceType != "worker" || results[0].Code != "worker_job_generation_response_invalid" || results[0].FailurePhase != "protocol" {
+				t.Fatalf("invalid Worker generation did not fail closed: %#v", results)
+			}
+		})
+	}
+
+	t.Run("discord bot assignment without worker", func(t *testing.T) {
+		requests := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		defer server.Close()
+
+		results := testClient().Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
+			{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+		}, StartRequest{DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01"})
+
+		if requests != 0 {
+			t.Fatalf("Discord Bot received %d requests without a Worker generation, want 0", requests)
+		}
+		if len(results) != 1 || results[0].Success || results[0].ServiceType != "discord_bot" || results[0].Code != "worker_job_generation_unavailable" || results[0].FailurePhase != "pre_dispatch" {
+			t.Fatalf("missing Worker generation did not fail closed before Discord Bot dispatch: %#v", results)
+		}
+	})
+}
+
+func TestStartRequiresSingleWorkerResponseJSONValue(t *testing.T) {
+	const (
+		validResponse = `{"job_generation":17}`
+	)
+	padResponse := func(totalLength int, suffix string) string {
+		t.Helper()
+		paddingLength := totalLength - len(validResponse) - len(suffix)
+		if paddingLength < 0 {
+			t.Fatalf("cannot build %d-byte response with %d-byte suffix", totalLength, len(suffix))
+		}
+		body := validResponse + strings.Repeat(" ", paddingLength) + suffix
+		if len(body) != totalLength {
+			t.Fatalf("response length=%d, want %d", len(body), totalLength)
+		}
+		return body
+	}
+	secondObject := `{"job_generation":18}`
+
+	for _, test := range []struct {
+		name         string
+		workerResult string
+		wantBodyLen  int
+		wantSuccess  bool
+	}{
+		{
+			name:         "single JSON object",
+			workerResult: validResponse,
+			wantBodyLen:  len(validResponse),
+			wantSuccess:  true,
+		},
+		{
+			name:         "second JSON object",
+			workerResult: validResponse + secondObject,
+			wantBodyLen:  len(validResponse) + len(secondObject),
+		},
+		{
+			name:         "trailing garbage",
+			workerResult: validResponse + "garbage",
+			wantBodyLen:  len(validResponse) + len("garbage"),
+		},
+		{
+			name:         "below limit with trailing whitespace",
+			workerResult: padResponse(expectedWorkerStartResponseLimitBytes-1, ""),
+			wantBodyLen:  expectedWorkerStartResponseLimitBytes - 1,
+			wantSuccess:  true,
+		},
+		{
+			name:         "exact limit with trailing whitespace",
+			workerResult: padResponse(expectedWorkerStartResponseLimitBytes, ""),
+			wantBodyLen:  expectedWorkerStartResponseLimitBytes,
+			wantSuccess:  true,
+		},
+		{
+			name:         "one byte over limit with trailing whitespace",
+			workerResult: padResponse(expectedWorkerStartResponseLimitPlusOneBytes, ""),
+			wantBodyLen:  expectedWorkerStartResponseLimitPlusOneBytes,
+		},
+		{
+			name:         "second JSON object hidden beyond limit",
+			workerResult: padResponse(expectedWorkerStartResponseLimitBytes+len(secondObject), secondObject),
+			wantBodyLen:  expectedWorkerStartResponseLimitBytes + len(secondObject),
+		},
+		{
+			name:         "garbage hidden beyond limit",
+			workerResult: padResponse(expectedWorkerStartResponseLimitPlusOneBytes, "g"),
+			wantBodyLen:  expectedWorkerStartResponseLimitPlusOneBytes,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if len(test.workerResult) != test.wantBodyLen {
+				t.Fatalf("test response length=%d, want %d", len(test.workerResult), test.wantBodyLen)
+			}
+			requests := map[string]int{}
+			var botGeneration any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				switch {
+				case payload["overlay_profile_id"] != nil:
+					requests["worker"]++
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = io.WriteString(w, test.workerResult)
+				case payload["guild_id"] != nil:
+					requests["discord_bot"]++
+					botGeneration = payload["job_generation"]
+					w.WriteHeader(http.StatusAccepted)
+				default:
+					t.Fatalf("unexpected start payload: %#v", payload)
+				}
+			}))
+			defer server.Close()
+
+			results := testClient().Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
+				{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
+				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+			}, StartRequest{DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01"})
+
+			if test.wantSuccess {
+				if requests["worker"] != 1 || requests["discord_bot"] != 1 || len(results) != 2 || !results[0].Success || !results[1].Success {
+					t.Fatalf("valid Worker response dispatch failed: requests=%#v results=%#v", requests, results)
+				}
+				if botGeneration != float64(17) {
+					t.Fatalf("Discord Bot generation=%#v, want 17", botGeneration)
+				}
+				return
+			}
+
+			if requests["worker"] != 1 || requests["discord_bot"] != 0 {
+				t.Fatalf("invalid Worker response dispatch count=%#v, want worker=1 discord_bot=0", requests)
+			}
+			if len(results) != 1 || results[0].Success || results[0].Code != "worker_job_generation_response_invalid" || results[0].FailurePhase != "protocol" {
+				t.Fatalf("invalid Worker response did not fail as a protocol error: %#v", results)
+			}
+			if strings.Contains(results[0].Error, test.workerResult) {
+				t.Fatalf("protocol error exposed raw Worker response: %q", results[0].Error)
+			}
+		})
+	}
+}
+
 func TestStartDispatchesArchiveRunOnlyToCapableEncoder(t *testing.T) {
 	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 123456789, time.UTC)
 	for _, test := range []struct {
@@ -217,7 +423,9 @@ func TestStartNegotiatesWorkerVideoIngestWithoutLeakingCredential(t *testing.T) 
 		case payload["video_ingest_url"] != nil:
 			dispatchOrder = append(dispatchOrder, "worker")
 			workerPayload = payload
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"job_generation": 17})
 		case payload["guild_id"] != nil:
 			dispatchOrder = append(dispatchOrder, "discord_bot")
 			w.WriteHeader(http.StatusAccepted)

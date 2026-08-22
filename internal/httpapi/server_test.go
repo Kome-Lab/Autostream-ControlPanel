@@ -3974,6 +3974,20 @@ func TestStartStreamCompensatesPartialDispatchFailure(t *testing.T) {
 			},
 		},
 		{
+			name: "worker response framing fails after encoder starts",
+			results: []servicecall.DispatchResult{
+				{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/start", StatusCode: http.StatusAccepted, Success: true},
+				{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/start", StatusCode: http.StatusAccepted, Code: "worker_job_generation_response_invalid", FailurePhase: "protocol", Error: "Worker start response did not contain exactly one JSON value"},
+			},
+		},
+		{
+			name: "oversized worker response fails after encoder starts",
+			results: []servicecall.DispatchResult{
+				{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/start", StatusCode: http.StatusAccepted, Success: true},
+				{ServiceID: "worker-01", ServiceType: "worker", Endpoint: "/jobs/start", StatusCode: http.StatusAccepted, Code: "worker_job_generation_response_invalid", FailurePhase: "protocol", Error: "Worker start response exceeded size limit"},
+			},
+		},
+		{
 			name: "bot fails after encoder and worker start",
 			results: []servicecall.DispatchResult{
 				{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", Endpoint: "/streams/start", StatusCode: http.StatusAccepted, Success: true},

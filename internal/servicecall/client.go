@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	maxPreviewPlaylistBytes = 1 << 20
-	maxPreviewSegmentBytes  = 32 << 20
-	encoderStopTimeout      = 15 * time.Second
-	archiveTransferTimeout  = 6 * time.Hour
+	maxPreviewPlaylistBytes     = 1 << 20
+	maxPreviewSegmentBytes      = 32 << 20
+	maxWorkerStartResponseBytes = 1 << 20
+	encoderStopTimeout          = 15 * time.Second
+	archiveTransferTimeout      = 6 * time.Hour
 )
 
 type Config struct {
@@ -559,6 +560,14 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 	}
 	var workerVideoRoute workerVideoIngestRoute
 	for _, service := range ordered {
+		if service.ServiceType == "discord_bot" && req.WorkerJobGeneration == 0 {
+			results = append(results, DispatchResult{
+				ServiceID: service.ServiceID, ServiceType: service.ServiceType,
+				Code: "worker_job_generation_unavailable", FailurePhase: "pre_dispatch",
+				Error: "positive Worker job generation is required before Discord Bot start",
+			})
+			break
+		}
 		endpoint, payload, ok := c.startPayload(stream, service, req, encoderURL, workerService, now)
 		if !ok {
 			continue
@@ -602,11 +611,18 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 		} else {
 			result = c.post(ctx, service, endpoint, payload)
 		}
-		if workerVideoEnabled && service.ServiceType == "worker" && result.Success {
-			result.VideoOverlayBurnInNegotiated = true
-		}
-		if service.ServiceType == "worker" && result.Success && result.JobGeneration > 0 {
-			req.WorkerJobGeneration = result.JobGeneration
+		if service.ServiceType == "worker" && result.Success {
+			if result.JobGeneration == 0 {
+				result.Success = false
+				result.Code = "worker_job_generation_response_invalid"
+				result.FailurePhase = "protocol"
+				result.Error = "Worker start response did not include a positive job generation"
+			} else {
+				req.WorkerJobGeneration = result.JobGeneration
+				if workerVideoEnabled {
+					result.VideoOverlayBurnInNegotiated = true
+				}
+			}
 		}
 		results = append(results, result)
 		// Start dependencies are ordered encoder -> worker -> Discord Bot.
@@ -920,7 +936,36 @@ func (c Client) serviceJSONActionInternal(ctx context.Context, service store.Reg
 			JobGeneration uint64                 `json:"job_generation"`
 			VideoIngest   workerVideoIngestRoute `json:"video_ingest"`
 		}
-		if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&successBody); err == nil {
+		workerStartResponse := service.ServiceType == "worker" && endpoint == "/jobs/start"
+		var decoder *json.Decoder
+		if workerStartResponse {
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, maxWorkerStartResponseBytes+1))
+			if readErr != nil {
+				result.Code = "worker_job_generation_response_invalid"
+				result.FailurePhase = "protocol"
+				result.Error = "Worker start response could not be read"
+				return result
+			}
+			if len(body) > maxWorkerStartResponseBytes {
+				result.Code = "worker_job_generation_response_invalid"
+				result.FailurePhase = "protocol"
+				result.Error = "Worker start response exceeded size limit"
+				return result
+			}
+			decoder = json.NewDecoder(bytes.NewReader(body))
+		} else {
+			decoder = json.NewDecoder(io.LimitReader(response.Body, 1<<20))
+		}
+		if err := decoder.Decode(&successBody); err == nil {
+			if workerStartResponse {
+				var trailing any
+				if err := decoder.Decode(&trailing); err != io.EOF {
+					result.Code = "worker_job_generation_response_invalid"
+					result.FailurePhase = "protocol"
+					result.Error = "Worker start response did not contain exactly one JSON value"
+					return result
+				}
+			}
 			result.MessageID = sanitizeServiceErrorValue(successBody.MessageID)
 			result.AlreadySent = successBody.AlreadySent
 			result.JobGeneration = successBody.JobGeneration
@@ -1365,6 +1410,7 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 	case "discord_bot":
 		payload := map[string]any{
 			"stream_id":         stream.ID,
+			"job_generation":    req.WorkerJobGeneration,
 			"guild_id":          req.DiscordGuildID,
 			"voice_channel_id":  req.DiscordVoiceChannelID,
 			"text_channel_id":   req.DiscordTextChannelID,
@@ -1375,9 +1421,6 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		}
 		if strings.TrimSpace(workerService.PublicURL) != "" {
 			payload["worker_events_url"] = workerService.PublicURL
-			if req.WorkerJobGeneration > 0 {
-				payload["job_generation"] = req.WorkerJobGeneration
-			}
 			if token := c.issueIngestTokenForAudience(stream.ID, service, "worker_events", "worker", now); token != "" {
 				payload["worker_events_token"] = token
 			}
