@@ -28,7 +28,7 @@ import {
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
-import { buildStreamCreatePayload, buildStreamSettingsPayload, streamScheduleInputValue, streamScheduleRFC3339 } from "@/lib/stream-create";
+import { buildStreamCreatePayload, buildStreamSettingsPayload, streamAssignmentConflictMessage, streamCreateCompatibilityMessage, streamScheduleInputValue, streamScheduleRFC3339, streamServiceAssignmentOption } from "@/lib/stream-create";
 import { staticRelayRecoveryActionAvailable, staticRelayRecoveryConfirmation, staticRelayRecoveryErrorMessage } from "@/lib/stream-static-relay";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
@@ -36,7 +36,7 @@ import { StreamPreview } from "@/features/streams/stream-preview";
 import type { Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
-type SelectOption = { value: string; label: string; description?: string };
+type SelectOption = { value: string; label: string; description?: string; disabled?: boolean };
 type StreamAction = { path: string; streamName: string; streamID?: string; actionLabel: string; method?: "POST" | "DELETE"; body?: unknown };
 
 const noneValue = "__none__";
@@ -345,7 +345,7 @@ export function StreamsView() {
             canAssignWorker={can("workers.assign")}
             onSaved={(stream) => {
               setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]);
-              setActionNotice({ tone: "success", message: `${stream.name} を作成し、開始トリガーの待機を開始しました。VC、配信経路、録画設定を確認してください。` });
+              setActionNotice({ tone: "success", message: `${stream.name} を作成しました。稼働中の配信を保護するためNode割り当ては変更していません。開始前にこの配信枠を編集し、担当Nodeを明示的に割り当ててください。` });
               setCreateOpen(false);
             }}
           />
@@ -457,8 +457,8 @@ function StreamSlotForm({
   const captionProfiles = useResourceOptions("/profiles/caption", ["name", "id"]);
   const overlayProfiles = useResourceOptions("/profiles/overlay", ["name", "id"]);
   const archiveProfiles = useResourceOptions("/profiles/archive", ["name", "id"]);
-  const encoderNodes = useServiceOptions("encoder_recorder");
-  const workerNodes = useServiceOptions("worker");
+  const encoderNodes = useServiceOptions("encoder_recorder", stream?.id);
+  const workerNodes = useServiceOptions("worker", stream?.id);
   const editing = stream !== undefined && stream !== null;
   const liveEditing = editing && stream?.status === "live";
   const [name, setName] = useState(stream?.name || "");
@@ -474,13 +474,16 @@ function StreamSlotForm({
   const [watermarkEnabled, setWatermarkEnabled] = useState(Boolean(stream?.overlay_profile_id));
   const [overlayProfileID, setOverlayProfileID] = useState(optionOrNone(stream?.overlay_profile_id));
   const [encoderAudioGainDB, setEncoderAudioGainDB] = useState(String(stream?.encoder_audio_gain_db ?? 0));
-  const [encoderServiceID, setEncoderServiceID] = useState<string | null>(stream?.assigned_encoder_id || null);
-  const [workerServiceID, setWorkerServiceID] = useState<string | null>(stream?.assigned_worker_id || null);
+  // null means the operator has not touched this assignment control. It keeps
+  // the field omitted so the backend preserves ownership. Selecting
+  // "未選択" changes the state to an explicit empty assignment request.
+  const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
+  const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
   const [scheduledStartAt, setScheduledStartAt] = useState(() => streamScheduleInputValue(stream?.scheduled_start_at));
   const [message, setMessage] = useState("");
 
-  const effectiveEncoderServiceID = encoderServiceID ?? singleOptionValue(encoderNodes);
-  const effectiveWorkerServiceID = workerServiceID ?? singleOptionValue(workerNodes);
+  const effectiveEncoderServiceID = encoderServiceID ?? optionOrNone(stream?.assigned_encoder_id);
+  const effectiveWorkerServiceID = workerServiceID ?? optionOrNone(stream?.assigned_worker_id);
 
   const saveStream = useMutation<Stream, Error, Record<string, unknown>>({
     mutationFn: (payload) => editing && stream ? apiPut<Stream>(liveEditing ? `/streams/${stream.id}/runtime-settings` : `/streams/${stream.id}/settings`, payload) : apiPost<Stream>("/streams", payload),
@@ -514,13 +517,13 @@ function StreamSlotForm({
         encoderAudioGainDB: Number(encoderAudioGainDB),
         // Omit assignments that this editor cannot manage. A selectable
         // "未選択" remains an explicit empty value and therefore unassigns.
-        encoderServiceID: canAssignEncoder ? selectedValue(effectiveEncoderServiceID) : undefined,
-        workerServiceID: canAssignWorker ? selectedValue(effectiveWorkerServiceID) : undefined,
+        encoderServiceID: canAssignEncoder && encoderServiceID !== null ? selectedValue(effectiveEncoderServiceID) : undefined,
+        workerServiceID: canAssignWorker && workerServiceID !== null ? selectedValue(effectiveWorkerServiceID) : undefined,
         scheduledStartAt: streamScheduleRFC3339(scheduledStartAt),
         scheduledEndAt: stream?.scheduled_end_at || "",
         encoderInputURL: stream?.encoder_input_url || "",
       }),
-    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderAudioGainDB, encoderProfileID, guildID, liveEditing, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, youtubeOutputID],
+    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderAudioGainDB, encoderProfileID, encoderServiceID, guildID, liveEditing, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, workerServiceID, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
@@ -528,8 +531,8 @@ function StreamSlotForm({
   const watermarkReady = !watermarkEnabled || selectedValue(overlayProfileID) !== "";
   const encoderAudioGainValue = Number(encoderAudioGainDB);
   const encoderAudioGainReady = Number.isFinite(encoderAudioGainValue) && encoderAudioGainValue >= -60 && encoderAudioGainValue <= 24;
-  const nodeAssignmentReady = !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
-  const nodeAssignmentPermissionLimited = autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
+  const nodeAssignmentReady = !editing || !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
+  const nodeAssignmentPermissionLimited = editing && autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
 
   return (
     <Card id="create-stream" className={className}>
@@ -538,7 +541,7 @@ function StreamSlotForm({
           {editing ? <Pencil className="size-5" /> : <Plus className="size-5" />}
           {editing ? "配信枠を編集" : "配信枠を作成"}
         </CardTitle>
-        <CardDescription>{liveEditing ? "配信を止めずにEncoder音量とウォーターマークを変更できます。" : editing ? "待機中または終了済みの枠設定を編集します。" : "Discord VCの開始条件、配信経路、録画保存先を確認してから待機を開始します。"}</CardDescription>
+        <CardDescription>{liveEditing ? "配信を止めずにEncoder音量とウォーターマークを変更できます。" : editing ? "待機中または終了済みの枠設定を編集します。" : "Discord VCの開始条件、配信経路、録画保存先を設定します。Node割り当ては作成後に明示的に行います。"}</CardDescription>
       </CardHeader>
       <CardContent>
         <form
@@ -562,7 +565,7 @@ function StreamSlotForm({
             </div>
           </FormSection>
 
-          <FormSection title="開始条件" description="自動開始に使うDiscordと担当Node">
+          <FormSection title="開始条件" description={editing ? "自動開始に使うDiscordと担当Node" : "自動開始に使うDiscord。担当Nodeは作成後の編集で割り当てます。"}>
             <label className="mb-3 flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm">
               <Checkbox checked={autoStartFromDiscord} onCheckedChange={(value) => setAutoStartFromDiscord(value === true)} />
               Discord VCへの参加を検知して自動開始
@@ -572,10 +575,12 @@ function StreamSlotForm({
               <TextField label="DiscordサーバーID" value={guildID} onChange={setGuildID} />
               <TextField label="ボイスチャンネルID" value={voiceChannelID} onChange={setVoiceChannelID} />
               <TextField label="チャットチャンネルID" value={textChannelID} onChange={setTextChannelID} />
-              {canAssignWorker ? <SelectField label="担当Worker Node" value={effectiveWorkerServiceID} onChange={setWorkerServiceID} options={[{ value: noneValue, label: "未選択" }, ...workerNodes]} /> : null}
-              {canAssignEncoder ? <SelectField label="担当Encoder Node" value={effectiveEncoderServiceID} onChange={setEncoderServiceID} options={[{ value: noneValue, label: "未選択" }, ...encoderNodes]} /> : null}
+              {editing && canAssignWorker ? <SelectField label="担当Worker Node" value={effectiveWorkerServiceID} onChange={setWorkerServiceID} options={[{ value: noneValue, label: "未選択" }, ...workerNodes]} /> : null}
+              {editing && canAssignEncoder ? <SelectField label="担当Encoder Node" value={effectiveEncoderServiceID} onChange={setEncoderServiceID} options={[{ value: noneValue, label: "未選択" }, ...encoderNodes]} /> : null}
             </div>
           </FormSection>
+
+          {!editing ? <div className="flex gap-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground"><AlertCircle className="mt-0.5 size-4 shrink-0" />新規作成では既存配信のNode割り当てを変更しません。作成後に配信枠を編集し、開始前に担当Nodeを割り当ててください。</div> : null}
 
           <FormSection title="出力と録画" description="視聴先と事前登録した録画設定">
             <div className="grid gap-3 md:grid-cols-2">
@@ -697,7 +702,7 @@ function SelectField({ label, value, onChange, options, disabled }: { label: str
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
-            <SelectItem key={option.value} value={option.value} textValue={option.label}>
+            <SelectItem key={option.value} value={option.value} textValue={option.label} disabled={option.disabled}>
               <span className="min-w-0 truncate">{option.label}</span>
             </SelectItem>
           ))}
@@ -746,7 +751,7 @@ function useOAuthAccountOptions(purpose: OAuthAccountPurpose) {
   );
 }
 
-function useServiceOptions(serviceType: string) {
+function useServiceOptions(serviceType: string, editingStreamID?: string) {
   const query = useServiceHealth();
   const rows = useMemo(() => query.data || [], [query.data]);
   return useMemo(
@@ -756,10 +761,10 @@ function useServiceOptions(serviceType: string) {
         .map((row) => {
           const value = row.service_id || row.id;
           const label = firstNonEmpty(row.service_name, row.service_id || row.id);
-          return { value, label };
+          return streamServiceAssignmentOption({ value, label, currentStreamID: row.current_stream_id }, editingStreamID);
         })
         .filter((option) => option.value),
-    [rows, serviceType],
+    [editingStreamID, rows, serviceType],
   );
 }
 
@@ -821,12 +826,10 @@ function optionOrNone(value?: string) {
   return value?.trim() || noneValue;
 }
 
-function singleOptionValue(options: SelectOption[]) {
-  return options.length === 1 ? options[0].value : noneValue;
-}
-
 function streamCreateErrorMessage(error: unknown) {
   if (error instanceof APIError) {
+    const compatibilityMessage = streamCreateCompatibilityMessage(error.code);
+    if (compatibilityMessage) return compatibilityMessage;
     const messages: Record<string, string> = {
       name_required: "配信枠名を入力してください。",
       auto_start_trigger_invalid: "自動開始条件が無効です。Discord VC参加で自動開始を使う場合は画面のチェック項目から設定してください。",
@@ -857,6 +860,8 @@ function streamCreateErrorMessage(error: unknown) {
 function streamSaveErrorMessage(error: unknown, editing: boolean) {
   if (!editing) return streamCreateErrorMessage(error);
   if (error instanceof APIError) {
+    const assignmentConflict = streamAssignmentConflictMessage(error.code);
+    if (assignmentConflict) return assignmentConflict;
     const messages: Record<string, string> = {
       name_required: "配信枠名を入力してください。",
       schedule_end_before_start: "終了予定は開始予定より後に設定してください。",
@@ -876,6 +881,8 @@ function streamSaveErrorMessage(error: unknown, editing: boolean) {
 
 function streamActionErrorMessage(error: unknown, actionLabel: string) {
   if (error instanceof APIError) {
+    const assignmentConflict = streamAssignmentConflictMessage(error.code);
+    if (assignmentConflict) return assignmentConflict;
     const staticRelayMessage = staticRelayRecoveryErrorMessage(error.code || "");
     if (staticRelayMessage) return staticRelayMessage;
     if (error.detailCode === "database_connection_transient") return `${actionLabel}を完了できませんでした。Control PanelとMariaDBの一時的な接続切断が発生しました。少し待ってから再試行してください。`;

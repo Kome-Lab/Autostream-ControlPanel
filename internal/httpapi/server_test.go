@@ -30,6 +30,10 @@ import (
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
 )
 
+func formatSafeHTTPSensitiveDiagnostic(value any) string {
+	return fmt.Sprintf("type=%T details=redacted", value)
+}
+
 func TestCurrentUserAvatarLifecycle(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{ID: "user-avatar", Username: "avatar-admin", Email: "avatar@example.jp", Roles: []string{"super_admin"}}, "correct horse battery", nil); err != nil {
@@ -1897,7 +1901,7 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 		t.Fatalf("expected live status and dispatch, got %#v", startBody)
 	}
 	if dispatcher.startCalls != 1 {
-		t.Fatalf("expected start dispatch, got %#v", dispatcher)
+		t.Fatalf("expected start dispatch, got %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 
 	failReq := httptest.NewRequest(http.MethodPost, "/streams/"+created.ID+"/mark-failed", nil)
@@ -2385,8 +2389,10 @@ func TestConcurrentStreamStartsClaimOnceBeforeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	baseStreams := store.NewMemoryStreamStore()
+	auth.BindStreamAssignmentGuard(baseStreams)
 	transitionGate := &gatedLifecycleTransitionStore{
 		StreamStore: baseStreams,
+		startClaims: baseStreams,
 		expected:    "created",
 		status:      "starting",
 		entered:     make(chan struct{}, 2),
@@ -2598,10 +2604,10 @@ func TestStopStreamNormalizesOnlyExactAlreadyStoppedDownstreamReceipts(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
+			registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
 			if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
 				t.Fatal(err)
 			}
-			registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
 
 			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
 			req.AddCookie(cookie)
@@ -2674,10 +2680,10 @@ func TestStopStreamDoesNotNormalizeEncoderNoProcessWhenRelayClaimLookupFails(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
 	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
 		t.Fatal(err)
 	}
-	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
 
 	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/stop", nil)
 	req.AddCookie(cookie)
@@ -2764,9 +2770,6 @@ func TestStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
 		DiscordConfigID:  "discord-config-auto-stop",
 		DiscordGuildID:   "guild-auto-stop",
@@ -2776,6 +2779,9 @@ func TestStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
 
 	requestCtx, cancelRequest := context.WithCancel(t.Context())
 	dispatcher.cancelRequest = cancelRequest
@@ -2826,10 +2832,10 @@ func TestForceStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
 	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
 		t.Fatal(err)
 	}
-	registerAssignedServices(t, auth, stream.ID, requiredStopServiceTypes...)
 
 	requestCtx, cancelRequest := context.WithCancel(t.Context())
 	dispatcher.cancelRequest = cancelRequest
@@ -2900,7 +2906,7 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 		t.Fatalf("download content disposition = %q", got)
 	}
 	if dispatcher.archiveDownloadCalls != 1 || dispatcher.archiveArtifact.ID != archiveArtifact.ID {
-		t.Fatalf("download did not dispatch expected artifact: %#v", dispatcher)
+		t.Fatalf("download did not dispatch expected artifact: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 
 	previewReq := httptest.NewRequest(http.MethodGet, artifactPath+"/download?inline=1", nil)
@@ -2918,7 +2924,7 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 		t.Fatalf("preview content disposition = %q", got)
 	}
 	if dispatcher.archiveDownloadCalls != 2 || dispatcher.archiveArtifact.ID != archiveArtifact.ID || dispatcher.archiveByteRange != "bytes=0-3" {
-		t.Fatalf("preview did not dispatch expected artifact: %#v", dispatcher)
+		t.Fatalf("preview did not dispatch expected artifact: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	var downloadAudits int
 	for _, event := range auth.AuditEvents() {
@@ -2939,7 +2945,7 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 		t.Fatalf("invalid rename status=%d body=%s", invalidRenameRes.Code, invalidRenameRes.Body.String())
 	}
 	if dispatcher.archiveRenameCalls != 0 {
-		t.Fatalf("invalid rename must not dispatch: %#v", dispatcher)
+		t.Fatalf("invalid rename must not dispatch: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 
 	renameReq := httptest.NewRequest(http.MethodPut, artifactPath, bytes.NewBufferString(`{"name":"renamed.mp4"}`))
@@ -2951,7 +2957,7 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 		t.Fatalf("rename status=%d body=%s", renameRes.Code, renameRes.Body.String())
 	}
 	if dispatcher.archiveRenameCalls != 1 || dispatcher.archiveRenameName != "renamed.mp4" {
-		t.Fatalf("rename did not dispatch expected artifact: %#v", dispatcher)
+		t.Fatalf("rename did not dispatch expected artifact: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	renamedArtifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
 	if err != nil {
@@ -2970,7 +2976,7 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 		t.Fatalf("delete status=%d body=%s", deleteRes.Code, deleteRes.Body.String())
 	}
 	if dispatcher.archiveDeleteCalls != 1 {
-		t.Fatalf("delete did not dispatch: %#v", dispatcher)
+		t.Fatalf("delete did not dispatch: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	finalArtifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
 	if err != nil {
@@ -3232,7 +3238,7 @@ func TestStreamScheduledStartIsOptionalClearableAndHonored(t *testing.T) {
 	}
 }
 
-func TestCreateStreamAssignsSelectedPrimaryNodes(t *testing.T) {
+func TestCreateStreamRejectsRequestedPrimaryNodes(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
@@ -3248,20 +3254,15 @@ func TestCreateStreamAssignsSelectedPrimaryNodes(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusCreated {
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
-	var created store.Stream
-	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
-		t.Fatal(err)
-	}
-	assignments, err := auth.ListStreamAssignments(t.Context(), created.ID)
+	items, err := streams.ListStreams(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary := primaryStreamAssignments(assignments)
-	if missing := missingServiceTypes(primary, []string{"encoder_recorder", "worker"}); len(missing) > 0 {
-		t.Fatalf("selected primary nodes were not assigned, missing=%#v assignments=%#v", missing, assignments)
+	if len(items) != 0 {
+		t.Fatalf("rejected legacy create persisted streams: %#v", items)
 	}
 	events := auth.AuditEvents()
 	assignAudits := 0
@@ -3270,8 +3271,8 @@ func TestCreateStreamAssignsSelectedPrimaryNodes(t *testing.T) {
 			assignAudits++
 		}
 	}
-	if assignAudits != 2 {
-		t.Fatalf("expected assignment audit events for stream settings, got %d events=%#v", assignAudits, events)
+	if assignAudits != 0 {
+		t.Fatalf("create must not write assignment audit events, got %d events=%#v", assignAudits, events)
 	}
 }
 
@@ -3290,7 +3291,7 @@ func TestCreateStreamRejectsPrimaryNodeAssignmentWithoutPermission(t *testing.T)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "permission_denied") {
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
@@ -3298,11 +3299,11 @@ func TestCreateStreamRejectsPrimaryNodeAssignmentWithoutPermission(t *testing.T)
 		t.Fatal(err)
 	}
 	if len(items) != 0 {
-		t.Fatalf("stream should not be created when assignment permission is missing: %#v", items)
+		t.Fatalf("rejected legacy create persisted streams: %#v", items)
 	}
 }
 
-func TestCreateStreamRejectsWrongPrimaryNodeType(t *testing.T) {
+func TestCreateStreamRejectsPrimaryNodeFieldBeforeResolvingType(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
@@ -3317,8 +3318,15 @@ func TestCreateStreamRejectsWrongPrimaryNodeType(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "encoder_service_type_invalid") {
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	}
+	items, err := streams.ListStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("rejected legacy create persisted streams: %#v", items)
 	}
 }
 
@@ -3664,6 +3672,13 @@ func (s failOnStreamAssignmentRegistry) AssignServiceToStreamWithRole(ctx contex
 	return s.ServiceRegistryStore.AssignServiceToStreamWithRole(ctx, serviceID, streamID, actorUserID, assignmentRole)
 }
 
+func (s failOnStreamAssignmentRegistry) AssignServiceToStreamGuarded(ctx context.Context, mutation store.ServiceAssignmentMutation) (store.RegisteredService, error) {
+	if mutation.ServiceID == s.failServiceID {
+		return store.RegisteredService{}, errors.New("injected stream assignment failure")
+	}
+	return s.ServiceRegistryStore.AssignServiceToStreamGuarded(ctx, mutation)
+}
+
 func TestUpdateStreamSettingsRollsBackExplicitAssignmentClearWhenLaterAssignmentFails(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.update", "services.assign", "workers.assign"}); err != nil {
@@ -3707,7 +3722,7 @@ func TestUpdateStreamSettingsRollsBackExplicitAssignmentClearWhenLaterAssignment
 		t.Fatal(err)
 	}
 	if len(assignments) != 1 || assignments[0].ServiceID != "encoder-old" || assignments[0].AssignmentRole != "primary" {
-		t.Fatalf("stream assignments did not converge after failure: %#v", assignments)
+		t.Fatalf("stream assignments did not converge after failure: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	for serviceID, expectedStreamID := range map[string]string{
 		"encoder-old": stream.ID,
@@ -3763,7 +3778,7 @@ func TestUpdateStreamSettingsExplicitEmptyServiceIDClearsOnlyRequestedAssignment
 		t.Fatal(err)
 	}
 	if len(assignments) != 1 || assignments[0].ServiceID != "worker-preserve" || assignments[0].AssignmentRole != "primary" {
-		t.Fatalf("explicit encoder clear changed unexpected assignments: %#v", assignments)
+		t.Fatalf("explicit encoder clear changed unexpected assignments: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	for serviceID, expectedStreamID := range map[string]string{
 		"encoder-clear":   "",
@@ -3938,7 +3953,7 @@ func TestStreamStartStopDispatchesAssignedServices(t *testing.T) {
 		t.Fatalf("start response does not include dispatch results: %s", startRes.Body.String())
 	}
 	if dispatcher.startCalls != 1 || dispatcher.startedStream.ID != stream.ID || len(dispatcher.startedServices) != 3 {
-		t.Fatalf("dispatcher was not called correctly: %#v", dispatcher)
+		t.Fatalf("dispatcher was not called correctly: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	mediaRuntime, err := streams.GetStreamMediaRuntime(t.Context(), stream.ID)
 	if err != nil || mediaRuntime.VideoOverlayBurnIn {
@@ -3957,7 +3972,7 @@ func TestStreamStartStopDispatchesAssignedServices(t *testing.T) {
 		t.Fatalf("stop response does not include dispatch results: %s", stopRes.Body.String())
 	}
 	if dispatcher.stopCalls != 1 || dispatcher.stoppedStream.ID != stream.ID || len(dispatcher.stoppedServices) != 3 {
-		t.Fatalf("stop dispatcher was not called correctly: %#v", dispatcher)
+		t.Fatalf("stop dispatcher was not called correctly: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 }
 
@@ -4031,10 +4046,10 @@ func TestStartStreamCompensatesPartialDispatchFailure(t *testing.T) {
 				t.Fatalf("partial failure response status=%d body=%s", res.Code, res.Body.String())
 			}
 			if dispatcher.startCalls != 1 || dispatcher.stopCalls != 1 || dispatcher.stopContextCancelled {
-				t.Fatalf("partial failure did not use one detached compensating stop: %#v", dispatcher)
+				t.Fatalf("partial failure did not use one detached compensating stop: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 			}
 			if len(dispatcher.stoppedServices) != 3 || dispatcher.stoppedStream.ID != stream.ID || dispatcher.stoppedStream.Status != "failed" {
-				t.Fatalf("compensating stop did not cover failed stream primary assignments: %#v", dispatcher)
+				t.Fatalf("compensating stop did not cover failed stream primary assignments: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 			}
 			stored, err := streams.GetStream(t.Context(), stream.ID)
 			if err != nil || stored.Status != "failed" {
@@ -4109,7 +4124,7 @@ func TestStartStreamMaterializesConfiguredDiscordBotAssignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if primaryServiceID(primaryStreamAssignments(assignments), "discord_bot") != "discord_bot-01" {
-		t.Fatalf("configured Discord Bot was not materialized as primary assignment: %#v", assignments)
+		t.Fatalf("configured Discord Bot was not materialized as primary assignment: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	if primaryServiceID(dispatcher.startedServices, "discord_bot") != "discord_bot-01" {
 		t.Fatalf("dispatcher did not receive the materialized Discord Bot: %#v", dispatcher.startedServices)
@@ -4327,7 +4342,7 @@ func TestServiceStopStreamUsesPrimaryDiscordBotAndCanonicalLifecycle(t *testing.
 		t.Fatalf("service stop status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.stopCalls != 1 || dispatcher.stoppedStream.ID != stream.ID || len(dispatcher.stoppedServices) != 3 {
-		t.Fatalf("service stop must use the canonical dispatch: %#v", dispatcher)
+		t.Fatalf("service stop must use the canonical dispatch: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	stopped, err := streams.GetStream(t.Context(), stream.ID)
 	if err != nil {
@@ -4461,7 +4476,7 @@ func TestServiceStartStreamAllowsConfiguredDiscordBotWithoutPriorAssignment(t *t
 		}
 	}
 	if !persisted {
-		t.Fatalf("configured discord bot assignment was not persisted: %#v", assignments)
+		t.Fatalf("configured discord bot assignment was not persisted: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 }
 
@@ -4951,8 +4966,8 @@ func TestStartStreamAuditsYouTubeRuntimeSaveFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != "created" {
-		t.Fatalf("stream status changed after runtime save failure: %s", updated.Status)
+	if updated.Status != "failed" {
+		t.Fatalf("claimed stream did not converge after runtime save failure: %s", updated.Status)
 	}
 }
 
@@ -6106,6 +6121,16 @@ type relayStaticSelectionBarrierStreamStore struct {
 	afterStaticStartClaim func()
 }
 
+func (s *relayStaticSelectionBarrierStreamStore) ClaimStreamStart(ctx context.Context, request store.StreamStartClaimRequest) (store.ClaimedStreamStart, error) {
+	claimed, err := s.MemoryStreamStore.ClaimStreamStart(ctx, request)
+	if err == nil && s.afterStaticStartClaim != nil {
+		after := s.afterStaticStartClaim
+		s.afterStaticStartClaim = nil
+		after()
+	}
+	return claimed, err
+}
+
 func (s *relayStaticSelectionBarrierStreamStore) TransitionStreamStatus(ctx context.Context, id, from, to string) (store.Stream, bool, error) {
 	stream, transitioned, err := s.MemoryStreamStore.TransitionStreamStatus(ctx, id, from, to)
 	if transitioned && to == "starting" && s.afterStaticStartClaim != nil {
@@ -6258,11 +6283,13 @@ func TestStartStreamRelayStaticRejectsNoncanonicalBindingBeforeClaimPrepareOrDis
 
 func TestStartStreamRelayStaticRejectsOutputChangesBeforeClaimReservation(t *testing.T) {
 	for _, tt := range []struct {
-		name   string
-		mutate func(t *testing.T, fixture relayStaticStartFixtureForTest) error
+		name       string
+		wantStatus string
+		mutate     func(t *testing.T, fixture relayStaticStartFixtureForTest) error
 	}{
 		{
-			name: "output profile revision changes",
+			name:       "output profile revision changes",
+			wantStatus: "failed",
 			mutate: func(t *testing.T, fixture relayStaticStartFixtureForTest) error {
 				_, err := fixture.profiles.UpdateProfile(t.Context(), store.ProfileYouTubeOutput, fixture.youtube.ID, "static relay dispatch output changed", map[string]any{
 					"mode":                    "live_api_relay_static",
@@ -6274,7 +6301,8 @@ func TestStartStreamRelayStaticRejectsOutputChangesBeforeClaimReservation(t *tes
 			},
 		},
 		{
-			name: "persisted stream output changes",
+			name:       "persisted stream output changes",
+			wantStatus: "starting",
 			mutate: func(t *testing.T, fixture relayStaticStartFixtureForTest) error {
 				alternate, err := fixture.profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "alternate static relay output", map[string]any{
 					"mode":                    "live_api_relay_static",
@@ -6316,8 +6344,8 @@ func TestStartStreamRelayStaticRejectsOutputChangesBeforeClaimReservation(t *tes
 				t.Fatalf("stale static output must not create a runtime: %v", err)
 			}
 			stream, err := fixture.streams.GetStream(t.Context(), fixture.stream.ID)
-			if err != nil || stream.Status != "failed" {
-				t.Fatalf("pre-provider static conflict must terminalize the claimed lifecycle: stream=%#v err=%v", stream, err)
+			if err != nil || stream.Status != tt.wantStatus {
+				t.Fatalf("claim-fenced compensation status=%q want=%q stream=%#v err=%v", stream.Status, tt.wantStatus, stream, err)
 			}
 		})
 	}
@@ -6668,7 +6696,7 @@ func TestStartStreamRelayStaticObservedFinalizeCommitStillNotifiesDiscord(t *tes
 		t.Fatal(err)
 	}
 	if queued.State != store.DiscordYouTubeLiveNotificationStateAwaitingYouTubeLive || queued.WatchURL != "https://www.youtube.com/watch?v=broadcast-static-dispatch" || notifier.notifyCalls != 0 {
-		t.Fatalf("observed finalizer commit must queue the static watch URL before provider-live delivery: notification=%#v notifier=%#v", queued, notifier)
+		t.Fatalf("observed finalizer commit must queue the static watch URL before provider-live delivery: notification=%s notifier=%s", formatSafeHTTPSensitiveDiagnostic(queued), formatSafeHTTPSensitiveDiagnostic(notifier))
 	}
 	fixture.server.youtubeLive = &scriptedYouTubeLifecycleClient{fakeYouTubeLiveClient: fixture.youtubeLive, statuses: []string{"live"}}
 	result, err := fixture.server.DispatchDueDiscordYouTubeLiveNotifications(t.Context(), 1)
@@ -6676,7 +6704,7 @@ func TestStartStreamRelayStaticObservedFinalizeCommitStillNotifiesDiscord(t *tes
 		t.Fatalf("observed finalizer notification delivery result=%#v err=%v", result, err)
 	}
 	if notifier.notifyCalls != 1 || notifier.notifiedStream.Status != "live" || notifier.notifiedURL != "https://www.youtube.com/watch?v=broadcast-static-dispatch" {
-		t.Fatalf("observed finalizer commit must retain static watch URL for Discord notification: notifier=%#v", notifier)
+		t.Fatalf("observed finalizer commit must retain static watch URL for Discord notification: notifier=%s", formatSafeHTTPSensitiveDiagnostic(notifier))
 	}
 	if fixture.youtubeLive.relayStaticPrepareCalls != 1 || fixture.dispatcher.startCalls != 1 {
 		t.Fatalf("observed finalizer commit must still perform one static prepare and dispatch: youtube=%#v dispatcher=%#v", fixture.youtubeLive, fixture.dispatcher)
@@ -7214,7 +7242,7 @@ func TestApplyRelayStaticYouTubePreservesRecoveryClaimWhenBindCleanupIsUncertain
 	}}
 	server := &Server{streams: streams, profiles: profiles, integrations: integrations, youtubeLive: youtubeLive}
 	request := &servicecall.StartRequest{YouTubeOutputID: youtube.ID}
-	err = server.applyYouTubeRelayStaticOutput(t.Context(), stream, youtube, request)
+	err = server.applyYouTubeRelayStaticOutput(t.Context(), stream, youtube, store.StreamStartOwnershipClaim{}, request)
 	if !errors.Is(err, errYouTubeRelayStaticRecoveryRequired) {
 		t.Fatalf("uncertain bind error=%v, want recovery-required", err)
 	}
@@ -7296,7 +7324,7 @@ func TestApplyRelayStaticYouTubeRetainsEveryPostPrepareFenceFailure(t *testing.T
 				integrations: integrations,
 				youtubeLive:  &fakeYouTubeLiveClient{relayStaticPrepareErr: tt.prepareErr},
 			}
-			err = server.applyYouTubeRelayStaticOutput(t.Context(), stream, youtube, &servicecall.StartRequest{YouTubeOutputID: youtube.ID})
+			err = server.applyYouTubeRelayStaticOutput(t.Context(), stream, youtube, store.StreamStartOwnershipClaim{}, &servicecall.StartRequest{YouTubeOutputID: youtube.ID})
 			if !errors.Is(err, errYouTubeRelayStaticRecoveryRequired) {
 				t.Fatalf("prepare error=%v, want recovery-required", err)
 			}
@@ -8828,7 +8856,7 @@ func TestStreamStartRequiresRequiredServiceAssignments(t *testing.T) {
 		t.Fatalf("unexpected missing assignment response: %#v", body)
 	}
 	if dispatcher.startCalls != 0 {
-		t.Fatalf("dispatcher should not be called: %#v", dispatcher)
+		t.Fatalf("dispatcher should not be called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	unchanged, err := streams.GetStream(t.Context(), stream.ID)
 	if err != nil {
@@ -8928,7 +8956,7 @@ func TestStreamStartReadinessEndpointReportsMissingAssignmentsWithoutDispatch(t 
 		t.Fatalf("unexpected readiness response: %#v", body)
 	}
 	if dispatcher.startCalls != 0 {
-		t.Fatalf("readiness endpoint must not dispatch start: %#v", dispatcher)
+		t.Fatalf("readiness endpoint must not dispatch start: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	unchanged, err := streams.GetStream(t.Context(), stream.ID)
 	if err != nil {
@@ -9073,7 +9101,7 @@ func TestStreamStartReadinessEndpointReportsMissingYouTubeStreamKeyWithoutReadin
 		t.Fatalf("readiness must not read raw youtube stream key, calls=%d", secrets.getCalls)
 	}
 	if dispatcher.startCalls != 0 {
-		t.Fatalf("readiness endpoint must not dispatch start: %#v", dispatcher)
+		t.Fatalf("readiness endpoint must not dispatch start: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	if strings.Contains(res.Body.String(), "<RAW_DISCORD_TOKEN>") || strings.Contains(res.Body.String(), "runtime-secret-stream-key") {
 		t.Fatalf("readiness response leaked a raw secret: %s", res.Body.String())
@@ -9126,7 +9154,7 @@ func TestStreamStartReadinessEndpointReportsYouTubeLiveAPIAccountIssueWithoutPre
 		t.Fatalf("readiness must not call YouTube Live API prepare, calls=%d", youtubeLive.prepareCalls)
 	}
 	if dispatcher.startCalls != 0 {
-		t.Fatalf("readiness endpoint must not dispatch start: %#v", dispatcher)
+		t.Fatalf("readiness endpoint must not dispatch start: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	if strings.Contains(res.Body.String(), "runtime-youtube-live-api-key") {
 		t.Fatalf("readiness response leaked a runtime secret: %s", res.Body.String())
@@ -9174,7 +9202,7 @@ func TestStreamStartReadinessEndpointReportsMissingDriveDestination(t *testing.T
 		t.Fatalf("unexpected readiness response: %#v", body)
 	}
 	if dispatcher.startCalls != 0 {
-		t.Fatalf("readiness endpoint must not dispatch start: %#v", dispatcher)
+		t.Fatalf("readiness endpoint must not dispatch start: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 }
 
@@ -9252,7 +9280,7 @@ func TestStreamStartReadinessEndpointReportsOAuthDriveAccountIssueWithoutRawSecr
 		t.Fatalf("unexpected readiness response: %#v", body)
 	}
 	if dispatcher.startCalls != 0 {
-		t.Fatalf("readiness endpoint must not dispatch start: %#v", dispatcher)
+		t.Fatalf("readiness endpoint must not dispatch start: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	for _, raw := range []string{"raw-google-client-secret", "raw-oauth-drive-folder-id"} {
 		if strings.Contains(res.Body.String(), raw) {
@@ -9297,7 +9325,7 @@ func TestStreamStopRequiresRequiredServiceAssignments(t *testing.T) {
 		t.Fatalf("unexpected missing assignment response: %#v", body)
 	}
 	if dispatcher.stopCalls != 0 {
-		t.Fatalf("dispatcher should not be called: %#v", dispatcher)
+		t.Fatalf("dispatcher should not be called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	unchanged, err := streams.GetStream(t.Context(), stream.ID)
 	if err != nil {
@@ -9333,7 +9361,7 @@ func TestStreamStartRejectsActiveStatusWithoutDispatch(t *testing.T) {
 		t.Fatalf("expected start state conflict, got %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.startCalls != 0 {
-		t.Fatalf("start must not be dispatched for an active stream: %#v", dispatcher)
+		t.Fatalf("start must not be dispatched for an active stream: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	unchanged, err := streams.GetStream(t.Context(), stream.ID)
 	if err != nil {
@@ -9367,7 +9395,7 @@ func TestStreamStopRejectsInactiveStatusWithoutDispatch(t *testing.T) {
 		t.Fatalf("expected stop state conflict, got %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.stopCalls != 0 {
-		t.Fatalf("stop must not be dispatched for an inactive stream: %#v", dispatcher)
+		t.Fatalf("stop must not be dispatched for an inactive stream: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	unchanged, err := streams.GetStream(t.Context(), stream.ID)
 	if err != nil {
@@ -9483,7 +9511,7 @@ func TestRetryUploadDispatchesAssignedEncoder(t *testing.T) {
 		t.Fatalf("retry status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.retryCalls != 1 || len(dispatcher.retriedServices) != 1 || dispatcher.retriedServices[0].ServiceID != "enc-01" {
-		t.Fatalf("retry dispatcher was not called correctly: %#v", dispatcher)
+		t.Fatalf("retry dispatcher was not called correctly: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 }
 
@@ -9711,7 +9739,7 @@ func TestRetryUploadRequiresAssignedEncoder(t *testing.T) {
 		t.Fatalf("unexpected missing assignment response: %#v", body)
 	}
 	if dispatcher.retryCalls != 0 {
-		t.Fatalf("dispatcher should not be called: %#v", dispatcher)
+		t.Fatalf("dispatcher should not be called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	logs, err := streams.ListStreamLogs(t.Context(), stream.ID)
 	if err != nil {
@@ -9820,7 +9848,7 @@ func TestStreamAudioStatusProxiesAssignedEncoder(t *testing.T) {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.audioStatusCalls != 1 {
-		t.Fatalf("audio status dispatcher was not called: %#v", dispatcher)
+		t.Fatalf("audio status dispatcher was not called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	if !strings.Contains(res.Body.String(), `"packets_total":2`) || strings.Contains(res.Body.String(), "service-token") {
 		t.Fatalf("unexpected response: %s", res.Body.String())
@@ -9875,7 +9903,7 @@ func TestStreamPreviewProxiesValidatedPlaylist(t *testing.T) {
 		t.Fatalf("preview response status=%d headers=%#v body=%s", res.Code, res.Header(), res.Body.String())
 	}
 	if dispatcher.calls != 1 || dispatcher.name != "index.m3u8" || !strings.Contains(res.Body.String(), "segment-000001.ts") {
-		t.Fatalf("preview dispatcher/body mismatch: %#v body=%s", dispatcher, res.Body.String())
+		t.Fatalf("preview dispatcher/body mismatch: %s body=%s", formatSafeHTTPSensitiveDiagnostic(dispatcher), res.Body.String())
 	}
 }
 
@@ -9976,7 +10004,7 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 		t.Fatalf("public preview segment status=%d headers=%#v body=%q", segmentRes.Code, segmentRes.Header(), segmentRes.Body.String())
 	}
 	if dispatcher.name != "segment-000001.ts" || dispatcher.byteRange != "bytes=1-3" || !strings.Contains(segmentRes.Header().Get("Access-Control-Expose-Headers"), "Content-Range") {
-		t.Fatalf("public preview segment dispatch/CORS mismatch: %#v headers=%#v", dispatcher, segmentRes.Header())
+		t.Fatalf("public preview segment dispatch/CORS mismatch: %s headers=%#v", formatSafeHTTPSensitiveDiagnostic(dispatcher), segmentRes.Header())
 	}
 
 	dispatcher.result = servicecall.PreviewAssetResult{
@@ -9993,7 +10021,7 @@ func TestStreamPreviewLinkIsSignedExpiresAndStopsWithStream(t *testing.T) {
 		t.Fatalf("public preview unsatisfied range status=%d headers=%#v body=%q", unsatisfiedRes.Code, unsatisfiedRes.Header(), unsatisfiedRes.Body.String())
 	}
 	if dispatcher.name != "segment-000001.ts" || dispatcher.byteRange != "bytes=99-" || !strings.Contains(unsatisfiedRes.Header().Get("Access-Control-Expose-Headers"), "Content-Range") {
-		t.Fatalf("public preview unsatisfied range dispatch/CORS mismatch: %#v headers=%#v", dispatcher, unsatisfiedRes.Header())
+		t.Fatalf("public preview unsatisfied range dispatch/CORS mismatch: %s headers=%#v", formatSafeHTTPSensitiveDiagnostic(dispatcher), unsatisfiedRes.Header())
 	}
 
 	dispatcher.result.ContentRange = "bytes 1-3/6"
@@ -10238,7 +10266,7 @@ func TestStreamEncoderPreflightProxiesAssignedEncoder(t *testing.T) {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.encoderPreflightCalls != 1 {
-		t.Fatalf("encoder preflight dispatcher was not called: %#v", dispatcher)
+		t.Fatalf("encoder preflight dispatcher was not called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	if !strings.Contains(res.Body.String(), `"id":"youtube_stream_key"`) || !strings.Contains(res.Body.String(), `"ffmpeg_bin":"ffmpeg"`) {
 		t.Fatalf("unexpected response: %s", res.Body.String())
@@ -10284,7 +10312,7 @@ func TestStreamEncoderPreflightRejectsLegacyRelayLiveAPIWithoutDispatch(t *testi
 		t.Fatalf("legacy relay preflight status=%d body=%s", res.Code, res.Body.String())
 	}
 	if dispatcher.encoderPreflightCalls != 0 {
-		t.Fatalf("legacy relay preflight must fail before encoder dispatch: %#v", dispatcher)
+		t.Fatalf("legacy relay preflight must fail before encoder dispatch: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 }
 
@@ -10358,7 +10386,7 @@ func TestStreamWorkerEventsProxiesAssignedEncoder(t *testing.T) {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.workerEventsCalls != 1 {
-		t.Fatalf("worker events dispatcher was not called: %#v", dispatcher)
+		t.Fatalf("worker events dispatcher was not called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	for _, raw := range []string{"service-token", "upstream-secret", "api_key=", "discord.com/api/webhooks", "Bearer"} {
 		if strings.Contains(res.Body.String(), raw) {
@@ -10416,7 +10444,7 @@ func TestSendWorkerTestEventDispatchesAssignedWorkerAndAudits(t *testing.T) {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.workerEventSendCalls != 1 || dispatcher.workerEventRequest.Text != "hello" {
-		t.Fatalf("worker event dispatcher was not called: %#v", dispatcher)
+		t.Fatalf("worker event dispatcher was not called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	events, err := auth.ListAudit(t.Context(), store.AuditFilter{Actions: []string{"streams.worker_event_test"}, Limit: 10})
 	if err != nil {
@@ -10454,7 +10482,7 @@ func TestServiceRemediationExecuteDispatchesAssignedEncoder(t *testing.T) {
 		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.retryCalls != 1 || len(dispatcher.retriedServices) != 1 || dispatcher.retriedServices[0].ServiceType != "encoder_recorder" {
-		t.Fatalf("expected encoder retry dispatch, got %#v", dispatcher)
+		t.Fatalf("expected encoder retry dispatch, got %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	events := auth.AuditEvents()
 	if len(events) == 0 || events[len(events)-1].Action != "remediation.execute" || events[len(events)-1].Result != "success" {
@@ -10475,7 +10503,7 @@ func TestServiceRemediationExecuteDispatchesAssignedEncoder(t *testing.T) {
 		t.Fatalf("expected replay rejection, got %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.retryCalls != 1 {
-		t.Fatalf("replayed action should not dispatch again: %#v", dispatcher)
+		t.Fatalf("replayed action should not dispatch again: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 }
 
@@ -10506,7 +10534,7 @@ func TestServiceRemediationExecuteRejectsUnverifiedObservabilityContext(t *testi
 		t.Fatalf("expected context verification failure, got %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.retryCalls != 0 {
-		t.Fatalf("dispatcher should not be called for unverified context: %#v", dispatcher)
+		t.Fatalf("dispatcher should not be called for unverified context: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 }
 
@@ -10541,7 +10569,7 @@ func TestServiceRemediationExecuteRequiresActionAndIncidentContext(t *testing.T)
 		})
 	}
 	if dispatcher.retryCalls != 0 {
-		t.Fatalf("dispatcher should not be called without complete context: %#v", dispatcher)
+		t.Fatalf("dispatcher should not be called without complete context: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 }
 
@@ -10617,7 +10645,7 @@ func TestServiceRemediationExecuteRequiresAssignedEncoder(t *testing.T) {
 		t.Fatalf("expected 409, got %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.retryCalls != 0 {
-		t.Fatalf("dispatcher should not be called: %#v", dispatcher)
+		t.Fatalf("dispatcher should not be called: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	events := auth.AuditEvents()
 	if len(events) == 0 || events[len(events)-1].Action != "remediation.execute" || events[len(events)-1].Result != "failure" {
@@ -10655,7 +10683,7 @@ func TestAssignServiceEndpointAllowsNonWorkerServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 1 || assignments[0].ServiceType != "encoder_recorder" {
-		t.Fatalf("unexpected assignments: %#v", assignments)
+		t.Fatalf("unexpected assignments: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 }
 
@@ -10708,14 +10736,14 @@ func TestAssignServiceEndpointReplacesSameTypeAndMovesService(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignmentsA) != 0 {
-		t.Fatalf("moved service should be removed from previous stream: %#v", assignmentsA)
+		t.Fatalf("moved service should be removed from previous stream: %s", formatSafeHTTPSensitiveDiagnostic(assignmentsA))
 	}
 	enc01, err := auth.GetService(t.Context(), "enc-01")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if enc01.CurrentStreamID != streamB.ID || enc01.Status != "assigned" {
-		t.Fatalf("moved service has wrong state: %#v", enc01)
+		t.Fatalf("moved service has wrong state: %s", formatSafeHTTPSensitiveDiagnostic(enc01))
 	}
 
 	assignServiceForTest(t, handler, cookie, csrf, "enc-02", streamB.ID)
@@ -10724,14 +10752,14 @@ func TestAssignServiceEndpointReplacesSameTypeAndMovesService(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignmentsB) != 1 || assignmentsB[0].ServiceID != "enc-02" {
-		t.Fatalf("same type replacement did not keep a single assignment: %#v", assignmentsB)
+		t.Fatalf("same type replacement did not keep a single assignment: %s", formatSafeHTTPSensitiveDiagnostic(assignmentsB))
 	}
 	enc01, err = auth.GetService(t.Context(), "enc-01")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if enc01.CurrentStreamID != "" || enc01.Status == "assigned" {
-		t.Fatalf("replaced service should be cleared: %#v", enc01)
+		t.Fatalf("replaced service should be cleared: %s", formatSafeHTTPSensitiveDiagnostic(enc01))
 	}
 }
 
@@ -10765,7 +10793,7 @@ func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 4 {
-		t.Fatalf("expected primary services plus standby encoder, got %#v", assignments)
+		t.Fatalf("expected primary services plus standby encoder, got %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	var primaryEncoder, standbyEncoder bool
 	for _, assignment := range assignments {
@@ -10777,7 +10805,7 @@ func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 		}
 	}
 	if !primaryEncoder || !standbyEncoder {
-		t.Fatalf("missing expected encoder assignment roles: %#v", assignments)
+		t.Fatalf("missing expected encoder assignment roles: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	healthReq := httptest.NewRequest(http.MethodGet, "/service-health", nil)
 	healthReq.AddCookie(cookie)
@@ -10807,7 +10835,7 @@ func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 		t.Fatalf("start status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.startCalls != 1 {
-		t.Fatalf("expected start dispatch, got %#v", dispatcher)
+		t.Fatalf("expected start dispatch, got %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	for _, service := range dispatcher.startedServices {
 		if service.ServiceID == "enc-standby" {
@@ -12259,7 +12287,7 @@ func TestServiceRuntimeSecretResolveAllowsAssignedArchiveDestinationSecrets(t *t
 		t.Fatal(err)
 	}
 	if resolvedRefreshToken.Value != "raw-google-refresh-token" {
-		t.Fatalf("unexpected resolved OAuth refresh token: %#v", resolvedRefreshToken)
+		t.Fatalf("unexpected resolved OAuth refresh token: %s", formatSafeHTTPSensitiveDiagnostic(resolvedRefreshToken))
 	}
 
 	credentialsReq := httptest.NewRequest(http.MethodPost, "/services/runtime-secrets/resolve", strings.NewReader(`{"service_id":"encoder-01","stream_id":"`+stream.ID+`","archive_profile_id":"`+archiveProfile.ID+`","secret_name":"google_drive_credentials"}`))
@@ -12706,14 +12734,14 @@ func TestUnassignServiceEndpointClearsAssignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 0 {
-		t.Fatalf("expected no assignments after unassign: %#v", assignments)
+		t.Fatalf("expected no assignments after unassign: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	service, err := auth.GetService(t.Context(), "enc-01")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if service.CurrentStreamID != "" || service.Status == "assigned" {
-		t.Fatalf("service was not cleared: %#v", service)
+		t.Fatalf("service was not cleared: %s", formatSafeHTTPSensitiveDiagnostic(service))
 	}
 	var auditEvents []store.AuditEvent
 	for _, event := range auth.AuditEvents() {
@@ -12759,7 +12787,7 @@ func TestUnassignWorkerRequiresWorkerUnassignPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 1 || assignments[0].ServiceID != "worker-01" {
-		t.Fatalf("assignment changed after forbidden unassign: %#v", assignments)
+		t.Fatalf("assignment changed after forbidden unassign: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 
 	unassignerCookie, unassignerCSRF := loginForTest(t, handler, "unassigner", "correct horse battery")
@@ -12776,7 +12804,7 @@ func TestUnassignWorkerRequiresWorkerUnassignPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 0 {
-		t.Fatalf("expected no assignments after allowed worker unassign: %#v", assignments)
+		t.Fatalf("expected no assignments after allowed worker unassign: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 }
 
@@ -12812,14 +12840,14 @@ func TestAssignWorkerEndpointRejectsMissingStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(assignments) != 0 {
-		t.Fatalf("missing stream should not receive assignments: %#v", assignments)
+		t.Fatalf("missing stream should not receive assignments: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	worker, err := auth.GetService(t.Context(), "worker-01")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if worker.CurrentStreamID != "" || worker.Status == "assigned" {
-		t.Fatalf("worker state changed after missing stream assignment: %#v", worker)
+		t.Fatalf("worker state changed after missing stream assignment: %s", formatSafeHTTPSensitiveDiagnostic(worker))
 	}
 }
 
@@ -12859,7 +12887,7 @@ func TestDeleteServiceEndpointRemovesRegistryAssignmentAndRevokesToken(t *testin
 		t.Fatal(err)
 	}
 	if len(assignments) != 0 {
-		t.Fatalf("assignment should be removed: %#v", assignments)
+		t.Fatalf("assignment should be removed: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	heartbeatReq := httptest.NewRequest(http.MethodPost, "/services/heartbeat", bytes.NewBufferString(`{"service_id":"enc-01","status":"online"}`))
 	heartbeatReq.Header.Set("Authorization", "Bearer "+token.RawToken)
@@ -15746,7 +15774,7 @@ func TestUpdateCaptionProfileAppliesImmediatelyToReferencingLiveStream(t *testin
 		t.Fatalf("caption profile update status = %d body = %s", res.Code, res.Body.String())
 	}
 	if dispatcher.captionRuntimeCalls != 1 || dispatcher.captionRuntimeStream.ID != stream.ID || dispatcher.captionRuntimeProfileID != profile.ID {
-		t.Fatalf("live caption runtime update was not dispatched: %#v", dispatcher)
+		t.Fatalf("live caption runtime update was not dispatched: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	if len(dispatcher.captionRuntimeServices) != 1 || dispatcher.captionRuntimeServices[0].ServiceID != "worker-caption-01" {
 		t.Fatalf("caption runtime dispatch did not use the primary Worker: %#v", dispatcher.captionRuntimeServices)
@@ -16526,7 +16554,7 @@ func TestServiceTokenRegisterHeartbeatAndRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	if token.RawToken == "" || token.TokenHash != "" {
-		t.Fatalf("token response leaked hash or missed raw token: %#v", token)
+		t.Fatalf("token response leaked hash or missed raw token: %s", formatSafeHTTPSensitiveDiagnostic(token))
 	}
 
 	registerReq := httptest.NewRequest(http.MethodPost, "/services/register", bytes.NewBufferString(`{"service_id":"worker-01","service_type":"worker","service_name":"Worker 01","public_url":"https://worker.example.com","version":"0.1.0","capabilities":{"overlay":true,"webhook_url":"https://discord.com/api/webhooks/id/raw-secret-token","google_drive_folder_id":"drive-folder-secret-id","endpoint":"rtsp://user:password@camera.example.com/live","nested":{"access_token":"super-secret-token","drive_folder_id":"nested-folder-secret-id","safe":true}}}`))
@@ -16701,7 +16729,7 @@ func TestCreateServiceTokenCanPrecreateService(t *testing.T) {
 		t.Fatal(err)
 	}
 	if registered.Status != "registered" || registered.PublicURL != "https://encoder-live.example.com" {
-		t.Fatalf("unexpected registered service: %#v", registered)
+		t.Fatalf("unexpected registered service: %s", formatSafeHTTPSensitiveDiagnostic(registered))
 	}
 
 	duplicateReq := httptest.NewRequest(http.MethodPost, "/api-tokens", bytes.NewBufferString(`{"service_type":"encoder_recorder","scopes":["service.register"],"service_id":"encoder-01","service_name":"Duplicate","public_url":"https://duplicate.example.com"}`))
@@ -16754,7 +16782,7 @@ func TestRotateServiceTokenRebindsPrecreatedService(t *testing.T) {
 		t.Fatal(err)
 	}
 	if newToken.ID == oldToken.ID || newToken.RawToken == "" || newToken.RawToken == oldToken.RawToken || newToken.TokenHash != "" {
-		t.Fatalf("unexpected rotated token response: old=%#v new=%#v", oldToken, newToken)
+		t.Fatalf("unexpected rotated token response: old=%s new=%s", formatSafeHTTPSensitiveDiagnostic(oldToken), formatSafeHTTPSensitiveDiagnostic(newToken))
 	}
 	if strings.Contains(rotateRes.Body.String(), oldToken.RawToken) {
 		t.Fatal("old raw token leaked in rotate response")
@@ -16787,7 +16815,7 @@ func TestRotateServiceTokenRebindsPrecreatedService(t *testing.T) {
 		t.Fatal(err)
 	}
 	if storedService.TokenID != newToken.ID || storedService.Status != "registered" {
-		t.Fatalf("service was not rebound to rotated token: %#v", storedService)
+		t.Fatalf("service was not rebound to rotated token: %s", formatSafeHTTPSensitiveDiagnostic(storedService))
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api-tokens", nil)
@@ -16814,7 +16842,7 @@ func TestRotateServiceTokenRebindsPrecreatedService(t *testing.T) {
 		}
 	}
 	if !oldRevoked || !newActive {
-		t.Fatalf("unexpected token rotation list state: %#v", tokens)
+		t.Fatalf("unexpected token rotation list state: %s", formatSafeHTTPSensitiveDiagnostic(tokens))
 	}
 }
 
@@ -16942,7 +16970,7 @@ func TestCreateServiceTokenPrecreateRequiresRegisterScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tokens) != 0 {
-		t.Fatalf("precreate without register scope should not create token: %#v", tokens)
+		t.Fatalf("precreate without register scope should not create token: %s", formatSafeHTTPSensitiveDiagnostic(tokens))
 	}
 }
 
@@ -16975,7 +17003,7 @@ func TestCreateServiceTokenRejectsEmptyScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tokens) != 0 {
-		t.Fatalf("empty scope request should not create token: %#v", tokens)
+		t.Fatalf("empty scope request should not create token: %s", formatSafeHTTPSensitiveDiagnostic(tokens))
 	}
 }
 
@@ -17016,10 +17044,10 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if body.Token == "" || body.ID == "" || body.Node.ServiceID != "studio-worker-01" || body.NodeType != "worker" {
-		t.Fatalf("unexpected node registration response: %#v", body)
+		t.Fatalf("unexpected node registration response: %s", formatSafeHTTPSensitiveDiagnostic(body))
 	}
 	if body.ConfigureToken == "" || body.ConfigureToken != body.Token || body.RuntimeToken == "" {
-		t.Fatalf("expected one-time configure token and runtime token: %#v", body)
+		t.Fatalf("expected one-time configure token and runtime token: %s", formatSafeHTTPSensitiveDiagnostic(body))
 	}
 	if body.Node.PublicURL != "https://worker.example.com:8443" || body.Node.Host != "worker.example.com" || body.Node.Port != 8443 || !body.Node.SSLEnabled {
 		t.Fatalf("node endpoint was not built from host/port/ssl: %#v", body.Node)
@@ -17096,7 +17124,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if configuredNode.Status != "registered" {
-		t.Fatalf("configure should move pending node to registered, got %#v", configuredNode)
+		t.Fatalf("configure should move pending node to registered, got %s", formatSafeHTTPSensitiveDiagnostic(configuredNode))
 	}
 	reuseReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
 	reuseRes := httptest.NewRecorder()
@@ -17117,7 +17145,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if heartbeatService.ReportedVersion != "1.4.2" || heartbeatService.ReportedOS != "linux" || heartbeatService.ReportedArch != "amd64" || heartbeatService.ReportedCapabilities["streaming"] != true {
-		t.Fatalf("node reported fields were not saved: %#v", heartbeatService)
+		t.Fatalf("node reported fields were not saved: %s", formatSafeHTTPSensitiveDiagnostic(heartbeatService))
 	}
 
 	auditReq := httptest.NewRequest(http.MethodGet, "/audit-logs?action=nodes.registration_token.create", nil)
@@ -17176,7 +17204,7 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 	wantConfigureCommand := "sudo /usr/local/bin/autostream-host-agent configure --panel-url 'http://example.com' --node 'host-agent-a' --config '/etc/autostream-host-agent/identity.json'"
 	if body.ConfigureCommand != wantConfigureCommand ||
 		body.ConfigurationPath != "/etc/autostream-host-agent/identity.json" {
-		t.Fatalf("pull agent configure metadata = %#v", body)
+		t.Fatalf("pull agent configure metadata = %s", formatSafeHTTPSensitiveDiagnostic(body))
 	}
 	for _, forbidden := range []string{`"host":`, `"port":`, `"public_url":`} {
 		if strings.Contains(res.Body.String(), forbidden) {
@@ -17208,7 +17236,7 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 	if pending.Status != "pending" ||
 		pending.ExecutionHostID != "host-a" ||
 		pending.OwnershipEpoch != 0 {
-		t.Fatalf("runtime binding self-claim mutated precreated service: %#v", pending)
+		t.Fatalf("runtime binding self-claim mutated precreated service: %s", formatSafeHTTPSensitiveDiagnostic(pending))
 	}
 
 	registerReq := httptest.NewRequest(http.MethodPost, "/services/register", bytes.NewBufferString(`{"service_id":"host-agent-a","service_type":"update_agent","service_name":"Host Agent A","transport_mode":"pull_v2","version":"v2.0.0","capabilities":{"agent_protocol_version":2,"observe_only":true}}`))
@@ -17223,10 +17251,10 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 		t.Fatal(err)
 	}
 	if registered.TransportMode != "pull_v2" || registered.ExecutionHostID != "host-a" || registered.OwnershipEpoch != 0 {
-		t.Fatalf("server-owned pull binding was not restored: %#v", registered)
+		t.Fatalf("server-owned pull binding was not restored: %s", formatSafeHTTPSensitiveDiagnostic(registered))
 	}
 	if registered.Host != "" || registered.Port != 0 || registered.PublicURL != "" {
-		t.Fatalf("endpointless registration gained an inbound endpoint: %#v", registered)
+		t.Fatalf("endpointless registration gained an inbound endpoint: %s", formatSafeHTTPSensitiveDiagnostic(registered))
 	}
 
 	configurationReq := httptest.NewRequest(http.MethodGet, "/nodes/host-agent-a/configuration", nil)
@@ -17293,7 +17321,7 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 		t.Fatal(err)
 	}
 	if unconsumed.ConfigureTokenUsedAt != nil || unconsumed.StagedNodeTokenID != "" {
-		t.Fatalf("protocol rejection consumed or staged credentials: %#v", unconsumed)
+		t.Fatalf("protocol rejection consumed or staged credentials: %s", formatSafeHTTPSensitiveDiagnostic(unconsumed))
 	}
 
 	beforeRotation, err := auth.GetService(t.Context(), "host-agent-a")
@@ -17326,7 +17354,7 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 		afterRotation.NodeTokenRotatedAt == nil ||
 		beforeRotation.NodeTokenRotatedAt == nil ||
 		!afterRotation.NodeTokenRotatedAt.Equal(*beforeRotation.NodeTokenRotatedAt) {
-		t.Fatalf("rejected pull runtime rotation mutated service:\nbefore=%#v\nafter=%#v", beforeRotation, afterRotation)
+		t.Fatalf("rejected pull runtime rotation mutated service: before=%s after=%s", formatSafeHTTPSensitiveDiagnostic(beforeRotation), formatSafeHTTPSensitiveDiagnostic(afterRotation))
 	}
 	if len(afterRotationTokens) != len(beforeRotationTokens) {
 		t.Fatalf("rejected pull runtime rotation changed token count: before=%d after=%d", len(beforeRotationTokens), len(afterRotationTokens))
@@ -17478,13 +17506,13 @@ func TestNodeAgentConfigureRejectsMissingEncryptionBeforeConsumingConfigureToken
 		t.Fatal(err)
 	}
 	if got.Status != "pending" || got.ReportedVersion != "" || got.ReportedCommit != "" || got.ReportedBuildDate != "" || got.ReportedHostname != "" || got.ReportedOS != "" || got.ReportedArch != "" {
-		t.Fatalf("configure must not mutate the runtime report before encryption is available: %#v", got)
+		t.Fatalf("configure must not mutate the runtime report before encryption is available: %s", formatSafeHTTPSensitiveDiagnostic(got))
 	}
 	if got.TokenID != token.ID {
 		t.Fatalf("runtime token should not rotate before encryption is available: old=%s got=%s", token.ID, got.TokenID)
 	}
 	if got.ConfigureTokenUsedAt != nil {
-		t.Fatalf("configure token must remain usable after prerequisite failure: %#v", got)
+		t.Fatalf("configure token must remain usable after prerequisite failure: %s", formatSafeHTTPSensitiveDiagnostic(got))
 	}
 }
 
@@ -17573,10 +17601,10 @@ func TestNodeAgentConfigurePersistsRuntimeReportForSupportedNodeTypes(t *testing
 				t.Fatal(err)
 			}
 			if got.Status != "registered" || got.ReportedVersion != "1.4.1" || got.ReportedCommit != "abc1234" || got.ReportedBuildDate != "2026-07-09T00:00:00Z" || got.ReportedHostname != service.ServiceID || got.ReportedOS != "linux" || got.ReportedArch != "amd64" || got.LastReportedAt == nil {
-				t.Fatalf("configure runtime report was not persisted for %s: %#v", serviceType, got)
+				t.Fatalf("configure runtime report was not persisted for %s: %s", serviceType, formatSafeHTTPSensitiveDiagnostic(got))
 			}
 			if got.ConfigureTokenUsedAt == nil {
-				t.Fatalf("configure token was not marked used for %s: %#v", serviceType, got)
+				t.Fatalf("configure token was not marked used for %s: %s", serviceType, formatSafeHTTPSensitiveDiagnostic(got))
 			}
 		})
 	}
@@ -17722,7 +17750,7 @@ func TestNodeManagementUpdateRotateAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	if updated.ServiceName != "Studio Worker Edited" || updated.Description != "編集済みNode" || updated.Host != "worker-edited.example.com" || updated.Port != 9443 || updated.PublicURL != "https://worker-edited.example.com:9443" {
-		t.Fatalf("node metadata was not updated: %#v", updated)
+		t.Fatalf("node metadata was not updated: %s", formatSafeHTTPSensitiveDiagnostic(updated))
 	}
 
 	configReq := httptest.NewRequest(http.MethodGet, "/nodes/studio-worker-01/configuration", nil)
@@ -17849,7 +17877,7 @@ func TestNodeTokenMutationsRejectPermissionEscalation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.TokenID != token.ID || got.ConfigureTokenHash != originalConfigureHash || got.ConfigureTokenUsedAt != nil {
-		t.Fatalf("denied token operations must not mutate the node: %#v", got)
+		t.Fatalf("denied token operations must not mutate the node: %s", formatSafeHTTPSensitiveDiagnostic(got))
 	}
 }
 
@@ -17899,7 +17927,7 @@ func TestNodeTokenMutationsRejectInvalidSigningKeyBeforeMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.TokenID != token.ID || got.ConfigureTokenHash != originalConfigureHash || got.ConfigureTokenUsedAt != nil || got.Status != "pending" || got.ReportedVersion != "" {
-		t.Fatalf("invalid signing key must fail before mutating the node: %#v", got)
+		t.Fatalf("invalid signing key must fail before mutating the node: %s", formatSafeHTTPSensitiveDiagnostic(got))
 	}
 }
 
@@ -18001,7 +18029,7 @@ func TestCreateWorkerOrEncoderNodeRequiresStreamIngestSigningKey(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(tokens) != 0 {
-				t.Fatalf("invalid signing key must fail before creating a token: %#v", tokens)
+				t.Fatalf("invalid signing key must fail before creating a token: %s", formatSafeHTTPSensitiveDiagnostic(tokens))
 			}
 		})
 	}
@@ -18042,7 +18070,7 @@ func TestCreateNodeRegistrationTokenRejectsSecretScopeEscalation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tokens) != 0 {
-		t.Fatalf("denied node registration should not create token: %#v", tokens)
+		t.Fatalf("denied node registration should not create token: %s", formatSafeHTTPSensitiveDiagnostic(tokens))
 	}
 }
 
@@ -18319,9 +18347,6 @@ func TestServiceObservabilityCriticalSignalIsObservabilityOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
-		t.Fatal(err)
-	}
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
@@ -18331,6 +18356,9 @@ func TestServiceObservabilityCriticalSignalIsObservabilityOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "discord_bot")
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/services/observability/signals", bytes.NewBufferString(`{"type":"event","name":"worker.video.output_failed","stream_id":"`+stream.ID+`","status":"failed","attributes":{"secret":"must-not-enter-audit"}}`))
 	req.Header.Set("Authorization", "Bearer "+workerToken.RawToken)
@@ -18344,7 +18372,7 @@ func TestServiceObservabilityCriticalSignalIsObservabilityOnly(t *testing.T) {
 		t.Fatalf("observability signal changed stream lifecycle: stream=%#v err=%v", stored, err)
 	}
 	if dispatcher.stopCalls != 0 {
-		t.Fatalf("observability signal dispatched a lifecycle stop: %#v", dispatcher)
+		t.Fatalf("observability signal dispatched a lifecycle stop: %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
 	}
 	if observabilityCalls != 1 {
 		t.Fatalf("critical signal was not proxied to Observability: calls=%d", observabilityCalls)
@@ -18399,7 +18427,7 @@ func TestServiceObservabilityCriticalSignalDoesNotAuthorizeLifecycleForUnassigne
 	}
 	stored, err := streams.GetStream(t.Context(), stream.ID)
 	if err != nil || stored.Status != "live" || dispatcher.stopCalls != 0 || observabilityCalls != 1 {
-		t.Fatalf("unassigned critical signal changed lifecycle: stream=%#v dispatcher=%#v obs_calls=%d err=%v", stored, dispatcher, observabilityCalls, err)
+		t.Fatalf("unassigned critical signal changed lifecycle: stream=%#v dispatcher=%s obs_calls=%d err=%v", stored, formatSafeHTTPSensitiveDiagnostic(dispatcher), observabilityCalls, err)
 	}
 	if auditJSON := toJSONForTest(t, auth.AuditEvents()); strings.Contains(auditJSON, "unassigned-secret") {
 		t.Fatalf("unassigned critical signal attributes leaked into audit: %s", auditJSON)
@@ -20448,10 +20476,37 @@ type blockingStartDispatcher struct {
 // than relying on one Server's in-process stream lock.
 type gatedLifecycleTransitionStore struct {
 	store.StreamStore
-	expected string
-	status   string
-	entered  chan struct{}
-	release  chan struct{}
+	startClaims store.StreamStartClaimStore
+	expected    string
+	status      string
+	entered     chan struct{}
+	release     chan struct{}
+}
+
+func (s *gatedLifecycleTransitionStore) ClaimStreamStart(ctx context.Context, request store.StreamStartClaimRequest) (store.ClaimedStreamStart, error) {
+	if s.startClaims == nil {
+		return store.ClaimedStreamStart{}, store.ErrServiceAssignmentGuardUnavailable
+	}
+	if strings.EqualFold(strings.TrimSpace(request.ExpectedStatus), s.expected) && strings.EqualFold(s.status, "starting") {
+		select {
+		case s.entered <- struct{}{}:
+		case <-ctx.Done():
+			return store.ClaimedStreamStart{}, ctx.Err()
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return store.ClaimedStreamStart{}, ctx.Err()
+		}
+	}
+	return s.startClaims.ClaimStreamStart(ctx, request)
+}
+
+func (s *gatedLifecycleTransitionStore) TransitionClaimedStreamStart(ctx context.Context, claim store.StreamStartOwnershipClaim, status string) (store.Stream, bool, error) {
+	if s.startClaims == nil {
+		return store.Stream{}, false, store.ErrServiceAssignmentGuardUnavailable
+	}
+	return s.startClaims.TransitionClaimedStreamStart(ctx, claim, status)
 }
 
 func (s *gatedLifecycleTransitionStore) TransitionStreamStatus(ctx context.Context, id, expectedStatus, status string) (store.Stream, bool, error) {

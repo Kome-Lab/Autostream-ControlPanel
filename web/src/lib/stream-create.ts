@@ -12,14 +12,49 @@ export type StreamCreateValues = {
   watermarkEnabled: boolean;
   overlayProfileID: string;
   encoderAudioGainDB: number;
-  // Undefined preserves a server-side assignment during an edit. An empty
-  // string is an explicit "unassign" selected in the stream form.
+  // Assignment values are used only by an explicit settings edit. Undefined
+  // preserves the server-side assignment, while an empty string unassigns it.
   encoderServiceID?: string;
   workerServiceID?: string;
   scheduledStartAt?: string;
   scheduledEndAt?: string;
   encoderInputURL?: string;
 };
+
+export type StreamServiceAssignmentOption = {
+  value: string;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+};
+
+export function streamServiceAssignmentOption(
+  service: { value: string; label: string; currentStreamID?: string },
+  editingStreamID?: string,
+): StreamServiceAssignmentOption {
+  const owner = service.currentStreamID?.trim() || "";
+  const busy = owner !== "" && owner !== (editingStreamID?.trim() || "");
+  return {
+    value: service.value,
+    label: busy ? `${service.label}（別の配信枠で使用中）` : service.label,
+    description: busy ? "現在の配信枠を停止し、割り当てを解除してから選択してください。" : undefined,
+    disabled: busy,
+  };
+}
+
+export function streamAssignmentConflictMessage(code?: string): string | undefined {
+  const messages: Record<string, string> = {
+    service_assignment_conflict: "Nodeの割り当てが同時に更新されました。一覧を更新し、現在の割り当てを確認してから再試行してください。",
+    service_assignment_protected_stream: "選択したNodeは開始中・配信中・録画処理中の別の配信枠で使用されています。その処理が完了してから再試行してください。",
+    service_unassign_protected_stream: "このNodeは開始中・配信中・録画処理中の配信枠で必要なため、割り当てを解除できません。処理完了後に再試行してください。",
+  };
+  return messages[code || ""];
+}
+
+export function streamCreateCompatibilityMessage(code?: string): string | undefined {
+  if (code !== "stream_create_assignment_fields_unsupported") return undefined;
+  return "この画面は古い形式のNode割り当てを送信しました。最新画面へ再読み込みし、配信枠を作成した後に編集画面でNodeを割り当ててください。";
+}
 
 export function buildStreamCreatePayload(values: StreamCreateValues): Record<string, unknown> {
   return compactRecord({
@@ -35,8 +70,6 @@ export function buildStreamCreatePayload(values: StreamCreateValues): Record<str
     caption_profile_id: values.captionProfileID,
     overlay_profile_id: values.watermarkEnabled ? values.overlayProfileID : "",
     encoder_audio_gain_db: values.encoderAudioGainDB,
-    ...(values.encoderServiceID === undefined ? {} : { encoder_service_id: values.encoderServiceID }),
-    ...(values.workerServiceID === undefined ? {} : { worker_service_id: values.workerServiceID }),
     scheduled_start_at: values.scheduledStartAt,
   });
 }

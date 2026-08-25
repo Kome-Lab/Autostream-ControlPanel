@@ -81,7 +81,7 @@ func TestPrecreateServiceAllowsSameTokenRegistrationOnly(t *testing.T) {
 		t.Fatalf("precreate service: %v", err)
 	}
 	if precreated.Status != "pending" || precreated.TokenID != first.ID {
-		t.Fatalf("unexpected precreated service: %#v", precreated)
+		t.Fatalf("unexpected precreated service: %s", formatSafeRegisteredServiceDiagnostic(precreated))
 	}
 	if _, err := auth.PrecreateService(ctx, second, ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Attacker", PublicURL: "https://attacker.example.com"}); !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("expected duplicate precreate to fail, got %v", err)
@@ -94,7 +94,7 @@ func TestPrecreateServiceAllowsSameTokenRegistrationOnly(t *testing.T) {
 		t.Fatalf("same-token register should succeed: %v", err)
 	}
 	if registered.Status != "registered" || registered.PublicURL != "https://encoder-live.example.com" {
-		t.Fatalf("unexpected registered service: %#v", registered)
+		t.Fatalf("unexpected registered service: %s", formatSafeRegisteredServiceDiagnostic(registered))
 	}
 	if _, ok := registered.Capabilities["token"]; ok {
 		t.Fatalf("secret-like capability key was persisted: %#v", registered.Capabilities)
@@ -119,10 +119,10 @@ func TestUpdateServiceMetadataPreservesRuntimeState(t *testing.T) {
 		t.Fatalf("update metadata: %v", err)
 	}
 	if updated.ServiceName != "Worker Edited" || updated.Description != "renamed" || updated.PublicURL != "https://worker-edited.example.com:9443" {
-		t.Fatalf("metadata was not updated: %#v", updated)
+		t.Fatalf("metadata was not updated: %s", formatSafeRegisteredServiceDiagnostic(updated))
 	}
 	if updated.Status != "online" || updated.LastHeartbeatAt == nil || updated.Metrics["cpu_percent"] != 12.5 || updated.TokenID != token.ID {
-		t.Fatalf("runtime state should be preserved: %#v", updated)
+		t.Fatalf("runtime state should be preserved: %s", formatSafeRegisteredServiceDiagnostic(updated))
 	}
 }
 
@@ -158,7 +158,7 @@ func TestHeartbeatReportsEndpointWithoutChangingAppliedEndpoint(t *testing.T) {
 		t.Fatalf("heartbeat: %v", err)
 	}
 	if service.Host != "worker.example.com" || service.Port != 8084 || !service.SSLEnabled || service.PublicURL != "https://worker.example.com:8084" {
-		t.Fatalf("heartbeat changed the applied endpoint: %#v", service)
+		t.Fatalf("heartbeat changed the applied endpoint: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if service.AppliedEndpoint == nil || service.AppliedEndpoint.Host != "worker.example.com" || service.AppliedEndpoint.Port != 8084 {
 		t.Fatalf("applied endpoint was not retained: %#v", service.AppliedEndpoint)
@@ -190,7 +190,7 @@ func TestPullUpdateAgentRegistrationIsEndpointlessAndHostBound(t *testing.T) {
 		t.Fatalf("precreate endpointless pull agent: %v", err)
 	}
 	if precreated.PublicURL != "" || precreated.AppliedEndpoint != nil {
-		t.Fatalf("endpointless pull agent unexpectedly has an endpoint: %#v", precreated)
+		t.Fatalf("endpointless pull agent unexpectedly has an endpoint: %s", formatSafeRegisteredServiceDiagnostic(precreated))
 	}
 
 	registered, err := auth.RegisterService(ctx, token, ServiceRegistration{
@@ -203,10 +203,10 @@ func TestPullUpdateAgentRegistrationIsEndpointlessAndHostBound(t *testing.T) {
 		t.Fatalf("register endpointless pull agent: %v", err)
 	}
 	if registered.TransportMode != "pull_v2" || registered.ExecutionHostID != "host-a" || registered.OwnershipEpoch != 7 {
-		t.Fatalf("agent-controlled registration changed host ownership: %#v", registered)
+		t.Fatalf("agent-controlled registration changed host ownership: %s", formatSafeRegisteredServiceDiagnostic(registered))
 	}
 	if registered.PublicURL != "" || registered.AppliedEndpoint != nil {
-		t.Fatalf("endpointless pull agent unexpectedly has an endpoint after registration: %#v", registered)
+		t.Fatalf("endpointless pull agent unexpectedly has an endpoint after registration: %s", formatSafeRegisteredServiceDiagnostic(registered))
 	}
 }
 
@@ -313,10 +313,10 @@ func TestRotateServiceNodeTokenSealerFailureDoesNotMutate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(afterService, beforeService) {
-		t.Fatalf("service mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeService, afterService)
+		t.Fatalf("service mutated after sealer failure: before=%s after=%s", formatSafeRegisteredServiceDiagnostic(beforeService), formatSafeRegisteredServiceDiagnostic(afterService))
 	}
 	if !reflect.DeepEqual(afterTokens, beforeTokens) {
-		t.Fatalf("tokens mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeTokens, afterTokens)
+		t.Fatalf("tokens mutated after sealer failure: before=%s after=%s", formatSafeSensitiveCompositeDiagnostic(beforeTokens), formatSafeSensitiveCompositeDiagnostic(afterTokens))
 	}
 }
 
@@ -375,10 +375,10 @@ func TestRotateServiceNodeTokenRejectsImmediatePullV2RotationWithoutMutation(t *
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(afterService, beforeService) {
-		t.Fatalf("rejected pull_v2 rotation mutated service:\nbefore=%#v\nafter=%#v", beforeService, afterService)
+		t.Fatalf("rejected pull_v2 rotation mutated service: before=%s after=%s", formatSafeRegisteredServiceDiagnostic(beforeService), formatSafeRegisteredServiceDiagnostic(afterService))
 	}
 	if !reflect.DeepEqual(afterTokens, beforeTokens) {
-		t.Fatalf("rejected pull_v2 rotation mutated tokens:\nbefore=%#v\nafter=%#v", beforeTokens, afterTokens)
+		t.Fatalf("rejected pull_v2 rotation mutated tokens: before=%s after=%s", formatSafeSensitiveCompositeDiagnostic(beforeTokens), formatSafeSensitiveCompositeDiagnostic(afterTokens))
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); err != nil {
 		t.Fatalf("rejected pull_v2 rotation invalidated the existing token: %v", err)
@@ -408,10 +408,10 @@ func TestRotateServiceNodeTokenPreservesSharedLegacyToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rotated.TokenID != newToken.ID || sibling.TokenID != oldToken.ID {
-		t.Fatalf("only the target service should detach: rotated=%#v sibling=%#v", rotated, sibling)
+		t.Fatalf("only the target service should detach: rotated=%s sibling=%s", formatSafeRegisteredServiceDiagnostic(rotated), formatSafeRegisteredServiceDiagnostic(sibling))
 	}
 	if authenticated, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); err != nil || authenticated.ID != oldToken.ID {
-		t.Fatalf("shared legacy token must remain active for sibling: token=%#v err=%v", authenticated, err)
+		t.Fatalf("shared legacy token must remain active for sibling: token=%s err=%v", formatSafeServiceTokenDiagnostic("authenticate", authenticated, 0, "unexpected_result"), err)
 	}
 }
 
@@ -449,7 +449,7 @@ func TestRotateServiceNodeTokenInvalidatesOutstandingConfigureToken(t *testing.T
 	if service.ConfigureTokenHash != "" || service.ConfigureTokenExpiresAt != nil ||
 		service.ConfigureTokenUsedAt != nil || service.LastHeartbeatAt != nil ||
 		len(service.ReportedCapabilities) != 0 {
-		t.Fatalf("runtime rotation retained configure token or liveness metadata: %#v", service)
+		t.Fatalf("runtime rotation retained configure token or liveness metadata: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 }
 
@@ -498,7 +498,7 @@ func TestRevokeServiceTokenClearsRuntimeReadinessAndRejectsPreviouslyAuthenticat
 		t.Fatal(err)
 	}
 	if service.LastHeartbeatAt != nil || len(service.ReportedCapabilities) != 0 {
-		t.Fatalf("revocation retained runtime readiness: %#v", service)
+		t.Fatalf("revocation retained runtime readiness: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if _, err := auth.Heartbeat(ctx, authenticated, ServiceHeartbeat{
 		ServiceID:    "updater-revoke",
@@ -512,7 +512,7 @@ func TestRevokeServiceTokenClearsRuntimeReadinessAndRejectsPreviouslyAuthenticat
 		t.Fatal(err)
 	}
 	if service.LastHeartbeatAt != nil || len(service.ReportedCapabilities) != 0 {
-		t.Fatalf("rejected heartbeat restored runtime readiness: %#v", service)
+		t.Fatalf("rejected heartbeat restored runtime readiness: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, token.RawToken, "updates.claim"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("revoked token still authenticated: %v", err)
@@ -547,7 +547,7 @@ func TestRotateServiceTokenAddsRequiredObservabilityEmailScope(t *testing.T) {
 		t.Fatalf("old runtime token should be revoked, got %v", err)
 	}
 	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "notifications.email.send"); err != nil || authenticated.ID != newToken.ID {
-		t.Fatalf("rotated token should authorize email relay: token=%#v err=%v", authenticated, err)
+		t.Fatalf("rotated token should authorize email relay: token=%s err=%v", formatSafeServiceTokenDiagnostic("authenticate", authenticated, 0, "unexpected_result"), err)
 	}
 	service, err := auth.GetService(ctx, "observability-shared")
 	if err != nil {
@@ -555,7 +555,7 @@ func TestRotateServiceTokenAddsRequiredObservabilityEmailScope(t *testing.T) {
 	}
 	if service.TokenID != newToken.ID || service.LastHeartbeatAt != nil ||
 		len(service.ReportedCapabilities) != 0 {
-		t.Fatalf("generic rotation retained old identity/liveness metadata: %#v", service)
+		t.Fatalf("generic rotation retained old identity/liveness metadata: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 }
 
@@ -580,7 +580,7 @@ func TestRotateServiceNodeTokenAddsRequiredObservabilityEmailScope(t *testing.T)
 		t.Fatalf("rotated observability scopes were not upgraded: %#v", newToken.Scopes)
 	}
 	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "notifications.email.send"); err != nil || authenticated.ID != newToken.ID {
-		t.Fatalf("rotated token should authorize email relay: token=%#v err=%v", authenticated, err)
+		t.Fatalf("rotated token should authorize email relay: token=%s err=%v", formatSafeServiceTokenDiagnostic("authenticate", authenticated, 0, "unexpected_result"), err)
 	}
 }
 
@@ -650,7 +650,7 @@ func TestConfigureServiceNodeAddsRequiredObservabilityEmailScope(t *testing.T) {
 		t.Fatalf("configured observability scopes were not upgraded: got %#v want %#v", newToken.Scopes, wantScopes)
 	}
 	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "notifications.email.send"); err != nil || authenticated.ID != newToken.ID {
-		t.Fatalf("configured token should authorize email relay: token=%#v err=%v", authenticated, err)
+		t.Fatalf("configured token should authorize email relay: token=%s err=%v", formatSafeServiceTokenDiagnostic("authenticate", authenticated, 0, "unexpected_result"), err)
 	}
 }
 
@@ -687,7 +687,7 @@ func TestConfigureServiceNodeAddsPairedDiscordStopScope(t *testing.T) {
 		t.Fatalf("configured Discord Bot scopes were not upgraded: %#v", newToken.Scopes)
 	}
 	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "streams.stop"); err != nil || authenticated.ID != newToken.ID {
-		t.Fatalf("configured token should authorize paired auto-stop: token=%#v err=%v", authenticated, err)
+		t.Fatalf("configured token should authorize paired auto-stop: token=%s err=%v", formatSafeServiceTokenDiagnostic("authenticate", authenticated, 0, "unexpected_result"), err)
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "streams.stop"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("legacy token unexpectedly gained stop permission: %v", err)
@@ -734,10 +734,10 @@ func TestConfigureServiceNodeSealerFailureDoesNotMutate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(afterService, beforeService) {
-		t.Fatalf("service mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeService, afterService)
+		t.Fatalf("service mutated after sealer failure: before=%s after=%s", formatSafeRegisteredServiceDiagnostic(beforeService), formatSafeRegisteredServiceDiagnostic(afterService))
 	}
 	if !reflect.DeepEqual(afterTokens, beforeTokens) {
-		t.Fatalf("tokens mutated after sealer failure:\nbefore=%#v\nafter=%#v", beforeTokens, afterTokens)
+		t.Fatalf("tokens mutated after sealer failure: before=%s after=%s", formatSafeSensitiveCompositeDiagnostic(beforeTokens), formatSafeSensitiveCompositeDiagnostic(afterTokens))
 	}
 }
 
@@ -772,28 +772,28 @@ func TestConfigureServiceNodeCommitsTokenSecretReportAndConsumptionTogether(t *t
 		t.Fatalf("configure service node: %v", err)
 	}
 	if sealedRawToken == "" || sealedRawToken != newToken.RawToken || newToken.ID == oldToken.ID {
-		t.Fatalf("unexpected rotated token: old=%#v new=%#v sealed=%q", oldToken, newToken, sealedRawToken)
+		t.Fatalf("unexpected rotated token: old=%s new=%s sealer_matches_new=%t", formatSafeServiceTokenDiagnostic("configure", oldToken, 0, "old"), formatSafeServiceTokenDiagnostic("configure", newToken, 0, "new"), sealedRawToken == newToken.RawToken)
 	}
 	if service.TokenID != newToken.ID || service.NodeTokenCiphertext != "sealed-runtime-token" || service.NodeTokenNonce != "runtime-nonce" {
-		t.Fatalf("runtime token secret was not committed with service: %#v", service)
+		t.Fatalf("runtime token secret was not committed with service: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if service.ConfigureTokenUsedAt == nil || !service.ConfigureTokenUsedAt.Equal(now) || service.NodeTokenRotatedAt == nil || !service.NodeTokenRotatedAt.Equal(now) {
-		t.Fatalf("configure consumption/rotation timestamps are wrong: %#v", service)
+		t.Fatalf("configure consumption/rotation timestamps are wrong: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if service.Status != "registered" || service.Version != "1.2.3" || service.ReportedVersion != "1.2.3" || service.ReportedCommit != "abc123" || service.ReportedBuildDate != "2026-07-17" || service.ReportedHostname != "encoder-host" || service.ReportedOS != "linux" || service.ReportedArch != "amd64" {
-		t.Fatalf("runtime report was not committed: %#v", service)
+		t.Fatalf("runtime report was not committed: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if service.LastReportedAt == nil || !service.LastReportedAt.Equal(now) || !service.UpdatedAt.Equal(now) {
-		t.Fatalf("runtime report timestamps are wrong: %#v", service)
+		t.Fatalf("runtime report timestamps are wrong: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if service.LastHeartbeatAt != nil || len(service.ReportedCapabilities) != 0 {
-		t.Fatalf("configure retained old identity liveness metadata: %#v", service)
+		t.Fatalf("configure retained old identity liveness metadata: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("old runtime token should be revoked, got %v", err)
 	}
 	if authenticated, err := auth.AuthenticateServiceToken(ctx, newToken.RawToken, "service.heartbeat"); err != nil || authenticated.ID != newToken.ID {
-		t.Fatalf("new runtime token should authenticate: token=%#v err=%v", authenticated, err)
+		t.Fatalf("new runtime token should authenticate: token=%s err=%v", formatSafeServiceTokenDiagnostic("authenticate", authenticated, 0, "unexpected_result"), err)
 	}
 	sealerCalled := false
 	if _, _, err := auth.ConfigureServiceNode(ctx, "encoder-configure", configureToken, now.Add(time.Second), ServiceRuntimeReport{}, func(string) (string, string, error) {
@@ -841,14 +841,14 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if staged.Token.RawToken == "" || staged.ActivationToken == "" || staged.Token.ID == oldToken.ID {
-		t.Fatalf("unexpected staged credentials: %#v", staged)
+		t.Fatalf("unexpected staged credentials: %s", formatSafeStagedServiceNodeConfigurationDiagnostic(staged))
 	}
 	service, err := auth.GetService(ctx, "updater-staged")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if service.TokenID != oldToken.ID || service.StagedNodePreviousTokenID != oldToken.ID || service.StagedNodeTokenID != staged.Token.ID || service.NodeTokenCiphertext != "" || service.ConfigureTokenUsedAt == nil || service.Status != "pending" {
-		t.Fatalf("stage changed the active updater identity: %#v", service)
+		t.Fatalf("stage changed the active updater identity: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "updates.claim"); err != nil {
 		t.Fatalf("old token stopped before activation: %v", err)
@@ -864,10 +864,21 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if alreadyActivated || activatedToken.ID != staged.Token.ID || activatedService.TokenID != staged.Token.ID || activatedService.NodeTokenCiphertext != "staged-ciphertext" || activatedService.NodeTokenNonce != "staged-nonce" || activatedService.Status != "registered" || activatedService.ReportedVersion != "v1.7.0" {
-		t.Fatalf("activation was not atomic: token=%#v service=%#v already=%v", activatedToken, activatedService, alreadyActivated)
+		t.Fatalf("activation was not atomic: token=%s service=%s already=%v", formatSafeServiceTokenDiagnostic("activate", activatedToken, 0, "unexpected_result"), formatSafeRegisteredServiceDiagnostic(activatedService), alreadyActivated)
 	}
 	if activatedService.LastHeartbeatAt != nil || len(activatedService.ReportedCapabilities) != 0 {
-		t.Fatalf("activation retained old identity liveness metadata: %#v", activatedService)
+		t.Fatalf("activation retained old identity liveness metadata: %s", formatSafeRegisteredServiceDiagnostic(activatedService))
+	}
+	if activatedService.StagedNodePreviousTokenID != "" ||
+		activatedService.StagedNodeTokenID != "" ||
+		activatedService.StagedNodeTokenHash != "" ||
+		len(activatedService.StagedNodeTokenScopes) != 0 ||
+		activatedService.StagedNodeTokenCiphertext != "" ||
+		activatedService.StagedNodeTokenNonce != "" ||
+		activatedService.StagedNodeActivationTokenHash != "" ||
+		activatedService.StagedNodeTokenAt != nil ||
+		activatedService.ConfigureTokenExpiresAt != nil {
+		t.Fatalf("activation retained staged identity metadata: %s", formatSafeRegisteredServiceDiagnostic(activatedService))
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, oldToken.RawToken, "service.heartbeat"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("old token survived activation: %v", err)
@@ -877,11 +888,520 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 			t.Fatalf("activated token lacks %s: %v", scope, err)
 		}
 	}
+	if _, _, _, err := auth.ActivateServiceNodeConfiguration(ctx, "updater-staged", staged.Token.ID, "wrong-activation", now.Add(2*time.Minute), ServiceRuntimeReport{}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("activation replay accepted the wrong activation token: %v", err)
+	}
 	if _, _, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(ctx, "updater-staged", staged.Token.ID, staged.ActivationToken, now.Add(2*time.Minute), ServiceRuntimeReport{}); err != nil || !alreadyActivated {
 		t.Fatalf("activation replay was not idempotent: already=%v err=%v", alreadyActivated, err)
 	}
 	if _, err := auth.ConsumeServiceConfigureToken(ctx, "updater-staged", configureToken, now.Add(3*time.Minute)); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("configure token replay survived stage: %v", err)
+	}
+}
+
+func TestFIX010UpdateAgentStageRejectsSharedTokenReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*RegisteredService, string)
+	}{
+		{
+			name: "current",
+			edit: func(service *RegisteredService, oldTokenID string) {
+				service.TokenID = oldTokenID
+			},
+		},
+		{
+			name: "staged_previous",
+			edit: func(service *RegisteredService, oldTokenID string) {
+				service.StagedNodePreviousTokenID = oldTokenID
+			},
+		},
+		{
+			name: "staged_token",
+			edit: func(service *RegisteredService, oldTokenID string) {
+				service.StagedNodeTokenID = oldTokenID
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			auth := NewMemoryAuthStore()
+			oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix010-stage-target")
+			createMemoryFIX010UpdateAgentService(t, auth, "fix010-stage-other")
+			now := time.Date(2026, time.August, 25, 1, 0, 0, 0, time.UTC)
+			configureToken := "fix010-stage-configure-" + test.name
+			if _, err := auth.SetServiceConfigureToken(
+				ctx,
+				"fix010-stage-target",
+				security.HashToken(configureToken),
+				now.Add(time.Hour),
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			auth.mu.Lock()
+			other := auth.services["fix010-stage-other"]
+			test.edit(&other, oldToken.ID)
+			auth.services[other.ServiceID] = other
+			beforeTarget := auth.services["fix010-stage-target"]
+			beforeOther := auth.services["fix010-stage-other"]
+			beforeOldToken := auth.serviceTokens[oldToken.ID]
+			beforeTokenCount := len(auth.serviceTokens)
+			auth.mu.Unlock()
+
+			sealerCalled := false
+			_, err := auth.StageServiceNodeConfiguration(
+				ctx,
+				"fix010-stage-target",
+				configureToken,
+				now,
+				func(string) (string, string, error) {
+					sealerCalled = true
+					return "fix010-stage-ciphertext", "fix010-stage-nonce", nil
+				},
+			)
+			if !errors.Is(err, ErrSystemUpdateRuntimeTokenRotationSharedToken) {
+				t.Fatalf("stage error = %v, want shared-token conflict", err)
+			}
+			if sealerCalled {
+				t.Fatal("stage sealed a new token before rejecting the shared reference")
+			}
+
+			auth.mu.Lock()
+			afterTarget := auth.services["fix010-stage-target"]
+			afterOther := auth.services["fix010-stage-other"]
+			afterOldToken := auth.serviceTokens[oldToken.ID]
+			afterTokenCount := len(auth.serviceTokens)
+			auth.mu.Unlock()
+			if !reflect.DeepEqual(afterTarget, beforeTarget) || !reflect.DeepEqual(afterOther, beforeOther) {
+				t.Fatalf(
+					"shared stage changed service references: target_current=%q target_previous=%q target_staged=%q other_current=%q other_previous=%q other_staged=%q",
+					afterTarget.TokenID,
+					afterTarget.StagedNodePreviousTokenID,
+					afterTarget.StagedNodeTokenID,
+					afterOther.TokenID,
+					afterOther.StagedNodePreviousTokenID,
+					afterOther.StagedNodeTokenID,
+				)
+			}
+			if !reflect.DeepEqual(afterOldToken, beforeOldToken) || afterTokenCount != beforeTokenCount {
+				t.Fatalf(
+					"shared stage changed token state: old_revoked=%t token_count=%d want_count=%d",
+					afterOldToken.RevokedAt != nil,
+					afterTokenCount,
+					beforeTokenCount,
+				)
+			}
+		})
+	}
+}
+
+func TestFIX010UpdateAgentActivationRejectsSharedTokenReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*RegisteredService, string, string)
+	}{
+		{
+			name: "old_current",
+			edit: func(service *RegisteredService, oldTokenID, _ string) {
+				service.TokenID = oldTokenID
+			},
+		},
+		{
+			name: "old_staged_previous",
+			edit: func(service *RegisteredService, oldTokenID, _ string) {
+				service.StagedNodePreviousTokenID = oldTokenID
+			},
+		},
+		{
+			name: "old_staged_token",
+			edit: func(service *RegisteredService, oldTokenID, _ string) {
+				service.StagedNodeTokenID = oldTokenID
+			},
+		},
+		{
+			name: "new_current",
+			edit: func(service *RegisteredService, _, stagedTokenID string) {
+				service.TokenID = stagedTokenID
+			},
+		},
+		{
+			name: "new_staged_previous",
+			edit: func(service *RegisteredService, _, stagedTokenID string) {
+				service.StagedNodePreviousTokenID = stagedTokenID
+			},
+		},
+		{
+			name: "new_staged_token",
+			edit: func(service *RegisteredService, _, stagedTokenID string) {
+				service.StagedNodeTokenID = stagedTokenID
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			auth := NewMemoryAuthStore()
+			oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix010-activate-target")
+			now := time.Date(2026, time.August, 25, 2, 0, 0, 0, time.UTC)
+			configureToken := "fix010-activate-configure-" + test.name
+			if _, err := auth.SetServiceConfigureToken(
+				ctx,
+				"fix010-activate-target",
+				security.HashToken(configureToken),
+				now.Add(time.Hour),
+			); err != nil {
+				t.Fatal(err)
+			}
+			staged, err := auth.StageServiceNodeConfiguration(
+				ctx,
+				"fix010-activate-target",
+				configureToken,
+				now,
+				func(string) (string, string, error) {
+					return "fix010-activation-ciphertext", "fix010-activation-nonce", nil
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			createMemoryFIX010UpdateAgentService(t, auth, "fix010-activate-other")
+
+			auth.mu.Lock()
+			other := auth.services["fix010-activate-other"]
+			test.edit(&other, oldToken.ID, staged.Token.ID)
+			auth.services[other.ServiceID] = other
+			beforeTarget := auth.services["fix010-activate-target"]
+			beforeOther := auth.services["fix010-activate-other"]
+			beforeOldToken := auth.serviceTokens[oldToken.ID]
+			beforeTokenCount := len(auth.serviceTokens)
+			auth.mu.Unlock()
+
+			activatedToken, activatedService, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(
+				ctx,
+				"fix010-activate-target",
+				staged.Token.ID,
+				staged.ActivationToken,
+				now.Add(time.Minute),
+				ServiceRuntimeReport{},
+			)
+			if !errors.Is(err, ErrSystemUpdateRuntimeTokenRotationSharedToken) {
+				t.Fatalf("activation error = %v, want shared-token conflict", err)
+			}
+			if activatedToken.ID != "" || activatedService.ServiceID != "" || alreadyActivated {
+				t.Fatalf(
+					"shared activation returned a success value: token_id=%q service_id=%q already=%t",
+					activatedToken.ID,
+					activatedService.ServiceID,
+					alreadyActivated,
+				)
+			}
+
+			auth.mu.Lock()
+			afterTarget := auth.services["fix010-activate-target"]
+			afterOther := auth.services["fix010-activate-other"]
+			afterOldToken := auth.serviceTokens[oldToken.ID]
+			_, stagedTokenPersisted := auth.serviceTokens[staged.Token.ID]
+			afterTokenCount := len(auth.serviceTokens)
+			auth.mu.Unlock()
+			if !reflect.DeepEqual(afterTarget, beforeTarget) || !reflect.DeepEqual(afterOther, beforeOther) {
+				t.Fatalf(
+					"shared activation changed service references: target_current=%q target_previous=%q target_staged=%q other_current=%q other_previous=%q other_staged=%q",
+					afterTarget.TokenID,
+					afterTarget.StagedNodePreviousTokenID,
+					afterTarget.StagedNodeTokenID,
+					afterOther.TokenID,
+					afterOther.StagedNodePreviousTokenID,
+					afterOther.StagedNodeTokenID,
+				)
+			}
+			if !reflect.DeepEqual(afterOldToken, beforeOldToken) || stagedTokenPersisted || afterTokenCount != beforeTokenCount {
+				t.Fatalf(
+					"shared activation changed token state: old_revoked=%t staged_persisted=%t token_count=%d want_count=%d",
+					afterOldToken.RevokedAt != nil,
+					stagedTokenPersisted,
+					afterTokenCount,
+					beforeTokenCount,
+				)
+			}
+		})
+	}
+}
+
+func createMemoryFIX010UpdateAgentService(
+	t *testing.T,
+	auth *MemoryAuthStore,
+	serviceID string,
+) ServiceToken {
+	t.Helper()
+	token, err := auth.CreateServiceToken(t.Context(), "update_agent", []string{
+		"service.register",
+		"service.heartbeat",
+		"updates.claim",
+		"updates.report",
+		"updates.authorize",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.PrecreateService(t.Context(), token, ServiceRegistration{
+		ServiceID:    serviceID,
+		ServiceType:  "update_agent",
+		ServiceName:  serviceID,
+		PublicURL:    "https://" + serviceID + ".example.com",
+		Capabilities: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func TestFIX011MemoryAuthAndReplayPrecedeStableSharedReferences(t *testing.T) {
+	t.Run("invalid configure credential", func(t *testing.T) {
+		ctx := t.Context()
+		auth := NewMemoryAuthStore()
+		oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-stage-target")
+		createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-stage-other")
+		now := time.Date(2026, time.August, 25, 3, 0, 0, 0, time.UTC)
+		configureToken := "fix011-memory-stage-configure"
+		if _, err := auth.SetServiceConfigureToken(
+			ctx,
+			"fix011-memory-stage-target",
+			security.HashToken(configureToken),
+			now.Add(time.Hour),
+		); err != nil {
+			t.Fatal(err)
+		}
+		auth.mu.Lock()
+		other := auth.services["fix011-memory-stage-other"]
+		other.StagedNodePreviousTokenID = oldToken.ID
+		auth.services[other.ServiceID] = other
+		beforeTarget := auth.services["fix011-memory-stage-target"]
+		beforeOther := other
+		beforeOldToken := auth.serviceTokens[oldToken.ID]
+		beforeTokenCount := len(auth.serviceTokens)
+		auth.mu.Unlock()
+		sealerCalled := false
+		_, err := auth.StageServiceNodeConfiguration(
+			ctx,
+			"fix011-memory-stage-target",
+			configureToken+"-invalid",
+			now,
+			func(string) (string, string, error) {
+				sealerCalled = true
+				return "unexpected-ciphertext", "unexpected-nonce", nil
+			},
+		)
+		if !errors.Is(err, ErrUnauthorized) ||
+			errors.Is(err, ErrSystemUpdateRuntimeTokenRotationSharedToken) {
+			t.Fatalf("invalid configure error = %v, want ErrUnauthorized only", err)
+		}
+		if sealerCalled {
+			t.Fatal("invalid configure credential reached the sealer")
+		}
+		auth.mu.Lock()
+		defer auth.mu.Unlock()
+		if !reflect.DeepEqual(auth.services[beforeTarget.ServiceID], beforeTarget) ||
+			!reflect.DeepEqual(auth.services[beforeOther.ServiceID], beforeOther) ||
+			!reflect.DeepEqual(auth.serviceTokens[oldToken.ID], beforeOldToken) ||
+			len(auth.serviceTokens) != beforeTokenCount {
+			t.Fatal("invalid configure credential changed memory state")
+		}
+	})
+
+	t.Run("invalid activation credential", func(t *testing.T) {
+		ctx := t.Context()
+		auth := NewMemoryAuthStore()
+		oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-activation-target")
+		now := time.Date(2026, time.August, 25, 3, 30, 0, 0, time.UTC)
+		configureToken := "fix011-memory-activation-configure"
+		if _, err := auth.SetServiceConfigureToken(
+			ctx,
+			"fix011-memory-activation-target",
+			security.HashToken(configureToken),
+			now.Add(time.Hour),
+		); err != nil {
+			t.Fatal(err)
+		}
+		staged, err := auth.StageServiceNodeConfiguration(
+			ctx,
+			"fix011-memory-activation-target",
+			configureToken,
+			now,
+			func(string) (string, string, error) {
+				return "fix011-memory-ciphertext", "fix011-memory-nonce", nil
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-activation-other")
+		auth.mu.Lock()
+		other := auth.services["fix011-memory-activation-other"]
+		other.StagedNodeTokenID = staged.Token.ID
+		auth.services[other.ServiceID] = other
+		beforeTarget := auth.services["fix011-memory-activation-target"]
+		beforeOther := other
+		beforeOldToken := auth.serviceTokens[oldToken.ID]
+		beforeTokenCount := len(auth.serviceTokens)
+		auth.mu.Unlock()
+		_, _, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(
+			ctx,
+			"fix011-memory-activation-target",
+			staged.Token.ID,
+			staged.ActivationToken+"-invalid",
+			now.Add(time.Minute),
+			ServiceRuntimeReport{},
+		)
+		if !errors.Is(err, ErrUnauthorized) ||
+			errors.Is(err, ErrSystemUpdateRuntimeTokenRotationSharedToken) ||
+			alreadyActivated {
+			t.Fatalf("invalid activation already=%t err=%v, want ErrUnauthorized only", alreadyActivated, err)
+		}
+		auth.mu.Lock()
+		defer auth.mu.Unlock()
+		if !reflect.DeepEqual(auth.services[beforeTarget.ServiceID], beforeTarget) ||
+			!reflect.DeepEqual(auth.services[beforeOther.ServiceID], beforeOther) ||
+			!reflect.DeepEqual(auth.serviceTokens[oldToken.ID], beforeOldToken) ||
+			len(auth.serviceTokens) != beforeTokenCount {
+			t.Fatal("invalid activation credential changed memory state")
+		}
+	})
+
+	t.Run("duplicate activation replay", func(t *testing.T) {
+		ctx := t.Context()
+		auth := NewMemoryAuthStore()
+		oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-replay-target")
+		now := time.Date(2026, time.August, 25, 4, 0, 0, 0, time.UTC)
+		configureToken := "fix011-memory-replay-configure"
+		if _, err := auth.SetServiceConfigureToken(
+			ctx,
+			"fix011-memory-replay-target",
+			security.HashToken(configureToken),
+			now.Add(time.Hour),
+		); err != nil {
+			t.Fatal(err)
+		}
+		staged, err := auth.StageServiceNodeConfiguration(
+			ctx,
+			"fix011-memory-replay-target",
+			configureToken,
+			now,
+			func(string) (string, string, error) {
+				return "fix011-memory-replay-ciphertext", "fix011-memory-replay-nonce", nil
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(
+			ctx,
+			"fix011-memory-replay-target",
+			staged.Token.ID,
+			staged.ActivationToken,
+			now.Add(time.Minute),
+			ServiceRuntimeReport{Version: "v1.0.0"},
+		); err != nil || alreadyActivated {
+			t.Fatalf("initial activation already=%t err=%v", alreadyActivated, err)
+		}
+		createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-replay-other")
+		auth.mu.Lock()
+		other := auth.services["fix011-memory-replay-other"]
+		other.StagedNodeTokenID = staged.Token.ID
+		auth.services[other.ServiceID] = other
+		beforeTarget := auth.services["fix011-memory-replay-target"]
+		beforeOther := other
+		beforeOldToken := auth.serviceTokens[oldToken.ID]
+		beforeNewToken := auth.serviceTokens[staged.Token.ID]
+		beforeTokenCount := len(auth.serviceTokens)
+		auth.mu.Unlock()
+		if _, _, _, err := auth.ActivateServiceNodeConfiguration(
+			ctx,
+			"fix011-memory-replay-target",
+			staged.Token.ID,
+			staged.ActivationToken+"-invalid",
+			now.Add(2*time.Minute),
+			ServiceRuntimeReport{},
+		); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("wrong replay token error = %v, want ErrUnauthorized", err)
+		}
+		replayedToken, replayedService, alreadyActivated, err :=
+			auth.ActivateServiceNodeConfiguration(
+				ctx,
+				"fix011-memory-replay-target",
+				staged.Token.ID,
+				staged.ActivationToken,
+				now.Add(2*time.Minute),
+				ServiceRuntimeReport{Version: "v9.9.9"},
+			)
+		if err != nil || !alreadyActivated ||
+			replayedToken.ID != staged.Token.ID ||
+			replayedService.ServiceID != beforeTarget.ServiceID {
+			t.Fatalf(
+				"duplicate replay token_id=%q service_id=%q already=%t err=%v",
+				replayedToken.ID,
+				replayedService.ServiceID,
+				alreadyActivated,
+				err,
+			)
+		}
+		auth.mu.Lock()
+		defer auth.mu.Unlock()
+		if !reflect.DeepEqual(auth.services[beforeTarget.ServiceID], beforeTarget) ||
+			!reflect.DeepEqual(auth.services[beforeOther.ServiceID], beforeOther) ||
+			!reflect.DeepEqual(auth.serviceTokens[oldToken.ID], beforeOldToken) ||
+			!reflect.DeepEqual(auth.serviceTokens[staged.Token.ID], beforeNewToken) ||
+			len(auth.serviceTokens) != beforeTokenCount {
+			t.Fatal("duplicate activation replay changed memory state")
+		}
+	})
+}
+
+func TestConsumedUpdateAgentConfigureTokenIsNotActivationReplay(t *testing.T) {
+	ctx := context.Background()
+	auth := NewMemoryAuthStore()
+	token, err := auth.CreateServiceToken(ctx, "update_agent", []string{
+		"service.register",
+		"service.heartbeat",
+		"updates.claim",
+		"updates.report",
+		"updates.authorize",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const serviceID = "updater-consumed-configure-token"
+	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{
+		ServiceID:   serviceID,
+		ServiceType: "update_agent",
+		ServiceName: "Updater",
+		PublicURL:   "https://updater.example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.July, 21, 3, 10, 0, 0, time.UTC)
+	const configureToken = "consumed-configure-token"
+	if _, err := auth.SetServiceConfigureToken(
+		ctx,
+		serviceID,
+		security.HashToken(configureToken),
+		now.Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.ConsumeServiceConfigureToken(ctx, serviceID, configureToken, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := auth.ActivateServiceNodeConfiguration(
+		ctx,
+		serviceID,
+		token.ID,
+		configureToken,
+		now.Add(time.Minute),
+		ServiceRuntimeReport{},
+	); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("consumed configure token authenticated as an activation replay: %v", err)
 	}
 }
 
@@ -919,7 +1439,7 @@ func TestUpdateAgentConfigurationRejectsLegacyScopesBeforeStageOrActivation(t *t
 		t.Fatal(err)
 	}
 	if service.TokenID != legacyToken.ID || service.ConfigureTokenUsedAt != nil || service.StagedNodeTokenID != "" {
-		t.Fatalf("rejected legacy updater stage mutated service: %#v", service)
+		t.Fatalf("rejected legacy updater stage mutated service: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 
 	// Simulate an incomplete staged configuration persisted by a pre-upgrade
@@ -971,7 +1491,7 @@ func TestUpdateAgentConfigurationRejectsLegacyScopesBeforeStageOrActivation(t *t
 		service.StagedNodeTokenID != stagedTokenID ||
 		service.NodeTokenCiphertext != "" ||
 		service.NodeTokenNonce != "" {
-		t.Fatalf("rejected legacy updater activation mutated service: %#v", service)
+		t.Fatalf("rejected legacy updater activation mutated service: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, legacyToken.RawToken, "service.heartbeat"); err != nil {
 		t.Fatalf("rejected legacy updater activation invalidated old token: %v", err)
@@ -1044,7 +1564,7 @@ func TestRegeneratingConfigureTokenRetainsPendingTombstoneAndInvalidatesOldStage
 		len(service.StagedNodeTokenScopes) != 0 || service.StagedNodeTokenCiphertext != "" ||
 		service.StagedNodeTokenNonce != "" || service.StagedNodeActivationTokenHash != "" ||
 		service.StagedNodeTokenAt != nil || service.ConfigureTokenUsedAt != nil {
-		t.Fatalf("configure regeneration did not retain a secret-free pending tombstone: %#v", service)
+		t.Fatalf("configure regeneration did not retain a secret-free pending tombstone: %s", formatSafeRegisteredServiceDiagnostic(service))
 	}
 	if _, _, _, err := auth.ActivateServiceNodeConfiguration(ctx, "updater-restage", staged.Token.ID, staged.ActivationToken, now.Add(time.Minute), ServiceRuntimeReport{}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("invalidated activation remained usable: %v", err)
@@ -1059,7 +1579,7 @@ func TestRegeneratingConfigureTokenRetainsPendingTombstoneAndInvalidatesOldStage
 		t.Fatalf("replacement stage did not overwrite tombstone: %v", err)
 	}
 	if replacement.Token.ID == staged.Token.ID || replacement.Service.StagedNodeTokenID != replacement.Token.ID {
-		t.Fatalf("replacement stage did not bind a fresh pending identity: %#v", replacement)
+		t.Fatalf("replacement stage did not bind a fresh pending identity: %s", formatSafeStagedServiceNodeConfigurationDiagnostic(replacement))
 	}
 }
 

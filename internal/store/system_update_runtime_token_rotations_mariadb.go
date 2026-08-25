@@ -25,6 +25,29 @@ emergency_revoked_token_id, emergency_revoked_at,
 created_at, updated_at
 FROM system_update_runtime_token_rotations`
 
+type mariaDBRuntimeTokenRotationLockPhase string
+
+const (
+	mariaDBRuntimeTokenRotationHostLocksHeld     mariaDBRuntimeTokenRotationLockPhase = "host_locks_held"
+	mariaDBRuntimeTokenRotationLaneLocksHeld     mariaDBRuntimeTokenRotationLockPhase = "lane_locks_held"
+	mariaDBRuntimeTokenRotationRotationLocksHeld mariaDBRuntimeTokenRotationLockPhase = "rotation_locks_held"
+	mariaDBRuntimeTokenRotationPolicyLocksHeld   mariaDBRuntimeTokenRotationLockPhase = "policy_locks_held"
+)
+
+type mariaDBRuntimeTokenRotationLockObserver func(string, mariaDBRuntimeTokenRotationLockPhase)
+type mariaDBRuntimeTokenRotationLockObserverContextKey struct{}
+
+func observeMariaDBRuntimeTokenRotationLockPhase(
+	ctx context.Context,
+	operation string,
+	phase mariaDBRuntimeTokenRotationLockPhase,
+) {
+	observer, _ := ctx.Value(mariaDBRuntimeTokenRotationLockObserverContextKey{}).(mariaDBRuntimeTokenRotationLockObserver)
+	if observer != nil {
+		observer(operation, phase)
+	}
+}
+
 func (s *MariaDBSystemUpdateStore) GetSystemUpdateRuntimeTokenRotation(
 	ctx context.Context,
 	id string,
@@ -66,6 +89,95 @@ WHERE active_execution_host_id = ?`,
 		return SystemUpdateRuntimeTokenRotation{}, err
 	}
 	return publicSystemUpdateRuntimeTokenRotation(rotation), nil
+}
+
+type mariaDBRuntimeTokenRotationLockPlan struct {
+	RotationID      string
+	ServiceID       string
+	PreviousTokenID string
+	StagedTokenID   string
+	References      []mariaDBServiceTokenReference
+}
+
+func (plan mariaDBRuntimeTokenRotationLockPlan) tokenIDs() []string {
+	return sortedUniqueStrings([]string{plan.PreviousTokenID, plan.StagedTokenID})
+}
+
+func (plan mariaDBRuntimeTokenRotationLockPlan) matches(rotation SystemUpdateRuntimeTokenRotation) bool {
+	return plan.RotationID == rotation.ID &&
+		plan.ServiceID == rotation.ServiceID &&
+		plan.PreviousTokenID == rotation.PreviousTokenID &&
+		plan.StagedTokenID == rotation.StagedTokenID
+}
+
+func (s *MariaDBSystemUpdateStore) discoverMariaDBRuntimeTokenRotationLockPlan(
+	ctx context.Context,
+	rotationID string,
+) (mariaDBRuntimeTokenRotationLockPlan, error) {
+	rotation, err := s.GetSystemUpdateRuntimeTokenRotation(ctx, rotationID)
+	if err != nil {
+		return mariaDBRuntimeTokenRotationLockPlan{}, err
+	}
+	plan := mariaDBRuntimeTokenRotationLockPlan{
+		RotationID:      rotation.ID,
+		ServiceID:       rotation.ServiceID,
+		PreviousTokenID: rotation.PreviousTokenID,
+		StagedTokenID:   rotation.StagedTokenID,
+	}
+	plan.References, err = discoverMariaDBServiceTokenReferences(ctx, s.db, plan.tokenIDs())
+	if err != nil {
+		return mariaDBRuntimeTokenRotationLockPlan{}, err
+	}
+	return plan, nil
+}
+
+func (s *MariaDBSystemUpdateStore) discoverMariaDBRuntimeTokenStageLockPlan(
+	ctx context.Context,
+	serviceID string,
+) (mariaDBRuntimeTokenRotationLockPlan, error) {
+	service, err := NewMariaDBAuthStore(s.db).getService(ctx, serviceID)
+	if err != nil {
+		return mariaDBRuntimeTokenRotationLockPlan{}, err
+	}
+	plan := mariaDBRuntimeTokenRotationLockPlan{
+		ServiceID:       service.ServiceID,
+		PreviousTokenID: service.TokenID,
+	}
+	plan.References, err = discoverMariaDBServiceTokenReferences(ctx, s.db, plan.tokenIDs())
+	if err != nil {
+		return mariaDBRuntimeTokenRotationLockPlan{}, err
+	}
+	return plan, nil
+}
+
+func lockMariaDBRuntimeTokenRotationPlan(
+	ctx context.Context,
+	tx *sql.Tx,
+	operation string,
+	plan mariaDBRuntimeTokenRotationLockPlan,
+) (RegisteredService, map[string]ServiceToken, error) {
+	services, tokens, err := lockMariaDBServiceTokenMutation(
+		ctx, tx, operation, plan.References, plan.tokenIDs(), plan.ServiceID,
+	)
+	if errors.Is(err, ErrNotFound) {
+		return RegisteredService{}, nil, ErrSystemUpdateOwnershipConflict
+	}
+	if err != nil {
+		return RegisteredService{}, nil, err
+	}
+	service, ok := services[plan.ServiceID]
+	if !ok {
+		return RegisteredService{}, nil, ErrSystemUpdateOwnershipConflict
+	}
+	for _, reference := range plan.References {
+		if reference.ServiceID != plan.ServiceID {
+			return RegisteredService{}, nil, ErrSystemUpdateRuntimeTokenRotationSharedToken
+		}
+	}
+	if !mariaDBServiceTokenReferenceTypesMatch(plan.References, services, tokens) {
+		return RegisteredService{}, nil, ErrSystemUpdateRuntimeTokenRotationToken
+	}
+	return service, tokens, nil
 }
 
 func (s *MariaDBSystemUpdateStore) StageSystemUpdateRuntimeTokenRotation(
@@ -125,6 +237,10 @@ func (s *MariaDBSystemUpdateStore) stageSystemUpdateRuntimeTokenRotationOnce(
 	if err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenStageLockPlan(ctx, params.ServiceID)
+	if err != nil {
+		return StageSystemUpdateRuntimeTokenRotationResult{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
@@ -145,6 +261,11 @@ func (s *MariaDBSystemUpdateStore) stageSystemUpdateRuntimeTokenRotationOnce(
 	if err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"stage_system_update_runtime_token_rotation",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
 	existing, err := scanSystemUpdateRuntimeTokenRotation(tx.QueryRowContext(
 		ctx,
 		systemUpdateRuntimeTokenRotationSelect+`
@@ -200,6 +321,11 @@ FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
 	); err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"stage_system_update_runtime_token_rotation",
+		mariaDBRuntimeTokenRotationLaneLocksHeld,
+	)
 	policy, err := mariaDBRuntimeTokenRotationPolicyForUpdate(ctx, tx, params.ServiceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrNotFound
@@ -207,26 +333,26 @@ FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
 	if err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
 	}
-	service, err := scanService(tx.QueryRowContext(
+	observeMariaDBRuntimeTokenRotationLockPhase(
 		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		params.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrNotFound
-	}
+		"stage_system_update_runtime_token_rotation",
+		mariaDBRuntimeTokenRotationPolicyLocksHeld,
+	)
+	service, lockedTokens, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "stage_system_update_runtime_token_rotation", lockPlan,
+	)
 	if err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
+	}
+	if service.TokenID != lockPlan.PreviousTokenID {
+		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrSystemUpdateOwnershipConflict
 	}
 	if hasStagedServiceNodeConfiguration(service) {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrConflict
 	}
-	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
-	if errors.Is(err, ErrNotFound) {
+	oldToken, ok := lockedTokens[service.TokenID]
+	if !ok || oldToken.RevokedAt != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrSystemUpdateAgentInactive
-	}
-	if err != nil {
-		return StageSystemUpdateRuntimeTokenRotationResult{}, err
 	}
 	if oldToken.ServiceType != "update_agent" {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrSystemUpdateAgentInactive
@@ -234,14 +360,6 @@ FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
 	if err := validateRuntimeTokenRotationOwnership(service, policy, ownership, params); err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
 	}
-	references, err := mariaDBRuntimeTokenServiceReferencesForUpdate(ctx, tx, oldToken.ID)
-	if err != nil {
-		return StageSystemUpdateRuntimeTokenRotationResult{}, err
-	}
-	if len(references) != 1 || references[0] != service.ServiceID {
-		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrSystemUpdateRuntimeTokenRotationSharedToken
-	}
-
 	stagedToken, scopesJSON, err := newRotatedServiceToken(oldToken, params.Now)
 	if err != nil {
 		return StageSystemUpdateRuntimeTokenRotationResult{}, err
@@ -341,6 +459,10 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateRuntimeTokenRotationStagedCr
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
 			ErrSystemUpdateRuntimeTokenRotationStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenRotationLockPlan(ctx, params.RotationID)
+	if err != nil {
+		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
@@ -359,6 +481,11 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateRuntimeTokenRotationStagedCr
 	if err != nil {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"claim_system_update_runtime_token_rotation_credential",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
 	rotation, err := scanSystemUpdateRuntimeTokenRotation(tx.QueryRowContext(
 		ctx,
 		systemUpdateRuntimeTokenRotationSelect+` WHERE id = ? FOR UPDATE`,
@@ -370,8 +497,17 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateRuntimeTokenRotationStagedCr
 	if err != nil {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"claim_system_update_runtime_token_rotation_credential",
+		mariaDBRuntimeTokenRotationRotationLocksHeld,
+	)
 	if rotation.ServiceID != params.ServiceID ||
 		rotation.ExecutionHostID != params.ExecutionHostID {
+		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
+			ErrSystemUpdateOwnershipConflict
+	}
+	if !lockPlan.matches(rotation) {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
 			ErrSystemUpdateOwnershipConflict
 	}
@@ -408,6 +544,11 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	); err != nil {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"claim_system_update_runtime_token_rotation_credential",
+		mariaDBRuntimeTokenRotationLaneLocksHeld,
+	)
 	policy, err := mariaDBRuntimeTokenRotationPolicyForUpdate(
 		ctx, tx, rotation.ServiceID,
 	)
@@ -417,14 +558,14 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	if err != nil {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
 	}
-	service, err := scanService(tx.QueryRowContext(
+	observeMariaDBRuntimeTokenRotationLockPhase(
 		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		rotation.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, ErrNotFound
-	}
+		"claim_system_update_runtime_token_rotation_credential",
+		mariaDBRuntimeTokenRotationPolicyLocksHeld,
+	)
+	service, lockedTokens, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "claim_system_update_runtime_token_rotation_credential", lockPlan,
+	)
 	if err != nil {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
 	}
@@ -445,39 +586,17 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
 			ErrSystemUpdateOwnershipConflict
 	}
-	oldToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (oldToken.RevokedAt != nil || oldToken.ServiceType != "update_agent")) {
+	oldToken, ok := lockedTokens[rotation.PreviousTokenID]
+	if !ok || oldToken.RevokedAt != nil || oldToken.ServiceType != "update_agent" {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
 			ErrSystemUpdateAgentInactive
 	}
-	if err != nil {
-		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
-	}
-	references, err := mariaDBRuntimeTokenServiceReferencesForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if err != nil {
-		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
-	}
-	if len(references) != 1 || references[0] != rotation.ServiceID {
-		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
-			ErrSystemUpdateRuntimeTokenRotationSharedToken
-	}
-	stagedToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.StagedTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (stagedToken.ServiceType != "update_agent" ||
-			stagedToken.TokenHash != rotation.stagedTokenHash ||
-			stagedToken.RevokedAt == nil)) {
+	stagedToken, ok := lockedTokens[rotation.StagedTokenID]
+	if !ok || stagedToken.ServiceType != "update_agent" ||
+		stagedToken.TokenHash != rotation.stagedTokenHash ||
+		stagedToken.RevokedAt == nil {
 		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
 			ErrSystemUpdateRuntimeTokenRotationToken
-	}
-	if err != nil {
-		return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{}, err
 	}
 	token, err := runtimeTokenRotationReplayToken(rotation, unseal)
 	if err != nil {
@@ -567,31 +686,6 @@ FOR UPDATE`, executionHostID).Scan(&id)
 		return nil
 	}
 	return err
-}
-
-func mariaDBRuntimeTokenServiceReferencesForUpdate(
-	ctx context.Context,
-	tx *sql.Tx,
-	tokenID string,
-) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT service_id
-FROM services
-WHERE token_id = ?
-ORDER BY service_id
-FOR UPDATE`, tokenID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var serviceIDs []string
-	for rows.Next() {
-		var serviceID string
-		if err := rows.Scan(&serviceID); err != nil {
-			return nil, err
-		}
-		serviceIDs = append(serviceIDs, serviceID)
-	}
-	return serviceIDs, rows.Err()
 }
 
 type runtimeTokenRotationScanner interface {
@@ -698,6 +792,10 @@ func (s *MariaDBSystemUpdateStore) MarkSystemUpdateRuntimeTokenRotationLocalStag
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateRuntimeTokenRotationStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenRotationLockPlan(ctx, id)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
@@ -715,6 +813,11 @@ func (s *MariaDBSystemUpdateStore) MarkSystemUpdateRuntimeTokenRotationLocalStag
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"mark_system_update_runtime_token_rotation_local_staged",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
 	rotation, err := scanSystemUpdateRuntimeTokenRotation(tx.QueryRowContext(
 		ctx,
 		systemUpdateRuntimeTokenRotationSelect+` WHERE id = ? FOR UPDATE`,
@@ -726,7 +829,16 @@ func (s *MariaDBSystemUpdateStore) MarkSystemUpdateRuntimeTokenRotationLocalStag
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"mark_system_update_runtime_token_rotation_local_staged",
+		mariaDBRuntimeTokenRotationRotationLocksHeld,
+	)
 	if rotation.ExecutionHostID != hostID {
+		return SystemUpdateRuntimeTokenRotation{}, false,
+			ErrSystemUpdateOwnershipConflict
+	}
+	if !lockPlan.matches(rotation) {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateOwnershipConflict
 	}
@@ -778,6 +890,11 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	); err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"mark_system_update_runtime_token_rotation_local_staged",
+		mariaDBRuntimeTokenRotationLaneLocksHeld,
+	)
 	policy, err := mariaDBRuntimeTokenRotationPolicyForUpdate(
 		ctx, tx, rotation.ServiceID,
 	)
@@ -787,14 +904,14 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
-	service, err := scanService(tx.QueryRowContext(
+	observeMariaDBRuntimeTokenRotationLockPhase(
 		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		rotation.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return SystemUpdateRuntimeTokenRotation{}, false, ErrNotFound
-	}
+		"mark_system_update_runtime_token_rotation_local_staged",
+		mariaDBRuntimeTokenRotationPolicyLocksHeld,
+	)
+	service, lockedTokens, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "mark_system_update_runtime_token_rotation_local_staged", lockPlan,
+	)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
@@ -815,40 +932,17 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateOwnershipConflict
 	}
-	oldToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (oldToken.RevokedAt != nil ||
-			oldToken.ServiceType != "update_agent")) {
+	oldToken, ok := lockedTokens[rotation.PreviousTokenID]
+	if !ok || oldToken.RevokedAt != nil || oldToken.ServiceType != "update_agent" {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateAgentInactive
 	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
-	}
-	references, err := mariaDBRuntimeTokenServiceReferencesForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
-	}
-	if len(references) != 1 || references[0] != rotation.ServiceID {
-		return SystemUpdateRuntimeTokenRotation{}, false,
-			ErrSystemUpdateRuntimeTokenRotationSharedToken
-	}
-	stagedToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.StagedTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (stagedToken.ServiceType != "update_agent" ||
-			stagedToken.TokenHash != rotation.stagedTokenHash ||
-			stagedToken.RevokedAt == nil)) {
+	stagedToken, ok := lockedTokens[rotation.StagedTokenID]
+	if !ok || stagedToken.ServiceType != "update_agent" ||
+		stagedToken.TokenHash != rotation.stagedTokenHash ||
+		stagedToken.RevokedAt == nil {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateRuntimeTokenRotationToken
-	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	if replay {
 		if err := tx.Commit(); err != nil {
@@ -906,6 +1000,10 @@ func (s *MariaDBSystemUpdateStore) ProveSystemUpdateRuntimeTokenRotationHeartbea
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateRuntimeTokenRotationStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenRotationLockPlan(ctx, params.RotationID)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
@@ -923,6 +1021,11 @@ func (s *MariaDBSystemUpdateStore) ProveSystemUpdateRuntimeTokenRotationHeartbea
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"prove_system_update_runtime_token_rotation_heartbeat",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
 	rotation, err := scanSystemUpdateRuntimeTokenRotation(tx.QueryRowContext(
 		ctx,
 		systemUpdateRuntimeTokenRotationSelect+` WHERE id = ? FOR UPDATE`,
@@ -934,8 +1037,17 @@ func (s *MariaDBSystemUpdateStore) ProveSystemUpdateRuntimeTokenRotationHeartbea
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"prove_system_update_runtime_token_rotation_heartbeat",
+		mariaDBRuntimeTokenRotationRotationLocksHeld,
+	)
 	if rotation.ServiceID != params.ServiceID ||
 		rotation.ExecutionHostID != params.ExecutionHostID {
+		return SystemUpdateRuntimeTokenRotation{}, false,
+			ErrSystemUpdateOwnershipConflict
+	}
+	if !lockPlan.matches(rotation) {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateOwnershipConflict
 	}
@@ -965,6 +1077,11 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	); err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"prove_system_update_runtime_token_rotation_heartbeat",
+		mariaDBRuntimeTokenRotationLaneLocksHeld,
+	)
 	policy, err := mariaDBRuntimeTokenRotationPolicyForUpdate(
 		ctx, tx, rotation.ServiceID,
 	)
@@ -974,14 +1091,14 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
-	service, err := scanService(tx.QueryRowContext(
+	observeMariaDBRuntimeTokenRotationLockPhase(
 		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		rotation.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return SystemUpdateRuntimeTokenRotation{}, false, ErrNotFound
-	}
+		"prove_system_update_runtime_token_rotation_heartbeat",
+		mariaDBRuntimeTokenRotationPolicyLocksHeld,
+	)
+	service, lockedTokens, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "prove_system_update_runtime_token_rotation_heartbeat", lockPlan,
+	)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
@@ -989,31 +1106,18 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateExecutionHostBusy
 	}
-	oldToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (service.TokenID != rotation.PreviousTokenID ||
-			oldToken.RevokedAt != nil ||
-			oldToken.ServiceType != "update_agent")) {
+	oldToken, ok := lockedTokens[rotation.PreviousTokenID]
+	if !ok || service.TokenID != rotation.PreviousTokenID ||
+		oldToken.RevokedAt != nil || oldToken.ServiceType != "update_agent" {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateAgentInactive
 	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
-	}
-	stagedToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.StagedTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (stagedToken.RevokedAt == nil ||
-			stagedToken.ServiceType != "update_agent" ||
-			stagedToken.TokenHash != rotation.stagedTokenHash)) {
+	stagedToken, ok := lockedTokens[rotation.StagedTokenID]
+	if !ok || stagedToken.RevokedAt == nil ||
+		stagedToken.ServiceType != "update_agent" ||
+		stagedToken.TokenHash != rotation.stagedTokenHash {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateRuntimeTokenRotationToken
-	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	if err := validateRuntimeTokenRotationHeartbeatProof(
 		rotation, service, policy, ownership, params,
@@ -1075,13 +1179,36 @@ func (s *MariaDBSystemUpdateStore) ActivateSystemUpdateRuntimeTokenRotation(
 	if !ok || registryDB != s.db {
 		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenRotationLockPlan(ctx, id)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	defer tx.Rollback()
-	rotation, service, ownership, err := mariaDBRuntimeTokenRotationForTransition(
+	rotation, ownership, err := mariaDBRuntimeTokenRotationForTransition(
 		ctx, tx, id, hostID,
+	)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"activate_system_update_runtime_token_rotation",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"activate_system_update_runtime_token_rotation",
+		mariaDBRuntimeTokenRotationRotationLocksHeld,
+	)
+	if !lockPlan.matches(rotation) {
+		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	service, lockedTokens, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "activate_system_update_runtime_token_rotation", lockPlan,
 	)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
@@ -1116,22 +1243,13 @@ func (s *MariaDBSystemUpdateStore) ActivateSystemUpdateRuntimeTokenRotation(
 		service.OwnershipEpoch != rotation.ExpectedOwnershipEpoch {
 		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateOwnershipConflict
 	}
-	references, err := mariaDBRuntimeTokenServiceReferencesForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
+	oldToken, ok := lockedTokens[rotation.PreviousTokenID]
+	if !ok {
+		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationToken
 	}
-	if len(references) != 1 || references[0] != service.ServiceID {
-		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationSharedToken
-	}
-	oldToken, err := mariaDBRuntimeServiceTokenForUpdate(ctx, tx, rotation.PreviousTokenID)
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
-	}
-	stagedToken, err := mariaDBRuntimeServiceTokenForUpdate(ctx, tx, rotation.StagedTokenID)
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
+	stagedToken, ok := lockedTokens[rotation.StagedTokenID]
+	if !ok {
+		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationToken
 	}
 	if oldToken.ServiceType != "update_agent" ||
 		stagedToken.ServiceType != "update_agent" ||
@@ -1219,15 +1337,37 @@ func (s *MariaDBSystemUpdateStore) CancelSystemUpdateRuntimeTokenRotation(
 	if !ok || registryDB != s.db {
 		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenRotationLockPlan(ctx, id)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	defer tx.Rollback()
-	rotation, _, ownership, err := mariaDBRuntimeTokenRotationForTransition(
+	rotation, ownership, err := mariaDBRuntimeTokenRotationForTransition(
 		ctx, tx, id, hostID,
 	)
 	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"cancel_system_update_runtime_token_rotation",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"cancel_system_update_runtime_token_rotation",
+		mariaDBRuntimeTokenRotationRotationLocksHeld,
+	)
+	if !lockPlan.matches(rotation) {
+		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	if _, _, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "cancel_system_update_runtime_token_rotation", lockPlan,
+	); err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	if rotation.Status == SystemUpdateRuntimeTokenRotationCanceled {
@@ -1336,6 +1476,10 @@ func (s *MariaDBSystemUpdateStore) AcknowledgeSystemUpdateRuntimeTokenRotationCa
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateRuntimeTokenRotationStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenRotationLockPlan(ctx, params.RotationID)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
@@ -1353,6 +1497,11 @@ func (s *MariaDBSystemUpdateStore) AcknowledgeSystemUpdateRuntimeTokenRotationCa
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"acknowledge_system_update_runtime_token_rotation_cancel",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
 	rotation, err := scanSystemUpdateRuntimeTokenRotation(tx.QueryRowContext(
 		ctx,
 		systemUpdateRuntimeTokenRotationSelect+` WHERE id = ? FOR UPDATE`,
@@ -1364,8 +1513,17 @@ func (s *MariaDBSystemUpdateStore) AcknowledgeSystemUpdateRuntimeTokenRotationCa
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"acknowledge_system_update_runtime_token_rotation_cancel",
+		mariaDBRuntimeTokenRotationRotationLocksHeld,
+	)
 	if rotation.ServiceID != params.ServiceID ||
 		rotation.ExecutionHostID != params.ExecutionHostID {
+		return SystemUpdateRuntimeTokenRotation{}, false,
+			ErrSystemUpdateOwnershipConflict
+	}
+	if !lockPlan.matches(rotation) {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateOwnershipConflict
 	}
@@ -1412,6 +1570,11 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	); err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"acknowledge_system_update_runtime_token_rotation_cancel",
+		mariaDBRuntimeTokenRotationLaneLocksHeld,
+	)
 	policy, err := mariaDBRuntimeTokenRotationPolicyForUpdate(
 		ctx, tx, rotation.ServiceID,
 	)
@@ -1421,14 +1584,14 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
-	service, err := scanService(tx.QueryRowContext(
+	observeMariaDBRuntimeTokenRotationLockPhase(
 		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		rotation.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return SystemUpdateRuntimeTokenRotation{}, false, ErrNotFound
-	}
+		"acknowledge_system_update_runtime_token_rotation_cancel",
+		mariaDBRuntimeTokenRotationPolicyLocksHeld,
+	)
+	service, lockedTokens, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "acknowledge_system_update_runtime_token_rotation_cancel", lockPlan,
+	)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
@@ -1449,29 +1612,16 @@ FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateOwnershipConflict
 	}
-	oldToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (oldToken.RevokedAt != nil ||
-			oldToken.ServiceType != "update_agent")) {
+	oldToken, ok := lockedTokens[rotation.PreviousTokenID]
+	if !ok || oldToken.RevokedAt != nil || oldToken.ServiceType != "update_agent" {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateAgentInactive
 	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
-	}
-	stagedToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.StagedTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) ||
-		(err == nil && (stagedToken.ServiceType != "update_agent" ||
-			stagedToken.TokenHash != rotation.stagedTokenHash)) {
+	stagedToken, ok := lockedTokens[rotation.StagedTokenID]
+	if !ok || stagedToken.ServiceType != "update_agent" ||
+		stagedToken.TokenHash != rotation.stagedTokenHash {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateRuntimeTokenRotationToken
-	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE service_tokens
 SET revoked_at = COALESCE(revoked_at, ?)
@@ -1530,13 +1680,36 @@ func (s *MariaDBSystemUpdateStore) EmergencyRevokeSystemUpdateRuntimeToken(
 	if !ok || registryDB != s.db {
 		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBRuntimeTokenRotationLockPlan(ctx, id)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	defer tx.Rollback()
-	rotation, service, _, err := mariaDBRuntimeTokenRotationForTransition(
+	rotation, _, err := mariaDBRuntimeTokenRotationForTransition(
 		ctx, tx, id, hostID,
+	)
+	if err != nil {
+		return SystemUpdateRuntimeTokenRotation{}, false, err
+	}
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"emergency_revoke_system_update_runtime_token",
+		mariaDBRuntimeTokenRotationHostLocksHeld,
+	)
+	observeMariaDBRuntimeTokenRotationLockPhase(
+		ctx,
+		"emergency_revoke_system_update_runtime_token",
+		mariaDBRuntimeTokenRotationRotationLocksHeld,
+	)
+	if !lockPlan.matches(rotation) {
+		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	service, lockedTokens, err := lockMariaDBRuntimeTokenRotationPlan(
+		ctx, tx, "emergency_revoke_system_update_runtime_token", lockPlan,
 	)
 	if err != nil {
 		return SystemUpdateRuntimeTokenRotation{}, false, err
@@ -1562,24 +1735,14 @@ func (s *MariaDBSystemUpdateStore) EmergencyRevokeSystemUpdateRuntimeToken(
 	if rotation.Revision != expectedRevision {
 		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationStale
 	}
-	previousToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.PreviousTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
+	previousToken, ok := lockedTokens[rotation.PreviousTokenID]
+	if !ok {
 		return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateRuntimeTokenRotationToken
 	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
-	}
-	stagedToken, err := mariaDBRuntimeServiceTokenForUpdate(
-		ctx, tx, rotation.StagedTokenID,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
+	stagedToken, ok := lockedTokens[rotation.StagedTokenID]
+	if !ok {
 		return SystemUpdateRuntimeTokenRotation{}, false,
 			ErrSystemUpdateRuntimeTokenRotationToken
-	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, false, err
 	}
 	if previousToken.ServiceType != "update_agent" ||
 		stagedToken.ServiceType != "update_agent" ||
@@ -1660,7 +1823,6 @@ func mariaDBRuntimeTokenRotationForTransition(
 	rotationID, executionHostID string,
 ) (
 	SystemUpdateRuntimeTokenRotation,
-	RegisteredService,
 	SystemUpdateExecutionHost,
 	error,
 ) {
@@ -1669,16 +1831,14 @@ func mariaDBRuntimeTokenRotationForTransition(
 FROM system_update_runtime_token_rotations
 WHERE id = ?`, rotationID).Scan(&serviceID, &storedHostID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, ErrNotFound
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{}, ErrNotFound
 	}
 	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, err
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{}, err
 	}
 	if storedHostID != executionHostID {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, ErrSystemUpdateOwnershipConflict
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{},
+			ErrSystemUpdateOwnershipConflict
 	}
 	ownership, err := scanSystemUpdateExecutionHost(tx.QueryRowContext(
 		ctx,
@@ -1686,52 +1846,32 @@ WHERE id = ?`, rotationID).Scan(&serviceID, &storedHostID)
 		executionHostID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, ErrSystemUpdateOwnershipConflict
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{},
+			ErrSystemUpdateOwnershipConflict
 	}
 	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, err
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{}, err
 	}
-	// Every host-scoped mutation takes the execution-host fence first. Lock the
-	// rotation next, then the service row, so transitions cannot deadlock with
-	// stage, job creation, policy changes, or ownership changes.
+	// Every host-scoped mutation takes the execution-host fence first and the
+	// rotation next. Callers then lock the complete discovered service set in
+	// sorted order before locking any service token row.
 	rotation, err := scanSystemUpdateRuntimeTokenRotation(tx.QueryRowContext(
 		ctx,
 		systemUpdateRuntimeTokenRotationSelect+` WHERE id = ? FOR UPDATE`,
 		rotationID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, ErrNotFound
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{}, ErrNotFound
 	}
 	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, err
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{}, err
 	}
 	if rotation.ServiceID != serviceID ||
 		rotation.ExecutionHostID != executionHostID {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, ErrSystemUpdateOwnershipConflict
+		return SystemUpdateRuntimeTokenRotation{}, SystemUpdateExecutionHost{},
+			ErrSystemUpdateOwnershipConflict
 	}
-	service, err := scanService(tx.QueryRowContext(
-		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		rotation.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, ErrNotFound
-	}
-	if err != nil {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, err
-	}
-	if rotation.ServiceID != service.ServiceID {
-		return SystemUpdateRuntimeTokenRotation{}, RegisteredService{},
-			SystemUpdateExecutionHost{}, ErrSystemUpdateOwnershipConflict
-	}
-	return rotation, service, ownership, nil
+	return rotation, ownership, nil
 }
 
 func validateMariaDBRuntimeTokenRotationHostFence(
@@ -1746,34 +1886,6 @@ func validateMariaDBRuntimeTokenRotationHostFence(
 		return ErrSystemUpdateOwnershipConflict
 	}
 	return nil
-}
-
-func mariaDBRuntimeServiceTokenForUpdate(
-	ctx context.Context,
-	tx *sql.Tx,
-	id string,
-) (ServiceToken, error) {
-	var token ServiceToken
-	var scopesJSON string
-	var revokedAt sql.NullTime
-	err := tx.QueryRowContext(ctx, `SELECT id, service_type, token_hash,
-scopes, revoked_at, created_at
-FROM service_tokens
-WHERE id = ?
-FOR UPDATE`, id).Scan(
-		&token.ID, &token.ServiceType, &token.TokenHash, &scopesJSON,
-		&revokedAt, &token.CreatedAt,
-	)
-	if err != nil {
-		return ServiceToken{}, err
-	}
-	if err := json.Unmarshal([]byte(scopesJSON), &token.Scopes); err != nil {
-		return ServiceToken{}, err
-	}
-	if revokedAt.Valid {
-		token.RevokedAt = cloneTimePtr(&revokedAt.Time)
-	}
-	return token, nil
 }
 
 var _ SystemUpdateRuntimeTokenRotationStore = (*MemorySystemUpdateStore)(nil)

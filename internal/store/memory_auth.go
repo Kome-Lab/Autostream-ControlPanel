@@ -12,27 +12,43 @@ import (
 )
 
 type MemoryAuthStore struct {
-	mu            sync.Mutex
-	heartbeatNow  func() time.Time
-	users         map[string]User
-	byUsername    map[string]string
-	roles         map[string]Role
-	permissions   map[string][]string
-	sessions      map[string]Session
-	serviceTokens map[string]ServiceToken
-	services      map[string]RegisteredService
-	metricHistory []ServiceMetricSnapshot
-	assignments   map[string]string
-	failedLogins  map[string]int
-	avatars       map[string]UserAvatar
-	mfaConfigs    map[string]MFAConfig
-	mfaChallenges map[string]MFAChallenge
-	emailChanges  map[string]EmailChangeChallenge
-	passkeys      map[string]PasskeyCredential
-	passkeyReg    map[string]PasskeyRegistrationChallenge
-	passkeySess   map[string]PasskeyCeremonySession
-	streamEvents  []ServiceStreamEvent
-	auditEvents   []AuditEvent
+	mu                    sync.Mutex
+	streamAssignmentGuard *MemoryStreamStore
+	heartbeatNow          func() time.Time
+	users                 map[string]User
+	byUsername            map[string]string
+	roles                 map[string]Role
+	permissions           map[string][]string
+	sessions              map[string]Session
+	serviceTokens         map[string]ServiceToken
+	services              map[string]RegisteredService
+	metricHistory         []ServiceMetricSnapshot
+	assignments           map[string]string
+	assignmentIDs         map[string]string
+	failedLogins          map[string]int
+	avatars               map[string]UserAvatar
+	mfaConfigs            map[string]MFAConfig
+	mfaChallenges         map[string]MFAChallenge
+	emailChanges          map[string]EmailChangeChallenge
+	passkeys              map[string]PasskeyCredential
+	passkeyReg            map[string]PasskeyRegistrationChallenge
+	passkeySess           map[string]PasskeyCeremonySession
+	streamEvents          []ServiceStreamEvent
+	auditEvents           []AuditEvent
+}
+
+// BindStreamAssignmentGuard joins the otherwise separate in-memory service
+// and stream stores under one lock boundary for assignment mutations. The HTTP
+// server binds its stores before serving requests.
+func (s *MemoryAuthStore) BindStreamAssignmentGuard(streams *MemoryStreamStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if streams != nil {
+		streams.mu.Lock()
+		streams.serviceAssignmentGuard = s
+		streams.mu.Unlock()
+	}
+	s.streamAssignmentGuard = streams
 }
 
 type MemoryAuthStoreOption func(*MemoryAuthStore)
@@ -48,7 +64,7 @@ func WithMemoryServiceHeartbeatClock(now func() time.Time) MemoryAuthStoreOption
 func NewMemoryAuthStore(options ...MemoryAuthStoreOption) *MemoryAuthStore {
 	store := &MemoryAuthStore{
 		heartbeatNow: time.Now,
-		users:        map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, failedLogins: map[string]int{}, avatars: map[string]UserAvatar{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, emailChanges: map[string]EmailChangeChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
+		users:        map[string]User{}, byUsername: map[string]string{}, roles: map[string]Role{}, permissions: map[string][]string{}, sessions: map[string]Session{}, serviceTokens: map[string]ServiceToken{}, services: map[string]RegisteredService{}, assignments: map[string]string{}, assignmentIDs: map[string]string{}, failedLogins: map[string]int{}, avatars: map[string]UserAvatar{}, mfaConfigs: map[string]MFAConfig{}, mfaChallenges: map[string]MFAChallenge{}, emailChanges: map[string]EmailChangeChallenge{}, passkeys: map[string]PasskeyCredential{}, passkeyReg: map[string]PasskeyRegistrationChallenge{}, passkeySess: map[string]PasskeyCeremonySession{},
 	}
 	for _, option := range options {
 		if option != nil {

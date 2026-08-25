@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -13,7 +13,7 @@ import {
   toggleNavigationSection,
 } from "../src/lib/navigation-section-state.ts";
 
-const adminShellSource = readFileSync(new URL("../src/components/admin/admin-shell.tsx", import.meta.url), "utf8");
+const navigationPersistenceSource = readFileSync(new URL("../src/components/shell/use-navigation-sections.ts", import.meta.url), "utf8");
 
 test("an active navigation section can be closed and reopened explicitly", () => {
   const active = createNavigationSectionsState(["operations", "monitoring"], "operations", "monitoring");
@@ -63,9 +63,9 @@ test("a section keeps the same React key when its active route changes", () => {
 });
 
 test("admin navigation restores and persists section state across reloads", () => {
-  assert.match(adminShellSource, /navigationSectionsStorageKey/);
-  assert.match(adminShellSource, /localStorage\.getItem/);
-  assert.match(adminShellSource, /localStorage\.setItem/);
+  assert.match(navigationPersistenceSource, /navigationSectionsStorageKey/);
+  assert.match(navigationPersistenceSource, /localStorage\.getItem/);
+  assert.match(navigationPersistenceSource, /localStorage\.setItem/);
   assert.match(navigationSectionsStorageKey, /:v1$/);
 
   const initial = createNavigationSectionsState(["operations", "monitoring", "administration"], "operations", "operations");
@@ -94,8 +94,11 @@ test("invalid or stale navigation storage falls back without adding unknown sect
 });
 
 test("responsive admin surfaces do not depend on a bare hidden utility", () => {
+  const shellDirectory = new URL("../src/components/shell/", import.meta.url);
   const sources = [
-    readFileSync(new URL("../src/components/admin/admin-shell.tsx", import.meta.url), "utf8"),
+    ...readdirSync(shellDirectory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".tsx"))
+      .map((entry) => readFileSync(new URL(entry.name, shellDirectory), "utf8")),
     readFileSync(new URL("../src/features/dashboard/dashboard-view.tsx", import.meta.url), "utf8"),
   ];
   const responsiveDisplay = /^(?:sm|md|lg|xl|2xl):(block|flex|grid|inline-flex)$/;

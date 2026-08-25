@@ -10,6 +10,7 @@ import (
 	"math"
 	"net"
 	"path"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -1331,6 +1332,389 @@ WHERE service_id = ?
 	return current, nil
 }
 
+type mariaDBPullUpdaterOwnershipLockPlan struct {
+	Ownership                 SystemUpdateExecutionHost
+	OwnershipExists           bool
+	Policies                  []UpdaterPolicy
+	PolicyIDs                 []string
+	PrimaryPolicyServiceIDs   []string
+	LegacyPolicyServiceIDs    []string
+	LegacyCandidateServiceIDs []string
+	ServiceIDs                []string
+	TokenIDs                  []string
+	References                []mariaDBServiceTokenReference
+}
+
+type mariaDBUpdaterPolicyLockPhase string
+
+const (
+	mariaDBUpdaterPolicyBeforeHostLock       mariaDBUpdaterPolicyLockPhase = "before_host_lock"
+	mariaDBUpdaterPolicyHostLockHeld         mariaDBUpdaterPolicyLockPhase = "host_lock_held"
+	mariaDBUpdaterPolicyLaneLocksHeld        mariaDBUpdaterPolicyLockPhase = "lane_locks_held"
+	mariaDBUpdaterPolicyBeforePolicyLocks    mariaDBUpdaterPolicyLockPhase = "before_policy_locks"
+	mariaDBUpdaterPolicyPolicyLocksHeld      mariaDBUpdaterPolicyLockPhase = "policy_locks_held"
+	mariaDBUpdaterPolicyPolicySetRevalidated mariaDBUpdaterPolicyLockPhase = "policy_set_revalidated"
+)
+
+type mariaDBUpdaterPolicyLockObserver func(string, mariaDBUpdaterPolicyLockPhase)
+type mariaDBUpdaterPolicyLockObserverContextKey struct{}
+
+func observeMariaDBUpdaterPolicyLockPhase(
+	ctx context.Context,
+	operation string,
+	phase mariaDBUpdaterPolicyLockPhase,
+) {
+	observer, _ := ctx.Value(mariaDBUpdaterPolicyLockObserverContextKey{}).(mariaDBUpdaterPolicyLockObserver)
+	if observer != nil {
+		observer(operation, phase)
+	}
+}
+
+func mariaDBUpdaterPolicyPersistentServiceIDs(policy UpdaterPolicy) []string {
+	serviceIDs := []string{policy.UpdaterID}
+	for _, target := range policy.Targets {
+		if !updaterPolicyControlPanelTarget(target) {
+			serviceIDs = append(serviceIDs, target.ServiceID)
+		}
+	}
+	return sortedUniqueStrings(serviceIDs)
+}
+
+func mariaDBServiceTokenIDs(services map[string]RegisteredService) []string {
+	tokenIDs := make([]string, 0, len(services)*3)
+	for _, service := range services {
+		tokenIDs = append(
+			tokenIDs,
+			service.TokenID,
+			service.StagedNodePreviousTokenID,
+			service.StagedNodeTokenID,
+		)
+	}
+	return sortedUniqueStrings(tokenIDs)
+}
+
+func discoverMariaDBUpdaterOwnershipServiceTokenSet(
+	ctx context.Context,
+	auth MariaDBAuthStore,
+	seedServiceIDs []string,
+) ([]string, []string, []mariaDBServiceTokenReference, error) {
+	serviceIDs := sortedUniqueStrings(seedServiceIDs)
+	services := make(map[string]RegisteredService, len(serviceIDs))
+	for {
+		for _, serviceID := range serviceIDs {
+			if _, exists := services[serviceID]; exists {
+				continue
+			}
+			service, err := auth.getService(ctx, serviceID)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			services[serviceID] = service
+		}
+		tokenIDs := mariaDBServiceTokenIDs(services)
+		references, err := discoverMariaDBServiceTokenReferences(ctx, auth.db, tokenIDs)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		nextServiceIDs := append([]string(nil), serviceIDs...)
+		for _, reference := range references {
+			nextServiceIDs = append(nextServiceIDs, reference.ServiceID)
+		}
+		nextServiceIDs = sortedUniqueStrings(nextServiceIDs)
+		if equalSortedStrings(serviceIDs, nextServiceIDs) {
+			return serviceIDs, tokenIDs, references, nil
+		}
+		serviceIDs = nextServiceIDs
+	}
+}
+
+func mariaDBUpdaterPolicyByServiceID(
+	policies []UpdaterPolicy,
+	serviceID string,
+) (UpdaterPolicy, bool) {
+	serviceID = strings.TrimSpace(serviceID)
+	for _, policy := range policies {
+		if policy.UpdaterID == serviceID {
+			return policy, true
+		}
+	}
+	return UpdaterPolicy{}, false
+}
+
+func expandMariaDBUpdaterPolicyServiceClosure(
+	policies []UpdaterPolicy,
+	seedServiceIDs []string,
+) []string {
+	serviceIDs := sortedUniqueStrings(seedServiceIDs)
+	for {
+		nextServiceIDs := append([]string(nil), serviceIDs...)
+		for _, serviceID := range serviceIDs {
+			policy, exists := mariaDBUpdaterPolicyByServiceID(policies, serviceID)
+			if !exists {
+				continue
+			}
+			nextServiceIDs = append(
+				nextServiceIDs,
+				mariaDBUpdaterPolicyPersistentServiceIDs(policy)...,
+			)
+		}
+		nextServiceIDs = sortedUniqueStrings(nextServiceIDs)
+		if equalSortedStrings(serviceIDs, nextServiceIDs) {
+			return serviceIDs
+		}
+		serviceIDs = nextServiceIDs
+	}
+}
+
+func discoverMariaDBUpdaterOwnershipReferenceClosure(
+	ctx context.Context,
+	auth MariaDBAuthStore,
+	policies []UpdaterPolicy,
+	seedServiceIDs []string,
+) ([]string, []string, []mariaDBServiceTokenReference, error) {
+	serviceIDs := expandMariaDBUpdaterPolicyServiceClosure(policies, seedServiceIDs)
+	for {
+		lockedServiceIDs, tokenIDs, references, err :=
+			discoverMariaDBUpdaterOwnershipServiceTokenSet(ctx, auth, serviceIDs)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		nextServiceIDs := expandMariaDBUpdaterPolicyServiceClosure(policies, lockedServiceIDs)
+		if equalSortedStrings(lockedServiceIDs, nextServiceIDs) {
+			return lockedServiceIDs, tokenIDs, references, nil
+		}
+		serviceIDs = nextServiceIDs
+	}
+}
+
+func lockMariaDBPullUpdaterOwnershipPolicies(
+	ctx context.Context,
+	tx *sql.Tx,
+	operation string,
+	discovered []UpdaterPolicy,
+	discoveredPolicyIDs []string,
+) (map[string]UpdaterPolicy, error) {
+	observeMariaDBUpdaterPolicyLockPhase(ctx, operation, mariaDBUpdaterPolicyBeforePolicyLocks)
+	rows, err := tx.QueryContext(ctx, `SELECT service_id,
+       revision,
+       projection_revision,
+       local_executor_policy_revision,
+       policy_json,
+       updated_at
+FROM update_agent_policies
+ORDER BY service_id
+FOR UPDATE`)
+	if err != nil {
+		return nil, err
+	}
+	locked := make([]UpdaterPolicy, 0, len(discovered))
+	for rows.Next() {
+		var (
+			serviceID                   string
+			revision                    int64
+			projectionRevision          int64
+			localExecutorPolicyRevision int64
+			body                        []byte
+			updatedAt                   time.Time
+		)
+		if err := rows.Scan(
+			&serviceID,
+			&revision,
+			&projectionRevision,
+			&localExecutorPolicyRevision,
+			&body,
+			&updatedAt,
+		); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		policy, err := decodeUpdaterPolicyRevisions(
+			serviceID,
+			revision,
+			projectionRevision,
+			localExecutorPolicyRevision,
+			body,
+			updatedAt,
+		)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		locked = append(locked, policy)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, operation, mariaDBUpdaterPolicyPolicyLocksHeld)
+
+	lockedByServiceID := make(map[string]UpdaterPolicy, len(locked))
+	lockedPolicyIDs := make([]string, 0, len(locked))
+	for index := range locked {
+		if err := attachUpdaterTargetDatabases(ctx, tx, &locked[index]); err != nil {
+			return nil, err
+		}
+		if err := attachUpdaterTargetLocalListeners(ctx, tx, &locked[index]); err != nil {
+			return nil, err
+		}
+		lockedByServiceID[locked[index].UpdaterID] = locked[index]
+		lockedPolicyIDs = append(lockedPolicyIDs, locked[index].UpdaterID)
+	}
+	if !equalSortedStrings(discoveredPolicyIDs, sortedUniqueStrings(lockedPolicyIDs)) ||
+		!reflect.DeepEqual(discovered, locked) {
+		return nil, ErrConflict
+	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, operation, mariaDBUpdaterPolicyPolicySetRevalidated)
+	return lockedByServiceID, nil
+}
+
+func (s MariaDBUpdaterPolicyStore) discoverMariaDBPullUpdaterOwnershipLockPlan(
+	ctx context.Context,
+	auth MariaDBAuthStore,
+	serviceID, executionHostID string,
+	discoverLegacyCandidates bool,
+) (mariaDBPullUpdaterOwnershipLockPlan, error) {
+	policies, err := s.ListUpdaterPolicies(ctx)
+	if err != nil {
+		return mariaDBPullUpdaterOwnershipLockPlan{}, err
+	}
+	policy, exists := mariaDBUpdaterPolicyByServiceID(policies, serviceID)
+	if !exists {
+		return mariaDBPullUpdaterOwnershipLockPlan{}, ErrNotFound
+	}
+	plan := mariaDBPullUpdaterOwnershipLockPlan{
+		Policies:                policies,
+		PrimaryPolicyServiceIDs: mariaDBUpdaterPolicyPersistentServiceIDs(policy),
+	}
+	for _, candidate := range policies {
+		plan.PolicyIDs = append(plan.PolicyIDs, candidate.UpdaterID)
+	}
+	plan.PolicyIDs = sortedUniqueStrings(plan.PolicyIDs)
+	plan.Ownership, err = scanSystemUpdateExecutionHost(s.db.QueryRowContext(
+		ctx,
+		systemUpdateExecutionHostSelect+` WHERE execution_host_id = ?`,
+		executionHostID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		plan.Ownership = syntheticSystemUpdateExecutionHost(executionHostID)
+		err = nil
+	} else if err == nil {
+		plan.OwnershipExists = true
+	}
+	if err != nil {
+		return mariaDBPullUpdaterOwnershipLockPlan{}, err
+	}
+	seedServiceIDs := append([]string(nil), plan.PrimaryPolicyServiceIDs...)
+	seedServiceIDs = append(
+		seedServiceIDs,
+		plan.Ownership.AgentServiceID,
+		plan.Ownership.LegacyAgentServiceID,
+	)
+	for _, candidate := range policies {
+		if candidate.ExecutionHostID == executionHostID ||
+			candidate.UpdaterID == plan.Ownership.AgentServiceID ||
+			candidate.UpdaterID == plan.Ownership.LegacyAgentServiceID {
+			seedServiceIDs = append(
+				seedServiceIDs,
+				mariaDBUpdaterPolicyPersistentServiceIDs(candidate)...,
+			)
+		}
+	}
+	var activeRuntimeRotationServiceID string
+	runtimeRotationErr := s.db.QueryRowContext(ctx, `SELECT service_id
+FROM system_update_runtime_token_rotations
+WHERE active_execution_host_id = ?`, executionHostID).Scan(&activeRuntimeRotationServiceID)
+	if runtimeRotationErr == nil {
+		seedServiceIDs = append(seedServiceIDs, activeRuntimeRotationServiceID)
+		if runtimePolicy, found := mariaDBUpdaterPolicyByServiceID(
+			policies,
+			activeRuntimeRotationServiceID,
+		); found {
+			seedServiceIDs = append(
+				seedServiceIDs,
+				mariaDBUpdaterPolicyPersistentServiceIDs(runtimePolicy)...,
+			)
+		}
+	} else if !errors.Is(runtimeRotationErr, sql.ErrNoRows) {
+		return mariaDBPullUpdaterOwnershipLockPlan{}, runtimeRotationErr
+	}
+	if discoverLegacyCandidates && !plan.OwnershipExists {
+		for _, candidate := range policies {
+			if !legacyUpdaterPolicyCoversPullPolicy(candidate, policy, executionHostID) {
+				continue
+			}
+			plan.LegacyCandidateServiceIDs = append(
+				plan.LegacyCandidateServiceIDs,
+				candidate.UpdaterID,
+			)
+			seedServiceIDs = append(
+				seedServiceIDs,
+				mariaDBUpdaterPolicyPersistentServiceIDs(candidate)...,
+			)
+		}
+		plan.LegacyCandidateServiceIDs = sortedUniqueStrings(plan.LegacyCandidateServiceIDs)
+	} else {
+		legacyServiceID := strings.TrimSpace(plan.Ownership.LegacyAgentServiceID)
+		if legacyServiceID == "" &&
+			normalizedSystemUpdateTransportMode(plan.Ownership.TransportMode) == SystemUpdateTransportSSHV1 {
+			legacyServiceID = strings.TrimSpace(plan.Ownership.AgentServiceID)
+		}
+		if legacyServiceID != "" {
+			legacyPolicy, found := mariaDBUpdaterPolicyByServiceID(policies, legacyServiceID)
+			if found {
+				plan.LegacyPolicyServiceIDs = mariaDBUpdaterPolicyPersistentServiceIDs(legacyPolicy)
+				seedServiceIDs = append(seedServiceIDs, plan.LegacyPolicyServiceIDs...)
+			}
+		}
+	}
+	plan.ServiceIDs, plan.TokenIDs, plan.References, err =
+		discoverMariaDBUpdaterOwnershipReferenceClosure(ctx, auth, policies, seedServiceIDs)
+	if err != nil {
+		return mariaDBPullUpdaterOwnershipLockPlan{}, err
+	}
+	return plan, nil
+}
+
+func (plan mariaDBPullUpdaterOwnershipLockPlan) matchesOwnership(
+	ownership SystemUpdateExecutionHost,
+	exists bool,
+) bool {
+	return plan.OwnershipExists == exists &&
+		plan.Ownership.ExecutionHostID == ownership.ExecutionHostID &&
+		normalizedSystemUpdateTransportMode(plan.Ownership.TransportMode) ==
+			normalizedSystemUpdateTransportMode(ownership.TransportMode) &&
+		plan.Ownership.AgentServiceID == ownership.AgentServiceID &&
+		plan.Ownership.LegacyAgentServiceID == ownership.LegacyAgentServiceID &&
+		plan.Ownership.OwnershipEpoch == ownership.OwnershipEpoch &&
+		plan.Ownership.PolicyRevision == ownership.PolicyRevision
+}
+
+func (plan mariaDBPullUpdaterOwnershipLockPlan) matchesLockedServices(
+	services map[string]RegisteredService,
+) bool {
+	if len(services) != len(plan.ServiceIDs) {
+		return false
+	}
+	expectedByServiceID := make(map[string]mariaDBServiceTokenReference, len(plan.References))
+	for _, reference := range plan.References {
+		expectedByServiceID[reference.ServiceID] = reference
+	}
+	for _, serviceID := range plan.ServiceIDs {
+		service, exists := services[serviceID]
+		expected, expectedExists := expectedByServiceID[serviceID]
+		if !exists || !expectedExists ||
+			service.TokenID != expected.TokenID ||
+			service.StagedNodePreviousTokenID != expected.StagedPreviousTokenID ||
+			service.StagedNodeTokenID != expected.StagedTokenID {
+			return false
+		}
+	}
+	return true
+}
+
 func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	ctx context.Context,
 	services ServiceRegistryStore,
@@ -1349,6 +1733,19 @@ func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	if !ok || updates == nil || updates.db == nil || updates.db != s.db {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
 	}
+	lockPlan, err := s.discoverMariaDBPullUpdaterOwnershipLockPlan(
+		ctx,
+		auth,
+		params.ServiceID,
+		params.ExecutionHostID,
+		true,
+	)
+	if errors.Is(err, ErrNotFound) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1356,6 +1753,11 @@ func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	}
 	defer tx.Rollback()
 
+	observeMariaDBUpdaterPolicyLockPhase(
+		ctx,
+		"activate_pull_updater_ownership",
+		mariaDBUpdaterPolicyBeforeHostLock,
+	)
 	currentOwnership, err := scanSystemUpdateExecutionHost(tx.QueryRowContext(
 		ctx,
 		systemUpdateExecutionHostSelect+` WHERE execution_host_id = ? FOR UPDATE`,
@@ -1369,39 +1771,19 @@ func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	if err != nil {
 		return ActivatePullUpdaterOwnershipResult{}, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(
+		ctx,
+		"activate_pull_updater_ownership",
+		mariaDBUpdaterPolicyHostLockHeld,
+	)
+	if !lockPlan.matchesOwnership(currentOwnership, !ownershipMissing) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
 	if currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
 	}
 	if normalizedSystemUpdateTransportMode(currentOwnership.TransportMode) != SystemUpdateTransportSSHV1 {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-
-	service, err := scanService(tx.QueryRowContext(
-		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		params.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	if err != nil {
-		return ActivatePullUpdaterOwnershipResult{}, err
-	}
-	if service.ServiceType != "update_agent" ||
-		service.TransportMode != SystemUpdateTransportPullV2 ||
-		service.ExecutionHostID != params.ExecutionHostID ||
-		service.OwnershipEpoch != 0 {
-		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	token, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
-	if errors.Is(err, ErrNotFound) {
-		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	if err != nil {
-		return ActivatePullUpdaterOwnershipResult{}, err
-	}
-	if token.ServiceType != "update_agent" {
-		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
 	}
 
 	var activeJobID string
@@ -1418,50 +1800,25 @@ FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ActivatePullUpdaterOwnershipResult{}, err
 	}
-
-	var (
-		policyRevision                    int64
-		policyProjectionRevision          int64
-		policyLocalExecutorPolicyRevision int64
-		policyBody                        []byte
-		policyUpdatedAt                   time.Time
-	)
-	err = tx.QueryRowContext(
+	observeMariaDBUpdaterPolicyLockPhase(
 		ctx,
-		`SELECT revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
-FROM update_agent_policies
-WHERE service_id = ?
-FOR UPDATE`,
-		params.ServiceID,
-	).Scan(
-		&policyRevision,
-		&policyProjectionRevision,
-		&policyLocalExecutorPolicyRevision,
-		&policyBody,
-		&policyUpdatedAt,
+		"activate_pull_updater_ownership",
+		mariaDBUpdaterPolicyLaneLocksHeld,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
+
+	lockedPolicies, err := lockMariaDBPullUpdaterOwnershipPolicies(
+		ctx,
+		tx,
+		"activate_pull_updater_ownership",
+		lockPlan.Policies,
+		lockPlan.PolicyIDs,
+	)
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	policy, exists := lockedPolicies[params.ServiceID]
+	if !exists {
 		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
-	}
-	if err != nil {
-		return ActivatePullUpdaterOwnershipResult{}, err
-	}
-	policy, err := decodeUpdaterPolicyRevisions(
-		params.ServiceID,
-		policyRevision,
-		policyProjectionRevision,
-		policyLocalExecutorPolicyRevision,
-		policyBody,
-		policyUpdatedAt,
-	)
-	if err != nil {
-		return ActivatePullUpdaterOwnershipResult{}, err
-	}
-	if err := attachUpdaterTargetDatabases(ctx, tx, &policy); err != nil {
-		return ActivatePullUpdaterOwnershipResult{}, err
-	}
-	if err := attachUpdaterTargetLocalListeners(ctx, tx, &policy); err != nil {
-		return ActivatePullUpdaterOwnershipResult{}, err
 	}
 	if !PullUpdaterPolicyDatabaseBindingsReady(policy) {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
@@ -1474,7 +1831,49 @@ FOR UPDATE`,
 		policy.LocalExecutorPolicySHA256 != params.ExpectedLocalExecutorPolicySHA256 {
 		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
 	}
-	targetIDs := make([]string, 0, len(policy.Targets))
+	if !equalSortedStrings(
+		lockPlan.PrimaryPolicyServiceIDs,
+		mariaDBUpdaterPolicyPersistentServiceIDs(policy),
+	) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
+	lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutation(
+		ctx,
+		tx,
+		"activate_pull_updater_ownership",
+		lockPlan.References,
+		lockPlan.TokenIDs,
+		lockPlan.ServiceIDs...,
+	)
+	if errors.Is(err, ErrNotFound) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if err != nil {
+		return ActivatePullUpdaterOwnershipResult{}, err
+	}
+	if !lockPlan.matchesLockedServices(lockedServices) ||
+		!mariaDBServiceTokenReferenceTypesMatch(
+			lockPlan.References,
+			lockedServices,
+			lockedTokens,
+		) {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	service, exists := lockedServices[params.ServiceID]
+	if !exists {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if service.ServiceType != "update_agent" ||
+		service.TransportMode != SystemUpdateTransportPullV2 ||
+		service.ExecutionHostID != params.ExecutionHostID ||
+		service.OwnershipEpoch != 0 {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	lockedToken, tokenExists := lockedTokens[service.TokenID]
+	if !tokenExists || lockedToken.RevokedAt != nil ||
+		lockedToken.ServiceType != "update_agent" {
+		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
 	targetServices := make(map[string]RegisteredService, len(policy.Targets))
 	controlPanelTargetUsed := false
 	for _, target := range policy.Targets {
@@ -1486,25 +1885,33 @@ FOR UPDATE`,
 			controlPanelTargetUsed = true
 			continue
 		}
-		targetIDs = append(targetIDs, target.ServiceID)
+		targetService, targetExists := lockedServices[target.ServiceID]
+		if !targetExists {
+			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+		}
+		targetServices[target.ServiceID] = targetService
 	}
 	if params.ControlPanelTarget != nil && !controlPanelTargetUsed {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
-	sort.Strings(targetIDs)
-	for _, targetID := range targetIDs {
-		targetService, targetErr := scanService(tx.QueryRowContext(
-			ctx,
-			serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-			targetID,
-		))
-		if errors.Is(targetErr, sql.ErrNoRows) {
-			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
+		currentOwnership,
+		SystemUpdateTransportPullV2,
+		params.ServiceID,
+	)
+	if legacyAgentServiceID == "" && ownershipMissing {
+		legacyAgentServiceID, err = uniqueActiveMariaDBLegacyUpdaterForHostLocked(
+			params.ExecutionHostID,
+			policy,
+			service.TokenID,
+			lockPlan.LegacyCandidateServiceIDs,
+			lockedPolicies,
+			lockedServices,
+			lockedTokens,
+		)
+		if err != nil {
+			return ActivatePullUpdaterOwnershipResult{}, err
 		}
-		if targetErr != nil {
-			return ActivatePullUpdaterOwnershipResult{}, targetErr
-		}
-		targetServices[targetID] = targetService
 	}
 	if !registeredPullObserverReadyForActivation(service, policy, targetServices, time.Now().UTC()) {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
@@ -1545,22 +1952,6 @@ FOR UPDATE`,
 	}
 
 	now := time.Now().UTC()
-	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
-		currentOwnership,
-		SystemUpdateTransportPullV2,
-		params.ServiceID,
-	)
-	if legacyAgentServiceID == "" && ownershipMissing {
-		legacyAgentServiceID, err = uniqueActiveMariaDBLegacyUpdaterForHost(
-			ctx,
-			tx,
-			params.ExecutionHostID,
-			policy,
-		)
-		if err != nil {
-			return ActivatePullUpdaterOwnershipResult{}, err
-		}
-	}
 	nextOwnership := SystemUpdateExecutionHost{
 		ExecutionHostID:      params.ExecutionHostID,
 		TransportMode:        SystemUpdateTransportPullV2,
@@ -1719,13 +2110,46 @@ func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	if !ok || updates == nil || updates.db == nil || updates.db != s.db {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionStoreMismatch
 	}
-
+	lockPlan, err := s.discoverMariaDBPullUpdaterOwnershipLockPlan(
+		ctx,
+		auth,
+		params.ServiceID,
+		params.ExecutionHostID,
+		false,
+	)
+	if errors.Is(err, ErrNotFound) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	if err != nil {
+		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	if !lockPlan.OwnershipExists {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	discoveredOwnership := lockPlan.Ownership
+	if discoveredOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
+	}
+	if discoveredOwnership.TransportMode != SystemUpdateTransportPullV2 ||
+		discoveredOwnership.AgentServiceID != params.ServiceID ||
+		discoveredOwnership.OwnershipEpoch <= 0 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	discoveredLegacyAgentServiceID := strings.TrimSpace(discoveredOwnership.LegacyAgentServiceID)
+	if !updaterPolicyIdentifierPattern.MatchString(discoveredLegacyAgentServiceID) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return DeactivatePullUpdaterOwnershipResult{}, err
 	}
 	defer tx.Rollback()
 
+	observeMariaDBUpdaterPolicyLockPhase(
+		ctx,
+		"deactivate_pull_updater_ownership",
+		mariaDBUpdaterPolicyBeforeHostLock,
+	)
 	currentOwnership, err := scanSystemUpdateExecutionHost(tx.QueryRowContext(
 		ctx,
 		systemUpdateExecutionHostSelect+` WHERE execution_host_id = ? FOR UPDATE`,
@@ -1736,6 +2160,14 @@ func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	}
 	if err != nil {
 		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	observeMariaDBUpdaterPolicyLockPhase(
+		ctx,
+		"deactivate_pull_updater_ownership",
+		mariaDBUpdaterPolicyHostLockHeld,
+	)
+	if !lockPlan.matchesOwnership(currentOwnership, true) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
 	}
 	if currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
@@ -1749,37 +2181,8 @@ func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	if !updaterPolicyIdentifierPattern.MatchString(legacyAgentServiceID) {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
-
-	service, err := scanService(tx.QueryRowContext(
-		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		params.ServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	if err != nil {
-		return DeactivatePullUpdaterOwnershipResult{}, err
-	}
-	if service.ServiceType != "update_agent" ||
-		service.TransportMode != SystemUpdateTransportPullV2 ||
-		service.ExecutionHostID != params.ExecutionHostID ||
-		service.OwnershipEpoch != currentOwnership.OwnershipEpoch {
+	if legacyAgentServiceID != discoveredLegacyAgentServiceID {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	token, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
-	if errors.Is(err, ErrNotFound) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	if err != nil {
-		return DeactivatePullUpdaterOwnershipResult{}, err
-	}
-	if token.ServiceType != "update_agent" {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	recoveryPending, recoveryStateKnown := service.ReportedCapabilities["recovery_pending"].(bool)
-	if !recoveryStateKnown || recoveryPending {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
 	}
 
 	var activeID string
@@ -1833,13 +2236,25 @@ FOR UPDATE`, params.ExecutionHostID, now).Scan(&activeID)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return DeactivatePullUpdaterOwnershipResult{}, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(
+		ctx,
+		"deactivate_pull_updater_ownership",
+		mariaDBUpdaterPolicyLaneLocksHeld,
+	)
 
-	policy, err := mariaDBUpdaterPolicyForUpdate(ctx, tx, params.ServiceID)
-	if errors.Is(err, ErrNotFound) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
-	}
+	lockedPolicies, err := lockMariaDBPullUpdaterOwnershipPolicies(
+		ctx,
+		tx,
+		"deactivate_pull_updater_ownership",
+		lockPlan.Policies,
+		lockPlan.PolicyIDs,
+	)
 	if err != nil {
 		return DeactivatePullUpdaterOwnershipResult{}, err
+	}
+	policy, exists := lockedPolicies[params.ServiceID]
+	if !exists {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
 	}
 	if policy.Revision != params.ExpectedSourcePolicyRevision ||
 		policy.ProjectionRevision != params.ExpectedProjectionRevision ||
@@ -1850,26 +2265,36 @@ FOR UPDATE`, params.ExecutionHostID, now).Scan(&activeID)
 		currentOwnership.PolicyRevision != policy.ProjectionRevision {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
 	}
+	if !equalSortedStrings(
+		lockPlan.PrimaryPolicyServiceIDs,
+		mariaDBUpdaterPolicyPersistentServiceIDs(policy),
+	) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
+	}
 
-	legacyService, err := scanService(tx.QueryRowContext(
-		ctx,
-		serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
-		legacyAgentServiceID,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	if err != nil {
-		return DeactivatePullUpdaterOwnershipResult{}, err
-	}
-	if legacyService.ServiceType != "update_agent" ||
-		normalizedSystemUpdateTransportMode(legacyService.TransportMode) != SystemUpdateTransportSSHV1 {
+	legacyPolicy, legacyPolicyExists := lockedPolicies[legacyAgentServiceID]
+	if !legacyPolicyExists ||
+		!legacyUpdaterPolicyCoversPullPolicy(
+			legacyPolicy,
+			policy,
+			params.ExecutionHostID,
+		) {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
-	legacyToken, err := selectActiveServiceTokenForUpdate(
+	if !equalSortedStrings(
+		lockPlan.LegacyPolicyServiceIDs,
+		mariaDBUpdaterPolicyPersistentServiceIDs(legacyPolicy),
+	) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+
+	lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutation(
 		ctx,
 		tx,
-		legacyService.TokenID,
+		"deactivate_pull_updater_ownership",
+		lockPlan.References,
+		lockPlan.TokenIDs,
+		lockPlan.ServiceIDs...,
 	)
 	if errors.Is(err, ErrNotFound) {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
@@ -1877,28 +2302,50 @@ FOR UPDATE`, params.ExecutionHostID, now).Scan(&activeID)
 	if err != nil {
 		return DeactivatePullUpdaterOwnershipResult{}, err
 	}
-	if legacyToken.ServiceType != "update_agent" ||
+	if !lockPlan.matchesLockedServices(lockedServices) ||
+		!mariaDBServiceTokenReferenceTypesMatch(
+			lockPlan.References,
+			lockedServices,
+			lockedTokens,
+		) {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+
+	service, exists := lockedServices[params.ServiceID]
+	if !exists {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if service.ServiceType != "update_agent" ||
+		service.TransportMode != SystemUpdateTransportPullV2 ||
+		service.ExecutionHostID != params.ExecutionHostID ||
+		service.OwnershipEpoch != currentOwnership.OwnershipEpoch {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	token, exists := lockedTokens[service.TokenID]
+	if !exists || token.RevokedAt != nil || token.ServiceType != "update_agent" {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	recoveryPending, recoveryStateKnown := service.ReportedCapabilities["recovery_pending"].(bool)
+	if !recoveryStateKnown || recoveryPending {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
+	}
+
+	legacyService, exists := lockedServices[legacyAgentServiceID]
+	if !exists {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
+	}
+	if legacyService.ServiceType != "update_agent" ||
+		normalizedSystemUpdateTransportMode(legacyService.TransportMode) != SystemUpdateTransportSSHV1 {
+		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	legacyToken, exists := lockedTokens[legacyService.TokenID]
+	if !exists || legacyToken.RevokedAt != nil ||
+		legacyToken.ServiceType != "update_agent" ||
 		validateRequiredUpdateAgentScopes(
 			legacyToken.ServiceType,
 			legacyToken.Scopes,
 		) != nil {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	legacyPolicy, err := mariaDBUpdaterPolicyForUpdate(
-		ctx,
-		tx,
-		legacyAgentServiceID,
-	)
-	if errors.Is(err, ErrNotFound) ||
-		(err == nil && !legacyUpdaterPolicyCoversPullPolicy(
-			legacyPolicy,
-			policy,
-			params.ExecutionHostID,
-		)) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	if err != nil {
-		return DeactivatePullUpdaterOwnershipResult{}, err
 	}
 
 	nextOwnership := SystemUpdateExecutionHost{
@@ -1980,127 +2427,60 @@ WHERE service_id = ?
 	}, nil
 }
 
-func mariaDBUpdaterPolicyForUpdate(
-	ctx context.Context,
-	tx *sql.Tx,
-	serviceID string,
-) (UpdaterPolicy, error) {
-	var (
-		revision                    int64
-		projectionRevision          int64
-		localExecutorPolicyRevision int64
-		body                        []byte
-		updatedAt                   time.Time
-	)
-	err := tx.QueryRowContext(
-		ctx,
-		`SELECT revision, projection_revision, local_executor_policy_revision, policy_json, updated_at
-FROM update_agent_policies
-WHERE service_id = ?
-FOR UPDATE`,
-		serviceID,
-	).Scan(
-		&revision,
-		&projectionRevision,
-		&localExecutorPolicyRevision,
-		&body,
-		&updatedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return UpdaterPolicy{}, ErrNotFound
-	}
-	if err != nil {
-		return UpdaterPolicy{}, err
-	}
-	return decodeUpdaterPolicyRevisions(
-		serviceID,
-		revision,
-		projectionRevision,
-		localExecutorPolicyRevision,
-		body,
-		updatedAt,
-	)
-}
-
-func uniqueActiveMariaDBLegacyUpdaterForHost(
-	ctx context.Context,
-	tx *sql.Tx,
+func uniqueActiveMariaDBLegacyUpdaterForHostLocked(
 	executionHostID string,
 	pullPolicy UpdaterPolicy,
+	requiredTokenID string,
+	expectedCandidateServiceIDs []string,
+	lockedPolicies map[string]UpdaterPolicy,
+	lockedServices map[string]RegisteredService,
+	lockedTokens map[string]ServiceToken,
 ) (string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT policy.service_id,
-       token.scopes,
-       policy.revision,
-       policy.projection_revision,
-       policy.local_executor_policy_revision,
-       policy.policy_json,
-       policy.updated_at
-FROM update_agent_policies AS policy
-INNER JOIN services AS service ON service.service_id = policy.service_id
-INNER JOIN service_tokens AS token ON token.id = service.token_id
-WHERE service.service_type = 'update_agent'
-  AND service.transport_mode = ?
-  AND token.service_type = 'update_agent'
-  AND token.revoked_at IS NULL
-ORDER BY policy.service_id
-FOR UPDATE`, SystemUpdateTransportSSHV1)
-	if err != nil {
-		return "", err
+	type legacyUpdaterCandidate struct {
+		serviceID string
 	}
-	defer rows.Close()
-	candidates := make([]string, 0, 2)
-	for rows.Next() {
-		var (
-			serviceID                   string
-			tokenScopesJSON             string
-			revision                    int64
-			projectionRevision          int64
-			localExecutorPolicyRevision int64
-			body                        []byte
-			updatedAt                   time.Time
-		)
-		if err := rows.Scan(
-			&serviceID,
-			&tokenScopesJSON,
-			&revision,
-			&projectionRevision,
-			&localExecutorPolicyRevision,
-			&body,
-			&updatedAt,
-		); err != nil {
-			return "", err
-		}
-		policy, err := decodeUpdaterPolicyRevisions(
-			serviceID,
-			revision,
-			projectionRevision,
-			localExecutorPolicyRevision,
-			body,
-			updatedAt,
-		)
-		if err != nil {
-			return "", err
-		}
-		var tokenScopes []string
-		if err := json.Unmarshal([]byte(tokenScopesJSON), &tokenScopes); err != nil {
-			return "", err
-		}
-		if validateRequiredUpdateAgentScopes("update_agent", tokenScopes) == nil &&
-			legacyUpdaterPolicyCoversPullPolicy(
-				policy,
-				pullPolicy,
-				executionHostID,
-			) {
-			candidates = append(candidates, serviceID)
+	candidates := make([]legacyUpdaterCandidate, 0, 2)
+	policyServiceIDs := make([]string, 0, len(lockedPolicies))
+	for serviceID := range lockedPolicies {
+		policyServiceIDs = append(policyServiceIDs, serviceID)
+	}
+	for _, serviceID := range sortedUniqueStrings(policyServiceIDs) {
+		policy := lockedPolicies[serviceID]
+		if legacyUpdaterPolicyCoversPullPolicy(policy, pullPolicy, executionHostID) {
+			candidates = append(candidates, legacyUpdaterCandidate{
+				serviceID: strings.TrimSpace(serviceID),
+			})
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return "", err
+	candidateServiceIDs := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidateServiceIDs = append(candidateServiceIDs, candidate.serviceID)
 	}
-	if len(candidates) != 1 {
+	if !equalSortedStrings(candidateServiceIDs, expectedCandidateServiceIDs) {
+		return "", ErrSystemUpdateAgentBindingMismatch
+	}
+	requiredToken, exists := lockedTokens[strings.TrimSpace(requiredTokenID)]
+	if !exists || requiredToken.RevokedAt != nil || requiredToken.ServiceType != "update_agent" {
+		return "", ErrSystemUpdateAgentInactive
+	}
+	eligible := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		service, serviceExists := lockedServices[candidate.serviceID]
+		if !serviceExists || service.ServiceType != "update_agent" ||
+			normalizedSystemUpdateTransportMode(service.TransportMode) != SystemUpdateTransportSSHV1 {
+			return "", ErrSystemUpdateAgentBindingMismatch
+		}
+		token, tokenExists := lockedTokens[service.TokenID]
+		if !tokenExists || token.RevokedAt != nil || token.ServiceType != "update_agent" ||
+			validateRequiredUpdateAgentScopes(token.ServiceType, token.Scopes) != nil {
+			continue
+		}
+		eligible = append(eligible, candidate.serviceID)
+	}
+	if len(eligible) != 1 {
 		return "", nil
 	}
-	return candidates[0], nil
+	return eligible[0], nil
 }
 
 func (s MariaDBUpdaterPolicyStore) GetUpdaterReleaseTokenStatus(ctx context.Context) (SecretStatus, error) {

@@ -20,6 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge, statusDescriptor } from "@/components/admin/status-badge";
+import { PageActions } from "@/components/shell/page-actions";
+import { PageHeader } from "@/components/shell/page-header";
 import { useCurrentUser, useServiceHealth, useStreams } from "@/features/queries";
 import { hasPermission } from "@/lib/auth/permissions";
 import { isServiceAvailable } from "@/lib/service-health";
@@ -65,38 +67,38 @@ export function DashboardView() {
 
   return (
     <div className="space-y-5">
-      <section className="flex flex-col gap-3 border-b pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-medium text-primary">
-            <RadioTower className="size-4" />
-            Discord VC連動
-          </div>
-          <h1 className="mt-1 text-xl font-semibold">自動配信オペレーション</h1>
-          <p className="mt-1 text-sm text-muted-foreground">VC参加待機、配信・録画、要対応、配信基盤を一画面で確認できます。</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={refreshing}
-            onClick={() => {
-              if (canReadStreams) void streams.refetch();
-              if (canReadServices) void services.refetch();
-            }}
-          >
-            <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} />
-            最新状態に更新
-          </Button>
-          {canCreateStreams ? (
-            <Button asChild size="sm">
-              <Link href="/admin/streams/#create-stream">
-                <Plus className="size-4" />
-                配信枠を作成
-              </Link>
-            </Button>
-          ) : null}
-        </div>
-      </section>
+      <PageHeader
+        title="自動配信オペレーション"
+        description="VC参加待機、配信・録画、要対応、配信基盤を一画面で確認できます。"
+        breadcrumbs={[{ label: "管理", href: "/admin/" }, { label: "ダッシュボード" }]}
+        eyebrow={<><RadioTower className="size-4" aria-hidden="true" />Discord VC連動</>}
+        actions={(
+          <PageActions
+            primary={canCreateStreams ? (
+              <Button asChild size="sm">
+                <Link href="/admin/streams/#create-stream">
+                  <Plus className="size-4" aria-hidden="true" />
+                  配信枠を作成
+                </Link>
+              </Button>
+            ) : null}
+            secondary={(
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={refreshing}
+                onClick={() => {
+                  if (canReadStreams) void streams.refetch();
+                  if (canReadServices) void services.refetch();
+                }}
+              >
+                <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} aria-hidden="true" />
+                最新状態に更新
+              </Button>
+            )}
+          />
+        )}
+      />
 
       {streams.isError || services.isError ? (
         <QueryWarning

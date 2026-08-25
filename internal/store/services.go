@@ -262,6 +262,7 @@ type ServiceRegistryStore interface {
 	AssignServiceToStream(ctx context.Context, serviceID, streamID, actorUserID string) (RegisteredService, error)
 	AssignServiceToStreamWithRole(ctx context.Context, serviceID, streamID, actorUserID, assignmentRole string) (RegisteredService, error)
 	UnassignServiceFromStream(ctx context.Context, serviceID, actorUserID string) (RegisteredService, error)
+	ServiceAssignmentGuardStore
 	ListStreamAssignments(ctx context.Context, streamID string) ([]RegisteredService, error)
 	ListServiceAssignmentsForService(ctx context.Context, serviceID string) ([]StreamServiceAssignment, error)
 	RequestServiceRestart(ctx context.Context, serviceID string) (RegisteredService, error)
@@ -323,76 +324,491 @@ func (s MariaDBAuthStore) ListServiceTokens(ctx context.Context) ([]ServiceToken
 	return tokens, rows.Err()
 }
 
-func (s MariaDBAuthStore) RevokeServiceToken(ctx context.Context, id string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+type mariaDBServiceTokenReference struct {
+	ServiceID             string
+	TokenID               string
+	StagedPreviousTokenID string
+	StagedTokenID         string
+}
+
+func updateAgentStageTokenReferenceAllowed(serviceID, tokenID, stagedPreviousTokenID, stagedTokenID, targetServiceID, oldTokenID string) bool {
+	if tokenID != oldTokenID && stagedPreviousTokenID != oldTokenID && stagedTokenID != oldTokenID {
+		return true
+	}
+	return serviceID == targetServiceID &&
+		tokenID == oldTokenID &&
+		stagedPreviousTokenID != oldTokenID &&
+		stagedTokenID != oldTokenID
+}
+
+func updateAgentActivationTokenReferenceAllowed(serviceID, tokenID, stagedPreviousTokenID, stagedTokenID, targetServiceID, oldTokenID, newTokenID string) bool {
+	if tokenID != oldTokenID && tokenID != newTokenID &&
+		stagedPreviousTokenID != oldTokenID && stagedPreviousTokenID != newTokenID &&
+		stagedTokenID != oldTokenID && stagedTokenID != newTokenID {
+		return true
+	}
+	return serviceID == targetServiceID &&
+		tokenID == oldTokenID &&
+		stagedPreviousTokenID == oldTokenID &&
+		stagedTokenID == newTokenID
+}
+
+type mariaDBServiceTokenReferenceQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+type mariaDBServiceTokenLockPhase string
+
+const (
+	mariaDBServiceTokenReferenceDiscoveryComplete mariaDBServiceTokenLockPhase = "reference_discovery_complete"
+	mariaDBServiceTokenBeforeServiceLocks         mariaDBServiceTokenLockPhase = "before_service_locks"
+	mariaDBServiceTokenServiceLocksHeld           mariaDBServiceTokenLockPhase = "service_locks_held"
+	mariaDBServiceTokenBeforeTokenLocks           mariaDBServiceTokenLockPhase = "before_token_locks"
+	mariaDBServiceTokenTokenLocksHeld             mariaDBServiceTokenLockPhase = "token_locks_held"
+	mariaDBServiceTokenBindingsValidated          mariaDBServiceTokenLockPhase = "bindings_validated"
+	mariaDBServiceTokenReferenceSetMismatch       mariaDBServiceTokenLockPhase = "reference_set_mismatch"
+	mariaDBServiceTokenReferenceRetryStart        mariaDBServiceTokenLockPhase = "reference_retry_start"
+	mariaDBServiceTokenStableAuthReplayConflict   mariaDBServiceTokenLockPhase = "stable_auth_replay_conflict"
+	mariaDBServiceTokenReferenceRetryLimit                                     = 3
+)
+
+var errMariaDBServiceTokenReferenceSetChanged = errors.New("mariadb service token reference set changed")
+
+type mariaDBServiceTokenLockObserver func(string, mariaDBServiceTokenLockPhase)
+type mariaDBServiceTokenLockObserverContextKey struct{}
+
+func observeMariaDBServiceTokenLockPhase(ctx context.Context, operation string, phase mariaDBServiceTokenLockPhase) {
+	observer, _ := ctx.Value(mariaDBServiceTokenLockObserverContextKey{}).(mariaDBServiceTokenLockObserver)
+	if observer != nil {
+		observer(operation, phase)
+	}
+}
+
+func discoverMariaDBServiceTokenReferences(
+	ctx context.Context,
+	queryer mariaDBServiceTokenReferenceQueryer,
+	tokenIDs []string,
+) ([]mariaDBServiceTokenReference, error) {
+	tokenIDs = sortedUniqueStrings(tokenIDs)
+	if len(tokenIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(tokenIDs)), ",")
+	args := make([]any, 0, len(tokenIDs)*3)
+	for range 3 {
+		for _, tokenID := range tokenIDs {
+			args = append(args, tokenID)
+		}
+	}
+	rows, err := queryer.QueryContext(ctx, `SELECT service_id, token_id,
+COALESCE(staged_node_previous_token_id, ''), COALESCE(staged_node_token_id, '')
+FROM services
+WHERE token_id IN (`+placeholders+`)
+   OR staged_node_previous_token_id IN (`+placeholders+`)
+   OR staged_node_token_id IN (`+placeholders+`)
+ORDER BY service_id`, args...)
 	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byServiceID := make(map[string]mariaDBServiceTokenReference)
+	for rows.Next() {
+		var reference mariaDBServiceTokenReference
+		if err := rows.Scan(
+			&reference.ServiceID,
+			&reference.TokenID,
+			&reference.StagedPreviousTokenID,
+			&reference.StagedTokenID,
+		); err != nil {
+			return nil, err
+		}
+		reference.ServiceID = strings.TrimSpace(reference.ServiceID)
+		reference.TokenID = strings.TrimSpace(reference.TokenID)
+		reference.StagedPreviousTokenID = strings.TrimSpace(reference.StagedPreviousTokenID)
+		reference.StagedTokenID = strings.TrimSpace(reference.StagedTokenID)
+		if reference.ServiceID != "" {
+			byServiceID[reference.ServiceID] = reference
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	serviceIDs := make([]string, 0, len(byServiceID))
+	for serviceID := range byServiceID {
+		serviceIDs = append(serviceIDs, serviceID)
+	}
+	serviceIDs = sortedUniqueStrings(serviceIDs)
+	references := make([]mariaDBServiceTokenReference, 0, len(serviceIDs))
+	for _, serviceID := range serviceIDs {
+		references = append(references, byServiceID[serviceID])
+	}
+	return references, nil
+}
+
+func mariaDBServiceTokenReferencesEqual(left, right []mariaDBServiceTokenReference) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func mariaDBServiceTokenReferenceServiceIDs(
+	references []mariaDBServiceTokenReference,
+	additional ...string,
+) []string {
+	serviceIDs := append([]string(nil), additional...)
+	for _, reference := range references {
+		serviceIDs = append(serviceIDs, reference.ServiceID)
+	}
+	return sortedUniqueStrings(serviceIDs)
+}
+
+func lockMariaDBServiceTokensSorted(
+	ctx context.Context,
+	tx *sql.Tx,
+	tokenIDs []string,
+) (map[string]ServiceToken, error) {
+	locked := make(map[string]ServiceToken)
+	for _, tokenID := range sortedUniqueStrings(tokenIDs) {
+		token, err := selectServiceTokenForNodeConfiguration(ctx, tx, tokenID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		locked[token.ID] = token
+	}
+	return locked, nil
+}
+
+func lockMariaDBServiceTokenMutation(
+	ctx context.Context,
+	tx *sql.Tx,
+	operation string,
+	discovered []mariaDBServiceTokenReference,
+	tokenIDs []string,
+	additionalServiceIDs ...string,
+) (map[string]RegisteredService, map[string]ServiceToken, error) {
+	return lockMariaDBServiceTokenMutationWithReferenceSetError(
+		ctx,
+		tx,
+		operation,
+		discovered,
+		tokenIDs,
+		ErrNotFound,
+		additionalServiceIDs...,
+	)
+}
+
+func lockMariaDBServiceTokenMutationRetryable(
+	ctx context.Context,
+	tx *sql.Tx,
+	operation string,
+	discovered []mariaDBServiceTokenReference,
+	tokenIDs []string,
+	additionalServiceIDs ...string,
+) (map[string]RegisteredService, map[string]ServiceToken, error) {
+	return lockMariaDBServiceTokenMutationWithReferenceSetError(
+		ctx,
+		tx,
+		operation,
+		discovered,
+		tokenIDs,
+		errMariaDBServiceTokenReferenceSetChanged,
+		additionalServiceIDs...,
+	)
+}
+
+func lockMariaDBServiceTokenMutationWithReferenceSetError(
+	ctx context.Context,
+	tx *sql.Tx,
+	operation string,
+	discovered []mariaDBServiceTokenReference,
+	tokenIDs []string,
+	referenceSetError error,
+	additionalServiceIDs ...string,
+) (map[string]RegisteredService, map[string]ServiceToken, error) {
+	observeMariaDBServiceTokenLockPhase(ctx, operation, mariaDBServiceTokenBeforeServiceLocks)
+	lockedServices, err := lockMariaDBServicesSorted(
+		ctx,
+		tx,
+		mariaDBServiceTokenReferenceServiceIDs(discovered, additionalServiceIDs...),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	observeMariaDBServiceTokenLockPhase(ctx, operation, mariaDBServiceTokenServiceLocksHeld)
+	observeMariaDBServiceTokenLockPhase(ctx, operation, mariaDBServiceTokenBeforeTokenLocks)
+	lockedTokens, err := lockMariaDBServiceTokensSorted(ctx, tx, tokenIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	observeMariaDBServiceTokenLockPhase(ctx, operation, mariaDBServiceTokenTokenLocksHeld)
+	revalidated, err := discoverMariaDBServiceTokenReferences(ctx, tx, tokenIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !mariaDBServiceTokenReferencesEqual(discovered, revalidated) {
+		return nil, nil, referenceSetError
+	}
+	observeMariaDBServiceTokenLockPhase(ctx, operation, mariaDBServiceTokenBindingsValidated)
+	return lockedServices, lockedTokens, nil
+}
+
+func lockMariaDBPrecreateServiceAuthority(
+	ctx context.Context,
+	tx *sql.Tx,
+	serviceID string,
+	discovered []mariaDBServiceTokenReference,
+) (map[string]RegisteredService, error) {
+	serviceIDs := mariaDBServiceTokenReferenceServiceIDs(discovered, serviceID)
+	locked := make(map[string]RegisteredService, len(serviceIDs))
+	for _, candidateID := range serviceIDs {
+		service, err := scanService(tx.QueryRowContext(
+			ctx,
+			serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`,
+			candidateID,
+		))
+		if errors.Is(err, sql.ErrNoRows) && candidateID == serviceID {
+			// Under InnoDB's default REPEATABLE READ isolation this unique-key
+			// miss establishes the insertion gap authority for serviceID. The
+			// caller inserts only after every pre-existing reference was locked
+			// in the same lexical service order used by token mutations.
+			continue
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		if candidateID == serviceID {
+			return nil, ErrAlreadyExists
+		}
+		locked[service.ServiceID] = service
+	}
+	return locked, nil
+}
+
+func mariaDBServiceTokenReferencesWithCurrentBinding(
+	references []mariaDBServiceTokenReference,
+	serviceID, tokenID string,
+) []mariaDBServiceTokenReference {
+	byServiceID := make(map[string]mariaDBServiceTokenReference, len(references)+1)
+	for _, reference := range references {
+		byServiceID[reference.ServiceID] = reference
+	}
+	byServiceID[serviceID] = mariaDBServiceTokenReference{
+		ServiceID: serviceID,
+		TokenID:   tokenID,
+	}
+	serviceIDs := make([]string, 0, len(byServiceID))
+	for candidateID := range byServiceID {
+		serviceIDs = append(serviceIDs, candidateID)
+	}
+	serviceIDs = sortedUniqueStrings(serviceIDs)
+	result := make([]mariaDBServiceTokenReference, 0, len(serviceIDs))
+	for _, candidateID := range serviceIDs {
+		result = append(result, byServiceID[candidateID])
+	}
+	return result
+}
+
+func mariaDBServiceTokenSnapshotMatches(input, locked ServiceToken) bool {
+	if strings.TrimSpace(input.ID) != locked.ID ||
+		strings.TrimSpace(input.ServiceType) != locked.ServiceType ||
+		input.RevokedAt != nil || locked.RevokedAt != nil ||
+		(len(input.Scopes) != len(locked.Scopes)) {
+		return false
+	}
+	if input.TokenHash != "" && input.TokenHash != locked.TokenHash {
+		return false
+	}
+	for index := range input.Scopes {
+		if strings.TrimSpace(input.Scopes[index]) != locked.Scopes[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func mariaDBServiceTokenReferenceContains(reference mariaDBServiceTokenReference, tokenID string) bool {
+	tokenID = strings.TrimSpace(tokenID)
+	return tokenID != "" && (reference.TokenID == tokenID ||
+		reference.StagedPreviousTokenID == tokenID ||
+		reference.StagedTokenID == tokenID)
+}
+
+func mariaDBServiceTokenReferenceTypesMatch(
+	references []mariaDBServiceTokenReference,
+	services map[string]RegisteredService,
+	tokens map[string]ServiceToken,
+) bool {
+	for _, reference := range references {
+		service, ok := services[reference.ServiceID]
+		if !ok || service.TokenID != reference.TokenID ||
+			service.StagedNodePreviousTokenID != reference.StagedPreviousTokenID ||
+			service.StagedNodeTokenID != reference.StagedTokenID {
+			return false
+		}
+		for tokenID, token := range tokens {
+			if mariaDBServiceTokenReferenceContains(reference, tokenID) && service.ServiceType != token.ServiceType {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func mariaDBServiceTokenReferencesUseCurrentToken(
+	references []mariaDBServiceTokenReference,
+	tokenID string,
+) bool {
+	tokenID = strings.TrimSpace(tokenID)
+	for _, reference := range references {
+		if reference.TokenID != tokenID {
+			return false
+		}
+	}
+	return true
+}
+
+func (s MariaDBAuthStore) RevokeServiceToken(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrNotFound
+	}
+	for range mariaDBServiceTokenReferenceRetryLimit {
+		discovered, err := discoverMariaDBServiceTokenReferences(ctx, s.db, []string{id})
+		if err != nil {
+			return err
+		}
+		err = func() error {
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutationRetryable(
+				ctx, tx, "revoke_service_token", discovered, []string{id},
+			)
+			if err != nil {
+				return err
+			}
+			token, ok := lockedTokens[id]
+			if !ok || token.RevokedAt != nil ||
+				!mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
+				return ErrNotFound
+			}
+			now := time.Now().UTC()
+			if err := revokeServiceTokenInTx(ctx, tx, id, now); err != nil {
+				return err
+			}
+			for _, reference := range discovered {
+				if reference.TokenID != id {
+					continue
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE services SET last_heartbeat_at = NULL, reported_capabilities = '{}', updated_at = ? WHERE service_id = ? AND token_id = ?`, now, reference.ServiceID, id); err != nil {
+					return err
+				}
+			}
+			return tx.Commit()
+		}()
+		if errors.Is(err, errMariaDBServiceTokenReferenceSetChanged) {
+			continue
+		}
 		return err
 	}
-	defer tx.Rollback()
-	now := time.Now().UTC()
-	if err := revokeServiceTokenInTx(ctx, tx, id, now); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET last_heartbeat_at = NULL, reported_capabilities = '{}', updated_at = ? WHERE token_id = ?`, now, id); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return ErrNotFound
 }
 
 func (s MariaDBAuthStore) RotateServiceToken(ctx context.Context, id string) (ServiceToken, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ServiceToken{}, err
-	}
-	defer tx.Rollback()
-
-	var oldToken ServiceToken
-	var scopesJSON string
-	var revoked sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT id, service_type, scopes, revoked_at FROM service_tokens WHERE id = ? FOR UPDATE`, id).Scan(&oldToken.ID, &oldToken.ServiceType, &scopesJSON, &revoked)
-	if err == sql.ErrNoRows {
+	id = strings.TrimSpace(id)
+	if id == "" {
 		return ServiceToken{}, ErrNotFound
 	}
-	if err != nil {
-		return ServiceToken{}, err
-	}
-	if revoked.Valid {
-		return ServiceToken{}, ErrNotFound
-	}
-	if err := json.Unmarshal([]byte(scopesJSON), &oldToken.Scopes); err != nil {
-		return ServiceToken{}, err
-	}
+	for range mariaDBServiceTokenReferenceRetryLimit {
+		discovered, err := discoverMariaDBServiceTokenReferences(ctx, s.db, []string{id})
+		if err != nil {
+			return ServiceToken{}, err
+		}
+		var rotated ServiceToken
+		err = func() error {
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
 
-	raw, err := security.RandomToken(32)
-	if err != nil {
-		return ServiceToken{}, err
+			lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutationRetryable(
+				ctx, tx, "rotate_service_token", discovered, []string{id},
+			)
+			if err != nil {
+				return err
+			}
+			oldToken, ok := lockedTokens[id]
+			if !ok || oldToken.RevokedAt != nil {
+				return ErrNotFound
+			}
+			if !mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
+				return ErrNotFound
+			}
+			if !mariaDBServiceTokenReferencesUseCurrentToken(discovered, oldToken.ID) {
+				return ErrNotFound
+			}
+
+			raw, err := security.RandomToken(32)
+			if err != nil {
+				return err
+			}
+			now := time.Now().UTC()
+			token := ServiceToken{
+				ID:          newUUID(),
+				ServiceType: oldToken.ServiceType,
+				Scopes:      serviceTokenScopesForRotation(oldToken),
+				RawToken:    "ast_svc_" + raw,
+				CreatedAt:   now,
+			}
+			token.TokenHash = security.HashToken(token.RawToken)
+			body, err := json.Marshal(token.Scopes)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, string(body), token.CreatedAt); err != nil {
+				return err
+			}
+			for _, reference := range discovered {
+				result, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, last_heartbeat_at = NULL, reported_capabilities = '{}', staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ?`, token.ID, now, now, reference.ServiceID, oldToken.ID)
+				if err != nil {
+					return err
+				}
+				if affected, err := result.RowsAffected(); err != nil {
+					return err
+				} else if affected != 1 {
+					return ErrNotFound
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE service_tokens SET revoked_at = ? WHERE id = ?`, now, oldToken.ID); err != nil {
+				return err
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+			rotated = token
+			return nil
+		}()
+		if errors.Is(err, errMariaDBServiceTokenReferenceSetChanged) {
+			continue
+		}
+		return rotated, err
 	}
-	now := time.Now().UTC()
-	token := ServiceToken{
-		ID:          newUUID(),
-		ServiceType: oldToken.ServiceType,
-		Scopes:      serviceTokenScopesForRotation(oldToken),
-		RawToken:    "ast_svc_" + raw,
-		CreatedAt:   now,
-	}
-	token.TokenHash = security.HashToken(token.RawToken)
-	body, err := json.Marshal(token.Scopes)
-	if err != nil {
-		return ServiceToken{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, string(body), token.CreatedAt); err != nil {
-		return ServiceToken{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET token_id = ?, last_heartbeat_at = NULL, reported_capabilities = '{}', staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, node_token_rotated_at = ?, updated_at = ? WHERE token_id = ?`, token.ID, now, now, oldToken.ID); err != nil {
-		return ServiceToken{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE service_tokens SET revoked_at = ? WHERE id = ?`, now, oldToken.ID); err != nil {
-		return ServiceToken{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ServiceToken{}, err
-	}
-	return token, nil
+	return ServiceToken{}, ErrNotFound
 }
 
 func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID, expectedTokenID string, seal NodeTokenSealer) (ServiceToken, RegisteredService, error) {
@@ -404,18 +820,25 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 	if serviceID == "" || expectedTokenID == "" {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
+	discovered, err := discoverMariaDBServiceTokenReferences(ctx, s.db, []string{expectedTokenID})
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, err
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
-	if err == sql.ErrNoRows {
-		return ServiceToken{}, RegisteredService{}, ErrNotFound
-	}
+	lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutation(
+		ctx, tx, "rotate_service_node_token", discovered, []string{expectedTokenID}, serviceID,
+	)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, err
+	}
+	service, ok := lockedServices[serviceID]
+	if !ok {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
 	if service.TokenID != expectedTokenID {
 		return ServiceToken{}, RegisteredService{}, ErrNotFound
@@ -424,11 +847,12 @@ func (s MariaDBAuthStore) RotateServiceNodeToken(ctx context.Context, serviceID,
 		return ServiceToken{}, RegisteredService{}, ErrConflict
 	}
 
-	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, expectedTokenID)
-	if err != nil {
-		return ServiceToken{}, RegisteredService{}, err
+	oldToken, ok := lockedTokens[expectedTokenID]
+	if !ok || oldToken.RevokedAt != nil {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
-	if service.ServiceType != oldToken.ServiceType {
+	if service.ServiceType != oldToken.ServiceType ||
+		!mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
 		return ServiceToken{}, RegisteredService{}, ErrForbidden
 	}
 
@@ -531,7 +955,7 @@ func selectServiceTokenForNodeConfiguration(
 	var token ServiceToken
 	var scopesJSON string
 	var revoked sql.NullTime
-	err := tx.QueryRowContext(ctx, `SELECT id, service_type, scopes, revoked_at, created_at FROM service_tokens WHERE id = ? FOR UPDATE`, id).Scan(&token.ID, &token.ServiceType, &scopesJSON, &revoked, &token.CreatedAt)
+	err := tx.QueryRowContext(ctx, `SELECT id, service_type, token_hash, scopes, revoked_at, created_at FROM service_tokens WHERE id = ? FOR UPDATE`, id).Scan(&token.ID, &token.ServiceType, &token.TokenHash, &scopesJSON, &revoked, &token.CreatedAt)
 	if err == sql.ErrNoRows {
 		return ServiceToken{}, ErrNotFound
 	}
@@ -609,13 +1033,14 @@ func revokeServiceTokenInTx(ctx context.Context, tx *sql.Tx, id string, now time
 }
 
 func revokeServiceTokenIfUnreferencedInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
-	var serviceID string
-	err := tx.QueryRowContext(ctx, `SELECT service_id FROM services WHERE token_id = ? LIMIT 1 FOR UPDATE`, id).Scan(&serviceID)
-	if err == nil {
-		return nil
-	}
-	if err != sql.ErrNoRows {
+	var references int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM services
+WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id = ?`, id, id, id).Scan(&references)
+	if err != nil {
 		return err
+	}
+	if references > 0 {
+		return nil
 	}
 	return revokeServiceTokenInTx(ctx, tx, id, now)
 }
@@ -645,10 +1070,12 @@ func (s MariaDBAuthStore) AuthenticateServiceToken(ctx context.Context, rawToken
 }
 
 func (s MariaDBAuthStore) PrecreateService(ctx context.Context, token ServiceToken, registration ServiceRegistration) (RegisteredService, error) {
-	if registration.ServiceType != token.ServiceType {
+	registration = normalizeServiceRegistration(registration)
+	token.ID = strings.TrimSpace(token.ID)
+	token.ServiceType = strings.TrimSpace(token.ServiceType)
+	if registration.ServiceType != token.ServiceType || token.ID == "" {
 		return RegisteredService{}, ErrForbidden
 	}
-	registration = normalizeServiceRegistration(registration)
 	if err := validateServiceRegistration(registration); err != nil {
 		return RegisteredService{}, err
 	}
@@ -657,7 +1084,25 @@ func (s MariaDBAuthStore) PrecreateService(ctx context.Context, token ServiceTok
 	if err != nil {
 		return RegisteredService{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO services (
+	discovered, err := discoverMariaDBServiceTokenReferences(ctx, s.db, []string{token.ID})
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	defer tx.Rollback()
+
+	observeMariaDBServiceTokenLockPhase(ctx, "precreate_service", mariaDBServiceTokenBeforeServiceLocks)
+	lockedServices, err := lockMariaDBPrecreateServiceAuthority(
+		ctx, tx, registration.ServiceID, discovered,
+	)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	observeMariaDBServiceTokenLockPhase(ctx, "precreate_service", mariaDBServiceTokenServiceLocksHeld)
+	result, err := tx.ExecContext(ctx, `INSERT INTO services (
 service_id, service_type, service_name, description,
 transport_mode, execution_host_id, ownership_epoch,
 host, port, ssl_enabled, public_url,
@@ -691,6 +1136,42 @@ token_id, node_token_rotated_at, created_at, updated_at
 	}
 	if affected == 0 {
 		return RegisteredService{}, ErrAlreadyExists
+	}
+
+	observeMariaDBServiceTokenLockPhase(ctx, "precreate_service", mariaDBServiceTokenBeforeTokenLocks)
+	lockedTokens, err := lockMariaDBServiceTokensSorted(ctx, tx, []string{token.ID})
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	observeMariaDBServiceTokenLockPhase(ctx, "precreate_service", mariaDBServiceTokenTokenLocksHeld)
+	lockedToken, ok := lockedTokens[token.ID]
+	if !ok || !mariaDBServiceTokenSnapshotMatches(token, lockedToken) ||
+		lockedToken.ServiceType != registration.ServiceType {
+		return RegisteredService{}, ErrForbidden
+	}
+	inserted, err := scanService(tx.QueryRowContext(
+		ctx,
+		serviceSelectColumns+` FROM services WHERE service_id = ?`,
+		registration.ServiceID,
+	))
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	lockedServices[inserted.ServiceID] = inserted
+	expectedReferences := mariaDBServiceTokenReferencesWithCurrentBinding(
+		discovered, registration.ServiceID, token.ID,
+	)
+	revalidated, err := discoverMariaDBServiceTokenReferences(ctx, tx, []string{token.ID})
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	if !mariaDBServiceTokenReferencesEqual(expectedReferences, revalidated) ||
+		!mariaDBServiceTokenReferenceTypesMatch(revalidated, lockedServices, lockedTokens) {
+		return RegisteredService{}, ErrForbidden
+	}
+	observeMariaDBServiceTokenLockPhase(ctx, "precreate_service", mariaDBServiceTokenBindingsValidated)
+	if err := tx.Commit(); err != nil {
+		return RegisteredService{}, err
 	}
 	return s.getService(ctx, registration.ServiceID)
 }
@@ -812,15 +1293,6 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 	if heartbeat.ServiceID == "" {
 		heartbeat.ServiceID = strings.TrimSpace(heartbeat.NodeIDSnake)
 	}
-	if heartbeat.CurrentStreamID != "" {
-		assigned, err := s.isServiceAssigned(ctx, heartbeat.ServiceID, heartbeat.CurrentStreamID)
-		if err != nil {
-			return RegisteredService{}, err
-		}
-		if !assigned {
-			return RegisteredService{}, ErrForbidden
-		}
-	}
 	heartbeat.Version = truncateServiceReportedValue(strings.TrimSpace(heartbeat.Version), 80)
 	heartbeat.Commit = truncateServiceReportedValue(strings.TrimSpace(heartbeat.Commit), 80)
 	heartbeat.BuildDate = truncateServiceReportedValue(strings.TrimSpace(heartbeat.BuildDate), 80)
@@ -851,7 +1323,67 @@ func (s MariaDBAuthStore) Heartbeat(ctx context.Context, token ServiceToken, hea
 		apiSSL = false
 	}
 	apiPublicURL := buildServiceURL(apiHost, apiPort, apiSSL)
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET
+	discoveredService, err := s.getService(ctx, heartbeat.ServiceID)
+	if errors.Is(err, ErrNotFound) {
+		return RegisteredService{}, ErrForbidden
+	}
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	discoveredRows, err := discoverMariaDBAssignmentsForService(ctx, s.db, heartbeat.ServiceID)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	streamIDs := []string{heartbeat.CurrentStreamID, discoveredService.CurrentStreamID}
+	for _, row := range discoveredRows {
+		streamIDs = append(streamIDs, row.StreamID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	defer tx.Rollback()
+	if _, err := lockMariaDBStreamsSorted(ctx, tx, streamIDs); err != nil {
+		return RegisteredService{}, ErrForbidden
+	}
+	lockedServices, err := lockMariaDBServicesSorted(ctx, tx, []string{heartbeat.ServiceID})
+	if err != nil {
+		return RegisteredService{}, ErrForbidden
+	}
+	service, ok := lockedServices[heartbeat.ServiceID]
+	if !ok || service.ServiceType != discoveredService.ServiceType || strings.TrimSpace(service.CurrentStreamID) != strings.TrimSpace(discoveredService.CurrentStreamID) || service.TokenID != token.ID {
+		return RegisteredService{}, ErrForbidden
+	}
+	if err := lockMariaDBAssignmentRowsSorted(ctx, tx, discoveredRows); err != nil {
+		if errors.Is(err, ErrServiceAssignmentConflict) {
+			return RegisteredService{}, ErrForbidden
+		}
+		return RegisteredService{}, err
+	}
+	revalidatedRows, err := discoverMariaDBAssignmentsForService(ctx, tx, heartbeat.ServiceID)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	if !mariaDBAssignmentRowsEqual(discoveredRows, revalidatedRows) {
+		return RegisteredService{}, ErrForbidden
+	}
+	owner, _, err := consistentMariaDBServiceAssignment(ctx, tx, service)
+	if err != nil {
+		return RegisteredService{}, ErrForbidden
+	}
+	if heartbeat.CurrentStreamID != "" {
+		if owner != heartbeat.CurrentStreamID {
+			return RegisteredService{}, ErrForbidden
+		}
+	}
+	var activeTokenID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM service_tokens WHERE id = ? AND revoked_at IS NULL FOR UPDATE`, token.ID).Scan(&activeTokenID); err != nil {
+		if err == sql.ErrNoRows {
+			return RegisteredService{}, ErrForbidden
+		}
+		return RegisteredService{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE services SET
 status = ?,
 last_heartbeat_at = ?,
 current_stream_id = CASE WHEN ? = '' THEN current_stream_id ELSE ? END,
@@ -903,6 +1435,9 @@ WHERE service_id = ?
 	}
 	if affected == 0 {
 		return RegisteredService{}, ErrForbidden
+	}
+	if err := tx.Commit(); err != nil {
+		return RegisteredService{}, err
 	}
 	if err := s.recordServiceMetricSnapshots(ctx, heartbeat.ServiceID, token.ServiceType, heartbeat.Status, sanitizedMetrics, now); err != nil {
 		return RegisteredService{}, err
@@ -1057,6 +1592,17 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	now = now.UTC()
 	report.ServiceID = serviceID
 	report = normalizeServiceRuntimeReport(report)
+	discoveredService, err := s.getService(ctx, serviceID)
+	if errors.Is(err, ErrNotFound) {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
+	}
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
+	discovered, err := discoverMariaDBServiceTokenReferences(ctx, s.db, []string{discoveredService.TokenID})
+	if err != nil {
+		return ServiceToken{}, RegisteredService{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1064,12 +1610,15 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
-	if err == sql.ErrNoRows {
-		return ServiceToken{}, RegisteredService{}, ErrNotFound
-	}
+	lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutation(
+		ctx, tx, "configure_service_node", discovered, []string{discoveredService.TokenID}, serviceID,
+	)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, err
+	}
+	service, ok := lockedServices[serviceID]
+	if !ok || service.TokenID != discoveredService.TokenID {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
 	if service.ServiceType == "update_agent" {
 		return ServiceToken{}, RegisteredService{}, ErrTwoPhaseConfigureRequired
@@ -1082,11 +1631,12 @@ func (s MariaDBAuthStore) ConfigureServiceNode(ctx context.Context, serviceID, r
 		return ServiceToken{}, RegisteredService{}, ErrUnauthorized
 	}
 
-	oldToken, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
-	if err != nil {
-		return ServiceToken{}, RegisteredService{}, err
+	oldToken, ok := lockedTokens[service.TokenID]
+	if !ok || oldToken.RevokedAt != nil {
+		return ServiceToken{}, RegisteredService{}, ErrNotFound
 	}
-	if service.ServiceType != oldToken.ServiceType {
+	if service.ServiceType != oldToken.ServiceType ||
+		!mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
 		return ServiceToken{}, RegisteredService{}, ErrForbidden
 	}
 	token, scopesJSON, err := newRotatedServiceToken(oldToken, now)
@@ -1141,18 +1691,64 @@ func (s MariaDBAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 		return StagedServiceNodeConfiguration{}, ErrNotFound
 	}
 	now = now.UTC()
+	for attempt := 0; attempt < mariaDBServiceTokenReferenceRetryLimit; attempt++ {
+		discoveredService, err := s.getService(ctx, serviceID)
+		if errors.Is(err, ErrNotFound) {
+			return StagedServiceNodeConfiguration{}, ErrNotFound
+		}
+		if err != nil {
+			return StagedServiceNodeConfiguration{}, err
+		}
+		discovered, err := discoverMariaDBServiceTokenReferences(ctx, s.db, []string{discoveredService.TokenID})
+		if err != nil {
+			return StagedServiceNodeConfiguration{}, err
+		}
+		observeMariaDBServiceTokenLockPhase(ctx, "stage_service_node_configuration", mariaDBServiceTokenReferenceDiscoveryComplete)
+		staged, err := s.stageServiceNodeConfigurationWithReferences(
+			ctx,
+			serviceID,
+			rawConfigureToken,
+			now,
+			seal,
+			discoveredService,
+			discovered,
+		)
+		if !errors.Is(err, errMariaDBServiceTokenReferenceSetChanged) {
+			return staged, err
+		}
+		observeMariaDBServiceTokenLockPhase(ctx, "stage_service_node_configuration", mariaDBServiceTokenReferenceSetMismatch)
+		if attempt+1 < mariaDBServiceTokenReferenceRetryLimit {
+			observeMariaDBServiceTokenLockPhase(ctx, "stage_service_node_configuration", mariaDBServiceTokenReferenceRetryStart)
+		}
+	}
+	return StagedServiceNodeConfiguration{}, ErrConflict
+}
+
+func (s MariaDBAuthStore) stageServiceNodeConfigurationWithReferences(
+	ctx context.Context,
+	serviceID, rawConfigureToken string,
+	now time.Time,
+	seal NodeTokenSealer,
+	discoveredService RegisteredService,
+	discovered []mariaDBServiceTokenReference,
+) (StagedServiceNodeConfiguration, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return StagedServiceNodeConfiguration{}, err
 	}
 	defer tx.Rollback()
 
-	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
-	if err == sql.ErrNoRows {
-		return StagedServiceNodeConfiguration{}, ErrNotFound
-	}
+	lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutationRetryable(
+		ctx, tx, "stage_service_node_configuration", discovered, []string{discoveredService.TokenID},
+		serviceID,
+	)
 	if err != nil {
 		return StagedServiceNodeConfiguration{}, err
+	}
+	observeMariaDBServiceTokenLockPhase(ctx, "stage_service_node_configuration", mariaDBServiceTokenStableAuthReplayConflict)
+	service, ok := lockedServices[serviceID]
+	if !ok || service.TokenID != discoveredService.TokenID {
+		return StagedServiceNodeConfiguration{}, ErrNotFound
 	}
 	if service.ServiceType != "update_agent" {
 		return StagedServiceNodeConfiguration{}, ErrForbidden
@@ -1164,9 +1760,9 @@ func (s MariaDBAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 	if configureTokenHash == "" || service.ConfigureTokenExpiresAt == nil || service.ConfigureTokenUsedAt != nil || !now.Before(*service.ConfigureTokenExpiresAt) || !security.VerifyTokenHash(rawConfigureToken, configureTokenHash) {
 		return StagedServiceNodeConfiguration{}, ErrUnauthorized
 	}
-	oldToken, err := selectServiceTokenForNodeConfiguration(ctx, tx, service.TokenID)
-	if err != nil {
-		return StagedServiceNodeConfiguration{}, err
+	oldToken, ok := lockedTokens[service.TokenID]
+	if !ok {
+		return StagedServiceNodeConfiguration{}, ErrNotFound
 	}
 	if oldToken.RevokedAt != nil &&
 		(!isEmergencyRevokedNodeConfigurationAnchor(service, oldToken) ||
@@ -1179,6 +1775,21 @@ func (s MariaDBAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 	}
 	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
 		return StagedServiceNodeConfiguration{}, err
+	}
+	for _, reference := range discovered {
+		if !updateAgentStageTokenReferenceAllowed(
+			reference.ServiceID,
+			reference.TokenID,
+			reference.StagedPreviousTokenID,
+			reference.StagedTokenID,
+			serviceID,
+			oldToken.ID,
+		) {
+			return StagedServiceNodeConfiguration{}, ErrSystemUpdateRuntimeTokenRotationSharedToken
+		}
+	}
+	if !mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
+		return StagedServiceNodeConfiguration{}, ErrForbidden
 	}
 	token, scopesJSON, err := newRotatedServiceToken(oldToken, now)
 	if err != nil {
@@ -1230,27 +1841,105 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	now = now.UTC()
 	report.ServiceID = serviceID
 	report = normalizeServiceRuntimeReport(report)
+	for attempt := 0; attempt < mariaDBServiceTokenReferenceRetryLimit; attempt++ {
+		discoveredService, err := s.getService(ctx, serviceID)
+		if errors.Is(err, ErrNotFound) {
+			return ServiceToken{}, RegisteredService{}, false, ErrNotFound
+		}
+		if err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
+		tokenIDs := []string{discoveredService.TokenID, configurationID}
+		discovered, err := discoverMariaDBServiceTokenReferences(ctx, s.db, tokenIDs)
+		if err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
+		observeMariaDBServiceTokenLockPhase(ctx, "activate_service_node_configuration", mariaDBServiceTokenReferenceDiscoveryComplete)
+		token, service, alreadyActivated, err := s.activateServiceNodeConfigurationWithReferences(
+			ctx,
+			serviceID,
+			configurationID,
+			rawActivationToken,
+			now,
+			report,
+			discoveredService,
+			tokenIDs,
+			discovered,
+		)
+		if !errors.Is(err, errMariaDBServiceTokenReferenceSetChanged) {
+			return token, service, alreadyActivated, err
+		}
+		observeMariaDBServiceTokenLockPhase(ctx, "activate_service_node_configuration", mariaDBServiceTokenReferenceSetMismatch)
+		if attempt+1 < mariaDBServiceTokenReferenceRetryLimit {
+			observeMariaDBServiceTokenLockPhase(ctx, "activate_service_node_configuration", mariaDBServiceTokenReferenceRetryStart)
+		}
+	}
+	return ServiceToken{}, RegisteredService{}, false, ErrConflict
+}
+
+func (s MariaDBAuthStore) activateServiceNodeConfigurationWithReferences(
+	ctx context.Context,
+	serviceID, configurationID, rawActivationToken string,
+	now time.Time,
+	report ServiceRuntimeReport,
+	discoveredService RegisteredService,
+	tokenIDs []string,
+	discovered []mariaDBServiceTokenReference,
+) (ServiceToken, RegisteredService, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
 	defer tx.Rollback()
-	service, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ? FOR UPDATE`, serviceID))
-	if err == sql.ErrNoRows {
-		return ServiceToken{}, RegisteredService{}, false, ErrNotFound
-	}
+	lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutationRetryable(
+		ctx, tx, "activate_service_node_configuration", discovered, tokenIDs,
+		serviceID,
+	)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
+	observeMariaDBServiceTokenLockPhase(ctx, "activate_service_node_configuration", mariaDBServiceTokenStableAuthReplayConflict)
+	service, ok := lockedServices[serviceID]
+	if !ok || service.TokenID != discoveredService.TokenID {
+		return ServiceToken{}, RegisteredService{}, false, ErrNotFound
+	}
 	if service.ServiceType != "update_agent" {
 		return ServiceToken{}, RegisteredService{}, false, ErrForbidden
+	}
+	if service.TokenID == configurationID && service.StagedNodeTokenID == "" {
+		var activationTokenHash string
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT COALESCE(configure_token_hash, '') FROM services WHERE service_id = ?`,
+			serviceID,
+		).Scan(&activationTokenHash); err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
+		if service.ConfigureTokenUsedAt == nil ||
+			service.ConfigureTokenExpiresAt != nil ||
+			activationTokenHash == "" ||
+			!security.VerifyTokenHash(rawActivationToken, activationTokenHash) {
+			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+		}
+		token, ok := lockedTokens[service.TokenID]
+		if !ok || token.RevokedAt != nil || token.ServiceType != service.ServiceType ||
+			!mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
+			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+		}
+		if err := validateRequiredUpdateAgentScopes(token.ServiceType, token.Scopes); err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
+		return token, service, true, nil
 	}
 	if service.StagedNodeTokenID != configurationID || service.StagedNodeTokenHash == "" || service.StagedNodeActivationTokenHash == "" || !security.VerifyTokenHash(rawActivationToken, service.StagedNodeActivationTokenHash) {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
 	if service.TokenID == service.StagedNodeTokenID {
-		token, err := selectActiveServiceTokenForUpdate(ctx, tx, service.TokenID)
-		if err != nil {
+		token, ok := lockedTokens[service.TokenID]
+		if !ok || token.RevokedAt != nil {
+			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+		}
+		if !mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
 			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 		}
 		if err := validateRequiredUpdateAgentScopes(token.ServiceType, token.Scopes); err != nil {
@@ -1262,11 +1951,27 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	if service.ConfigureTokenExpiresAt == nil || !now.Before(*service.ConfigureTokenExpiresAt) || service.StagedNodeTokenAt == nil || service.TokenID != service.StagedNodePreviousTokenID {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
-	oldToken, err := selectServiceTokenForNodeConfiguration(ctx, tx, service.TokenID)
-	if err != nil ||
+	oldToken, ok := lockedTokens[service.TokenID]
+	if !ok ||
 		oldToken.ServiceType != "update_agent" ||
 		(oldToken.RevokedAt != nil &&
 			!isEmergencyRevokedNodeConfigurationAnchor(service, oldToken)) {
+		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
+	for _, reference := range discovered {
+		if !updateAgentActivationTokenReferenceAllowed(
+			reference.ServiceID,
+			reference.TokenID,
+			reference.StagedPreviousTokenID,
+			reference.StagedTokenID,
+			serviceID,
+			oldToken.ID,
+			service.StagedNodeTokenID,
+		) {
+			return ServiceToken{}, RegisteredService{}, false, ErrSystemUpdateRuntimeTokenRotationSharedToken
+		}
+	}
+	if !mariaDBServiceTokenReferenceTypesMatch(discovered, lockedServices, lockedTokens) {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
 	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
@@ -1276,6 +1981,9 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
 	token := ServiceToken{ID: service.StagedNodeTokenID, ServiceType: "update_agent", Scopes: append([]string(nil), service.StagedNodeTokenScopes...), TokenHash: service.StagedNodeTokenHash, CreatedAt: service.StagedNodeTokenAt.UTC()}
+	if _, exists := lockedTokens[token.ID]; exists {
+		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+	}
 	if err := validateServiceScopes(token.Scopes); err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
@@ -1286,7 +1994,7 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_tokens (id, service_type, token_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?)`, token.ID, token.ServiceType, token.TokenHash, string(scopesJSON), token.CreatedAt); err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = staged_node_token_ciphertext, node_token_nonce = staged_node_token_nonce, last_heartbeat_at = NULL, reported_capabilities = '{}', node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ? AND staged_node_token_id = ?`, report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, token.ID, now, now, serviceID, oldToken.ID, token.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE services SET status = CASE WHEN status = 'pending' THEN 'registered' ELSE status END, version = CASE WHEN ? = '' THEN version ELSE ? END, reported_version = CASE WHEN ? = '' THEN reported_version ELSE ? END, reported_commit = CASE WHEN ? = '' THEN reported_commit ELSE ? END, reported_build_date = CASE WHEN ? = '' THEN reported_build_date ELSE ? END, reported_hostname = CASE WHEN ? = '' THEN reported_hostname ELSE ? END, reported_os = CASE WHEN ? = '' THEN reported_os ELSE ? END, reported_arch = CASE WHEN ? = '' THEN reported_arch ELSE ? END, last_reported_at = CASE WHEN ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' AND ? = '' THEN last_reported_at ELSE ? END, token_id = ?, node_token_ciphertext = ?, node_token_nonce = ?, configure_token_hash = ?, configure_token_expires_at = NULL, staged_node_previous_token_id = NULL, staged_node_token_id = NULL, staged_node_token_hash = NULL, staged_node_token_scopes = NULL, staged_node_token_ciphertext = NULL, staged_node_token_nonce = NULL, staged_node_activation_token_hash = NULL, staged_node_token_at = NULL, last_heartbeat_at = NULL, reported_capabilities = '{}', node_token_rotated_at = ?, updated_at = ? WHERE service_id = ? AND token_id = ? AND staged_node_token_id = ?`, report.Version, report.Version, report.Version, report.Version, report.Commit, report.Commit, report.BuildDate, report.BuildDate, report.Hostname, report.Hostname, report.OS, report.OS, report.Arch, report.Arch, report.Version, report.Commit, report.BuildDate, report.Hostname, report.OS, report.Arch, now, token.ID, service.StagedNodeTokenCiphertext, service.StagedNodeTokenNonce, service.StagedNodeActivationTokenHash, now, now, serviceID, oldToken.ID, token.ID)
 	if err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
@@ -1306,6 +2014,9 @@ func (s MariaDBAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	service.TokenID = token.ID
 	service.NodeTokenCiphertext = service.StagedNodeTokenCiphertext
 	service.NodeTokenNonce = service.StagedNodeTokenNonce
+	service.ConfigureTokenHash = service.StagedNodeActivationTokenHash
+	service.ConfigureTokenExpiresAt = nil
+	clearStagedNodeConfiguration(&service)
 	service.LastHeartbeatAt = nil
 	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
@@ -1456,19 +2167,113 @@ WHERE service_id = ?`,
 	return s.getService(ctx, serviceID)
 }
 
-func (s MariaDBAuthStore) DeleteService(ctx context.Context, serviceID string) error {
-	service, err := s.getService(ctx, serviceID)
+func (s MariaDBAuthStore) DeleteService(ctx context.Context, serviceID string) (err error) {
+	defer func() {
+		if isMariaDBLockConflict(err) {
+			err = mariaDBLockConflictAsAssignmentConflict(err)
+		}
+	}()
+	serviceID = strings.TrimSpace(serviceID)
+	discoveredService, err := s.getService(ctx, serviceID)
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
+	discoveredTokenReferences, err := discoverMariaDBServiceTokenReferences(
+		ctx, s.db, []string{discoveredService.TokenID},
+	)
+	if err != nil {
+		return err
+	}
+	discoveredRows, err := discoverMariaDBAssignmentsForService(ctx, s.db, serviceID)
+	if err != nil {
+		return err
+	}
+	streamIDs := []string{discoveredService.CurrentStreamID}
+	for _, row := range discoveredRows {
+		streamIDs = append(streamIDs, row.StreamID)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM stream_service_assignments WHERE service_id = ?`, serviceID); err != nil {
+	if _, err := lockMariaDBStreamsSorted(ctx, tx, streamIDs); err != nil {
+		return ErrServiceAssignmentConflict
+	}
+	lockedServices, err := lockMariaDBServicesSorted(
+		ctx,
+		tx,
+		mariaDBServiceTokenReferenceServiceIDs(discoveredTokenReferences, serviceID),
+	)
+	if errors.Is(err, ErrNotFound) {
+		return ErrServiceAssignmentConflict
+	}
+	if err != nil {
 		return err
+	}
+	service, ok := lockedServices[serviceID]
+	if !ok || service.ServiceType != discoveredService.ServiceType || strings.TrimSpace(service.CurrentStreamID) != strings.TrimSpace(discoveredService.CurrentStreamID) || service.TokenID != discoveredService.TokenID {
+		return ErrServiceAssignmentConflict
+	}
+	if err := lockMariaDBAssignmentRowsSorted(ctx, tx, discoveredRows); err != nil {
+		return err
+	}
+	revalidatedRows, err := discoverMariaDBAssignmentsForService(ctx, tx, serviceID)
+	if err != nil {
+		return err
+	}
+	if !mariaDBAssignmentRowsEqual(discoveredRows, revalidatedRows) {
+		return ErrServiceAssignmentConflict
+	}
+	owner, _, err := consistentMariaDBServiceAssignment(ctx, tx, service)
+	if err != nil {
+		return err
+	}
+	if owner != "" {
+		state, lockErr := mariaDBStreamAssignmentProtectionAfterLocks(ctx, tx, owner)
+		if errors.Is(lockErr, ErrNotFound) {
+			return ErrServiceAssignmentConflict
+		}
+		if lockErr != nil {
+			return lockErr
+		}
+		if state.protected() {
+			return ErrServiceUnassignProtectedStream
+		}
+	}
+	lockedTokens, err := lockMariaDBServiceTokensSorted(ctx, tx, []string{service.TokenID})
+	if err != nil {
+		return err
+	}
+	if _, ok := lockedTokens[service.TokenID]; !ok {
+		return ErrServiceAssignmentConflict
+	}
+	revalidatedTokenReferences, err := discoverMariaDBServiceTokenReferences(
+		ctx, tx, []string{service.TokenID},
+	)
+	if err != nil {
+		return err
+	}
+	if !mariaDBServiceTokenReferencesEqual(discoveredTokenReferences, revalidatedTokenReferences) ||
+		!mariaDBServiceTokenReferenceTypesMatch(
+			discoveredTokenReferences, lockedServices, lockedTokens,
+		) {
+		return ErrServiceAssignmentConflict
+	}
+	for _, reference := range revalidatedTokenReferences {
+		if reference.ServiceID != serviceID {
+			return ErrServiceAssignmentConflict
+		}
+	}
+	now := time.Now().UTC()
+	for _, row := range revalidatedRows {
+		result, deleteErr := tx.ExecContext(ctx, `DELETE FROM stream_service_assignments WHERE id = ?`, row.ID)
+		if deleteErr != nil {
+			return deleteErr
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return ErrServiceAssignmentConflict
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM service_stream_events WHERE service_id = ?`, serviceID); err != nil {
 		return err
@@ -1491,67 +2296,11 @@ func (s MariaDBAuthStore) DeleteService(ctx context.Context, serviceID string) e
 }
 
 func (s MariaDBAuthStore) AssignServiceToStream(ctx context.Context, serviceID, streamID, actorUserID string) (RegisteredService, error) {
-	return s.AssignServiceToStreamWithRole(ctx, serviceID, streamID, actorUserID, "primary")
+	return s.AssignServiceToStreamGuarded(ctx, ServiceAssignmentMutation{ServiceID: serviceID, StreamID: streamID, ActorUserID: actorUserID, AssignmentRole: "primary"})
 }
 
 func (s MariaDBAuthStore) AssignServiceToStreamWithRole(ctx context.Context, serviceID, streamID, actorUserID, assignmentRole string) (RegisteredService, error) {
-	assignmentRole = normalizeAssignmentRole(assignmentRole)
-	service, err := s.getService(ctx, serviceID)
-	if err != nil {
-		return RegisteredService{}, err
-	}
-	if !streamAssignableServiceType(service.ServiceType) {
-		return RegisteredService{}, ErrInvalidServiceAssignment
-	}
-	now := time.Now().UTC()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return RegisteredService{}, err
-	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT service_id FROM stream_service_assignments WHERE service_id = ? OR (stream_id = ? AND service_type = ? AND assignment_role = 'primary' AND ? = 'primary')`, serviceID, streamID, service.ServiceType, assignmentRole)
-	if err != nil {
-		return RegisteredService{}, err
-	}
-	var replacedServiceIDs []string
-	for rows.Next() {
-		var replacedServiceID string
-		if err := rows.Scan(&replacedServiceID); err != nil {
-			rows.Close()
-			return RegisteredService{}, err
-		}
-		if replacedServiceID != serviceID {
-			replacedServiceIDs = append(replacedServiceIDs, replacedServiceID)
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return RegisteredService{}, err
-	}
-	if err := rows.Err(); err != nil {
-		return RegisteredService{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM stream_service_assignments WHERE service_id = ? OR (stream_id = ? AND service_type = ? AND assignment_role = 'primary' AND ? = 'primary')`, serviceID, streamID, service.ServiceType, assignmentRole); err != nil {
-		return RegisteredService{}, err
-	}
-	for _, replacedServiceID := range replacedServiceIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE services SET current_stream_id = NULL, status = CASE WHEN status = 'assigned' THEN 'registered' ELSE status END, updated_at = ? WHERE service_id = ?`, now, replacedServiceID); err != nil {
-			return RegisteredService{}, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO stream_service_assignments (id, stream_id, service_id, service_type, assignment_role, assigned_by_user_id, assigned_at)
-VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?)
-ON DUPLICATE KEY UPDATE assignment_role = VALUES(assignment_role), assigned_by_user_id = VALUES(assigned_by_user_id), assigned_at = VALUES(assigned_at)`, newUUID(), streamID, serviceID, service.ServiceType, assignmentRole, actorUserID, now); err != nil {
-		return RegisteredService{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET current_stream_id = ?, status = 'assigned', updated_at = ? WHERE service_id = ?`, streamID, now, serviceID); err != nil {
-		return RegisteredService{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return RegisteredService{}, err
-	}
-	service, err = s.getService(ctx, serviceID)
-	service.AssignmentRole = assignmentRole
-	return service, err
+	return s.AssignServiceToStreamGuarded(ctx, ServiceAssignmentMutation{ServiceID: serviceID, StreamID: streamID, ActorUserID: actorUserID, AssignmentRole: assignmentRole})
 }
 
 func streamAssignableServiceType(serviceType string) bool {
@@ -1564,25 +2313,7 @@ func streamAssignableServiceType(serviceType string) bool {
 }
 
 func (s MariaDBAuthStore) UnassignServiceFromStream(ctx context.Context, serviceID, actorUserID string) (RegisteredService, error) {
-	if _, err := s.getService(ctx, serviceID); err != nil {
-		return RegisteredService{}, err
-	}
-	now := time.Now().UTC()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return RegisteredService{}, err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM stream_service_assignments WHERE service_id = ?`, serviceID); err != nil {
-		return RegisteredService{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET current_stream_id = NULL, status = CASE WHEN status = 'assigned' THEN 'registered' ELSE status END, updated_at = ? WHERE service_id = ?`, now, serviceID); err != nil {
-		return RegisteredService{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return RegisteredService{}, err
-	}
-	return s.getService(ctx, serviceID)
+	return s.UnassignServiceFromStreamGuarded(ctx, ServiceUnassignmentMutation{ServiceID: serviceID, ActorUserID: actorUserID})
 }
 
 func (s MariaDBAuthStore) ListStreamAssignments(ctx context.Context, streamID string) ([]RegisteredService, error) {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -181,6 +182,12 @@ type StreamArchiveRunStore interface {
 	PrepareStreamArchiveRun(ctx context.Context, id, archiveRunID string, startedAt time.Time) (Stream, error)
 }
 
+func StreamArchiveRunIDForStart(startedAt time.Time) string {
+	jst := time.FixedZone("JST", 9*60*60)
+	local := startedAt.In(jst)
+	return fmt.Sprintf("%s_%09d_%s", local.Format("20060102_150405"), local.Nanosecond(), local.Format("MST"))
+}
+
 type StreamArtifactAdminStore interface {
 	DeleteStreamArtifact(ctx context.Context, streamID, artifactID string) error
 	RenameStreamArtifact(ctx context.Context, streamID, artifactID, name string) (StreamArtifact, error)
@@ -273,25 +280,23 @@ func (s MariaDBStreamStore) ListArchiveStreams(ctx context.Context) ([]Stream, e
 
 func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {
 	rows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL
-  AND COALESCE(TRIM(ss.archive_profile_id), '') <> ''
   AND (
-    (
-      s.archive_started_at IS NOT NULL
+	`+streamLogGuardPendingCondition+`
+    OR (
+      COALESCE(TRIM(ss.archive_profile_id), '') <> ''
+      AND s.archive_started_at IS NOT NULL
       AND s.archive_reported_at IS NULL
       AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')
     )
     OR (
-      s.archive_started_at IS NULL
-      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed')
-      AND NOT (`+archiveRecordingArtifactExistsCondition+`)
-      AND NOT EXISTS (
-        SELECT 1
-        FROM service_stream_events e
-        WHERE e.stream_id = s.id
-          AND e.event_type = 'archive.artifacts.reported'
-      )
+      s.archive_reported_at IS NULL
+      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')
+	  AND `+streamLogGuardPendingCondition+`
     )
-  )`))
+  )`),
+		archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage,
+		legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -350,18 +355,46 @@ func (s MariaDBStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, arc
 	if archiveRunID != "" && !validArchiveRunID(archiveRunID) {
 		return Stream{}, ErrInvalidStreamArtifact
 	}
+	if archiveRunID == "" {
+		startedAt = time.Time{}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Stream{}, err
+	}
+	defer tx.Rollback()
+	state, err := lockMariaDBStreamAssignmentProtection(ctx, tx, strings.TrimSpace(id))
+	if err != nil {
+		return Stream{}, err
+	}
 	var started any
 	if !startedAt.IsZero() {
 		started = startedAt.UTC()
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE streams SET archive_run_id = ?, archive_started_at = ?, archive_reported_at = NULL, updated_at = ? WHERE id = ?`, archiveRunID, started, time.Now().UTC(), id)
-	if err != nil {
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE streams SET archive_run_id = ?, archive_started_at = ?, archive_reported_at = NULL, updated_at = ? WHERE id = ?`, archiveRunID, started, now, id); err != nil {
 		return Stream{}, err
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return s.GetStream(ctx, id)
+	if err := closeMariaDBStreamLogGuard(ctx, tx, id, legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage, now); err != nil {
+		return Stream{}, err
 	}
-	return s.GetStream(ctx, id)
+	if archiveRunID == "" && strings.TrimSpace(state.ArchiveProfileID) != "" {
+		if err := insertMariaDBStreamLogGuard(ctx, tx, id, legacyArchiveAssignmentGuardLogMessage, now); err != nil {
+			return Stream{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Stream{}, err
+	}
+	stream := state.Stream
+	stream.ArchiveRunID = archiveRunID
+	stream.ArchiveStartedAt = nil
+	if !startedAt.IsZero() {
+		stream.ArchiveStartedAt = cloneTimePtr(&startedAt)
+	}
+	stream.ArchiveReportedAt = nil
+	stream.UpdatedAt = now
+	return stream, nil
 }
 
 func (s MariaDBStreamStore) HasActiveStream(ctx context.Context) (bool, error) {
@@ -379,21 +412,76 @@ func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stre
 	return stream, err
 }
 
-func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
+func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) (err error) {
+	defer func() {
+		if isMariaDBLockConflict(err) {
+			err = mariaDBLockConflictAsAssignmentConflict(err)
+		}
+	}()
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return ErrNotFound
+	}
+	discoveredRows, err := discoverMariaDBAssignmentsForStream(ctx, s.db, id)
+	if err != nil {
+		return err
+	}
+	discoveredCurrentServiceIDs, err := discoverMariaDBCurrentStreamServiceIDs(ctx, s.db, id)
+	if err != nil {
+		return err
+	}
+	serviceIDs := append([]string(nil), discoveredCurrentServiceIDs...)
+	for _, row := range discoveredRows {
+		serviceIDs = append(serviceIDs, row.ServiceID)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var streamID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? FOR UPDATE`, id).Scan(&streamID)
-	if errors.Is(err, sql.ErrNoRows) {
+	lockedStreams, err := lockMariaDBStreamsSorted(ctx, tx, []string{id})
+	if err != nil {
+		return err
+	}
+	if target, ok := lockedStreams[id]; !ok || target.DeletedAt != nil {
 		return ErrNotFound
 	}
+	lockedServices, err := lockMariaDBServicesSorted(ctx, tx, serviceIDs)
+	if err != nil {
+		return ErrServiceAssignmentConflict
+	}
+	if err := lockMariaDBAssignmentRowsSorted(ctx, tx, discoveredRows); err != nil {
+		return err
+	}
+	revalidatedRows, err := discoverMariaDBAssignmentsForStream(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	revalidatedCurrentServiceIDs, err := discoverMariaDBCurrentStreamServiceIDs(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if !mariaDBAssignmentRowsEqual(discoveredRows, revalidatedRows) || !equalSortedStrings(discoveredCurrentServiceIDs, revalidatedCurrentServiceIDs) {
+		return ErrServiceAssignmentConflict
+	}
+	assignmentServiceIDs := make([]string, 0, len(revalidatedRows))
+	for _, row := range revalidatedRows {
+		assignmentServiceIDs = append(assignmentServiceIDs, row.ServiceID)
+	}
+	if !equalSortedStrings(assignmentServiceIDs, revalidatedCurrentServiceIDs) {
+		return ErrServiceAssignmentConflict
+	}
+	for _, row := range revalidatedRows {
+		service, exists := lockedServices[row.ServiceID]
+		if !exists || service.ServiceType != row.ServiceType {
+			return ErrServiceAssignmentConflict
+		}
+		owner, role, consistencyErr := consistentMariaDBServiceAssignment(ctx, tx, service)
+		if consistencyErr != nil || owner != id || role != normalizeAssignmentRole(row.AssignmentRole) {
+			return ErrServiceAssignmentConflict
+		}
+	}
+	state, err := mariaDBStreamAssignmentProtectionAfterLocks(ctx, tx, id)
 	if err != nil {
 		return err
 	}
@@ -402,18 +490,59 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) error {
 	} else if hasClaim {
 		return ErrYouTubeRelayBindingClaimActive
 	}
+	if state.protected() {
+		return ErrServiceUnassignProtectedStream
+	}
+	var archiveEncoderID string
+	encoderRows := append([]mariaDBAssignmentRow(nil), revalidatedRows...)
+	sort.Slice(encoderRows, func(i, j int) bool {
+		leftPrimary := normalizeAssignmentRole(encoderRows[i].AssignmentRole) == "primary"
+		rightPrimary := normalizeAssignmentRole(encoderRows[j].AssignmentRole) == "primary"
+		if leftPrimary != rightPrimary {
+			return leftPrimary
+		}
+		return encoderRows[i].ServiceID < encoderRows[j].ServiceID
+	})
+	for _, row := range encoderRows {
+		if row.ServiceType == "encoder_recorder" {
+			archiveEncoderID = row.ServiceID
+			break
+		}
+	}
+	if archiveEncoderID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE stream_artifacts SET source_service_id = ? WHERE stream_id = ? AND COALESCE(TRIM(source_service_id), '') = ''`, archiveEncoderID, id); err != nil {
+			return err
+		}
+	}
+	now := time.Now().UTC()
+	for _, serviceID := range sortedUniqueStrings(assignmentServiceIDs) {
+		result, updateErr := tx.ExecContext(ctx, `UPDATE services SET current_stream_id = NULL, status = CASE WHEN status = 'assigned' THEN 'registered' ELSE status END, updated_at = ? WHERE service_id = ? AND current_stream_id = ?`, now, serviceID, id)
+		if updateErr != nil {
+			return updateErr
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return ErrServiceAssignmentConflict
+		}
+	}
+	for _, row := range revalidatedRows {
+		result, deleteErr := tx.ExecContext(ctx, `DELETE FROM stream_service_assignments WHERE id = ?`, row.ID)
+		if deleteErr != nil {
+			return deleteErr
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return ErrServiceAssignmentConflict
+		}
+	}
 	for _, query := range []string{
 		`DELETE FROM runtime_secret_leases WHERE stream_id = ?`,
 		`DELETE FROM service_remediation_executions WHERE stream_id = ?`,
 		`DELETE FROM service_stream_events WHERE stream_id = ?`,
 		`DELETE FROM stream_youtube_runtimes WHERE stream_id = ?`,
-		`DELETE FROM stream_service_assignments WHERE stream_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, query, id); err != nil {
 			return err
 		}
 	}
-	now := time.Now().UTC()
 	result, err := tx.ExecContext(ctx, `UPDATE streams SET status = 'completed', deleted_at = COALESCE(deleted_at, ?), updated_at = ? WHERE id = ?`, now, now, id)
 	if err != nil {
 		return err
@@ -884,9 +1013,6 @@ func (s MariaDBStreamStore) ListStreamArtifacts(ctx context.Context, id string) 
 }
 
 func (s MariaDBStreamStore) UpsertStreamArtifacts(ctx context.Context, id string, artifacts []StreamArtifact) error {
-	if _, err := s.GetStream(ctx, id); err != nil {
-		return err
-	}
 	if err := ValidateStreamArtifactReport(id, artifacts); err != nil {
 		return err
 	}
@@ -895,6 +1021,11 @@ func (s MariaDBStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 		return err
 	}
 	defer tx.Rollback()
+	state, err := lockMariaDBStreamAssignmentProtection(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	authority := state.Stream
 	normalized := NormalizeStreamArtifacts(id, artifacts)
 	for _, artifact := range normalized {
 		artifact.ID = newUUID()
@@ -905,8 +1036,18 @@ ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALU
 			return err
 		}
 	}
-	if err := markStreamArchiveRunReported(ctx, tx, id, normalized); err != nil {
-		return err
+	legacyAuthority := state.LegacyArchivePending || state.ArchiveRetryPending || (authority.ArchiveReportedAt != nil && legacyArchiveReportStatus(authority))
+	if streamArtifactReportMatchesArchiveAuthority(authority, normalized, legacyAuthority) {
+		if err := markStreamArchiveRunReported(ctx, tx, id, authority, normalized); err != nil {
+			return err
+		}
+		closedAt := time.Now().UTC()
+		if err := closeMariaDBStreamLogGuard(ctx, tx, id, archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage, closedAt); err != nil {
+			return err
+		}
+		if err := closeMariaDBStreamLogGuard(ctx, tx, id, legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage, closedAt); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -1070,35 +1211,6 @@ func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token
 	if err := ValidateStreamArtifactReport(event.StreamID, artifacts); err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var streamID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? FOR UPDATE`, event.StreamID).Scan(&streamID); errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	} else if err != nil {
-		return err
-	}
-	var serviceType, tokenID string
-	if err := tx.QueryRowContext(ctx, `SELECT service_type, token_id FROM services WHERE service_id = ? FOR UPDATE`, event.ServiceID).Scan(&serviceType, &tokenID); errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	} else if err != nil {
-		return err
-	}
-	if tokenID != token.ID {
-		return ErrForbidden
-	}
-	if !serviceStreamEventAllowed(serviceType, event.EventType) {
-		return ErrInvalidServiceStreamEvent
-	}
-	var assignedServiceID string
-	if err := tx.QueryRowContext(ctx, `SELECT service_id FROM stream_service_assignments WHERE service_id = ? AND stream_id = ? FOR UPDATE`, event.ServiceID, event.StreamID).Scan(&assignedServiceID); errors.Is(err, sql.ErrNoRows) {
-		return ErrForbidden
-	} else if err != nil {
-		return err
-	}
 	if event.Payload == nil {
 		event.Payload = map[string]any{}
 	}
@@ -1107,10 +1219,75 @@ func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token
 	if err != nil {
 		return err
 	}
+	normalized := NormalizeStreamArtifacts(event.StreamID, artifacts)
+	auth := MariaDBAuthStore{db: s.db}
+	discoveredService, err := auth.getService(ctx, event.ServiceID)
+	if err != nil {
+		return err
+	}
+	discoveredRows, err := discoverMariaDBAssignmentsForService(ctx, s.db, event.ServiceID)
+	if err != nil {
+		return err
+	}
+	streamIDs := []string{event.StreamID, discoveredService.CurrentStreamID}
+	for _, row := range discoveredRows {
+		streamIDs = append(streamIDs, row.StreamID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	lockedStreams, err := lockMariaDBStreamsSorted(ctx, tx, streamIDs)
+	if err != nil {
+		return ErrForbidden
+	}
+	if target, ok := lockedStreams[event.StreamID]; !ok || target.DeletedAt != nil {
+		return ErrForbidden
+	}
+	lockedServices, err := lockMariaDBServicesSorted(ctx, tx, []string{event.ServiceID})
+	if err != nil {
+		return ErrForbidden
+	}
+	service, ok := lockedServices[event.ServiceID]
+	if !ok || service.ServiceType != discoveredService.ServiceType || strings.TrimSpace(service.CurrentStreamID) != strings.TrimSpace(discoveredService.CurrentStreamID) || service.TokenID != token.ID {
+		return ErrForbidden
+	}
+	if err := lockMariaDBAssignmentRowsSorted(ctx, tx, discoveredRows); err != nil {
+		if errors.Is(err, ErrServiceAssignmentConflict) {
+			return ErrForbidden
+		}
+		return err
+	}
+	revalidatedRows, err := discoverMariaDBAssignmentsForService(ctx, tx, event.ServiceID)
+	if err != nil {
+		return err
+	}
+	if !mariaDBAssignmentRowsEqual(discoveredRows, revalidatedRows) {
+		return ErrForbidden
+	}
+	if !serviceStreamEventAllowed(service.ServiceType, event.EventType) {
+		return ErrInvalidServiceStreamEvent
+	}
+	owner, _, err := consistentMariaDBServiceAssignment(ctx, tx, service)
+	if err != nil || owner != event.StreamID {
+		return ErrForbidden
+	}
+	state, err := mariaDBStreamAssignmentProtectionAfterLocks(ctx, tx, event.StreamID)
+	if err != nil {
+		return err
+	}
+	authority := state.Stream
+	var activeTokenID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM service_tokens WHERE id = ? AND revoked_at IS NULL FOR UPDATE`, token.ID).Scan(&activeTokenID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrForbidden
+		}
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_stream_events (id, service_id, stream_id, event_type, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)`, newUUID(), event.ServiceID, event.StreamID, event.EventType, string(body), time.Now().UTC()); err != nil {
 		return err
 	}
-	normalized := NormalizeStreamArtifacts(event.StreamID, artifacts)
 	for _, artifact := range normalized {
 		artifact.ID = newUUID()
 		artifact.CreatedAt = time.Now().UTC()
@@ -1121,8 +1298,18 @@ ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALU
 			return err
 		}
 	}
-	if err := markStreamArchiveRunReported(ctx, tx, event.StreamID, normalized); err != nil {
-		return err
+	legacyAuthority := state.LegacyArchivePending || state.ArchiveRetryPending || (authority.ArchiveReportedAt != nil && legacyArchiveReportStatus(authority))
+	if streamArtifactReportMatchesArchiveAuthority(authority, normalized, legacyAuthority) {
+		if err := markStreamArchiveRunReported(ctx, tx, event.StreamID, authority, normalized); err != nil {
+			return err
+		}
+		closedAt := time.Now().UTC()
+		if err := closeMariaDBStreamLogGuard(ctx, tx, event.StreamID, archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage, closedAt); err != nil {
+			return err
+		}
+		if err := closeMariaDBStreamLogGuard(ctx, tx, event.StreamID, legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage, closedAt); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -1145,13 +1332,58 @@ type streamArchiveRunReporter interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-func markStreamArchiveRunReported(ctx context.Context, reporter streamArchiveRunReporter, streamID string, artifacts []StreamArtifact) error {
+func markStreamArchiveRunReported(ctx context.Context, reporter streamArchiveRunReporter, streamID string, authority Stream, artifacts []StreamArtifact) error {
 	if len(artifacts) == 0 {
 		return nil
 	}
 	now := time.Now().UTC()
-	_, err := reporter.ExecContext(ctx, `UPDATE streams SET archive_reported_at = ?, updated_at = ? WHERE id = ? AND archive_started_at IS NOT NULL AND archive_run_id = ?`, now, now, streamID, artifacts[0].ArchiveRunID)
+	var err error
+	if strings.TrimSpace(authority.ArchiveRunID) == "" {
+		_, err = reporter.ExecContext(ctx, `UPDATE streams
+SET updated_at = CASE WHEN archive_reported_at IS NULL THEN ? ELSE updated_at END,
+    archive_reported_at = COALESCE(archive_reported_at, ?)
+WHERE id = ? AND COALESCE(archive_run_id, '') = ''`, now, now, streamID)
+	} else {
+		_, err = reporter.ExecContext(ctx, `UPDATE streams
+SET updated_at = CASE WHEN archive_reported_at IS NULL THEN ? ELSE updated_at END,
+    archive_reported_at = COALESCE(archive_reported_at, ?)
+WHERE id = ? AND archive_started_at = ? AND archive_run_id = ?`, now, now, streamID, artifacts[0].ArchiveStartedAt, artifacts[0].ArchiveRunID)
+	}
 	return err
+}
+
+func streamArtifactReportMatchesArchiveAuthority(stream Stream, artifacts []StreamArtifact, legacyAuthority bool) bool {
+	if len(artifacts) == 0 {
+		return false
+	}
+	report := artifacts[0]
+	currentRunID := strings.TrimSpace(stream.ArchiveRunID)
+	reportRunID := strings.TrimSpace(report.ArchiveRunID)
+	if currentRunID == "" {
+		if reportRunID != "" || report.ArchiveStartedAt != nil {
+			return false
+		}
+		// New legacy starts carry a durable auxiliary pending marker instead of
+		// fabricating a run timestamp. The second branch closes pre-FIX-003
+		// in-flight legacy starts without weakening non-empty modern run matching.
+		return legacyAuthority || (stream.ArchiveStartedAt != nil && legacyArchiveReportStatus(stream))
+	}
+	return stream.ArchiveStartedAt != nil &&
+		reportRunID == currentRunID &&
+		report.ArchiveStartedAt != nil &&
+		report.ArchiveStartedAt.UTC().Equal(stream.ArchiveStartedAt.UTC())
+}
+
+func legacyArchiveReportStatus(stream Stream) bool {
+	if strings.TrimSpace(stream.ArchiveProfileID) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(stream.Status)) {
+	case "starting", "live", "stopping", "completed", "ready", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func ValidateStreamArtifactReport(streamID string, artifacts []StreamArtifact) error {

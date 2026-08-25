@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
 )
@@ -80,6 +81,12 @@ func TestArchiveProcessingStreamsExposeOnlyUnreportedCompletedRecordings(t *test
 		return items
 	}
 
+	if items := listProcessing(); len(items) != 0 {
+		t.Fatalf("never-started legacy stream was treated as processing = %#v", items)
+	}
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 	if items := listProcessing(); len(items) != 1 || items[0].ID != stream.ID {
 		t.Fatalf("processing streams before artifact report = %#v", items)
 	}
@@ -103,14 +110,15 @@ func TestArchiveProcessingStreamsExposeOnlyUnreportedCompletedRecordings(t *test
 	}
 }
 
-func TestCreateStreamReturnsPrimaryAssignedNodes(t *testing.T) {
+func TestStreamManagementCreateRejectsRequestedPrimaryNodes(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
 	}
 	registerServiceInstance(t, auth, "encoder_recorder-01", "encoder_recorder")
 	registerServiceInstance(t, auth, "worker-01", "worker")
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithServiceRegistryStore(auth))
+	streams := store.NewMemoryStreamStore()
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
 	req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(`{"name":"created with nodes","encoder_service_id":"encoder_recorder-01","worker_service_id":"worker-01"}`))
@@ -118,15 +126,12 @@ func TestCreateStreamReturnsPrimaryAssignedNodes(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusCreated {
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
 		t.Fatalf("create stream status = %d body = %s", res.Code, res.Body.String())
 	}
-	var stream store.Stream
-	if err := json.Unmarshal(res.Body.Bytes(), &stream); err != nil {
-		t.Fatal(err)
-	}
-	if stream.AssignedWorkerID != "worker-01" || stream.AssignedEncoderID != "encoder_recorder-01" {
-		t.Fatalf("created assigned nodes = worker=%q encoder=%q", stream.AssignedWorkerID, stream.AssignedEncoderID)
+	items, err := streams.ListStreams(t.Context())
+	if err != nil || len(items) != 0 {
+		t.Fatalf("rejected create persisted stream: streams=%#v err=%v", items, err)
 	}
 }
 
@@ -238,7 +243,7 @@ func TestDeleteStreamRetainsArchiveCatalogAndReleasesAssignments(t *testing.T) {
 	}
 	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
 	if err != nil || len(assignments) != 0 {
-		t.Fatalf("assignments were not released after delete: assignments=%#v err=%v", assignments, err)
+		t.Fatalf("assignments were not released after delete: assignments=%s err=%v", formatSafeHTTPSensitiveDiagnostic(assignments), err)
 	}
 	archiveReq := httptest.NewRequest(http.MethodGet, "/archive/streams", nil)
 	archiveReq.AddCookie(cookie)

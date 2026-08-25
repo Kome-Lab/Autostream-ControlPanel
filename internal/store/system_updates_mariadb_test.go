@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,34 @@ import (
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
+
+func formatSafeRegisteredServiceDiagnostic(service store.RegisteredService) string {
+	return fmt.Sprintf(
+		"service_id=%q service_type=%q token_id=%q staged_previous_token_id=%q staged_token_id=%q status=%q",
+		service.ServiceID,
+		service.ServiceType,
+		service.TokenID,
+		service.StagedNodePreviousTokenID,
+		service.StagedNodeTokenID,
+		service.Status,
+	)
+}
+
+func formatSafeServiceTokenDiagnostic(operation string, serviceToken store.ServiceToken, refCount int, category string) string {
+	return fmt.Sprintf(
+		"operation=%q token_id=%q service_type=%q revoked=%t ref_count=%d category=%q",
+		operation,
+		serviceToken.ID,
+		serviceToken.ServiceType,
+		serviceToken.RevokedAt != nil,
+		refCount,
+		category,
+	)
+}
+
+func formatSafeSensitiveCompositeDiagnostic(value any) string {
+	return fmt.Sprintf("type=%T details=redacted", value)
+}
 
 func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	dsn := os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN")
@@ -50,7 +79,7 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 		t.Fatalf("register update_agent after migration: %v", err)
 	}
 	if registered.ServiceType != "update_agent" || len(registered.Capabilities) == 0 {
-		t.Fatalf("registered update_agent did not retain TOFU capabilities: %#v", registered)
+		t.Fatalf("registered update_agent did not retain TOFU capabilities: %s", formatSafeRegisteredServiceDiagnostic(registered))
 	}
 	if _, err := auth.Heartbeat(ctx, token, store.ServiceHeartbeat{
 		ServiceID: serviceID, Status: "online", Version: "v1.0.0", Capabilities: capabilities,
@@ -88,7 +117,7 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stagedService.TokenID != token.ID || stagedService.StagedNodeTokenID != staged.Token.ID || stagedService.ConfigureTokenUsedAt == nil {
-		t.Fatalf("MariaDB stage changed active identity: %#v", stagedService)
+		t.Fatalf("MariaDB stage changed active identity: %s", formatSafeRegisteredServiceDiagnostic(stagedService))
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, token.RawToken, "updates.claim"); err != nil {
 		t.Fatalf("MariaDB old token stopped before activation: %v", err)
@@ -98,16 +127,56 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	}
 	activatedToken, registered, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(ctx, serviceID, staged.Token.ID, staged.ActivationToken, stageNow.Add(time.Second), store.ServiceRuntimeReport{Version: "v1.1.0", Hostname: "mariadb-updater", OS: "linux", Arch: "amd64"})
 	if err != nil || alreadyActivated || activatedToken.ID != staged.Token.ID || registered.TokenID != staged.Token.ID {
-		t.Fatalf("activate MariaDB updater configuration: token=%#v service=%#v already=%v err=%v", activatedToken, registered, alreadyActivated, err)
+		t.Fatalf("activate MariaDB updater configuration: token=%s service=%s already=%v err=%v", formatSafeServiceTokenDiagnostic("activate", activatedToken, 0, "unexpected_result"), formatSafeRegisteredServiceDiagnostic(registered), alreadyActivated, err)
 	}
 	if registered.LastHeartbeatAt != nil || len(registered.ReportedCapabilities) != 0 {
-		t.Fatalf("MariaDB activation retained stale heartbeat/capabilities: %#v", registered)
+		t.Fatalf("MariaDB activation retained stale heartbeat/capabilities: %s", formatSafeRegisteredServiceDiagnostic(registered))
+	}
+	if registered.StagedNodePreviousTokenID != "" ||
+		registered.StagedNodeTokenID != "" ||
+		registered.StagedNodeTokenHash != "" ||
+		len(registered.StagedNodeTokenScopes) != 0 ||
+		registered.StagedNodeTokenCiphertext != "" ||
+		registered.StagedNodeTokenNonce != "" ||
+		registered.StagedNodeActivationTokenHash != "" ||
+		registered.StagedNodeTokenAt != nil ||
+		registered.ConfigureTokenExpiresAt != nil {
+		t.Fatalf("MariaDB activation retained staged identity metadata: %s", formatSafeRegisteredServiceDiagnostic(registered))
+	}
+	var oldReferenceCount, newReferenceCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM services
+WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id = ?`,
+		token.ID, token.ID, token.ID,
+	).Scan(&oldReferenceCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM services
+WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id = ?`,
+		staged.Token.ID, staged.Token.ID, staged.Token.ID,
+	).Scan(&newReferenceCount); err != nil {
+		t.Fatal(err)
+	}
+	var oldRevoked, newRevoked bool
+	if err := db.QueryRowContext(ctx, `SELECT revoked_at IS NOT NULL FROM service_tokens WHERE id = ?`, token.ID).Scan(&oldRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT revoked_at IS NOT NULL FROM service_tokens WHERE id = ?`, staged.Token.ID).Scan(&newRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if oldReferenceCount != 0 || newReferenceCount != 1 || !oldRevoked || newRevoked {
+		t.Fatalf(
+			"MariaDB activation token closure old_refs=%d new_refs=%d old_revoked=%v new_revoked=%v",
+			oldReferenceCount, newReferenceCount, oldRevoked, newRevoked,
+		)
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, token.RawToken, "service.heartbeat"); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("MariaDB old token survived activation: %v", err)
 	}
 	if _, err := auth.AuthenticateServiceToken(ctx, staged.Token.RawToken, "updates.claim"); err != nil {
 		t.Fatalf("MariaDB staged token did not activate: %v", err)
+	}
+	if _, _, _, err := auth.ActivateServiceNodeConfiguration(ctx, serviceID, staged.Token.ID, "wrong-activation-token", stageNow.Add(2*time.Second), store.ServiceRuntimeReport{}); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("MariaDB activation replay accepted the wrong activation token: %v", err)
 	}
 	if _, _, alreadyActivated, err := auth.ActivateServiceNodeConfiguration(ctx, serviceID, staged.Token.ID, staged.ActivationToken, stageNow.Add(2*time.Second), store.ServiceRuntimeReport{}); err != nil || !alreadyActivated {
 		t.Fatalf("MariaDB activation replay: already=%v err=%v", alreadyActivated, err)
@@ -131,7 +200,7 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	if registered.ConfigureTokenExpiresAt != nil || registered.ConfigureTokenUsedAt != nil ||
 		registered.StagedNodeTokenID != "" || registered.LastHeartbeatAt != nil ||
 		len(registered.ReportedCapabilities) != 0 {
-		t.Fatalf("MariaDB runtime rotation retained configure/staging/heartbeat metadata: %#v", registered)
+		t.Fatalf("MariaDB runtime rotation retained configure/staging/heartbeat metadata: %s", formatSafeRegisteredServiceDiagnostic(registered))
 	}
 	if _, err := auth.ConsumeServiceConfigureToken(ctx, serviceID, outstandingConfigureToken, time.Now().UTC()); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("MariaDB runtime rotation left configure token usable: %v", err)
@@ -144,7 +213,7 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 		t.Fatalf("heartbeat/metric write for update_agent after migration: %v", err)
 	}
 	if heartbeat.LastHeartbeatAt == nil || heartbeat.ServiceType != "update_agent" {
-		t.Fatalf("update_agent heartbeat was not persisted: %#v", heartbeat)
+		t.Fatalf("update_agent heartbeat was not persisted: %s", formatSafeRegisteredServiceDiagnostic(heartbeat))
 	}
 
 	streams := store.NewMariaDBStreamStore(db)

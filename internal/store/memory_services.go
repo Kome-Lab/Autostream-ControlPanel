@@ -694,6 +694,18 @@ func (s *MemoryAuthStore) StageServiceNodeConfiguration(ctx context.Context, ser
 	if err := validateRequiredUpdateAgentScopes(oldToken.ServiceType, oldToken.Scopes); err != nil {
 		return StagedServiceNodeConfiguration{}, err
 	}
+	for candidateID, candidate := range s.services {
+		if !updateAgentStageTokenReferenceAllowed(
+			candidateID,
+			candidate.TokenID,
+			candidate.StagedNodePreviousTokenID,
+			candidate.StagedNodeTokenID,
+			serviceID,
+			oldToken.ID,
+		) {
+			return StagedServiceNodeConfiguration{}, ErrSystemUpdateRuntimeTokenRotationSharedToken
+		}
+	}
 	token, _, err := newRotatedServiceToken(oldToken, now)
 	if err != nil {
 		return StagedServiceNodeConfiguration{}, err
@@ -747,6 +759,22 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	if service.ServiceType != "update_agent" {
 		return ServiceToken{}, RegisteredService{}, false, ErrForbidden
 	}
+	if service.TokenID == configurationID && service.StagedNodeTokenID == "" {
+		if service.ConfigureTokenUsedAt == nil ||
+			service.ConfigureTokenExpiresAt != nil ||
+			service.ConfigureTokenHash == "" ||
+			!security.VerifyTokenHash(rawActivationToken, service.ConfigureTokenHash) {
+			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+		}
+		token, ok := s.serviceTokens[service.TokenID]
+		if !ok || token.RevokedAt != nil || token.ServiceType != service.ServiceType {
+			return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
+		}
+		if err := validateRequiredUpdateAgentScopes(token.ServiceType, token.Scopes); err != nil {
+			return ServiceToken{}, RegisteredService{}, false, err
+		}
+		return token, service, true, nil
+	}
 	if service.StagedNodeTokenID != configurationID || service.StagedNodeTokenHash == "" || service.StagedNodeActivationTokenHash == "" || !security.VerifyTokenHash(rawActivationToken, service.StagedNodeActivationTokenHash) {
 		return ServiceToken{}, RegisteredService{}, false, ErrUnauthorized
 	}
@@ -776,6 +804,19 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	if err := validateRequiredUpdateAgentScopes(service.ServiceType, service.StagedNodeTokenScopes); err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
 	}
+	for candidateID, candidate := range s.services {
+		if !updateAgentActivationTokenReferenceAllowed(
+			candidateID,
+			candidate.TokenID,
+			candidate.StagedNodePreviousTokenID,
+			candidate.StagedNodeTokenID,
+			serviceID,
+			oldToken.ID,
+			service.StagedNodeTokenID,
+		) {
+			return ServiceToken{}, RegisteredService{}, false, ErrSystemUpdateRuntimeTokenRotationSharedToken
+		}
+	}
 	token := ServiceToken{ID: service.StagedNodeTokenID, ServiceType: "update_agent", Scopes: append([]string(nil), service.StagedNodeTokenScopes...), TokenHash: service.StagedNodeTokenHash, CreatedAt: service.StagedNodeTokenAt.UTC()}
 	if err := validateServiceScopes(token.Scopes); err != nil {
 		return ServiceToken{}, RegisteredService{}, false, err
@@ -788,14 +829,19 @@ func (s *MemoryAuthStore) ActivateServiceNodeConfiguration(ctx context.Context, 
 	service.TokenID = token.ID
 	service.NodeTokenCiphertext = service.StagedNodeTokenCiphertext
 	service.NodeTokenNonce = service.StagedNodeTokenNonce
+	service.ConfigureTokenHash = service.StagedNodeActivationTokenHash
+	service.ConfigureTokenExpiresAt = nil
+	clearStagedNodeConfiguration(&service)
 	service.LastHeartbeatAt = nil
 	service.ReportedCapabilities = map[string]any{}
 	service.NodeTokenRotatedAt = &now
 	service.UpdatedAt = now
 	s.services[serviceID] = service
 	oldTokenStillReferenced := false
-	for candidateID, candidate := range s.services {
-		if candidateID != serviceID && candidate.TokenID == oldToken.ID {
+	for _, candidate := range s.services {
+		if candidate.TokenID == oldToken.ID ||
+			candidate.StagedNodePreviousTokenID == oldToken.ID ||
+			candidate.StagedNodeTokenID == oldToken.ID {
 			oldTokenStillReferenced = true
 			break
 		}
@@ -919,10 +965,28 @@ func (s *MemoryAuthStore) DeleteService(ctx context.Context, serviceID string) e
 	if !ok {
 		return ErrNotFound
 	}
+	if streams := s.streamAssignmentGuard; streams != nil {
+		streams.mu.Lock()
+		defer streams.mu.Unlock()
+		owner, _, err := s.consistentServiceAssignmentLocked(svc)
+		if err != nil {
+			return err
+		}
+		if owner != "" {
+			stream, ok := streams.streams[owner]
+			if !ok || stream.DeletedAt != nil {
+				return ErrServiceAssignmentConflict
+			}
+			if memoryStreamAssignmentProtectionLocked(streams, stream).protected() {
+				return ErrServiceUnassignProtectedStream
+			}
+		}
+	}
 	delete(s.services, serviceID)
 	for key, assignedServiceID := range s.assignments {
 		if assignedServiceID == serviceID {
 			delete(s.assignments, key)
+			delete(s.assignmentIDs, key)
 		}
 	}
 	filteredEvents := s.streamEvents[:0]
@@ -948,6 +1012,12 @@ func (s *MemoryAuthStore) AssignServiceToStreamWithRole(ctx context.Context, ser
 	if err := ctx.Err(); err != nil {
 		return RegisteredService{}, err
 	}
+	s.mu.Lock()
+	guardBound := s.streamAssignmentGuard != nil
+	s.mu.Unlock()
+	if guardBound {
+		return s.AssignServiceToStreamGuarded(ctx, ServiceAssignmentMutation{ServiceID: serviceID, StreamID: streamID, ActorUserID: actorUserID, AssignmentRole: assignmentRole})
+	}
 	assignmentRole = normalizeAssignmentRole(assignmentRole)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -963,6 +1033,7 @@ func (s *MemoryAuthStore) AssignServiceToStreamWithRole(ctx context.Context, ser
 	for key, assignedServiceID := range s.assignments {
 		if assignedServiceID == serviceID || (assignmentRole == "primary" && assignmentKeyMatchesPrimary(key, streamID, svc.ServiceType)) || key == targetKey {
 			delete(s.assignments, key)
+			delete(s.assignmentIDs, key)
 			if assignedServiceID != serviceID {
 				replacedServiceIDs[assignedServiceID] = true
 			}
@@ -978,6 +1049,7 @@ func (s *MemoryAuthStore) AssignServiceToStreamWithRole(ctx context.Context, ser
 		s.services[replacedServiceID] = replaced
 	}
 	s.assignments[targetKey] = serviceID
+	s.assignmentIDs[targetKey] = newUUID()
 	svc.CurrentStreamID = streamID
 	svc.Status = "assigned"
 	svc.AssignmentRole = assignmentRole
@@ -991,6 +1063,12 @@ func (s *MemoryAuthStore) UnassignServiceFromStream(ctx context.Context, service
 		return RegisteredService{}, err
 	}
 	s.mu.Lock()
+	guardBound := s.streamAssignmentGuard != nil
+	s.mu.Unlock()
+	if guardBound {
+		return s.UnassignServiceFromStreamGuarded(ctx, ServiceUnassignmentMutation{ServiceID: serviceID, ActorUserID: actorUserID})
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	svc, ok := s.services[serviceID]
 	if !ok {
@@ -999,6 +1077,7 @@ func (s *MemoryAuthStore) UnassignServiceFromStream(ctx context.Context, service
 	for key, assignedServiceID := range s.assignments {
 		if assignedServiceID == serviceID {
 			delete(s.assignments, key)
+			delete(s.assignmentIDs, key)
 		}
 	}
 	svc.CurrentStreamID = ""
@@ -1008,6 +1087,238 @@ func (s *MemoryAuthStore) UnassignServiceFromStream(ctx context.Context, service
 	svc.UpdatedAt = time.Now().UTC()
 	s.services[serviceID] = svc
 	return svc, nil
+}
+
+func (s *MemoryAuthStore) AssignServiceToStreamGuarded(ctx context.Context, mutation ServiceAssignmentMutation) (RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return RegisteredService{}, err
+	}
+	mutation.ServiceID = strings.TrimSpace(mutation.ServiceID)
+	mutation.StreamID = strings.TrimSpace(mutation.StreamID)
+	mutation.AssignmentRole = normalizeAssignmentRole(mutation.AssignmentRole)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	streams := s.streamAssignmentGuard
+	if streams == nil {
+		return RegisteredService{}, ErrServiceAssignmentGuardUnavailable
+	}
+	streams.mu.Lock()
+	defer streams.mu.Unlock()
+
+	svc, ok := s.services[mutation.ServiceID]
+	if !ok {
+		return RegisteredService{}, ErrNotFound
+	}
+	if !streamAssignableServiceType(svc.ServiceType) {
+		return RegisteredService{}, ErrInvalidServiceAssignment
+	}
+	target, ok := streams.streams[mutation.StreamID]
+	if !ok || target.DeletedAt != nil {
+		return RegisteredService{}, ErrNotFound
+	}
+	currentStreamID, currentRole, err := s.consistentServiceAssignmentLocked(svc)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	if mutation.ExpectedCurrentStreamID != nil && currentStreamID != strings.TrimSpace(*mutation.ExpectedCurrentStreamID) {
+		return RegisteredService{}, ErrServiceAssignmentConflict
+	}
+	if currentStreamID == mutation.StreamID && currentRole == mutation.AssignmentRole {
+		svc.AssignmentRole = currentRole
+		return svc, nil
+	}
+	if currentStreamID != "" {
+		source, ok := streams.streams[currentStreamID]
+		if !ok || source.DeletedAt != nil {
+			return RegisteredService{}, ErrServiceAssignmentConflict
+		}
+		if memoryStreamAssignmentProtectionLocked(streams, source).protected() {
+			return RegisteredService{}, ErrServiceAssignmentProtectedStream
+		}
+	}
+	if memoryStreamAssignmentProtectionLocked(streams, target).protected() {
+		return RegisteredService{}, ErrServiceAssignmentProtectedStream
+	}
+
+	targetKey := assignmentKey(mutation.StreamID, svc.ServiceType, mutation.AssignmentRole, mutation.ServiceID)
+	replacedServiceIDs := make(map[string]bool)
+	for key, assignedServiceID := range s.assignments {
+		if assignedServiceID == mutation.ServiceID ||
+			(mutation.AssignmentRole == "primary" && assignmentKeyMatchesPrimary(key, mutation.StreamID, svc.ServiceType)) ||
+			key == targetKey {
+			if assignedServiceID != mutation.ServiceID {
+				replaced, ok := s.services[assignedServiceID]
+				if !ok {
+					return RegisteredService{}, ErrServiceAssignmentConflict
+				}
+				replacedOwner, _, err := s.consistentServiceAssignmentLocked(replaced)
+				if err != nil || replacedOwner != mutation.StreamID {
+					return RegisteredService{}, ErrServiceAssignmentConflict
+				}
+				replacedServiceIDs[assignedServiceID] = true
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	for key, assignedServiceID := range s.assignments {
+		if assignedServiceID == mutation.ServiceID ||
+			(mutation.AssignmentRole == "primary" && assignmentKeyMatchesPrimary(key, mutation.StreamID, svc.ServiceType)) ||
+			key == targetKey {
+			delete(s.assignments, key)
+			delete(s.assignmentIDs, key)
+		}
+	}
+	for replacedServiceID := range replacedServiceIDs {
+		replaced := s.services[replacedServiceID]
+		replaced.CurrentStreamID = ""
+		if replaced.Status == "assigned" {
+			replaced.Status = "registered"
+		}
+		replaced.UpdatedAt = now
+		s.services[replacedServiceID] = replaced
+	}
+	s.assignments[targetKey] = mutation.ServiceID
+	s.assignmentIDs[targetKey] = newUUID()
+	svc.CurrentStreamID = mutation.StreamID
+	svc.Status = "assigned"
+	svc.AssignmentRole = mutation.AssignmentRole
+	svc.UpdatedAt = now
+	s.services[mutation.ServiceID] = svc
+	return svc, nil
+}
+
+func (s *MemoryAuthStore) UnassignServiceFromStreamGuarded(ctx context.Context, mutation ServiceUnassignmentMutation) (RegisteredService, error) {
+	if err := ctx.Err(); err != nil {
+		return RegisteredService{}, err
+	}
+	mutation.ServiceID = strings.TrimSpace(mutation.ServiceID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	streams := s.streamAssignmentGuard
+	if streams == nil {
+		return RegisteredService{}, ErrServiceAssignmentGuardUnavailable
+	}
+	streams.mu.Lock()
+	defer streams.mu.Unlock()
+
+	svc, ok := s.services[mutation.ServiceID]
+	if !ok {
+		return RegisteredService{}, ErrNotFound
+	}
+	currentStreamID, currentRole, err := s.consistentServiceAssignmentLocked(svc)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	if mutation.ExpectedCurrentStreamID != nil && currentStreamID != strings.TrimSpace(*mutation.ExpectedCurrentStreamID) {
+		return RegisteredService{}, ErrServiceAssignmentConflict
+	}
+	if currentStreamID == "" {
+		svc.AssignmentRole = currentRole
+		return svc, nil
+	}
+	owner, ok := streams.streams[currentStreamID]
+	if !ok || owner.DeletedAt != nil {
+		return RegisteredService{}, ErrServiceAssignmentConflict
+	}
+	if memoryStreamAssignmentProtectionLocked(streams, owner).protected() {
+		return RegisteredService{}, ErrServiceUnassignProtectedStream
+	}
+	for key, assignedServiceID := range s.assignments {
+		if assignedServiceID == mutation.ServiceID {
+			delete(s.assignments, key)
+			delete(s.assignmentIDs, key)
+		}
+	}
+	svc.CurrentStreamID = ""
+	if svc.Status == "assigned" {
+		svc.Status = "registered"
+	}
+	svc.AssignmentRole = ""
+	svc.UpdatedAt = time.Now().UTC()
+	s.services[mutation.ServiceID] = svc
+	return svc, nil
+}
+
+func (s *MemoryAuthStore) BeginStreamArchiveRetryGuarded(ctx context.Context, serviceID, streamID string) (Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return Stream{}, err
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	streamID = strings.TrimSpace(streamID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	streams := s.streamAssignmentGuard
+	if streams == nil {
+		return Stream{}, ErrServiceAssignmentGuardUnavailable
+	}
+	streams.mu.Lock()
+	defer streams.mu.Unlock()
+	svc, ok := s.services[serviceID]
+	if !ok {
+		return Stream{}, ErrNotFound
+	}
+	if svc.ServiceType != "encoder_recorder" {
+		return Stream{}, ErrInvalidServiceAssignment
+	}
+	owner, _, err := s.consistentServiceAssignmentLocked(svc)
+	if err != nil {
+		return Stream{}, err
+	}
+	if owner != streamID {
+		return Stream{}, ErrServiceAssignmentConflict
+	}
+	stream, ok := streams.streams[streamID]
+	if !ok || stream.DeletedAt != nil {
+		return Stream{}, ErrNotFound
+	}
+	if streams.archiveRetryPending[streamID] {
+		return stream, nil
+	}
+	streams.archiveRetryPending[streamID] = true
+	if stream.ArchiveReportedAt != nil {
+		stream.ArchiveReportedAt = nil
+		stream.UpdatedAt = time.Now().UTC()
+		streams.streams[streamID] = stream
+		streams.artifactReports[streamID] = false
+	}
+	return stream, nil
+}
+
+func (s *MemoryAuthStore) consistentServiceAssignmentLocked(service RegisteredService) (string, string, error) {
+	owner := ""
+	role := ""
+	count := 0
+	for key, assignedServiceID := range s.assignments {
+		if assignedServiceID != service.ServiceID {
+			continue
+		}
+		streamID, serviceType, assignmentRole := assignmentPartsFromKey(key)
+		if serviceType != service.ServiceType || streamID == "" {
+			return "", "", ErrServiceAssignmentConflict
+		}
+		owner = streamID
+		role = assignmentRole
+		count++
+	}
+	if count > 1 || (count == 0) != (strings.TrimSpace(service.CurrentStreamID) == "") {
+		return "", "", ErrServiceAssignmentConflict
+	}
+	if count == 1 && owner != strings.TrimSpace(service.CurrentStreamID) {
+		return "", "", ErrServiceAssignmentConflict
+	}
+	return owner, role, nil
+}
+
+func memoryStreamAssignmentProtectionLocked(streams *MemoryStreamStore, stream Stream) streamAssignmentProtection {
+	state := streamAssignmentProtection{Stream: stream, ArchiveRetryPending: streams.archiveRetryPending[stream.ID], LegacyArchivePending: streams.legacyArchivePending[stream.ID], HasArchiveReport: streams.artifactReports[stream.ID]}
+	for _, artifact := range streams.artifacts[stream.ID] {
+		if isArchiveRecordingArtifact(artifact) {
+			state.HasRecordingArtifact = true
+			break
+		}
+	}
+	return state
 }
 
 func (s *MemoryAuthStore) ListStreamAssignments(ctx context.Context, streamID string) ([]RegisteredService, error) {

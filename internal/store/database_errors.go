@@ -66,3 +66,35 @@ func isTransientDatabaseConnectionError(err error) bool {
 func IsTransientDatabaseConnectionError(err error) bool {
 	return isTransientDatabaseConnectionError(err)
 }
+
+func isMariaDBLockConflict(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	switch mysqlErr.Number {
+	case 1205, 1213: // lock wait timeout, deadlock victim
+		return true
+	default:
+		return false
+	}
+}
+
+type mariaDBServiceAssignmentConflict struct {
+	cause error
+}
+
+func (err mariaDBServiceAssignmentConflict) Error() string {
+	return ErrServiceAssignmentConflict.Error()
+}
+
+func (err mariaDBServiceAssignmentConflict) Unwrap() []error {
+	return []error{ErrServiceAssignmentConflict, err.cause}
+}
+
+func mariaDBLockConflictAsAssignmentConflict(err error) error {
+	if !isMariaDBLockConflict(err) {
+		return err
+	}
+	return mariaDBServiceAssignmentConflict{cause: err}
+}

@@ -108,8 +108,10 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	failingServices := &failOnceServiceActivationStore{
-		ServiceRegistryStore: auth,
-		failuresRemaining:    1,
+		ServiceRegistryStore:   auth,
+		stageFailuresRemaining: 1,
+		stageFailure:           store.ErrConflict,
+		failuresRemaining:      1,
 	}
 	handler := NewServer(
 		store.NewMemoryStreamStore(),
@@ -128,6 +130,35 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	concurrentStageRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/node-agent/configure/stage",
+		bytes.NewReader(stagePayload),
+	)
+	concurrentStageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(concurrentStageResponse, concurrentStageRequest)
+	if concurrentStageResponse.Code != http.StatusConflict ||
+		!strings.Contains(
+			concurrentStageResponse.Body.String(),
+			`"code":"runtime_token_rotation_conflict"`,
+		) {
+		t.Fatalf(
+			"concurrent stage status=%d body=%s",
+			concurrentStageResponse.Code,
+			concurrentStageResponse.Body.String(),
+		)
+	}
+	afterConcurrentStage, err := auth.GetService(t.Context(), "host-agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterConcurrentStage.ConfigureTokenUsedAt != nil ||
+		afterConcurrentStage.StagedNodeTokenID != "" {
+		t.Fatalf(
+			"concurrent stage response changed identity: %s",
+			formatSafeHTTPSensitiveDiagnostic(afterConcurrentStage),
+		)
 	}
 	stageRequest := httptest.NewRequest(
 		http.MethodPost,
@@ -154,7 +185,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 		staged.LocalExecutorPolicy == nil ||
 		staged.Config.TransportMode != store.SystemUpdateTransportPullV2 ||
 		staged.Config.API != (updateagent.APIConfig{}) {
-		t.Fatalf("staged configuration = %#v", staged)
+		t.Fatalf("staged configuration = %s", formatSafeHTTPSensitiveDiagnostic(staged))
 	}
 	var stagedPolicy updateagent.LocalExecutorPolicy
 	if err := json.Unmarshal(
@@ -197,7 +228,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 	}
 	if stagedService.TokenID != agentToken.ID ||
 		stagedService.ConfigureTokenUsedAt == nil {
-		t.Fatalf("stage changed the active identity: %#v", stagedService)
+		t.Fatalf("stage changed the active identity: %s", formatSafeHTTPSensitiveDiagnostic(stagedService))
 	}
 	if _, err := auth.AuthenticateServiceToken(
 		t.Context(),
@@ -299,6 +330,43 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 	); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("staged runtime token became active after failed activation: %v", err)
 	}
+	failingServices.failuresRemaining = 1
+	failingServices.failure = store.ErrSystemUpdateRuntimeTokenRotationSharedToken
+	sharedTokenResponse := sendHostAgentConfigureActivation(
+		t,
+		handler,
+		activation,
+	)
+	if sharedTokenResponse.Code != http.StatusConflict ||
+		!strings.Contains(
+			sharedTokenResponse.Body.String(),
+			`"code":"runtime_token_rotation_shared_token"`,
+		) {
+		t.Fatalf(
+			"shared-token activation status=%d body=%s",
+			sharedTokenResponse.Code,
+			sharedTokenResponse.Body.String(),
+		)
+	}
+	failingServices.failuresRemaining = 1
+	failingServices.failure = store.ErrConflict
+	concurrentChangeResponse := sendHostAgentConfigureActivation(
+		t,
+		handler,
+		activation,
+	)
+	if concurrentChangeResponse.Code != http.StatusConflict ||
+		!strings.Contains(
+			concurrentChangeResponse.Body.String(),
+			`"code":"runtime_token_rotation_conflict"`,
+		) {
+		t.Fatalf(
+			"concurrent activation status=%d body=%s",
+			concurrentChangeResponse.Code,
+			concurrentChangeResponse.Body.String(),
+		)
+	}
+	failingServices.failure = nil
 	ownershipAfterFailure, err := updates.GetSystemUpdateExecutionHost(
 		t.Context(),
 		"host-a",
@@ -382,7 +450,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if activatedService.TokenID != stagedService.StagedNodeTokenID {
-		t.Fatalf("active runtime token did not switch: %#v", activatedService)
+		t.Fatalf("active runtime token did not switch: %s", formatSafeHTTPSensitiveDiagnostic(activatedService))
 	}
 	if _, err := auth.AuthenticateServiceToken(
 		t.Context(),
@@ -410,6 +478,31 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 		boundPolicy.ProjectionRevision != saved.ProjectionRevision ||
 		boundPolicy.LocalExecutorPolicyRevision != saved.LocalExecutorPolicyRevision {
 		t.Fatalf("activated policy binding = %#v", boundPolicy)
+	}
+	wrongReplay := cloneHostAgentConfigureActivationPayload(activation)
+	wrongReplay["activationToken"] = "wrong-activation-token"
+	wrongReplayResponse := sendHostAgentConfigureActivation(t, handler, wrongReplay)
+	if wrongReplayResponse.Code != http.StatusUnauthorized ||
+		!strings.Contains(wrongReplayResponse.Body.String(), `"code":"invalid_activation_token"`) {
+		t.Fatalf(
+			"wrong activation replay status=%d body=%s",
+			wrongReplayResponse.Code,
+			wrongReplayResponse.Body.String(),
+		)
+	}
+	tamperedReplay := cloneHostAgentConfigureActivationPayload(activation)
+	tamperedReplay["agentUid"] = uint32(2001)
+	tamperedReplayResponse := sendHostAgentConfigureActivation(t, handler, tamperedReplay)
+	if tamperedReplayResponse.Code != http.StatusConflict ||
+		!strings.Contains(
+			tamperedReplayResponse.Body.String(),
+			`"code":"local_executor_policy_binding_mismatch"`,
+		) {
+		t.Fatalf(
+			"tampered activation replay status=%d body=%s",
+			tamperedReplayResponse.Code,
+			tamperedReplayResponse.Body.String(),
+		)
 	}
 
 	replayResponse := sendHostAgentConfigureActivation(
@@ -501,7 +594,7 @@ func assertHostAgentConfigureNotActivated(
 	}
 	if service.TokenID != oldToken.ID ||
 		service.StagedNodeTokenID != stagedTokenID {
-		t.Fatalf("rejected activation changed identity: %#v", service)
+		t.Fatalf("rejected activation changed identity: %s", formatSafeHTTPSensitiveDiagnostic(service))
 	}
 	if _, err := auth.AuthenticateServiceToken(
 		t.Context(),
@@ -521,7 +614,33 @@ func assertHostAgentConfigureNotActivated(
 
 type failOnceServiceActivationStore struct {
 	store.ServiceRegistryStore
-	failuresRemaining int
+	stageFailuresRemaining int
+	stageFailure           error
+	failuresRemaining      int
+	failure                error
+}
+
+func (s *failOnceServiceActivationStore) StageServiceNodeConfiguration(
+	ctx context.Context,
+	serviceID, rawConfigureToken string,
+	now time.Time,
+	seal store.NodeTokenSealer,
+) (store.StagedServiceNodeConfiguration, error) {
+	if s.stageFailuresRemaining > 0 {
+		s.stageFailuresRemaining--
+		failure := s.stageFailure
+		if failure == nil {
+			failure = errors.New("injected service stage failure")
+		}
+		return store.StagedServiceNodeConfiguration{}, failure
+	}
+	return s.ServiceRegistryStore.StageServiceNodeConfiguration(
+		ctx,
+		serviceID,
+		rawConfigureToken,
+		now,
+		seal,
+	)
 }
 
 func (s *failOnceServiceActivationStore) ActivateServiceNodeConfiguration(
@@ -532,10 +651,14 @@ func (s *failOnceServiceActivationStore) ActivateServiceNodeConfiguration(
 ) (store.ServiceToken, store.RegisteredService, bool, error) {
 	if s.failuresRemaining > 0 {
 		s.failuresRemaining--
+		failure := s.failure
+		if failure == nil {
+			failure = errors.New("injected service activation failure")
+		}
 		return store.ServiceToken{},
 			store.RegisteredService{},
 			false,
-			errors.New("injected service activation failure")
+			failure
 	}
 	return s.ServiceRegistryStore.ActivateServiceNodeConfiguration(
 		ctx,

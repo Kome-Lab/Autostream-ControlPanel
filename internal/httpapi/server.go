@@ -321,6 +321,17 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 			s.services = services
 		}
 	}
+	if provider, ok := s.streams.(interface {
+		AssignmentGuardMemoryStore() *store.MemoryStreamStore
+	}); ok {
+		memoryStreams := provider.AssignmentGuardMemoryStore()
+		if memoryAuth, ok := s.auth.(*store.MemoryAuthStore); ok {
+			memoryAuth.BindStreamAssignmentGuard(memoryStreams)
+		}
+		if memoryServices, ok := s.services.(*store.MemoryAuthStore); ok {
+			memoryServices.BindStreamAssignmentGuard(memoryStreams)
+		}
+	}
 	if s.profiles == nil {
 		s.profiles = store.NewMemoryProfileStore()
 	}
@@ -5792,6 +5803,12 @@ func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request)
 	case errors.Is(err, store.ErrUnauthorized):
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_configure_token"})
 		return
+	case errors.Is(err, store.ErrSystemUpdateRuntimeTokenRotationSharedToken):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "runtime_token_rotation_shared_token"})
+		return
+	case errors.Is(err, store.ErrConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "runtime_token_rotation_conflict"})
+		return
 	case errors.Is(err, store.ErrForbidden):
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
 		return
@@ -5895,6 +5912,12 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 	}
 	var configurePolicy *updateagent.ConfigurePolicyProjection
 	activationConfigurationID := configurationID
+	clearedHostAgentActivationReplay := inspectErr == nil &&
+		isPullV2HostAgent(stagedService) &&
+		stagedService.StagedNodeTokenID == ""
+	if clearedHostAgentActivationReplay {
+		activationConfigurationID = stagedService.TokenID
+	}
 	if inspectErr == nil &&
 		isPullV2HostAgent(stagedService) &&
 		stagedService.StagedNodeTokenID != "" &&
@@ -5976,6 +5999,12 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 	case errors.Is(err, store.ErrUnauthorized):
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_activation_token"})
 		return
+	case errors.Is(err, store.ErrSystemUpdateRuntimeTokenRotationSharedToken):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "runtime_token_rotation_shared_token"})
+		return
+	case errors.Is(err, store.ErrConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "runtime_token_rotation_conflict"})
+		return
 	case errors.Is(err, store.ErrForbidden):
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "two_phase_configure_not_supported"})
 		return
@@ -5985,6 +6014,69 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 	case err != nil:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "activate_node_configuration_failed"})
 		return
+	}
+	if alreadyActivated && clearedHostAgentActivationReplay && configurePolicy == nil {
+		if s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, updated.ServiceID) {
+			return
+		}
+		if body.ConfigureProtocolVersion != updateagent.HostAgentConfigureProtocolVersion ||
+			body.AgentUID == 0 ||
+			body.AgentGID == 0 {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "host_agent_configure_protocol_required"})
+			return
+		}
+		projection, projectionErr := s.hostAgentConfigurePolicyProjection(
+			r.Context(),
+			r,
+			updated,
+			body.AgentUID,
+			body.AgentGID,
+		)
+		if projectionErr != nil {
+			writeHostAgentConfigurePolicyError(w, projectionErr)
+			return
+		}
+		configureBindingKey, keyErr := nodeRuntimeTokenEncryptionKey()
+		if keyErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "host_agent_configure_binding_unavailable"})
+			return
+		}
+		if !hostAgentConfigureConfigurationIDMatches(
+			configurationID,
+			updated.TokenID,
+			body.AgentUID,
+			body.AgentGID,
+			projection,
+			configureBindingKey,
+		) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "local_executor_policy_binding_mismatch"})
+			return
+		}
+		if body.LocalExecutorPolicySHA256 != projection.SHA256 ||
+			body.SourcePolicyRevision != projection.SourcePolicyRevision ||
+			body.ProjectionRevision != projection.ProjectionRevision ||
+			body.LocalExecutorPolicyRevision != projection.PolicyRevision {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "local_executor_policy_binding_mismatch"})
+			return
+		}
+		if _, bindErr := s.updaterPolicies.BindPullUpdaterConfigurePolicy(
+			r.Context(),
+			store.BindPullUpdaterConfigurePolicyParams{
+				ServiceID:                           updated.ServiceID,
+				ExpectedSourcePolicyRevision:        projection.SourcePolicyRevision,
+				ExpectedProjectionRevision:          projection.ProjectionRevision,
+				ExpectedLocalExecutorPolicyRevision: projection.PolicyRevision,
+				LocalExecutorPolicySHA256:           projection.SHA256,
+			},
+		); bindErr != nil {
+			if errors.Is(bindErr, store.ErrConflict) {
+				writeJSON(w, http.StatusConflict, map[string]string{"code": "local_executor_policy_binding_mismatch"})
+			} else {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "bind_local_executor_policy_failed"})
+			}
+			return
+		}
+		configurePolicy = &projection
 	}
 	state := "activated"
 	if alreadyActivated {
@@ -6710,6 +6802,24 @@ func (s *Server) getWorker(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, worker)
 }
 
+func serviceAssignmentHTTPError(err error, unassign bool) (code string, status int, handled bool) {
+	switch {
+	case errors.Is(err, store.ErrServiceAssignmentConflict):
+		return "service_assignment_conflict", http.StatusConflict, true
+	case errors.Is(err, store.ErrServiceAssignmentProtectedStream):
+		return "service_assignment_protected_stream", http.StatusConflict, true
+	case errors.Is(err, store.ErrServiceUnassignProtectedStream):
+		if unassign {
+			return "service_unassign_protected_stream", http.StatusConflict, true
+		}
+		return "service_assignment_protected_stream", http.StatusConflict, true
+	case errors.Is(err, store.ErrServiceAssignmentGuardUnavailable):
+		return "service_assignment_guard_unavailable", http.StatusServiceUnavailable, true
+	default:
+		return "", 0, false
+	}
+}
+
 func (s *Server) assignService(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		StreamID       string `json:"stream_id"`
@@ -6746,10 +6856,14 @@ func (s *Server) assignService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := currentFromContext(r.Context())
-	service, err := s.services.AssignServiceToStreamWithRole(r.Context(), existing.ServiceID, body.StreamID, current.User.ID, body.AssignmentRole)
+	service, err := s.services.AssignServiceToStreamGuarded(r.Context(), store.ServiceAssignmentMutation{ServiceID: existing.ServiceID, StreamID: body.StreamID, ActorUserID: current.User.ID, AssignmentRole: body.AssignmentRole})
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidServiceAssignment) {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": "service_assignment_unsupported"})
+			return
+		}
+		if code, status, handled := serviceAssignmentHTTPError(err, false); handled {
+			writeJSON(w, status, map[string]string{"code": code})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_failed"})
@@ -6771,8 +6885,12 @@ func (s *Server) unassignService(w http.ResponseWriter, r *http.Request) {
 	}
 	previousStreamID := existing.CurrentStreamID
 	current := currentFromContext(r.Context())
-	service, err := s.services.UnassignServiceFromStream(r.Context(), existing.ServiceID, current.User.ID)
+	service, err := s.services.UnassignServiceFromStreamGuarded(r.Context(), store.ServiceUnassignmentMutation{ServiceID: existing.ServiceID, ActorUserID: current.User.ID})
 	if err != nil {
+		if code, status, handled := serviceAssignmentHTTPError(err, true); handled {
+			writeJSON(w, status, map[string]string{"code": code})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "unassign_service_failed"})
 		return
 	}
@@ -6815,6 +6933,9 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.services.DeleteService(r.Context(), existing.ServiceID); errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "service_not_found"})
+		return
+	} else if code, status, handled := serviceAssignmentHTTPError(err, true); handled {
+		writeJSON(w, status, map[string]string{"code": code})
 		return
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_service_failed"})
@@ -6860,8 +6981,12 @@ func (s *Server) assignWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := currentFromContext(r.Context())
-	worker, err := s.services.AssignServiceToStreamWithRole(r.Context(), r.PathValue("id"), body.StreamID, current.User.ID, body.AssignmentRole)
+	worker, err := s.services.AssignServiceToStreamGuarded(r.Context(), store.ServiceAssignmentMutation{ServiceID: r.PathValue("id"), StreamID: body.StreamID, ActorUserID: current.User.ID, AssignmentRole: body.AssignmentRole})
 	if err != nil {
+		if code, status, handled := serviceAssignmentHTTPError(err, false); handled {
+			writeJSON(w, status, map[string]string{"code": code})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_worker_failed"})
 		return
 	}
@@ -6885,8 +7010,12 @@ func (s *Server) unassignWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	previousStreamID := existing.CurrentStreamID
 	current := currentFromContext(r.Context())
-	worker, err := s.services.UnassignServiceFromStream(r.Context(), existing.ServiceID, current.User.ID)
+	worker, err := s.services.UnassignServiceFromStreamGuarded(r.Context(), store.ServiceUnassignmentMutation{ServiceID: existing.ServiceID, ActorUserID: current.User.ID})
 	if err != nil {
+		if code, status, handled := serviceAssignmentHTTPError(err, true); handled {
+			writeJSON(w, status, map[string]string{"code": code})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "unassign_worker_failed"})
 		return
 	}
@@ -8787,6 +8916,13 @@ func (s *Server) serviceRemediationExecute(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "remediation_claim_failed"})
 		return
 	}
+	stream, err = s.beginStreamArchiveRetryGuarded(r.Context(), stream, primaryAssignments)
+	if err != nil {
+		code, status := archiveRetryGuardHTTPError(err)
+		s.writeAudit(r, serviceRemediationAudit(token, body, "failure", map[string]any{"reason": code}))
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
 	results := s.dispatcher.RetryArchiveUpload(r.Context(), stream, primaryAssignments, archiveConfig)
 	results = sanitizeDispatchResults(results)
 	if hasDispatchFailure(results) {
@@ -8821,6 +8957,32 @@ func isServiceRemediationActionAllowed(action string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *Server) beginStreamArchiveRetryGuarded(ctx context.Context, stream store.Stream, assignments []store.RegisteredService) (store.Stream, error) {
+	if s.services == nil {
+		return store.Stream{}, store.ErrServiceAssignmentGuardUnavailable
+	}
+	encoderServiceID := primaryServiceID(assignments, "encoder_recorder")
+	if encoderServiceID == "" {
+		return store.Stream{}, store.ErrServiceAssignmentConflict
+	}
+	return s.services.BeginStreamArchiveRetryGuarded(ctx, encoderServiceID, stream.ID)
+}
+
+func archiveRetryGuardHTTPError(err error) (string, int) {
+	switch {
+	case errors.Is(err, store.ErrServiceAssignmentConflict),
+		errors.Is(err, store.ErrServiceAssignmentProtectedStream),
+		errors.Is(err, store.ErrServiceUnassignProtectedStream):
+		return "service_assignment_conflict", http.StatusConflict
+	case errors.Is(err, store.ErrNotFound):
+		return "not_found", http.StatusNotFound
+	case errors.Is(err, store.ErrServiceAssignmentGuardUnavailable):
+		return "service_assignment_guard_unavailable", http.StatusServiceUnavailable
+	default:
+		return "archive_retry_guard_failed", http.StatusInternalServerError
 	}
 }
 
@@ -8946,8 +9108,42 @@ func archiveRequestInt(value *int) int {
 const autoStartTriggerDiscordVoiceJoin = "discord_voice_join"
 
 func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
+	var fields map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	_, encoderAssignmentFieldPresent := fields["encoder_service_id"]
+	_, workerAssignmentFieldPresent := fields["worker_service_id"]
+	if encoderAssignmentFieldPresent || workerAssignmentFieldPresent {
+		current := currentFromContext(r.Context())
+		serviceTypes := make([]string, 0, 2)
+		if encoderAssignmentFieldPresent {
+			serviceTypes = append(serviceTypes, "encoder_recorder")
+		}
+		if workerAssignmentFieldPresent {
+			serviceTypes = append(serviceTypes, "worker")
+		}
+		s.writeAudit(r, store.AuditEvent{
+			ActorUserID: current.User.ID, ActorUsername: current.User.Username,
+			Action: "streams.create", ResourceType: "stream", Result: "failure",
+			Metadata: map[string]any{
+				"reason":                   "stream_create_assignment_fields_unsupported",
+				"assignment_field_count":   len(serviceTypes),
+				"assignment_service_types": serviceTypes,
+			},
+		})
+		w.Header().Set("Warning", `299 AutoStream "stream create assignment fields are unsupported; assign nodes after creation"`)
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_create_assignment_fields_unsupported"})
+		return
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
 	var body streamSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(encoded, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
@@ -8966,10 +9162,6 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := currentFromContext(r.Context())
-	if code, status := s.validateStreamServiceAssignmentRequest(r.Context(), body, current.Permissions); code != "" {
-		writeJSON(w, status, map[string]string{"code": code})
-		return
-	}
 	stream, err := s.streams.CreateStream(r.Context(), body.Name)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_stream_failed"})
@@ -8989,17 +9181,9 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	assignments, code, status := s.applyStreamServiceAssignments(r, stream.ID, body, current)
-	if code != "" {
-		writeJSON(w, status, map[string]string{"code": code})
-		return
-	}
-	assignments.WriteAudit(r, s, current)
-	stream, err = s.streamWithAssignedNodes(r.Context(), stream)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
-		return
-	}
+	// Creating a stream persists configuration only. Runtime ownership changes
+	// remain an explicit settings update so a new inactive slot cannot steal a
+	// service assignment from a live stream or an in-flight archive package.
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
 	writeJSON(w, http.StatusCreated, stream)
 }
@@ -9053,68 +9237,6 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
 		return
 	}
-	if s.services != nil {
-		assignments, err := s.services.ListStreamAssignments(r.Context(), stream.ID)
-		if err != nil {
-			auditFailure("list_stream_assignments_failed")
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
-			return
-		}
-		archiveEncoderID := ""
-		for _, assignment := range primaryStreamAssignments(assignments) {
-			if strings.TrimSpace(assignment.ServiceType) == "encoder_recorder" {
-				archiveEncoderID = strings.TrimSpace(assignment.ServiceID)
-				break
-			}
-		}
-		if archiveEncoderID == "" {
-			for _, assignment := range assignments {
-				if strings.TrimSpace(assignment.ServiceType) == "encoder_recorder" {
-					archiveEncoderID = strings.TrimSpace(assignment.ServiceID)
-					break
-				}
-			}
-		}
-		if archiveEncoderID != "" {
-			artifacts, err := s.streams.ListStreamArtifacts(r.Context(), stream.ID)
-			if err != nil {
-				auditFailure("list_stream_artifacts_failed")
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_artifacts_failed"})
-				return
-			}
-			changed := false
-			for index := range artifacts {
-				if strings.TrimSpace(artifacts[index].SourceServiceID) != "" {
-					continue
-				}
-				artifacts[index].SourceServiceID = archiveEncoderID
-				changed = true
-			}
-			if changed {
-				if err := s.streams.UpsertStreamArtifacts(r.Context(), stream.ID, artifacts); err != nil {
-					auditFailure("remember_archive_source_failed")
-					writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "remember_archive_source_failed"})
-					return
-				}
-			}
-		}
-		seen := make(map[string]struct{}, len(assignments))
-		for _, assignment := range assignments {
-			serviceID := strings.TrimSpace(assignment.ServiceID)
-			if serviceID == "" {
-				continue
-			}
-			if _, ok := seen[serviceID]; ok {
-				continue
-			}
-			seen[serviceID] = struct{}{}
-			if _, err := s.services.UnassignServiceFromStream(r.Context(), serviceID, currentFromContext(r.Context()).User.ID); err != nil {
-				auditFailure("unassign_stream_service_failed")
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "unassign_stream_service_failed"})
-				return
-			}
-		}
-	}
 	if err := s.streams.DeleteStream(r.Context(), stream.ID); errors.Is(err, store.ErrNotFound) {
 		auditFailure("not_found")
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
@@ -9122,6 +9244,10 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 	} else if errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {
 		auditFailure("youtube_relay_binding_release_pending")
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
+		return
+	} else if code, status, handled := serviceAssignmentHTTPError(err, true); handled {
+		auditFailure(code)
+		writeJSON(w, status, map[string]string{"code": code})
 		return
 	} else if err != nil {
 		auditFailure("delete_stream_failed")
@@ -10094,10 +10220,14 @@ func (s *Server) applyStreamServiceAssignments(r *http.Request, streamID string,
 				if snapshot.ServiceType != operation.serviceType || snapshot.CurrentStream != streamID {
 					continue
 				}
-				if _, err := s.services.UnassignServiceFromStream(r.Context(), snapshot.ServiceID, current.User.ID); err != nil {
+				expected := streamID
+				if _, err := s.services.UnassignServiceFromStreamGuarded(r.Context(), store.ServiceUnassignmentMutation{ServiceID: snapshot.ServiceID, ActorUserID: current.User.ID, ExpectedCurrentStreamID: &expected}); err != nil {
 					if rollbackErr := result.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
 						log.Printf("stream service assignment rollback failed after unassign: stream_id=%s error=%v", streamID, rollbackErr)
 						return result, "assign_service_rollback_failed", http.StatusInternalServerError
+					}
+					if code, status, handled := serviceAssignmentHTTPError(err, true); handled {
+						return result, code, status
 					}
 					return result, "unassign_service_failed", http.StatusInternalServerError
 				}
@@ -10106,7 +10236,14 @@ func (s *Server) applyStreamServiceAssignments(r *http.Request, streamID string,
 			}
 			continue
 		}
-		service, err := s.services.AssignServiceToStreamWithRole(r.Context(), serviceID, streamID, current.User.ID, "primary")
+		expectedCurrentStreamID := ""
+		for _, snapshot := range result.Snapshots {
+			if snapshot.ServiceID == serviceID {
+				expectedCurrentStreamID = snapshot.CurrentStream
+				break
+			}
+		}
+		service, err := s.services.AssignServiceToStreamGuarded(r.Context(), store.ServiceAssignmentMutation{ServiceID: serviceID, StreamID: streamID, ActorUserID: current.User.ID, AssignmentRole: "primary", ExpectedCurrentStreamID: &expectedCurrentStreamID})
 		if err != nil {
 			if rollbackErr := result.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
 				log.Printf("stream service assignment rollback failed: stream_id=%s error=%v", streamID, rollbackErr)
@@ -10115,7 +10252,20 @@ func (s *Server) applyStreamServiceAssignments(r *http.Request, streamID string,
 			if errors.Is(err, store.ErrNotFound) {
 				return result, "service_not_found", http.StatusBadRequest
 			}
+			if code, status, handled := serviceAssignmentHTTPError(err, false); handled {
+				return result, code, status
+			}
 			return result, "assign_service_failed", http.StatusInternalServerError
+		}
+		alreadyAssigned := false
+		for _, snapshot := range result.Snapshots {
+			if snapshot.ServiceID == serviceID && snapshot.CurrentStream == streamID && snapshot.AssignmentRole == "primary" {
+				alreadyAssigned = true
+				break
+			}
+		}
+		if alreadyAssigned {
+			continue
 		}
 		result.Applied = append(result.Applied, appliedStreamServiceAssignment{Service: service, ServiceType: operation.serviceType})
 		result.Mutated = true
@@ -10168,20 +10318,14 @@ func (assignments appliedStreamServiceAssignments) Rollback(ctx context.Context,
 	if !assignments.Mutated || services == nil {
 		return nil
 	}
-	affected := make(map[string]struct{}, len(assignments.Snapshots)+len(assignments.Applied))
-	for _, snapshot := range assignments.Snapshots {
-		affected[snapshot.ServiceID] = struct{}{}
-	}
+	appliedIDs := make([]string, 0, len(assignments.Applied))
 	for _, applied := range assignments.Applied {
-		affected[applied.Service.ServiceID] = struct{}{}
+		appliedIDs = append(appliedIDs, applied.Service.ServiceID)
 	}
-	serviceIDs := make([]string, 0, len(affected))
-	for serviceID := range affected {
-		serviceIDs = append(serviceIDs, serviceID)
-	}
-	sort.Strings(serviceIDs)
-	for _, serviceID := range serviceIDs {
-		if _, err := services.UnassignServiceFromStream(ctx, serviceID, actorUserID); err != nil && !errors.Is(err, store.ErrNotFound) {
+	sort.Strings(appliedIDs)
+	for _, serviceID := range appliedIDs {
+		expected := assignments.StreamID
+		if _, err := services.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: serviceID, ActorUserID: actorUserID, ExpectedCurrentStreamID: &expected}); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
 	}
@@ -10198,7 +10342,8 @@ func (assignments appliedStreamServiceAssignments) Rollback(ctx context.Context,
 		if snapshot.CurrentStream == "" {
 			continue
 		}
-		if _, err := services.AssignServiceToStreamWithRole(ctx, snapshot.ServiceID, snapshot.CurrentStream, actorUserID, snapshot.AssignmentRole); err != nil {
+		expected := ""
+		if _, err := services.AssignServiceToStreamGuarded(ctx, store.ServiceAssignmentMutation{ServiceID: snapshot.ServiceID, StreamID: snapshot.CurrentStream, ActorUserID: actorUserID, AssignmentRole: snapshot.AssignmentRole, ExpectedCurrentStreamID: &expected}); err != nil {
 			return err
 		}
 	}
@@ -10329,6 +10474,11 @@ func (s *Server) applyEncoderVideoProfile(ctx context.Context, req *servicecall.
 	return nil
 }
 
+type streamStartMaterialization struct {
+	Service     store.RegisteredService
+	ActorUserID string
+}
+
 func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 	token, ok := s.authenticateService(w, r, "streams.start")
 	if !ok {
@@ -10387,22 +10537,13 @@ func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_not_waiting"})
 		return
 	}
+	var materialization *streamStartMaterialization
 	if assignBeforeStart {
-		assignedService, err := s.services.AssignServiceToStreamWithRole(r.Context(), service.ServiceID, stream.ID, "service:"+service.ServiceID, "primary")
-		if errors.Is(err, store.ErrNotFound) {
-			s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "failure", map[string]any{"service_id": service.ServiceID, "reason": "service_not_registered"})
-			writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_primary_assignment"})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_stream_service_failed"})
-			return
-		}
-		service = assignedService
+		materialization = &streamStartMaterialization{Service: service, ActorUserID: "service:" + service.ServiceID}
 	}
 	r.Body = http.NoBody
 	r = r.WithContext(context.WithValue(r.Context(), currentUserKey{}, serviceCurrentUser(service)))
-	s.startStream(w, r)
+	s.startStreamWithMaterialization(w, r, materialization)
 }
 
 // serviceStopStream is deliberately narrower than the operator stop route:
@@ -10512,22 +10653,16 @@ func (s *Server) discordServiceTokenConfiguredForStream(ctx context.Context, tok
 	return service, true, nil
 }
 
-func (s *Server) materializeConfiguredDiscordAssignment(ctx context.Context, streamID, discordConfigID, actorUserID string, assignments []store.RegisteredService) ([]store.RegisteredService, bool, error) {
+func (s *Server) configuredDiscordAssignmentCandidate(ctx context.Context, streamID, discordConfigID string, assignments []store.RegisteredService) ([]store.RegisteredService, string, error) {
 	if s.services == nil || primaryServiceID(primaryStreamAssignments(assignments), "discord_bot") != "" {
-		return assignments, false, nil
+		return assignments, "", nil
 	}
 	service, configured, err := s.configuredDiscordServiceForStream(ctx, streamID, discordConfigID)
 	if err != nil || !configured {
-		return assignments, false, err
+		return assignments, "", err
 	}
-	if _, err := s.services.AssignServiceToStreamWithRole(ctx, service.ServiceID, streamID, actorUserID, "primary"); err != nil {
-		return nil, false, err
-	}
-	updated, err := s.streamAssignments(ctx, streamID)
-	if err != nil {
-		return nil, false, err
-	}
-	return updated, true, nil
+	service.AssignmentRole = "primary"
+	return append(assignments, service), service.ServiceID, nil
 }
 
 func (s *Server) configuredDiscordServiceForStream(ctx context.Context, streamID, discordConfigID string) (store.RegisteredService, bool, error) {
@@ -10647,6 +10782,10 @@ func isForceStoppableStreamStatus(status string) bool {
 }
 
 func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
+	s.startStreamWithMaterialization(w, r, nil)
+}
+
+func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.Request, materialization *streamStartMaterialization) {
 	unlockLifecycle := s.lockStreamLifecycle(r.PathValue("id"))
 	defer unlockLifecycle()
 
@@ -10725,23 +10864,41 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	}
 	primaryAssignments := primaryStreamAssignments(assignments)
 	missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
+	claimMaterializeServiceID := ""
+	claimMaterializeActorUserID := ""
+	if materialization != nil {
+		service := materialization.Service
+		service.AssignmentRole = "primary"
+		assignments = append(assignments, service)
+		primaryAssignments = primaryStreamAssignments(assignments)
+		missing = missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
+		claimMaterializeServiceID = strings.TrimSpace(service.ServiceID)
+		claimMaterializeActorUserID = strings.TrimSpace(materialization.ActorUserID)
+	}
 	// The stream form selects a Discord config, whose service_id identifies the
 	// Bot node, but historically only Worker/Encoder IDs were materialized as
 	// stream assignments. Auto-start has a service-token fallback for this
 	// configuration; operator start must converge to the same primary assignment
 	// before dispatch so later stop/runtime operations see the Bot as well.
-	if len(missing) == 1 && missing[0] == "discord_bot" {
+	if materialization == nil && len(missing) == 1 && missing[0] == "discord_bot" {
 		current := currentFromContext(r.Context())
-		updatedAssignments, materialized, materializeErr := s.materializeConfiguredDiscordAssignment(r.Context(), stream.ID, body.DiscordConfigID, current.User.ID, assignments)
+		updatedAssignments, materializeServiceID, materializeErr := s.configuredDiscordAssignmentCandidate(r.Context(), stream.ID, body.DiscordConfigID, assignments)
 		if materializeErr != nil {
-			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "assign_discord_service_failed", "error_type": fmt.Sprintf("%T", materializeErr)}})
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_failed"})
+			code := "assign_service_failed"
+			status := http.StatusInternalServerError
+			if guardedCode, guardedStatus, handled := serviceAssignmentHTTPError(materializeErr, false); handled {
+				code = guardedCode
+				status = guardedStatus
+			}
+			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "error_type": fmt.Sprintf("%T", materializeErr)}})
+			writeJSON(w, status, map[string]string{"code": code})
 			return
 		}
-		if materialized {
+		if materializeServiceID != "" {
 			assignments = updatedAssignments
 			primaryAssignments = primaryStreamAssignments(assignments)
-			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: primaryServiceID(primaryAssignments, "discord_bot"), Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": "discord_bot", "assignment_role": "primary", "source": "streams.start"}})
+			claimMaterializeServiceID = materializeServiceID
+			claimMaterializeActorUserID = current.User.ID
 			missing = missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
 		}
 	}
@@ -10832,56 +10989,56 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, archiveConfigStatus(err), map[string]string{"code": code})
 		return
 	}
-	if archiveRuns, ok := s.streams.(store.StreamArchiveRunStore); ok {
-		archiveStartedAt := time.Time{}
-		archiveRunID := ""
-		if strings.TrimSpace(body.ArchiveProfileID) != "" {
-			archiveStartedAt = time.Now().UTC()
-			if servicecall.ArchiveRunsEnabled(primaryAssignments) {
-				archiveRunID = archiveRunIDForStart(archiveStartedAt)
-			}
-		}
-		prepared, err := archiveRuns.PrepareStreamArchiveRun(r.Context(), stream.ID, archiveRunID, archiveStartedAt)
-		if err != nil {
-			current := currentFromContext(r.Context())
-			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "prepare_archive_run_failed", "archive_profile_id": body.ArchiveProfileID}})
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "prepare_archive_run_failed"})
-			return
-		}
-		stream = prepared
-		body.ArchiveRunID = archiveRunID
-		body.ArchiveStartedAt = archiveStartedAt
+	claimStore, ok := s.streams.(store.StreamStartClaimStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_start_claim_unavailable"})
+		return
 	}
-	// The static fixed relay reserves a pre-provisioned YouTube LiveStream. Claim
-	// the stream lifecycle before the external Prepare call so a stale
-	// created/failed CAS cannot leave a successfully created Broadcast, runtime,
-	// and relay claim behind without an owning start lifecycle.
+	claimedStart, err := claimStore.ClaimStreamStart(r.Context(), store.StreamStartClaimRequest{
+		StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt,
+		ExpectedPrimaryAssignments: primaryAssignments,
+		MaterializeServiceID:       claimMaterializeServiceID, MaterializeActorUserID: claimMaterializeActorUserID,
+		ArchiveEnabled: strings.TrimSpace(body.ArchiveProfileID) != "", ArchiveStartedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		current := currentFromContext(r.Context())
+		code := "stream_start_claim_failed"
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrServiceAssignmentConflict) || errors.Is(err, store.ErrNotFound) {
+			code = "service_assignment_conflict"
+			status = http.StatusConflict
+		} else if errors.Is(err, store.ErrServiceAssignmentGuardUnavailable) {
+			code = "stream_start_claim_unavailable"
+			status = http.StatusServiceUnavailable
+		}
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code}})
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	stream = claimedStart.Stream
+	primaryAssignments = claimedStart.PrimaryAssignments
+	body.ArchiveRunID = claimedStart.ArchiveAuthority.RunID
+	body.ArchiveStartedAt = time.Time{}
+	if claimedStart.ArchiveAuthority.StartedAt != nil {
+		body.ArchiveStartedAt = claimedStart.ArchiveAuthority.StartedAt.UTC()
+	}
+	if claimedStart.Materialized != nil {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: claimedStart.Materialized.ServiceID, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": claimedStart.Materialized.ServiceType, "assignment_role": "primary", "source": "streams.start"}})
+	}
+	s.systemUpdateOperationMu.Unlock()
+	updateOperationLocked = false
+
+	// The static fixed relay reserves a pre-provisioned YouTube LiveStream. The
+	// universal ownership claim now precedes every external Prepare/dispatch.
 	relayStaticStartClaimed := relayStaticOutput != nil
 	if relayStaticStartClaimed {
-		claimed, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, stream.Status, "starting")
-		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
-			return
-		}
-		if !transitioned {
-			current := currentFromContext(r.Context())
-			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_startable", "current_status": claimed.Status}})
-			writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_startable", "status": claimed.Status})
-			return
-		}
-		stream = claimed
-		s.systemUpdateOperationMu.Unlock()
-		updateOperationLocked = false
 		// A static start must remain bound to the exact output version that was
 		// selected before we claimed the lifecycle. Do not let a concurrent
 		// static-to-dynamic output edit fall through to a different Prepare or
 		// dispatch path after the stream has entered starting.
 		if err := s.validateYouTubeRelayStaticOutputStartFence(r.Context(), stream.ID, *relayStaticOutput); err != nil {
-			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
+			s.convergeRelayStaticPreDispatchFailure(r.Context(), claimedStart.OwnershipClaim)
 			current := currentFromContext(r.Context())
 			code := youtubeOutputCode(err)
 			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}})
@@ -10889,16 +11046,16 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	applyYouTubeOutput := s.applyYouTubeOutput
+	applyYouTubeOutput := func(ctx context.Context, stream store.Stream, req *servicecall.StartRequest) error {
+		return s.applyYouTubeOutput(ctx, stream, claimedStart.OwnershipClaim, req)
+	}
 	if relayStaticOutput != nil {
 		applyYouTubeOutput = func(ctx context.Context, stream store.Stream, req *servicecall.StartRequest) error {
-			return s.applyYouTubeOutputProfile(ctx, stream, relayStaticOutput.Profile, req)
+			return s.applyYouTubeOutputProfile(ctx, stream, relayStaticOutput.Profile, claimedStart.OwnershipClaim, req)
 		}
 	}
 	if err := applyYouTubeOutput(r.Context(), stream, &body); err != nil {
-		if relayStaticStartClaimed {
-			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
-		}
+		s.convergeRelayStaticPreDispatchFailure(r.Context(), claimedStart.OwnershipClaim)
 		current := currentFromContext(r.Context())
 		code := youtubeOutputCode(err)
 		metadata := map[string]any{"reason": code, "youtube_output_id": body.YouTubeOutputID}
@@ -10913,9 +11070,7 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.saveYouTubeRuntime(r.Context(), stream.ID, body.YouTubeRuntime); err != nil {
-		if relayStaticStartClaimed {
-			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
-		}
+		s.convergeRelayStaticPreDispatchFailure(r.Context(), claimedStart.OwnershipClaim)
 		current := currentFromContext(r.Context())
 		errorCode := store.YouTubeRuntimeSaveErrorCode(err)
 		log.Printf("stream start runtime save failed: stream_id=%s error_code=%s error_type=%T", stream.ID, errorCode, err)
@@ -10939,33 +11094,13 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if !relayStaticStartClaimed {
-		claimed, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, stream.Status, "starting")
-		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
-			return
-		}
-		if !transitioned {
-			current := currentFromContext(r.Context())
-			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_startable", "current_status": claimed.Status}})
-			writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_status_not_startable", "status": claimed.Status})
-			return
-		}
-		stream = claimed
-		s.systemUpdateOperationMu.Unlock()
-		updateOperationLocked = false
-	}
 	if relayStaticStartClaimed {
 		// Persist the external-dispatch fence before the first downstream Start
 		// request. A returned timeout can otherwise look like a harmless local
 		// failure even though the Encoder may have received the request and begun
 		// pushing this reusable fixed relay.
 		if err := s.markYouTubeRelayStaticPossiblyDispatched(r.Context(), stream.ID); err != nil {
-			s.convergeRelayStaticPreDispatchFailure(r.Context(), stream.ID)
+			s.convergeRelayStaticPreDispatchFailure(r.Context(), claimedStart.OwnershipClaim)
 			current := currentFromContext(r.Context())
 			code := youtubeOutputCode(err)
 			s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "trigger": "before_start_dispatch", "youtube_output_id": body.YouTubeOutputID}})
@@ -10976,7 +11111,7 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	results := s.dispatcher.Start(r.Context(), stream, primaryAssignments, body)
 	results = sanitizeDispatchResults(results)
 	if hasDispatchFailure(results) {
-		failed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "failed")
+		failed, transitioned, transitionErr := claimStore.TransitionClaimedStreamStart(r.Context(), claimedStart.OwnershipClaim, "failed")
 		if errors.Is(transitionErr, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 			return
@@ -11033,7 +11168,7 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 	videoOverlayBurnIn := workerVideoOverlayBurnInNegotiated(results)
 	if mediaRuntimeStore, ok := s.streams.(store.StreamMediaRuntimeStore); ok {
 		if err := mediaRuntimeStore.SetStreamVideoOverlayBurnIn(r.Context(), stream.ID, videoOverlayBurnIn); err != nil {
-			failed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "failed")
+			failed, transitioned, transitionErr := claimStore.TransitionClaimedStreamStart(r.Context(), claimedStart.OwnershipClaim, "failed")
 			if transitionErr != nil || !transitioned {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "save_stream_media_runtime_failed"})
 				return
@@ -11048,16 +11183,14 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.ensureYouTubeBroadcastLive(r.Context(), body.YouTubeRuntime); err != nil {
-		s.failYouTubeLiveAPIStart(w, r, stream, primaryAssignments, results, err)
+		s.failYouTubeLiveAPIStart(w, r, stream, primaryAssignments, claimedStart.OwnershipClaim, results, err)
 		return
 	}
 	s.completeStreamStart(w, r, stream, primaryAssignments, body, results)
 }
 
 func archiveRunIDForStart(startedAt time.Time) string {
-	jst := time.FixedZone("JST", 9*60*60)
-	local := startedAt.In(jst)
-	return fmt.Sprintf("%s_%09d_%s", local.Format("20060102_150405"), local.Nanosecond(), local.Format("MST"))
+	return store.StreamArchiveRunIDForStart(startedAt)
 }
 
 func (s *Server) applyCaptionDispatchConfig(ctx context.Context, req *servicecall.StartRequest) error {
@@ -11162,9 +11295,14 @@ func (s *Server) ensureYouTubeBroadcastLive(ctx context.Context, runtime map[str
 // be moved to live. Downstream stop and provider completion use a detached,
 // bounded context so a cancelled Discord auto-start request cannot abandon
 // cleanup.
-func (s *Server) failYouTubeLiveAPIStart(w http.ResponseWriter, r *http.Request, stream store.Stream, assignments []store.RegisteredService, dispatch []servicecall.DispatchResult, transitionErr error) {
+func (s *Server) failYouTubeLiveAPIStart(w http.ResponseWriter, r *http.Request, stream store.Stream, assignments []store.RegisteredService, ownership store.StreamStartOwnershipClaim, dispatch []servicecall.DispatchResult, transitionErr error) {
 	log.Printf("youtube live api start failed: stream_id=%s error_type=%T", stream.ID, transitionErr)
-	failed, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "starting", "failed")
+	claimStore, ok := s.streams.(store.StreamStartClaimStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_start_claim_unavailable"})
+		return
+	}
+	failed, transitioned, err := claimStore.TransitionClaimedStreamStart(r.Context(), ownership, "failed")
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -11708,19 +11846,23 @@ func (s *Server) validateYouTubeRelayStaticOutputStartFence(ctx context.Context,
 	return nil
 }
 
-// convergeRelayStaticPreDispatchFailure is used only after the static path has
-// successfully claimed starting before its external Prepare call. It is
-// intentionally best effort: a newer lifecycle transition remains authoritative
-// and must never be overwritten by this failed start request.
-func (s *Server) convergeRelayStaticPreDispatchFailure(ctx context.Context, streamID string) {
-	if _, transitioned, err := s.streams.TransitionStreamStatus(ctx, streamID, "starting", "failed"); err != nil {
-		log.Printf("relay static pre-dispatch start convergence failed: stream_id=%s error_type=%T", streamID, err)
+// convergeRelayStaticPreDispatchFailure is the claim-fenced convergence path
+// for every failure after ownership acquisition and before/around dispatch.
+// A newer lifecycle, assignment identity, or archive authority always wins.
+func (s *Server) convergeRelayStaticPreDispatchFailure(ctx context.Context, ownership store.StreamStartOwnershipClaim) {
+	claimStore, ok := s.streams.(store.StreamStartClaimStore)
+	if !ok {
+		log.Printf("stream pre-dispatch convergence unavailable: stream_id=%s", ownership.StreamID)
+		return
+	}
+	if _, transitioned, err := claimStore.TransitionClaimedStreamStart(ctx, ownership, "failed"); err != nil {
+		log.Printf("stream pre-dispatch start convergence failed: stream_id=%s error_type=%T", ownership.StreamID, err)
 	} else if !transitioned {
-		log.Printf("relay static pre-dispatch start convergence superseded: stream_id=%s", streamID)
+		log.Printf("stream pre-dispatch start convergence superseded: stream_id=%s", ownership.StreamID)
 	}
 }
 
-func (s *Server) applyYouTubeOutput(ctx context.Context, stream store.Stream, req *servicecall.StartRequest) error {
+func (s *Server) applyYouTubeOutput(ctx context.Context, stream store.Stream, ownership store.StreamStartOwnershipClaim, req *servicecall.StartRequest) error {
 	outputID := strings.TrimSpace(req.YouTubeOutputID)
 	if outputID == "" {
 		return nil
@@ -11732,10 +11874,10 @@ func (s *Server) applyYouTubeOutput(ctx context.Context, stream store.Stream, re
 	if err != nil {
 		return err
 	}
-	return s.applyYouTubeOutputProfile(ctx, stream, profile, req)
+	return s.applyYouTubeOutputProfile(ctx, stream, profile, ownership, req)
 }
 
-func (s *Server) applyYouTubeOutputProfile(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {
+func (s *Server) applyYouTubeOutputProfile(ctx context.Context, stream store.Stream, profile store.Profile, ownership store.StreamStartOwnershipClaim, req *servicecall.StartRequest) error {
 	mode := normalizedYouTubeOutputMode(firstNonEmpty(configString(profile.Config, "mode"), configString(profile.Config, "output_mode")))
 	if mode == "" {
 		return errYouTubeOutputInvalidConfig
@@ -11753,7 +11895,7 @@ func (s *Server) applyYouTubeOutputProfile(ctx context.Context, stream store.Str
 	case "live_api":
 		return s.applyYouTubeLiveAPIOutput(ctx, stream, profile, req)
 	case "live_api_relay_static":
-		return s.applyYouTubeRelayStaticOutput(ctx, stream, profile, req)
+		return s.applyYouTubeRelayStaticOutput(ctx, stream, profile, ownership, req)
 	default:
 		return errYouTubeOutputInvalidConfig
 	}
@@ -12073,7 +12215,7 @@ func (s *Server) applyYouTubeLiveAPIOutput(ctx context.Context, stream store.Str
 	return nil
 }
 
-func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store.Stream, profile store.Profile, req *servicecall.StartRequest) error {
+func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store.Stream, profile store.Profile, ownership store.StreamStartOwnershipClaim, req *servicecall.StartRequest) error {
 	if err := s.validateYouTubeRelayStaticReadiness(ctx, stream, profile); err != nil {
 		return err
 	}
@@ -12119,7 +12261,7 @@ func (s *Server) applyYouTubeRelayStaticOutput(ctx context.Context, stream store
 	// external PrepareRelayStatic call. Once this marker has committed, even a
 	// documented validation error cannot prove that a prior process did not
 	// reach YouTube; every later outcome is therefore recovered, never released.
-	claim, err = s.markYouTubeRelayStaticPossiblyPrepared(ctx, claimStore, claim)
+	claim, err = s.markYouTubeRelayStaticPossiblyPrepared(ctx, claimStore, claim, ownership)
 	if err != nil {
 		return err
 	}
@@ -12298,7 +12440,7 @@ func (s *Server) relayStaticFinalizeCommitWasObserved(ctx context.Context, claim
 // when the marker is visible, recovery owns the possible external Broadcast.
 // Only a provably unchanged reserved/not-attempted claim may be released,
 // because the external client has not been called before that marker.
-func (s *Server) markYouTubeRelayStaticPossiblyPrepared(ctx context.Context, claimStore store.StreamYouTubeRelayBindingClaimStore, claim store.YouTubeRelayBindingClaim) (store.YouTubeRelayBindingClaim, error) {
+func (s *Server) markYouTubeRelayStaticPossiblyPrepared(ctx context.Context, claimStore store.StreamYouTubeRelayBindingClaimStore, claim store.YouTubeRelayBindingClaim, ownership store.StreamStartOwnershipClaim) (store.YouTubeRelayBindingClaim, error) {
 	marked, err := claimStore.MarkReservedStreamYouTubeRelayBindingClaimPossiblyPrepared(ctx, claim)
 	if err == nil {
 		return marked, nil
@@ -12307,7 +12449,11 @@ func (s *Server) markYouTubeRelayStaticPossiblyPrepared(ctx context.Context, cla
 	// following read) was lost. First terminalize this local start attempt; the
 	// Store reconciliation then reads the durable PrepareState under its own
 	// fence and releases only a proven not-attempted reservation.
-	failed, transitioned, transitionErr := s.streams.TransitionStreamStatus(ctx, claim.StreamID, "starting", "failed")
+	startClaimStore, ok := s.streams.(store.StreamStartClaimStore)
+	if !ok {
+		return claim, errYouTubeRelayStaticRecoveryRequired
+	}
+	failed, transitioned, transitionErr := startClaimStore.TransitionClaimedStreamStart(ctx, ownership, "failed")
 	if transitionErr != nil {
 		// A status-CAS response may have been lost just like the marker response.
 		// Re-read before deciding whether reconciliation is safe: only an inactive
@@ -13931,9 +14077,10 @@ func (s *Server) ensureAutoStartWaitingStreamLegacy(r *http.Request, completed s
 			if strings.TrimSpace(assignment.ServiceID) == "" {
 				continue
 			}
-			if _, err := s.services.AssignServiceToStreamWithRole(r.Context(), assignment.ServiceID, waiting.ID, actorID, normalizeAssignmentRole(assignment.AssignmentRole)); err != nil {
+			if _, err := s.services.AssignServiceToStreamGuarded(r.Context(), store.ServiceAssignmentMutation{ServiceID: assignment.ServiceID, StreamID: waiting.ID, ActorUserID: actorID, AssignmentRole: normalizeAssignmentRole(assignment.AssignmentRole)}); err != nil {
 				for _, assignedServiceID := range assignedServiceIDs {
-					_, _ = s.services.UnassignServiceFromStream(r.Context(), assignedServiceID, actorID)
+					expected := waiting.ID
+					_, _ = s.services.UnassignServiceFromStreamGuarded(r.Context(), store.ServiceUnassignmentMutation{ServiceID: assignedServiceID, ActorUserID: actorID, ExpectedCurrentStreamID: &expected})
 				}
 				_ = s.streams.DeleteStream(r.Context(), waiting.ID)
 				return store.Stream{}, err
@@ -14530,6 +14677,13 @@ func (s *Server) retryUpload(w http.ResponseWriter, r *http.Request) {
 		code := archiveConfigCode(err)
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.retry_upload", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code, "archive_profile_id": stream.ArchiveProfileID}})
 		writeJSON(w, archiveConfigStatus(err), map[string]string{"code": code})
+		return
+	}
+	stream, err = s.beginStreamArchiveRetryGuarded(r.Context(), stream, primaryAssignments)
+	if err != nil {
+		code, status := archiveRetryGuardHTTPError(err)
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.retry_upload", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": code}})
+		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
 	results := s.dispatcher.RetryArchiveUpload(r.Context(), stream, primaryAssignments, archiveConfig)

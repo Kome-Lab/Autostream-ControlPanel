@@ -341,8 +341,21 @@ func TestMemoryArchiveProcessingStreamsStopWaitingAfterArtifactReport(t *testing
 	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
 		t.Fatal(err)
 	}
-
 	processing, err := streams.ListArchiveProcessingStreams(t.Context())
+	if err != nil || len(processing) != 0 {
+		t.Fatalf("never-started legacy stream became archive-processing: streams=%#v err=%v", processing, err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "created"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+
+	processing, err = streams.ListArchiveProcessingStreams(t.Context())
 	if err != nil || len(processing) != 1 || processing[0].ID != stream.ID {
 		t.Fatalf("processing streams before artifact report = %#v err=%v", processing, err)
 	}
