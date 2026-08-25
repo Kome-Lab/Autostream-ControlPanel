@@ -64,10 +64,11 @@ const navigationIcons: Record<NavigationIconName, ComponentType<{ className?: st
 };
 
 export function AppNavigation({ pathname, currentUser, sectionState, onToggleSection, mobile = false }: { pathname: string; currentUser: CurrentUser; sectionState: NavigationSectionsState; onToggleSection: (sectionKey: string) => void; mobile?: boolean }) {
+  const { t } = useI18n();
   const visibleSections = visibleNavigationSections(currentUser);
 
   return (
-    <nav aria-label="管理メニュー" className="space-y-1.5">
+    <nav aria-label={t("navigationMenu")} className="space-y-1.5">
       {visibleSections.map((section) => (
         <NavigationSection
           key={navigationSectionStateKey(section.key)}

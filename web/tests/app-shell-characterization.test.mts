@@ -53,30 +53,35 @@ test("admin navigation keeps four groups and the established 26 entries", () => 
   assert.deepEqual(entries, expectedNavigation);
 });
 
-test("navigation visibility remains permission filtered with a super-admin override", () => {
+test("navigation implementation retains the permission authority used by runtime browser coverage", () => {
   assert.match(shellSource, /hasAnyPermission\(currentUser,\s*item\.permissions\)/);
   assert.match(shellSource, /roles\?\.includes\("super_admin"\)/);
   assert.match(shellSource, /items\.filter\(\(item\) => canSeeNavItem\(item,\s*currentUser\)\)/);
 });
 
-test("desktop and mobile navigation keep the same lifted section state", () => {
+test("desktop and mobile navigation retain shared state plumbing for runtime browser coverage", () => {
   assert.match(shellSource, /max-lg:hidden/);
   assert.match(shellSource, /SheetContent[\s\S]*side="left"/);
   assert.match(shellSource, /SheetClose asChild/);
   assert.match(shellSource, /sectionState=\{synchronizedNavigationSectionsState\}/);
-  assert.match(shellSource, /aria-label="ナビゲーションを開く"/);
+  assert.match(shellSource, /t\("navigationOpen"\)/);
 });
 
 test("shell controls and stream-create permission remain present", () => {
   assert.match(shellSource, /hasPermission\(currentUser\.data,\s*"streams\.create"\)/);
-  assert.match(shellSource, /href="\/admin\/streams\/#create-stream"/);
+  assert.match(shellSource, /streamCreateHref\s*=\s*"\/admin\/streams\/#create-stream"/);
   assert.match(shellSource, /setLocale/);
   assert.match(shellSource, /toggleTheme/);
-  assert.match(shellSource, /aria-label="アカウントメニュー"/);
+  assert.match(shellSource, /t\("accountMenu"\)/);
   assert.match(shellSource, /\/auth\/logout/);
   assert.match(shellSource, /\/auth\/session\/refresh/);
   assert.match(shellSource, /\/setup\/status/);
   assert.match(shellSource, /loginPathForLocation/);
+});
+
+test("AdminShell remains the compatibility re-export of AppShell", () => {
+  const compatibilitySource = readFileSync(legacyShellPath, "utf8");
+  assert.match(compatibilitySource, /export\s+\{\s*AppShell\s+as\s+AdminShell\s*\}\s+from\s+"@\/components\/shell\/app-shell"/);
 });
 
 test("only authenticated admin routes receive the app shell", () => {

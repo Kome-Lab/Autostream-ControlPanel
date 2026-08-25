@@ -94,6 +94,33 @@ export const translations = {
     password: "パスワード",
     createFirstAdmin: "初期管理者を作成",
     openAdmin: "管理画面を開く",
+    navigationOpen: "ナビゲーションを開く",
+    navigationTitle: "ナビゲーション",
+    navigationClose: "ナビゲーションを閉じる",
+    navigationMenu: "管理メニュー",
+    createStream: "配信枠を作成",
+    accountMenu: "アカウントメニュー",
+    emailNotSet: "メール未設定",
+    accountSettings: "アカウント設定",
+    logout: "ログアウト",
+    profileSection: "個人設定",
+    accountDescription: "プロフィールとログインセキュリティを管理",
+    authenticationPendingTitle: "ログイン状態を確認しています",
+    authenticationPendingDescription: "セッションが切れている場合はログイン画面へ移動します。",
+    goToLogin: "ログインへ",
+    serviceHealthReady: "{healthy}/{total} サービス稼働",
+    serviceHealthLoading: "稼働状況を確認中",
+    serviceHealthEmpty: "登録済みサービスなし",
+    serviceHealthError: "稼働状況を取得できません",
+    serviceHealthStale: "{healthy}/{total} サービス稼働（更新失敗）",
+    serviceHealthRefreshing: "稼働状況を更新中",
+    updateLoading: "更新情報を確認中",
+    updateCurrent: "最新版です",
+    updateAvailable: "更新 {version} を利用できます",
+    updateRefreshing: "更新情報を更新中",
+    updateError: "更新情報を取得できません",
+    updateStale: "更新情報の再確認に失敗しました",
+    updateUnknown: "更新情報は未確認です",
   },
   en: {
     appName: "AutoStream",
@@ -185,11 +212,42 @@ export const translations = {
     password: "Password",
     createFirstAdmin: "Create first admin",
     openAdmin: "Open admin",
+    navigationOpen: "Open navigation",
+    navigationTitle: "Navigation",
+    navigationClose: "Close navigation",
+    navigationMenu: "Admin navigation",
+    createStream: "Create stream slot",
+    accountMenu: "Account menu",
+    emailNotSet: "Email not set",
+    accountSettings: "Account settings",
+    logout: "Log out",
+    profileSection: "Personal settings",
+    accountDescription: "Manage your profile and sign-in security",
+    authenticationPendingTitle: "Checking your sign-in status",
+    authenticationPendingDescription: "If your session has expired, you will be redirected to the login page.",
+    goToLogin: "Go to login",
+    serviceHealthReady: "{healthy}/{total} services available",
+    serviceHealthLoading: "Checking service availability",
+    serviceHealthEmpty: "No registered services",
+    serviceHealthError: "Service availability unavailable",
+    serviceHealthStale: "{healthy}/{total} services available (refresh failed)",
+    serviceHealthRefreshing: "Refreshing service availability",
+    updateLoading: "Checking for updates",
+    updateCurrent: "Up to date",
+    updateAvailable: "Update {version} is available",
+    updateRefreshing: "Refreshing update information",
+    updateError: "Update information unavailable",
+    updateStale: "Could not refresh update information",
+    updateUnknown: "Update information has not been checked",
   },
 } satisfies Record<Locale, Record<string, string>>;
 
 export type TranslationKey = keyof typeof translations.ja;
+export type TranslationValues = Record<string, string | number>;
 
-export function translate(locale: Locale, key: TranslationKey) {
-  return translations[locale]?.[key] ?? translations.ja[key] ?? key;
+export function translate(locale: Locale, key: TranslationKey, values: TranslationValues = {}) {
+  const message = translations[locale]?.[key] ?? translations.ja[key] ?? key;
+  return message.replace(/\{([a-zA-Z0-9_]+)\}/g, (placeholder, name: string) => (
+    Object.hasOwn(values, name) ? String(values[name]) : placeholder
+  ));
 }

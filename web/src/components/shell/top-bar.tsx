@@ -5,9 +5,9 @@ import { AccountMenu } from "@/components/shell/account-menu";
 import { LocaleControl, ThemeControl } from "@/components/shell/display-controls";
 import { GlobalCommandBoundary } from "@/components/shell/global-command-boundary";
 import { StreamCreateAction } from "@/components/shell/stream-create-action";
-import { ServiceHealthSummary } from "@/components/status/service-health-summary";
+import { ServiceHealthSummary, type ServiceHealthStatus } from "@/components/status/service-health-summary";
 import { Separator } from "@/components/ui/separator";
-import type { CurrentUser, WorkerNode } from "@/types/domain";
+import type { CurrentUser } from "@/types/domain";
 
 type TopBarProps = {
   mobileNavigation: ReactNode;
@@ -18,7 +18,7 @@ type TopBarProps = {
   currentUser: CurrentUser;
   canCreateStream: boolean;
   canViewHealth: boolean;
-  healthRows?: WorkerNode[];
+  healthStatus: ServiceHealthStatus;
   onLogout: () => void;
   logoutPending: boolean;
 };
@@ -35,7 +35,7 @@ export function TopBar(props: TopBarProps) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-        {props.canViewHealth ? <ServiceHealthSummary rows={props.healthRows} className="max-xl:hidden" /> : null}
+        {props.canViewHealth ? <ServiceHealthSummary status={props.healthStatus} className="max-xl:hidden" /> : null}
         <GlobalCommandBoundary />
         {props.canCreateStream ? <StreamCreateAction pathname={props.pathname} className="max-md:hidden" /> : null}
         <LocaleControl />

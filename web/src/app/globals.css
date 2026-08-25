@@ -61,7 +61,7 @@
   --status-warning-foreground: oklch(0.4 0.095 65);
   --status-warning-subtle: oklch(0.965 0.04 80);
   --status-warning-border: oklch(0.82 0.1 80);
-  --status-warning-focus: oklch(0.68 0.16 75);
+  --status-warning-focus: oklch(0.63 0.16 75);
   --status-critical: oklch(0.56 0.21 25);
   --status-critical-foreground: oklch(0.42 0.18 25);
   --status-critical-subtle: oklch(0.955 0.035 25);
@@ -302,4 +302,25 @@ textarea {
 
 ::selection {
   background: color-mix(in oklch, var(--primary) 24%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-navigation-sheet,
+  [data-slot="sheet-overlay"]:has(+ .mobile-navigation-sheet) {
+    animation: none !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+  }
+}
+
+.semantic-status-focus:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .semantic-status-focus:focus-visible {
+    outline-color: Highlight !important;
+    box-shadow: none !important;
+  }
 }

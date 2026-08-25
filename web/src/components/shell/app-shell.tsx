@@ -10,13 +10,15 @@ import { MobileNavigation } from "@/components/shell/mobile-navigation";
 import { TopBar } from "@/components/shell/top-bar";
 import { useNavigationSections } from "@/components/shell/use-navigation-sections";
 import { useShellSessionGuard } from "@/components/shell/use-shell-session-guard";
-import { formatVersion } from "@/components/status/update-indicator";
+import type { ServiceHealthStatus } from "@/components/status/service-health-summary";
+import { formatVersion, type UpdateStatus } from "@/components/status/update-indicator";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAppSettings, useCurrentUser, useServiceHealth, useVersion } from "@/features/queries";
 import { apiPost, clearCSRFToken } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { activeNavigationItem, activeNavigationSectionKey, isSuperAdmin } from "@/lib/navigation";
+import type { AppVersion, WorkerNode } from "@/types/domain";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -28,6 +30,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const superAdmin = isSuperAdmin(currentUser.data);
   const canViewHealth = superAdmin || hasPermission(currentUser.data, "service_health.read");
   const serviceHealth = useServiceHealth(canViewHealth);
+  const healthStatus = serviceHealthQueryStatus(serviceHealth);
+  const updateStatus = versionQueryStatus(appVersion);
   const activeSectionKey = activeNavigationSectionKey(pathname);
   const { synchronizedNavigationSectionsState, toggleNavigationSectionByKey } = useNavigationSections(activeSectionKey);
   const { sessionExpired } = useShellSessionGuard(currentUser);
@@ -49,24 +53,23 @@ export function AppShell({ children }: { children: ReactNode }) {
   const versionLabel = formatVersion(appVersion.data?.version);
   const activeItem = activeNavigationItem(pathname);
   const accountPage = pathname.startsWith("/admin/account");
-  const pageSection = accountPage ? "個人設定" : t("liveOperations");
-  const pageTitle = accountPage ? "アカウント設定" : activeItem ? t(activeItem.key) : t("dashboard");
-  const pageDescription = accountPage ? "プロフィールとログインセキュリティを管理" : activeItem?.description[locale];
+  const pageSection = accountPage ? t("profileSection") : t("liveOperations");
+  const pageTitle = accountPage ? t("accountSettings") : activeItem ? t(activeItem.key) : t("dashboard");
+  const pageDescription = accountPage ? t("accountDescription") : activeItem?.description[locale];
   const canCreateStream = superAdmin || hasPermission(currentUser.data, "streams.create");
-  const healthRows = serviceHealth.data || [];
 
   const mobileNavigation = (
     <MobileNavigation
       appName={appName}
       versionLabel={versionLabel}
-      version={appVersion.data}
+      updateStatus={updateStatus}
       pathname={pathname}
       currentUser={currentUser.data}
       sectionState={synchronizedNavigationSectionsState}
       onToggleSection={toggleNavigationSectionByKey}
       canCreateStream={canCreateStream}
       canViewHealth={canViewHealth}
-      healthRows={healthRows}
+      healthStatus={healthStatus}
     />
   );
 
@@ -75,7 +78,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <AppSidebar
         appName={appName}
         versionLabel={versionLabel}
-        version={appVersion.data}
+        updateStatus={updateStatus}
         pathname={pathname}
         currentUser={currentUser.data}
         sectionState={synchronizedNavigationSectionsState}
@@ -91,7 +94,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           currentUser={currentUser.data}
           canCreateStream={canCreateStream}
           canViewHealth={canViewHealth}
-          healthRows={healthRows}
+          healthStatus={healthStatus}
           onLogout={() => logout.mutate()}
           logoutPending={logout.isPending}
         />
@@ -113,15 +116,37 @@ function ShellLoading() {
 }
 
 function ShellAuthenticationPending() {
+  const { t } = useI18n();
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
       <div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-sm">
-        <h1 className="text-lg font-semibold">ログイン状態を確認しています</h1>
-        <p className="mt-2 text-sm text-muted-foreground">セッションが切れている場合はログイン画面へ移動します。</p>
+        <h1 className="text-lg font-semibold">{t("authenticationPendingTitle")}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{t("authenticationPendingDescription")}</p>
         <div className="mt-4 flex justify-end">
-          <Button asChild variant="outline"><Link href="/login">ログインへ</Link></Button>
+          <Button asChild variant="outline"><Link href="/login">{t("goToLogin")}</Link></Button>
         </div>
       </div>
     </main>
   );
+}
+
+type RemoteQueryState<T> = {
+  data: T | undefined;
+  isError: boolean;
+  isFetching: boolean;
+  isPending: boolean;
+};
+
+function serviceHealthQueryStatus(query: RemoteQueryState<WorkerNode[]>): ServiceHealthStatus {
+  if (query.isError) return query.data === undefined ? { kind: "error" } : { kind: "stale", rows: query.data };
+  if (query.isPending || query.data === undefined) return { kind: "loading" };
+  if (query.data.length === 0) return { kind: "empty", refreshing: query.isFetching };
+  return { kind: "ready", rows: query.data, refreshing: query.isFetching };
+}
+
+function versionQueryStatus(query: RemoteQueryState<AppVersion>): UpdateStatus {
+  if (query.isError) return query.data === undefined ? { kind: "error" } : { kind: "stale", version: query.data };
+  if (query.isPending || query.data === undefined) return { kind: "loading" };
+  return { kind: "ready", version: query.data, refreshing: query.isFetching };
 }
