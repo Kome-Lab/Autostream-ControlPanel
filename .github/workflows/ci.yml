@@ -366,6 +366,11 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - name: Test UI Foundation browser behavior
+        timeout-minutes: 8
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+        run: npm run test:ui-foundation-browser
       - run: npm run test:system-updates
       - run: npm run test:stream-regressions
       - run: npm run lint
