@@ -61,7 +61,10 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
   let logoutResponse: StubResponse = { body: { status: "ok" } };
   let loginResponse: StubResponse = { body: { csrf_token: "browser-fixture-csrf" } };
   let streamsResponse: StubResponse = { body: [] };
-  let startReadinessResponse: StubResponse = { body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 } };
+  let startReadinessResponse: StubResponse = {
+    body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 },
+    requiredResponse: true,
+  };
   let startReadinessMethods: string[] = [];
   browser.setRouteResolver(({ method, url }) => {
     const pathname = normalizePath(new URL(url).pathname);
@@ -372,7 +375,8 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     try {
       authResponse = { status: 401, body: { code: "unauthorized" } };
       setupResponse = { body: { setup_enabled: true, setup_required: true }, waitUntil: setupRelease.promise };
-      browser.clearRequestCounts();
+      await browser.waitForRequestHandlersIdle({ pathname: "/setup/status", method: "GET" });
+      browser.clearRequestCounts("/setup/status");
       browser.clearConsoleErrors();
       await browser.navigate("about:blank");
       await browser.navigate(`${server.baseUrl}/admin/streams/?guard-unmount=1`);
@@ -387,7 +391,12 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
       await browser.waitFor("location.pathname", (value: string) => value === "/login/", "login navigation did not unmount the guard");
 
       setupRelease.resolve();
-      await browser.waitForResponseCount("/setup/status", 1);
+      await browser.waitForRequestHandlersIdle({ pathname: "/setup/status", method: "GET" });
+      assert.equal(
+        browser.responses.get("/setup/status") || 0,
+        browser.requests.get("/setup/status") || 0,
+        "every observed setup request must settle before checking the unmounted guard",
+      );
       await waitForAnimationFrames(browser);
       assert.equal(await browser.evaluate<string>("location.pathname"), "/login/", "unmounted guard must not apply a stale setup redirect");
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
@@ -449,7 +458,11 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
         editAvailable: edit instanceof HTMLButtonElement && !edit.disabled,
       };
     })()`;
-    const successResponse = { body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 } };
+    const successNotice = `${startReadinessStream.name}の開始準備の確認を受け付けました。状態が更新されるまでしばらくお待ちください。`;
+    const successResponse = {
+      body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 },
+      requiredResponse: true,
+    };
     const matrix = [
       { name: "start only", permissions: ["streams.read", "streams.start"], readinessAvailable: true, editAvailable: false, requestCount: 1 },
       { name: "update only", permissions: ["streams.read", "streams.update"], readinessAvailable: false, editAvailable: true, requestCount: 0 },
@@ -494,10 +507,11 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
 
       for (const matrixCase of matrix) {
         await t.test(matrixCase.name, async () => {
+          await waitForStartReadinessHandlersIdle(browser);
           authResponse = { body: permissionUser([...matrixCase.permissions]) };
           startReadinessResponse = successResponse;
           startReadinessMethods = [];
-          browser.clearRequestCounts();
+          browser.clearRequestCounts(startReadinessPath);
           browser.clearConsoleErrors();
           await browser.navigate(`${server.baseUrl}/admin/streams/`);
           await waitForShell(browser, "アカウントメニュー");
@@ -516,22 +530,31 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
             );
             await browser.clickSelector('[data-slot="alert-dialog-action"]');
             await browser.waitForRequestCount(startReadinessPath, 1);
+            await browser.waitForResponseCount(startReadinessPath, 1);
+            await browser.waitFor(
+              "document.body.textContent || ''",
+              (value: string) => value.includes(successNotice),
+              `${matrixCase.name}: start-readiness mutation did not reach its public success boundary`,
+            );
           } else {
             await browser.clickSelector(readinessSelector);
             await waitForAnimationFrames(browser);
           }
+          await waitForStartReadinessHandlersIdle(browser);
 
           assert.deepEqual(
             {
               readinessAvailable: initial.readinessAvailable,
               editAvailable: initial.editAvailable,
               requestCount: browser.requests.get(startReadinessPath) || 0,
+              responseCount: browser.responses.get(startReadinessPath) || 0,
               methods: startReadinessMethods,
             },
             {
               readinessAvailable: matrixCase.readinessAvailable,
               editAvailable: matrixCase.editAvailable,
               requestCount: matrixCase.requestCount,
+              responseCount: matrixCase.requestCount,
               methods: matrixCase.requestCount === 1 ? ["POST"] : [],
             },
             `${matrixCase.name}: start-readiness permission authority`,
@@ -541,6 +564,7 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
       }
 
       await t.test("permission changes before confirm", async () => {
+        await waitForStartReadinessHandlersIdle(browser);
         authResponse = { body: permissionUser(["streams.read", "streams.start"]) };
         startReadinessResponse = successResponse;
         await browser.navigate(`${server.baseUrl}/admin/streams/`);
@@ -558,17 +582,20 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
         );
 
         authResponse = { body: permissionUser(["streams.read"]) };
-        browser.clearRequestCounts();
+        await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+        browser.clearRequestCounts("/auth/me");
         await browser.evaluate("document.dispatchEvent(new Event('visibilitychange', { bubbles: true })); true");
         await browser.waitForResponseCount("/auth/me", 1);
+        await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
         await browser.waitFor(
           actionSnapshotExpression,
           (value: { readinessAvailable: boolean }) => !value.readinessAvailable,
           "refetched permissions did not disable start-readiness",
         );
 
+        await waitForStartReadinessHandlersIdle(browser);
         startReadinessMethods = [];
-        browser.clearRequestCounts();
+        browser.clearRequestCounts(startReadinessPath);
         assert.equal(
           await browser.evaluate("Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))"),
           false,
@@ -576,18 +603,24 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
         );
         await browser.clickSelector(readinessSelector);
         await waitForAnimationFrames(browser);
+        await waitForStartReadinessHandlersIdle(browser);
         assert.deepEqual(
-          { requestCount: browser.requests.get(startReadinessPath) || 0, methods: startReadinessMethods },
-          { requestCount: 0, methods: [] },
+          {
+            requestCount: browser.requests.get(startReadinessPath) || 0,
+            responseCount: browser.responses.get(startReadinessPath) || 0,
+            methods: startReadinessMethods,
+          },
+          { requestCount: 0, responseCount: 0, methods: [] },
           "a permission change before confirmation must not send a mutation",
         );
       });
 
       await t.test("backend 403 retains the existing action error mapping", async () => {
+        await waitForStartReadinessHandlersIdle(browser);
         authResponse = { body: permissionUser(["streams.read", "streams.start"]) };
-        startReadinessResponse = { status: 403, body: { code: "permission_denied" } };
+        startReadinessResponse = { status: 403, body: { code: "permission_denied" }, requiredResponse: true };
         startReadinessMethods = [];
-        browser.clearRequestCounts();
+        browser.clearRequestCounts(startReadinessPath);
         await browser.navigate(`${server.baseUrl}/admin/streams/`);
         await waitForShell(browser, "アカウントメニュー");
         await browser.waitFor(
@@ -603,21 +636,31 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
         );
         await browser.clickSelector('[data-slot="alert-dialog-action"]');
         await browser.waitForRequestCount(startReadinessPath, 1);
+        await browser.waitForResponseCount(startReadinessPath, 1);
         await browser.waitFor(
           "document.body.textContent || ''",
           (value: string) => value.includes("開始準備の確認を実行する権限がありません") && value.includes("permission_denied"),
           "backend 403 no longer used the existing stream action error mapping",
         );
+        await browser.waitFor(
+          actionSnapshotExpression,
+          (value: { readinessAvailable: boolean }) => value.readinessAvailable,
+          "backend 403 mutation did not return to its terminal state",
+        );
+        await waitForStartReadinessHandlersIdle(browser);
+        assert.equal(browser.requests.get(startReadinessPath), 1, "backend 403 must not be resent automatically");
+        assert.equal(browser.responses.get(startReadinessPath), 1, "backend 403 must have exactly one response");
         assert.deepEqual(startReadinessMethods, ["POST"]);
       });
 
       await t.test("pending mutation keeps duplicate start-readiness blocked", async () => {
         const release = deferred();
         try {
+          await waitForStartReadinessHandlersIdle(browser);
           authResponse = { body: permissionUser(["streams.read", "streams.start"]) };
           startReadinessResponse = { ...successResponse, waitUntil: release.promise };
           startReadinessMethods = [];
-          browser.clearRequestCounts();
+          browser.clearRequestCounts(startReadinessPath);
           await browser.navigate(`${server.baseUrl}/admin/streams/`);
           await waitForShell(browser, "アカウントメニュー");
           await browser.waitFor(
@@ -641,10 +684,19 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
           await browser.clickSelector(readinessSelector);
           await waitForAnimationFrames(browser);
           assert.equal(browser.requests.get(startReadinessPath), 1, "pending start-readiness must not send a duplicate request");
+          assert.equal(browser.responses.get(startReadinessPath) || 0, 0, "deferred start-readiness must remain pending before release");
           assert.deepEqual(startReadinessMethods, ["POST"]);
         } finally {
           release.resolve();
-          if ((browser.requests.get(startReadinessPath) || 0) > 0) await browser.waitForResponseCount(startReadinessPath, 1);
+          if ((browser.requests.get(startReadinessPath) || 0) > 0) {
+            await browser.waitForResponseCount(startReadinessPath, 1);
+            await browser.waitFor(
+              "document.body.textContent || ''",
+              (value: string) => value.includes(successNotice),
+              "released start-readiness mutation did not reach its public success boundary",
+            );
+          }
+          await waitForStartReadinessHandlersIdle(browser);
         }
       });
     } finally {
@@ -1193,6 +1245,12 @@ function authMeExpirySnapshotExpression(returnParameterName: string) {
       returnParameterValues: url.searchParams.getAll(${JSON.stringify(returnParameterName)}),
     };
   })()`;
+}
+
+async function waitForStartReadinessHandlersIdle(browser: BrowserHarness) {
+  await browser.waitForRequestHandlersIdle({ pathname: startReadinessPath, method: "POST" });
+  await browser.waitForRequestHandlersIdle({ pathname: "/streams", method: "GET" });
+  browser.assertNoFatalError();
 }
 
 async function waitForStatus(browser: BrowserHarness, health: string, update: string) {

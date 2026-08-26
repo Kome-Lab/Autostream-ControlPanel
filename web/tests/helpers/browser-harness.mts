@@ -3,6 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
+import {
+  FetchRequestLifecycle,
+  RejectableEventWaiters,
+  type FetchSettlementCommand,
+  type RequestHandlerIdleOptions,
+} from "./browser-request-lifecycle.mts";
 import { connectToBrowserDevTools } from "./browser-startup.mts";
 
 export type StubResponse = {
@@ -10,6 +16,7 @@ export type StubResponse = {
   body?: unknown;
   delayMs?: number;
   waitUntil?: Promise<void>;
+  requiredResponse?: boolean;
 };
 
 export type StubRequest = {
@@ -59,9 +66,12 @@ export class BrowserHarness {
   private nextCommandId = 0;
   private routeResolver: RouteResolver = () => null;
   private readonly pendingCommands = new Map<number, PendingCommand>();
-  private readonly eventWaiters = new Map<string, Set<(params: Record<string, unknown>) => void>>();
+  private readonly eventWaiters = new RejectableEventWaiters();
+  private readonly requestLifecycle = new FetchRequestLifecycle();
   private consoleErrorEvents = 0;
   private topLevelNavigationEvents = 0;
+  private topLevelNavigationPending = false;
+  private mainFrameId: string | undefined;
   private fatalError: Error | undefined;
   private closed = false;
 
@@ -76,10 +86,7 @@ export class BrowserHarness {
     this.socket = socket;
     this.sessionId = sessionId;
     this.socket.addEventListener("message", (event) => this.receive(String(event.data)));
-    this.socket.addEventListener("close", () => {
-      for (const command of this.pendingCommands.values()) command.reject(new Error("Browser CDP connection closed"));
-      this.pendingCommands.clear();
-    });
+    this.socket.addEventListener("close", () => this.handleSocketClose());
   }
 
   static async launch() {
@@ -130,7 +137,13 @@ export class BrowserHarness {
     this.routeResolver = resolver;
   }
 
-  clearRequestCounts() {
+  clearRequestCounts(pathname?: string) {
+    if (pathname) {
+      this.requests.delete(pathname);
+      this.responses.delete(pathname);
+      this.responseStatuses.delete(pathname);
+      return;
+    }
     this.requests.clear();
     this.responses.clear();
     this.responseStatuses.clear();
@@ -152,25 +165,56 @@ export class BrowserHarness {
     return this.topLevelNavigationEvents;
   }
 
+  get safeFetchCancellationCount() {
+    return this.requestLifecycle.safeCancellationCount;
+  }
+
+  assertNoFatalError() {
+    if (this.fatalError) throw this.fatalError;
+    this.requestLifecycle.assertHealthy();
+  }
+
+  async waitForRequestHandlersIdle(options: RequestHandlerIdleOptions = {}) {
+    await this.requestLifecycle.waitForIdle(options);
+  }
+
   async waitForRequestCount(pathname: string, count: number, timeoutMs = 10_000) {
-    await waitForMapCount(this.requests, pathname, count, `request count for ${pathname}`, timeoutMs);
+    await waitForMapCount(this.requests, pathname, count, `request count for ${pathname}`, timeoutMs, () => this.assertNoFatalError());
   }
 
   async waitForResponseCount(pathname: string, count: number, timeoutMs = 10_000) {
-    await waitForMapCount(this.responses, pathname, count, `response count for ${pathname}`, timeoutMs);
+    await waitForMapCount(this.responses, pathname, count, `response count for ${pathname}`, timeoutMs, () => this.assertNoFatalError());
   }
 
   async navigate(url: string) {
-    const loaded = this.once("Page.loadEventFired");
-    const result = await this.send("Page.navigate", { url });
-    if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
-    await withTimeout(loaded, 20_000, `Timed out loading ${url}`);
+    this.requestLifecycle.beginNavigation("navigate");
+    this.topLevelNavigationPending = true;
+    const loaded = this.eventWaiters.wait("Page.loadEventFired", 20_000, `Timed out loading ${url}`);
+    try {
+      const result = await this.send("Page.navigate", { url });
+      if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
+      await loaded.promise;
+    } catch (error) {
+      this.topLevelNavigationPending = false;
+      void loaded.promise.catch(() => {});
+      loaded.cancel(asError(error));
+      throw error;
+    }
   }
 
   async reload() {
-    const loaded = this.once("Page.loadEventFired");
-    await this.send("Page.reload", { ignoreCache: true });
-    await withTimeout(loaded, 20_000, "Timed out reloading the page");
+    this.requestLifecycle.beginNavigation("reload");
+    this.topLevelNavigationPending = true;
+    const loaded = this.eventWaiters.wait("Page.loadEventFired", 20_000, "Timed out reloading the page");
+    try {
+      await this.send("Page.reload", { ignoreCache: true });
+      await loaded.promise;
+    } catch (error) {
+      this.topLevelNavigationPending = false;
+      void loaded.promise.catch(() => {});
+      loaded.cancel(asError(error));
+      throw error;
+    }
   }
 
   async evaluate<T>(expression: string): Promise<T> {
@@ -267,6 +311,9 @@ export class BrowserHarness {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.requestLifecycle.beginNavigation("close");
+    const closeError = new Error("Browser harness closed");
+    this.eventWaiters.rejectAll(closeError);
     try {
       await withTimeout(this.sendBrowser("Browser.close"), 3_000, "Timed out closing the browser through CDP");
     } catch {
@@ -274,6 +321,7 @@ export class BrowserHarness {
     }
     await terminateChildProcess(this.browserProcess);
     this.socket.close();
+    this.requestLifecycle.close(closeError);
     await removeOwnedBrowserDirectory(this.userDataDirectory);
   }
 
@@ -295,18 +343,6 @@ export class BrowserHarness {
     });
   }
 
-  private once(method: string) {
-    return new Promise<Record<string, unknown>>((resolveEvent) => {
-      const listener = (params: Record<string, unknown>) => {
-        this.eventWaiters.get(method)?.delete(listener);
-        resolveEvent(params);
-      };
-      const listeners = this.eventWaiters.get(method) || new Set();
-      listeners.add(listener);
-      this.eventWaiters.set(method, listeners);
-    });
-  }
-
   private receive(rawMessage: string) {
     const message = JSON.parse(rawMessage) as CDPResponse;
     if (message.id) {
@@ -323,24 +359,43 @@ export class BrowserHarness {
       if (type === "error" || type === "assert") this.consoleErrorEvents += 1;
     }
     if (message.method === "Runtime.exceptionThrown") this.consoleErrorEvents += 1;
+    if (message.method === "Page.frameRequestedNavigation") {
+      const frameId = String(message.params?.frameId || "");
+      if ((!this.mainFrameId || frameId === this.mainFrameId) && !this.topLevelNavigationPending) {
+        this.requestLifecycle.beginNavigation("top-level-navigation");
+        this.topLevelNavigationPending = true;
+      }
+    }
     if (message.method === "Page.frameNavigated") {
-      const frame = message.params?.frame as { parentId?: string } | undefined;
-      if (frame && !frame.parentId) this.topLevelNavigationEvents += 1;
+      const frame = message.params?.frame as { id?: string; parentId?: string } | undefined;
+      if (frame && !frame.parentId) {
+        this.mainFrameId = frame.id ? String(frame.id) : this.mainFrameId;
+        this.topLevelNavigationPending = false;
+        this.topLevelNavigationEvents += 1;
+      }
     }
     if (message.method === "Fetch.requestPaused") {
       void this.handleRequest(message.params || {}).catch((error) => this.recordFatalError(error));
     }
-    for (const listener of this.eventWaiters.get(message.method) || []) listener(message.params || {});
+    this.eventWaiters.resolve(message.method, message.params || {});
   }
 
   private async handleRequest(params: Record<string, unknown>) {
-    const requestId = String(params.requestId);
+    const requestId = typeof params.requestId === "string" ? params.requestId : "";
     const request = params.request as { method: string; url: string };
     const pathname = new URL(request.url).pathname.replace(/\/$/, "") || "/";
+    this.requestLifecycle.register({
+      requestId,
+      method: request.method,
+      pathname,
+      requiredResponse: false,
+    });
     this.requests.set(pathname, (this.requests.get(pathname) || 0) + 1);
     const response = this.routeResolver({ method: request.method, url: request.url });
+    this.requestLifecycle.setRequiredResponse(requestId, response !== null && response.requiredResponse !== false);
     if (!response) {
-      await this.send("Fetch.continueRequest", { requestId });
+      const settled = await this.settleFetchRequest(requestId, "Fetch.continueRequest", { requestId });
+      if (!settled) return;
       this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);
       return;
     }
@@ -348,23 +403,54 @@ export class BrowserHarness {
     if (response.waitUntil) await response.waitUntil;
     const body = response.body === undefined ? "" : JSON.stringify(response.body);
     const responseStatus = response.status ?? 200;
-    await this.send("Fetch.fulfillRequest", {
+    const settled = await this.settleFetchRequest(requestId, "Fetch.fulfillRequest", {
       requestId,
       responseCode: responseStatus,
       responseHeaders: [{ name: "content-type", value: "application/json; charset=utf-8" }],
       body: Buffer.from(body).toString("base64"),
     });
+    if (!settled) return;
     this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);
     const statuses = this.responseStatuses.get(pathname) || [];
     statuses.push(responseStatus);
     this.responseStatuses.set(pathname, statuses);
   }
 
+  private async settleFetchRequest(
+    requestId: string,
+    command: FetchSettlementCommand,
+    params: Record<string, unknown>,
+  ) {
+    const attempt = this.requestLifecycle.beginSettlement(requestId, command);
+    try {
+      await this.send(command, params);
+    } catch (error) {
+      this.requestLifecycle.handleSettlementError(attempt, error);
+      return false;
+    }
+    this.requestLifecycle.completeSettlement(attempt);
+    return true;
+  }
+
   private recordFatalError(error: unknown) {
     if (this.closed || this.fatalError) return;
     this.fatalError = asError(error);
+    this.requestLifecycle.fail(this.fatalError);
+    this.eventWaiters.rejectAll(this.fatalError);
     for (const command of this.pendingCommands.values()) command.reject(this.fatalError);
     this.pendingCommands.clear();
+  }
+
+  private handleSocketClose() {
+    const error = new Error(this.closed ? "Browser harness closed" : "Browser CDP connection closed");
+    if (!this.closed) {
+      this.recordFatalError(error);
+      return;
+    }
+    for (const command of this.pendingCommands.values()) command.reject(error);
+    this.pendingCommands.clear();
+    this.eventWaiters.rejectAll(error);
+    this.requestLifecycle.close(error);
   }
 }
 
@@ -567,13 +653,16 @@ async function waitForMapCount(
   expected: number,
   description: string,
   timeoutMs: number,
+  assertHealthy: () => void,
 ) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    assertHealthy();
     if ((counts.get(pathname) || 0) === expected) return;
     await delay(20);
   }
-  throw new Error(`${description} did not become ${expected}`);
+  assertHealthy();
+  throw new Error(`${description} did not become ${expected}; last count: ${counts.get(pathname) || 0}`);
 }
 
 function asError(error: unknown) {
