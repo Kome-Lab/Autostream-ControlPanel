@@ -33,7 +33,7 @@ import { staticRelayRecoveryActionAvailable, staticRelayRecoveryConfirmation, st
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { StreamPreview } from "@/features/streams/stream-preview";
-import type { Stream } from "@/types/domain";
+import type { CurrentUser, Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
 type SelectOption = { value: string; label: string; description?: string; disabled?: boolean };
@@ -87,6 +87,12 @@ export function StreamsView() {
   const canStop = can("streams.stop");
   const canUpdate = can("streams.update");
   const canDelete = can("streams.delete");
+  const confirmStartReadiness = (stream: Stream) => {
+    const latestCurrentUser = queryClient.getQueryData<CurrentUser>(["auth", "me"]);
+    const latestSuperAdmin = latestCurrentUser?.user.roles?.includes("super_admin") === true;
+    if (!latestSuperAdmin && !hasPermission(latestCurrentUser, "streams.start")) return;
+    actionMutation.mutate({ path: `/streams/${stream.id}/start-readiness`, streamName: stream.name, actionLabel: "開始準備の確認" });
+  };
   const streamRows = useMemo(
     () => [...createdStreams, ...(streams.data || []).filter((stream) => !createdStreams.some((created) => created.id === stream.id))],
     [createdStreams, streams.data],
@@ -205,9 +211,9 @@ export function StreamsView() {
               </Button>
             </DangerConfirm>
           </RoleGuard> : null}
-          <RoleGuard allowed={canUpdate}>
-            <DangerConfirm title={`${row.original.name} の開始準備を再確認しますか`} description="担当Node、Discord、出力先、録画設定をもう一度確認します。現在の配信は停止しません。" onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start-readiness`, streamName: row.original.name, actionLabel: "開始準備の確認" })} actionLabel="準備を再確認">
-              <Button variant="outline" size="icon-sm" aria-label="開始準備を再確認" {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
+          <RoleGuard allowed={canStart}>
+            <DangerConfirm title={`${row.original.name} の開始準備を再確認しますか`} description="担当Node、Discord、出力先、録画設定をもう一度確認します。現在の配信は停止しません。" onConfirm={() => confirmStartReadiness(row.original)} actionLabel="準備を再確認">
+              <Button variant="outline" size="icon-sm" aria-label="開始準備を再確認" {...guardedButtonProps(canStart)} disabled={!canStart || actionMutation.isPending}>
                 <RotateCw />
               </Button>
             </DangerConfirm>

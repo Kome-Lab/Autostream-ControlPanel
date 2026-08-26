@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { BrowserHarness, ensureWebServer, type StubResponse } from "./helpers/browser-harness.mts";
+import {
+  assertStreamsStartReadinessHandlerGuard,
+  mutateStreamsStartReadinessHandlerGuard,
+  type StreamsStartReadinessGuardMutation,
+} from "./helpers/streams-start-readiness-handler-guard.mts";
 import { loginPathForLocation } from "../src/lib/auth/post-login-redirect.ts";
 import {
   assertAuthMeExpiryOutcome,
@@ -34,6 +40,8 @@ const healthyRows = [
 ];
 const currentVersion = versionResponse({ latestVersion: "v1.2.4" });
 const availableVersion = versionResponse({ latestVersion: "v1.3.0", updateAvailable: true });
+const startReadinessStream = { id: "stream-permission-fixture", name: "権限検証配信", status: "ready" };
+const startReadinessPath = `/streams/${startReadinessStream.id}/start-readiness`;
 
 test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
   const server = await ensureWebServer(webRoot, requestedBaseUrl);
@@ -52,6 +60,9 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
   let refreshResponse: StubResponse = { body: { status: "ok" } };
   let logoutResponse: StubResponse = { body: { status: "ok" } };
   let loginResponse: StubResponse = { body: { csrf_token: "browser-fixture-csrf" } };
+  let streamsResponse: StubResponse = { body: [] };
+  let startReadinessResponse: StubResponse = { body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 } };
+  let startReadinessMethods: string[] = [];
   browser.setRouteResolver(({ method, url }) => {
     const pathname = normalizePath(new URL(url).pathname);
     if (pathname === "/auth/me") return authResponse;
@@ -60,7 +71,11 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     if (pathname === "/auth/oauth/providers") return { body: [] };
     if (pathname === "/auth/login" && method === "POST") return loginResponse;
     if (pathname === "/auth/logout" && method === "POST") return logoutResponse;
-    if (pathname === "/streams") return { body: [] };
+    if (pathname === "/streams") return streamsResponse;
+    if (pathname === startReadinessPath) {
+      startReadinessMethods.push(method);
+      return method === "POST" ? startReadinessResponse : { status: 405, body: { code: "method_not_allowed" } };
+    }
     if (pathname === "/service-health") return healthResponse;
     if (pathname === "/version") return versionFixture;
     if (pathname === "/auth/session/refresh" && method === "POST") return refreshResponse;
@@ -417,6 +432,226 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
       assertLoginNavigationOutcome({ href, expectedOrigin: server.baseUrl, expectedPathname: "/admin/" });
       assert.equal(browser.requests.get("/auth/login"), 1);
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
+    }
+  });
+
+  await t.test("Streams start-readiness follows streams.start at render and confirm time", async (t) => {
+    const readinessSelector = 'button[aria-label="開始準備を再確認"]';
+    const editSelector = `button[aria-label=${JSON.stringify(`${startReadinessStream.name} を編集`)}]`;
+    const actionSnapshotExpression = `(() => {
+      const visibleButton = (selector) => [...document.querySelectorAll(selector)]
+        .find((element) => element instanceof HTMLButtonElement && element.getClientRects().length > 0);
+      const readiness = visibleButton(${JSON.stringify(readinessSelector)});
+      const edit = visibleButton(${JSON.stringify(editSelector)});
+      return {
+        readinessPresent: Boolean(readiness),
+        readinessAvailable: readiness instanceof HTMLButtonElement && !readiness.disabled,
+        editAvailable: edit instanceof HTMLButtonElement && !edit.disabled,
+      };
+    })()`;
+    const successResponse = { body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 } };
+    const matrix = [
+      { name: "start only", permissions: ["streams.read", "streams.start"], readinessAvailable: true, editAvailable: false, requestCount: 1 },
+      { name: "update only", permissions: ["streams.read", "streams.update"], readinessAvailable: false, editAvailable: true, requestCount: 0 },
+      { name: "both", permissions: ["streams.read", "streams.start", "streams.update"], readinessAvailable: true, editAvailable: true, requestCount: 1 },
+      { name: "neither", permissions: ["streams.read"], readinessAvailable: false, editAvailable: false, requestCount: 0 },
+      { name: "wildcard", permissions: ["*"], readinessAvailable: true, editAvailable: true, requestCount: 1 },
+    ] as const;
+
+    await t.test("handler guard structural oracle rejects in-memory regressions", () => {
+      const source = readFileSync(new URL("../src/features/streams/streams-view.tsx", import.meta.url), "utf8");
+      assert.doesNotThrow(
+        () => assertStreamsStartReadinessHandlerGuard(source),
+        "actual start-readiness submit handler must retain its fresh permission guard",
+      );
+      const negativeFixtures: {
+        name: string;
+        mutation: StreamsStartReadinessGuardMutation;
+        expectedError: RegExp;
+      }[] = [
+        { name: "fresh cache read removed", mutation: "remove-fresh-cache-read", expectedError: /latest auth query cache/ },
+        { name: "streams.start replaced by streams.update", mutation: "use-streams-update-authority", expectedError: /authority must be streams\.start/ },
+        { name: "early return removed", mutation: "remove-early-return", expectedError: /must return before/ },
+        { name: "mutation moved before guard", mutation: "move-mutation-before-guard", expectedError: /must follow the fresh permission guard/ },
+        { name: "RoleGuard remains but handler guard is removed", mutation: "remove-handler-guard", expectedError: /existing permission helper/ },
+      ];
+      for (const fixture of negativeFixtures) {
+        const mutatedSource = mutateStreamsStartReadinessHandlerGuard(source, fixture.mutation);
+        assert.throws(
+          () => assertStreamsStartReadinessHandlerGuard(mutatedSource),
+          fixture.expectedError,
+          `${fixture.name} must make the structural oracle Red`,
+        );
+      }
+    });
+
+    try {
+      streamsResponse = { body: [startReadinessStream] };
+      healthResponse = { body: healthyRows };
+      versionFixture = { body: currentVersion };
+      await browser.setViewport(1440, 900);
+      await setStoredDisplay(browser, "ja", "light");
+
+      for (const matrixCase of matrix) {
+        await t.test(matrixCase.name, async () => {
+          authResponse = { body: permissionUser([...matrixCase.permissions]) };
+          startReadinessResponse = successResponse;
+          startReadinessMethods = [];
+          browser.clearRequestCounts();
+          browser.clearConsoleErrors();
+          await browser.navigate(`${server.baseUrl}/admin/streams/`);
+          await waitForShell(browser, "アカウントメニュー");
+          const initial = await browser.waitFor<{ readinessPresent: boolean; readinessAvailable: boolean; editAvailable: boolean }>(
+            actionSnapshotExpression,
+            (value) => value.readinessPresent,
+            `${matrixCase.name}: start-readiness action did not render`,
+          );
+
+          if (initial.readinessAvailable) {
+            await browser.clickSelector(readinessSelector);
+            await browser.waitFor(
+              "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
+              Boolean,
+              `${matrixCase.name}: start-readiness confirmation did not open`,
+            );
+            await browser.clickSelector('[data-slot="alert-dialog-action"]');
+            await browser.waitForRequestCount(startReadinessPath, 1);
+          } else {
+            await browser.clickSelector(readinessSelector);
+            await waitForAnimationFrames(browser);
+          }
+
+          assert.deepEqual(
+            {
+              readinessAvailable: initial.readinessAvailable,
+              editAvailable: initial.editAvailable,
+              requestCount: browser.requests.get(startReadinessPath) || 0,
+              methods: startReadinessMethods,
+            },
+            {
+              readinessAvailable: matrixCase.readinessAvailable,
+              editAvailable: matrixCase.editAvailable,
+              requestCount: matrixCase.requestCount,
+              methods: matrixCase.requestCount === 1 ? ["POST"] : [],
+            },
+            `${matrixCase.name}: start-readiness permission authority`,
+          );
+          assertNoBrowserConsoleErrors(browser.consoleErrorCount);
+        });
+      }
+
+      await t.test("permission changes before confirm", async () => {
+        authResponse = { body: permissionUser(["streams.read", "streams.start"]) };
+        startReadinessResponse = successResponse;
+        await browser.navigate(`${server.baseUrl}/admin/streams/`);
+        await waitForShell(browser, "アカウントメニュー");
+        await browser.waitFor(
+          actionSnapshotExpression,
+          (value: { readinessAvailable: boolean }) => value.readinessAvailable,
+          "start-readiness action was not initially available",
+        );
+        await browser.clickSelector(readinessSelector);
+        await browser.waitFor(
+          "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
+          Boolean,
+          "start-readiness confirmation did not open before permission change",
+        );
+
+        authResponse = { body: permissionUser(["streams.read"]) };
+        browser.clearRequestCounts();
+        await browser.evaluate("document.dispatchEvent(new Event('visibilitychange', { bubbles: true })); true");
+        await browser.waitForResponseCount("/auth/me", 1);
+        await browser.waitFor(
+          actionSnapshotExpression,
+          (value: { readinessAvailable: boolean }) => !value.readinessAvailable,
+          "refetched permissions did not disable start-readiness",
+        );
+
+        startReadinessMethods = [];
+        browser.clearRequestCounts();
+        assert.equal(
+          await browser.evaluate("Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))"),
+          false,
+          "permission refresh must dismiss the stale start-readiness confirmation",
+        );
+        await browser.clickSelector(readinessSelector);
+        await waitForAnimationFrames(browser);
+        assert.deepEqual(
+          { requestCount: browser.requests.get(startReadinessPath) || 0, methods: startReadinessMethods },
+          { requestCount: 0, methods: [] },
+          "a permission change before confirmation must not send a mutation",
+        );
+      });
+
+      await t.test("backend 403 retains the existing action error mapping", async () => {
+        authResponse = { body: permissionUser(["streams.read", "streams.start"]) };
+        startReadinessResponse = { status: 403, body: { code: "permission_denied" } };
+        startReadinessMethods = [];
+        browser.clearRequestCounts();
+        await browser.navigate(`${server.baseUrl}/admin/streams/`);
+        await waitForShell(browser, "アカウントメニュー");
+        await browser.waitFor(
+          actionSnapshotExpression,
+          (value: { readinessAvailable: boolean }) => value.readinessAvailable,
+          "403 fixture start-readiness action was not available",
+        );
+        await browser.clickSelector(readinessSelector);
+        await browser.waitFor(
+          "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
+          Boolean,
+          "403 fixture confirmation did not open",
+        );
+        await browser.clickSelector('[data-slot="alert-dialog-action"]');
+        await browser.waitForRequestCount(startReadinessPath, 1);
+        await browser.waitFor(
+          "document.body.textContent || ''",
+          (value: string) => value.includes("開始準備の確認を実行する権限がありません") && value.includes("permission_denied"),
+          "backend 403 no longer used the existing stream action error mapping",
+        );
+        assert.deepEqual(startReadinessMethods, ["POST"]);
+      });
+
+      await t.test("pending mutation keeps duplicate start-readiness blocked", async () => {
+        const release = deferred();
+        try {
+          authResponse = { body: permissionUser(["streams.read", "streams.start"]) };
+          startReadinessResponse = { ...successResponse, waitUntil: release.promise };
+          startReadinessMethods = [];
+          browser.clearRequestCounts();
+          await browser.navigate(`${server.baseUrl}/admin/streams/`);
+          await waitForShell(browser, "アカウントメニュー");
+          await browser.waitFor(
+            actionSnapshotExpression,
+            (value: { readinessAvailable: boolean }) => value.readinessAvailable,
+            "pending fixture start-readiness action was not available",
+          );
+          await browser.clickSelector(readinessSelector);
+          await browser.waitFor(
+            "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
+            Boolean,
+            "pending fixture confirmation did not open",
+          );
+          await browser.clickSelector('[data-slot="alert-dialog-action"]');
+          await browser.waitForRequestCount(startReadinessPath, 1);
+          await browser.waitFor(
+            actionSnapshotExpression,
+            (value: { readinessAvailable: boolean }) => !value.readinessAvailable,
+            "pending start-readiness mutation did not disable its trigger",
+          );
+          await browser.clickSelector(readinessSelector);
+          await waitForAnimationFrames(browser);
+          assert.equal(browser.requests.get(startReadinessPath), 1, "pending start-readiness must not send a duplicate request");
+          assert.deepEqual(startReadinessMethods, ["POST"]);
+        } finally {
+          release.resolve();
+          if ((browser.requests.get(startReadinessPath) || 0) > 0) await browser.waitForResponseCount(startReadinessPath, 1);
+        }
+      });
+    } finally {
+      authResponse = { body: currentUser };
+      streamsResponse = { body: [] };
+      startReadinessResponse = successResponse;
+      startReadinessMethods = [];
     }
   });
 
@@ -818,6 +1053,25 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
       /required browser scenario did not run/,
       "inventory-only registration without execution must be rejected",
     );
+    const startReadinessScenarioName = "Streams start-readiness follows streams.start at render and confirm time";
+    const requiredStartReadinessResults = [
+      { name: startReadinessScenarioName, passed: true, skipped: false, todo: false },
+      { name: "another required scenario", passed: true, skipped: false, todo: false },
+    ];
+    assert.doesNotThrow(() => assertBrowserSuiteExecution(
+      passingSummary,
+      requiredStartReadinessResults,
+      [startReadinessScenarioName],
+    ));
+    assert.throws(
+      () => assertBrowserSuiteExecution(
+        passingSummary,
+        requiredStartReadinessResults.filter((result) => result.name !== startReadinessScenarioName),
+        [startReadinessScenarioName],
+      ),
+      /required browser scenario did not run/,
+      "removing the required start-readiness result must be rejected",
+    );
   });
 
   authResponse = { body: currentUser };
@@ -1043,6 +1297,13 @@ function deferred() {
       settled = true;
       resolvePromise();
     },
+  };
+}
+
+function permissionUser(permissions: string[]) {
+  return {
+    user: { id: "stream-permission-user", username: "stream-permission-operator", roles: [] },
+    permissions,
   };
 }
 

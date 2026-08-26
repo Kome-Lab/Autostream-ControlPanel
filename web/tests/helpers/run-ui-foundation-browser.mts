@@ -33,6 +33,7 @@ const requiredScenarioNames = [
   "stale refresh completion does not replace a newer authenticated session",
   "session guard ignores setup completion after unmount",
   "login rejects external return URL variants",
+  "Streams start-readiness follows streams.start at render and confirm time",
   "desktop/mobile navigation parity, active route, and permission visibility are runtime-enforced",
   "same-route and cross-route mobile create release the navigation focus owner",
   "reduced motion removes Sheet animation while preserving close and focus",
