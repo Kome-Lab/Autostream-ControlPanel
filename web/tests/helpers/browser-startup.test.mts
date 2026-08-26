@@ -15,7 +15,7 @@ import {
   type ActivePortAccess,
   type BrowserStartupOptions,
 } from "./browser-startup.mts";
-import { resolveBrowserPath } from "./browser-harness.mts";
+import { BrowserHarness, resolveBrowserPath } from "./browser-harness.mts";
 
 const validPath = "/devtools/browser/01234567-89ab-cdef-0123-456789abcdef";
 const validUrl = `ws://127.0.0.1:9222${validPath}`;
@@ -109,6 +109,8 @@ test("delayed DevToolsActivePort creation opens the validated loopback endpoint"
   const profile = mkdtempSync(join(tmpdir(), "autostream-browser-startup-test-"));
   const tracked = trackedTimers();
   let openedUrl = "";
+  let connectedReason = "";
+  let connectedSource = "";
   const expectedSocket = fakeSocket();
 
   try {
@@ -120,11 +122,17 @@ test("delayed DevToolsActivePort creation opens the validated loopback endpoint"
         openedUrl = url;
         return expectedSocket;
       },
+      recordConnectedDiagnostics: (details) => {
+        connectedReason = details.reason;
+        connectedSource = details.endpointSource;
+      },
     });
     writeFileSync(join(profile, "DevToolsActivePort"), `9222\n${validPath}`);
 
     assert.equal(await connected, expectedSocket);
     assert.equal(openedUrl, validUrl);
+    assert.equal(connectedReason, "connected");
+    assert.equal(connectedSource, "active-port");
     assertStartupResourcesReleased(browserProcess, tracked);
   } finally {
     rmSync(profile, { recursive: true, force: true });
@@ -322,12 +330,57 @@ test("permanent and never-settling WebSocket failures remain nonzero and release
   });
 });
 
+test("a WebSocket resolving after the startup deadline is closed", async () => {
+  const browserProcess = new FakeBrowserProcess();
+  const activePort = new FakeActivePort(Buffer.from(`9222\n${validPath}`));
+  const tracked = trackedTimers();
+  let aborted = false;
+  let closeCount = 0;
+  const socket = { close: () => { closeCount += 1; } } as unknown as WebSocket;
+
+  await assert.rejects(
+    connectToBrowserDevTools(asChildProcess(browserProcess), "unused", {
+      ...startupOptions(activePort, tracked),
+      timeoutMs: 25,
+      openWebSocket: (_url, signal) => new Promise<WebSocket>((resolveSocket) => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          queueMicrotask(() => resolveSocket(socket));
+        }, { once: true });
+      }),
+    }),
+    /reason=websocket_timeout/,
+  );
+  await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+  assert.equal(aborted, true);
+  assert.equal(closeCount, 1, "late startup socket remained open");
+  assertStartupResourcesReleased(browserProcess, tracked);
+});
+
 test("a nonexistent executable and an immediate child exit fail closed", async (t) => {
   await t.test("configured nonexistent executable", () => {
     const previous = process.env.AUTOSTREAM_BROWSER_PATH;
     process.env.AUTOSTREAM_BROWSER_PATH = join(tmpdir(), `autostream-browser-does-not-exist-${process.pid}`);
     try {
       assert.throws(() => resolveBrowserPath(), /Configured Chrome\/Chromium executable was not found/);
+    } finally {
+      if (previous === undefined) delete process.env.AUTOSTREAM_BROWSER_PATH;
+      else process.env.AUTOSTREAM_BROWSER_PATH = previous;
+    }
+  });
+
+  await t.test("configured nonexistent executable launch has bounded zero-attempt facts", async () => {
+    const previous = process.env.AUTOSTREAM_BROWSER_PATH;
+    process.env.AUTOSTREAM_BROWSER_PATH = join(tmpdir(), `autostream-browser-does-not-exist-${process.pid}`);
+    try {
+      await assert.rejects(BrowserHarness.launch(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /attemptCount=0/);
+        assert.match(error.message, /reason=executable_unavailable/);
+        assert.match(error.message, /browserVersion="unavailable"/);
+        assert.match(error.message, /platform=/);
+        return true;
+      });
     } finally {
       if (previous === undefined) delete process.env.AUTOSTREAM_BROWSER_PATH;
       else process.env.AUTOSTREAM_BROWSER_PATH = previous;

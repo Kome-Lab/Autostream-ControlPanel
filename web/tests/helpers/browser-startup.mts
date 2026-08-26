@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 
+import { browserAttemptTimeoutMs, sanitizeBrowserDiagnosticText } from "./browser-launch-profile.mts";
+
 const devToolsBrowserPathPrefix = "/devtools/browser/";
 const devToolsStderrMarker = "DevTools listening on ";
 const diagnosticTailLimit = 2_000;
 
-export const browserStartupTimeoutMs = 30_000;
+export const browserStartupTimeoutMs = browserAttemptTimeoutMs;
 
 export type DevToolsEndpointParseFailure = {
   ok: false;
@@ -40,6 +42,7 @@ export type BrowserStartupOptions = {
   activePortProbeIntervalMs?: number;
   webSocketRetryIntervalMs?: number;
   timers?: StartupTimers;
+  recordConnectedDiagnostics?: (details: BrowserStartupFailureDetails) => void;
 };
 
 type StartupDiagnostics = {
@@ -53,6 +56,50 @@ type StartupDiagnostics = {
   stdoutTail: string;
   webSocketAttempts: number;
 };
+
+export type BrowserStartupFailureDetails = Readonly<{
+  reason: string;
+  processCode: number | null;
+  processSignal: NodeJS.Signals | null;
+  activePortFile: StartupDiagnostics["activePortFile"];
+  activePortParse: string;
+  stderrParse: string;
+  endpointSource: StartupDiagnostics["endpointSource"];
+  webSocketAttempts: number;
+  stdoutTail: string;
+  stderrTail: string;
+}>;
+
+export class BrowserStartupError extends Error {
+  readonly details: BrowserStartupFailureDetails;
+
+  constructor(details: BrowserStartupFailureDetails) {
+    const safeDetails = Object.freeze({
+      ...details,
+      stdoutTail: sanitizeBrowserDiagnosticText(details.stdoutTail),
+      stderrTail: sanitizeBrowserDiagnosticText(details.stderrTail),
+    });
+    super(`Chrome DevTools startup failed: ${formatBrowserStartupFailureDetails(safeDetails)}`);
+    this.name = "BrowserStartupError";
+    this.details = safeDetails;
+  }
+}
+
+export function formatBrowserStartupFailureDetails(details: BrowserStartupFailureDetails) {
+  const fields = [
+    `reason=${details.reason}`,
+    `code=${details.processCode ?? "null"}`,
+    `signal=${details.processSignal ?? "null"}`,
+    `activePortFile=${details.activePortFile}`,
+    `activePortParse=${details.activePortParse}`,
+    `stderrParse=${details.stderrParse}`,
+    `endpointSource=${details.endpointSource}`,
+    `webSocketAttempts=${details.webSocketAttempts}`,
+  ];
+  if (details.stdoutTail) fields.push(`stdoutTail=${JSON.stringify(sanitizeBrowserDiagnosticText(details.stdoutTail))}`);
+  if (details.stderrTail) fields.push(`stderrTail=${JSON.stringify(sanitizeBrowserDiagnosticText(details.stderrTail))}`);
+  return fields.join("; ");
+}
 
 type EndpointDiscovery =
   | { kind: "endpoint"; source: "active-port" | "stderr"; url: string }
@@ -248,6 +295,11 @@ export async function connectToBrowserDevTools(
         if (browserProcess.exitCode !== null || browserProcess.signalCode !== null) {
           closeWebSocket(connected.socket);
           throw startupFailure("process_exit", diagnostics);
+        }
+        try {
+          options.recordConnectedDiagnostics?.(startupDetails("connected", diagnostics));
+        } catch {
+          // Diagnostic recording cannot turn a validated connection into an unowned socket.
         }
         return connected.socket;
       }
@@ -564,32 +616,26 @@ function openValidatedWebSocket(url: string, signal: AbortSignal) {
 }
 
 function startupFailure(reason: string, diagnostics: StartupDiagnostics) {
-  const fields = [
-    `reason=${reason}`,
-    `code=${diagnostics.processCode ?? "null"}`,
-    `signal=${diagnostics.processSignal ?? "null"}`,
-    `activePortFile=${diagnostics.activePortFile}`,
-    `activePortParse=${diagnostics.activePortParse}`,
-    `stderrParse=${diagnostics.stderrParse}`,
-    `endpointSource=${diagnostics.endpointSource}`,
-    `webSocketAttempts=${diagnostics.webSocketAttempts}`,
-  ];
-  if (diagnostics.stdoutTail) fields.push(`stdoutTail=${JSON.stringify(sanitizeDiagnosticTail(diagnostics.stdoutTail))}`);
-  if (diagnostics.stderrTail) fields.push(`stderrTail=${JSON.stringify(sanitizeDiagnosticTail(diagnostics.stderrTail))}`);
-  return new Error(`Chrome DevTools startup failed: ${fields.join("; ")}`);
+  return new BrowserStartupError(startupDetails(reason, diagnostics));
+}
+
+function startupDetails(reason: string, diagnostics: StartupDiagnostics): BrowserStartupFailureDetails {
+  return {
+    reason,
+    processCode: diagnostics.processCode,
+    processSignal: diagnostics.processSignal,
+    activePortFile: diagnostics.activePortFile,
+    activePortParse: diagnostics.activePortParse,
+    stderrParse: diagnostics.stderrParse,
+    endpointSource: diagnostics.endpointSource,
+    webSocketAttempts: diagnostics.webSocketAttempts,
+    stdoutTail: diagnostics.stdoutTail,
+    stderrTail: diagnostics.stderrTail,
+  };
 }
 
 function appendDiagnosticTail(previous: string, chunk: Uint8Array) {
   return `${previous}${Buffer.from(chunk).toString("utf8")}`.slice(-diagnosticTailLimit);
-}
-
-function sanitizeDiagnosticTail(value: string) {
-  return value
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\bBearer\s+\S+/gi, "Bearer <redacted>")
-    .replace(/([?&](?:access_token|api_key|key|password|secret|token)=)[^&\s]+/gi, "$1<redacted>")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "�")
-    .slice(-diagnosticTailLimit);
 }
 
 function closeWebSocket(socket: WebSocket) {

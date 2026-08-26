@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 import {
   FetchRequestLifecycle,
@@ -9,7 +9,12 @@ import {
   type FetchSettlementCommand,
   type RequestHandlerIdleOptions,
 } from "./browser-request-lifecycle.mts";
-import { connectToBrowserDevTools } from "./browser-startup.mts";
+import {
+  BrowserLaunchError,
+  launchBrowserProcessWithRetry,
+  type BrowserLaunchSession,
+} from "./browser-process-attempt.mts";
+import { collectBrowserLaunchFacts } from "./browser-launch-profile.mts";
 
 export type StubResponse = {
   status?: number;
@@ -63,6 +68,7 @@ export class BrowserHarness {
   private readonly userDataDirectory: string;
   private readonly socket: WebSocket;
   private readonly sessionId: string;
+  private readonly browserLaunchSession: BrowserLaunchSession | undefined;
   private nextCommandId = 0;
   private routeResolver: RouteResolver = () => null;
   private readonly pendingCommands = new Map<number, PendingCommand>();
@@ -80,52 +86,54 @@ export class BrowserHarness {
     userDataDirectory: string,
     socket: WebSocket,
     sessionId: string,
+    browserLaunchSession?: BrowserLaunchSession,
   ) {
     this.browserProcess = browserProcess;
     this.userDataDirectory = userDataDirectory;
     this.socket = socket;
     this.sessionId = sessionId;
+    this.browserLaunchSession = browserLaunchSession;
     this.socket.addEventListener("message", (event) => this.receive(String(event.data)));
     this.socket.addEventListener("close", () => this.handleSocketClose());
   }
 
   static async launch() {
-    const browserPath = resolveBrowserPath();
-    const userDataDirectory = mkdtempSync(join(tmpdir(), "autostream-ui-browser-"));
-    const browserProcess = spawn(browserPath, [
-      "--headless=new",
-      "--disable-background-networking",
-      "--disable-component-update",
-      "--disable-breakpad",
-      "--disable-crash-reporter",
-      "--disable-default-apps",
-      "--disable-gpu",
-      "--no-default-browser-check",
-      "--no-first-run",
-      "--remote-debugging-address=127.0.0.1",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${userDataDirectory}`,
-      "about:blank",
-    ], { stdio: "pipe", windowsHide: true });
+    let browserPath: string;
+    try {
+      browserPath = resolveBrowserPath();
+    } catch {
+      const configuredPath = process.env.AUTOSTREAM_BROWSER_PATH || "unavailable";
+      throw new BrowserLaunchError(
+        [],
+        collectBrowserLaunchFacts(configuredPath),
+        "executable_unavailable",
+      );
+    }
+    const browserLaunchSession = await launchBrowserProcessWithRetry({ browserPath });
+    const { browserProcess, userDataDirectory, socket } = browserLaunchSession;
 
     try {
-      const socket = await connectToBrowserDevTools(browserProcess, userDataDirectory);
       const command = createCommandSender(socket);
       const target = await command("Target.createTarget", { url: "about:blank" });
       const attached = await command("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      const harness = new BrowserHarness(browserProcess, userDataDirectory, socket, String(attached.sessionId));
+      const harness = new BrowserHarness(
+        browserProcess,
+        userDataDirectory,
+        socket,
+        String(attached.sessionId),
+        browserLaunchSession,
+      );
       await harness.send("Page.enable");
       await harness.send("Runtime.enable");
       await harness.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
       return harness;
     } catch (error) {
-      await terminateChildProcess(browserProcess);
       try {
-        await removeOwnedBrowserDirectory(userDataDirectory);
+        await browserLaunchSession.close();
       } catch (cleanupError) {
         throw new AggregateError(
           [asError(error), asError(cleanupError)],
-          "Browser launch failed and its owned profile could not be removed",
+          "Browser launch failed and its owned attempt could not be cleaned",
           { cause: error },
         );
       }
@@ -319,10 +327,17 @@ export class BrowserHarness {
     } catch {
       // The browser commonly closes the CDP socket before acknowledging Browser.close.
     }
-    await terminateChildProcess(this.browserProcess);
-    this.socket.close();
-    this.requestLifecycle.close(closeError);
-    await removeOwnedBrowserDirectory(this.userDataDirectory);
+    try {
+      if (this.browserLaunchSession) {
+        await this.browserLaunchSession.close();
+      } else {
+        await terminateChildProcess(this.browserProcess);
+        this.socket.close();
+        await removeOwnedBrowserDirectory(this.userDataDirectory);
+      }
+    } finally {
+      this.requestLifecycle.close(closeError);
+    }
   }
 
   private async send(method: string, params: Record<string, unknown> = {}) {
@@ -442,7 +457,10 @@ export class BrowserHarness {
   }
 
   private handleSocketClose() {
-    const error = new Error(this.closed ? "Browser harness closed" : "Browser CDP connection closed");
+    const launchDiagnostics = this.browserLaunchSession?.failureDiagnostics();
+    const error = new Error(this.closed
+      ? "Browser harness closed"
+      : `Browser CDP connection closed${launchDiagnostics ? `: ${launchDiagnostics}` : ""}`);
     if (!this.closed) {
       this.recordFatalError(error);
       return;
