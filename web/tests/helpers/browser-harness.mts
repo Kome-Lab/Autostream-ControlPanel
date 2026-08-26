@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
+import { connectToBrowserDevTools } from "./browser-startup.mts";
+
 export type StubResponse = {
   status?: number;
   body?: unknown;
@@ -93,14 +95,14 @@ export class BrowserHarness {
       "--disable-gpu",
       "--no-default-browser-check",
       "--no-first-run",
+      "--remote-debugging-address=127.0.0.1",
       "--remote-debugging-port=0",
       `--user-data-dir=${userDataDirectory}`,
       "about:blank",
     ], { stdio: "pipe", windowsHide: true });
 
     try {
-      const websocketUrl = await devToolsWebsocketUrl(browserProcess);
-      const socket = await openWebSocket(websocketUrl);
+      const socket = await connectToBrowserDevTools(browserProcess, userDataDirectory);
       const command = createCommandSender(socket);
       const target = await command("Target.createTarget", { url: "about:blank" });
       const attached = await command("Target.attachToTarget", { targetId: target.targetId, flatten: true });
@@ -449,42 +451,15 @@ export function nextGeneratedFilesMatch(snapshot: NextGeneratedFilesSnapshot) {
   });
 }
 
-function resolveBrowserPath() {
-  const candidates = [process.env.AUTOSTREAM_BROWSER_PATH, ...defaultBrowserCandidates].filter((value): value is string => Boolean(value));
-  const browserPath = candidates.find((candidate) => existsSync(candidate));
+export function resolveBrowserPath() {
+  const configuredPath = process.env.AUTOSTREAM_BROWSER_PATH;
+  if (configuredPath) {
+    if (!existsSync(configuredPath)) throw new Error("Configured Chrome/Chromium executable was not found");
+    return configuredPath;
+  }
+  const browserPath = defaultBrowserCandidates.find((candidate) => existsSync(candidate));
   if (!browserPath) throw new Error("Chrome/Chromium was not found; set AUTOSTREAM_BROWSER_PATH");
   return browserPath;
-}
-
-function devToolsWebsocketUrl(browserProcess: ChildProcessWithoutNullStreams) {
-  return new Promise<string>((resolveUrl, rejectUrl) => {
-    let output = "";
-    const timeout = setTimeout(() => rejectUrl(new Error(`Chrome DevTools endpoint was not reported:\n${output}`)), 15_000);
-    const receiveOutput = (chunk: Buffer) => {
-      output = `${output}${chunk.toString("utf8")}`.slice(-8_000);
-      const match = output.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (!match) return;
-      clearTimeout(timeout);
-      resolveUrl(match[1]);
-    };
-    browserProcess.stderr.on("data", receiveOutput);
-    browserProcess.once("error", (error) => {
-      clearTimeout(timeout);
-      rejectUrl(error);
-    });
-    browserProcess.once("exit", (code) => {
-      clearTimeout(timeout);
-      rejectUrl(new Error(`Chrome exited before DevTools was ready (${code}):\n${output}`));
-    });
-  });
-}
-
-function openWebSocket(url: string) {
-  return new Promise<WebSocket>((resolveSocket, rejectSocket) => {
-    const socket = new WebSocket(url);
-    socket.addEventListener("open", () => resolveSocket(socket), { once: true });
-    socket.addEventListener("error", () => rejectSocket(new Error(`Could not connect to ${url}`)), { once: true });
-  });
 }
 
 function createCommandSender(socket: WebSocket) {
