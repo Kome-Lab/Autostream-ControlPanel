@@ -1,0 +1,38 @@
+[
+  {
+    "id": "EX-AUTO-01",
+    "source": "web/src/features/queries.ts polling query hooks; archive-view.tsx artifact poll",
+    "routeOrOperation": "existing GET resource/status/system-update/bootstrap/artifact routes",
+    "reason": "timer/background polling; no new user intent"
+  },
+  {
+    "id": "EX-AUTO-02",
+    "source": "use-shell-session-guard.ts/useShellSessionGuard",
+    "routeOrOperation": "POST /auth/session/refresh",
+    "reason": "activity-driven automatic session refresh; explicitly not logout or a user action"
+  },
+  {
+    "id": "EX-AUTO-03",
+    "source": "features/queries.ts/useSetupStatus; Shell/auth bootstrap",
+    "routeOrOperation": "GET /setup/status and auth bootstrap reads",
+    "reason": "initial routing/session/setup discovery read"
+  },
+  {
+    "id": "EX-AUTO-04",
+    "source": "internal/httpapi/server.go OAuth login callback handlers",
+    "routeOrOperation": "GET/POST /auth/oauth/callback",
+    "reason": "provider-driven automatic callback after the included start action"
+  },
+  {
+    "id": "EX-AUTO-05",
+    "source": "internal/httpapi/server.go connected-account callback handlers",
+    "routeOrOperation": "GET/POST /integrations/oauth-accounts/callback",
+    "reason": "provider-driven automatic callback after connect/relink start"
+  },
+  {
+    "id": "EX-AUTO-06",
+    "source": "feature mutation onSuccess and recovery controllers",
+    "routeOrOperation": "existing invalidateQueries / refetch calls",
+    "reason": "consequence/reconciliation of an included action, not a new action"
+  }
+]

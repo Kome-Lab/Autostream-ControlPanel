@@ -1,0 +1,22 @@
+{
+  "inventoryAuthorityHead": "34e32c276ddd6d235167112598a5ec851305ad8d",
+  "designArtifactSha256": "82e5dea2a3453f7b71fca1cc2ef974b9aa47a653dfe53f15949354b140361011",
+  "canonicalBytes": 47486,
+  "canonicalSha256": "eb5f0c21f9a9895a9fef23353d33ed81043640c646e55a1047d9b4d2ef862f37",
+  "rowCount": 100,
+  "uniqueIdCount": 100,
+  "requiredKeyCount": 18,
+  "excludedAutomaticOperationCount": 6,
+  "waveCounts": {
+    "1A": 1,
+    "1C": 5,
+    "1D": 21,
+    "1E": 5,
+    "1F": 5,
+    "1G": 10,
+    "2A": 10,
+    "Pre-Wave/B-00 then 2A": 1,
+    "3A": 32,
+    "3B": 10
+  }
+}
