@@ -4,9 +4,11 @@ import { join, relative, sep } from "node:path";
 
 import ts from "typescript";
 
-const requiredContractPaths = [
+const requiredFoundationPaths = [
   "src/lib/foundation/actions/contracts.ts",
+  "src/lib/foundation/api-errors/adapter.ts",
   "src/lib/foundation/api-errors/contracts.ts",
+  "src/lib/foundation/api-errors/registry.ts",
   "src/lib/foundation/permissions/contracts.ts",
   "src/lib/foundation/remote-state/contracts.ts",
   "src/lib/foundation/status/contracts.ts",
@@ -16,6 +18,7 @@ const allowedTypeImports = new Set([
   "@/lib/i18n",
   "@/lib/foundation/actions/contracts",
   "@/lib/foundation/api-errors/contracts",
+  "@/lib/foundation/api-errors/registry",
   "@/lib/foundation/permissions/contracts",
   "@/lib/foundation/remote-state/contracts",
   "@/lib/foundation/status/contracts",
@@ -30,18 +33,35 @@ const forbiddenPropertyNames = new Set([
 
 const browserGlobals = new Set([
   "document",
+  "EventSource",
   "fetch",
+  "globalThis",
+  "history",
+  "indexedDB",
+  "invalidateQueries",
   "localStorage",
   "location",
+  "logger",
   "navigator",
+  "queueMicrotask",
+  "queryKey",
+  "requestAnimationFrame",
   "sessionStorage",
+  "clearCSRFToken",
+  "clearInterval",
+  "clearTimeout",
+  "setInterval",
+  "setTimeout",
+  "WebSocket",
   "window",
   "XMLHttpRequest",
+  "analytics",
+  "console",
 ]);
 
 export function assertUIFoundationContractBoundaries(webRoot: string) {
   const foundationRoot = join(webRoot, "src", "lib", "foundation");
-  for (const path of requiredContractPaths) {
+  for (const path of requiredFoundationPaths) {
     assert.equal(existsSync(join(webRoot, path)), true, `${path} is missing`);
   }
 
@@ -64,10 +84,17 @@ export function assertUIFoundationContractBoundaries(webRoot: string) {
     for (const statement of sourceFile.statements) {
       if (!ts.isImportDeclaration(statement)) continue;
       assert.ok(statement.importClause, `${path} has a side-effect import`);
-      assert.equal(statement.importClause.isTypeOnly, true, `${path} imports runtime code`);
       assert.ok(ts.isStringLiteral(statement.moduleSpecifier), `${path} has a non-literal import`);
       const specifier = statement.moduleSpecifier.text;
-      assert.equal(allowedTypeImports.has(specifier), true, `${path} imports forbidden module ${specifier}`);
+      if (statement.importClause.isTypeOnly) {
+        assert.equal(allowedTypeImports.has(specifier), true, `${path} imports forbidden type module ${specifier}`);
+      } else {
+        assert.equal(
+          isAllowedRuntimeImport(path, specifier),
+          true,
+          `${path} imports forbidden runtime module ${specifier}`,
+        );
+      }
       const dependency = foundationPathForImport(specifier);
       if (dependency) dependencies.push(dependency);
     }
@@ -102,6 +129,7 @@ export function assertUIFoundationContractBoundaries(webRoot: string) {
   assertAcyclic(graph);
   assertCanonicalErrorOwnership(webRoot);
   assertCanonicalErrorConsumers(parsed);
+  assertAPIErrorAdapterBoundaries(webRoot, parsed);
   assertStatusIndependence(parsed);
   assertActionDescriptorIsData(parsed);
 
@@ -143,6 +171,53 @@ function assertCanonicalErrorConsumers(parsed: Map<string, ts.SourceFile>) {
   assert.equal(typeAliasUses(actions, "MutationOutcome", "AdaptedAPIError"), true, "MutationOutcome must use AdaptedAPIError");
   assert.equal(typeAliasUses(remoteState, "Freshness", "AdaptedAPIError"), true, "Freshness must use AdaptedAPIError");
   assert.equal(typeAliasUses(remoteState, "RemoteState", "AdaptedAPIError"), true, "RemoteState must use AdaptedAPIError");
+}
+
+function assertAPIErrorAdapterBoundaries(webRoot: string, parsed: Map<string, ts.SourceFile>) {
+  const adapter = requiredSource(parsed, "src/lib/foundation/api-errors/adapter.ts");
+  const registry = requiredSource(parsed, "src/lib/foundation/api-errors/registry.ts");
+  assert.equal(
+    hasNamedTypeImport(adapter, "@/lib/foundation/api-errors/contracts", "AdaptedAPIError"),
+    true,
+    "adapter must import the canonical AdaptedAPIError contract",
+  );
+  assert.equal(
+    hasNamedTypeImport(registry, "@/lib/foundation/api-errors/contracts", "AdaptedAPIErrorKind"),
+    true,
+    "registry must import the canonical AdaptedAPIErrorKind contract",
+  );
+
+  for (const [path, sourceFile] of parsed) {
+    if (!path.startsWith("src/lib/foundation/api-errors/")) continue;
+    const mutableTopLevel = sourceFile.statements
+      .filter(ts.isVariableStatement)
+      .filter((statement) => (statement.declarationList.flags & ts.NodeFlags.Const) === 0);
+    assert.deepEqual(mutableTopLevel.map((statement) => statement.getText()), [], `${path} has module-mutable state`);
+
+    const functionFields = collectNodes(
+      sourceFile,
+      (node): node is ts.FunctionTypeNode | ts.MethodSignature =>
+        ts.isFunctionTypeNode(node) || ts.isMethodSignature(node),
+    );
+    assert.deepEqual(
+      functionFields.map((node) => node.getText()),
+      [],
+      `${path} exposes a function-valued runtime hook`,
+    );
+  }
+
+  const consumers = walkFiles(join(webRoot, "src"))
+    .filter(isTypeScriptSource)
+    .filter((path) => !normalize(relative(webRoot, path)).startsWith("src/lib/foundation/api-errors/"))
+    .flatMap((path) => {
+      const sourceFile = parse(path, readFileSync(path, "utf8"));
+      return sourceFile.statements
+        .filter(ts.isImportDeclaration)
+        .filter((statement) => ts.isStringLiteral(statement.moduleSpecifier))
+        .filter((statement) => isAPIErrorImplementationImport((statement.moduleSpecifier as ts.StringLiteral).text))
+        .map(() => normalize(relative(webRoot, path)));
+    });
+  assert.deepEqual(consumers, [], "B-02 adapter/registry must have zero production consumers");
 }
 
 function assertStatusIndependence(parsed: Map<string, ts.SourceFile>) {
@@ -201,6 +276,15 @@ function foundationPathForImport(specifier: string) {
   const prefix = "@/lib/foundation/";
   if (!specifier.startsWith(prefix)) return undefined;
   return `src/lib/foundation/${specifier.slice(prefix.length)}.ts`;
+}
+
+function isAllowedRuntimeImport(path: string, specifier: string) {
+  return path === "src/lib/foundation/api-errors/adapter.ts"
+    && specifier === "@/lib/foundation/api-errors/registry";
+}
+
+function isAPIErrorImplementationImport(specifier: string) {
+  return /(?:^|\/)foundation\/api-errors\/(?:adapter|registry)(?:\.[cm]?ts)?$/.test(specifier);
 }
 
 function assertAcyclic(graph: Map<string, string[]>) {
