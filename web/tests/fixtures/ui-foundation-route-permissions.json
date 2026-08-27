@@ -1,0 +1,51 @@
+{
+  "metadata": {
+    "repository": "Kome-Lab/Autostream-ControlPanel",
+    "authorityHead": "09b235e56a459c74dc2f2833588db86299efe568",
+    "source": "internal/httpapi/server.go",
+    "navigationSource": "web/src/lib/navigation.ts"
+  },
+  "entries": [
+    {
+      "id": "STR-08",
+      "surface": "streams.start-readiness",
+      "method": "POST",
+      "route": "/streams/{id}/start-readiness",
+      "pageRequirement": {
+        "kind": "all",
+        "permissions": [
+          "streams.read"
+        ]
+      },
+      "actionRequirement": {
+        "kind": "all",
+        "permissions": [
+          "streams.start"
+        ]
+      },
+      "serverWrapper": "requirePermission"
+    },
+    {
+      "id": "WORKERS-CONFIGURATION",
+      "surface": "workers.configuration",
+      "method": "GET",
+      "route": "/nodes/{id}/configuration",
+      "pageRequirement": {
+        "kind": "any",
+        "permissions": [
+          "workers.read",
+          "service_health.read",
+          "api_tokens.create"
+        ]
+      },
+      "actionRequirement": {
+        "kind": "any",
+        "permissions": [
+          "service_health.read",
+          "api_tokens.create"
+        ]
+      },
+      "serverWrapper": "requireAnyPermission"
+    }
+  ]
+}

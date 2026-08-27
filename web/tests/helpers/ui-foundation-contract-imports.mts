@@ -10,6 +10,7 @@ const requiredFoundationPaths = [
   "src/lib/foundation/api-errors/contracts.ts",
   "src/lib/foundation/api-errors/registry.ts",
   "src/lib/foundation/permissions/contracts.ts",
+  "src/lib/foundation/permissions/evaluator.ts",
   "src/lib/foundation/remote-state/contracts.ts",
   "src/lib/foundation/status/contracts.ts",
 ] as const;

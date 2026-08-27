@@ -731,7 +731,7 @@ test("canonical API error copy has exact ja/en parity and zero placeholders", ()
 });
 
 test("AST dependency guard includes B-02 and reports zero production consumers", () => {
-  assert.deepEqual(assertUIFoundationContractBoundaries(webRoot), { fileCount: 7 });
+  assert.deepEqual(assertUIFoundationContractBoundaries(webRoot), { fileCount: 8 });
 });
 
 function apiError(status: number, code?: string, detailCode?: string) {
