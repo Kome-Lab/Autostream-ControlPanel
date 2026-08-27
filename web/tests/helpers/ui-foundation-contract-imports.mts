@@ -11,7 +11,10 @@ const requiredFoundationPaths = [
   "src/lib/foundation/api-errors/registry.ts",
   "src/lib/foundation/permissions/contracts.ts",
   "src/lib/foundation/permissions/evaluator.ts",
+  "src/lib/foundation/remote-state/aggregate.ts",
   "src/lib/foundation/remote-state/contracts.ts",
+  "src/lib/foundation/remote-state/internal-error.ts",
+  "src/lib/foundation/remote-state/projector.ts",
   "src/lib/foundation/status/contracts.ts",
 ] as const;
 
@@ -22,6 +25,7 @@ const allowedTypeImports = new Set([
   "@/lib/foundation/api-errors/registry",
   "@/lib/foundation/permissions/contracts",
   "@/lib/foundation/remote-state/contracts",
+  "@/lib/foundation/remote-state/projector",
   "@/lib/foundation/status/contracts",
 ]);
 
@@ -210,6 +214,7 @@ function assertAPIErrorAdapterBoundaries(webRoot: string, parsed: Map<string, ts
   const consumers = walkFiles(join(webRoot, "src"))
     .filter(isTypeScriptSource)
     .filter((path) => !normalize(relative(webRoot, path)).startsWith("src/lib/foundation/api-errors/"))
+    .filter((path) => normalize(relative(webRoot, path)) !== "src/lib/foundation/remote-state/projector.ts")
     .flatMap((path) => {
       const sourceFile = parse(path, readFileSync(path, "utf8"));
       return sourceFile.statements
@@ -218,7 +223,7 @@ function assertAPIErrorAdapterBoundaries(webRoot: string, parsed: Map<string, ts
         .filter((statement) => isAPIErrorImplementationImport((statement.moduleSpecifier as ts.StringLiteral).text))
         .map(() => normalize(relative(webRoot, path)));
     });
-  assert.deepEqual(consumers, [], "B-02 adapter/registry must have zero production consumers");
+  assert.deepEqual(consumers, [], "B-02 adapter/registry must have zero non-B-04 production consumers");
 }
 
 function assertStatusIndependence(parsed: Map<string, ts.SourceFile>) {
@@ -280,8 +285,15 @@ function foundationPathForImport(specifier: string) {
 }
 
 function isAllowedRuntimeImport(path: string, specifier: string) {
-  return path === "src/lib/foundation/api-errors/adapter.ts"
-    && specifier === "@/lib/foundation/api-errors/registry";
+  return (path === "src/lib/foundation/api-errors/adapter.ts"
+      && specifier === "@/lib/foundation/api-errors/registry")
+    || (path === "src/lib/foundation/remote-state/projector.ts"
+      && [
+        "@/lib/foundation/api-errors/adapter",
+        "@/lib/foundation/remote-state/internal-error",
+      ].includes(specifier))
+    || (path === "src/lib/foundation/remote-state/aggregate.ts"
+      && specifier === "@/lib/foundation/remote-state/internal-error");
 }
 
 function isAPIErrorImplementationImport(specifier: string) {

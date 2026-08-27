@@ -287,7 +287,7 @@ test("excluded automatic operations are the exact six reviewed families", () => 
 });
 
 test("foundation imports, ownership, syntax, and dependency graph stay pure", () => {
-  assert.deepEqual(assertUIFoundationContractBoundaries(webRoot), { fileCount: 8 });
+  assert.deepEqual(assertUIFoundationContractBoundaries(webRoot), { fileCount: 11 });
 });
 
 function isFrozenActionId(value: string, inventoryIds: ReadonlySet<string>): value is ActionId {
