@@ -5,6 +5,8 @@ import { join, relative, sep } from "node:path";
 import ts from "typescript";
 
 const requiredFoundationPaths = [
+  "src/lib/foundation/actions/confirmation-policy.ts",
+  "src/lib/foundation/actions/confirmation-revalidation.ts",
   "src/lib/foundation/actions/contracts.ts",
   "src/lib/foundation/api-errors/adapter.ts",
   "src/lib/foundation/api-errors/contracts.ts",
@@ -285,7 +287,12 @@ function foundationPathForImport(specifier: string) {
 }
 
 function isAllowedRuntimeImport(path: string, specifier: string) {
-  return (path === "src/lib/foundation/api-errors/adapter.ts"
+  return (path === "src/lib/foundation/actions/confirmation-revalidation.ts"
+      && [
+        "@/lib/foundation/actions/confirmation-policy",
+        "@/lib/foundation/permissions/evaluator",
+      ].includes(specifier))
+    || (path === "src/lib/foundation/api-errors/adapter.ts"
       && specifier === "@/lib/foundation/api-errors/registry")
     || (path === "src/lib/foundation/remote-state/projector.ts"
       && [

@@ -1,0 +1,13 @@
+{
+  "authorityHead": "482a8375fb53d8fd7344040d4dfbc57360404976",
+  "consumerCount": 7,
+  "consumers": [
+    "web/src/features/account/account-view.tsx",
+    "web/src/features/application/updater-settings-panel.tsx",
+    "web/src/features/archive/archive-view.tsx",
+    "web/src/features/nodes/node-registration-view.tsx",
+    "web/src/features/resources/resource-page.tsx",
+    "web/src/features/streams/streams-view.tsx",
+    "web/src/features/workers/workers-view.tsx"
+  ]
+}

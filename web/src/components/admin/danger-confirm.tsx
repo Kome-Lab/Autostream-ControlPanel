@@ -1,20 +1,9 @@
 "use client";
 
-import { ReactNode } from "react";
-import { AlertTriangle } from "lucide-react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+import type { ReactNode } from "react";
+
 import { useI18n } from "@/components/admin/i18n-provider";
+import { ConfirmationDialogFrame } from "@/components/foundation/confirmation/confirmation-dialog-frame";
 
 type DangerConfirmProps = {
   title: string;
@@ -24,26 +13,21 @@ type DangerConfirmProps = {
   actionLabel?: string;
 };
 
+/**
+ * @deprecated New actions must use HighRiskConfirmation with a Feature-owned
+ * controller. Existing direct consumers remain temporarily source-compatible.
+ */
 export function DangerConfirm({ title, description, children, onConfirm, actionLabel }: DangerConfirmProps) {
   const { t } = useI18n();
   return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>{children}</AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogMedia className="bg-red-50 text-red-600">
-            <AlertTriangle />
-          </AlertDialogMedia>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{description || t("dangerousNotice")}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={() => void onConfirm()}>
-            {actionLabel || t("execute")}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmationDialogFrame
+      trigger={children}
+      title={title}
+      description={description || t("dangerousNotice")}
+      cancelLabel={t("cancel")}
+      actionLabel={actionLabel || t("execute")}
+      actionClosesDialog
+      onConfirm={() => void onConfirm()}
+    />
   );
 }

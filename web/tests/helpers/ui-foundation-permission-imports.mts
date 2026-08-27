@@ -94,7 +94,14 @@ export function assertPermissionFoundationBoundaries(webRoot: string) {
         .filter((statement) => /foundation\/(?:permissions\/evaluator|permissions\/action-availability-boundary)/.test(statement.moduleSpecifier.text))
         .map(() => normalize(relative(webRoot, path)));
     });
-  assert.deepEqual(consumers, [], "B-03 production modules must have zero production consumers");
+  assert.deepEqual(
+    consumers,
+    [
+      "src/components/foundation/confirmation/high-risk-confirmation.ts",
+      "src/lib/foundation/actions/confirmation-revalidation.ts",
+    ],
+    "B-03 has exactly the reviewed B-05 renderer and invocation-gate consumers",
+  );
 
   return {
     componentRuntimeImports: importSpecifiers(boundary).filter((specifier) => specifier === "react").length,

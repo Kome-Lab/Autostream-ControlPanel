@@ -579,11 +579,11 @@ test("ja/en permission reason copy is exact, parallel, placeholder-free, and key
   assert.deepEqual(Object.keys(expected.ja), Object.keys(expected.en));
 });
 
-test("new production modules have pure imports, no endpoint ownership, and zero consumers", () => {
+test("new production modules have pure imports, no endpoint ownership, and exact reviewed consumers", () => {
   assert.deepEqual(assertPermissionFoundationBoundaries(webRoot), {
     componentRuntimeImports: 1,
     evaluatorRuntimeImports: 0,
-    productionConsumerCount: 0,
+    productionConsumerCount: 2,
   });
 });
 
