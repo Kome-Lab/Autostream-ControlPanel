@@ -17,6 +17,9 @@ const requiredFoundationPaths = [
   "src/lib/foundation/remote-state/contracts.ts",
   "src/lib/foundation/remote-state/internal-error.ts",
   "src/lib/foundation/remote-state/projector.ts",
+  "src/lib/foundation/secrets/contracts.ts",
+  "src/lib/foundation/secrets/lifecycle-owner.ts",
+  "src/lib/foundation/secrets/timing-policy.ts",
   "src/lib/foundation/status/contracts.ts",
 ] as const;
 
@@ -28,6 +31,7 @@ const allowedTypeImports = new Set([
   "@/lib/foundation/permissions/contracts",
   "@/lib/foundation/remote-state/contracts",
   "@/lib/foundation/remote-state/projector",
+  "@/lib/foundation/secrets/contracts",
   "@/lib/foundation/status/contracts",
 ]);
 
@@ -300,7 +304,9 @@ function isAllowedRuntimeImport(path: string, specifier: string) {
         "@/lib/foundation/remote-state/internal-error",
       ].includes(specifier))
     || (path === "src/lib/foundation/remote-state/aggregate.ts"
-      && specifier === "@/lib/foundation/remote-state/internal-error");
+      && specifier === "@/lib/foundation/remote-state/internal-error")
+    || (path === "src/lib/foundation/secrets/lifecycle-owner.ts"
+      && specifier === "@/lib/foundation/secrets/timing-policy");
 }
 
 function isAPIErrorImplementationImport(specifier: string) {
