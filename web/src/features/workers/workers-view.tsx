@@ -1,34 +1,68 @@
 "use client";
 
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import type { CellContext, ColumnDef } from "@tanstack/react-table";
 import { Check, Copy, FileCode2, Link, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/tables/data-table";
-import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { MetricCard } from "@/components/admin/metric-card";
-import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
-import { StatusBadge } from "@/components/admin/status-badge";
-import { apiGet, apiPost } from "@/lib/api/client";
+import { HighRiskConfirmation, type ConfirmationDialogState } from "@/components/foundation/confirmation/high-risk-confirmation";
+import { ActionAvailabilityBoundary } from "@/components/foundation/permissions/action-availability-boundary";
+import { RemoteStateBoundary } from "@/components/foundation/remote-state/remote-state-boundary";
+import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
 import { hasPermission } from "@/lib/auth/permissions";
-import { isServiceAvailable } from "@/lib/service-health";
 import { useCurrentUser, useNodes, useServiceHealth, useWorkers } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import type { WorkerNode } from "@/types/domain";
 import { formatNodeMetricPercent, formatWorkerHeartbeat } from "./node-operational-display";
+import { buildWorkerRestartDescriptor } from "./workers-action-descriptors";
+import {
+  createWorkerRestartController,
+  type AllowedWorkerRestartOpen,
+} from "./workers-action-controller";
+import { workerConfigurationDescriptor } from "./workers-configuration-descriptor";
+import {
+  createWorkerConfigurationController,
+  type WorkerConfigurationData,
+} from "./workers-configuration-controller";
+import {
+  presentWorkerOperationalStatus,
+  summarizeWorkerOperations,
+} from "./workers-status-presenter";
 
-type NodeConfigurationResponse = {
-  node: WorkerNode;
-  node_api_url: string;
-  configuration_yaml: string;
-  configure_command: string;
-  systemd_unit?: string;
-};
+type RestartDialogModel = Readonly<{
+  opened: AllowedWorkerRestartOpen;
+  state: ConfirmationDialogState;
+}>;
+
+type WorkerActionsContextValue = Readonly<{
+  configurationController: ReturnType<typeof createWorkerConfigurationController>;
+  configurationSnapshot: ReturnType<ReturnType<typeof createWorkerConfigurationController>["getSnapshot"]>;
+  openRestart: (worker: WorkerNode) => void;
+  restartController: ReturnType<typeof createWorkerRestartController>;
+  restartDialog: RestartDialogModel | null;
+  setRestartDialog: Dispatch<SetStateAction<RestartDialogModel | null>>;
+  submitRestart: (opened: AllowedWorkerRestartOpen) => void;
+  translate: ReturnType<typeof useI18n>["t"];
+}>;
+
+const WorkerActionsContext = createContext<WorkerActionsContextValue | null>(null);
 
 export function WorkersView() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const currentUser = useCurrentUser();
   const canReadWorkers = hasPermission(currentUser.data, "workers.read");
   const workers = useWorkers(canReadWorkers);
@@ -37,26 +71,27 @@ export function WorkersView() {
   const registeredNodes = useNodes(canReadRegisteredNodes);
   const serviceHealth = useServiceHealth(canReadServiceHealth);
   const queryClient = useQueryClient();
-  const canRestart = hasPermission(currentUser.data, "workers.restart");
-  const [configuration, setConfiguration] = useState<NodeConfigurationResponse | null>(null);
+  const restartController = useMemo(
+    () => createWorkerRestartController({ queryClient }),
+    [queryClient],
+  );
+  const configurationController = useMemo(
+    () => createWorkerConfigurationController({ queryClient }),
+    [queryClient],
+  );
+  const configurationSnapshot = useSyncExternalStore(
+    configurationController.subscribe,
+    configurationController.getSnapshot,
+    configurationController.getSnapshot,
+  );
   const [copied, setCopied] = useState("");
-
-  const restart = useMutation({
-    mutationFn: (workerID: string) => apiPost(`/workers/${workerID}/restart`),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["workers"] });
-    },
-  });
-
-  const loadConfiguration = useMutation({
-    mutationFn: (nodeID: string) => apiGet<NodeConfigurationResponse>(`/nodes/${encodeURIComponent(nodeID)}/configuration`),
-    onSuccess: (data) => setConfiguration(data),
-  });
+  const [restartDialog, setRestartDialog] = useState<RestartDialogModel | null>(null);
+  const [restartNotice, setRestartNotice] = useState("");
 
   const rows = mergeOperationalNodes(workers.data || [], registeredNodes.data || [], serviceHealth.data || []);
-  const online = rows.filter(isNodeOnline).length;
+  const operationalSummary = summarizeWorkerOperations(rows);
   const activeJobs = rows.reduce((sum, node) => sum + Number(node.metrics?.active_jobs || node.metrics?.runningJobs || 0), 0);
-  const warning = rows.filter((node) => !isNodeOnline(node)).length;
+  const warning = operationalSummary.attention;
 
   const copyValue = async (key: string, value?: string) => {
     if (!value) return;
@@ -64,6 +99,58 @@ export function WorkersView() {
     setCopied(key);
     window.setTimeout(() => setCopied(""), 1200);
   };
+
+  const openRestart = useCallback((worker: WorkerNode) => {
+    setRestartNotice("");
+    const opened = restartController.open(worker);
+    if (opened.kind === "allowed") {
+      setRestartDialog({ opened, state: { kind: "ready" } });
+      return;
+    }
+    const reasonKey = opened.evaluation.availability.kind === "allowed"
+      ? "workerRestartStateUnavailable"
+      : opened.evaluation.availability.reasonKey;
+    setRestartNotice(t(reasonKey));
+  }, [restartController, t]);
+
+  const submitRestart = useCallback((opened: AllowedWorkerRestartOpen) => {
+    setRestartDialog((current) => current?.opened === opened
+      ? { ...current, state: { kind: "revalidating" } }
+      : current);
+    void restartController.submit(opened, () => {
+      setRestartDialog((current) => current?.opened === opened
+        ? { ...current, state: { kind: "submitting" } }
+        : current);
+    }).then((result) => {
+      if (result.outcome?.kind === "succeeded") {
+        setRestartDialog(null);
+        setRestartNotice(t("workerRestartSucceeded"));
+        return;
+      }
+      setRestartDialog((current) => current?.opened === opened
+        ? { ...current, state: result.state }
+        : current);
+    });
+  }, [restartController, t]);
+
+  const workerActionsContextValue = useMemo<WorkerActionsContextValue>(() => ({
+    configurationController,
+    configurationSnapshot,
+    openRestart,
+    restartController,
+    restartDialog,
+    setRestartDialog,
+    submitRestart,
+    translate: t,
+  }), [
+    configurationController,
+    configurationSnapshot,
+    openRestart,
+    restartController,
+    restartDialog,
+    submitRestart,
+    t,
+  ]);
 
   const columns: ColumnDef<WorkerNode>[] = [
     {
@@ -75,7 +162,7 @@ export function WorkersView() {
           <div className="min-w-56">
             <div className="flex items-center gap-2">
               <div className="font-medium">{nodeDisplayName(row.original)}</div>
-              <Button variant="outline" size="icon-sm" aria-label="Node IDをコピー" onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
+              <Button variant="outline" size="icon-sm" aria-label={t("workerNodeIdCopy")} onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
                 {copied === `node-id-${nodeID}` ? <Check className="size-4" /> : <Copy className="size-4" />}
               </Button>
             </div>
@@ -86,15 +173,15 @@ export function WorkersView() {
     { accessorKey: "service_type", header: t("nodeType"), cell: ({ row }) => serviceTypeLabel(row.original.service_type) },
     {
       id: "endpoint",
-      header: "接続先",
+      header: t("workerEndpoint"),
       cell: ({ row }) => {
         const node = row.original;
         const url = nodeEndpoint(node);
         return (
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">{url ? "設定済み" : "未設定"}</span>
+            <span className="text-muted-foreground">{url ? t("workerEndpointConfigured") : t("workerEndpointNotConfigured")}</span>
             {url ? (
-              <Button variant="outline" size="icon-sm" aria-label="Node Agent API URLをコピー" onClick={() => copyValue(`endpoint-${node.service_id || node.id}`, url)}>
+              <Button variant="outline" size="icon-sm" aria-label={t("workerEndpointCopy")} onClick={() => copyValue(`endpoint-${node.service_id || node.id}`, url)}>
                 {copied === `endpoint-${node.service_id || node.id}` ? <Check className="size-4" /> : <Link className="size-4" />}
               </Button>
             ) : null}
@@ -105,29 +192,35 @@ export function WorkersView() {
     {
       accessorKey: "status",
       header: t("status"),
-      cell: ({ row }) => <StatusBadge status={row.original.health_status || row.original.status} showDetail />,
+      cell: ({ row }) => (
+        <DomainStatusBadge
+          presentation={presentWorkerOperationalStatus(row.original)}
+          translate={t}
+          showDetail
+        />
+      ),
     },
     {
       id: "reported",
-      header: "報告情報",
+      header: t("workerReportedInformation"),
       cell: ({ row }) => (
         <div className="text-sm">
-          <div>Version {row.original.reported_version || row.original.version || "未取得"}</div>
+          <div>Version {row.original.reported_version || row.original.version || t("workerNotReported")}</div>
           <div className="text-muted-foreground">
-            {row.original.reported_os || "OS未取得"} / {row.original.reported_arch || "Arch未取得"}
+            {row.original.reported_os || t("workerOSNotReported")} / {row.original.reported_arch || t("workerArchNotReported")}
           </div>
-          <div className="text-muted-foreground">Capability {capabilityCount(row.original)}件</div>
+          <div className="text-muted-foreground">{t("workerCapabilityCount", { count: capabilityCount(row.original) })}</div>
         </div>
       ),
     },
     {
       accessorKey: "heartbeat_age_sec",
-      header: "Heartbeat",
+      header: t("workerHeartbeat"),
       cell: ({ row }) => formatWorkerHeartbeat(row.original),
     },
     {
       id: "load",
-      header: "負荷",
+      header: t("workerLoad"),
       cell: ({ row }) => (
         <div className="text-sm">
           <div>CPU {formatNodeMetricPercent(row.original.metrics, "cpu")}</div>
@@ -138,48 +231,56 @@ export function WorkersView() {
     {
       id: "actions",
       header: t("actions"),
-      cell: ({ row }) => {
-        const nodeID = row.original.service_id || row.original.id;
-        return (
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" aria-label="Configurationを表示" title="Configurationを表示" onClick={() => loadConfiguration.mutate(nodeID)} disabled={loadConfiguration.isPending}>
-              <FileCode2 />
-              <span>設定</span>
-            </Button>
-            {row.original.service_type === "worker" ? <RoleGuard allowed={canRestart}>
-               <DangerConfirm title={`${row.original.service_name} を再起動しますか`} onConfirm={() => restart.mutate(nodeID)} actionLabel={t("restart")}>
-                <Button variant="outline" size="sm" aria-label={t("restart")} title={t("restart")} {...guardedButtonProps(canRestart)}>
-                  <RotateCw />
-                  <span>再起動</span>
-                </Button>
-              </DangerConfirm>
-            </RoleGuard> : null}
-          </div>
-        );
-      },
+      cell: WorkerActionsCell,
     },
   ];
 
   return (
     <div className="space-y-4">
       <section className="grid gap-4 md:grid-cols-3">
-        <MetricCard title={t("onlineNodes")} value={`${online}/${rows.length}`} detail="登録済みNode" tone={warning > 0 ? "warning" : "ok"} />
-        <MetricCard title="実行中ジョブ" value={activeJobs} detail="現在処理中" />
-        <MetricCard title={t("attentionRequired")} value={warning} detail="Heartbeatまたは状態に注意" tone={warning > 0 ? "danger" : "ok"} />
+        <MetricCard title={t("onlineNodes")} value={`${operationalSummary.healthy}/${operationalSummary.total}`} detail={t("statusNodeHealthy")} tone={warning > 0 ? "warning" : "ok"} />
+        <MetricCard title={t("workerActiveJobs")} value={activeJobs} detail={t("workerCurrentlyProcessing")} />
+        <MetricCard title={t("attentionRequired")} value={warning} detail={t("workerAttentionDetail")} tone={warning > 0 ? "danger" : "ok"} />
       </section>
 
-      {configuration ? (
+      {restartNotice ? <p role="status" className="rounded-md border bg-muted px-3 py-2 text-sm">{restartNotice}</p> : null}
+
+      {configurationSnapshot.targetId ? (
         <Card>
           <CardHeader>
-            <CardTitle>Configuration: {configuration.node.service_name}</CardTitle>
+            <CardTitle>{t("workerConfigurationTitle", {
+              name: configurationTargetName(configurationSnapshot.targetId, rows),
+            })}</CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-4 lg:grid-cols-2">
-            <SecretBlock label="Node Agent API URL" value={configuration.node_api_url || "-"} copied={copied === "api"} onCopy={() => copyValue("api", configuration.node_api_url)} />
-            <SecretBlock label="Auto Configure" value={configuration.configure_command} copied={copied === "command"} onCopy={() => copyValue("command", configuration.configure_command)} />
-            <SecretBlock label="config.yml" value={configuration.configuration_yaml} copied={copied === "yaml"} onCopy={() => copyValue("yaml", configuration.configuration_yaml)} />
-            {configuration.systemd_unit ? (
-              <SecretBlock label="systemd" value={configuration.systemd_unit} copied={copied === "systemd"} onCopy={() => copyValue("systemd", configuration.systemd_unit)} />
-            ) : null}
+          <CardContent className="space-y-3">
+            <RemoteStateBoundary
+              state={configurationSnapshot.state}
+              noticeId="worker-configuration-state-notice"
+              translate={t}
+              formatTimestamp={(timestamp) => formatConfigurationTimestamp(timestamp, locale)}
+              renderLoading={() => <p role="status">{t("workerConfigurationLoading")}</p>}
+              renderEmpty={() => <p>{t("workerConfigurationEmpty")}</p>}
+              renderData={(configuration, context) => (
+                <div className="space-y-3">
+                  {context.freshness.kind === "refreshing" ? <p role="status">{t("workerConfigurationRefreshing")}</p> : null}
+                  {context.freshness.kind === "stale" ? <p role="status">{t("workerConfigurationStale")}</p> : null}
+                  <ConfigurationContent
+                    configuration={configuration}
+                    copied={copied}
+                    onCopy={copyValue}
+                    translate={t}
+                  />
+                </div>
+              )}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={configurationSnapshot.pending}
+              onClick={() => void configurationController.refresh()}
+            >
+              {t("workerConfigurationRetry")}
+            </Button>
           </CardContent>
         </Card>
       ) : null}
@@ -187,19 +288,125 @@ export function WorkersView() {
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("workers")}</CardTitle>
-          <p className="text-sm text-muted-foreground">Worker、Encoder / Recorder、Discord BOT、Observabilityの運用状態をまとめて確認します。</p>
+          <p className="text-sm text-muted-foreground">{t("workerPageDescription")}</p>
         </CardHeader>
         <CardContent>
           {registeredNodes.isError || serviceHealth.isError ? (
             <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100" role="status">
-              一部のNode情報を取得できませんでした。登録済みNodeまたはサービス稼働ページの権限と接続状態を確認してください。
+              {t("workerPartialNodeInformation")}
             </div>
           ) : null}
-          <DataTable columns={columns} data={rows} filterPlaceholder="Node名、種類、状態で絞り込み" getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
+          <WorkerActionsContext.Provider value={workerActionsContextValue}>
+            <DataTable columns={columns} data={rows} filterPlaceholder={t("workerFilterPlaceholder")} getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
+          </WorkerActionsContext.Provider>
         </CardContent>
       </Card>
     </div>
   );
+}
+
+function WorkerActionsCell({ row }: CellContext<WorkerNode, unknown>) {
+  const context = useWorkerActionsContext();
+  const restartTriggerRef = useRef<HTMLButtonElement>(null);
+  const wasSelectedRestart = useRef(false);
+  const {
+    configurationController,
+    configurationSnapshot,
+    openRestart,
+    restartController,
+    restartDialog,
+    setRestartDialog,
+    submitRestart,
+    translate,
+  } = context;
+  const nodeID = row.original.service_id || row.original.id;
+  const restartEvaluation = restartController.evaluate(row.original);
+  const configurationEvaluation = configurationController.evaluate();
+  const selectedRestart = restartDialog?.opened.descriptor.target.resourceId === nodeID
+    ? restartDialog
+    : null;
+
+  useLayoutEffect(() => {
+    const shouldRestoreFocus = wasSelectedRestart.current && selectedRestart === null;
+    wasSelectedRestart.current = selectedRestart !== null;
+    const trigger = restartTriggerRef.current;
+    if (shouldRestoreFocus && trigger && !trigger.disabled && trigger.getAttribute("aria-disabled") !== "true") {
+      trigger.focus();
+    }
+  }, [selectedRestart]);
+
+  return (
+    <div className="flex items-center gap-2">
+      <ActionAvailabilityBoundary
+        evaluation={configurationEvaluation}
+        translate={translate}
+        reasonPresentation="inline"
+        reasonId={`worker-configuration-reason-${encodeURIComponent(nodeID)}`}
+      >
+        {(availabilityProps) => (
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label={translate(workerConfigurationDescriptor.labelKey)}
+            title={translate(workerConfigurationDescriptor.labelKey)}
+            {...availabilityProps}
+            disabled={availabilityProps.disabled || (configurationSnapshot.pending && configurationSnapshot.targetId === nodeID)}
+            onClick={() => void configurationController.select(nodeID)}
+          >
+            <FileCode2 />
+            <span>{translate("workerConfigurationShortLabel")}</span>
+          </Button>
+        )}
+      </ActionAvailabilityBoundary>
+      {row.original.service_type === "worker" ? (
+        <ActionAvailabilityBoundary
+          evaluation={restartEvaluation}
+          translate={translate}
+          reasonPresentation="sr-only"
+          reasonId={`worker-restart-reason-${encodeURIComponent(nodeID)}`}
+        >
+          {(availabilityProps) => (
+            <HighRiskConfirmation
+              descriptor={buildWorkerRestartDescriptor(row.original)}
+              open={selectedRestart !== null}
+              evaluation={selectedRestart?.opened.evaluation ?? restartEvaluation}
+              state={selectedRestart?.state ?? { kind: "ready" }}
+              context={{
+                impact: { key: "workerRestartImpact" },
+                rollback: { key: "workerRestartRollback" },
+              }}
+              translate={translate}
+              trigger={(confirmationProps) => (
+                <Button
+                  ref={restartTriggerRef}
+                  variant="outline"
+                  size="sm"
+                  aria-label={translate("workerRestartAction")}
+                  title={translate("workerRestartAction")}
+                  {...availabilityProps}
+                  disabled={availabilityProps.disabled || confirmationProps.disabled}
+                >
+                  <RotateCw />
+                  <span>{translate("restart")}</span>
+                </Button>
+              )}
+              onOpenIntent={() => openRestart(row.original)}
+              onCloseIntent={() => setRestartDialog((current) => current?.opened.descriptor.target.resourceId === nodeID ? null : current)}
+              onConfirmIntent={() => {
+                if (selectedRestart) submitRestart(selectedRestart.opened);
+              }}
+            />
+          )}
+        </ActionAvailabilityBoundary>
+      ) : null}
+    </div>
+  );
+}
+
+function useWorkerActionsContext() {
+  const context = useContext(WorkerActionsContext);
+  if (!context) throw new Error("WorkerActionsCell requires WorkerActionsContext.");
+  return context;
 }
 
 function capabilityCount(node: WorkerNode) {
@@ -238,10 +445,6 @@ function mergeOperationalNodes(...sources: WorkerNode[][]) {
   });
 }
 
-function isNodeOnline(node: WorkerNode) {
-  return isServiceAvailable(node);
-}
-
 function serviceTypeLabel(type?: string) {
   const labels: Record<string, string> = {
     worker: "Worker",
@@ -253,7 +456,7 @@ function serviceTypeLabel(type?: string) {
 }
 
 function nodeDisplayName(node: WorkerNode) {
-  return node.service_name || "未設定のNode名";
+  return node.service_name || "Node";
 }
 
 function nodeEndpoint(node: WorkerNode) {
@@ -263,17 +466,54 @@ function nodeEndpoint(node: WorkerNode) {
   return node.public_url || "";
 }
 
-function SecretBlock({ label, value, copied, onCopy }: { label: string; value: string; copied: boolean; onCopy: () => void }) {
+function ConfigurationContent({
+  configuration,
+  copied,
+  onCopy,
+  translate,
+}: {
+  configuration: WorkerConfigurationData;
+  copied: string;
+  onCopy: (key: string, value?: string) => Promise<void>;
+  translate: ReturnType<typeof useI18n>["t"];
+}) {
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <ConfigurationBlock label={translate("workerConfigurationNodeAPIURL")} value={configuration.node_api_url || "-"} copied={copied === "api"} onCopy={() => onCopy("api", configuration.node_api_url)} translate={translate} />
+      <ConfigurationBlock label={translate("workerConfigurationAutoConfigure")} value={configuration.configure_command || "-"} copied={copied === "command"} onCopy={() => onCopy("command", configuration.configure_command)} translate={translate} />
+      <ConfigurationBlock label={translate("workerConfigurationYAML")} value={configuration.configuration_yaml || "-"} copied={copied === "yaml"} onCopy={() => onCopy("yaml", configuration.configuration_yaml)} translate={translate} />
+      {configuration.systemd_unit ? (
+        <ConfigurationBlock label={translate("workerConfigurationSystemdUnit")} value={configuration.systemd_unit} copied={copied === "systemd"} onCopy={() => onCopy("systemd", configuration.systemd_unit)} translate={translate} />
+      ) : null}
+    </div>
+  );
+}
+
+function ConfigurationBlock({ label, value, copied, onCopy, translate }: { label: string; value: string; copied: boolean; onCopy: () => void; translate: ReturnType<typeof useI18n>["t"] }) {
   return (
     <div className="min-w-0 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <label className="text-sm font-medium">{label}</label>
         <Button variant="outline" size="sm" onClick={onCopy}>
           {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-          {copied ? "コピー済み" : "コピー"}
+          {copied ? translate("copied") : translate("copy")}
         </Button>
       </div>
       <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted p-3 text-xs leading-relaxed">{value}</pre>
     </div>
   );
+}
+
+function configurationTargetName(
+  targetId: string,
+  rows: readonly WorkerNode[],
+) {
+  return rows.find((row) => (row.service_id || row.id) === targetId)?.service_name || targetId;
+}
+
+function formatConfigurationTimestamp(timestamp: number, locale: "ja" | "en") {
+  return new Intl.DateTimeFormat(locale === "ja" ? "ja-JP" : "en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(timestamp));
 }

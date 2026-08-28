@@ -1,0 +1,27 @@
+{
+  "authorityHead": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+  "restart": {
+    "actionId": "WKR-01",
+    "featureAction": "workers.restart",
+    "method": "POST",
+    "pathTemplate": "/workers/{encoded_id}/restart",
+    "permission": { "kind": "all", "permissions": ["workers.restart"] },
+    "risk": "high",
+    "confirmation": "consequence",
+    "duplicate": { "scope": "resource-action", "keyTemplate": "worker:{worker_id}:restart" },
+    "retry": { "kind": "never", "automaticAttempts": 0 },
+    "auditAction": "workers.restart",
+    "requestBody": "none"
+  },
+  "configuration": {
+    "method": "GET",
+    "pathTemplate": "/nodes/{encoded_id}/configuration",
+    "permission": { "kind": "any", "permissions": ["service_health.read", "api_tokens.create"] },
+    "pagePermission": "workers.read",
+    "queryKey": null
+  },
+  "existingQueryKeys": [
+    ["auth", "me"],
+    ["workers"]
+  ]
+}

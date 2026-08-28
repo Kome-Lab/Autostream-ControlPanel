@@ -31,6 +31,39 @@ export type StubRequest = {
 
 export type RouteResolver = (request: StubRequest) => StubResponse | null;
 
+export type BrowserNativeKey = "Enter" | "Space" | "Escape";
+
+type BrowserNativeKeyInput = Readonly<{
+  key: string;
+  code: string;
+  windowsVirtualKeyCode: number;
+  nativeVirtualKeyCode: number;
+  text?: string;
+}>;
+
+const browserNativeKeyInputs = {
+  Enter: {
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+    text: "\r",
+  },
+  Space: {
+    key: " ",
+    code: "Space",
+    windowsVirtualKeyCode: 32,
+    nativeVirtualKeyCode: 32,
+    text: " ",
+  },
+  Escape: {
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  },
+} satisfies Readonly<Record<BrowserNativeKey, BrowserNativeKeyInput>>;
+
 type CDPResponse = {
   id?: number;
   method?: string;
@@ -309,6 +342,23 @@ export class BrowserHarness {
 
   async setMediaFeatures(features: Array<{ name: string; value: string }>) {
     await this.send("Emulation.setEmulatedMedia", { media: "screen", features });
+  }
+
+  async pressNativeKey(key: BrowserNativeKey): Promise<void> {
+    if (this.closed) throw new Error("Browser harness closed");
+    this.assertNoFatalError();
+    const input = browserNativeKeyInputs[key];
+    const base = {
+      key: input.key,
+      code: input.code,
+      windowsVirtualKeyCode: input.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: input.nativeVirtualKeyCode,
+    };
+    const text = input.text === undefined
+      ? {}
+      : { text: input.text, unmodifiedText: input.text };
+    await this.send("Input.dispatchKeyEvent", { ...base, ...text, type: "keyDown" });
+    await this.send("Input.dispatchKeyEvent", { ...base, type: "keyUp" });
   }
 
   async pressKey(key: string, code = key) {

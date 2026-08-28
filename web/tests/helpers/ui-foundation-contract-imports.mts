@@ -21,6 +21,12 @@ const requiredFoundationPaths = [
   "src/lib/foundation/secrets/lifecycle-owner.ts",
   "src/lib/foundation/secrets/timing-policy.ts",
   "src/lib/foundation/status/contracts.ts",
+  "src/lib/foundation/status/presenter-core.ts",
+  "src/lib/foundation/status/lifecycle-presenters.ts",
+  "src/lib/foundation/status/node-presenters.ts",
+  "src/lib/foundation/status/system-update-presenters.ts",
+  "src/lib/foundation/status/observability-presenters.ts",
+  "src/lib/foundation/status/aggregate.ts",
 ] as const;
 
 const allowedTypeImports = new Set([
@@ -229,7 +235,10 @@ function assertAPIErrorAdapterBoundaries(webRoot: string, parsed: Map<string, ts
         .filter((statement) => isAPIErrorImplementationImport((statement.moduleSpecifier as ts.StringLiteral).text))
         .map(() => normalize(relative(webRoot, path)));
     });
-  assert.deepEqual(consumers, [], "B-02 adapter/registry must have zero non-B-04 production consumers");
+  assert.deepEqual(consumers, [
+    "src/features/workers/workers-action-controller.ts",
+    "src/features/workers/workers-configuration-controller.ts",
+  ], "B-02 adapter has exactly the reviewed Worker pilot consumers outside B-04");
 }
 
 function assertStatusIndependence(parsed: Map<string, ts.SourceFile>) {
@@ -306,7 +315,10 @@ function isAllowedRuntimeImport(path: string, specifier: string) {
     || (path === "src/lib/foundation/remote-state/aggregate.ts"
       && specifier === "@/lib/foundation/remote-state/internal-error")
     || (path === "src/lib/foundation/secrets/lifecycle-owner.ts"
-      && specifier === "@/lib/foundation/secrets/timing-policy");
+      && specifier === "@/lib/foundation/secrets/timing-policy")
+    || (path.startsWith("src/lib/foundation/status/")
+      && path !== "src/lib/foundation/status/presenter-core.ts"
+      && specifier === "@/lib/foundation/status/presenter-core");
 }
 
 function isAPIErrorImplementationImport(specifier: string) {

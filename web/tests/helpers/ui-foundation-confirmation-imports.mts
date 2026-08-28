@@ -148,7 +148,7 @@ export function assertConfirmationFoundationBoundaries(
     "utf8",
   )) as { authorityHead?: unknown; consumerCount?: unknown; consumers?: unknown };
   assert.equal(fixture.authorityHead, "482a8375fb53d8fd7344040d4dfbc57360404976");
-  assert.equal(fixture.consumerCount, 7);
+  assert.equal(fixture.consumerCount, 6);
   assert.deepEqual(fixture.consumers, dangerConsumers, "DangerConfirm consumers must match the frozen fixture");
   assert.deepEqual(dangerConsumers, [...dangerConsumers].sort(), "DangerConfirm consumers must be lexical");
 
@@ -167,7 +167,11 @@ export function assertConfirmationFoundationBoundaries(
     "@/components/foundation/confirmation/high-risk-confirmation",
     rendererPath,
   );
-  assert.deepEqual(rendererConsumers, [], "HighRiskConfirmation has zero production consumers before Feature migration");
+  assert.deepEqual(
+    rendererConsumers,
+    ["src/features/workers/workers-view.tsx"],
+    "HighRiskConfirmation has exactly the reviewed Worker pilot consumer",
+  );
 
   assertAcyclic(parsed);
   return Object.freeze({

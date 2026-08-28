@@ -98,9 +98,12 @@ export function assertPermissionFoundationBoundaries(webRoot: string) {
     consumers,
     [
       "src/components/foundation/confirmation/high-risk-confirmation.ts",
+      "src/features/workers/workers-action-controller.ts",
+      "src/features/workers/workers-configuration-controller.ts",
+      "src/features/workers/workers-view.tsx",
       "src/lib/foundation/actions/confirmation-revalidation.ts",
     ],
-    "B-03 has exactly the reviewed B-05 renderer and invocation-gate consumers",
+    "B-03 has exactly the reviewed B-05 and Worker pilot consumers",
   );
 
   return {

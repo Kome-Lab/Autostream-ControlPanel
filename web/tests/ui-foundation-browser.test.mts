@@ -38,6 +38,13 @@ const healthyRows = [
   { id: "worker-one", service_type: "worker", service_name: "Worker One", status: "online", health_status: "healthy" },
   { id: "encoder-one", service_type: "encoder", service_name: "Encoder One", status: "offline", health_status: "unhealthy" },
 ];
+const workerPilotRows = [
+  { service_id: "worker-one", service_type: "worker", service_name: "Worker One", status: "online", health_status: "healthy" },
+  { service_id: "worker-future", service_type: "worker", service_name: "Future Worker", status: "future_online_v2", health_status: "future_healthy_v2" },
+  { service_id: "worker-assigned", service_type: "worker", service_name: "Assigned Worker", status: "assigned" },
+  { service_id: "worker-former-alias", service_type: "worker", service_name: "Former Alias Worker", status: "future_connectivity", health_status: "ok" },
+  { service_id: "worker-degraded", service_type: "worker", service_name: "Degraded Worker", status: "degraded", health_status: "future_health" },
+];
 const currentVersion = versionResponse({ latestVersion: "v1.2.4" });
 const availableVersion = versionResponse({ latestVersion: "v1.3.0", updateAvailable: true });
 const startReadinessStream = { id: "stream-permission-fixture", name: "権限検証配信", status: "ready" };
@@ -66,6 +73,12 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     requiredResponse: true,
   };
   let startReadinessMethods: string[] = [];
+  let workersResponse: StubResponse = { body: workerPilotRows };
+  let nodesResponse: StubResponse = { body: workerPilotRows };
+  let configurationResponse: StubResponse = { body: workerConfiguration("worker-one", "BROWSER-CONFIG-MARKER") };
+  let restartResponse: StubResponse = { status: 202, body: { status: "accepted" } };
+  let workerRestartMethods: string[] = [];
+  let workerConfigurationMethods: string[] = [];
   browser.setRouteResolver(({ method, url }) => {
     const pathname = normalizePath(new URL(url).pathname);
     if (pathname === "/auth/me") return authResponse;
@@ -75,6 +88,18 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     if (pathname === "/auth/login" && method === "POST") return loginResponse;
     if (pathname === "/auth/logout" && method === "POST") return logoutResponse;
     if (pathname === "/streams") return streamsResponse;
+    if (pathname === "/workers" && method === "GET") return workersResponse;
+    if (pathname === "/nodes" && method === "GET") return nodesResponse;
+    const configurationMatch = pathname.match(/^\/nodes\/([^/]+)\/configuration$/);
+    if (configurationMatch && method === "GET") {
+      workerConfigurationMethods.push(method);
+      return configurationResponse;
+    }
+    const restartMatch = pathname.match(/^\/workers\/([^/]+)\/restart$/);
+    if (restartMatch && method === "POST") {
+      workerRestartMethods.push(method);
+      return restartResponse;
+    }
     if (pathname === startReadinessPath) {
       startReadinessMethods.push(method);
       return method === "POST" ? startReadinessResponse : { status: 405, body: { code: "method_not_allowed" } };
@@ -707,6 +732,533 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     }
   });
 
+  await t.test("Worker restart uses fresh canonical action policy and one POST per worker", async () => {
+    const restartPath = "/workers/worker-one/restart";
+    const permittedUser = permissionUser(["workers.read", "workers.restart"]);
+    let authRefreshRelease: ReturnType<typeof deferred> | undefined;
+    let restartRelease: ReturnType<typeof deferred> | undefined;
+    try {
+      await browser.setViewport(1440, 900);
+      await browser.setMediaFeatures([]);
+      browser.clearConsoleErrors();
+      await setStoredDisplay(browser, "en", "light");
+      workersResponse = { body: workerPilotRows };
+      nodesResponse = { body: workerPilotRows };
+      restartResponse = { status: 202, body: { status: "accepted" }, requiredResponse: true };
+      authResponse = { body: permittedUser };
+      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await waitForShell(browser, "Account menu");
+      await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled === false);
+
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      const actionOnlyAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
+      authResponse = { body: permissionUser(["workers.restart"]) };
+      await browser.waitForResponseCount("/auth/me", actionOnlyAuthResponseCount, 20_000);
+      const actionOnly = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled === false);
+      assert.equal(actionOnly.reason, "", "workers.restart must not depend on page or Configuration permissions after the row is loaded");
+
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      const refreshingAuthRequestCount = (browser.requests.get("/auth/me") || 0) + 1;
+      authRefreshRelease = deferred();
+      authResponse = {
+        body: permissionUser(["workers.restart"]),
+        waitUntil: authRefreshRelease.promise,
+      };
+      await browser.waitForRequestCount("/auth/me", refreshingAuthRequestCount, 20_000);
+      browser.clearRequestCounts(restartPath);
+      await clickWorkerAction(browser, "Restart worker");
+      const unknown = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      assert.match(unknown.reason, /permission could not be verified/i);
+      assert.equal(await workerRestartDialogCount(browser), 0, "an unknown restart permission must not open a confirmation");
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "an unknown restart permission must not send POST");
+      authRefreshRelease.resolve();
+      authResponse = { body: permissionUser(["workers.restart"]) };
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      authRefreshRelease = undefined;
+
+      authResponse = { body: permissionUser(["workers.read"]) };
+      await browser.reload();
+      const denied = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      assert.match(denied.reason, /do not have permission to restart workers/i);
+      browser.clearRequestCounts(restartPath);
+      await clickWorkerAction(browser, "Restart worker");
+      await waitForAnimationFrames(browser);
+      assert.equal(await workerRestartDialogCount(browser), 0, "a visible denied restart must not open a confirmation");
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "a visible denied restart must not send POST");
+
+      const permissionRestoredRows = workerPilotRows.map((row, index) => index === 0
+        ? { ...row, service_name: "Worker One Permission Restored" }
+        : row);
+      workersResponse = { body: permissionRestoredRows };
+      authResponse = { body: permittedUser };
+      browser.clearRequestCounts("/workers");
+      await browser.reload();
+      await browser.waitForResponseCount("/workers", 1);
+      await waitForWorkerRestartReady(browser, "Worker One Permission Restored");
+
+      const trigger = await waitForWorkerAction(
+        browser,
+        "Restart worker",
+        "Worker One Permission Restored",
+        (value) => value.disabled === false && value.dataState === "closed",
+      );
+      assert.equal(trigger.targetCount, 1, "the allowed Worker row must expose exactly one restart trigger");
+      assert.equal(trigger.tagName, "BUTTON", "the Radix trigger ref must target the actual Button element");
+      assert.equal(trigger.interactiveButtonCount, 1, "the Worker restart trigger must expose exactly one button role");
+      assert.equal(trigger.nestedButtonCount, 0, "the Worker restart trigger must not nest an interactive button");
+      assert.equal(trigger.ariaHaspopup, "dialog", "the actual Button must receive Radix aria-haspopup");
+      assert.equal(trigger.ariaExpanded, "false", "the closed actual Button must receive Radix aria-expanded");
+      const inapplicableTriggerCount = await workerRestartTriggerCount(browser, "Encoder One");
+      assert.equal(inapplicableTriggerCount, 0, "a non-Worker row must not render the restart trigger");
+
+      browser.clearRequestCounts(restartPath);
+      await clickWorkerAction(browser, "Restart worker", "Worker One Permission Restored");
+      const pointerDialog = await waitForWorkerRestartDialog(browser, "Worker One Permission Restored");
+      assertWorkerRestartSingleOpenEvidence(trigger, pointerDialog, "pointer");
+      assert.ok(pointerDialog.title.length > 0, "the open Worker restart confirmation must expose its title");
+      assert.ok(pointerDialog.description.length > 0, "the open Worker restart confirmation must expose its description");
+      assert.equal(pointerDialog.activeInside, true, "pointer activation must move focus into the consequence dialog");
+      assert.equal(pointerDialog.triggerDataState, "open", "the actual Button must receive Radix's open data-state");
+      assert.equal(pointerDialog.triggerAriaExpanded, "true", "the actual Button must receive Radix's open aria-expanded state");
+      assert.equal(pointerDialog.restartNotice, "", "opening the confirmation must not manufacture an outcome notice");
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "opening by pointer must not send POST before confirmation");
+      await browser.pressNativeKey("Escape");
+      await waitForWorkerRestartDialogClosed(browser);
+      await waitForWorkerRestartTriggerFocus(browser, "Worker One Permission Restored", "Escape");
+
+      await tabToWorkerAction(browser, "Restart worker", "Worker One Permission Restored");
+      const enterTrigger = await waitForWorkerAction(
+        browser,
+        "Restart worker",
+        "Worker One Permission Restored",
+        (value) => value.dataState === "closed",
+      );
+      await browser.pressNativeKey("Enter");
+      const enterDialog = await waitForWorkerRestartDialog(browser, "Worker One Permission Restored");
+      assertWorkerRestartSingleOpenEvidence(enterTrigger, enterDialog, "Enter");
+      assert.equal(enterDialog.activeInside, true, "Enter activation must move focus into the consequence dialog");
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "opening by Enter must not send POST before confirmation");
+      await browser.pressNativeKey("Escape");
+      await waitForWorkerRestartDialogClosed(browser);
+      await waitForWorkerRestartTriggerFocus(browser, "Worker One Permission Restored", "Enter then Escape");
+
+      const spaceTrigger = await waitForWorkerAction(
+        browser,
+        "Restart worker",
+        "Worker One Permission Restored",
+        (value) => value.dataState === "closed",
+      );
+      await browser.pressNativeKey("Space");
+      const spaceDialog = await waitForWorkerRestartDialog(browser, "Worker One Permission Restored");
+      assertWorkerRestartSingleOpenEvidence(spaceTrigger, spaceDialog, "Space");
+      assert.equal(spaceDialog.activeInside, true, "Space activation must move focus into the consequence dialog");
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "opening by Space must not send POST before confirmation");
+      await browser.clickSelector('[data-slot="alert-dialog-cancel"]');
+      await waitForWorkerRestartDialogClosed(browser);
+      await waitForWorkerRestartTriggerFocus(browser, "Worker One Permission Restored", "Cancel");
+
+      await waitForWorkerRestartReady(browser);
+      await clickWorkerAction(browser, "Restart worker");
+      await waitForWorkerRestartDialog(browser);
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      const revokedAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
+      authResponse = { body: permissionUser(["workers.read"]) };
+      await browser.waitForResponseCount("/auth/me", revokedAuthResponseCount, 20_000);
+      const revoked = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      assert.match(revoked.reason, /do not have permission to restart workers/i);
+      workerRestartMethods = [];
+      browser.clearRequestCounts(restartPath);
+      browser.clearRequestCounts("/workers");
+      await browser.clickSelector('[data-confirm-action]');
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("The action cannot be sent because the latest permissions or state could not be verified"),
+        "a submit-time permission revoke was not blocked",
+      );
+      assert.equal(await workerRestartDialogCount(browser), 1, "submit-time permission revalidation must remain in the existing dialog");
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "a submit-time permission revoke must not send POST");
+      assert.deepEqual(workerRestartMethods, []);
+      await browser.pressNativeKey("Escape");
+      await waitForWorkerRestartDialogClosed(browser);
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      const restoredAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
+      authResponse = { body: permittedUser };
+      await browser.waitForResponseCount("/auth/me", restoredAuthResponseCount, 20_000);
+      await waitForWorkerRestartReady(browser);
+
+      await clickWorkerAction(browser, "Restart worker");
+      await waitForWorkerRestartDialog(browser);
+      workersResponse = { body: [] };
+      workerRestartMethods = [];
+      browser.clearRequestCounts(restartPath);
+      browser.clearRequestCounts("/workers");
+      await browser.clickSelector('[data-confirm-action]');
+      await browser.waitForRequestCount("/workers", 1);
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("The target changed, so the action was not sent"),
+        "a removed target was not blocked at submit-time revalidation",
+      );
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "a removed target must not send POST");
+      assert.deepEqual(workerRestartMethods, []);
+      workersResponse = { body: workerPilotRows };
+      await browser.pressNativeKey("Escape");
+      await waitForWorkerRestartDialogClosed(browser);
+      browser.clearRequestCounts("/workers");
+      await browser.reload();
+      await browser.waitForResponseCount("/workers", 1);
+      await waitForWorkerRestartReady(browser);
+
+      await clickWorkerAction(browser, "Restart worker");
+      await waitForWorkerRestartDialog(browser);
+      workersResponse = { body: workerPilotRows.map((row, index) => index === 0 ? { ...row, service_type: "encoder_recorder" } : row) };
+      workerRestartMethods = [];
+      browser.clearRequestCounts(restartPath);
+      browser.clearRequestCounts("/workers");
+      await browser.clickSelector('[data-confirm-action]');
+      await browser.waitForRequestCount("/workers", 1);
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("The target changed, so the action was not sent"),
+        "a changed service_type was not blocked at submit-time revalidation",
+      );
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "a changed service_type must not send POST");
+      assert.deepEqual(workerRestartMethods, []);
+      workersResponse = { body: workerPilotRows };
+      await browser.pressNativeKey("Escape");
+      await waitForWorkerRestartDialogClosed(browser);
+      browser.clearRequestCounts("/workers");
+      await browser.reload();
+      await browser.waitForResponseCount("/workers", 1);
+      await waitForWorkerRestartReady(browser);
+
+      restartRelease = deferred();
+      restartResponse = {
+        status: 202,
+        body: { status: "accepted" },
+        waitUntil: restartRelease.promise,
+        requiredResponse: true,
+      };
+      workerRestartMethods = [];
+      browser.clearRequestCounts(restartPath);
+      await clickWorkerAction(browser, "Restart worker");
+      await waitForWorkerRestartDialog(browser);
+      await browser.clickSelector('[data-confirm-action]');
+      await browser.waitForRequestCount(restartPath, 1);
+      const pendingTrigger = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled);
+      assert.equal(pendingTrigger.disabled, true, "the same Worker restart trigger must be unavailable while confirmation is pending");
+      assert.equal(await workerRestartDialogCount(browser), 1, "pending duplicate activation must not create an additional dialog");
+      await browser.clickSelector('[data-confirm-action]');
+      await browser.pressNativeKey("Enter");
+      await browser.pressNativeKey("Enter");
+      await waitForAnimationFrames(browser);
+      assert.equal(browser.requests.get(restartPath), 1, "double click and Enter repeat must share one latched POST");
+      assert.deepEqual(workerRestartMethods, ["POST"]);
+      const independentWorker = await waitForWorkerAction(browser, "Restart worker", "Future Worker", (value) => value.count >= 1);
+      assert.equal(independentWorker.disabled, false, "a different worker must remain independently evaluated while the first worker is pending");
+      restartRelease.resolve();
+      await browser.waitForResponseCount(restartPath, 1);
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("The worker restart request was accepted."),
+        "restart success notice did not render",
+      );
+      await waitForWorkerRestartDialogClosed(browser);
+      await waitForWorkerRestartTriggerFocus(browser, "Worker One", "completion");
+
+      for (const failure of [
+        {
+          name: "403",
+          response: { status: 403, body: { code: "permission_denied", message: "RAW-RESTART-403-MARKER" }, requiredResponse: true },
+          publicText: "You do not have permission to perform this action.",
+          expectedWorkerGets: 1,
+        },
+        {
+          name: "409",
+          response: { status: 409, body: { code: "worker_busy", message: "RAW-RESTART-409-MARKER" }, requiredResponse: true },
+          publicText: "The resource has changed. Review the latest state.",
+          expectedWorkerGets: 2,
+        },
+        {
+          name: "outcome_unknown",
+          response: { status: 503, body: { code: "worker_unavailable", message: "RAW-RESTART-503-MARKER" }, requiredResponse: true },
+          publicText: "The result could not be confirmed. Do not resend the action",
+          expectedWorkerGets: 1,
+        },
+      ] as const) {
+        restartResponse = failure.response;
+        workerRestartMethods = [];
+        browser.clearRequestCounts(restartPath);
+        browser.clearRequestCounts("/workers");
+        await waitForWorkerRestartReady(browser);
+        await clickWorkerAction(browser, "Restart worker");
+        await waitForWorkerRestartDialog(browser);
+        await browser.clickSelector('[data-confirm-action]');
+        await browser.waitForResponseCount(restartPath, 1);
+        await browser.waitForRequestCount("/workers", failure.expectedWorkerGets);
+        await browser.waitFor(
+          "document.body.textContent || ''",
+          (value: string) => value.includes(failure.publicText),
+          `${failure.name} did not reach its safe public state`,
+        );
+        const renderedOutcome = await browser.evaluate<string>("document.body.textContent || ''");
+        assert.equal(renderedOutcome.includes(`RAW-RESTART-${failure.name === "outcome_unknown" ? "503" : failure.name}-MARKER`), false);
+        if (failure.name === "outcome_unknown") {
+          assert.equal(renderedOutcome.includes("The worker restart request was accepted."), false, "outcome_unknown must not claim success");
+          assert.equal(renderedOutcome.includes("The worker restart request failed."), false, "outcome_unknown must not claim failure");
+        }
+        const outcomeFocus = await waitForWorkerRestartOutcomeFocus(
+          browser,
+          "Worker One",
+          failure.publicText,
+          failure.name,
+        );
+        assert.equal(outcomeFocus.dialogCount, 1, `${failure.name} must keep exactly one dialog open before Escape`);
+        assert.equal(outcomeFocus.activeExists, true, `${failure.name} must retain an active element`);
+        assert.equal(outcomeFocus.activeInside, true, `${failure.name} focus escaped the active dialog`);
+        assert.equal(outcomeFocus.activeIsBody, false, `${failure.name} moved focus to body`);
+        assert.equal(outcomeFocus.activeIsTrigger, false, `${failure.name} moved focus to the background restart trigger`);
+        assert.equal(outcomeFocus.activeHiddenOrInert, false, `${failure.name} moved focus to a hidden or inert element`);
+        assert.equal(outcomeFocus.activeVisible, true, `${failure.name} active element is not visibly focusable`);
+        assert.equal(outcomeFocus.safeOutcomeTextVisible, true, `${failure.name} safe outcome text is not visible in the dialog`);
+        const repeatActionPresent = await browser.evaluate<boolean>(
+          "Boolean(document.querySelector('[data-confirm-action]'))",
+        );
+        if (repeatActionPresent) {
+          await browser.clickSelector('[data-confirm-action]');
+          await browser.pressNativeKey("Enter");
+        } else {
+          assert.equal(failure.name, "outcome_unknown", "only outcome_unknown may remove the repeat action");
+        }
+        await waitForAnimationFrames(browser);
+        assert.equal(browser.requests.get(restartPath), 1, `${failure.name} must never be resent automatically or by repeated activation`);
+        assert.deepEqual(workerRestartMethods, ["POST"], `${failure.name} request methods`);
+        await browser.pressNativeKey("Escape");
+        await waitForWorkerRestartDialogClosed(browser);
+        await waitForWorkerRestartTriggerFocus(browser, "Worker One", `${failure.name} Escape`);
+      }
+      assertNoBrowserConsoleErrors(browser.consoleErrorCount);
+    } finally {
+      authRefreshRelease?.resolve();
+      restartRelease?.resolve();
+      authResponse = { body: currentUser };
+      workersResponse = { body: workerPilotRows };
+      nodesResponse = { body: workerPilotRows };
+      restartResponse = { status: 202, body: { status: "accepted" } };
+      workerRestartMethods = [];
+      await browser.setMediaFeatures([]).catch(() => {});
+    }
+  });
+
+  await t.test("Workers Configuration uses the server ANY permission and safe remote state", async () => {
+    const configurationPath = "/nodes/worker-one/configuration";
+    let authRefreshRelease: ReturnType<typeof deferred> | undefined;
+    let configurationRefreshRelease: ReturnType<typeof deferred> | undefined;
+    try {
+      await browser.setViewport(1440, 900);
+      await browser.setMediaFeatures([]);
+      browser.clearConsoleErrors();
+      await setStoredDisplay(browser, "en", "light");
+      workersResponse = { body: workerPilotRows };
+      nodesResponse = { body: workerPilotRows };
+      healthResponse = { body: workerPilotRows };
+
+      for (const permissionCase of [
+        { name: "service_health.read only", permissions: ["workers.read", "service_health.read"], allowed: true },
+        { name: "api_tokens.create only", permissions: ["workers.read", "api_tokens.create"], allowed: true },
+        { name: "both", permissions: ["workers.read", "service_health.read", "api_tokens.create"], allowed: true },
+        { name: "neither", permissions: ["workers.read"], allowed: false },
+        { name: "wildcard", permissions: ["*"], allowed: true },
+      ] as const) {
+        authResponse = { body: permissionUser([...permissionCase.permissions]) };
+        configurationResponse = { body: workerConfiguration("worker-one", `CONFIG-${permissionCase.name}-MARKER`) };
+        workerConfigurationMethods = [];
+        await browser.navigate(`${server.baseUrl}/admin/workers/`);
+        await waitForShell(browser, "Account menu");
+        const action = await waitForWorkerAction(
+          browser,
+          "Show configuration",
+          "Worker One",
+          (value) => permissionCase.allowed ? value.disabled === false : value.disabled && value.reason.length > 0,
+        );
+        browser.clearRequestCounts(configurationPath);
+        await clickWorkerAction(browser, "Show configuration");
+        if (permissionCase.allowed) {
+          await browser.waitForResponseCount(configurationPath, 1);
+          await browser.waitFor(
+            "document.body.textContent || ''",
+            (value: string) => value.includes(`CONFIG-${permissionCase.name}-MARKER`),
+            `${permissionCase.name} did not render Configuration content`,
+          );
+          assert.equal(browser.requests.get(configurationPath), 1, `${permissionCase.name} GET count`);
+          assert.deepEqual(workerConfigurationMethods, ["GET"]);
+        } else {
+          await waitForAnimationFrames(browser);
+          assert.match(action.reason, /do not have permission to view this configuration/i);
+          assert.equal(browser.requests.get(configurationPath) || 0, 0, "workers.read alone must not authorize Configuration GET");
+          assert.deepEqual(workerConfigurationMethods, []);
+        }
+      }
+
+      authResponse = { body: permissionUser(["workers.read", "service_health.read"]) };
+      configurationResponse = { body: workerConfiguration("worker-one", "CACHED-CONFIGURATION-MARKER") };
+      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await waitForShell(browser, "Account menu");
+      await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled === false);
+
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      const refreshingAuthRequestCount = (browser.requests.get("/auth/me") || 0) + 1;
+      authRefreshRelease = deferred();
+      authResponse = {
+        body: permissionUser(["workers.read", "service_health.read"]),
+        waitUntil: authRefreshRelease.promise,
+      };
+      await browser.waitForRequestCount("/auth/me", refreshingAuthRequestCount, 20_000);
+      await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.count >= 1);
+      browser.clearRequestCounts(configurationPath);
+      await clickWorkerAction(browser, "Show configuration");
+      const unknown = await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      assert.match(unknown.reason, /permission could not be verified/i);
+      assert.equal(browser.requests.get(configurationPath) || 0, 0, "a refreshing permission snapshot must suppress Configuration GET");
+      authRefreshRelease.resolve();
+      authResponse = { body: permissionUser(["workers.read", "service_health.read"]) };
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      await browser.reload();
+      await waitForShell(browser, "Account menu");
+      await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled === false);
+
+      workerConfigurationMethods = [];
+      browser.clearRequestCounts(configurationPath);
+      await clickWorkerAction(browser, "Show configuration");
+      await browser.waitForResponseCount(configurationPath, 1);
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("CACHED-CONFIGURATION-MARKER")
+          && value.includes("Node Agent API URL")
+          && value.includes("Auto Configure command")
+          && value.includes("systemd unit"),
+        "successful Configuration content was incomplete",
+      );
+      assert.deepEqual(workerConfigurationMethods, ["GET"]);
+
+      configurationRefreshRelease = deferred();
+      configurationResponse = {
+        status: 503,
+        body: { code: "configuration_unavailable", message: "RAW-CONFIGURATION-REFRESH-MARKER" },
+        waitUntil: configurationRefreshRelease.promise,
+      };
+      workerConfigurationMethods = [];
+      browser.clearRequestCounts(configurationPath);
+      await clickButtonWithText(browser, "Reload configuration");
+      await browser.waitForRequestCount(configurationPath, 1);
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("CACHED-CONFIGURATION-MARKER") && value.includes("Refreshing configuration"),
+        "same-target pending refresh hid the cached Configuration",
+      );
+      configurationRefreshRelease.resolve();
+      await browser.waitForResponseCount(configurationPath, 1);
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("CACHED-CONFIGURATION-MARKER") && value.includes("The refresh failed"),
+        "same-target refresh failure did not preserve stale Configuration",
+      );
+      assert.deepEqual(workerConfigurationMethods, ["GET"]);
+      assert.equal(await browserContainsMarker(browser, "RAW-CONFIGURATION-REFRESH-MARKER"), false);
+
+      configurationResponse = {
+        status: 500,
+        body: { code: "get_node_failed", message: "RAW-CONFIGURATION-BLOCKING-MARKER" },
+      };
+      workerConfigurationMethods = [];
+      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await waitForShell(browser, "Account menu");
+      await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled === false);
+      browser.clearRequestCounts(configurationPath);
+      await clickWorkerAction(browser, "Show configuration");
+      await browser.waitForResponseCount(configurationPath, 1);
+      await browser.waitFor(
+        "document.body.textContent || ''",
+        (value: string) => value.includes("The data could not be loaded.") && value.includes("The service is temporarily unavailable."),
+        "a no-data Configuration error did not render as a safe blocking state",
+      );
+      assert.equal(await browserContainsMarker(browser, "RAW-CONFIGURATION-BLOCKING-MARKER"), false, "raw error marker leaked into DOM or accessibility attributes");
+      assert.deepEqual(workerConfigurationMethods, ["GET"]);
+
+      configurationResponse = { body: workerConfiguration("worker-one", "STATUS-CONFIGURATION-MARKER") };
+      authResponse = { body: currentUser };
+      healthResponse = { body: [
+        ...healthyRows,
+        { id: "worker-malformed", service_type: "worker", service_name: "Malformed Status Worker", status: "future_connectivity", health_status: { known: true, labelKey: "statusNodeHealthy" } },
+      ] };
+      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await waitForShell(browser, "Account menu");
+      const healthyStatus = await waitForWorkerStatus(browser, "Worker One", (value) => value.text.includes("Healthy"));
+      assert.deepEqual(
+        { known: healthyStatus.known, tone: healthyStatus.tone, icon: healthyStatus.icon },
+        { known: "true", tone: "success", icon: "heart-pulse" },
+      );
+      const unknownStatus = await waitForWorkerStatus(browser, "Future Worker", (value) => value.text.includes("Unknown status"));
+      assert.deepEqual(
+        { known: unknownStatus.known, tone: unknownStatus.tone, icon: unknownStatus.icon },
+        { known: "false", tone: "unknown", icon: "circle-help" },
+      );
+      assert.equal(unknownStatus.rowText.includes("future_online_v2"), false);
+      assert.equal(unknownStatus.rowText.includes("future_healthy_v2"), false);
+      const assignedStatus = await waitForWorkerStatus(browser, "Assigned Worker", (value) => value.text.includes("Assigned"));
+      assert.equal(assignedStatus.text.includes("Healthy"), false, "assignment must not be presented as health");
+      assert.equal(assignedStatus.tone, "info");
+      const formerAlias = await waitForWorkerStatus(browser, "Former Alias Worker", (value) => value.text.includes("Unknown status"));
+      assert.equal(formerAlias.rowText.includes("ok"), false, "removed node-health alias must remain unknown and hidden");
+      const restoredCanonical = await waitForWorkerStatus(browser, "Degraded Worker", (value) => value.text.includes("Degraded"));
+      assert.deepEqual(
+        { known: restoredCanonical.known, tone: restoredCanonical.tone, icon: restoredCanonical.icon },
+        { known: "true", tone: "warning", icon: "triangle-alert" },
+      );
+      const malformedStatus = await waitForWorkerStatus(browser, "Malformed Status Worker", (value) => value.text.includes("Unknown status"));
+      assert.equal(malformedStatus.text.includes("Healthy"), false, "a partial presentation-like object must contribute no positive status");
+      assert.equal(
+        await browser.evaluate("[...document.querySelectorAll('section')].some((section) => section.textContent?.includes('Online nodes') && section.textContent?.includes('1/6'))"),
+        true,
+        "unknown, removed alias, malformed, degraded and assigned rows must be excluded from the healthy numerator",
+      );
+
+      await browser.setMediaFeatures([{ name: "forced-colors", value: "active" }]);
+      const forcedUnknown = await waitForWorkerStatus(browser, "Future Worker", (value) => value.text.includes("Unknown status"));
+      assert.deepEqual(
+        { known: forcedUnknown.known, tone: forcedUnknown.tone, icon: forcedUnknown.icon },
+        { known: "false", tone: "unknown", icon: "circle-help" },
+        "forced colors must preserve text, icon and semantic tone",
+      );
+
+      await browser.setMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+      await browser.evaluate("document.querySelector('button[aria-label=\"Show configuration\"]')?.focus(); true");
+      const reduced = await waitForWorkerStatus(browser, "Future Worker", (value) => value.text.includes("Unknown status"));
+      assert.equal(reduced.transitionDuration, "0s");
+      assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), "Show configuration");
+
+      await setStoredDisplay(browser, "ja", "light");
+      await browser.reload();
+      await waitForShell(browser, "アカウントメニュー");
+      await waitForWorkerAction(browser, "Configuration を表示", "Worker One", (value) => value.disabled === false);
+      const japaneseUnknown = await waitForWorkerStatus(browser, "Future Worker", (value) => value.text.includes("不明な状態"));
+      assert.equal(japaneseUnknown.rowText.includes("future_online_v2"), false);
+      const japaneseAssigned = await waitForWorkerStatus(browser, "Assigned Worker", (value) => value.text.includes("割り当て済み"));
+      assert.equal(japaneseAssigned.text.includes("正常"), false);
+      assertNoBrowserConsoleErrors(browser.consoleErrorCount);
+    } finally {
+      authRefreshRelease?.resolve();
+      configurationRefreshRelease?.resolve();
+      authResponse = { body: currentUser };
+      healthResponse = { body: healthyRows };
+      workersResponse = { body: workerPilotRows };
+      nodesResponse = { body: workerPilotRows };
+      configurationResponse = { body: workerConfiguration("worker-one", "BROWSER-CONFIG-MARKER") };
+      workerConfigurationMethods = [];
+      await browser.setMediaFeatures([]).catch(() => {});
+    }
+  });
+
   await t.test("desktop/mobile navigation parity, active route, and permission visibility are runtime-enforced", async () => {
     authResponse = { body: currentUser };
     healthResponse = { body: healthyRows };
@@ -1297,6 +1849,331 @@ async function triggerReconnect(browser: BrowserHarness) {
   await browser.evaluate("window.dispatchEvent(new Event('offline')); window.dispatchEvent(new Event('online')); true");
 }
 
+type WorkerActionSnapshot = {
+  ariaControls: string | null;
+  ariaExpanded: string | null;
+  ariaHaspopup: string | null;
+  count: number;
+  dataState: string | null;
+  disabled: boolean;
+  interactiveButtonCount: number;
+  nestedButtonCount: number;
+  reason: string;
+  tagName: string;
+  targetCount: number;
+};
+
+type WorkerRestartDialogSnapshot = {
+  activeInside: boolean;
+  activeLabel: string;
+  description: string;
+  dialogCount: number;
+  restartNotice: string;
+  title: string;
+  triggerAriaExpanded: string | null;
+  triggerDataState: string | null;
+};
+
+type WorkerRestartOutcomeFocusSnapshot = {
+  activeExists: boolean;
+  activeHiddenOrInert: boolean;
+  activeInside: boolean;
+  activeIsBody: boolean;
+  activeIsTrigger: boolean;
+  activeVisible: boolean;
+  dialogCount: number;
+  safeOutcomeTextVisible: boolean;
+};
+
+type WorkerStatusSnapshot = {
+  icon: string | null;
+  known: string | null;
+  rowText: string;
+  text: string;
+  tone: string | null;
+  transitionDuration: string;
+};
+
+async function waitForWorkerAction(
+  browser: BrowserHarness,
+  label: string,
+  target: number | string,
+  accept: (value: WorkerActionSnapshot) => boolean,
+) {
+  return browser.waitFor<WorkerActionSnapshot>(
+    workerActionSnapshotExpression(label, target),
+    (value) => value !== null && accept(value),
+    `worker action ${label} for ${target} did not reach the expected state`,
+    15_000,
+  );
+}
+
+async function waitForWorkerRestartReady(browser: BrowserHarness, target = "Worker One") {
+  await browser.waitForRequestHandlersIdle({ pathname: "/workers", method: "GET" });
+  await waitForWorkerAction(browser, "Restart worker", target, (value) => value.disabled === false);
+}
+
+async function clickWorkerAction(browser: BrowserHarness, label: string, target: number | string = "Worker One") {
+  const present = await browser.evaluate<boolean>(`(() => {
+    const target = ${JSON.stringify(target)};
+    const candidates = [...document.querySelectorAll('button[aria-label=${JSON.stringify(label)}]')];
+    const button = typeof target === 'number'
+      ? candidates[target]
+      : candidates.find((candidate) => candidate.closest('tr')?.textContent?.includes(target));
+    if (!(button instanceof HTMLButtonElement)) return false;
+    button.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return true;
+  })()`);
+  assert.equal(present, true, `worker action ${label} for ${target} was not present`);
+  await waitForAnimationFrames(browser);
+  const point = await browser.evaluate<{ disabled: boolean; hit: boolean; x: number; y: number } | null>(`(() => {
+    const target = ${JSON.stringify(target)};
+    const candidates = [...document.querySelectorAll('button[aria-label=${JSON.stringify(label)}]')];
+    const button = typeof target === 'number'
+      ? candidates[target]
+      : candidates.find((candidate) => candidate.closest('tr')?.textContent?.includes(target));
+    if (!(button instanceof HTMLButtonElement) || button.getClientRects().length === 0) return null;
+    const rect = button.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    return {
+      disabled: button.disabled || button.getAttribute('aria-disabled') === 'true',
+      hit: button.contains(document.elementFromPoint(x, y)),
+      x,
+      y,
+    };
+  })()`);
+  if (!point) assert.fail(`worker action ${label} for ${target} was not present`);
+  if (!point.disabled) {
+    assert.equal(point.hit, true, `enabled worker action ${label} for ${target} did not own its click point`);
+  }
+  await browser.clickAt(point.x, point.y);
+}
+
+async function clickButtonWithText(browser: BrowserHarness, text: string) {
+  const clicked = await browser.evaluate<boolean>(`(() => {
+    const button = [...document.querySelectorAll('button')].find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+    if (!(button instanceof HTMLButtonElement)) return false;
+    button.click();
+    return true;
+  })()`);
+  assert.equal(clicked, true, `button ${text} was not present`);
+}
+
+function workerActionSnapshotExpression(label: string, target: number | string) {
+  return `(() => {
+    const target = ${JSON.stringify(target)};
+    const buttons = [...document.querySelectorAll('button[aria-label=${JSON.stringify(label)}]')];
+    const targetButtons = typeof target === 'number'
+      ? (buttons[target] ? [buttons[target]] : [])
+      : buttons.filter((candidate) => candidate.closest('tr')?.textContent?.includes(target));
+    const button = targetButtons[0];
+    if (!(button instanceof HTMLButtonElement)) return null;
+    const reasonId = button.getAttribute('aria-describedby');
+    return {
+      ariaControls: button.getAttribute('aria-controls'),
+      ariaExpanded: button.getAttribute('aria-expanded'),
+      ariaHaspopup: button.getAttribute('aria-haspopup'),
+      count: buttons.length,
+      dataState: button.getAttribute('data-state'),
+      disabled: button.disabled || button.getAttribute('aria-disabled') === 'true',
+      interactiveButtonCount: 1 + button.querySelectorAll('button, [role="button"]').length,
+      nestedButtonCount: button.querySelectorAll('button').length,
+      reason: reasonId ? document.getElementById(reasonId)?.textContent || '' : '',
+      tagName: button.tagName,
+      targetCount: targetButtons.length,
+    };
+  })()`;
+}
+
+async function waitForWorkerRestartDialog(browser: BrowserHarness, target = "Worker One") {
+  return browser.waitFor<WorkerRestartDialogSnapshot>(
+    `(() => {
+      const content = document.querySelector('[data-slot="alert-dialog-content"][data-state="open"]');
+      const buttons = [...document.querySelectorAll('button[aria-label="Restart worker"]')];
+      const trigger = buttons.find((candidate) => candidate.closest('tr')?.textContent?.includes(${JSON.stringify(target)}));
+      return {
+        activeInside: content instanceof HTMLElement && content.contains(document.activeElement),
+        activeLabel: document.activeElement?.getAttribute('aria-label') || '',
+        description: content?.querySelector('[data-slot="alert-dialog-description"]')?.textContent?.trim() || '',
+        dialogCount: document.querySelectorAll('[data-slot="alert-dialog-content"][data-state="open"]').length,
+        restartNotice: [...document.querySelectorAll('[role="status"]')]
+          .map((element) => element.textContent?.trim() || '')
+          .find((text) => text.includes('worker') || text.includes('Worker')) || '',
+        title: content?.querySelector('[data-slot="alert-dialog-title"]')?.textContent?.trim() || '',
+        triggerAriaExpanded: trigger?.getAttribute('aria-expanded') || null,
+        triggerDataState: trigger?.getAttribute('data-state') || null,
+      };
+    })()`,
+    (value) => value.dialogCount === 1
+      && value.title.length > 0
+      && value.description.length > 0
+      && value.activeInside
+      && value.triggerDataState === "open",
+    "Worker restart confirmation did not open",
+  );
+}
+
+function assertWorkerRestartSingleOpenEvidence(
+  before: WorkerActionSnapshot,
+  after: WorkerRestartDialogSnapshot,
+  activation: string,
+) {
+  assert.equal(before.targetCount, 1, `${activation} must begin with one public restart trigger`);
+  assert.equal(before.dataState, "closed", `${activation} must begin from the public closed trigger state`);
+  assert.equal(before.ariaExpanded, "false", `${activation} must begin with aria-expanded=false`);
+  assert.equal(after.dialogCount, 1, `${activation} must produce one visible Worker restart dialog`);
+  assert.equal(after.triggerDataState, "open", `${activation} must produce one public closed-to-open state transition`);
+  assert.equal(after.triggerAriaExpanded, "true", `${activation} must produce aria-expanded=true`);
+}
+
+async function waitForWorkerRestartOutcomeFocus(
+  browser: BrowserHarness,
+  target: string,
+  safeOutcomeText: string,
+  outcomeName: string,
+) {
+  return browser.waitFor<WorkerRestartOutcomeFocusSnapshot>(
+    `(() => {
+      const content = document.querySelector('[data-slot="alert-dialog-content"][data-state="open"]');
+      const active = document.activeElement;
+      const trigger = [...document.querySelectorAll('button[aria-label="Restart worker"]')]
+        .find((candidate) => candidate.closest('tr')?.textContent?.includes(${JSON.stringify(target)}));
+      const style = active instanceof HTMLElement ? getComputedStyle(active) : null;
+      const activeHiddenOrInert = active instanceof HTMLElement && (
+        Boolean(active.closest('[hidden], [aria-hidden="true"], [inert]'))
+        || style?.display === 'none'
+        || style?.visibility === 'hidden'
+      );
+      return {
+        activeExists: active instanceof Element,
+        activeHiddenOrInert,
+        activeInside: content instanceof HTMLElement && active instanceof Element && content.contains(active),
+        activeIsBody: active === document.body,
+        activeIsTrigger: active === trigger,
+        activeVisible: active instanceof HTMLElement && active.getClientRects().length > 0 && !activeHiddenOrInert,
+        dialogCount: document.querySelectorAll('[data-slot="alert-dialog-content"][data-state="open"]').length,
+        safeOutcomeTextVisible: content instanceof HTMLElement
+          && content.getClientRects().length > 0
+          && (content.textContent || '').includes(${JSON.stringify(safeOutcomeText)}),
+      };
+    })()`,
+    (value) => value.dialogCount === 1
+      && value.activeExists
+      && value.activeInside
+      && !value.activeIsBody
+      && !value.activeIsTrigger
+      && !value.activeHiddenOrInert
+      && value.activeVisible
+      && value.safeOutcomeTextVisible,
+    `${outcomeName} did not retain safe focus inside the active Worker restart dialog`,
+  );
+}
+
+async function workerRestartDialogCount(browser: BrowserHarness) {
+  return browser.evaluate<number>(
+    "document.querySelectorAll('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]').length",
+  );
+}
+
+async function workerRestartTriggerCount(browser: BrowserHarness, target: string) {
+  return browser.evaluate<number>(`(() => {
+    const row = [...document.querySelectorAll('tr')].find((candidate) => candidate.textContent?.includes(${JSON.stringify(target)}));
+    return row?.querySelectorAll('button[aria-label="Restart worker"]').length || 0;
+  })()`);
+}
+
+async function waitForWorkerRestartTriggerFocus(browser: BrowserHarness, target: string, action: string) {
+  await browser.waitFor<{
+    activeLabel: string;
+    activeRow: string;
+    activeTag: string;
+    focused: boolean;
+    targetCount: number;
+  }>(
+    `(() => {
+      const buttons = [...document.querySelectorAll('button[aria-label="Restart worker"]')]
+        .filter((candidate) => candidate.closest('tr')?.textContent?.includes(${JSON.stringify(target)}));
+      const button = buttons[0];
+      return {
+        activeLabel: document.activeElement?.getAttribute('aria-label') || '',
+        activeRow: document.activeElement?.closest('tr')?.textContent?.trim() || '',
+        activeTag: document.activeElement?.tagName || '',
+        focused: button instanceof HTMLButtonElement && document.activeElement === button,
+        targetCount: buttons.length,
+      };
+    })()`,
+    (value) => value.focused,
+    `${action} did not return focus to the exact restart trigger`,
+  );
+}
+
+async function tabToWorkerAction(browser: BrowserHarness, label: string, target: string) {
+  const prepared = await browser.evaluate<boolean>(`(() => {
+    const button = [...document.querySelectorAll('button[aria-label=${JSON.stringify(label)}]')]
+      .find((candidate) => candidate.closest('tr')?.textContent?.includes(${JSON.stringify(target)}));
+    if (!(button instanceof HTMLButtonElement)) return false;
+    const tabbable = [...new Set(document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]'))]
+      .filter((candidate) => candidate instanceof HTMLElement
+        && candidate.tabIndex >= 0
+        && candidate.getClientRects().length > 0
+        && !candidate.hasAttribute('disabled'));
+    const index = tabbable.indexOf(button);
+    const previous = index > 0 ? tabbable[index - 1] : null;
+    if (!(previous instanceof HTMLElement)) return false;
+    previous.focus();
+    return document.activeElement === previous;
+  })()`);
+  assert.equal(prepared, true, `could not prepare Tab navigation to Worker action ${label} for ${target}`);
+  await browser.pressKey("Tab");
+  await waitForWorkerRestartTriggerFocus(browser, target, "Tab");
+}
+
+async function waitForWorkerRestartDialogClosed(browser: BrowserHarness) {
+  await browser.waitFor(
+    `(() => !document.querySelector('[data-slot="alert-dialog-content"]')
+      && !document.querySelector('[data-slot="alert-dialog-overlay"]'))()`,
+    Boolean,
+    "Worker restart confirmation did not close and release its portal",
+  );
+}
+
+async function waitForWorkerStatus(
+  browser: BrowserHarness,
+  workerName: string,
+  accept: (value: WorkerStatusSnapshot) => boolean,
+) {
+  return browser.waitFor<WorkerStatusSnapshot>(
+    `(() => {
+      const row = [...document.querySelectorAll('tr')].find((candidate) => candidate.textContent?.includes(${JSON.stringify(workerName)}));
+      const badge = row?.querySelector('[data-status-known]');
+      if (!(row instanceof HTMLElement) || !(badge instanceof HTMLElement)) return null;
+      return {
+        icon: badge.querySelector('[data-status-icon]')?.getAttribute('data-status-icon') || null,
+        known: badge.getAttribute('data-status-known'),
+        rowText: row.textContent || '',
+        text: badge.textContent || '',
+        tone: badge.getAttribute('data-status-tone'),
+        transitionDuration: getComputedStyle(badge).transitionDuration,
+      };
+    })()`,
+    (value) => value !== null && accept(value),
+    `Worker status for ${workerName} did not reach the expected state`,
+    15_000,
+  );
+}
+
+async function browserContainsMarker(browser: BrowserHarness, marker: string) {
+  return browser.evaluate<boolean>(`(() => {
+    const marker = ${JSON.stringify(marker)};
+    if ((document.body.textContent || '').includes(marker)) return true;
+    return [...document.querySelectorAll('[aria-label], [aria-description], [aria-describedby], [title]')].some((element) =>
+      ['aria-label', 'aria-description', 'title'].some((attribute) => (element.getAttribute(attribute) || '').includes(marker))
+      || (element.getAttribute('aria-describedby') || '').split(/\\s+/).some((id) => (document.getElementById(id)?.textContent || '').includes(marker))
+    );
+  })()`);
+}
+
 async function expandNavigationSections(browser: BrowserHarness) {
   await browser.evaluate(`(() => {
     const navigation = [...document.querySelectorAll('nav')].find((element) => element.getClientRects().length > 0 && element.querySelector('a[href^="/admin/"]'));
@@ -1362,6 +2239,22 @@ function permissionUser(permissions: string[]) {
   return {
     user: { id: "stream-permission-user", username: "stream-permission-operator", roles: [] },
     permissions,
+  };
+}
+
+function workerConfiguration(id: string, yaml: string) {
+  return {
+    node: {
+      service_id: id,
+      service_type: "worker",
+      service_name: id === "worker-one" ? "Worker One" : `Worker ${id}`,
+      status: "online",
+      health_status: "healthy",
+    },
+    node_api_url: `https://${id}.example.invalid`,
+    configure_command: `configure ${id}`,
+    configuration_yaml: yaml,
+    systemd_unit: `[Unit]\nDescription=${id}`,
   };
 }
 

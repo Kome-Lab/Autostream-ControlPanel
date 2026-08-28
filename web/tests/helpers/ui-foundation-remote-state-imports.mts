@@ -182,7 +182,11 @@ export function assertRemoteStateFoundationBoundaries(webRoot: string) {
         .filter((statement) => isB04ImplementationImport(statement.moduleSpecifier.text))
         .map(() => normalize(relative(webRoot, path)));
     });
-  assert.deepEqual(consumers, [], "B-04 production modules must have zero production consumers");
+  assert.deepEqual(
+    consumers,
+    ["src/features/workers/workers-view.tsx"],
+    "B-04 renderer has exactly the reviewed Worker Configuration consumer",
+  );
 
   return Object.freeze({
     componentRuntimeImportCount: runtimeImportCount(parsed, productionPaths[3])

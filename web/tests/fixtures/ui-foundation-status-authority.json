@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 1,
+  "authorities": [
+    {
+      "id": "contracts",
+      "repository": "Autostream-Contracts",
+      "branch": "main",
+      "head": "fe7632c8b7bde9793d2eea38d2124bf4267e52b9",
+      "path": "pkg/contracts/types.go",
+      "sourceSha256": "895c81da273b5dd43aa06d627ae7c5bb63647c38c344a5b65de774397062f5bd"
+    },
+    {
+      "id": "observability",
+      "repository": "Autostream-Observability",
+      "branch": "main",
+      "head": "2a3cca58d77340b9fef6d003d2d2ce2ab0d13d7a",
+      "path": "migrations/001_init.sql",
+      "sourceSha256": "64df2de7896ce8774e83e6d2ea2d550fd580002f3a03256cbfe5f73cd17a37d7"
+    },
+    {
+      "id": "control-panel-domain",
+      "repository": "Autostream-ControlPanel",
+      "branch": "main",
+      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "path": "web/src/types/domain.ts",
+      "sourceSha256": "065504bd2d37cfa3d4fcacdd38a07ae4916ced4b0513b9a4c15266610ebf32d2"
+    },
+    {
+      "id": "control-panel-http",
+      "repository": "Autostream-ControlPanel",
+      "branch": "main",
+      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "path": "internal/httpapi/server.go",
+      "sourceSha256": "048ef3209e907a0cbf1af03fc9b0e314669fb55e44db1becdacdc998aee2eabd"
+    },
+    {
+      "id": "control-panel-policy",
+      "repository": "Autostream-ControlPanel",
+      "branch": "main",
+      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "path": "internal/updateagent/managed_policy.go",
+      "sourceSha256": "345680c78d98b3034f0b4f7cfa7c17bc8fb42cd5f7ca006d67476f007e5afd1f"
+    },
+    {
+      "id": "control-panel-stream-store",
+      "repository": "Autostream-ControlPanel",
+      "branch": "main",
+      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "path": "internal/store/streams.go",
+      "sourceSha256": "a26b25de6f30f26fb025f337e453f0c46e58c3ed2b8c51eb38e7e266dc660a94"
+    },
+    {
+      "id": "control-panel-auth-store",
+      "repository": "Autostream-ControlPanel",
+      "branch": "main",
+      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "path": "internal/store/auth.go",
+      "sourceSha256": "899ff70ea1e8991501889521029cdc399383e235c544d51f729a3a21e6b81f9f"
+    }
+  ],
+  "vocabularies": [
+    {
+      "id": "contracts-stream-status",
+      "authorityId": "contracts",
+      "symbol": "StreamStatus",
+      "parser": "go-typed-constants",
+      "excerptSha256": "4a5d1b420c8884a9acca2e02d94a8933ce3a5339f461c1be8cd47d59db3771ba",
+      "excerpt": "type StreamStatus string\n\nconst (\n\tStreamCreated   StreamStatus = \"created\"\n\tStreamStarting  StreamStatus = \"starting\"\n\tStreamLive      StreamStatus = \"live\"\n\tStreamStopping  StreamStatus = \"stopping\"\n\tStreamCompleted StreamStatus = \"completed\"\n\tStreamFailed    StreamStatus = \"failed\"\n)",
+      "domains": [
+        { "name": "stream-lifecycle", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "contracts-service-status",
+      "authorityId": "contracts",
+      "symbol": "ServiceStatus",
+      "parser": "go-typed-constants",
+      "excerptSha256": "d185e1b73b47455a8c137f63b4a5cd03024dc907d4d8378796f9dbbb97d1c535",
+      "excerpt": "type ServiceStatus string\n\nconst (\n\tServiceStatusUnknown          ServiceStatus = \"unknown\"\n\tServiceStatusPending          ServiceStatus = \"pending\"\n\tServiceStatusRegistered       ServiceStatus = \"registered\"\n\tServiceStatusAssigned         ServiceStatus = \"assigned\"\n\tServiceStatusRestartRequested ServiceStatus = \"restart_requested\"\n\tServiceStatusOnline           ServiceStatus = \"online\"\n\tServiceStatusDegraded         ServiceStatus = \"degraded\"\n\tServiceStatusOffline          ServiceStatus = \"offline\"\n\tServiceStatusUpdating         ServiceStatus = \"updating\"\n)",
+      "domains": [
+        {
+          "name": "node-connectivity",
+          "symbols": [
+            "ServiceStatusOnline",
+            "ServiceStatusDegraded",
+            "ServiceStatusOffline",
+            "ServiceStatusUpdating"
+          ]
+        },
+        {
+          "name": "node-ownership",
+          "symbols": [
+            "ServiceStatusPending",
+            "ServiceStatusRegistered",
+            "ServiceStatusAssigned",
+            "ServiceStatusRestartRequested"
+          ]
+        }
+      ],
+      "sentinelSymbols": ["ServiceStatusUnknown"]
+    },
+    {
+      "id": "contracts-system-update-reachability",
+      "authorityId": "contracts",
+      "symbol": "SystemUpdateReachability",
+      "parser": "go-typed-constants",
+      "excerptSha256": "90c96d72b10c7ecbc8d28e3edc379b1a1ce06e9d5a8b9fd2daa8606ad9716b2e",
+      "excerpt": "type SystemUpdateReachability string\n\nconst (\n\tSystemUpdateReachable   SystemUpdateReachability = \"reachable\"\n\tSystemUpdateUnreachable SystemUpdateReachability = \"unreachable\"\n\tSystemUpdateUnknown     SystemUpdateReachability = \"unknown\"\n)",
+      "domains": [
+        {
+          "name": "system-update-target",
+          "symbols": ["SystemUpdateReachable", "SystemUpdateUnreachable"]
+        }
+      ],
+      "sentinelSymbols": ["SystemUpdateUnknown"]
+    },
+    {
+      "id": "contracts-system-update-status",
+      "authorityId": "contracts",
+      "symbol": "SystemUpdateStatus",
+      "parser": "go-typed-constants",
+      "excerptSha256": "57cfccfe433d3ad6c8021bdb2fe9a0a626de8c98b2a69904102d71899c71766c",
+      "excerpt": "type SystemUpdateStatus string\n\nconst (\n\tSystemUpdateQueued         SystemUpdateStatus = \"queued\"\n\tSystemUpdateClaimed        SystemUpdateStatus = \"claimed\"\n\tSystemUpdateDownloading    SystemUpdateStatus = \"downloading\"\n\tSystemUpdateVerifying      SystemUpdateStatus = \"verifying\"\n\tSystemUpdateStaging        SystemUpdateStatus = \"staging\"\n\tSystemUpdateStopping       SystemUpdateStatus = \"stopping\"\n\tSystemUpdateInstalling     SystemUpdateStatus = \"installing\"\n\tSystemUpdateStarting       SystemUpdateStatus = \"starting\"\n\tSystemUpdateHealthChecking SystemUpdateStatus = \"health_checking\"\n\tSystemUpdateReconciling    SystemUpdateStatus = \"reconciling\"\n\tSystemUpdateRollingBack    SystemUpdateStatus = \"rolling_back\"\n\tSystemUpdateSucceeded      SystemUpdateStatus = \"succeeded\"\n\tSystemUpdateRolledBack     SystemUpdateStatus = \"rolled_back\"\n\tSystemUpdateFailed         SystemUpdateStatus = \"failed\"\n\tSystemUpdateCanceled       SystemUpdateStatus = \"canceled\"\n)",
+      "domains": [
+        { "name": "system-update-job", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "contracts-incident-status",
+      "authorityId": "contracts",
+      "symbol": "IncidentStatus",
+      "parser": "go-typed-constants",
+      "excerptSha256": "e671475f08a776f4c57faad1d6e6d65e95b65a582265a1dedd4cc4b2b65f0d35",
+      "excerpt": "type IncidentStatus string\n\nconst (\n\tIncidentOpen          IncidentStatus = \"open\"\n\tIncidentAcknowledged  IncidentStatus = \"acknowledged\"\n\tIncidentInvestigating IncidentStatus = \"investigating\"\n\tIncidentMitigated     IncidentStatus = \"mitigated\"\n\tIncidentResolved      IncidentStatus = \"resolved\"\n\tIncidentIgnored       IncidentStatus = \"ignored\"\n)",
+      "domains": [
+        { "name": "incident", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "contracts-diagnostic-rerun-outcome",
+      "authorityId": "contracts",
+      "symbol": "DiagnosticRerunOutcome",
+      "parser": "go-typed-constants",
+      "excerptSha256": "1cd59128c791a37f66d9211eb92020b22826b78408e6952c4dc9597cbadd3336",
+      "excerpt": "type DiagnosticRerunOutcome string\n\nconst (\n\tDiagnosticRerunOutcomeEvaluated    DiagnosticRerunOutcome = \"evaluated\"\n\tDiagnosticRerunOutcomeInconclusive DiagnosticRerunOutcome = \"inconclusive\"\n)",
+      "domains": [
+        { "name": "diagnostic", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "observability-remediation-status",
+      "authorityId": "observability",
+      "symbol": "remediation_actions.status",
+      "parser": "sql-status-enum",
+      "excerptSha256": "b9faeeb7dbae746ca67a24ee9801ba64fccb27c11b1262a4e92adf46fb734513",
+      "excerpt": "CREATE TABLE IF NOT EXISTS remediation_actions (\n  id VARCHAR(64) PRIMARY KEY,\n  incident_id VARCHAR(64) NOT NULL,\n  action VARCHAR(128) NOT NULL,\n  mode ENUM('disabled','suggest_only','safe_auto','manual_approval') NOT NULL,\n  status ENUM('disabled','suggested','pending_approval','approved','executed','blocked') NOT NULL,\n  safe_auto BOOLEAN NOT NULL,\n  requires_approval BOOLEAN NOT NULL,\n  result TEXT NULL,\n  created_at DATETIME NOT NULL,\n  updated_at DATETIME NOT NULL,\n  executed_at DATETIME NULL,\n  INDEX idx_remediation_incident (incident_id),\n  INDEX idx_remediation_status_updated (status, updated_at)\n);",
+      "domains": [
+        { "name": "remediation", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "control-panel-recording-status",
+      "authorityId": "control-panel-domain",
+      "symbol": "StreamStatus",
+      "parser": "ts-string-union",
+      "excerptSha256": "d5c93e9c7de1e950a71aa6cb144db6d0f8d4c3d3f12918cacc8a87aafda89d0c",
+      "excerpt": "export type StreamStatus =\n  | \"draft\"\n  | \"scheduled\"\n  | \"ready\"\n  | \"starting\"\n  | \"live\"\n  | \"stopping\"\n  | \"stopped\"\n  | \"completed\"\n  | \"failed\"\n  | \"error\";",
+      "domains": [
+        { "name": "recording-lifecycle", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "control-panel-node-health",
+      "authorityId": "control-panel-http",
+      "symbol": "serviceHealthFields",
+      "parser": "go-return-literals",
+      "excerptSha256": "9edf15df5bc70584f9f784520ef93b82d4b6b9d40ec96c839bb424258db3c2e7",
+      "excerpt": "func serviceHealthFields(service store.RegisteredService, now time.Time) (string, bool, *int64) {\n\tif service.Status == \"offline\" {\n\t\treturn \"offline\", true, heartbeatAge(service.LastHeartbeatAt, now)\n\t}\n\tif service.LastHeartbeatAt == nil {\n\t\treturn \"unconfigured\", true, nil\n\t}\n\tage := heartbeatAge(service.LastHeartbeatAt, now)\n\tif age != nil && time.Duration(*age)*time.Second > heartbeatOfflineAfter() {\n\t\treturn \"offline\", true, age\n\t}\n\tif age != nil && time.Duration(*age)*time.Second > heartbeatWarningAfter() {\n\t\treturn \"warning\", true, age\n\t}\n\treturn \"healthy\", false, age\n}",
+      "domains": [
+        { "name": "node-health", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "control-panel-policy-status",
+      "authorityId": "control-panel-policy",
+      "symbol": "PolicyStatus",
+      "parser": "go-untyped-constants",
+      "excerptSha256": "b54e48c3d7203dc134c0405535ae8982b0f3fd4128976f63618fd4637d9fa85d",
+      "excerpt": "const (\n\tPolicyStatusApplied = \"applied\"\n\tPolicyStatusPending = \"pending\"\n\tPolicyStatusFailed  = \"failed\"",
+      "domains": [
+        { "name": "system-update-policy", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "control-panel-archive-processing",
+      "authorityId": "control-panel-stream-store",
+      "symbol": "ListArchiveProcessingStreams",
+      "parser": "sql-status-in",
+      "excerptSha256": "90808304507c099e5ea65eba12058bcda09ee754a2f15fed5c2f15af28f1a4c5",
+      "excerpt": "func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {\n\trows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL\n  AND (\n\t`+streamLogGuardPendingCondition+`\n    OR (\n      COALESCE(TRIM(ss.archive_profile_id), '') <> ''\n      AND s.archive_started_at IS NOT NULL\n      AND s.archive_reported_at IS NULL\n      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')\n    )\n    OR (\n      s.archive_reported_at IS NULL\n      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')\n\t  AND `+streamLogGuardPendingCondition+`\n    )\n  )`),",
+      "domains": [
+        { "name": "archive-processing", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "control-panel-archive-share",
+      "authorityId": "control-panel-http",
+      "symbol": "publicArchiveShareAdmin",
+      "parser": "go-status-assignments",
+      "excerptSha256": "c557489b6fa709399059e83b2e63544956fc521356a348bfb6277947eef3fe7d",
+      "excerpt": "func publicArchiveShareAdmin(share store.StreamArtifactShare) map[string]any {\n\tstatus := \"active\"\n\tif share.RevokedAt != nil {\n\t\tstatus = \"revoked\"\n\t} else if !share.ExpiresAt.After(time.Now().UTC()) {\n\t\tstatus = \"expired\"\n\t}",
+      "domains": [
+        { "name": "archive-share", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    },
+    {
+      "id": "control-panel-audit-result",
+      "authorityId": "control-panel-auth-store",
+      "symbol": "normalizeAuditFilter",
+      "parser": "go-filter-results",
+      "excerptSha256": "17b1cdec7d1685e9f56644fc26fa5b238ecc7f5c06427d0db9b72ccd8f294830",
+      "excerpt": "func normalizeAuditFilter(filter AuditFilter) AuditFilter {\n\tif filter.Limit <= 0 || filter.Limit > 500 {\n\t\tfilter.Limit = 100\n\t}\n\tfilter.Result = strings.TrimSpace(filter.Result)\n\tif filter.Result != \"success\" && filter.Result != \"failure\" {\n\t\tfilter.Result = \"\"\n\t}",
+      "domains": [
+        { "name": "audit-result", "include": "all" }
+      ],
+      "sentinelSymbols": []
+    }
+  ]
+}

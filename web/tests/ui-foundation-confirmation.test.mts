@@ -865,11 +865,11 @@ test("B-05 i18n copy is exact, parallel, placeholder-bounded, and token-literal"
   assert.equal(translate("en", "confirmationTypeTokenInstruction", { token: "DELETE NODE_1" }), "Type \"DELETE NODE_1\" to confirm.");
 });
 
-test("AST guard fixes legacy consumers, two frame owners, zero modern consumers, and rejects mutants", () => {
+test("AST guard fixes legacy consumers, two frame owners, and the exact Worker pilot consumer", () => {
   assert.deepEqual(assertConfirmationFoundationBoundaries(webRoot), {
-    dangerConsumerCount: 7,
+    dangerConsumerCount: 6,
     frameConsumerCount: 2,
-    rendererConsumerCount: 0,
+    rendererConsumerCount: 1,
     reviewedFileCount: 5,
   });
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([
@@ -880,7 +880,7 @@ test("AST guard fixes legacy consumers, two frame owners, zero modern consumers,
   ])), /exactly two reviewed owners/);
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([
     ["src/features/synthetic/new-action.ts", 'import { HighRiskConfirmation } from "@/components/foundation/confirmation/high-risk-confirmation";\nvoid HighRiskConfirmation;\n'],
-  ])), /zero production consumers/);
+  ])), /exactly the reviewed Worker pilot consumer/);
   const rendererPath = join(webRoot, "src", "components", "foundation", "confirmation", "high-risk-confirmation.ts");
   const rendererSource = readFileSync(rendererPath, "utf8");
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([

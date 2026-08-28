@@ -1168,7 +1168,7 @@ test("mutation-sensitive oracles reject every required incorrect alternate", asy
 test("new modules preserve strict import, ownership, consumer, and dependency boundaries", () => {
   assert.deepEqual(assertRemoteStateFoundationBoundaries(webRoot), {
     componentRuntimeImportCount: 3,
-    productionConsumerCount: 0,
+    productionConsumerCount: 1,
     productionFileCount: 5,
     pureReactImportCount: 0,
   });
