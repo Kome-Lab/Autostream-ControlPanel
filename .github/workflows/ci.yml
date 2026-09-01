@@ -17,11 +17,59 @@ jobs:
   service-installer:
     name: Service installer migration
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    services:
+      mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_ci
+          MARIADB_USER: autostream_ci
+          MARIADB_PASSWORD: autostream-ci-password
+          MARIADB_ROOT_PASSWORD: autostream-ci-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
       - name: Check service installer integration test syntax
         run: bash -n release/test-install-autostream-control-panel-integration.sh
+      - name: Check Bundle 4 migration contract syntax
+        run: bash -n release/test-control-platform-migration-contract.sh
+      - name: Test Bundle 4 service-installer migration contract
+        run: bash release/test-control-platform-migration-contract.sh
+      - name: Test Bundle 4 migration against MariaDB
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+        run: |
+          set -euo pipefail
+          mapfile -t discovered < <(
+            go test ./internal/database -list '^TestMariaDBControlPlatformFeatureMigrationAndPersistence$' |
+              LC_ALL=C grep '^Test'
+          )
+          if [[ "${#discovered[@]}" -ne 1 || "${discovered[0]}" != "TestMariaDBControlPlatformFeatureMigrationAndPersistence" ]]; then
+            echo "Bundle 4 MariaDB witness denominator mismatch: ${#discovered[@]}/1" >&2
+            exit 1
+          fi
+          result="${RUNNER_TEMP}/bundle4-service-installer-mariadb.json"
+          go test ./internal/database \
+            -run '^TestMariaDBControlPlatformFeatureMigrationAndPersistence$' \
+            -count=1 \
+            -json | tee "${result}"
+          if jq -e 'select(.Action == "skip" and .Test == "TestMariaDBControlPlatformFeatureMigrationAndPersistence")' "${result}" >/dev/null; then
+            echo "Bundle 4 MariaDB witness was skipped" >&2
+            exit 1
+          fi
+          jq -e 'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and .Test == "TestMariaDBControlPlatformFeatureMigrationAndPersistence")' "${result}" >/dev/null
+          jq -e 'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and ((.Test // "") == ""))' "${result}" >/dev/null
       - name: Test fresh install, legacy migration, idempotence, and rollback
         run: sudo bash release/test-install-autostream-control-panel-integration.sh
       - name: Check Local Executor systemd sandbox smoke syntax
@@ -67,6 +115,52 @@ jobs:
           cache-dependency-path: go.mod
       - name: Check service installer syntax
         run: bash -n release/install-autostream-control-panel
+      - name: Test Bundle 4 five-task witnesses
+        shell: bash
+        run: |
+          set -euo pipefail
+          witness_count=0
+          run_witness() {
+            local task_id=$1
+            shift
+            while (( $# > 0 )); do
+              local package=$1
+              local pattern=$2
+              shift 2
+              mapfile -t discovered < <(
+                go test "${package}" -list "${pattern}" |
+                  LC_ALL=C grep '^Test'
+              )
+              if [[ "${#discovered[@]}" -eq 0 ]]; then
+                echo "${task_id}: zero focused tests discovered for ${package} ${pattern}" >&2
+                exit 1
+              fi
+              printf '%s witness: %s %s tests=%d\n' \
+                "${task_id}" "${package}" "${pattern}" "${#discovered[@]}"
+              go test "${package}" -run "${pattern}" -count=1
+            done
+            witness_count=$((witness_count + 1))
+          }
+          run_witness CONTROL-MEDIA-ASSETS-001 \
+            ./internal/mediaassets '^Test(Processor|Variant|MemoryRepository)' \
+            ./internal/httpapi '^TestMediaAssetHTTP'
+          run_witness CONTROL-USER-THEMES-001 \
+            ./internal/store '^TestUserUIPreference' \
+            ./internal/httpapi '^TestUIPreferenceAPI'
+          run_witness CONTROL-DISCORD-TARGET-PRESETS-001 \
+            ./internal/store '^TestDiscordTargetPreset' \
+            ./internal/httpapi '^TestDiscordTargetPresetHTTP'
+          run_witness CONTROL-STREAM-VISUAL-SETTINGS-001 \
+            ./internal/streamvisual '^Test(Update|PresetMode|HeaderTitle|Readiness)' \
+            ./internal/httpapi '^Test(StreamStartAndReadiness|StreamVisualSettingsHTTP)'
+          run_witness CONTROL-VIDEO-COVER-ORCHESTRATION-001 \
+            ./internal/videocover '^Test(Desired|Hide|VideoCoverPreset)' \
+            ./internal/httpapi '^TestVideoCoverHTTP'
+          if [[ "${witness_count}" -ne 5 ]]; then
+            echo "Bundle 4 witness denominator mismatch: ${witness_count}/5" >&2
+            exit 1
+          fi
+          echo "Bundle 4 semantic test witnesses PASS: 5/5, zero denominator=0"
       - run: go test ./...
       - name: Test production Docker port reconfiguration daemon boundary
         shell: bash
@@ -366,12 +460,31 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
-      - name: Test UI Foundation browser behavior
+      - name: Test Bundle 4 Web semantic witnesses
+        run: npm run test:control-platform
+      - name: Test Bundle 4 browser witnesses and UI Foundation behavior
         timeout-minutes: 8
         env:
           AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
-        run: npm run test:ui-foundation-browser
+        run: npm run test:control-platform-browser
       - run: npm run test:system-updates
       - run: npm run test:stream-regressions
       - run: npm run lint
       - run: npm run build
+
+  overall:
+    name: overall
+    if: always()
+    needs: [service-installer, go, web]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every blocking job
+        env:
+          SERVICE_INSTALLER_RESULT: ${{ needs.service-installer.result }}
+          GO_RESULT: ${{ needs.go.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+        run: |
+          set -euo pipefail
+          [[ "${SERVICE_INSTALLER_RESULT}" == success ]]
+          [[ "${GO_RESULT}" == success ]]
+          [[ "${WEB_RESULT}" == success ]]

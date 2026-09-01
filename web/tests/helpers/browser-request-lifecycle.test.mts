@@ -37,8 +37,8 @@ const browserHarnessPath = join(helperRoot, "browser-harness.mts");
 const uiBrowserTestPath = join(helperRoot, "..", "ui-foundation-browser.test.mts");
 const browserRunnerPath = join(helperRoot, "run-ui-foundation-browser.mts");
 
-test("UI browser runner import is inert and its exact 26-test inventory accepts only the complete fixture", () => {
-  assert.equal(EXPECTED_UI_FOUNDATION_BROWSER_TESTS, 26);
+test("UI browser runner import is inert and its exact 28-test inventory accepts only the complete fixture", () => {
+  assert.equal(EXPECTED_UI_FOUNDATION_BROWSER_TESTS, 28);
   assert.deepEqual([...requiredScenarioNames], [...independentRequiredBrowserScenarioNames]);
   assert.equal(new Set(requiredScenarioNames).size, requiredScenarioNames.length, "runner required scenario names must be unique");
   const fixture = passingBrowserInventoryFixture();
@@ -55,13 +55,13 @@ test("UI browser exact inventory rejects count, result and required-name negativ
       completed: [],
     },
     {
-      name: "tests=25",
-      summary: browserSummary({ tests: 25, passed: 25 }),
-      completed: passing.completed.slice(0, 25),
-    },
-    {
       name: "tests=27",
       summary: browserSummary({ tests: 27, passed: 27 }),
+      completed: passing.completed.slice(0, 27),
+    },
+    {
+      name: "tests=29",
+      summary: browserSummary({ tests: 29, passed: 29 }),
       completed: [...passing.completed, passingScenario("independent extra leaf")],
     },
     {
@@ -71,24 +71,24 @@ test("UI browser exact inventory rejects count, result and required-name negativ
         scenario.name === firstRequiredName ? passingScenario("replacement non-required leaf") : scenario),
     },
     {
-      name: "required duplicated while total remains 26",
+      name: "required duplicated while total remains 28",
       summary: passing.summary,
       completed: passing.completed.map((scenario, index) =>
         index === passing.completed.length - 1 ? passingScenario(firstRequiredName) : scenario),
     },
     {
       name: "failure=1",
-      summary: { ...passing.summary, success: false, counts: { ...passing.summary.counts, passed: 25 } },
+      summary: { ...passing.summary, success: false, counts: { ...passing.summary.counts, passed: 27 } },
       completed: passing.completed.map((scenario, index) => index === 0 ? { ...scenario, passed: false } : scenario),
     },
     {
       name: "skipped=1",
-      summary: browserSummary({ passed: 25, skipped: 1 }),
+      summary: browserSummary({ passed: 27, skipped: 1 }),
       completed: passing.completed.map((scenario, index) => index === 0 ? { ...scenario, passed: false, skipped: true } : scenario),
     },
     {
       name: "todo=1",
-      summary: browserSummary({ passed: 25, todo: 1 }),
+      summary: browserSummary({ passed: 27, todo: 1 }),
       completed: passing.completed.map((scenario, index) => index === 0 ? { ...scenario, passed: false, todo: true } : scenario),
     },
     {
@@ -708,6 +708,8 @@ const independentRequiredBrowserScenarioNames = Object.freeze([
   "same-route and cross-route mobile create release the navigation focus owner",
   "reduced motion removes Sheet animation while preserving close and focus",
   "locale and theme controls preserve route/session and expose translated accessible names",
+  "Account appearance persists 12 themes and 3 modes with DB fallback and save rollback",
+  "Stream detail presents visual snapshots and cover actions preserve request-count and applied-state boundaries",
   "status focus remains visible in normal and forced-colors modes",
   "false-positive guards reject invalid observable outcomes",
 ] as const);
@@ -742,10 +744,10 @@ function browserSummary(overrides: Partial<{
     success: true,
     counts: {
       cancelled: 0,
-      passed: 26,
+      passed: 28,
       skipped: 0,
       suites: 1,
-      tests: 26,
+      tests: 28,
       todo: 0,
       topLevel: 1,
       ...overrides,

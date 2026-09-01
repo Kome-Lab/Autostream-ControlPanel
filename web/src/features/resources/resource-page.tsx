@@ -16,7 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
+import { APIError, apiDelete, apiDeleteJSON, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { auditActionLabel } from "@/lib/audit-action";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
@@ -39,6 +39,7 @@ import {
   type OAuthAccountPurpose,
 } from "@/lib/oauth-account";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import { buildDiscordTargetPresetPayload, validDiscordTargetPreset } from "@/features/resources/discord-target-preset";
 import type { WorkerNode } from "@/types/domain";
 
 const watermarkCanvasWidth = 1920;
@@ -211,7 +212,9 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
     },
   });
   const deleteMutation = useMutation<unknown, Error, ResourceRow>({
-    mutationFn: async (row) => apiDelete(deletePathForResource(resource, row)),
+    mutationFn: async (row) => revisionedDeleteResource(resource.path)
+      ? apiDeleteJSON(deletePathForResource(resource, row), { expected_revision: numberValue(rowString(row, ["revision"]), 0) })
+      : apiDelete(deletePathForResource(resource, row)),
     onSuccess: async () => {
       setDeleteMessage("削除しました。");
       await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
@@ -422,6 +425,8 @@ function ResourceFormFields({ resource, disabled, submit, initial, submitLabel }
       return <EncoderProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "discord-config":
       return <DiscordConfigForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
+    case "discord-target-preset":
+      return <DiscordTargetPresetForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "youtube-output":
       return <YouTubeOutputForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "caption-profile":
@@ -531,6 +536,36 @@ function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { disable
       {discordNodes.length === 0 ? <p className="text-sm text-muted-foreground">先にNode登録でDiscord Bot Nodeを登録してください。</p> : null}
       <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">音声転送と自動再接続は常に有効です。</div>
       <FormActions label={submitLabel} disabled={disabled || effectiveServiceID === noneValue} />
+    </form>
+  );
+}
+
+function DiscordTargetPresetForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const row = initial || {};
+  const [name, setName] = useState(() => rowString(row, ["name"]) || "main-target");
+  const [guildID, setGuildID] = useState(() => rowString(row, ["guild_id"]));
+  const [textChannelID, setTextChannelID] = useState(() => rowString(row, ["text_channel_id"]));
+  const [voiceChannelID, setVoiceChannelID] = useState(() => rowString(row, ["voice_channel_id"]));
+  const input = { name, guildID, textChannelID, voiceChannelID, ...(initial ? { revision: numberValue(rowString(row, ["revision"]), 0) } : {}) };
+  const ready = validDiscordTargetPreset(input);
+
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!ready) return;
+        submit(buildDiscordTargetPresetPayload(input));
+      }}
+    >
+      <div className="grid gap-3 md:grid-cols-2">
+        <TextField label="プリセット名" value={name} onChange={setName} required />
+        <TextField label="DiscordサーバーID" value={guildID} onChange={setGuildID} required />
+        <TextField label="チャットチャンネルID" value={textChannelID} onChange={setTextChannelID} required />
+        <TextField label="ボイスチャンネルID" value={voiceChannelID} onChange={setVoiceChannelID} required />
+      </div>
+      {!ready ? <p role="status" className="text-sm text-amber-700 dark:text-amber-300">名前と、32桁以内の数字だけで構成された3つのDiscord IDを入力してください。</p> : null}
+      <FormActions label={submitLabel} disabled={disabled || !ready} />
     </form>
   );
 }
@@ -3069,6 +3104,10 @@ function deletePathForResource(resource: ResourceDefinition, row: ResourceRow) {
   const id = resourceRowID(row);
   if (!id) throw new Error("delete id is missing");
   return `${resource.path}/${encodeURIComponent(id)}`;
+}
+
+function revisionedDeleteResource(path: string) {
+  return path === "/discord/target-presets" || path === "/video-cover-presets";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

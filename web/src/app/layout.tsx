@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 import { I18nProvider } from "@/components/admin/i18n-provider";
 import { GoogleAnalytics } from "@/components/admin/google-analytics";
@@ -14,16 +15,17 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ja" suppressHydrationWarning>
-      <body>
-        <ThemeProvider>
-          <I18nProvider>
-            <QueryProvider>
+		<html lang="ja" suppressHydrationWarning>
+			<body>
+				<Script src="/theme-bootstrap.js" strategy="beforeInteractive" />
+        <QueryProvider>
+          <ThemeProvider>
+            <I18nProvider>
               <GoogleAnalytics />
               <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
-            </QueryProvider>
-          </I18nProvider>
-        </ThemeProvider>
+            </I18nProvider>
+          </ThemeProvider>
+        </QueryProvider>
       </body>
     </html>
   );

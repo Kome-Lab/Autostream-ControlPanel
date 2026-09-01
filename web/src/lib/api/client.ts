@@ -68,6 +68,19 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
+export async function apiPostForm<T>(path: string, body: FormData): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "X-CSRF-Token": getCSRFToken(),
+    },
+    body,
+  });
+  return readJSONResponse<T>(response, path);
+}
+
 export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   if (forceMock()) return mockPut(path, body) as T;
   try {
@@ -128,6 +141,21 @@ export async function apiDelete<T>(path: string): Promise<T> {
     if (canUseMockFallback(path)) return mockDelete(path) as T;
     throw error;
   }
+}
+
+export async function apiDeleteJSON<T>(path: string, body: unknown): Promise<T> {
+  if (forceMock()) return mockDelete(path) as T;
+  const response = await fetch(path, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-CSRF-Token": getCSRFToken(),
+    },
+    body: JSON.stringify(body),
+  });
+  return readJSONResponse<T>(response, path);
 }
 
 async function readJSONResponse<T>(response: Response, path: string): Promise<T> {

@@ -25,7 +25,7 @@ import {
   type CompletedBrowserScenario,
 } from "./ui-foundation-assertions.mts";
 
-export const EXPECTED_UI_FOUNDATION_BROWSER_TESTS = 26;
+export const EXPECTED_UI_FOUNDATION_BROWSER_TESTS = 28;
 
 export const requiredScenarioNames = Object.freeze([
   "query states distinguish loading, empty, unhealthy, error, stale, recovery, and update variants",
@@ -42,6 +42,8 @@ export const requiredScenarioNames = Object.freeze([
   "same-route and cross-route mobile create release the navigation focus owner",
   "reduced motion removes Sheet animation while preserving close and focus",
   "locale and theme controls preserve route/session and expose translated accessible names",
+  "Account appearance persists 12 themes and 3 modes with DB fallback and save rollback",
+  "Stream detail presents visual snapshots and cover actions preserve request-count and applied-state boundaries",
   "status focus remains visible in normal and forced-colors modes",
   "false-positive guards reject invalid observable outcomes",
 ] as const);

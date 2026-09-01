@@ -49,6 +49,10 @@ const currentVersion = versionResponse({ latestVersion: "v1.2.4" });
 const availableVersion = versionResponse({ latestVersion: "v1.3.0", updateAvailable: true });
 const startReadinessStream = { id: "stream-permission-fixture", name: "権限検証配信", status: "ready" };
 const startReadinessPath = `/streams/${startReadinessStream.id}/start-readiness`;
+const controlPlatformStream = { id: "stream-control-platform", name: "ビジュアル確認配信", status: "ready" };
+const controlPlatformVisualPath = `/streams/${controlPlatformStream.id}/visual-settings`;
+const controlPlatformCoverPath = `/streams/${controlPlatformStream.id}/video-cover-state`;
+const controlPlatformPipeline = ["base_or_worker_scene", "video_cover", "watermark", "video_encode", "tee_live_archive_preview"];
 
 test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
   const server = await ensureWebServer(webRoot, requestedBaseUrl);
@@ -79,17 +83,60 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
   let restartResponse: StubResponse = { status: 202, body: { status: "accepted" } };
   let workerRestartMethods: string[] = [];
   let workerConfigurationMethods: string[] = [];
-  browser.setRouteResolver(({ method, url }) => {
+  let uiPreferenceResponse: StubResponse = { body: { theme_id: "autostream", color_mode: "light", revision: 4 } };
+  let uiPreferenceWriteResponse: StubResponse = { body: { theme_id: "violet", color_mode: "light", revision: 5 } };
+  let uiPreferenceMethods: string[] = [];
+  let uiPreferenceBodies: unknown[] = [];
+  let controlPlatformVisualResponse: StubResponse = { body: {
+    stream_id: controlPlatformStream.id,
+    background_mode: "image",
+    header_title_mode: "custom",
+    header_title_value: "配信ビジュアル見出し",
+    discord_target_mode: "preset",
+    discord_target_preset_revision: 3,
+    discord_snapshot_revision: 5,
+    discord_preset_deleted: true,
+    cover_source: "upload",
+    cover_start_active: false,
+    revision: 2,
+  } };
+  let controlPlatformCoverResponse: StubResponse = { body: controlPlatformCoverState(false, 1, false, 1, "idle") };
+	let controlPlatformCoverWriteResponse: StubResponse = { body: controlPlatformCoverState(true, 2, true, 2, "applied") };
+	let controlPlatformCoverMethods: string[] = [];
+	let controlPlatformCoverBodies: unknown[] = [];
+	browser.setRouteResolver(({ method, url, postData }) => {
     const pathname = normalizePath(new URL(url).pathname);
-    if (pathname === "/auth/me") return authResponse;
-    if (pathname === "/setup/status") return setupResponse;
-    if (pathname === "/settings/app") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" } };
-    if (pathname === "/auth/oauth/providers") return { body: [] };
+    if (pathname === "/auth/me" && method === "GET") return { ...authResponse, requiredResponse: authResponse.requiredResponse ?? false };
+    if (pathname === "/setup/status" && method === "GET") return { ...setupResponse, requiredResponse: setupResponse.requiredResponse ?? false };
+    if (pathname === "/settings/app" && method === "GET") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false };
+    if (pathname === "/auth/oauth/providers" && method === "GET") return { body: [], requiredResponse: false };
+    if (pathname === "/auth/mfa/status" && method === "GET") return { body: { enabled: false }, requiredResponse: false };
+    if (pathname === "/auth/passkeys" && method === "GET") return { body: [], requiredResponse: false };
+    if (pathname === "/auth/oauth-links" && method === "GET") return { body: [], requiredResponse: false };
+    if (pathname === "/account/preferences/ui") {
+      uiPreferenceMethods.push(method);
+      if (method === "GET") return { ...uiPreferenceResponse, requiredResponse: uiPreferenceResponse.requiredResponse ?? false };
+      if (method === "PUT") {
+				uiPreferenceBodies.push(JSON.parse(postData || "null"));
+				return uiPreferenceWriteResponse;
+			}
+      return { status: 405, body: { code: "method_not_allowed" } };
+    }
     if (pathname === "/auth/login" && method === "POST") return loginResponse;
     if (pathname === "/auth/logout" && method === "POST") return logoutResponse;
-    if (pathname === "/streams") return streamsResponse;
-    if (pathname === "/workers" && method === "GET") return workersResponse;
-    if (pathname === "/nodes" && method === "GET") return nodesResponse;
+    if (pathname === "/streams" && method === "GET") return { ...streamsResponse, requiredResponse: streamsResponse.requiredResponse ?? false };
+    if (pathname === controlPlatformVisualPath && method === "GET") return { ...controlPlatformVisualResponse, requiredResponse: controlPlatformVisualResponse.requiredResponse ?? false };
+		if (pathname === controlPlatformCoverPath) {
+			controlPlatformCoverMethods.push(method);
+			if (method === "GET") return { ...controlPlatformCoverResponse, requiredResponse: controlPlatformCoverResponse.requiredResponse ?? false };
+			if (method === "PUT") {
+				controlPlatformCoverBodies.push(JSON.parse(postData || "null"));
+				return controlPlatformCoverWriteResponse;
+			}
+      return { status: 405, body: { code: "method_not_allowed" } };
+    }
+    if (pathname === "/workers" && method === "GET") return { ...workersResponse, requiredResponse: workersResponse.requiredResponse ?? false };
+    if (pathname === "/nodes" && method === "GET") return { ...nodesResponse, requiredResponse: nodesResponse.requiredResponse ?? false };
     const configurationMatch = pathname.match(/^\/nodes\/([^/]+)\/configuration$/);
     if (configurationMatch && method === "GET") {
       workerConfigurationMethods.push(method);
@@ -104,8 +151,8 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
       startReadinessMethods.push(method);
       return method === "POST" ? startReadinessResponse : { status: 405, body: { code: "method_not_allowed" } };
     }
-    if (pathname === "/service-health") return healthResponse;
-    if (pathname === "/version") return versionFixture;
+    if (pathname === "/service-health" && method === "GET") return { ...healthResponse, requiredResponse: healthResponse.requiredResponse ?? false };
+    if (pathname === "/version" && method === "GET") return { ...versionFixture, requiredResponse: versionFixture.requiredResponse ?? false };
     if (pathname === "/auth/session/refresh" && method === "POST") return refreshResponse;
     return null;
   });
@@ -884,10 +931,18 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
       const restoredAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
       authResponse = { body: permittedUser };
       await browser.waitForResponseCount("/auth/me", restoredAuthResponseCount, 20_000);
+      workersResponse = { body: workerPilotRows };
+      browser.clearRequestCounts("/workers");
+      await browser.reload();
+      await browser.waitForResponseCount("/workers", 1);
       await waitForWorkerRestartReady(browser);
 
       await clickWorkerAction(browser, "Restart worker");
       await waitForWorkerRestartDialog(browser);
+      browser.clearRequestCounts("/workers");
+      await browser.evaluate("window.dispatchEvent(new Event('focus')); true");
+      await browser.waitForResponseCount("/workers", 1, 20_000);
+      await browser.waitForRequestHandlersIdle({ pathname: "/workers", method: "GET" });
       workersResponse = { body: [] };
       workerRestartMethods = [];
       browser.clearRequestCounts(restartPath);
@@ -1486,10 +1541,246 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     await browser.pressKey("Escape");
 
     const routeBeforeTheme = await browser.evaluate<string>("location.pathname + location.hash");
+		const mirrorBeforeTheme = await browser.evaluate<string>(`localStorage.getItem('autostream.ui_preference') || ''`);
     await browser.clickSelector('button[aria-label="Theme"]');
     await browser.waitFor("document.documentElement.classList.contains('dark')", Boolean, "theme did not switch to dark");
     assert.equal(await browser.evaluate<string>("location.pathname + location.hash"), routeBeforeTheme);
     assert.equal(browser.requests.get("/auth/me") || 0, 0, "theme switching must not recreate the session query");
+		assert.equal(await browser.evaluate<string>(`localStorage.getItem('autostream.ui_preference') || ''`), mirrorBeforeTheme, "authenticated unsaved theme preview must not replace the DB bootstrap mirror");
+  });
+
+  await t.test("Account appearance persists 12 themes and 3 modes with DB fallback and save rollback", async () => {
+		authResponse = { status: 401, body: { code: "unauthorized" } };
+		uiPreferenceMethods = [];
+		uiPreferenceBodies = [];
+		await browser.navigate(`${server.baseUrl}/login/`);
+		await browser.waitFor(`location.pathname === '/login/'`, Boolean, "login route was not retained");
+		assert.equal(uiPreferenceMethods.filter((method) => method === "GET").length, 0, "public login must not query authenticated UI preferences");
+
+		authResponse = { body: currentUser };
+		uiPreferenceResponse = { body: { theme_id: "autostream", color_mode: "system", revision: 0 } };
+		uiPreferenceWriteResponse = { body: { theme_id: "autostream", color_mode: "dark", revision: 1 } };
+		await browser.evaluate(`localStorage.removeItem('autostream.ui_preference'); localStorage.setItem('autostream.theme', 'dark'); true`);
+		await browser.navigate(`${server.baseUrl}/admin/account/`);
+		await browser.waitFor(
+			`document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
+			(value: string) => value === "autostream/dark",
+			"legacy local preference was not retained while its DB CAS migration completed",
+		);
+		await browser.waitFor(
+			`(localStorage.getItem('autostream.ui_preference') || '').includes('"color_mode":"dark"')`,
+			Boolean,
+			"legacy preference migration did not persist the DB-backed bootstrap mirror",
+		);
+		assert.equal(uiPreferenceMethods.filter((method) => method === "PUT").length, 1, "legacy preference migration must send exactly one CAS PUT");
+		assert.deepEqual(uiPreferenceBodies.at(-1), { theme_id: "autostream", color_mode: "dark", expected_revision: 0 });
+
+		uiPreferenceResponse = { body: { theme_id: "ocean", color_mode: "dark", revision: 4 }, delayMs: 1_200 };
+    uiPreferenceWriteResponse = { body: { theme_id: "violet", color_mode: "light", revision: 5 } };
+    uiPreferenceMethods = [];
+		uiPreferenceBodies = [];
+    await browser.setViewport(1440, 1000);
+    await setStoredDisplay(browser, "ja", "light");
+		await browser.evaluate(`localStorage.setItem('autostream.ui_preference', JSON.stringify({ theme_id: 'cyan', color_mode: 'light' })); true`);
+		await browser.navigate(`${server.baseUrl}/admin/account/`);
+		assert.equal(
+			await browser.evaluate<string>(`document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`),
+			"cyan/light",
+			"external pre-hydration bootstrap did not apply the validated local mirror before the DB response",
+		);
+		await browser.waitFor(
+      `document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
+      (value: string) => value === "ocean/dark",
+			"DB appearance did not override the pre-hydration mirror",
+		);
+		uiPreferenceResponse = { body: { theme_id: "ocean", color_mode: "dark", revision: 4 } };
+    await browser.clickRoleWithText("tab", "外観");
+    const matrix = await browser.waitFor(
+      `(() => ({ themes: document.querySelectorAll('[role="radiogroup"][aria-label="配色テーマ"] [role="radio"]').length, modes: document.querySelectorAll('[role="radiogroup"][aria-label="表示モード"] [role="radio"]').length }))()`,
+      (value: { themes: number; modes: number }) => value.themes === 12 && value.modes === 3,
+      "appearance matrix was not rendered",
+    );
+    assert.deepEqual(matrix, { themes: 12, modes: 3 });
+    await browser.clickSelector('[aria-label="Violetテーマ"]');
+    await browser.clickSelector('[aria-label="ライトモード"]');
+    await browser.waitFor(
+      `document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode + '/' + document.documentElement.classList.contains('dark')`,
+      (value: string) => value === "violet/light/false",
+      "appearance preview was not immediate",
+    );
+		assert.match(await browser.evaluate<string>(`localStorage.getItem('autostream.ui_preference') || ''`), /"theme_id":"ocean"/, "unsaved appearance preview replaced the DB bootstrap mirror");
+    await browser.clickSelector('[aria-label="表示設定を保存"]');
+    await browser.waitFor(
+      `document.body.textContent?.includes('表示設定を保存しました。') === true`,
+      Boolean,
+      "appearance save did not complete",
+    );
+    assert.equal(uiPreferenceMethods.filter((method) => method === "PUT").length, 1, "appearance save must send exactly one PUT");
+		assert.match(await browser.evaluate<string>(`localStorage.getItem('autostream.ui_preference') || ''`), /"theme_id":"violet"/, "saved DB appearance did not refresh the bootstrap mirror");
+
+    uiPreferenceWriteResponse = { status: 409, body: { code: "revision_conflict" } };
+    await browser.clickSelector('[aria-label="Oceanテーマ"]');
+    await browser.clickSelector('[aria-label="ダークモード"]');
+    await browser.clickSelector('[aria-label="表示設定を保存"]');
+    await browser.waitFor(
+      `document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
+      (value: string) => value === "violet/light",
+      "failed save did not roll back the displayed preference",
+    );
+    assert.equal(uiPreferenceMethods.filter((method) => method === "PUT").length, 2, "failed save must not retry automatically");
+
+    uiPreferenceResponse = { body: { theme_id: "violet", color_mode: "light", revision: 5 } };
+    await browser.reload();
+    await browser.waitFor(
+      `document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
+      (value: string) => value === "violet/light",
+      "saved DB appearance did not persist across reload",
+    );
+    const putsBeforeFallback = uiPreferenceMethods.filter((method) => method === "PUT").length;
+    uiPreferenceResponse = { body: { theme_id: "future-theme", color_mode: "infrared", revision: 6, fallback: true } };
+    await browser.reload();
+    await browser.waitFor(
+      `document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
+      (value: string) => value === "autostream/system",
+      "unknown stored appearance did not render the safe fallback",
+    );
+    assert.equal(uiPreferenceMethods.filter((method) => method === "PUT").length, putsBeforeFallback, "safe fallback must not overwrite DB automatically");
+
+		uiPreferenceResponse = { body: { theme_id: "violet", color_mode: "light", revision: 7 } };
+		await setStoredDisplay(browser, "en", "light");
+		await browser.reload();
+		await browser.clickRoleWithText("tab", "外観");
+		await browser.waitFor(`document.querySelector('[aria-label="Violet theme"]') !== null`, Boolean, "translated theme accessible name missing");
+		await browser.evaluate(`document.querySelector('[aria-label="Ocean theme"]')?.focus(); true`);
+		await browser.pressKey("ArrowRight");
+		await browser.waitFor(
+			`document.activeElement?.getAttribute('aria-label') + '/' + document.querySelector('[aria-label="Cyan theme"]')?.getAttribute('aria-checked')`,
+			(value: string) => value === "Cyan theme/true",
+			"theme radiogroup did not implement roving Arrow-key selection",
+		);
+		await browser.evaluate(`document.querySelector('[aria-label="System mode"]')?.focus(); true`);
+		await browser.pressKey("End");
+		await browser.waitFor(
+			`document.activeElement?.getAttribute('aria-label') + '/' + document.querySelector('[aria-label="Dark mode"]')?.getAttribute('aria-checked')`,
+			(value: string) => value === "Dark mode/true",
+			"mode radiogroup did not implement roving Home/End selection",
+		);
+  });
+
+  await t.test("Stream detail presents visual snapshots and cover actions preserve request-count and applied-state boundaries", async () => {
+    const limitedUser = { user: { id: "visual-reader", username: "visual-reader", roles: ["viewer"] }, permissions: ["streams.read"] };
+    streamsResponse = { body: [controlPlatformStream] };
+    controlPlatformVisualResponse = { body: {
+      stream_id: controlPlatformStream.id,
+      background_mode: "image",
+      header_title_mode: "custom",
+      header_title_value: "配信ビジュアル見出し",
+      discord_target_mode: "preset",
+      discord_target_preset_revision: 3,
+      discord_snapshot_revision: 5,
+      discord_preset_deleted: true,
+      cover_source: "upload",
+      cover_start_active: false,
+      revision: 2,
+    } };
+    controlPlatformCoverResponse = { body: controlPlatformCoverState(false, 1, false, 1, "idle") };
+		controlPlatformCoverMethods = [];
+		controlPlatformCoverBodies = [];
+    authResponse = { body: limitedUser };
+    await setStoredDisplay(browser, "ja", "light");
+    await browser.navigate(`${server.baseUrl}/admin/streams/`);
+    await browser.waitFor(`document.body.textContent?.includes(${JSON.stringify(controlPlatformStream.name)}) === true`, Boolean, "control-platform stream row missing");
+    await browser.clickSelector('button[aria-label="詳細"]');
+    await browser.waitFor(`document.querySelector('section[aria-label="配信ビジュアルとVideo Cover"]') !== null`, Boolean, "visual detail panel missing");
+    await browser.waitFor(
+      `document.body.textContent?.includes('配信ビジュアル見出し') === true && document.body.textContent?.includes('保存済みsnapshotを継続します') === true`,
+      Boolean,
+      "saved visual snapshot did not finish rendering",
+    );
+    const visualSnapshot = await browser.evaluate<{ title: boolean; layers: boolean; warning: boolean; showDisabled: boolean }>(`(() => ({
+      title: document.body.textContent?.includes('配信ビジュアル見出し') === true,
+      layers: document.body.textContent?.includes('Base / Worker scene → Video Cover → Watermark → Encode → tee') === true,
+      warning: document.body.textContent?.includes('保存済みsnapshotを継続します') === true,
+      showDisabled: document.querySelector('button[aria-label="Video Coverを表示"]')?.hasAttribute('disabled') === true,
+    }))()`);
+    assert.deepEqual(visualSnapshot, { title: true, layers: true, warning: true, showDisabled: true });
+    await scrollSelectorIntoView(browser, 'button[aria-label="Video Coverを表示"]');
+    await browser.clickSelector('button[aria-label="Video Coverを表示"]');
+    await waitForAnimationFrames(browser);
+    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 0, "permission denied UI must send zero cover requests");
+
+    authResponse = { body: currentUser };
+		controlPlatformCoverMethods = [];
+		controlPlatformCoverBodies = [];
+    controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(true, 2, true, 2, "applied") };
+    await browser.navigate(`${server.baseUrl}/admin/streams/`);
+    await browser.waitFor(`document.body.textContent?.includes(${JSON.stringify(controlPlatformStream.name)}) === true`, Boolean, "control-platform stream did not reload");
+    await browser.clickSelector('button[aria-label="詳細"]');
+    await browser.waitFor(`document.querySelector('button[aria-label="Video Coverを表示"]:not([disabled])') !== null`, Boolean, "show cover action did not become available");
+    await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+    browser.clearRequestCounts("/auth/me");
+    const permissionRelease = deferred();
+    authResponse = { body: currentUser, waitUntil: permissionRelease.promise };
+    await browser.evaluate("window.dispatchEvent(new Event('focus')); true");
+    await browser.waitForRequestCount("/auth/me", 1, 20_000);
+    await browser.waitFor(`document.querySelector('button[aria-label="Video Coverを表示"]:disabled') !== null`, Boolean, "show cover action remained enabled while permission was refreshing");
+    browser.clearRequestCounts(controlPlatformCoverPath);
+    await browser.clickSelector('button[aria-label="Video Coverを表示"]');
+    await waitForAnimationFrames(browser);
+    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 0, "refreshing permission must send zero cover requests");
+    permissionRelease.resolve();
+    authResponse = { body: currentUser };
+    await browser.waitForResponseCount("/auth/me", 1, 20_000);
+    await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+    await browser.reload();
+    await browser.waitFor(`document.body.textContent?.includes(${JSON.stringify(controlPlatformStream.name)}) === true`, Boolean, "control-platform stream did not reload after permission refresh");
+    await browser.clickSelector('button[aria-label="詳細"]');
+    await browser.waitFor(`document.querySelector('button[aria-label="Video Coverを表示"]:not([disabled])') !== null`, Boolean, "show cover action did not recover after permission refresh");
+    await waitForAnimationFrames(browser);
+    browser.clearRequestCounts(controlPlatformCoverPath);
+		controlPlatformCoverMethods = [];
+		controlPlatformCoverBodies = [];
+    const showRelease = deferred();
+    controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(true, 2, true, 2, "applied"), waitUntil: showRelease.promise };
+    await scrollSelectorIntoView(browser, 'button[aria-label="Video Coverを表示"]');
+    await browser.clickSelector('button[aria-label="Video Coverを表示"]');
+    await browser.waitForRequestCount(controlPlatformCoverPath, 1);
+    await browser.clickSelector('button[aria-label="Video Coverを表示"]');
+    await waitForAnimationFrames(browser);
+    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 1, "duplicate pending show must send zero additional requests");
+    showRelease.resolve();
+    await browser.waitFor(`document.querySelector('[data-video-cover="applied"]') !== null`, Boolean, "applied cover did not render after authoritative result");
+
+    controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(false, 3, true, 2, "confirming") };
+    await scrollSelectorIntoView(browser, 'button[aria-label="Video Coverを非表示"]');
+    await browser.clickSelector('button[aria-label="Video Coverを非表示"]');
+    await waitForAnimationFrames(browser);
+    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 1, "hide trigger must not mutate before confirmation");
+    const confirmed = await browser.evaluate<boolean>(`(() => {
+      const dialog = document.querySelector('[role="alertdialog"]');
+      const action = [...(dialog?.querySelectorAll('button') || [])].find((button) => button.textContent?.trim() === 'Coverを非表示');
+      if (!(action instanceof HTMLButtonElement)) return false;
+      action.click();
+      return true;
+    })()`);
+    assert.equal(confirmed, true, "hide confirmation action missing");
+    await browser.waitForRequestCount(controlPlatformCoverPath, 2);
+    await browser.waitFor(`document.body.textContent?.includes('DesiredとAppliedが一致していません') === true`, Boolean, "ambiguous hide falsely appeared applied");
+    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 2);
+
+    controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(false, 3, true, 2, "confirming") };
+    await scrollSelectorIntoView(browser, 'button[aria-label="同じ操作キーで状態確認"]');
+    await browser.clickSelector('button[aria-label="同じ操作キーで状態確認"]');
+		await browser.waitForRequestCount(controlPlatformCoverPath, 3);
+		assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 3, "explicit reconciliation must be one deliberate request");
+		assert.deepEqual(controlPlatformCoverBodies[2], controlPlatformCoverBodies[1], "explicit reconciliation must resend the exact original generation/revision payload");
+
+    controlPlatformCoverWriteResponse = { status: 403, body: { code: "permission_denied" } };
+    await scrollSelectorIntoView(browser, 'button[aria-label="Video Coverを表示"]');
+    await browser.clickSelector('button[aria-label="Video Coverを表示"]');
+    await browser.waitForRequestCount(controlPlatformCoverPath, 4);
+    await waitForAnimationFrames(browser);
+    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 4, "backend 403 must receive one request and no automatic resend");
   });
 
   await t.test("status focus remains visible in normal and forced-colors modes", async () => {
@@ -2219,6 +2510,17 @@ async function waitForAnimationFrames(browser: BrowserHarness) {
   await browser.evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))");
 }
 
+async function scrollSelectorIntoView(browser: BrowserHarness, selector: string) {
+  const found = await browser.evaluate<boolean>(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!(element instanceof HTMLElement)) return false;
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return true;
+  })()`);
+  assert.equal(found, true, `could not scroll action into view: ${selector}`);
+  await waitForAnimationFrames(browser);
+}
+
 function deferred() {
   let settled = false;
   let resolvePromise!: () => void;
@@ -2239,6 +2541,28 @@ function permissionUser(permissions: string[]) {
   return {
     user: { id: "stream-permission-user", username: "stream-permission-operator", roles: [] },
     permissions,
+  };
+}
+
+function controlPlatformCoverState(
+  desiredActive: boolean,
+  desiredRevision: number,
+  appliedActive: boolean | null,
+  appliedRevision: number | null,
+  status: "idle" | "confirming" | "applied" | "failed",
+) {
+  return {
+    stream_id: controlPlatformStream.id,
+    job_generation: 1,
+    desired_active: desiredActive,
+    desired_revision: desiredRevision,
+    applied_active: appliedActive,
+    applied_revision: appliedRevision,
+    asset_variant_id: "variant-cover",
+    last_error_code: status === "confirming" ? "transport_outcome_unknown" : "",
+    status,
+    pipeline_order: controlPlatformPipeline,
+    cover_watermark_independent: true,
   };
 }
 

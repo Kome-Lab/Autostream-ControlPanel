@@ -182,6 +182,44 @@
   --focus-critical: oklch(0.72 0.19 25);
 }
 
+/* User themes are a bounded accent/surface layer. Semantic status variables
+   above remain untouched so LIVE/healthy/warning/critical retain one meaning. */
+:root[data-theme] {
+  --primary: oklch(0.47 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+  --primary-foreground: oklch(0.99 0.01 var(--user-theme-hue, 174));
+  --accent: oklch(0.925 calc(var(--user-theme-chroma, 0.115) * 0.28) var(--user-theme-hue, 174));
+  --accent-foreground: oklch(0.24 calc(var(--user-theme-chroma, 0.115) * 0.4) var(--user-theme-hue, 174));
+  --ring: oklch(0.52 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+  --sidebar-primary: oklch(0.6 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+  --sidebar-primary-foreground: oklch(0.99 0.01 var(--user-theme-hue, 174));
+  --sidebar-ring: oklch(0.6 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+  --surface-selected: var(--accent);
+}
+
+.dark[data-theme] {
+  --primary: oklch(0.68 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+  --primary-foreground: oklch(0.12 0.015 var(--user-theme-hue, 174));
+  --accent: oklch(0.255 calc(var(--user-theme-chroma, 0.115) * 0.4) var(--user-theme-hue, 174));
+  --accent-foreground: oklch(0.95 calc(var(--user-theme-chroma, 0.115) * 0.18) var(--user-theme-hue, 174));
+  --ring: oklch(0.68 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+  --sidebar-primary: oklch(0.68 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+  --sidebar-primary-foreground: oklch(0.12 0.015 var(--user-theme-hue, 174));
+  --sidebar-ring: oklch(0.68 var(--user-theme-chroma, 0.115) var(--user-theme-hue, 174));
+}
+
+:root[data-theme="autostream"] { --user-theme-hue: 174; --user-theme-chroma: 0.115; }
+:root[data-theme="slate"] { --user-theme-hue: 248; --user-theme-chroma: 0.045; }
+:root[data-theme="ocean"] { --user-theme-hue: 238; --user-theme-chroma: 0.13; }
+:root[data-theme="cyan"] { --user-theme-hue: 205; --user-theme-chroma: 0.12; }
+:root[data-theme="indigo"] { --user-theme-hue: 275; --user-theme-chroma: 0.16; }
+:root[data-theme="violet"] { --user-theme-hue: 300; --user-theme-chroma: 0.16; }
+:root[data-theme="magenta"] { --user-theme-hue: 330; --user-theme-chroma: 0.17; }
+:root[data-theme="rose"] { --user-theme-hue: 355; --user-theme-chroma: 0.15; }
+:root[data-theme="crimson"] { --user-theme-hue: 20; --user-theme-chroma: 0.17; }
+:root[data-theme="amber"] { --user-theme-hue: 75; --user-theme-chroma: 0.13; }
+:root[data-theme="emerald"] { --user-theme-hue: 155; --user-theme-chroma: 0.13; }
+:root[data-theme="monochrome"] { --user-theme-hue: 248; --user-theme-chroma: 0; }
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

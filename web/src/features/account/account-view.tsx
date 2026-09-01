@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, CheckCircle2, Copy, KeyRound, Link2, Mail, Plus, QrCode, RefreshCcw, Save, ShieldCheck, ShieldOff, Trash2, Upload, UserCog, X } from "lucide-react";
+import { Camera, CheckCircle2, Copy, KeyRound, Link2, Mail, Palette, Plus, QrCode, RefreshCcw, Save, ShieldCheck, ShieldOff, Trash2, Upload, UserCog, X } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { AccountAvatar } from "@/components/ui/account-avatar";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +19,7 @@ import { useAppSettings, useCurrentUser } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { passkeyRegistrationCredentialToJSON, passkeysSupported, publicKeyCreationOptionsFromJSON } from "@/lib/passkeys";
 import type { MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
+import { AppearancePanel } from "@/features/account/appearance-panel";
 
 type AccountNotice = { tone: "success" | "error"; text: string } | null;
 
@@ -96,6 +97,7 @@ export function AccountView() {
         <TabsList variant="line" className="h-auto w-full justify-start border-b pb-1">
           <TabsTrigger value="profile" className="min-w-32 flex-none"><UserCog />プロフィール</TabsTrigger>
           <TabsTrigger value="security" className="min-w-32 flex-none"><ShieldCheck />セキュリティ</TabsTrigger>
+          <TabsTrigger value="appearance" className="min-w-32 flex-none"><Palette />外観</TabsTrigger>
         </TabsList>
         <TabsContent value="profile">
           <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.75fr)_minmax(0,1.25fr)]">
@@ -133,6 +135,9 @@ export function AccountView() {
               refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "passkeys"] })}
             />
           </div>
+        </TabsContent>
+        <TabsContent value="appearance">
+          <AppearancePanel />
         </TabsContent>
       </Tabs>
     </div>

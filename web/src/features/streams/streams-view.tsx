@@ -33,6 +33,7 @@ import { staticRelayRecoveryActionAvailable, staticRelayRecoveryConfirmation, st
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { StreamPreview } from "@/features/streams/stream-preview";
+import { StreamControlPlatformPanel } from "@/features/streams/stream-control-platform-panel";
 import type { CurrentUser, Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
@@ -426,6 +427,7 @@ function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutpu
           <DetailGroup title="自動開始"><DetailLine label="方式" value={stream.auto_start_trigger === "discord_voice_join" ? "Discord VC参加で自動開始" : "手動開始"} /><DetailLine label="BOT" value={optionLabel(discordLabels, stream.discord_config_id) || "未設定"} /><DetailLine label="VC" value={stream.discord_voice_channel_id || "未設定"} /><DetailLine label="Chat" value={stream.discord_text_channel_id || "未設定"} /></DetailGroup>
           <DetailGroup title="担当Node・映像設定"><DetailLine label="Worker" value={stream.assigned_worker_id || "未割当"} /><DetailLine label="Encoder" value={stream.assigned_encoder_id || "未割当"} /><DetailLine label="Encoder音量" value={`${stream.encoder_audio_gain_db ?? 0} dB`} /><DetailLine label="Watermark" value={optionLabel(overlayProfileLabels, stream.overlay_profile_id) || "OFF"} /></DetailGroup>
         </div>
+        <StreamControlPlatformPanel stream={stream} />
         {isPreviewableStreamStatus(stream.status) ? <StreamPreview stream={stream} /> : null}
         <div className="flex justify-end"><Button asChild variant="outline" size="sm"><Link href={`/admin/audit-logs/?q=${encodeURIComponent(stream.id)}`}>この配信枠の操作履歴を確認</Link></Button></div>
       </DialogContent>

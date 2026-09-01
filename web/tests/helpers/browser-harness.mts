@@ -27,6 +27,7 @@ export type StubResponse = {
 export type StubRequest = {
   method: string;
   url: string;
+  postData?: string;
 };
 
 export type RouteResolver = (request: StubRequest) => StubResponse | null;
@@ -447,7 +448,7 @@ export class BrowserHarness {
 
   private async handleRequest(params: Record<string, unknown>) {
     const requestId = typeof params.requestId === "string" ? params.requestId : "";
-    const request = params.request as { method: string; url: string };
+		const request = params.request as { method: string; url: string; postData?: string };
     const pathname = new URL(request.url).pathname.replace(/\/$/, "") || "/";
     this.requestLifecycle.register({
       requestId,
@@ -456,7 +457,7 @@ export class BrowserHarness {
       requiredResponse: false,
     });
     this.requests.set(pathname, (this.requests.get(pathname) || 0) + 1);
-    const response = this.routeResolver({ method: request.method, url: request.url });
+		const response = this.routeResolver({ method: request.method, url: request.url, postData: request.postData });
     this.requestLifecycle.setRequiredResponse(requestId, response !== null && response.requiredResponse !== false);
     if (!response) {
       const settled = await this.settleFetchRequest(requestId, "Fetch.continueRequest", { requestId });

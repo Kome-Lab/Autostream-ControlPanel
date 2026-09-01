@@ -19,6 +19,7 @@ export type ResourceDefinition = {
 export type ResourceFormKind =
   | "encoder-profile"
   | "discord-config"
+  | "discord-target-preset"
   | "youtube-output"
   | "caption-profile"
   | "overlay-profile"
@@ -65,6 +66,15 @@ export const resourcePages = {
         deletable: true,
         permissions: { read: "discord_configs.read", create: "discord_configs.create", update: "discord_configs.update", delete: "discord_configs.delete" },
         createTemplate: { name: "main-discord-bot", audio_forward_enabled: true },
+      },
+      {
+        title: "Discord配信先プリセット",
+        path: "/discord/target-presets",
+        description: "Guild、Chat、Voiceの組を再利用します。配信枠への保存時に値をsnapshotし、後のプリセット変更では既存枠を変えません。",
+        form: "discord-target-preset",
+        deletable: true,
+        permissions: { read: "discord_target_presets.read", create: "discord_target_presets.create", update: "discord_target_presets.update", delete: "discord_target_presets.delete" },
+        createTemplate: { name: "main-target", guild_id: "", text_channel_id: "", voice_channel_id: "" },
       },
     ],
   },
