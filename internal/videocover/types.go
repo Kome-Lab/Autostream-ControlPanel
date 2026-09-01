@@ -1,13 +1,17 @@
 package videocover
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"io"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -62,11 +66,49 @@ type ActionRequest struct {
 	HideConfirmed         bool   `json:"hide_confirmed,omitempty"`
 }
 
+func (request *ActionRequest) UnmarshalJSON(body []byte) error {
+	if !utf8.Valid(body) || rejectDuplicateActionJSONFields(body) != nil {
+		return ErrInvalidRequest
+	}
+	type wire ActionRequest
+	var value wire
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return ErrInvalidRequest
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ErrInvalidRequest
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return ErrInvalidRequest
+	}
+	for _, name := range []string{"active", "expected_job_generation", "expected_revision", "idempotency_key"} {
+		raw, exists := fields[name]
+		if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return ErrInvalidRequest
+		}
+	}
+	_, hidePresent := fields["hide_confirmed"]
+	if value.Active && hidePresent || !value.Active && (!hidePresent || !value.HideConfirmed) {
+		return ErrInvalidRequest
+	}
+	candidate := ActionRequest(value)
+	if err := ValidateRequest(candidate); err != nil {
+		return err
+	}
+	*request = candidate
+	return nil
+}
+
 type PreparedAction struct {
 	State             State
 	Replay            bool
 	Dispatch          bool
 	RequestedRevision uint64
+	Outcome           string
+	SafeErrorCode     string
 }
 
 type Repository interface {
@@ -76,7 +118,10 @@ type Repository interface {
 	UpdatePreset(context.Context, string, Preset, uint64) (Preset, error)
 	DeletePreset(context.Context, string, string, uint64) (Preset, error)
 	EnsureGeneration(context.Context, string, uint64, string, bool) (State, error)
+	RecordStartApplied(context.Context, string, uint64, bool, uint64) (State, error)
 	GetCurrentState(context.Context, string) (State, error)
+	LookupActionReplay(context.Context, string, ActionRequest) (PreparedAction, bool, error)
+	LookupActionOutcome(context.Context, string, ActionRequest) (PreparedAction, bool, error)
 	PrepareAction(context.Context, string, ActionRequest) (PreparedAction, error)
 	RecordApplied(context.Context, string, uint64, string, bool, uint64) (State, error)
 	RecordAmbiguous(context.Context, string, uint64, string) (State, error)
@@ -89,17 +134,102 @@ func NormalizeState(state State) State {
 	return state
 }
 func ValidateRequest(request ActionRequest) error {
-	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
-	if request.ExpectedJobGeneration < 1 || request.ExpectedRevision < 1 || request.IdempotencyKey == "" || len(request.IdempotencyKey) > 128 {
+	if request.ExpectedJobGeneration < 1 || request.ExpectedRevision < 1 || !validActionIdempotencyKey(request.IdempotencyKey) {
 		return ErrInvalidRequest
 	}
-	if !request.Active && !request.HideConfirmed {
+	if request.Active && request.HideConfirmed || !request.Active && !request.HideConfirmed {
 		return ErrInvalidRequest
 	}
 	return nil
 }
 func RequestFingerprint(request ActionRequest) string {
-	raw := fmt.Sprintf("active=%t\ngeneration=%d\nrevision=%d\nidempotency=%s", request.Active, request.ExpectedJobGeneration, request.ExpectedRevision, strings.TrimSpace(request.IdempotencyKey))
+	raw := fmt.Sprintf("active=%t\ngeneration=%d\nrevision=%d\nidempotency=%s", request.Active, request.ExpectedJobGeneration, request.ExpectedRevision, request.IdempotencyKey)
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func validActionIdempotencyKey(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	length := utf8.RuneCountInString(value)
+	if length < 1 || length > 128 {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(value)
+	last, _ := utf8.DecodeLastRuneInString(value)
+	if actionIdempotencyEdgeSpace(first) || actionIdempotencyEdgeSpace(last) {
+		return false
+	}
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func actionIdempotencyEdgeSpace(character rune) bool {
+	return unicode.IsSpace(character) || character == '\ufeff'
+}
+
+func rejectDuplicateActionJSONFields(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := consumeUniqueActionJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func consumeUniqueActionJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return ErrInvalidRequest
+			}
+			if _, exists := seen[key]; exists {
+				return ErrInvalidRequest
+			}
+			seen[key] = struct{}{}
+			if err := consumeUniqueActionJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return ErrInvalidRequest
+		}
+	case '[':
+		for decoder.More() {
+			if err := consumeUniqueActionJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return ErrInvalidRequest
+		}
+	default:
+		return ErrInvalidRequest
+	}
+	return nil
 }

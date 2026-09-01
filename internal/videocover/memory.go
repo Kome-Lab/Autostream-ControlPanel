@@ -155,6 +155,24 @@ func (m *MemoryRepository) EnsureGeneration(_ context.Context, streamID string, 
 	m.states[streamID][generation] = state
 	return NormalizeState(state), nil
 }
+func (m *MemoryRepository) RecordStartApplied(_ context.Context, streamID string, generation uint64, active bool, revision uint64) (State, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.states[streamID][generation]
+	if !ok {
+		return State{}, ErrNotFound
+	}
+	if revision == 0 || state.DesiredRevision != revision || state.DesiredActive != active {
+		return State{}, ErrRevisionConflict
+	}
+	state.AppliedActive = &active
+	state.AppliedRevision = &revision
+	state.Status = "applied"
+	state.LastErrorCode = ""
+	state.UpdatedAt = m.now()
+	m.states[streamID][generation] = state
+	return NormalizeState(state), nil
+}
 func (m *MemoryRepository) GetCurrentState(_ context.Context, streamID string) (State, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -174,6 +192,67 @@ func (m *MemoryRepository) GetCurrentState(_ context.Context, streamID string) (
 func actionKey(streamID string, generation uint64, key string) string {
 	return streamID + "/" + fmtUint(generation) + "/" + key
 }
+
+func (m *MemoryRepository) LookupActionReplay(_ context.Context, streamID string, request ActionRequest) (PreparedAction, bool, error) {
+	if err := ValidateRequest(request); err != nil {
+		return PreparedAction{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	states := m.states[streamID]
+	var latest uint64
+	for generation := range states {
+		if generation > latest {
+			latest = generation
+		}
+	}
+	if latest == 0 {
+		return PreparedAction{}, false, ErrNotFound
+	}
+	state := states[latest]
+	if latest != request.ExpectedJobGeneration {
+		return PreparedAction{State: NormalizeState(state)}, false, nil
+	}
+	prior, ok := m.actions[actionKey(streamID, latest, request.IdempotencyKey)]
+	if !ok {
+		return PreparedAction{State: NormalizeState(state)}, false, nil
+	}
+	if prior.Fingerprint != RequestFingerprint(request) {
+		return PreparedAction{}, false, ErrIdempotencyConflict
+	}
+	return PreparedAction{
+		State: NormalizeState(state), Replay: true, Dispatch: false, RequestedRevision: prior.RequestedRevision,
+		Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode,
+	}, true, nil
+}
+
+// LookupActionOutcome reads one exact action without applying the
+// current-generation fence used by the preflight replay lookup. It is used
+// only after Record* has durably resolved that action, so a concurrent
+// generation rollover cannot hide its immutable outcome.
+func (m *MemoryRepository) LookupActionOutcome(_ context.Context, streamID string, request ActionRequest) (PreparedAction, bool, error) {
+	if err := ValidateRequest(request); err != nil {
+		return PreparedAction{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.states[streamID][request.ExpectedJobGeneration]
+	if !ok {
+		return PreparedAction{}, false, ErrNotFound
+	}
+	prior, ok := m.actions[actionKey(streamID, request.ExpectedJobGeneration, request.IdempotencyKey)]
+	if !ok {
+		return PreparedAction{State: NormalizeState(state)}, false, nil
+	}
+	if prior.Fingerprint != RequestFingerprint(request) {
+		return PreparedAction{}, false, ErrIdempotencyConflict
+	}
+	return PreparedAction{
+		State: NormalizeState(state), Replay: true, Dispatch: false, RequestedRevision: prior.RequestedRevision,
+		Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode,
+	}, true, nil
+}
+
 func (m *MemoryRepository) PrepareAction(_ context.Context, streamID string, request ActionRequest) (PreparedAction, error) {
 	if err := ValidateRequest(request); err != nil {
 		return PreparedAction{}, err
@@ -191,13 +270,16 @@ func (m *MemoryRepository) PrepareAction(_ context.Context, streamID string, req
 		return PreparedAction{}, ErrStaleGeneration
 	}
 	state := states[latest]
-	key := actionKey(streamID, latest, strings.TrimSpace(request.IdempotencyKey))
+	key := actionKey(streamID, latest, request.IdempotencyKey)
 	fingerprint := RequestFingerprint(request)
 	if prior, ok := m.actions[key]; ok {
 		if prior.Fingerprint != fingerprint {
 			return PreparedAction{}, ErrIdempotencyConflict
 		}
-		return PreparedAction{State: NormalizeState(state), Replay: true, Dispatch: false, RequestedRevision: prior.RequestedRevision}, nil
+		return PreparedAction{
+			State: NormalizeState(state), Replay: true, Dispatch: false, RequestedRevision: prior.RequestedRevision,
+			Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode,
+		}, nil
 	}
 	if state.DesiredRevision != request.ExpectedRevision {
 		return PreparedAction{}, ErrRevisionConflict
@@ -231,14 +313,22 @@ func (m *MemoryRepository) RecordApplied(_ context.Context, streamID string, gen
 	if !ok || action.RequestedRevision != revision {
 		return State{}, ErrRevisionConflict
 	}
+	if !actionMayResolve(action.Status) {
+		return NormalizeState(state), nil
+	}
+	updateRuntime := currentActionMayResolve(state, key, action)
+	action.Status = "applied"
+	action.SafeErrorCode = ""
+	m.actions[actionKey] = action
+	if !updateRuntime {
+		return NormalizeState(state), nil
+	}
 	state.AppliedActive = &active
 	state.AppliedRevision = &revision
 	state.Status = "applied"
 	state.LastErrorCode = ""
 	state.UpdatedAt = m.now()
 	m.states[streamID][generation] = state
-	action.Status = "applied"
-	m.actions[actionKey] = action
 	return NormalizeState(state), nil
 }
 func (m *MemoryRepository) RecordAmbiguous(_ context.Context, streamID string, generation uint64, key string) (State, error) {
@@ -253,13 +343,20 @@ func (m *MemoryRepository) RecordAmbiguous(_ context.Context, streamID string, g
 	if !ok {
 		return State{}, ErrNotFound
 	}
+	if !actionMayResolve(action.Status) {
+		return NormalizeState(state), nil
+	}
+	updateRuntime := currentActionMayResolve(state, key, action)
+	action.Status = "confirming"
+	action.SafeErrorCode = "transport_outcome_unknown"
+	m.actions[actionKey] = action
+	if !updateRuntime {
+		return NormalizeState(state), nil
+	}
 	state.Status = "confirming"
 	state.LastErrorCode = "transport_outcome_unknown"
 	state.UpdatedAt = m.now()
 	m.states[streamID][generation] = state
-	action.Status = "confirming"
-	action.SafeErrorCode = "transport_outcome_unknown"
-	m.actions[actionKey] = action
 	return NormalizeState(state), nil
 }
 func (m *MemoryRepository) RecordFailed(_ context.Context, streamID string, generation uint64, key, code string) (State, error) {
@@ -274,14 +371,33 @@ func (m *MemoryRepository) RecordFailed(_ context.Context, streamID string, gene
 	if !ok {
 		return State{}, ErrNotFound
 	}
+	if !actionMayResolve(action.Status) {
+		return NormalizeState(state), nil
+	}
+	updateRuntime := currentActionMayResolve(state, key, action)
+	action.Status = "failed"
+	action.SafeErrorCode = safeCode(code)
+	m.actions[actionKey] = action
+	if !updateRuntime {
+		return NormalizeState(state), nil
+	}
 	state.Status = "failed"
-	state.LastErrorCode = safeCode(code)
+	state.LastErrorCode = action.SafeErrorCode
 	state.UpdatedAt = m.now()
 	m.states[streamID][generation] = state
-	action.Status = "failed"
-	action.SafeErrorCode = state.LastErrorCode
-	m.actions[actionKey] = action
 	return NormalizeState(state), nil
+}
+
+func currentActionMayResolve(state State, key string, action memoryAction) bool {
+	if state.LastIdempotencyKey != key || state.DesiredRevision != action.RequestedRevision {
+		return false
+	}
+	return state.Status == "idle" && action.Status == "pending" ||
+		state.Status == "confirming" && action.Status == "confirming"
+}
+
+func actionMayResolve(status string) bool {
+	return status == "pending" || status == "confirming"
 }
 func safeCode(code string) string {
 	code = strings.TrimSpace(code)

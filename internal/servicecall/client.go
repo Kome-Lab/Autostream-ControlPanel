@@ -58,22 +58,25 @@ type StartRequest struct {
 	// Control Panel. They are internal dispatch inputs, never operator-supplied
 	// fields, and let a negotiated Worker scene match the selected Encoder
 	// output before the final Encoder pass.
-	EncoderVideoWidth           int            `json:"-"`
-	EncoderVideoHeight          int            `json:"-"`
-	EncoderVideoFPS             int            `json:"-"`
-	CaptionProfileID            string         `json:"caption_profile_id,omitempty"`
-	WorkerJobGeneration         uint64         `json:"-"`
-	CaptionAudioFlushMS         int            `json:"-"`
-	CaptionAudioMaxBatchPackets int            `json:"-"`
-	UnresolvedSSRCBufferMS      int            `json:"-"`
-	OverlayProfileID            string         `json:"overlay_profile_id,omitempty"`
-	EncoderAudioGainDB          float64        `json:"encoder_audio_gain_db,omitempty"`
-	ArchiveProfileID            string         `json:"archive_profile_id,omitempty"`
-	ArchiveRunID                string         `json:"-"`
-	ArchiveStartedAt            time.Time      `json:"-"`
-	YouTubeOutputID             string         `json:"youtube_output_id,omitempty"`
-	YouTubeRuntime              map[string]any `json:"-"`
-	ArchiveConfig               map[string]any `json:"-"`
+	EncoderVideoWidth           int                      `json:"-"`
+	EncoderVideoHeight          int                      `json:"-"`
+	EncoderVideoFPS             int                      `json:"-"`
+	CaptionProfileID            string                   `json:"caption_profile_id,omitempty"`
+	WorkerJobGeneration         uint64                   `json:"-"`
+	CaptionAudioFlushMS         int                      `json:"-"`
+	CaptionAudioMaxBatchPackets int                      `json:"-"`
+	UnresolvedSSRCBufferMS      int                      `json:"-"`
+	DiscordTargetRevision       uint64                   `json:"-"`
+	SceneAppearance             *SceneAppearance         `json:"-"`
+	VideoCoverStart             *VideoCoverStartSnapshot `json:"-"`
+	OverlayProfileID            string                   `json:"overlay_profile_id,omitempty"`
+	EncoderAudioGainDB          float64                  `json:"encoder_audio_gain_db,omitempty"`
+	ArchiveProfileID            string                   `json:"archive_profile_id,omitempty"`
+	ArchiveRunID                string                   `json:"-"`
+	ArchiveStartedAt            time.Time                `json:"-"`
+	YouTubeOutputID             string                   `json:"youtube_output_id,omitempty"`
+	YouTubeRuntime              map[string]any           `json:"-"`
+	ArchiveConfig               map[string]any           `json:"-"`
 }
 
 func (c Client) UpdateEncoderRuntimeSettings(ctx context.Context, stream store.Stream, services []store.RegisteredService, audioGainDB float64, overlayProfileID string) DispatchResult {
@@ -541,6 +544,23 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 			ServiceID: issue.ServiceID, ServiceType: issue.ServiceType,
 			Code: issue.Code, FailurePhase: "pre_dispatch", Error: issue.Message,
 		}}
+	}
+	if req.VideoCoverStart != nil {
+		encoder := firstService(ordered, "encoder_recorder")
+		if !reportedCapabilityTrue(encoder.ReportedCapabilities, CapabilityLiveVideoCoverV1) {
+			return []DispatchResult{{ServiceID: encoder.ServiceID, ServiceType: "encoder_recorder", Code: "video_cover_capability_unavailable", FailurePhase: "pre_dispatch", Error: "Encoder does not advertise video cover runtime support"}}
+		}
+	}
+	if req.SceneAppearance != nil {
+		worker := firstService(ordered, "worker")
+		if !reportedCapabilityTrue(worker.ReportedCapabilities, CapabilitySceneAppearanceV1) {
+			return []DispatchResult{{ServiceID: worker.ServiceID, ServiceType: "worker", Code: "scene_appearance_capability_unavailable", FailurePhase: "pre_dispatch", Error: "Worker does not advertise scene appearance runtime support"}}
+		}
+	}
+	discordService := firstService(ordered, "discord_bot")
+	if reportedCapabilityTrue(discordService.ReportedCapabilities, CapabilityDiscordResolvedTargetV2) &&
+		(req.DiscordTargetRevision == 0 || !validDiscordTargetID(req.DiscordGuildID) || !validDiscordTargetID(req.DiscordTextChannelID) || !validDiscordTargetID(req.DiscordVoiceChannelID)) {
+		return []DispatchResult{{ServiceID: discordService.ServiceID, ServiceType: "discord_bot", Code: "discord_target_invalid", FailurePhase: "pre_dispatch", Error: "resolved Discord target snapshot is invalid"}}
 	}
 	results := make([]DispatchResult, 0, len(ordered))
 	encoderURL := firstServiceURL(ordered, "encoder_recorder")
@@ -1402,19 +1422,28 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		if len(req.ArchiveConfig) > 0 {
 			payload["archive_config"] = req.ArchiveConfig
 		}
+		if req.VideoCoverStart != nil && reportedCapabilityTrue(service.ReportedCapabilities, CapabilityLiveVideoCoverV1) {
+			payload["video_cover_start"] = req.VideoCoverStart
+		}
 		if reportedCapabilityTrue(service.ReportedCapabilities, "archive_runs") && strings.TrimSpace(req.ArchiveRunID) != "" && !req.ArchiveStartedAt.IsZero() {
 			payload["archive_run_id"] = req.ArchiveRunID
 			payload["started_at"] = req.ArchiveStartedAt.UTC()
 		}
 		return "/streams/start", payload, true
 	case "discord_bot":
-		payload := map[string]any{
-			"stream_id":         stream.ID,
-			"job_generation":    req.WorkerJobGeneration,
-			"guild_id":          req.DiscordGuildID,
-			"voice_channel_id":  req.DiscordVoiceChannelID,
-			"text_channel_id":   req.DiscordTextChannelID,
-			"encoder_audio_url": encoderURL,
+		payload := map[string]any{"stream_id": stream.ID, "job_generation": req.WorkerJobGeneration, "encoder_audio_url": encoderURL}
+		if reportedCapabilityTrue(service.ReportedCapabilities, CapabilityDiscordResolvedTargetV2) {
+			payload["schema_version"] = 2
+			payload["discord_target"] = DiscordTargetSnapshot{
+				Revision: req.DiscordTargetRevision,
+				Resolved: ResolvedDiscordTarget{
+					GuildID: req.DiscordGuildID, TextChannelID: req.DiscordTextChannelID, VoiceChannelID: req.DiscordVoiceChannelID,
+				},
+			}
+		} else {
+			payload["guild_id"] = req.DiscordGuildID
+			payload["voice_channel_id"] = req.DiscordVoiceChannelID
+			payload["text_channel_id"] = req.DiscordTextChannelID
 		}
 		if token := c.issueIngestToken(stream.ID, service, "discord_audio", now); token != "" {
 			payload["stream_ingest_token"] = token
@@ -1445,6 +1474,9 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		}
 		if token := c.issueIngestToken(stream.ID, service, "worker_events", now); token != "" {
 			payload["stream_ingest_token"] = token
+		}
+		if req.SceneAppearance != nil && reportedCapabilityTrue(service.ReportedCapabilities, CapabilitySceneAppearanceV1) {
+			payload["scene_appearance"] = req.SceneAppearance
 		}
 		return "/jobs/start", payload, true
 	default:
@@ -1569,6 +1601,19 @@ func workerVideoCapabilityMismatch(services []store.RegisteredService) (Readines
 func reportedCapabilityTrue(capabilities map[string]any, name string) bool {
 	value, ok := capabilities[name].(bool)
 	return ok && value
+}
+
+func validDiscordTargetID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 1 || len(value) > 32 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateWorkerVideoIngestRoute(route workerVideoIngestRoute) error {

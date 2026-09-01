@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/example/autostream-control-panel/internal/mediaassets"
@@ -129,15 +130,15 @@ func reportedBool(service store.RegisteredService, key string) bool {
 	return ok && result
 }
 
-func (s *Server) beginVideoCoverGeneration(ctx context.Context, streamID string) error {
+func (s *Server) beginVideoCoverGeneration(ctx context.Context, streamID string) (videocover.State, error) {
 	if s.videoCovers == nil {
-		return nil
+		return videocover.State{}, nil
 	}
 	generation := uint64(1)
 	if current, err := s.videoCovers.GetCurrentState(ctx, streamID); err == nil {
 		generation = current.JobGeneration + 1
 	} else if !errors.Is(err, videocover.ErrNotFound) {
-		return err
+		return videocover.State{}, err
 	}
 	variantID := ""
 	desiredActive := false
@@ -146,11 +147,126 @@ func (s *Server) beginVideoCoverGeneration(ctx context.Context, streamID string)
 			variantID = settings.CoverVariantID
 			desiredActive = settings.CoverSource != "none" && settings.CoverStartActive
 		} else if !errors.Is(err, streamvisual.ErrNotFound) {
-			return err
+			return videocover.State{}, err
 		}
 	}
-	_, err := s.videoCovers.EnsureGeneration(ctx, streamID, generation, variantID, desiredActive)
-	return err
+	return s.videoCovers.EnsureGeneration(ctx, streamID, generation, variantID, desiredActive)
+}
+
+func (s *Server) materializeVisualStartSnapshot(ctx context.Context, streamID string, assignments []store.RegisteredService, generation videocover.State, request *servicecall.StartRequest) error {
+	if request == nil || s.streamVisual == nil {
+		return nil
+	}
+	settings, err := s.streamVisual.Get(ctx, streamID)
+	if errors.Is(err, streamvisual.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if settings.DiscordSnapshotRevision == 0 {
+		return streamvisual.ErrInvalidSettings
+	}
+	request.DiscordTargetRevision = settings.DiscordSnapshotRevision
+	if settings.DiscordTargetMode == "manual" || settings.DiscordTargetMode == "preset" {
+		request.DiscordGuildID = settings.DiscordGuildID
+		request.DiscordTextChannelID = settings.DiscordTextChannelID
+		request.DiscordVoiceChannelID = settings.DiscordVoiceChannelID
+	}
+
+	workerSupportsScene := false
+	encoderSupportsCover := false
+	for _, service := range assignments {
+		switch service.ServiceType {
+		case "worker":
+			workerSupportsScene = reportedBool(service, servicecall.CapabilitySceneAppearanceV1)
+		case "encoder_recorder":
+			encoderSupportsCover = reportedBool(service, servicecall.CapabilityLiveVideoCoverV1)
+		}
+	}
+	customScene := settings.BackgroundMode == "image" || settings.HeaderTitleMode == "custom"
+	if customScene && !workerSupportsScene {
+		return streamvisual.ErrInvalidSettings
+	}
+	// Revision zero identifies a legacy stream that has no v2 visual row. Its
+	// default appearance stays on the exact omitted-field compatibility path.
+	if workerSupportsScene && settings.Revision > 0 {
+		appearance := &servicecall.SceneAppearance{
+			Generation: generation.JobGeneration, Revision: settings.Revision,
+			Capability: servicecall.CapabilitySceneAppearanceV1, Readiness: servicecall.VisualReadinessReady,
+			BackgroundMode: settings.BackgroundMode, HeaderTitleMode: settings.HeaderTitleMode,
+		}
+		if settings.BackgroundMode == "image" {
+			appearance.Background, err = s.visualAssetDescriptor(ctx, streamID, settings.BackgroundAssetID, settings.BackgroundVariantID, "scene_background")
+			if err != nil {
+				return err
+			}
+		}
+		if settings.HeaderTitleMode == "custom" {
+			appearance.CustomTitle = settings.HeaderTitleValue
+		}
+		request.SceneAppearance = appearance
+	}
+
+	coverConfigured := settings.CoverSource != "none"
+	if coverConfigured && !encoderSupportsCover {
+		return streamvisual.ErrInvalidSettings
+	}
+	if encoderSupportsCover {
+		if generation.JobGeneration == 0 || generation.DesiredRevision == 0 {
+			return videocover.ErrInvalidRequest
+		}
+		start := &servicecall.VideoCoverStartSnapshot{
+			JobGeneration: generation.JobGeneration, Revision: generation.DesiredRevision,
+			Active:         generation.DesiredActive,
+			IdempotencyKey: "stream-start:" + strconv.FormatUint(generation.JobGeneration, 10) + ":" + strconv.FormatUint(generation.DesiredRevision, 10),
+		}
+		if start.Active {
+			start.CoverAsset, err = s.visualAssetDescriptor(ctx, streamID, settings.CoverAssetID, settings.CoverVariantID, "video_cover")
+			if err != nil {
+				return err
+			}
+		}
+		request.VideoCoverStart = start
+	}
+	return nil
+}
+
+func (s *Server) visualAssetDescriptor(ctx context.Context, streamID, expectedAssetID, variantID, usage string) (*servicecall.MediaAssetDescriptor, error) {
+	if s.mediaAssets == nil {
+		return nil, mediaassets.ErrNotFound
+	}
+	internal, err := s.mediaAssets.OpenInternalVariant(ctx, streamID, variantID)
+	if err != nil {
+		return nil, err
+	}
+	defer internal.Reader.Close()
+	if internal.Asset.ID != expectedAssetID || internal.Variant.ID != variantID || internal.Variant.AssetID != expectedAssetID ||
+		internal.Asset.UsageType != usage || internal.Variant.Status != "ready" || internal.Variant.ProcessorRevision < 1 {
+		return nil, mediaassets.ErrIntegrity
+	}
+	descriptor := &servicecall.MediaAssetDescriptor{
+		AssetID: internal.Asset.ID, VariantID: internal.Variant.ID, Usage: usage,
+		MediaType: internal.Variant.MediaType, Width: internal.Variant.Width, Height: internal.Variant.Height,
+		ByteSize: internal.Variant.ByteSize, PixelCount: int64(internal.Variant.Width) * int64(internal.Variant.Height),
+		Animated: false, SHA256: strings.ToLower(internal.Variant.SHA256),
+		Revision: uint64(internal.Variant.ProcessorRevision), Readiness: servicecall.VisualReadinessReady,
+	}
+	if usage == "video_cover" {
+		opaque := internal.Variant.Opaque
+		descriptor.Opaque = &opaque
+		denominator := int64(internal.Variant.Height) * 16
+		delta := int64(internal.Variant.Width)*9 - int64(internal.Variant.Height)*16
+		if delta < 0 {
+			delta = -delta
+		}
+		aspectPPM := 0
+		if denominator > 0 {
+			aspectPPM = int(delta * 1_000_000 / denominator)
+		}
+		descriptor.AspectRatioErrorPPM = &aspectPPM
+	}
+	return descriptor, nil
 }
 
 type videoCoverPresetRequest struct {
@@ -252,26 +368,21 @@ func (s *Server) updateVideoCoverState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
 		return
 	}
-	// An already-recorded action is an immutable idempotency result. Resolve an
-	// exact replay before consulting mutable runtime capability or asset health,
-	// while still re-evaluating the caller's permission above. PrepareAction
-	// verifies the persisted request fingerprint and cannot dispatch a replay.
+	// An already-recorded action is an immutable idempotency result. Resolve any
+	// historical exact replay before consulting mutable runtime capability or
+	// asset health, while still re-evaluating the caller's permission above.
 	coverState, err := s.videoCovers.GetCurrentState(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeVideoCoverError(w, err)
 		return
 	}
-	if strings.TrimSpace(coverState.LastIdempotencyKey) == strings.TrimSpace(request.IdempotencyKey) {
-		prepared, prepareErr := s.videoCovers.PrepareAction(r.Context(), r.PathValue("id"), request)
-		if prepareErr != nil {
-			writeVideoCoverError(w, prepareErr)
-			return
-		}
-		if !prepared.Replay || prepared.Dispatch {
-			writeJSON(w, http.StatusConflict, map[string]string{"code": "idempotency_conflict"})
-			return
-		}
-		writeJSON(w, http.StatusOK, prepared.State)
+	replay, replayFound, replayErr := s.videoCovers.LookupActionReplay(r.Context(), r.PathValue("id"), request)
+	if replayErr != nil {
+		writeVideoCoverError(w, replayErr)
+		return
+	}
+	if replayFound {
+		s.serveVideoCoverReplay(w, r, action, request, replay)
 		return
 	}
 	assignments, err := s.streamAssignments(r.Context(), r.PathValue("id"))
@@ -279,15 +390,7 @@ func (s *Server) updateVideoCoverState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return
 	}
-	var encoder store.RegisteredService
-	found := false
-	for _, service := range assignments {
-		if service.ServiceType == "encoder_recorder" && (strings.TrimSpace(service.AssignmentRole) == "" || strings.EqualFold(strings.TrimSpace(service.AssignmentRole), "primary")) {
-			encoder = service
-			found = true
-			break
-		}
-	}
+	encoder, found := primaryVideoCoverEncoder(assignments)
 	if !found || !reportedBool(encoder, "live_video_cover_v1") {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "video_cover_capability_unavailable"})
 		return
@@ -332,31 +435,145 @@ func (s *Server) updateVideoCoverState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if prepared.Replay {
-		writeJSON(w, http.StatusOK, prepared.State)
+		s.serveVideoCoverReplay(w, r, action, request, prepared)
 		return
 	}
-	result := s.videoCoverDispatcher.DispatchVideoCover(r.Context(), encoder, servicecall.VideoCoverDispatchRequest{StreamID: r.PathValue("id"), JobGeneration: request.ExpectedJobGeneration, Revision: prepared.RequestedRevision, Active: request.Active, AssetVariantID: prepared.State.AssetVariantID, IdempotencyKey: request.IdempotencyKey})
-	var state videocover.State
-	status := http.StatusOK
+	var coverAsset *servicecall.MediaAssetDescriptor
+	if request.Active {
+		coverAsset, err = s.visualAssetDescriptor(r.Context(), r.PathValue("id"), settings.CoverAssetID, settings.CoverVariantID, "video_cover")
+		if err != nil {
+			if _, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, "media_asset_integrity"); err != nil {
+				writeVideoCoverError(w, err)
+				return
+			}
+			recorded, status, resultText, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
+			if !outcomeOK {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_action_outcome_unavailable"})
+				return
+			}
+			s.writeVideoCoverActionAudit(r, action, request, recorded, resultText, false)
+			writeJSON(w, status, recorded.State)
+			return
+		}
+	}
+	result := s.videoCoverDispatcher.DispatchVideoCover(r.Context(), encoder, servicecall.VideoCoverDispatchRequest{
+		StreamID: r.PathValue("id"), JobGeneration: request.ExpectedJobGeneration, Revision: prepared.RequestedRevision,
+		Active: request.Active, AssetVariantID: prepared.State.AssetVariantID, IdempotencyKey: request.IdempotencyKey,
+		CoverAsset: coverAsset, HideConfirmed: request.HideConfirmed,
+	})
 	if result.Ambiguous {
-		state, err = s.videoCovers.RecordAmbiguous(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey)
-		status = http.StatusAccepted
+		_, err = s.videoCovers.RecordAmbiguous(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey)
 	} else if result.Applied {
-		state, err = s.videoCovers.RecordApplied(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, request.Active, prepared.RequestedRevision)
+		_, err = s.videoCovers.RecordApplied(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, request.Active, prepared.RequestedRevision)
 	} else {
-		state, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, result.SafeErrorCode)
-		status = http.StatusBadGateway
+		_, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, result.SafeErrorCode)
 	}
 	if err != nil {
 		writeVideoCoverError(w, err)
 		return
 	}
-	resultText := "failure"
-	if result.Applied {
-		resultText = "success"
+	recorded, status, resultText, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
+	if !outcomeOK {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_action_outcome_unavailable"})
+		return
 	}
-	s.writeAudit(r, store.AuditEvent{Action: action, ResourceType: "stream", ResourceID: r.PathValue("id"), Result: resultText, Metadata: map[string]any{"job_generation": state.JobGeneration, "desired_active": state.DesiredActive, "desired_revision": state.DesiredRevision, "applied_revision": state.AppliedRevision, "status": state.Status, "error_code": state.LastErrorCode}})
-	writeJSON(w, status, state)
+	s.writeVideoCoverActionAudit(r, action, request, recorded, resultText, false)
+	writeJSON(w, status, recorded.State)
+}
+
+func (s *Server) serveVideoCoverReplay(w http.ResponseWriter, r *http.Request, action string, request videocover.ActionRequest, prepared videocover.PreparedAction) {
+	if !prepared.Replay || prepared.Dispatch {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "idempotency_conflict"})
+		return
+	}
+	if prepared.Outcome != "confirming" || prepared.State.LastIdempotencyKey != request.IdempotencyKey || prepared.State.Status != "confirming" {
+		writeJSON(w, http.StatusOK, prepared.State)
+		return
+	}
+	reconciler, ok := s.videoCoverDispatcher.(servicecall.VideoCoverReconciler)
+	if !ok {
+		writeJSON(w, http.StatusAccepted, prepared.State)
+		return
+	}
+	assignments, err := s.streamAssignments(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
+		return
+	}
+	encoder, found := primaryVideoCoverEncoder(assignments)
+	if !found || !reportedBool(encoder, servicecall.CapabilityLiveVideoCoverV1) {
+		writeJSON(w, http.StatusAccepted, prepared.State)
+		return
+	}
+	result := reconciler.ReconcileVideoCover(r.Context(), encoder, servicecall.VideoCoverReconcileRequest{
+		StreamID: r.PathValue("id"), JobGeneration: request.ExpectedJobGeneration,
+		Revision: prepared.RequestedRevision, Active: request.Active,
+		AssetVariantID: prepared.State.AssetVariantID,
+	})
+	switch {
+	case result.Applied:
+		_, err = s.videoCovers.RecordApplied(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, request.Active, prepared.RequestedRevision)
+	case result.Ambiguous:
+		_, err = s.videoCovers.RecordAmbiguous(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey)
+	case result.SafeErrorCode != "":
+		_, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, result.SafeErrorCode)
+	}
+	if err != nil {
+		writeVideoCoverError(w, err)
+		return
+	}
+	recorded, status, resultText, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
+	if !outcomeOK {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_action_outcome_unavailable"})
+		return
+	}
+	s.writeVideoCoverActionAudit(r, action, request, recorded, resultText, true)
+	writeJSON(w, status, recorded.State)
+}
+
+func (s *Server) recordedVideoCoverOutcome(ctx context.Context, streamID string, request videocover.ActionRequest) (videocover.PreparedAction, int, string, bool) {
+	recorded, found, err := s.videoCovers.LookupActionOutcome(ctx, streamID, request)
+	if err != nil || !found || !recorded.Replay || recorded.Dispatch {
+		return videocover.PreparedAction{}, 0, "", false
+	}
+	switch recorded.Outcome {
+	case "applied":
+		return recorded, http.StatusOK, "success", true
+	case "confirming":
+		return recorded, http.StatusAccepted, "failure", true
+	case "failed":
+		return recorded, http.StatusBadGateway, "failure", true
+	default:
+		return videocover.PreparedAction{}, 0, "", false
+	}
+}
+
+func (s *Server) writeVideoCoverActionAudit(r *http.Request, action string, request videocover.ActionRequest, recorded videocover.PreparedAction, resultText string, reconciled bool) {
+	var appliedRevision any
+	if recorded.Outcome == "applied" {
+		appliedRevision = recorded.RequestedRevision
+	}
+	metadata := map[string]any{
+		"job_generation":   request.ExpectedJobGeneration,
+		"desired_active":   request.Active,
+		"desired_revision": recorded.RequestedRevision,
+		"applied_revision": appliedRevision,
+		"status":           recorded.Outcome,
+		"error_code":       recorded.SafeErrorCode,
+	}
+	if reconciled {
+		metadata["reconciled"] = true
+	}
+	s.writeAudit(r, store.AuditEvent{Action: action, ResourceType: "stream", ResourceID: r.PathValue("id"), Result: resultText, Metadata: metadata})
+}
+
+func primaryVideoCoverEncoder(assignments []store.RegisteredService) (store.RegisteredService, bool) {
+	for _, service := range assignments {
+		if service.ServiceType == "encoder_recorder" && (strings.TrimSpace(service.AssignmentRole) == "" || strings.EqualFold(strings.TrimSpace(service.AssignmentRole), "primary")) {
+			return service, true
+		}
+	}
+	return store.RegisteredService{}, false
 }
 
 func writeVideoCoverError(w http.ResponseWriter, err error) {

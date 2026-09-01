@@ -19,6 +19,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/database"
 	"github.com/example/autostream-control-panel/internal/httpapi"
 	"github.com/example/autostream-control-panel/internal/mediaassets"
+	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/streamvisual"
 	"github.com/example/autostream-control-panel/internal/version"
@@ -60,6 +61,7 @@ func main() {
 	}
 	visualRepository := streamvisual.NewMariaDBRepository(db, mediaRepository)
 	videoCoverRepository := videocover.NewMariaDBRepository(db)
+	runtimeDispatcher := servicecall.FromEnv()
 	srv := httpapi.NewServer(
 		store.NewMariaDBStreamStore(db),
 		httpapi.WithAuthStore(store.NewMariaDBAuthStoreWithSecretKey(db, os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))),
@@ -78,6 +80,8 @@ func main() {
 		httpapi.WithDiscordTargetPresetStore(store.NewMariaDBDiscordTargetPresetStore(db)),
 		httpapi.WithStreamVisualRepository(visualRepository),
 		httpapi.WithVideoCoverRepository(videoCoverRepository),
+		httpapi.WithServiceDispatcher(runtimeDispatcher),
+		httpapi.WithVideoCoverDispatcher(runtimeDispatcher),
 	)
 	handler := withStaticFiles(srv, staticWebDir(), appSettingsStore)
 	server := &http.Server{

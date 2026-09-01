@@ -295,6 +295,30 @@ func (s *SQLRepository) EnsureGeneration(ctx context.Context, streamID string, g
 	}
 	return scanState(s.db.QueryRowContext(ctx, stateSelect+` WHERE stream_id=? AND job_generation=?`, streamID, generation))
 }
+func (s *SQLRepository) RecordStartApplied(ctx context.Context, streamID string, generation uint64, active bool, revision uint64) (State, error) {
+	if generation == 0 || revision == 0 {
+		return State{}, ErrInvalidRequest
+	}
+	now := s.now()
+	result, err := s.db.ExecContext(ctx, `UPDATE stream_video_cover_runtime SET applied_active=?,applied_revision=?,last_error_code=NULL,reconciliation_status='applied',updated_at=? WHERE stream_id=? AND job_generation=? AND desired_active=? AND desired_revision=? AND applied_revision IS NULL`, active, revision, now, strings.TrimSpace(streamID), generation, active, revision)
+	if err != nil {
+		return State{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		state, getErr := scanState(s.db.QueryRowContext(ctx, stateSelect+` WHERE stream_id=? AND job_generation=?`, strings.TrimSpace(streamID), generation))
+		if errors.Is(getErr, sql.ErrNoRows) {
+			return State{}, ErrNotFound
+		}
+		if getErr != nil {
+			return State{}, getErr
+		}
+		if state.AppliedActive != nil && state.AppliedRevision != nil && *state.AppliedActive == active && *state.AppliedRevision == revision {
+			return state, nil
+		}
+		return State{}, ErrRevisionConflict
+	}
+	return scanState(s.db.QueryRowContext(ctx, stateSelect+` WHERE stream_id=? AND job_generation=?`, strings.TrimSpace(streamID), generation))
+}
 func (s *SQLRepository) GetCurrentState(ctx context.Context, streamID string) (State, error) {
 	state, err := scanState(s.db.QueryRowContext(ctx, stateSelect+` WHERE stream_id=? ORDER BY job_generation DESC LIMIT 1`, strings.TrimSpace(streamID)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -302,12 +326,93 @@ func (s *SQLRepository) GetCurrentState(ctx context.Context, streamID string) (S
 	}
 	return state, err
 }
+
+func (s *SQLRepository) LookupActionReplay(ctx context.Context, streamID string, request ActionRequest) (PreparedAction, bool, error) {
+	if err := ValidateRequest(request); err != nil {
+		return PreparedAction{}, false, err
+	}
+	streamID = strings.TrimSpace(streamID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PreparedAction{}, false, err
+	}
+	defer tx.Rollback()
+	state, err := scanState(tx.QueryRowContext(ctx, stateSelect+` WHERE stream_id=? ORDER BY job_generation DESC LIMIT 1 FOR UPDATE`, streamID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return PreparedAction{}, false, ErrNotFound
+	}
+	if err != nil {
+		return PreparedAction{}, false, err
+	}
+	if state.JobGeneration != request.ExpectedJobGeneration {
+		return PreparedAction{State: state}, false, nil
+	}
+	var priorFingerprint string
+	var priorRevision uint64
+	var priorStatus string
+	var priorSafeError sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT request_fingerprint,requested_revision,result_status,safe_error_code FROM stream_video_cover_actions WHERE stream_id=? AND job_generation=? AND idempotency_key=? FOR UPDATE`, streamID, state.JobGeneration, request.IdempotencyKey).Scan(&priorFingerprint, &priorRevision, &priorStatus, &priorSafeError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PreparedAction{State: state}, false, nil
+	}
+	if err != nil {
+		return PreparedAction{}, false, err
+	}
+	if priorFingerprint != RequestFingerprint(request) {
+		return PreparedAction{}, false, ErrIdempotencyConflict
+	}
+	return PreparedAction{
+		State: state, Replay: true, Dispatch: false, RequestedRevision: priorRevision,
+		Outcome: priorStatus, SafeErrorCode: priorSafeError.String,
+	}, true, nil
+}
+
+// LookupActionOutcome reads the exact generation/action pair after a Record*
+// call. Runtime is locked before action, matching PrepareAction and record, but
+// unlike LookupActionReplay this deliberately does not consult the latest
+// generation.
+func (s *SQLRepository) LookupActionOutcome(ctx context.Context, streamID string, request ActionRequest) (PreparedAction, bool, error) {
+	if err := ValidateRequest(request); err != nil {
+		return PreparedAction{}, false, err
+	}
+	streamID = strings.TrimSpace(streamID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PreparedAction{}, false, err
+	}
+	defer tx.Rollback()
+	state, err := scanState(tx.QueryRowContext(ctx, stateSelect+` WHERE stream_id=? AND job_generation=? FOR UPDATE`, streamID, request.ExpectedJobGeneration))
+	if errors.Is(err, sql.ErrNoRows) {
+		return PreparedAction{}, false, ErrNotFound
+	}
+	if err != nil {
+		return PreparedAction{}, false, err
+	}
+	var priorFingerprint string
+	var priorRevision uint64
+	var priorStatus string
+	var priorSafeError sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT request_fingerprint,requested_revision,result_status,safe_error_code FROM stream_video_cover_actions WHERE stream_id=? AND job_generation=? AND idempotency_key=? FOR UPDATE`, streamID, request.ExpectedJobGeneration, request.IdempotencyKey).Scan(&priorFingerprint, &priorRevision, &priorStatus, &priorSafeError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PreparedAction{State: state}, false, nil
+	}
+	if err != nil {
+		return PreparedAction{}, false, err
+	}
+	if priorFingerprint != RequestFingerprint(request) {
+		return PreparedAction{}, false, ErrIdempotencyConflict
+	}
+	return PreparedAction{
+		State: state, Replay: true, Dispatch: false, RequestedRevision: priorRevision,
+		Outcome: priorStatus, SafeErrorCode: priorSafeError.String,
+	}, true, nil
+}
+
 func (s *SQLRepository) PrepareAction(ctx context.Context, streamID string, request ActionRequest) (PreparedAction, error) {
 	if err := ValidateRequest(request); err != nil {
 		return PreparedAction{}, err
 	}
 	streamID = strings.TrimSpace(streamID)
-	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return PreparedAction{}, err
@@ -326,7 +431,9 @@ func (s *SQLRepository) PrepareAction(ctx context.Context, streamID string, requ
 	fingerprint := RequestFingerprint(request)
 	var priorFingerprint string
 	var priorRevision uint64
-	err = tx.QueryRowContext(ctx, `SELECT request_fingerprint,requested_revision FROM stream_video_cover_actions WHERE stream_id=? AND job_generation=? AND idempotency_key=?`, streamID, state.JobGeneration, request.IdempotencyKey).Scan(&priorFingerprint, &priorRevision)
+	var priorStatus string
+	var priorSafeError sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT request_fingerprint,requested_revision,result_status,safe_error_code FROM stream_video_cover_actions WHERE stream_id=? AND job_generation=? AND idempotency_key=?`, streamID, state.JobGeneration, request.IdempotencyKey).Scan(&priorFingerprint, &priorRevision, &priorStatus, &priorSafeError)
 	if err == nil {
 		if priorFingerprint != fingerprint {
 			return PreparedAction{}, ErrIdempotencyConflict
@@ -334,7 +441,10 @@ func (s *SQLRepository) PrepareAction(ctx context.Context, streamID string, requ
 		if err = tx.Commit(); err != nil {
 			return PreparedAction{}, err
 		}
-		return PreparedAction{State: state, Replay: true, Dispatch: false, RequestedRevision: priorRevision}, nil
+		return PreparedAction{
+			State: state, Replay: true, Dispatch: false, RequestedRevision: priorRevision,
+			Outcome: priorStatus, SafeErrorCode: priorSafeError.String,
+		}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return PreparedAction{}, err
@@ -379,13 +489,22 @@ func (s *SQLRepository) RecordFailed(ctx context.Context, streamID string, gener
 	return s.record(ctx, streamID, generation, key, "failed", safeCode(code), nil, nil)
 }
 func (s *SQLRepository) record(ctx context.Context, streamID string, generation uint64, key, status, code string, active *bool, revision *uint64) (State, error) {
+	streamID = strings.TrimSpace(streamID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return State{}, err
 	}
 	defer tx.Rollback()
+	state, err := scanState(tx.QueryRowContext(ctx, stateSelect+` WHERE stream_id=? AND job_generation=? FOR UPDATE`, streamID, generation))
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, ErrNotFound
+	}
+	if err != nil {
+		return State{}, err
+	}
 	var requestedRevision uint64
-	if err = tx.QueryRowContext(ctx, `SELECT requested_revision FROM stream_video_cover_actions WHERE stream_id=? AND job_generation=? AND idempotency_key=? FOR UPDATE`, streamID, generation, key).Scan(&requestedRevision); errors.Is(err, sql.ErrNoRows) {
+	var actionStatus string
+	if err = tx.QueryRowContext(ctx, `SELECT requested_revision,result_status FROM stream_video_cover_actions WHERE stream_id=? AND job_generation=? AND idempotency_key=? FOR UPDATE`, streamID, generation, key).Scan(&requestedRevision, &actionStatus); errors.Is(err, sql.ErrNoRows) {
 		return State{}, ErrNotFound
 	} else if err != nil {
 		return State{}, err
@@ -393,17 +512,24 @@ func (s *SQLRepository) record(ctx context.Context, streamID string, generation 
 	if revision != nil && requestedRevision != *revision {
 		return State{}, ErrRevisionConflict
 	}
+	if !actionMayResolve(actionStatus) {
+		return state, nil
+	}
+	updateRuntime := state.LastIdempotencyKey == key && state.DesiredRevision == requestedRevision &&
+		(state.Status == "idle" && actionStatus == "pending" || state.Status == "confirming" && actionStatus == "confirming")
 	now := s.now()
 	if _, err = tx.ExecContext(ctx, `UPDATE stream_video_cover_actions SET result_status=?,safe_error_code=?,updated_at=? WHERE stream_id=? AND job_generation=? AND idempotency_key=?`, status, nullString(code), now, streamID, generation, key); err != nil {
 		return State{}, err
 	}
-	if active != nil && revision != nil {
-		_, err = tx.ExecContext(ctx, `UPDATE stream_video_cover_runtime SET applied_active=?,applied_revision=?,last_error_code=NULL,reconciliation_status='applied',updated_at=? WHERE stream_id=? AND job_generation=?`, *active, *revision, now, streamID, generation)
-	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE stream_video_cover_runtime SET last_error_code=?,reconciliation_status=?,updated_at=? WHERE stream_id=? AND job_generation=?`, nullString(code), status, now, streamID, generation)
-	}
-	if err != nil {
-		return State{}, err
+	if updateRuntime {
+		if active != nil && revision != nil {
+			_, err = tx.ExecContext(ctx, `UPDATE stream_video_cover_runtime SET applied_active=?,applied_revision=?,last_error_code=NULL,reconciliation_status='applied',updated_at=? WHERE stream_id=? AND job_generation=? AND last_idempotency_key=? AND desired_revision=?`, *active, *revision, now, streamID, generation, key, requestedRevision)
+		} else {
+			_, err = tx.ExecContext(ctx, `UPDATE stream_video_cover_runtime SET last_error_code=?,reconciliation_status=?,updated_at=? WHERE stream_id=? AND job_generation=? AND last_idempotency_key=? AND desired_revision=?`, nullString(code), status, now, streamID, generation, key, requestedRevision)
+		}
+		if err != nil {
+			return State{}, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return State{}, err

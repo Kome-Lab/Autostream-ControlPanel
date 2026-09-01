@@ -1,11 +1,17 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/example/autostream-control-panel/internal/mediaassets"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/streamvisual"
@@ -13,15 +19,22 @@ import (
 )
 
 type countingVideoCoverDispatcher struct {
-	calls    int
-	result   servicecall.VideoCoverDispatchResult
-	requests []servicecall.VideoCoverDispatchRequest
+	calls           int
+	result          servicecall.VideoCoverDispatchResult
+	requests        []servicecall.VideoCoverDispatchRequest
+	reconcileCalls  int
+	reconcileResult servicecall.VideoCoverDispatchResult
 }
 
 func (d *countingVideoCoverDispatcher) DispatchVideoCover(_ context.Context, _ store.RegisteredService, request servicecall.VideoCoverDispatchRequest) servicecall.VideoCoverDispatchResult {
 	d.calls++
 	d.requests = append(d.requests, request)
 	return d.result
+}
+
+func (d *countingVideoCoverDispatcher) ReconcileVideoCover(_ context.Context, _ store.RegisteredService, _ servicecall.VideoCoverReconcileRequest) servicecall.VideoCoverDispatchResult {
+	d.reconcileCalls++
+	return d.reconcileResult
 }
 
 func TestVideoCoverHTTPPermissionCapabilityIdempotencyAndAmbiguousRequestCounts(t *testing.T) {
@@ -38,18 +51,59 @@ func TestVideoCoverHTTPPermissionCapabilityIdempotencyAndAmbiguousRequestCounts(
 		t.Fatal(err)
 	}
 	token := createRegisteredAssignedService(t, auth, "encoder-cover", "encoder_recorder", stream.ID)
+	media, err := mediaassets.NewMemoryRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := media.CreateUploadSession(t.Context(), "cover-allowed", time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, err := media.Upload(t.Context(), mediaassets.UploadInput{SessionID: session.ID, UserID: "cover-allowed", UsageType: "video_cover", Filename: "cover.png", ContentType: "image/png", Body: bytes.NewReader(testVideoCoverPNG(t))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant, err := media.EnsureVariant(t.Context(), "cover-allowed", asset.ID, 1920, 1080, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = media.ClaimDraft(t.Context(), "cover-allowed", session.ID, stream.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	media.ReferenceVariant(stream.ID, variant.ID)
 	covers := videocover.NewMemoryRepository()
-	if _, err = covers.EnsureGeneration(t.Context(), stream.ID, 1, "variant-cover", false); err != nil {
+	if _, err = covers.EnsureGeneration(t.Context(), stream.ID, 1, variant.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &countingVideoCoverDispatcher{result: servicecall.VideoCoverDispatchResult{Applied: true}}
 	visual := &fixedVisualRepository{
-		settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "default", HeaderTitleMode: "default", CoverSource: "upload", CoverAssetID: "asset-cover", CoverVariantID: "variant-cover", Revision: 1},
+		settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "default", HeaderTitleMode: "default", CoverSource: "upload", CoverAssetID: asset.ID, CoverVariantID: variant.ID, Revision: 1},
 		assets:   streamvisual.AssetReadiness{CoverVariantReady: true, MediaAssetIntegrity: true},
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithStreamVisualRepository(visual), WithVideoCoverRepository(covers), WithVideoCoverDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithMediaAssetRepository(media), WithStreamVisualRepository(visual), WithVideoCoverRepository(covers), WithVideoCoverDispatcher(dispatcher))
 	allowedCookie, allowedCSRF := loginForTest(t, handler, "cover-allowed", "correct horse battery")
 	deniedCookie, deniedCSRF := loginForTest(t, handler, "cover-denied", "correct horse battery")
+	invalidBodies := map[string]string{
+		"missing_active":   `{"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1"}`,
+		"null_active":      `{"active":null,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1"}`,
+		"duplicate_active": `{"active":true,"active":false,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1","hide_confirmed":true}`,
+		"show_with_hide":   `{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1","hide_confirmed":true}`,
+		"padded_key":       `{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":" show-1"}`,
+	}
+	invalidUTF8 := append([]byte(`{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"`), 0xff, '"', '}')
+	invalidBodies["invalid_utf8"] = string(invalidUTF8)
+	for name, body := range invalidBodies {
+		t.Run("invalid_request_"+name, func(t *testing.T) {
+			response := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", body, allowedCookie, allowedCSRF)
+			if response.Code != http.StatusBadRequest || dispatcher.calls != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, dispatcher.calls, response.Body.String())
+			}
+		})
+	}
+	beforeAction, err := covers.GetCurrentState(t.Context(), stream.ID)
+	if err != nil || beforeAction.DesiredRevision != 1 || beforeAction.LastIdempotencyKey != "" {
+		t.Fatalf("invalid request mutated state=%#v err=%v", beforeAction, err)
+	}
 	showBody := `{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1"}`
 	denied := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", showBody, deniedCookie, deniedCSRF)
 	if denied.Code != http.StatusForbidden || dispatcher.calls != 0 {
@@ -107,10 +161,31 @@ func TestVideoCoverHTTPPermissionCapabilityIdempotencyAndAmbiguousRequestCounts(
 	if err != nil || state.AppliedActive == nil || !*state.AppliedActive || state.AppliedRevision == nil || *state.AppliedRevision != 2 {
 		t.Fatalf("hide ambiguity fabricated public-video applied state=%#v err=%v", state, err)
 	}
-	reconcile := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", hideBody, allowedCookie, allowedCSRF)
-	if reconcile.Code != http.StatusOK || dispatcher.calls != 2 {
-		t.Fatalf("ambiguous duplicate resent status=%d calls=%d", reconcile.Code, dispatcher.calls)
+	// Replaying an older applied key while the newer key is ambiguous must not
+	// reconcile or overwrite the newer action's shared confirming state.
+	visual.assets = streamvisual.AssetReadiness{CoverVariantReady: true}
+	olderWhileConfirming := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", showBody, allowedCookie, allowedCSRF)
+	if olderWhileConfirming.Code != http.StatusOK || dispatcher.calls != 2 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("older replay reconciled newer action status=%d dispatch=%d reconcile=%d body=%s", olderWhileConfirming.Code, dispatcher.calls, dispatcher.reconcileCalls, olderWhileConfirming.Body.String())
 	}
+	state, err = covers.GetCurrentState(t.Context(), stream.ID)
+	if err != nil || state.Status != "confirming" || state.LastIdempotencyKey != "hide-1" {
+		t.Fatalf("older replay overwrote newer confirming state=%#v err=%v", state, err)
+	}
+	visual.assets = streamvisual.AssetReadiness{CoverVariantReady: true, MediaAssetIntegrity: true}
+	dispatcher.reconcileResult = servicecall.VideoCoverDispatchResult{Applied: true}
+	reconcile := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", hideBody, allowedCookie, allowedCSRF)
+	if reconcile.Code != http.StatusOK || dispatcher.calls != 2 || dispatcher.reconcileCalls != 1 {
+		t.Fatalf("ambiguous duplicate mutation resent status=%d dispatch=%d reconcile=%d", reconcile.Code, dispatcher.calls, dispatcher.reconcileCalls)
+	}
+	// The first key remains an exact replay after a later key becomes current,
+	// even when mutable asset health has since degraded.
+	visual.assets = streamvisual.AssetReadiness{CoverVariantReady: true}
+	olderReplay := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", showBody, allowedCookie, allowedCSRF)
+	if olderReplay.Code != http.StatusOK || dispatcher.calls != 2 || dispatcher.reconcileCalls != 1 {
+		t.Fatalf("older exact replay consulted mutable state status=%d dispatch=%d reconcile=%d body=%s", olderReplay.Code, dispatcher.calls, dispatcher.reconcileCalls, olderReplay.Body.String())
+	}
+	visual.assets = streamvisual.AssetReadiness{CoverVariantReady: true, MediaAssetIntegrity: true}
 	dispatcher.result = servicecall.VideoCoverDispatchResult{SafeErrorCode: "permission_denied"}
 	failedBody := `{"active":true,"expected_job_generation":1,"expected_revision":3,"idempotency_key":"show-2"}`
 	failed := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", failedBody, allowedCookie, allowedCSRF)
@@ -128,4 +203,41 @@ func TestVideoCoverHTTPPermissionCapabilityIdempotencyAndAmbiguousRequestCounts(
 	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "stale_job_generation") || dispatcher.calls != 3 {
 		t.Fatalf("stale status=%d calls=%d body=%s", stale.Code, dispatcher.calls, stale.Body.String())
 	}
+	visual.settings.CoverAssetID = "missing-cover-asset"
+	visual.settings.CoverVariantID = "variant-cover-2"
+	visual.assets = streamvisual.AssetReadiness{CoverVariantReady: true, MediaAssetIntegrity: true}
+	descriptorFailureBody := `{"active":true,"expected_job_generation":2,"expected_revision":1,"idempotency_key":"descriptor-failure"}`
+	descriptorFailure := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", descriptorFailureBody, allowedCookie, allowedCSRF)
+	if descriptorFailure.Code != http.StatusBadGateway || dispatcher.calls != 3 || !strings.Contains(descriptorFailure.Body.String(), `"status":"failed"`) || !strings.Contains(descriptorFailure.Body.String(), `"last_error_code":"media_asset_integrity"`) {
+		t.Fatalf("descriptor failure status=%d calls=%d body=%s", descriptorFailure.Code, dispatcher.calls, descriptorFailure.Body.String())
+	}
+	descriptorReplay := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/video-cover-state", descriptorFailureBody, allowedCookie, allowedCSRF)
+	if descriptorReplay.Code != http.StatusOK || dispatcher.calls != 3 || !strings.Contains(descriptorReplay.Body.String(), `"status":"failed"`) {
+		t.Fatalf("descriptor failure replay status=%d calls=%d body=%s", descriptorReplay.Code, dispatcher.calls, descriptorReplay.Body.String())
+	}
+	foundFailureAudit := false
+	for _, event := range auth.AuditEvents() {
+		if event.Action == "streams.video_cover.show" && event.ResourceID == stream.ID && event.Result == "failure" && event.Metadata["status"] == "failed" && event.Metadata["error_code"] == "media_asset_integrity" {
+			foundFailureAudit = true
+			break
+		}
+	}
+	if !foundFailureAudit {
+		t.Fatalf("descriptor failure immutable audit missing: %#v", auth.AuditEvents())
+	}
+}
+
+func testVideoCoverPNG(t *testing.T) []byte {
+	t.Helper()
+	frame := image.NewNRGBA(image.Rect(0, 0, 16, 9))
+	for y := 0; y < 9; y++ {
+		for x := 0; x < 16; x++ {
+			frame.SetNRGBA(x, y, color.NRGBA{R: uint8(x * 8), G: uint8(y * 16), B: 64, A: 255})
+		}
+	}
+	var body bytes.Buffer
+	if err := png.Encode(&body, frame); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
 }

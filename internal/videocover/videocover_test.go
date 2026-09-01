@@ -2,6 +2,7 @@ package videocover
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -67,6 +68,103 @@ func TestDesiredAppliedGenerationRevisionIdempotencyAndAmbiguity(t *testing.T) {
 	}
 }
 
+func TestRecordStartAppliedRequiresExactDesiredGenerationAndRevision(t *testing.T) {
+	repository := NewMemoryRepository()
+	if _, err := repository.EnsureGeneration(t.Context(), "stream-start", 3, "variant-3", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.RecordStartApplied(t.Context(), "stream-start", 2, true, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong generation error=%v", err)
+	}
+	if _, err := repository.RecordStartApplied(t.Context(), "stream-start", 3, false, 1); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("wrong desired state error=%v", err)
+	}
+	if _, err := repository.RecordStartApplied(t.Context(), "stream-start", 3, true, 2); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("wrong revision error=%v", err)
+	}
+	applied, err := repository.RecordStartApplied(t.Context(), "stream-start", 3, true, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Status != "applied" || applied.AppliedActive == nil || !*applied.AppliedActive || applied.AppliedRevision == nil || *applied.AppliedRevision != 1 {
+		t.Fatalf("start applied=%#v", applied)
+	}
+	if replay, err := repository.RecordStartApplied(t.Context(), "stream-start", 3, true, 1); err != nil || replay.Status != "applied" {
+		t.Fatalf("exact replay=%#v err=%v", replay, err)
+	}
+}
+
+func TestHistoricalActionResultCannotOverwriteCurrentActionState(t *testing.T) {
+	repository := NewMemoryRepository()
+	if _, err := repository.EnsureGeneration(t.Context(), "stream-race", 1, "variant-1", false); err != nil {
+		t.Fatal(err)
+	}
+	first, err := repository.PrepareAction(t.Context(), "stream-race", ActionRequest{
+		Active: true, ExpectedJobGeneration: 1, ExpectedRevision: 1, IdempotencyKey: "show-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := repository.PrepareAction(t.Context(), "stream-race", ActionRequest{
+		Active: false, ExpectedJobGeneration: 1, ExpectedRevision: first.RequestedRevision,
+		IdempotencyKey: "hide-b", HideConfirmed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := repository.RecordAmbiguous(t.Context(), "stream-race", 1, "hide-b")
+	if err != nil || current.Status != "confirming" || current.LastIdempotencyKey != "hide-b" {
+		t.Fatalf("newer action was not confirming: %#v err=%v", current, err)
+	}
+	late, err := repository.RecordApplied(t.Context(), "stream-race", 1, "show-a", true, first.RequestedRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if late.Status != "confirming" || late.LastIdempotencyKey != "hide-b" || late.DesiredRevision != second.RequestedRevision || late.AppliedRevision != nil {
+		t.Fatalf("historical result overwrote current action: %#v", late)
+	}
+	settled, err := repository.RecordApplied(t.Context(), "stream-race", 1, "hide-b", false, second.RequestedRevision)
+	if err != nil || settled.Status != "applied" {
+		t.Fatalf("current action did not settle: %#v err=%v", settled, err)
+	}
+	terminal, err := repository.RecordFailed(t.Context(), "stream-race", 1, "hide-b", "cover_graph_unavailable")
+	if err != nil || terminal.Status != "applied" || terminal.LastErrorCode != "" {
+		t.Fatalf("terminal action was overwritten: %#v err=%v", terminal, err)
+	}
+	replayed, found, err := repository.LookupActionReplay(t.Context(), "stream-race", ActionRequest{
+		Active: false, ExpectedJobGeneration: 1, ExpectedRevision: first.RequestedRevision,
+		IdempotencyKey: "hide-b", HideConfirmed: true,
+	})
+	if err != nil || !found || replayed.Outcome != "applied" || replayed.SafeErrorCode != "" {
+		t.Fatalf("immutable terminal outcome unavailable: %#v found=%t err=%v", replayed, found, err)
+	}
+}
+
+func TestExactActionOutcomeSurvivesGenerationRollover(t *testing.T) {
+	repository := NewMemoryRepository()
+	request := ActionRequest{Active: true, ExpectedJobGeneration: 1, ExpectedRevision: 1, IdempotencyKey: "show-before-rollover"}
+	if _, err := repository.EnsureGeneration(t.Context(), "stream-rollover", 1, "variant-1", false); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := repository.PrepareAction(t.Context(), "stream-rollover", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repository.EnsureGeneration(t.Context(), "stream-rollover", 2, "variant-2", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repository.RecordFailed(t.Context(), "stream-rollover", 1, request.IdempotencyKey, "media_asset_integrity"); err != nil {
+		t.Fatal(err)
+	}
+	if replay, found, err := repository.LookupActionReplay(t.Context(), "stream-rollover", request); err != nil || found || replay.State.JobGeneration != 2 {
+		t.Fatalf("preflight replay ignored current-generation fence: %#v found=%t err=%v", replay, found, err)
+	}
+	outcome, found, err := repository.LookupActionOutcome(t.Context(), "stream-rollover", request)
+	if err != nil || !found || outcome.RequestedRevision != prepared.RequestedRevision || outcome.Outcome != "failed" || outcome.SafeErrorCode != "media_asset_integrity" || outcome.State.JobGeneration != 1 {
+		t.Fatalf("exact terminal outcome unavailable after rollover: %#v found=%t err=%v", outcome, found, err)
+	}
+}
+
 func TestHideConfirmationAndPipelineWatermarkIndependence(t *testing.T) {
 	if err := ValidateRequest(ActionRequest{Active: false, ExpectedJobGeneration: 1, ExpectedRevision: 1, IdempotencyKey: "hide"}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("hide without confirmation=%v", err)
@@ -78,6 +176,39 @@ func TestHideConfirmationAndPipelineWatermarkIndependence(t *testing.T) {
 	state := NormalizeState(State{})
 	if !state.CoverWatermarkIndependent || !reflect.DeepEqual(state.PipelineOrder, expected) {
 		t.Fatalf("normalized=%#v", state)
+	}
+}
+
+func TestActionRequestRejectsNonCanonicalRawJSONBeforeMutation(t *testing.T) {
+	for name, body := range map[string][]byte{
+		"missing_active":       []byte(`{"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1"}`),
+		"null_active":          []byte(`{"active":null,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1"}`),
+		"duplicate_active":     []byte(`{"active":true,"active":false,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1","hide_confirmed":true}`),
+		"show_with_hide":       []byte(`{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1","hide_confirmed":true}`),
+		"hide_without_confirm": []byte(`{"active":false,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"hide-1"}`),
+		"padded_key":           []byte(`{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":" show-1"}`),
+		"nel_padded_key":       []byte("{\"active\":true,\"expected_job_generation\":1,\"expected_revision\":1,\"idempotency_key\":\"\\u0085show-1\"}"),
+		"bom_padded_key":       []byte("{\"active\":true,\"expected_job_generation\":1,\"expected_revision\":1,\"idempotency_key\":\"\\ufeffshow-1\"}"),
+		"invalid_utf8":         append([]byte(`{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"`), 0xff, '"', '}'),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var request ActionRequest
+			if err := json.Unmarshal(body, &request); err == nil {
+				t.Fatalf("non-canonical request accepted: %q", body)
+			}
+		})
+	}
+
+	for name, body := range map[string][]byte{
+		"show": []byte(`{"active":true,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"show-1"}`),
+		"hide": []byte(`{"active":false,"expected_job_generation":1,"expected_revision":1,"idempotency_key":"hide-1","hide_confirmed":true}`),
+	} {
+		t.Run("valid_"+name, func(t *testing.T) {
+			var request ActionRequest
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Fatalf("canonical request rejected: %v", err)
+			}
+		})
 	}
 }
 

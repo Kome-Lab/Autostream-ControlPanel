@@ -11122,9 +11122,15 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		current := currentFromContext(r.Context())
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: claimedStart.Materialized.ServiceID, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": claimedStart.Materialized.ServiceType, "assignment_role": "primary", "source": "streams.start"}})
 	}
-	if err := s.beginVideoCoverGeneration(r.Context(), stream.ID); err != nil {
+	videoCoverGeneration, err := s.beginVideoCoverGeneration(r.Context(), stream.ID)
+	if err != nil {
 		_, _, _ = claimStore.TransitionClaimedStreamStart(r.Context(), claimedStart.OwnershipClaim, "failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_generation_failed"})
+		return
+	}
+	if err := s.materializeVisualStartSnapshot(r.Context(), stream.ID, primaryAssignments, videoCoverGeneration, &body); err != nil {
+		_, _, _ = claimStore.TransitionClaimedStreamStart(r.Context(), claimedStart.OwnershipClaim, "failed")
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "visual_start_snapshot_failed"})
 		return
 	}
 	s.systemUpdateOperationMu.Unlock()
@@ -11265,6 +11271,22 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"dispatch": results, "stop_dispatch": stopResults}})
 		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "service_dispatch_failed", "stream": failed, "dispatch": results, "stop_dispatch": stopResults})
 		return
+	}
+	if body.VideoCoverStart != nil {
+		if _, err := s.videoCovers.RecordStartApplied(r.Context(), stream.ID, body.VideoCoverStart.JobGeneration, body.VideoCoverStart.Active, body.VideoCoverStart.Revision); err != nil {
+			failed, transitioned, transitionErr := claimStore.TransitionClaimedStreamStart(r.Context(), claimedStart.OwnershipClaim, "failed")
+			if transitionErr != nil || !transitioned {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "record_video_cover_start_failed"})
+				return
+			}
+			stopRequest, cancel := detachedStopLifecycleRequest(r)
+			defer cancel()
+			stopResults := sanitizeDispatchResults(s.dispatcher.Stop(stopRequest.Context(), failed, primaryAssignments))
+			current := currentFromContext(stopRequest.Context())
+			s.writeAudit(stopRequest, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "record_video_cover_start_failed", "dispatch": results, "stop_dispatch": stopResults}})
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "record_video_cover_start_failed", "stream": failed, "dispatch": results, "stop_dispatch": stopResults})
+			return
+		}
 	}
 	videoOverlayBurnIn := workerVideoOverlayBurnInNegotiated(results)
 	if mediaRuntimeStore, ok := s.streams.(store.StreamMediaRuntimeStore); ok {
