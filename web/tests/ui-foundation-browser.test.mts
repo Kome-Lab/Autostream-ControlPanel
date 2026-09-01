@@ -1713,7 +1713,11 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
 		controlPlatformCoverMethods = [];
 		controlPlatformCoverBodies = [];
     controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(true, 2, true, 2, "applied") };
-    await browser.navigate(`${server.baseUrl}/admin/streams/`);
+		await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+		browser.clearRequestCounts("/auth/me");
+		await browser.reload();
+		await browser.waitForResponseCount("/auth/me", 1, 20_000);
+		await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
     await browser.waitFor(`document.body.textContent?.includes(${JSON.stringify(controlPlatformStream.name)}) === true`, Boolean, "control-platform stream did not reload");
     await browser.clickSelector('button[aria-label="詳細"]');
     await browser.waitFor(`document.querySelector('button[aria-label="Video Coverを表示"]:not([disabled])') !== null`, Boolean, "show cover action did not become available");

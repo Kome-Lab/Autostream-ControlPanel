@@ -253,7 +253,10 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err != nil || assetAfterRollback.OwnerType != "upload_draft" || assetAfterRollback.OwnerID != session.ID {
 		t.Fatalf("failed create claimed draft=%#v err=%v", assetAfterRollback, err)
 	}
-	scheduledStart := now.Add(2 * time.Hour)
+	// streams.scheduled_start_at is an existing DATETIME column, so persistence
+	// intentionally has second precision even though the new Bundle 4 tables use
+	// DATETIME(6). Derive the oracle from that schema authority.
+	scheduledStart := now.Add(2 * time.Hour).Truncate(time.Second)
 	createdStream, createdSettings, err := visuals.CreateStream(ctx, userID, streamvisual.Create{
 		Name:            "Bundle 4 visual stream",
 		UploadSessionID: session.ID,

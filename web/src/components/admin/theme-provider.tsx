@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname } from "next/navigation";
 import { apiGet, apiPut } from "@/lib/api/client";
@@ -29,16 +29,18 @@ type ThemeContextValue = {
 };
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
+const subscribeHydration = () => () => {};
+const clientHydrated = () => true;
+const serverHydrated = () => false;
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
 	const pathname = usePathname();
 	const queryClient = useQueryClient();
-  const [bootstrap] = useState(() => {
-    if (typeof window === "undefined") {
-      return { preference: safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 }), legacyMode: null as UserColorMode | null };
-    }
-    return { preference: readThemeMirror(window.localStorage), legacyMode: legacyThemeMigrationMode(window.localStorage) };
-  });
+  const bootstrapReady = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
+  const bootstrap = useMemo(() => bootstrapReady
+    ? { preference: readThemeMirror(window.localStorage), legacyMode: legacyThemeMigrationMode(window.localStorage) }
+    : { preference: safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 }), legacyMode: null as UserColorMode | null },
+  [bootstrapReady]);
   const [preview, setPreview] = useState<SafeUserUIPreference | null>(null);
   const [legacyMigrationFailed, setLegacyMigrationFailed] = useState(false);
 	const legacyMigrationAttempted = useRef(false);
@@ -47,13 +49,14 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     queryKey: uiPreferenceQueryKey,
     queryFn: () => apiGet<UserUIPreference>("/account/preferences/ui"),
     retry: false,
-		enabled: pathname.startsWith("/admin"),
+		enabled: bootstrapReady && pathname.startsWith("/admin"),
   });
   const persistedPreference = useMemo(
     () => preferenceQuery.data ? safeUserUIPreference(preferenceQuery.data) : bootstrap.preference,
     [bootstrap.preference, preferenceQuery.data],
   );
-	const legacyMigrationEligible = bootstrap.legacyMode !== null
+	const legacyMigrationEligible = bootstrapReady
+		&& bootstrap.legacyMode !== null
 		&& preferenceQuery.data !== undefined
 		&& preferenceQuery.data.revision === 0
 		&& preferenceQuery.data.theme_id === "autostream"
@@ -85,13 +88,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 	}, [legacyMigrationEligible, legacyMigrationFailed, legacyPreference, queryClient]);
 
   useEffect(() => {
+		if (!bootstrapReady) return;
     applyThemeToRoot(document.documentElement, preference, systemDark);
-  }, [preference, systemDark]);
+	}, [bootstrapReady, preference, systemDark]);
 
   useEffect(() => {
     // On authenticated pages the DB-backed value is authoritative. Keep the
     // local mirror limited to pre-hydration bootstrap and never persist an
     // unsaved preview. Public auth pages retain the legacy local-only toggle.
+		if (!bootstrapReady) return;
     if (pathname.startsWith("/admin")) {
 			if (!preferenceQuery.data || (bootstrap.legacyMode !== null && (legacyMigrationEligible || legacyMigrationFailed))) return;
 			writeThemeMirror(window.localStorage, persistedPreference);
@@ -99,7 +104,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 		}
 		if (bootstrap.legacyMode !== null && preview === null) return;
 		writeThemeMirror(window.localStorage, preference);
-  }, [bootstrap.legacyMode, legacyMigrationEligible, legacyMigrationFailed, pathname, persistedPreference, preference, preferenceQuery.data, preview]);
+	}, [bootstrap.legacyMode, bootstrapReady, legacyMigrationEligible, legacyMigrationFailed, pathname, persistedPreference, preference, preferenceQuery.data, preview]);
 
   const previewPreference = useCallback((next: Partial<UserUIPreference>) => {
     setPreview((current) => safeUserUIPreference({ ...(current ?? persistedPreference), ...next }));
