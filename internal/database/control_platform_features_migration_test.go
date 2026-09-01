@@ -369,7 +369,9 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	coverSession, err := media.CreateUploadSession(ctx, userID, now.Add(time.Hour))
+	// This draft is intentionally consumed by the preset fixture after the GC
+	// witness below, so keep its expiry beyond that witness's 25-hour horizon.
+	coverSession, err := media.CreateUploadSession(ctx, userID, now.Add(48*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,8 +401,19 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err = media.SoftDeleteAsset(ctx, userID, runtimeAsset.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	if removed, gcErr := media.GarbageCollect(ctx, now.Add(25*time.Hour), 10); gcErr != nil || removed != 0 {
+	if removed, gcErr := media.GarbageCollect(ctx, now.Add(25*time.Hour), 10); gcErr != nil || removed != 1 {
 		t.Fatalf("runtime-referenced asset GC removed=%d err=%v", removed, gcErr)
+	}
+	var extraneousAssetRows int
+	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_assets WHERE id=?`, extraneousAsset.ID).Scan(&extraneousAssetRows); err != nil || extraneousAssetRows != 0 {
+		t.Fatalf("expired unreferenced draft remained: count=%d err=%v", extraneousAssetRows, err)
+	}
+	runtimeInternal, err := media.OpenInternalVariant(ctx, createdStream.ID, runtimeVariant.ID)
+	if err != nil || runtimeInternal.Asset.ID != runtimeAsset.ID || runtimeInternal.Variant.ID != runtimeVariant.ID {
+		t.Fatalf("runtime-referenced asset was not retrievable: asset=%s variant=%s err=%v", runtimeInternal.Asset.ID, runtimeInternal.Variant.ID, err)
+	}
+	if err = runtimeInternal.Reader.Close(); err != nil {
+		t.Fatal(err)
 	}
 	var claimedSessionRows int
 	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_upload_sessions WHERE id=?`, session.ID).Scan(&claimedSessionRows); err != nil || claimedSessionRows != 0 {
