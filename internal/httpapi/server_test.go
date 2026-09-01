@@ -20044,6 +20044,9 @@ func TestUpdaterVersionEndpointIsUnauthenticatedAndBoundedIdentity(t *testing.T)
 	if got := res.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("updater version content type = %q", got)
 	}
+	if got := res.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("updater version cache control = %q", got)
+	}
 	var payload map[string]any
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode updater version response: %v", err)
@@ -20065,6 +20068,19 @@ func TestUpdaterVersionEndpointIsUnauthenticatedAndBoundedIdentity(t *testing.T)
 		if forbidden != "" && strings.Contains(res.Body.String(), forbidden) {
 			t.Fatalf("updater version response exposed forbidden value %q: %s", forbidden, res.Body.String())
 		}
+	}
+
+	methodReq := httptest.NewRequest(http.MethodPost, "/updater/version", nil)
+	methodRes := httptest.NewRecorder()
+	handler.ServeHTTP(methodRes, methodReq)
+	if methodRes.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("updater version POST status = %d body = %s", methodRes.Code, methodRes.Body.String())
+	}
+	if got := methodRes.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("updater version POST cache control = %q", got)
+	}
+	if got := methodRes.Header().Get("Allow"); !strings.Contains(got, http.MethodGet) {
+		t.Fatalf("updater version POST Allow = %q", got)
 	}
 
 	protectedReq := httptest.NewRequest(http.MethodGet, "/version", nil)
@@ -20116,6 +20132,9 @@ func TestUpdaterVersionEndpointDefaultsIdentityAndRejectsInvalidConfigRevision(t
 
 			if res.Code != http.StatusInternalServerError {
 				t.Fatalf("invalid config revision %q status = %d body = %s", revision, res.Code, res.Body.String())
+			}
+			if got := res.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("invalid config revision %q cache control = %q", revision, got)
 			}
 			var payload map[string]any
 			if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {

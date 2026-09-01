@@ -478,6 +478,9 @@ func detachedStopLifecycleRequest(r *http.Request) (*http.Request, context.Cance
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/updater/version" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	s.handler.ServeHTTP(w, r)
 }
 
