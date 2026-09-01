@@ -9,6 +9,7 @@ const (
 	CapabilityLiveVideoCoverV1        = "live_video_cover_v1"
 	CapabilityDiscordResolvedTargetV2 = "discord_resolved_target_v2"
 	VisualReadinessReady              = "ready"
+	VisualReadinessUnknown            = "unknown"
 )
 
 type VisualSafeError struct {
