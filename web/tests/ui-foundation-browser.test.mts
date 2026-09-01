@@ -1770,12 +1770,22 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
 
     controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(false, 3, true, 2, "confirming") };
     await scrollSelectorIntoView(browser, 'button[aria-label="同じ操作キーで状態確認"]');
+		await browser.waitFor(
+			`document.querySelector('button[aria-label="同じ操作キーで状態確認"]:not([disabled])') !== null`,
+			Boolean,
+			"explicit reconciliation remained disabled after the prior mutation settled",
+		);
     await browser.clickSelector('button[aria-label="同じ操作キーで状態確認"]');
 		await browser.waitForRequestCount(controlPlatformCoverPath, 3);
 		assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 3, "explicit reconciliation must be one deliberate request");
 		assert.deepEqual(controlPlatformCoverBodies[2], controlPlatformCoverBodies[1], "explicit reconciliation must resend the exact original generation/revision payload");
 
     controlPlatformCoverWriteResponse = { status: 403, body: { code: "permission_denied" } };
+		await browser.waitFor(
+			`document.querySelector('button[aria-label="Video Coverを表示"]:not([disabled])') !== null`,
+			Boolean,
+			"show cover action remained disabled after reconciliation settled",
+		);
     await scrollSelectorIntoView(browser, 'button[aria-label="Video Coverを表示"]');
     await browser.clickSelector('button[aria-label="Video Coverを表示"]');
     await browser.waitForRequestCount(controlPlatformCoverPath, 4);

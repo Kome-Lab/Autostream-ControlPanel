@@ -134,7 +134,9 @@ CREATE TABLE IF NOT EXISTS discord_target_presets (
 );
 
 ALTER TABLE stream_settings
-  ADD COLUMN IF NOT EXISTS discord_target_mode VARCHAR(16) NULL AFTER discord_text_channel_id,
+  ADD COLUMN IF NOT EXISTS discord_target_mode VARCHAR(16) NULL
+    CHECK (discord_target_mode IS NULL OR discord_target_mode IN ('inherit','preset','manual'))
+    AFTER discord_text_channel_id,
   ADD COLUMN IF NOT EXISTS discord_target_preset_id CHAR(36) NULL AFTER discord_target_mode,
   ADD COLUMN IF NOT EXISTS discord_target_preset_revision BIGINT UNSIGNED NULL AFTER discord_target_preset_id;
 
@@ -142,10 +144,9 @@ CREATE INDEX IF NOT EXISTS idx_stream_settings_discord_target_preset
   ON stream_settings (discord_target_preset_id);
 
 ALTER TABLE stream_settings
-  ADD CONSTRAINT IF NOT EXISTS fk_stream_settings_discord_target_preset
-    FOREIGN KEY (discord_target_preset_id) REFERENCES discord_target_presets(id) ON DELETE SET NULL,
-  ADD CONSTRAINT IF NOT EXISTS chk_stream_settings_discord_target_mode
-    CHECK (discord_target_mode IS NULL OR discord_target_mode IN ('inherit','preset','manual'));
+  ADD CONSTRAINT fk_stream_settings_discord_target_preset
+    FOREIGN KEY IF NOT EXISTS (discord_target_preset_id)
+      REFERENCES discord_target_presets(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS video_cover_presets (
   id CHAR(36) NOT NULL,
