@@ -18962,17 +18962,22 @@ func TestPreferredObservabilityServiceUsesHealthHeartbeatAndNameOrder(t *testing
 }
 
 func TestObservabilityProxyEndpoints(t *testing.T) {
+	var capturedMu sync.Mutex
 	var gotAuth string
 	var gotMetricsRange string
 	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMu.Lock()
 		gotAuth = r.Header.Get("Authorization")
+		if r.URL.Path == "/metrics" {
+			gotMetricsRange = r.URL.Query().Get("range_sec")
+		}
+		capturedMu.Unlock()
 		switch r.URL.Path {
 		case "/incidents":
 			_, _ = w.Write([]byte(`[{"id":"inc-1","severity":"critical","google_drive_folder_id":"drive-folder-secret-id","target":"https://example.com/callback?api_key=upstream-secret"}]`))
 		case "/diagnostics":
 			_, _ = w.Write([]byte(`[{"incident_id":"inc-1","rule":"encoder_process_exited","diagnostic_report":{"summary":"Encoder stopped"}}]`))
 		case "/metrics":
-			gotMetricsRange = r.URL.Query().Get("range_sec")
 			_, _ = w.Write([]byte(`[{"name":"encoder.output_fps","service_id":"enc-1","value":60},{"name":"discord.audio_receiving","service_id":"enc-1","value":1},{"name":"encoder.audio_silence_sec","service_id":"enc-1","value":0},{"name":"encoder.audio_clipping_total","service_id":"enc-1","value":0}]`))
 		case "/remediation-actions":
 			_, _ = w.Write([]byte(`[{"id":"rem-1","status":"suggested"}]`))
@@ -19064,8 +19069,11 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 			t.Fatalf("notification delivery operation context was not preserved: %s", res.Body.String())
 		}
 	}
-	if gotMetricsRange != "900" {
-		t.Fatalf("metrics range was not forwarded to observability: %q", gotMetricsRange)
+	capturedMu.Lock()
+	gotMetricsRangeSnapshot := gotMetricsRange
+	capturedMu.Unlock()
+	if gotMetricsRangeSnapshot != "900" {
+		t.Fatalf("metrics range was not forwarded to observability: %q", gotMetricsRangeSnapshot)
 	}
 	createReq := httptest.NewRequest(http.MethodPost, "/observability/notification-channels", bytes.NewBufferString(`{"name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/slack-secret-token","enabled":true}`))
 	createReq.AddCookie(cookie)
@@ -19139,8 +19147,11 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	if rerunRes.Code != http.StatusOK || !strings.Contains(rerunRes.Body.String(), `"outcome":"evaluated"`) {
 		t.Fatalf("diagnostic rerun status = %d body = %s", rerunRes.Code, rerunRes.Body.String())
 	}
-	if gotAuth != "Bearer "+observabilityToken.RawToken {
-		t.Fatalf("unexpected upstream auth: %s", gotAuth)
+	capturedMu.Lock()
+	gotAuthSnapshot := gotAuth
+	capturedMu.Unlock()
+	if gotAuthSnapshot != "Bearer "+observabilityToken.RawToken {
+		t.Fatal("unexpected upstream authorization header")
 	}
 	events = auth.AuditEvents()
 	if len(events) == 0 || events[len(events)-1].Action != "diagnostics.run" || events[len(events)-1].ResourceType != "incident" || events[len(events)-1].ResourceID != "inc-1" {

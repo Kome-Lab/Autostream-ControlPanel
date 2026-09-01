@@ -447,7 +447,7 @@ jobs:
       - run: go build ./...
 
   observability_proxy_race_pre_fix:
-    name: Observability proxy race pre-fix proof
+    name: Observability proxy race baseline negative fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -508,7 +508,7 @@ jobs:
           } > "${proof_log}"
 
           [[ "${checked_out_authority_sha}" == "${authority_sha}" ]]
-          [[ "${test_bytes_equal}" == true ]]
+          [[ "${test_bytes_equal}" == false ]]
 
           set +e
           (
@@ -548,6 +548,102 @@ jobs:
           retention-days: 7
           compression-level: 9
 
+  observability_proxy_race_current:
+    name: Observability proxy race current-source proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Initialize bounded current-source proof artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof_dir="${RUNNER_TEMP}/observability-proxy-race-current"
+          install -d -m 0700 "${proof_dir}"
+          printf 'status=not_run\n' > "${proof_dir}/proof.txt"
+          chmod 0600 "${proof_dir}/proof.txt"
+      - name: Check out current source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Verify current-source Observability proxy race coverage
+        shell: bash
+        env:
+          GOMAXPROCS: "2"
+        run: |
+          set -euo pipefail
+          proof_dir="${RUNNER_TEMP}/observability-proxy-race-current"
+          proof_log="${proof_dir}/proof.txt"
+          targeted_log="${RUNNER_TEMP}/observability-proxy-race-current-targeted.raw.log"
+          full_race_log="${RUNNER_TEMP}/observability-proxy-race-current-full-race.raw.log"
+          normal_log="${RUNNER_TEMP}/observability-proxy-race-current-normal.raw.log"
+          trap 'rm -f "${targeted_log}" "${full_race_log}" "${normal_log}"' EXIT
+
+          current_sha="$(git rev-parse HEAD)"
+          set +e
+          go test -json -race -mod=readonly -p 1 ./internal/httpapi \
+            -run '^TestObservabilityProxyEndpoints$' \
+            -count=50 \
+            -timeout=15m \
+            > "${targeted_log}" 2>&1
+          targeted_status=$?
+          go test -race -mod=readonly -p 1 ./internal/httpapi \
+            -count=1 \
+            -timeout=20m \
+            > "${full_race_log}" 2>&1
+          full_race_status=$?
+          go test -mod=readonly -p 1 ./internal/httpapi \
+            -count=1 \
+            -timeout=10m \
+            > "${normal_log}" 2>&1
+          normal_status=$?
+          set -e
+
+          targeted_race_warning_count="$(grep -F -c 'WARNING: DATA RACE' "${targeted_log}" || true)"
+          full_race_warning_count="$(grep -F -c 'WARNING: DATA RACE' "${full_race_log}" || true)"
+          targeted_test_run_count="$(awk 'index($0, "\"Action\":\"run\"") && index($0, "\"Test\":\"TestObservabilityProxyEndpoints\"") { count++ } END { print count + 0 }' "${targeted_log}")"
+          targeted_test_pass_count="$(awk 'index($0, "\"Action\":\"pass\"") && index($0, "\"Test\":\"TestObservabilityProxyEndpoints\"") { count++ } END { print count + 0 }' "${targeted_log}")"
+          targeted_log_bytes="$(wc -c < "${targeted_log}")"
+          full_race_log_bytes="$(wc -c < "${full_race_log}")"
+          normal_log_bytes="$(wc -c < "${normal_log}")"
+          {
+            printf 'status=current_source_checks_completed\n'
+            printf 'current_sha=%s\n' "${current_sha}"
+            printf 'targeted_race_exit=%s\n' "${targeted_status}"
+            printf 'targeted_race_warning_count=%s\n' "${targeted_race_warning_count}"
+            printf 'targeted_test_run_count=%s\n' "${targeted_test_run_count}"
+            printf 'targeted_test_pass_count=%s\n' "${targeted_test_pass_count}"
+            printf 'targeted_raw_log_bytes=%s\n' "${targeted_log_bytes}"
+            printf 'full_package_race_exit=%s\n' "${full_race_status}"
+            printf 'full_package_race_warning_count=%s\n' "${full_race_warning_count}"
+            printf 'full_package_race_raw_log_bytes=%s\n' "${full_race_log_bytes}"
+            printf 'normal_package_exit=%s\n' "${normal_status}"
+            printf 'normal_package_raw_log_bytes=%s\n' "${normal_log_bytes}"
+            printf 'raw_logs_retained=false\n'
+          } > "${proof_log}"
+          chmod 0600 "${proof_log}"
+
+          [[ "${targeted_status}" -eq 0 ]]
+          [[ "${targeted_race_warning_count}" -eq 0 ]]
+          [[ "${targeted_test_run_count}" -eq 50 ]]
+          [[ "${targeted_test_pass_count}" -eq 50 ]]
+          [[ "${full_race_status}" -eq 0 ]]
+          [[ "${full_race_warning_count}" -eq 0 ]]
+          [[ "${normal_status}" -eq 0 ]]
+          [[ "$(wc -c < "${proof_log}")" -le 8192 ]]
+      - name: Upload bounded current-source race proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: observability-proxy-race-current-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observability-proxy-race-current/proof.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+
   web:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -577,7 +673,7 @@ jobs:
   overall:
     name: overall
     if: always()
-    needs: [service-installer, go, observability_proxy_race_pre_fix, web]
+    needs: [service-installer, go, observability_proxy_race_pre_fix, observability_proxy_race_current, web]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every blocking job
@@ -585,10 +681,12 @@ jobs:
           SERVICE_INSTALLER_RESULT: ${{ needs.service-installer.result }}
           GO_RESULT: ${{ needs.go.result }}
           OBSERVABILITY_PROXY_RACE_PRE_FIX_RESULT: ${{ needs.observability_proxy_race_pre_fix.result }}
+          OBSERVABILITY_PROXY_RACE_CURRENT_RESULT: ${{ needs.observability_proxy_race_current.result }}
           WEB_RESULT: ${{ needs.web.result }}
         run: |
           set -euo pipefail
           [[ "${SERVICE_INSTALLER_RESULT}" == success ]]
           [[ "${GO_RESULT}" == success ]]
           [[ "${OBSERVABILITY_PROXY_RACE_PRE_FIX_RESULT}" == success ]]
+          [[ "${OBSERVABILITY_PROXY_RACE_CURRENT_RESULT}" == success ]]
           [[ "${WEB_RESULT}" == success ]]
