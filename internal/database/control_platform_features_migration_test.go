@@ -74,6 +74,10 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 			t.Fatalf("table %s count=%d err=%v", table, count, err)
 		}
 	}
+	var streamUpdatedAtPrecision int
+	if err := db.QueryRowContext(ctx, `SELECT DATETIME_PRECISION FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='streams' AND column_name='updated_at'`).Scan(&streamUpdatedAtPrecision); err != nil || streamUpdatedAtPrecision != 6 {
+		t.Fatalf("streams.updated_at precision=%v err=%v", streamUpdatedAtPrecision, err)
+	}
 	// Replaying the exact migration models a crash after DDL but before the
 	// schema_migrations record. It must remain retry-safe.
 	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/079_control_platform_features.sql")

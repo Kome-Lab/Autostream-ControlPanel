@@ -1774,6 +1774,24 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
 
     controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(false, 3, true, 2, "confirming") };
     await scrollSelectorIntoView(browser, 'button[aria-label="同じ操作キーで状態確認"]');
+		await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+		browser.clearRequestCounts("/auth/me");
+		const reconciliationPermissionRelease = deferred();
+		authResponse = { body: currentUser, waitUntil: reconciliationPermissionRelease.promise };
+		await browser.evaluate("window.dispatchEvent(new Event('focus')); true");
+		await browser.waitForRequestCount("/auth/me", 1, 20_000);
+		await browser.waitFor(
+			`document.querySelector('button[aria-label="同じ操作キーで状態確認"]:disabled') !== null`,
+			Boolean,
+			"explicit reconciliation remained enabled while permission was refreshing",
+		);
+		await browser.clickSelector('button[aria-label="同じ操作キーで状態確認"]');
+		await waitForAnimationFrames(browser);
+		assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 2, "refreshing permission must send zero reconciliation requests");
+		reconciliationPermissionRelease.resolve();
+		authResponse = { body: currentUser };
+		await browser.waitForResponseCount("/auth/me", 1, 20_000);
+		await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
 		await browser.waitFor(
 			`document.querySelector('button[aria-label="同じ操作キーで状態確認"]:not([disabled])') !== null`,
 			Boolean,

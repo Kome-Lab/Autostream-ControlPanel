@@ -77,6 +77,7 @@ export function StreamControlPlatformPanel({ stream }: { stream: Stream }) {
       : { status: "ready", permissions: currentUser.data?.permissions || [], superAdmin: currentUser.data?.user.roles?.includes("super_admin") === true } as CoverPermissionSnapshot;
   const show = coverActionAvailability(true, permission, action.isPending);
   const hide = coverActionAvailability(false, permission, action.isPending);
+	const reconcile = lastAction ? coverActionAvailability(lastAction.active, permission, action.isPending) : null;
 	const issue = (active: boolean, hideConfirmed = false) => {
 		if (!cover.data) return;
 		action.mutate(buildVideoCoverAction(active, cover.data, newVideoCoverIdempotencyKey(), hideConfirmed));
@@ -122,7 +123,7 @@ export function StreamControlPlatformPanel({ stream }: { stream: Stream }) {
           <Button type="button" variant="outline" size="sm" aria-label="Video Coverを非表示" disabled={!cover.data || !hide.allowed} title={hide.reason || undefined}><EyeOff className="size-4" />Coverを非表示</Button>
         </DangerConfirm>
         {lastAction && (cover.data?.status === "confirming" || notice.includes("確認できません")) ? (
-			<Button type="button" variant="outline" size="sm" aria-label="同じ操作キーで状態確認" onClick={() => action.mutate(lastAction)} disabled={action.isPending}>
+			<Button type="button" variant="outline" size="sm" aria-label="同じ操作キーで状態確認" onClick={() => action.mutate(lastAction)} disabled={!reconcile?.allowed} title={reconcile?.reason || undefined}>
             <RefreshCcw className="size-4" />同じ操作キーで状態確認
           </Button>
         ) : null}

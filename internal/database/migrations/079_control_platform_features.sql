@@ -2,6 +2,12 @@
 -- This repository uses forward-only migrations. Referenced assets are retained;
 -- rollback after first reference requires the matching database/blob backup.
 
+-- Stream Start uses streams.updated_at as its persisted compare-and-swap
+-- authority. Preserve every legacy value while widening the column so visual
+-- mutations in the same second can still invalidate an already-read Start.
+ALTER TABLE streams
+  MODIFY COLUMN updated_at DATETIME(6) NOT NULL;
+
 CREATE TABLE IF NOT EXISTS user_ui_preferences (
   user_id CHAR(36) NOT NULL,
   theme_id VARCHAR(32) NOT NULL DEFAULT 'autostream',
