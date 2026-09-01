@@ -381,7 +381,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = covers.EnsureGeneration(ctx, createdStream.ID, 99, runtimeVariant.ID, false); err != nil {
+	if _, err = covers.EnsureGeneration(ctx, legacy.ID, 99, runtimeVariant.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = media.SoftDeleteAsset(ctx, userID, runtimeAsset.ID, now); err != nil {
@@ -394,7 +394,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_assets WHERE id=?`, extraneousAsset.ID).Scan(&extraneousAssetRows); err != nil || extraneousAssetRows != 0 {
 		t.Fatalf("expired unreferenced draft remained: count=%d err=%v", extraneousAssetRows, err)
 	}
-	runtimeInternal, err := media.OpenInternalVariant(ctx, createdStream.ID, runtimeVariant.ID)
+	runtimeInternal, err := media.OpenInternalVariant(ctx, legacy.ID, runtimeVariant.ID)
 	if err != nil || runtimeInternal.Asset.ID != runtimeAsset.ID || runtimeInternal.Variant.ID != runtimeVariant.ID {
 		t.Fatalf("runtime-referenced asset was not retrievable: asset=%s variant=%s err=%v", runtimeInternal.Asset.ID, runtimeInternal.Variant.ID, err)
 	}
