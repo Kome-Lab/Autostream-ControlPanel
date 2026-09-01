@@ -369,20 +369,6 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// This draft is intentionally consumed by the preset fixture after the GC
-	// witness below, so keep its expiry beyond that witness's 25-hour horizon.
-	coverSession, err := media.CreateUploadSession(ctx, userID, now.Add(48*time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	coverAsset, err := media.Upload(ctx, mediaassets.UploadInput{SessionID: coverSession.ID, UserID: userID, UsageType: "video_cover", Filename: "cover.png", ContentType: "image/png", Body: bytes.NewReader(controlPlatformPNG(t, 160, 90, false))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	coverVariant, err := media.EnsureVariant(ctx, userID, coverAsset.ID, 1920, 1080, true)
-	if err != nil {
-		t.Fatal(err)
-	}
 	runtimeSession, err := media.CreateUploadSession(ctx, userID, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -418,6 +404,18 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	var claimedSessionRows int
 	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_upload_sessions WHERE id=?`, session.ID).Scan(&claimedSessionRows); err != nil || claimedSessionRows != 0 {
 		t.Fatalf("expired claimed upload session remained: count=%d err=%v", claimedSessionRows, err)
+	}
+	coverSession, err := media.CreateUploadSession(ctx, userID, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverAsset, err := media.Upload(ctx, mediaassets.UploadInput{SessionID: coverSession.ID, UserID: userID, UsageType: "video_cover", Filename: "cover.png", ContentType: "image/png", Body: bytes.NewReader(controlPlatformPNG(t, 160, 90, false))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverVariant, err := media.EnsureVariant(ctx, userID, coverAsset.ID, 1920, 1080, true)
+	if err != nil {
+		t.Fatal(err)
 	}
 	coverPreset, err := covers.CreatePreset(ctx, videocover.Preset{Name: "Release " + userID[:8], AssetID: coverAsset.ID, AssetVariantID: coverVariant.ID, Enabled: true, CreatedByUserID: userID})
 	if err != nil {
