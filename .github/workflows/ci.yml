@@ -446,6 +446,108 @@ jobs:
               autostream-kometubu_panel
       - run: go build ./...
 
+  observability_proxy_race_pre_fix:
+    name: Observability proxy race pre-fix proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Initialize bounded proof artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof_dir="${RUNNER_TEMP}/observability-proxy-race-pre-fix"
+          install -d -m 0700 "${proof_dir}"
+          printf 'status=not_run\n' > "${proof_dir}/proof.txt"
+          chmod 0600 "${proof_dir}/proof.txt"
+      - name: Check out current workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out exact pre-fix authority source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 86261a2e8b839bcf24f8b360d21b3a6c7cfc51da
+          path: authority-source
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: authority-source/go.mod
+          cache-dependency-path: authority-source/go.mod
+      - name: Reproduce exact-authority Observability proxy race
+        shell: bash
+        env:
+          GOMAXPROCS: "2"
+        run: |
+          set -euo pipefail
+          authority_sha="86261a2e8b839bcf24f8b360d21b3a6c7cfc51da"
+          authority_dir="${GITHUB_WORKSPACE}/authority-source"
+          current_test="${GITHUB_WORKSPACE}/internal/httpapi/server_test.go"
+          authority_test="${authority_dir}/internal/httpapi/server_test.go"
+          proof_dir="${RUNNER_TEMP}/observability-proxy-race-pre-fix"
+          proof_log="${proof_dir}/proof.txt"
+          raw_log="${RUNNER_TEMP}/observability-proxy-race-pre-fix.raw.log"
+          trap 'rm -f "${raw_log}"' EXIT
+
+          current_sha="$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)"
+          checked_out_authority_sha="$(git -C "${authority_dir}" rev-parse HEAD)"
+          current_test_sha256="$(sha256sum "${current_test}" | awk '{print $1}')"
+          authority_test_sha256="$(sha256sum "${authority_test}" | awk '{print $1}')"
+          test_bytes_equal=false
+          if cmp -s "${current_test}" "${authority_test}"; then
+            test_bytes_equal=true
+          fi
+
+          {
+            printf 'status=source_checked\n'
+            printf 'authority_sha=%s\n' "${authority_sha}"
+            printf 'checked_out_authority_sha=%s\n' "${checked_out_authority_sha}"
+            printf 'current_sha=%s\n' "${current_sha}"
+            printf 'current_test_sha256=%s\n' "${current_test_sha256}"
+            printf 'authority_test_sha256=%s\n' "${authority_test_sha256}"
+            printf 'test_bytes_equal=%s\n' "${test_bytes_equal}"
+          } > "${proof_log}"
+
+          [[ "${checked_out_authority_sha}" == "${authority_sha}" ]]
+          [[ "${test_bytes_equal}" == true ]]
+
+          set +e
+          (
+            cd "${authority_dir}"
+            go test -race -mod=readonly -p 1 ./internal/httpapi \
+              -run '^TestObservabilityProxyEndpoints$' \
+              -count=20 \
+              -timeout=20m
+          ) > "${raw_log}" 2>&1
+          race_status=$?
+          set -e
+
+          race_warning_count="$(grep -F -c 'WARNING: DATA RACE' "${raw_log}" || true)"
+          target_function_count="$(grep -F -c 'TestObservabilityProxyEndpoints.func1' "${raw_log}" || true)"
+          raw_log_bytes="$(wc -c < "${raw_log}")"
+          {
+            printf 'status=race_command_completed\n'
+            printf 'go_test_exit=%s\n' "${race_status}"
+            printf 'race_warning_count=%s\n' "${race_warning_count}"
+            printf 'target_function_witness_count=%s\n' "${target_function_count}"
+            printf 'raw_log_bytes=%s\n' "${raw_log_bytes}"
+            printf 'raw_log_retained=false\n'
+          } >> "${proof_log}"
+          chmod 0600 "${proof_log}"
+
+          [[ "${race_status}" -ne 0 ]]
+          [[ "${race_warning_count}" -ge 1 ]]
+          [[ "${target_function_count}" -ge 1 ]]
+          [[ "$(wc -c < "${proof_log}")" -le 8192 ]]
+      - name: Upload bounded pre-fix race proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: observability-proxy-race-pre-fix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observability-proxy-race-pre-fix/proof.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+
   web:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -475,16 +577,18 @@ jobs:
   overall:
     name: overall
     if: always()
-    needs: [service-installer, go, web]
+    needs: [service-installer, go, observability_proxy_race_pre_fix, web]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every blocking job
         env:
           SERVICE_INSTALLER_RESULT: ${{ needs.service-installer.result }}
           GO_RESULT: ${{ needs.go.result }}
+          OBSERVABILITY_PROXY_RACE_PRE_FIX_RESULT: ${{ needs.observability_proxy_race_pre_fix.result }}
           WEB_RESULT: ${{ needs.web.result }}
         run: |
           set -euo pipefail
           [[ "${SERVICE_INSTALLER_RESULT}" == success ]]
           [[ "${GO_RESULT}" == success ]]
+          [[ "${OBSERVABILITY_PROXY_RACE_PRE_FIX_RESULT}" == success ]]
           [[ "${WEB_RESULT}" == success ]]
