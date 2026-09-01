@@ -18,8 +18,11 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/database"
 	"github.com/example/autostream-control-panel/internal/httpapi"
+	"github.com/example/autostream-control-panel/internal/mediaassets"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/streamvisual"
 	"github.com/example/autostream-control-panel/internal/version"
+	"github.com/example/autostream-control-panel/internal/videocover"
 )
 
 const defaultStaticWebDir = "/usr/share/autostream-control-panel"
@@ -49,6 +52,14 @@ func main() {
 	}
 
 	appSettingsStore := store.NewMariaDBAppSettingsStore(db)
+	mediaRepository, err := mediaassets.NewMariaDBRepository(db, mediaassets.DefaultStorageRoot())
+	if err != nil {
+		// Storage errors may contain the private filesystem root. Keep the
+		// operator-visible failure stable without logging that path.
+		log.Fatal("initialize media asset storage: media_asset_storage_unavailable")
+	}
+	visualRepository := streamvisual.NewMariaDBRepository(db, mediaRepository)
+	videoCoverRepository := videocover.NewMariaDBRepository(db)
 	srv := httpapi.NewServer(
 		store.NewMariaDBStreamStore(db),
 		httpapi.WithAuthStore(store.NewMariaDBAuthStoreWithSecretKey(db, os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))),
@@ -62,6 +73,11 @@ func main() {
 		httpapi.WithSystemUpdateStore(store.NewMariaDBSystemUpdateStore(db)),
 		httpapi.WithUpdaterPolicyStore(store.NewMariaDBUpdaterPolicyAdminStore(db, os.Getenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY"))),
 		httpapi.WithOAuthLoginStore(store.NewMariaDBOAuthLoginStore(db)),
+		httpapi.WithMediaAssetRepository(mediaRepository),
+		httpapi.WithUserUIPreferenceStore(store.NewMariaDBUserUIPreferenceStore(db)),
+		httpapi.WithDiscordTargetPresetStore(store.NewMariaDBDiscordTargetPresetStore(db)),
+		httpapi.WithStreamVisualRepository(visualRepository),
+		httpapi.WithVideoCoverRepository(videoCoverRepository),
 	)
 	handler := withStaticFiles(srv, staticWebDir(), appSettingsStore)
 	server := &http.Server{
@@ -86,6 +102,7 @@ func main() {
 	go srv.RunYouTubeIngestHealthLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_INGEST_HEALTH_INTERVAL", 30*time.Second))
 	go srv.RunDiscordYouTubeLiveNotificationOutboxLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_LIVE_NOTIFICATION_RETRY_INTERVAL", 15*time.Second))
 	go srv.RunOAuthTokenRefreshLoop(runCtx, durationFromEnv("AUTOSTREAM_OAUTH_TOKEN_REFRESH_INTERVAL", 45*time.Minute))
+	go srv.RunMediaAssetGarbageCollector(runCtx, durationFromEnv("AUTOSTREAM_MEDIA_ASSET_GC_INTERVAL", time.Hour))
 	select {
 	case err := <-errCh:
 		if err != nil {

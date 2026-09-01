@@ -26,14 +26,17 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/ingesttoken"
+	"github.com/example/autostream-control-panel/internal/mediaassets"
 	"github.com/example/autostream-control-panel/internal/netpolicy"
 	"github.com/example/autostream-control-panel/internal/oauthlogin"
 	"github.com/example/autostream-control-panel/internal/observability"
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/streamvisual"
 	"github.com/example/autostream-control-panel/internal/updateagent"
 	"github.com/example/autostream-control-panel/internal/version"
+	"github.com/example/autostream-control-panel/internal/videocover"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
@@ -124,6 +127,12 @@ type Server struct {
 	previewSigningKey        string
 	loginFailures            *loginFailureLimiter
 	serviceEmailLimiter      *serviceEmailRateLimiter
+	mediaAssets              mediaassets.Repository
+	uiPreferences            store.UserUIPreferenceStore
+	discordTargetPresets     store.DiscordTargetPresetStore
+	streamVisual             streamvisual.Repository
+	videoCovers              videocover.Repository
+	videoCoverDispatcher     servicecall.VideoCoverDispatcher
 }
 
 // streamLifecycleLock serializes one stream's externally visible lifecycle
@@ -403,6 +412,15 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 	if s.oauthLogin == nil {
 		s.oauthLogin = store.NewMemoryOAuthLoginStore()
 	}
+	if s.uiPreferences == nil {
+		s.uiPreferences = store.NewMemoryUserUIPreferenceStore()
+	}
+	if s.discordTargetPresets == nil {
+		s.discordTargetPresets = store.NewMemoryDiscordTargetPresetStore()
+	}
+	if s.videoCovers == nil {
+		s.videoCovers = videocover.NewMemoryRepository()
+	}
 	if s.oauthConnector == nil {
 		if connector, ok := s.oauthVerifier.(oauthlogin.Connector); ok {
 			s.oauthConnector = connector
@@ -511,6 +529,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /auth/logout", s.requirePermission("", s.logout))
 	s.mux.HandleFunc("POST /auth/session/refresh", s.requirePermission("", s.refreshSession))
 	s.mux.HandleFunc("GET /auth/me", s.requirePermission("", s.me))
+	s.mux.HandleFunc("GET /account/preferences/ui", s.requirePermission("", s.getUIPreference))
+	s.mux.HandleFunc("PUT /account/preferences/ui", s.requirePermission("", s.updateUIPreference))
 	s.mux.HandleFunc("GET /auth/avatar", s.requirePermission("", s.getCurrentUserAvatar))
 	s.mux.HandleFunc("PUT /auth/avatar", s.requirePermission("", s.updateCurrentUserAvatar))
 	s.mux.HandleFunc("DELETE /auth/avatar", s.requirePermission("", s.deleteCurrentUserAvatar))
@@ -559,6 +579,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /discord/configs/{id}", s.requirePermission("discord_configs.read", s.getDiscordConfig))
 	s.mux.HandleFunc("PUT /discord/configs/{id}", s.requirePermission("discord_configs.update", s.updateDiscordConfig))
 	s.mux.HandleFunc("DELETE /discord/configs/{id}", s.requirePermission("discord_configs.delete", s.deleteDiscordConfig))
+	s.mux.HandleFunc("GET /discord/target-presets", s.requirePermission("discord_target_presets.read", s.listDiscordTargetPresets))
+	s.mux.HandleFunc("POST /discord/target-presets", s.requirePermission("discord_target_presets.create", s.createDiscordTargetPreset))
+	s.mux.HandleFunc("GET /discord/target-presets/{id}", s.requirePermission("discord_target_presets.read", s.getDiscordTargetPreset))
+	s.mux.HandleFunc("PUT /discord/target-presets/{id}", s.requirePermission("discord_target_presets.update", s.updateDiscordTargetPreset))
+	s.mux.HandleFunc("DELETE /discord/target-presets/{id}", s.requirePermission("discord_target_presets.delete", s.deleteDiscordTargetPreset))
 	s.mux.HandleFunc("GET /youtube/outputs", s.requirePermission("youtube_outputs.read", s.listYouTubeOutputs))
 	s.mux.HandleFunc("POST /youtube/outputs", s.requirePermission("youtube_outputs.create", s.createYouTubeOutput))
 	s.mux.HandleFunc("GET /youtube/outputs/{id}", s.requirePermission("youtube_outputs.read", s.getYouTubeOutput))
@@ -606,7 +631,22 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /archive/streams", s.requirePermission("archives.read", s.listArchiveStreams))
 	s.mux.HandleFunc("GET /archive/processing-streams", s.requirePermission("archives.read", s.listArchiveProcessingStreams))
 	s.mux.HandleFunc("POST /streams", s.requirePermission("streams.create", s.createStream))
+	s.mux.HandleFunc("POST /media-assets/upload-sessions", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.createMediaUploadSession))
+	s.mux.HandleFunc("POST /media-assets", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.uploadMediaAsset))
+	s.mux.HandleFunc("GET /media-assets/{id}", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.getMediaAsset))
+	s.mux.HandleFunc("POST /media-assets/{id}/variants", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.createMediaAssetVariant))
+	s.mux.HandleFunc("DELETE /media-assets/{id}", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.deleteMediaAsset))
+	s.mux.HandleFunc("GET /internal/streams/{stream_id}/media-assets/{variant_id}", s.internalMediaAsset)
 	s.mux.HandleFunc("GET /streams/{id}", s.requirePermission("streams.read", s.getStream))
+	s.mux.HandleFunc("GET /streams/{id}/visual-settings", s.requirePermission("streams.read", s.getStreamVisualSettings))
+	s.mux.HandleFunc("PUT /streams/{id}/visual-settings", s.requirePermission("streams.update", s.updateStreamVisualSettings))
+	s.mux.HandleFunc("GET /streams/{id}/video-cover-state", s.requirePermission("streams.read", s.getVideoCoverState))
+	s.mux.HandleFunc("PUT /streams/{id}/video-cover-state", s.requirePermission("", s.updateVideoCoverState))
+	s.mux.HandleFunc("GET /video-cover-presets", s.requirePermission("video_cover_presets.read", s.listVideoCoverPresets))
+	s.mux.HandleFunc("POST /video-cover-presets", s.requirePermission("video_cover_presets.create", s.createVideoCoverPreset))
+	s.mux.HandleFunc("GET /video-cover-presets/{id}", s.requirePermission("video_cover_presets.read", s.getVideoCoverPreset))
+	s.mux.HandleFunc("PUT /video-cover-presets/{id}", s.requirePermission("video_cover_presets.update", s.updateVideoCoverPreset))
+	s.mux.HandleFunc("DELETE /video-cover-presets/{id}", s.requirePermission("video_cover_presets.delete", s.deleteVideoCoverPreset))
 	s.mux.HandleFunc("DELETE /streams/{id}", s.requirePermission("streams.delete", s.deleteStream))
 	s.mux.HandleFunc("GET /streams/{id}/external-e2e-config", s.requirePermission("streams.read", s.externalE2EConfig))
 	s.mux.HandleFunc("PUT /streams/{id}/settings", s.requirePermission("streams.update", s.updateStreamSettings))
@@ -711,7 +751,11 @@ func secureHeaders(next http.Handler) http.Handler {
 func limitRequestBody(next http.Handler, maximum int64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && isUnsafeMethod(r.Method) {
-			r.Body = http.MaxBytesReader(w, r.Body, maximum)
+			requestLimit := maximum
+			if r.Method == http.MethodPost && r.URL.Path == "/media-assets" {
+				requestLimit = mediaassets.MaxUploadBytes + (1 << 20)
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, requestLimit)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -9162,9 +9206,50 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := currentFromContext(r.Context())
-	stream, err := s.streams.CreateStream(r.Context(), body.Name)
+	var stream store.Stream
+	var createdVisual streamvisual.Settings
+	_, visualSettingsPresent := fields["visual_settings"]
+	_, uploadSessionPresent := fields["upload_session_id"]
+	if uploadSessionPresent && streamArchiveDirectRequested(body) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_draft_archive_create_unsupported"})
+		return
+	}
+	atomicLegacySettings := (visualSettingsPresent || uploadSessionPresent) && !streamArchiveDirectRequested(body)
+	if visualSettingsPresent || uploadSessionPresent {
+		creator, ok := s.streamVisual.(streamvisual.AtomicCreator)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_visual_create_unavailable"})
+			return
+		}
+		var envelope createStreamVisualEnvelope
+		if err := json.Unmarshal(encoded, &envelope); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+		visualUpdate := streamvisual.Update{}
+		if len(envelope.VisualSettings) != 0 && string(envelope.VisualSettings) != "null" {
+			if err := json.Unmarshal(envelope.VisualSettings, &visualUpdate); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+				return
+			}
+		}
+		stream, createdVisual, err = creator.CreateStream(r.Context(), current.User.ID, streamvisual.Create{Name: body.Name, UploadSessionID: envelope.UploadSessionID, Settings: visualUpdate, LegacySettings: settings})
+		if err == nil {
+			// Preset-effective IDs are server-derived. Never let legacy client
+			// fields overwrite the snapshot during the bounded compatibility save.
+			settings.DiscordGuildID = createdVisual.DiscordGuildID
+			settings.DiscordTextID = createdVisual.DiscordTextChannelID
+			settings.DiscordVoiceID = createdVisual.DiscordVoiceChannelID
+		}
+	} else {
+		stream, err = s.streams.CreateStream(r.Context(), body.Name)
+	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_stream_failed"})
+		if visualSettingsPresent || uploadSessionPresent {
+			writeStreamVisualError(w, err)
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_stream_failed"})
+		}
 		return
 	}
 	if streamArchiveDirectRequested(body) {
@@ -9174,7 +9259,7 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if streamSettingsConfigured(settings) {
+	if streamSettingsConfigured(settings) && !atomicLegacySettings {
 		stream, err = s.streams.UpdateStreamSettings(r.Context(), stream.ID, settings)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_settings_failed"})
@@ -9556,6 +9641,8 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	streamID := r.PathValue("id")
+	unlockLifecycle := s.lockStreamLifecycle(streamID)
+	defer unlockLifecycle()
 	existing, err := s.streams.GetStream(r.Context(), streamID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
@@ -10024,8 +10111,8 @@ func streamSettingsAuditMetadata(stream store.Stream) map[string]any {
 		"scheduled_start_at":                 stream.ScheduledStartAt,
 		"scheduled_end_at":                   stream.ScheduledEndAt,
 		"discord_config_id":                  stream.DiscordConfigID,
-		"discord_guild_id":                   stream.DiscordGuildID,
-		"discord_voice_channel_id":           stream.DiscordVoiceID,
+		"discord_guild_configured":           stream.DiscordGuildID != "",
+		"discord_voice_channel_configured":   stream.DiscordVoiceID != "",
 		"discord_text_channel_configured":    stream.DiscordTextID != "",
 		"auto_start_trigger":                 stream.AutoStartTrigger,
 		"youtube_output_id":                  stream.YouTubeOutputID,
@@ -10908,6 +10995,15 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
 		return
 	}
+	if issues, readinessErr := s.controlPlatformReadinessIssues(r.Context(), stream.ID, primaryAssignments); readinessErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "control_platform_readiness_failed"})
+		return
+	} else if len(issues) > 0 {
+		current := currentFromContext(r.Context())
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"readiness_issues": issues}})
+		writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_start_not_ready", "issues": issues})
+		return
+	}
 	s.systemUpdateOperationMu.Lock()
 	updateOperationLocked := true
 	defer func() {
@@ -11025,6 +11121,11 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 	if claimedStart.Materialized != nil {
 		current := currentFromContext(r.Context())
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: claimedStart.Materialized.ServiceID, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": claimedStart.Materialized.ServiceType, "assignment_role": "primary", "source": "streams.start"}})
+	}
+	if err := s.beginVideoCoverGeneration(r.Context(), stream.ID); err != nil {
+		_, _, _ = claimStore.TransitionClaimedStreamStart(r.Context(), claimedStart.OwnershipClaim, "failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_generation_failed"})
+		return
 	}
 	s.systemUpdateOperationMu.Unlock()
 	updateOperationLocked = false
@@ -13663,6 +13764,12 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 	missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
 	issues := []servicecall.ReadinessIssue{}
 	if len(missing) == 0 {
+		controlIssues, controlErr := s.controlPlatformReadinessIssues(r.Context(), stream.ID, primaryAssignments)
+		if controlErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "control_platform_readiness_failed"})
+			return
+		}
+		issues = append(issues, controlIssues...)
 		if job, active, err := s.activeSystemUpdateForStreamTargets(r.Context(), primaryAssignments); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "check_service_update_failed"})
 			return
