@@ -2483,7 +2483,7 @@ test("updater mock configure command keeps the one-time token out of argv", () =
   }) as { configure_token?: string; configure_command?: string; scopes?: string[] };
 
   assert.match(response.configure_token || "", /^ast_cfg_/);
-  assert.match(response.configure_command || "", /sudo \/usr\/local\/bin\/autostream-updater configure/);
+  assert.match(response.configure_command || "", /sudo \/usr\/local\/bin\/autostream-host-agent configure/);
   assert.doesNotMatch(response.configure_command || "", /--token|ast_cfg_/);
   assert.equal(
     ["updates.claim", "updates.report", "updates.authorize"].every((scope) => response.scopes?.includes(scope)),

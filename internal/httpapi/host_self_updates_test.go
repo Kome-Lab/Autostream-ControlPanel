@@ -12,6 +12,7 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 type fixedHostSelfUpdateReleaseResolver struct {
@@ -282,7 +283,7 @@ func TestHostSelfUpdateCreateSerializesAgainstConfigureStage(t *testing.T) {
 		body, err := json.Marshal(map[string]any{
 			"nodeId":          "host-agent-a",
 			"configureToken":  fixture.configureToken,
-			"protocolVersion": updateagent.HostAgentConfigureProtocolVersion,
+			"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
 			"agentUid":        uint32(1001),
 			"agentGid":        uint32(1002),
 		})
@@ -617,7 +618,7 @@ func newHostSelfUpdateIdentityRaceFixture(
 				ServiceID:      worker.ServiceID,
 				ServiceType:    worker.ServiceType,
 				HostID:         "host-a",
-				DeploymentMode: updateagent.ModeSystemd,
+				DeploymentMode: updateradapter.ModeSystemd,
 			}},
 		},
 	)
