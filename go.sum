@@ -381,3 +381,5 @@ software.sslmate.com/src/go-pkcs12 v0.4.0 h1:H2g08FrTvSFKUj+D309j1DPfk5APnIdAQAB
 software.sslmate.com/src/go-pkcs12 v0.4.0/go.mod h1:Qiz0EyvDRJjjxGyUQa2cCNZn/wMyzrRJ/qcDXOQazLI=
 github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab h1:pMgIxqr+RsZTpud/7RCkZfkFKDmxTsNmjCcwk6Hc92U=
 github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab/go.mod h1:sJPMVofBZcO4uZd1T/y/VkN6/pwN0PJNAQGzlXI+GN4=
+github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 h1:1EYB5IzjZawrrnELUi78f9fPu57HuXjmddZPjrls/28=
+github.com/santhosh-tekuri/jsonschema/v6 v6.0.3/go.mod h1:JXeL+ps8p7/KNMjDQk3TCwPpBy0wYklyWTfbkIzdIFU=
