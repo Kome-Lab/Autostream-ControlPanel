@@ -10,7 +10,7 @@ import (
 	"net/http"
 
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 var (
@@ -23,13 +23,13 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 	r *http.Request,
 	agent store.RegisteredService,
 	agentUID, agentGID uint32,
-) (updateagent.ConfigurePolicyProjection, error) {
+) (updateradapter.ConfigurePolicyProjection, error) {
 	policy, err := s.updaterPolicies.GetUpdaterPolicy(ctx, agent.ServiceID)
 	if errors.Is(err, store.ErrNotFound) {
-		return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyNotConfigured
+		return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyNotConfigured
 	}
 	if err != nil {
-		return updateagent.ConfigurePolicyProjection{}, err
+		return updateradapter.ConfigurePolicyProjection{}, err
 	}
 	if agent.TransportMode != store.SystemUpdateTransportPullV2 ||
 		policy.TransportMode != store.SystemUpdateTransportPullV2 ||
@@ -38,36 +38,36 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 		policy.Revision < 1 ||
 		policy.ProjectionRevision < 1 ||
 		policy.LocalExecutorPolicyRevision < 1 {
-		return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+		return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
 	}
 	services, err := s.services.ListServices(ctx)
 	if err != nil {
-		return updateagent.ConfigurePolicyProjection{}, err
+		return updateradapter.ConfigurePolicyProjection{}, err
 	}
 	servicesByID := make(map[string]store.RegisteredService, len(services))
 	for _, service := range services {
 		servicesByID[service.ServiceID] = service
 	}
 	if err := addControlPanelSystemUpdateServiceForPolicy(servicesByID, policy); err != nil {
-		return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+		return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
 	}
-	targets := make([]updateagent.HostAgentConfigurePolicyTarget, 0, len(policy.Targets))
+	targets := make([]updateradapter.HostAgentConfigurePolicyTarget, 0, len(policy.Targets))
 	for _, target := range policy.Targets {
 		service, exists := servicesByID[target.ServiceID]
 		if !exists ||
 			target.HostID != policy.ExecutionHostID ||
 			service.ServiceType != target.ServiceType ||
 			service.AppliedEndpoint == nil {
-			return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+			return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
 		}
 		localListenPort, localListenPortAvailable := store.PullUpdaterPolicyTargetLocalListenPort(
 			target,
 			service,
 		)
-		if target.DeploymentMode == updateagent.ModeSystemd && !localListenPortAvailable {
-			return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+		if target.DeploymentMode == updateradapter.ModeSystemd && !localListenPortAvailable {
+			return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
 		}
-		targets = append(targets, updateagent.HostAgentConfigurePolicyTarget{
+		targets = append(targets, updateradapter.HostAgentConfigurePolicyTarget{
 			ServiceID:             target.ServiceID,
 			ServiceType:           target.ServiceType,
 			DeploymentMode:        target.DeploymentMode,
@@ -79,8 +79,8 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 			LocalListenPort:       localListenPort,
 		})
 	}
-	projection, err := updateagent.BuildHostAgentConfigurePolicy(
-		updateagent.HostAgentConfigurePolicySource{
+	projection, err := updateradapter.BuildHostAgentConfigurePolicy(
+		updateradapter.HostAgentConfigurePolicySource{
 			PanelURL:                    panelBaseURL(r),
 			ExecutionHostID:             policy.ExecutionHostID,
 			AgentUID:                    agentUID,
@@ -92,7 +92,7 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 		},
 	)
 	if err != nil {
-		return updateagent.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+		return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
 	}
 	return projection, nil
 }
@@ -116,7 +116,7 @@ func writeHostAgentConfigurePolicyError(w http.ResponseWriter, err error) {
 func hostAgentConfigureBoundConfigurationID(
 	internalConfigurationID string,
 	agentUID, agentGID uint32,
-	projection updateagent.ConfigurePolicyProjection,
+	projection updateradapter.ConfigurePolicyProjection,
 	key string,
 ) string {
 	mac := hmac.New(sha256.New, []byte(key))
@@ -140,7 +140,7 @@ func hostAgentConfigureBoundConfigurationID(
 func hostAgentConfigureConfigurationIDMatches(
 	externalConfigurationID, internalConfigurationID string,
 	agentUID, agentGID uint32,
-	projection updateagent.ConfigurePolicyProjection,
+	projection updateradapter.ConfigurePolicyProjection,
 	key string,
 ) bool {
 	expected := hostAgentConfigureBoundConfigurationID(

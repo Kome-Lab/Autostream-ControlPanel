@@ -677,18 +677,6 @@ exit 99
 EOF
 chmod 0755 "${EXTRACTED_ROOT}/bin/control-panel"
 
-cat > "${EXTRACTED_ROOT}/bin/autostream-updater" <<'EOF'
-#!/bin/sh
-if [ "${1:-}" = "--version" ]; then
-  printf '%s\n' 'autostream-updater v9.9.9'
-  printf '%s\n' 'commit: 0123456789abcdef0123456789abcdef01234567'
-  printf '%s\n' 'build_date: 2026-07-31T00:00:00Z'
-  exit 0
-fi
-exit 99
-EOF
-chmod 0755 "${EXTRACTED_ROOT}/bin/autostream-updater"
-
 cat > "${EXTRACTED_ROOT}/backup/autostream-backup-control-panel" <<'EOF'
 #!/bin/sh
 exit 0
@@ -755,9 +743,6 @@ rebuild_fixture_archive() {
 
 rebuild_fixture_archive
 (
-  grep -Eq '^[0-9a-f]{64}  \./bin/autostream-updater$' \
-  "${EXTRACTED_ROOT}/checksums.txt" || \
-    die "fixture checksum inventory does not cover bin/autostream-updater"
   grep -Eq '^[0-9a-f]{64}  \./artifact-manifest.json$' \
     "${EXTRACTED_ROOT}/checksums.txt" || \
     die "fixture checksum inventory does not cover artifact-manifest.json"
@@ -1596,7 +1581,6 @@ for directory_path in \
 done
 for executable_path in \
   "${fresh_release}/bin/control-panel" \
-  "${fresh_release}/bin/autostream-updater" \
   "${fresh_release}/backup/autostream-backup-control-panel" \
   "${fresh_release}/install-autostream-control-panel"; do
   [[ $(stat -c '%U:%G:%a' -- "${executable_path}") == "root:root:755" ]] || \

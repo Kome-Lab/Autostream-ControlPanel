@@ -139,10 +139,8 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		`copy_created_backup_and_record "${link_path}" "${backup_path}"`,
 		`find "${managed_candidate}" -type d -exec chmod 0755 {} +`,
 		`find "${managed_candidate}" -type f -exec chmod 0644 {} +`,
-		`"${managed_candidate}/bin/autostream-updater"`,
 		`verify_managed_release "${managed_candidate}"`,
 		`verify_binary_identity "${EXTRACTED_ROOT}/bin/control-panel" "autostream-control-panel"`,
-		`verify_binary_identity "${EXTRACTED_ROOT}/bin/autostream-updater" "autostream-updater"`,
 		`candidate_version_output="$(runuser -u autostream -- "${managed_candidate}/bin/control-panel" --version)"`,
 		`sync -f "${RELEASES_DIR}"`,
 		`managed_version_output="$(runuser -u autostream -- "${RELEASE_DIR}/bin/control-panel" --version)"`,
@@ -291,7 +289,7 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	}
 	bundleVerify := strings.Index(
 		installer,
-		`verify_binary_identity "${EXTRACTED_ROOT}/bin/autostream-updater" "autostream-updater"`,
+		`verify_binary_identity "${EXTRACTED_ROOT}/bin/control-panel" "autostream-control-panel"`,
 	)
 	accountMutation := strings.Index(installer, "groupadd --system autostream")
 	if bundleVerify < 0 || accountMutation < 0 || bundleVerify >= accountMutation {
@@ -433,19 +431,10 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 	}
 	workflow := string(workflowBytes)
 	for _, marker := range []string{
-		`cp release/install-autostream-control-panel "${root}/install-autostream-control-panel"`,
-		`chmod 0755 "${root}/install-autostream-control-panel"`,
-		`-o "${root}/bin/autostream-updater" ./cmd/autostream-updater`,
+		`bash scripts/ci/build-control-panel-release-candidate.sh`,
 		`- name: Attest Control Panel archives`,
-		`artifacts/autostream-control-panel_${{ needs.release-host.outputs.version }}_linux_amd64.tar.gz`,
-		`artifacts/autostream-control-panel_${{ needs.release-host.outputs.version }}_linux_arm64.tar.gz`,
-		`"s/vX\\.Y\\.Z/${version}/g"`,
-		`"s/<version>/${version}/g"`,
-		`"s/<arch>/${arch}/g"`,
-		`"s/linux_amd64/linux_${arch}/g"`,
-		`autostream-host-agent_${version}_linux_${arch}.tar.gz`,
-		`(( size > 268435456 ))`,
-		`(.size | type == "number" and . > 0 and . <= 268435456)`,
+		`autostream-control-panel_*.tar.gz`,
+		`release-manifest.json`,
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("host release workflow is missing installer packaging marker %q", marker)
@@ -592,10 +581,6 @@ func TestControlPanelReleaseShipsManagedServiceInstaller(t *testing.T) {
 		"successful migration replaced the running legacy process",
 		"idempotent reinstall changed the existing environment",
 		"fresh installer unexpectedly started the service",
-		`cat > "${EXTRACTED_ROOT}/bin/autostream-updater"`,
-		`chmod 0755 "${EXTRACTED_ROOT}/bin/autostream-updater"`,
-		`grep -Eq '^[0-9a-f]{64}  \./bin/autostream-updater$'`,
-		`"${fresh_release}/bin/autostream-updater"`,
 		"fresh managed release was not runnable by autostream",
 		"snapshot_managed_release_tree()",
 		`find . -printf '%P|%D:%i|%U:%G|%m|%s\n'`,

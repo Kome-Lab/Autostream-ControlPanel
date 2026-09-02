@@ -1396,7 +1396,7 @@ function mockConfigureCommand(serviceType: string, nodeID: string, configureToke
 function mockConfigureBinary(serviceType: string) {
   switch (serviceType) {
     case "update_agent":
-      return "/usr/local/bin/autostream-updater";
+      return "/usr/local/bin/autostream-host-agent";
     case "encoder_recorder":
       return "autostream-encoder-recorder";
     case "discord_bot":
@@ -1411,7 +1411,7 @@ function mockConfigureBinary(serviceType: string) {
 function mockConfigPath(serviceType: string) {
   switch (serviceType) {
     case "update_agent":
-      return "/etc/autostream/updater.json";
+      return "/etc/autostream-host-agent/identity.json";
     case "encoder_recorder":
       return "/etc/autostream-encoder-recorder/config.yml";
     case "discord_bot":
@@ -1425,7 +1425,7 @@ function mockConfigPath(serviceType: string) {
 
 function mockUpdaterConfigurationMetadata() {
   return {
-    configuration_path: "/etc/autostream/updater.json",
+    configuration_path: "/etc/autostream-host-agent/identity.json",
   };
 }
 

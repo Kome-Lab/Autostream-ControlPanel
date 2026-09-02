@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 type hostAgentPolicyResponse struct {
@@ -41,7 +41,7 @@ type hostAgentRuntimeRequirement struct {
 }
 
 type hostAgentSelfUpdateDirective struct {
-	updateagent.HostSelfUpdateRequest
+	updateradapter.HostSelfUpdateRequest
 	StagedAt time.Time `json:"staged_at"`
 }
 
@@ -326,7 +326,7 @@ func (s *Server) hostAgentSelfUpdateDirective(
 		RecoveryProtocolVersion: observed.Release.RecoveryProtocolVersion,
 	}
 	directive := &hostAgentSelfUpdateDirective{
-		HostSelfUpdateRequest: updateagent.HostSelfUpdateRequest{
+		HostSelfUpdateRequest: updateradapter.HostSelfUpdateRequest{
 			Generation:              observed.AttemptGeneration,
 			AgentVersion:            observed.TargetVersion,
 			ExecutorVersion:         observed.TargetVersion,
@@ -336,7 +336,7 @@ func (s *Server) hostAgentSelfUpdateDirective(
 			ExecutorProtocolVersion: observed.Release.ExecutorProtocolVersion,
 			MutationProtocolVersion: observed.Release.MutationProtocolVersion,
 			RecoveryProtocolVersion: observed.Release.RecoveryProtocolVersion,
-			Release: updateagent.HostSelfUpdateReleaseIdentity{
+			Release: updateradapter.HostSelfUpdateReleaseIdentity{
 				Tag:                     observed.Release.Tag,
 				Commit:                  observed.Release.Commit,
 				PublishedAt:             observed.Release.PublishedAt,

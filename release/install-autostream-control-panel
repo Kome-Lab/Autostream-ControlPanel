@@ -1252,7 +1252,6 @@ readonly MANIFEST_BUILD_DATE
 
 for required in \
   "bin/control-panel" \
-  "bin/autostream-updater" \
   ".env.example" \
   "backup/autostream-backup-control-panel" \
   "systemd/autostream-control-panel.service.example" \
@@ -1266,7 +1265,6 @@ done
 [[ -n $(find "${EXTRACTED_ROOT}/share/autostream-control-panel" -type f -print -quit) ]] || \
   die "Control Panel web asset directory is empty"
 [[ -x ${EXTRACTED_ROOT}/bin/control-panel ]] || die "Control Panel binary is not executable"
-[[ -x ${EXTRACTED_ROOT}/bin/autostream-updater ]] || die "updater binary is not executable"
 [[ -x ${EXTRACTED_ROOT}/backup/autostream-backup-control-panel ]] || die "backup executable is not executable"
 grep -Fx -- "ExecStart=${PUBLIC_BINARY}" \
   "${EXTRACTED_ROOT}/systemd/autostream-control-panel.service.example" >/dev/null || \
@@ -1290,7 +1288,6 @@ verify_binary_identity() {
 }
 
 verify_binary_identity "${EXTRACTED_ROOT}/bin/control-panel" "autostream-control-panel"
-verify_binary_identity "${EXTRACTED_ROOT}/bin/autostream-updater" "autostream-updater"
 
 require_absent_or_secure_root_directory() {
   local path=$1
@@ -1625,7 +1622,6 @@ else
   find "${managed_candidate}" -type f -exec chmod 0644 {} +
   chmod 0755 \
     "${managed_candidate}/bin/control-panel" \
-    "${managed_candidate}/bin/autostream-updater" \
     "${managed_candidate}/backup/autostream-backup-control-panel" \
     "${managed_candidate}/install-autostream-control-panel"
   printf '%s\n' "${ARTIFACT_SHA256}" > "${managed_candidate}/.artifact-sha256"

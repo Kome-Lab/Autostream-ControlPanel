@@ -8,7 +8,7 @@ import (
 	"strconv"
 
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 	"github.com/example/autostream-control-panel/internal/version"
 )
 
@@ -46,7 +46,7 @@ func controlPanelSystemUpdateService() (store.RegisteredService, error) {
 	if err != nil {
 		return store.RegisteredService{}, err
 	}
-	configSHA256, err := updateagent.SystemdConfigurePortSidecarSHA256(
+	configSHA256, err := updateradapter.SystemdConfigurePortSidecarSHA256(
 		controlPanelSystemUpdateServiceType,
 		port,
 		configRevision,
@@ -104,7 +104,7 @@ func updaterPolicyUsesControlPanelSystemUpdateTarget(policy store.UpdaterPolicy)
 		if target.TargetID == controlPanelSystemUpdateServiceID &&
 			target.ServiceID == controlPanelSystemUpdateServiceID &&
 			target.ServiceType == controlPanelSystemUpdateServiceType &&
-			target.DeploymentMode == updateagent.ModeSystemd {
+			target.DeploymentMode == updateradapter.ModeSystemd {
 			return true
 		}
 	}

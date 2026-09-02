@@ -671,10 +671,10 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if err := json.NewDecoder(bytes.NewReader(createdPayload)).Decode(&createdBody); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(createdBody.ConfigureToken, "ast_cfg_") || !strings.HasPrefix(createdBody.ConfigureCommand, "sudo /usr/local/bin/autostream-updater configure ") || strings.Contains(createdBody.ConfigureCommand, createdBody.ConfigureToken) || strings.Contains(createdBody.ConfigureCommand, "--token") {
+	if !strings.HasPrefix(createdBody.ConfigureToken, "ast_cfg_") || !strings.HasPrefix(createdBody.ConfigureCommand, "sudo /usr/local/bin/autostream-host-agent configure ") || strings.Contains(createdBody.ConfigureCommand, createdBody.ConfigureToken) || strings.Contains(createdBody.ConfigureCommand, "--token") {
 		t.Fatalf("updater configure metadata = %#v", createdBody)
 	}
-	if createdBody.ConfigurationPath != "/etc/autostream/updater.json" || createdBody.ManualRequired || bytes.Contains(createdPayload, []byte(`"configuration_example"`)) {
+	if createdBody.ConfigurationPath != "/etc/autostream-host-agent/identity.json" || createdBody.ManualRequired || bytes.Contains(createdPayload, []byte(`"configuration_example"`)) {
 		t.Fatalf("updater configuration metadata = %#v", createdBody)
 	}
 	if !slices.Contains(createdBody.Scopes, "updates.authorize") {
@@ -713,7 +713,7 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if err := json.NewDecoder(regenerateResult.Body).Decode(&regenerated); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(regenerated.ConfigureToken, "ast_cfg_") || strings.Contains(regenerated.ConfigureCommand, regenerated.ConfigureToken) || strings.Contains(regenerated.ConfigureCommand, "--token") || !strings.HasPrefix(regenerated.ConfigureCommand, "sudo /usr/local/bin/autostream-updater configure ") {
+	if !strings.HasPrefix(regenerated.ConfigureToken, "ast_cfg_") || strings.Contains(regenerated.ConfigureCommand, regenerated.ConfigureToken) || strings.Contains(regenerated.ConfigureCommand, "--token") || !strings.HasPrefix(regenerated.ConfigureCommand, "sudo /usr/local/bin/autostream-host-agent configure ") {
 		t.Fatalf("regenerated updater configure metadata = %#v", regenerated)
 	}
 	oldConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+createdBody.ConfigureToken+`"}`))
@@ -854,7 +854,7 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if rotateResult.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("rotated runtime token response cache control = %q", rotateResult.Header().Get("Cache-Control"))
 	}
-	if !strings.Contains(rotateResult.Body.String(), `"runtime_token":"ast_svc_`) || !strings.Contains(rotateResult.Body.String(), `"configuration_path":"/etc/autostream/updater.json"`) || strings.Contains(rotateResult.Body.String(), `"manual_configuration_required":true`) {
+	if !strings.Contains(rotateResult.Body.String(), `"runtime_token":"ast_svc_`) || !strings.Contains(rotateResult.Body.String(), `"configuration_path":"/etc/autostream-host-agent/identity.json"`) || strings.Contains(rotateResult.Body.String(), `"manual_configuration_required":true`) {
 		t.Fatalf("rotate updater runtime token response = %s", rotateResult.Body.String())
 	}
 	invalidated := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+outstanding.ConfigureToken+`"}`))

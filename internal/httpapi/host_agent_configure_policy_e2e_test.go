@@ -14,7 +14,7 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
@@ -92,7 +92,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 				ServiceID:       worker.ServiceID,
 				HostID:          "host-a",
 				ServiceType:     worker.ServiceType,
-				DeploymentMode:  updateagent.ModeSystemd,
+				DeploymentMode:  updateradapter.ModeSystemd,
 				LocalListenPort: 18081,
 			}},
 		},
@@ -124,7 +124,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 	stagePayload, err := json.Marshal(map[string]any{
 		"nodeId":          "host-agent-a",
 		"configureToken":  configureToken,
-		"protocolVersion": updateagent.HostAgentConfigureProtocolVersion,
+		"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
 		"agentUid":        uint32(1001),
 		"agentGid":        uint32(1002),
 	})
@@ -177,17 +177,17 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 	if stageResponse.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("stage Cache-Control=%q", stageResponse.Header().Get("Cache-Control"))
 	}
-	var staged updateagent.UpdaterStagedConfiguration
+	var staged updateradapter.UpdaterStagedConfiguration
 	if err := json.NewDecoder(stageResponse.Body).Decode(&staged); err != nil {
 		t.Fatal(err)
 	}
-	if staged.ConfigureProtocol != updateagent.HostAgentConfigureProtocolVersion ||
+	if staged.ConfigureProtocol != updateradapter.HostAgentConfigureProtocolVersion ||
 		staged.LocalExecutorPolicy == nil ||
 		staged.Config.TransportMode != store.SystemUpdateTransportPullV2 ||
-		staged.Config.API != (updateagent.APIConfig{}) {
+		staged.Config.API != (updateradapter.UpdaterConfigureAPIAssertion{}) {
 		t.Fatalf("staged configuration = %s", formatSafeHTTPSensitiveDiagnostic(staged))
 	}
-	var stagedPolicy updateagent.LocalExecutorPolicy
+	var stagedPolicy updateradapter.LocalExecutorPolicy
 	if err := json.Unmarshal(
 		staged.LocalExecutorPolicy.Policy,
 		&stagedPolicy,
@@ -200,7 +200,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 		stagedPolicy.ProjectionRevision != saved.ProjectionRevision ||
 		stagedPolicy.PolicyRevision != saved.LocalExecutorPolicyRevision ||
 		len(stagedPolicy.Targets) != 1 ||
-		stagedPolicy.Targets[0].LocalListen != (updateagent.LocalExecutorEndpoint{
+		stagedPolicy.Targets[0].LocalListen != (updateradapter.LocalExecutorEndpoint{
 			Host: "127.0.0.1",
 			Port: 18081,
 		}) {
@@ -238,8 +238,8 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 		t.Fatalf("old runtime token stopped before activation: %v", err)
 	}
 
-	alteredProjection, err := updateagent.BuildHostAgentConfigurePolicy(
-		updateagent.HostAgentConfigurePolicySource{
+	alteredProjection, err := updateradapter.BuildHostAgentConfigurePolicy(
+		updateradapter.HostAgentConfigurePolicySource{
 			PanelURL:                    "https://panel.example.com",
 			ExecutionHostID:             "host-a",
 			AgentUID:                    2001,
@@ -247,10 +247,10 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 			SourcePolicyRevision:        saved.Revision,
 			ProjectionRevision:          saved.ProjectionRevision,
 			LocalExecutorPolicyRevision: saved.LocalExecutorPolicyRevision,
-			Targets: []updateagent.HostAgentConfigurePolicyTarget{{
+			Targets: []updateradapter.HostAgentConfigurePolicyTarget{{
 				ServiceID:             worker.ServiceID,
 				ServiceType:           worker.ServiceType,
-				DeploymentMode:        updateagent.ModeSystemd,
+				DeploymentMode:        updateradapter.ModeSystemd,
 				EndpointRevision:      worker.EndpointRevision,
 				AppliedConfigRevision: worker.AppliedConfigRevision,
 				AppliedConfigSHA256:   worker.AppliedConfigSHA256,
@@ -432,13 +432,13 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 			activationResponse.Body.String(),
 		)
 	}
-	var result updateagent.UpdaterActivationResult
+	var result updateradapter.UpdaterActivationResult
 	if err := json.NewDecoder(activationResponse.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
 	if result.State != "activated" ||
 		result.ConfigurationID != staged.ConfigurationID ||
-		result.ConfigureProtocol != updateagent.HostAgentConfigureProtocolVersion ||
+		result.ConfigureProtocol != updateradapter.HostAgentConfigureProtocolVersion ||
 		result.LocalExecutorPolicySHA256 != staged.LocalExecutorPolicy.SHA256 ||
 		result.SourcePolicyRevision != staged.LocalExecutorPolicy.SourcePolicyRevision ||
 		result.ProjectionRevision != staged.LocalExecutorPolicy.ProjectionRevision ||
@@ -526,9 +526,9 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 }
 
 func hostAgentConfigureActivationPayload(
-	staged updateagent.UpdaterStagedConfiguration,
+	staged updateradapter.UpdaterStagedConfiguration,
 	agentUID, agentGID uint32,
-	projection updateagent.ConfigurePolicyProjection,
+	projection updateradapter.ConfigurePolicyProjection,
 ) map[string]any {
 	return map[string]any{
 		"nodeId":                      staged.Config.NodeID,
@@ -540,7 +540,7 @@ func hostAgentConfigureActivationPayload(
 		"hostname":                    "host-a",
 		"os":                          "linux",
 		"arch":                        "amd64",
-		"configureProtocolVersion":    updateagent.HostAgentConfigureProtocolVersion,
+		"configureProtocolVersion":    updateradapter.HostAgentConfigureProtocolVersion,
 		"agentUid":                    agentUID,
 		"agentGid":                    agentGID,
 		"localExecutorPolicySha256":   projection.SHA256,

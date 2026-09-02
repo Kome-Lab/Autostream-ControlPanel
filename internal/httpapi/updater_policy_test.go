@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -772,7 +772,7 @@ func TestUpdateAgentPullsPolicyByAssignedRuntimeTokenWithoutReleaseToken(t *test
 	}
 	decoder := json.NewDecoder(res.Body)
 	decoder.DisallowUnknownFields()
-	var pulled updateagent.ManagedPolicy
+	var pulled updateradapter.ManagedPolicy
 	if err := decoder.Decode(&pulled); err != nil {
 		t.Fatal(err)
 	}

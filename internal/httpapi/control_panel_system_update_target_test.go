@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 func TestControlPanelSystemUpdateServiceUsesExactRuntimeIdentity(t *testing.T) {
@@ -22,7 +22,7 @@ func TestControlPanelSystemUpdateServiceUsesExactRuntimeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedConfigSHA256, err := updateagent.SystemdConfigurePortSidecarSHA256(
+	expectedConfigSHA256, err := updateradapter.SystemdConfigurePortSidecarSHA256(
 		"control_panel",
 		36190,
 		7,
@@ -219,7 +219,7 @@ func TestHostAgentConfigureProjectionSynthesizesControlPanelAndDatabase(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	var policy updateagent.LocalExecutorPolicy
+	var policy updateradapter.LocalExecutorPolicy
 	if err := json.Unmarshal(projection.Policy, &policy); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestHostAgentConfigureProjectionSynthesizesControlPanelAndDatabase(t *testi
 		policy.Targets[0].DatabaseName != "autostream_panel" ||
 		policy.Targets[0].EndpointRevision != 7 ||
 		policy.Targets[0].ConfigRevision != 7 ||
-		policy.Targets[0].LocalListen != (updateagent.LocalExecutorEndpoint{
+		policy.Targets[0].LocalListen != (updateradapter.LocalExecutorEndpoint{
 			Host: "127.0.0.1",
 			Port: 36190,
 		}) {
@@ -496,7 +496,7 @@ func newControlPanelPullPolicyHTTPFixture(t *testing.T) controlPanelPullPolicyHT
 				ServiceID:      "control-panel",
 				HostID:         "host-panel",
 				ServiceType:    "control_panel",
-				DeploymentMode: updateagent.ModeSystemd,
+				DeploymentMode: updateradapter.ModeSystemd,
 				DatabaseName:   "autostream_panel",
 			}},
 		},

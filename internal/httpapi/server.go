@@ -34,7 +34,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/streamvisual"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 	"github.com/example/autostream-control-panel/internal/version"
 	"github.com/example/autostream-control-panel/internal/videocover"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
@@ -5277,7 +5277,7 @@ func posixShellQuote(value string) string {
 }
 
 func nodeConfigureBinary(service store.RegisteredService) string {
-	if isPullV2HostAgent(service) {
+	if service.ServiceType == "update_agent" {
 		return "/usr/local/bin/autostream-host-agent"
 	}
 	switch service.ServiceType {
@@ -5287,19 +5287,14 @@ func nodeConfigureBinary(service store.RegisteredService) string {
 		return "autostream-discord-bot"
 	case "observability":
 		return "autostream-observability"
-	case "update_agent":
-		return "/usr/local/bin/autostream-updater"
 	default:
 		return "autostream-worker"
 	}
 }
 
 func nodeDefaultConfigPath(service store.RegisteredService) string {
-	if isPullV2HostAgent(service) {
-		return "/etc/autostream-host-agent/identity.json"
-	}
 	if strings.TrimSpace(service.ServiceType) == "update_agent" {
-		return "/etc/autostream/updater.json"
+		return "/etc/autostream-host-agent/identity.json"
 	}
 	return "/etc/autostream-" + nodeServiceDirectoryName(service.ServiceType) + "/config.yml"
 }
@@ -5811,9 +5806,9 @@ func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request)
 		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, service.ServiceID) {
 		return
 	}
-	var configurePolicy *updateagent.ConfigurePolicyProjection
+	var configurePolicy *updateradapter.ConfigurePolicyProjection
 	if validConfigureToken && isPullV2HostAgent(service) {
-		if body.ProtocolVersion != updateagent.HostAgentConfigureProtocolVersion ||
+		if body.ProtocolVersion != updateradapter.HostAgentConfigureProtocolVersion ||
 			body.AgentUID == 0 ||
 			body.AgentGID == 0 {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": "host_agent_configure_protocol_required"})
@@ -5894,7 +5889,7 @@ func (s *Server) nodeAgentConfigureStage(w http.ResponseWriter, r *http.Request)
 		"config":                updaterNodeConfigurationResponse(r, staged.Service, staged.Token.RawToken),
 	}
 	if configurePolicy != nil {
-		response["configure_protocol_version"] = updateagent.HostAgentConfigureProtocolVersion
+		response["configure_protocol_version"] = updateradapter.HostAgentConfigureProtocolVersion
 		response["local_executor_policy"] = configurePolicy
 	}
 	writeOneTimeSecretJSON(w, http.StatusOK, response)
@@ -5957,7 +5952,7 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 		s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, stagedService.ServiceID) {
 		return
 	}
-	var configurePolicy *updateagent.ConfigurePolicyProjection
+	var configurePolicy *updateradapter.ConfigurePolicyProjection
 	activationConfigurationID := configurationID
 	clearedHostAgentActivationReplay := inspectErr == nil &&
 		isPullV2HostAgent(stagedService) &&
@@ -5970,7 +5965,7 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 		stagedService.StagedNodeTokenID != "" &&
 		stagedService.StagedNodeActivationTokenHash != "" &&
 		security.VerifyTokenHash(activationToken, stagedService.StagedNodeActivationTokenHash) {
-		if body.ConfigureProtocolVersion != updateagent.HostAgentConfigureProtocolVersion ||
+		if body.ConfigureProtocolVersion != updateradapter.HostAgentConfigureProtocolVersion ||
 			body.AgentUID == 0 ||
 			body.AgentGID == 0 {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": "host_agent_configure_protocol_required"})
@@ -6066,7 +6061,7 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 		if s.rejectUpdaterIdentityMutationDuringActiveWork(w, r, updated.ServiceID) {
 			return
 		}
-		if body.ConfigureProtocolVersion != updateagent.HostAgentConfigureProtocolVersion ||
+		if body.ConfigureProtocolVersion != updateradapter.HostAgentConfigureProtocolVersion ||
 			body.AgentUID == 0 ||
 			body.AgentGID == 0 {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": "host_agent_configure_protocol_required"})
@@ -6149,7 +6144,7 @@ func (s *Server) nodeAgentConfigureActivate(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Cache-Control", "no-store")
 	response := map[string]any{"state": state, "configuration_id": configurationID}
 	if configurePolicy != nil {
-		response["configure_protocol_version"] = updateagent.HostAgentConfigureProtocolVersion
+		response["configure_protocol_version"] = updateradapter.HostAgentConfigureProtocolVersion
 		response["local_executor_policy_sha256"] = configurePolicy.SHA256
 		response["source_policy_revision"] = configurePolicy.SourcePolicyRevision
 		response["projection_revision"] = configurePolicy.ProjectionRevision

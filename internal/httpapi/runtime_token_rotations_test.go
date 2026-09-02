@@ -13,7 +13,7 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 func TestRuntimeTokenRotationHTTPKeepsCredentialOffAdminPathAndRotatesThroughDedicatedBearer(t *testing.T) {
@@ -1151,7 +1151,7 @@ func newRuntimeTokenRotationHTTPFixtureWithHeartbeatClock(
 	oldToken := registerRuntimeTokenRotationAgentForTest(
 		t, auth, "host-agent-a", "host-a", 0,
 	)
-	reportedConfigSHA256, err := updateagent.SystemdConfigurePortSidecarSHA256(
+	reportedConfigSHA256, err := updateradapter.SystemdConfigurePortSidecarSHA256(
 		"worker",
 		18081,
 		1,

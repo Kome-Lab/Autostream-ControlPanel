@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 const (
@@ -34,7 +34,7 @@ func (productionHostSelfUpdateReleaseResolver) ResolveHostSelfUpdateRelease(
 	ctx context.Context,
 	version, arch string,
 ) (store.SystemUpdateHostReleaseMetadata, error) {
-	metadata, err := (updateagent.ReleaseDownloader{
+	metadata, err := (updateradapter.ReleaseDownloader{
 		TrustedPublicOnly: true,
 	}).ResolveHostAgentReleaseMetadata(ctx, version, arch)
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateagent"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 type portCoordinatorCaptureStore struct {
@@ -623,14 +623,14 @@ func TestSystemUpdateDockerPortMappingSnapshotIsAllowlistedAndFailClosed(t *test
 
 func TestSystemUpdateReportAcceptsNestedPortResultAndMapsCompletionDrift(t *testing.T) {
 	handler, token, updates := newPortReportHTTPFixture(t)
-	payload, err := json.Marshal(updateagent.JobReport{
+	payload, err := json.Marshal(updateradapter.JobReport{
 		ServiceID:       "host-agent-a",
 		LeaseToken:      "lease-token",
 		LeaseGeneration: 2,
 		Sequence:        3,
 		Status:          "succeeded",
 		Progress:        100,
-		PortReconfigure: &updateagent.PortReconfigurationJobReport{
+		PortReconfigure: &updateradapter.PortReconfigurationJobReport{
 			Result: string(store.SystemUpdatePortReconfigurationApplied),
 		},
 	})
