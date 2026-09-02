@@ -1,8 +1,8 @@
 "use client";
 
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertCircle, Check, Copy, Eye, Pencil, Play, Plus, RadioTower, RotateCw, SlidersHorizontal, Square, Shuffle, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,10 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { DataTable } from "@/components/tables/data-table";
-import { DangerConfirm } from "@/components/admin/danger-confirm";
-import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge } from "@/components/admin/status-badge";
-import { APIError, apiDelete, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
   oauthAccountDisplayName as oauthAccountLabel,
@@ -28,18 +25,20 @@ import {
 import { useAppSettings, useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
-import { buildStreamCreatePayload, buildStreamSettingsPayload, streamAssignmentConflictMessage, streamCreateCompatibilityMessage, streamScheduleInputValue, streamScheduleRFC3339, streamServiceAssignmentOption } from "@/lib/stream-create";
-import { staticRelayRecoveryActionAvailable, staticRelayRecoveryConfirmation, staticRelayRecoveryErrorMessage } from "@/lib/stream-static-relay";
+import { buildStreamCreatePayload, buildStreamSettingsPayload, streamScheduleInputValue, streamScheduleRFC3339, streamServiceAssignmentOption } from "@/lib/stream-create";
+import { staticRelayRecoveryActionAvailable } from "@/lib/stream-static-relay";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { StreamPreview } from "@/features/streams/stream-preview";
 import { StreamControlPlatformPanel } from "@/features/streams/stream-control-platform-panel";
-import type { CurrentUser, Stream } from "@/types/domain";
+import { StreamActionControl, type StreamActionControlHandle } from "@/features/streams/stream-action-control";
+import { createStreamActionController, type StreamActionExecutionResult } from "@/features/streams/stream-action-controller";
+import { mutateStreamAction, streamActionStateSnapshot, streamPermissionSnapshot } from "@/features/streams/stream-action-runtime";
+import type { StreamActionIntent } from "@/features/streams/stream-action-descriptors";
+import type { Stream } from "@/types/domain";
 
 type ResourceRow = Record<string, unknown>;
 type SelectOption = { value: string; label: string; description?: string; disabled?: boolean };
-type StreamAction = { path: string; streamName: string; streamID?: string; actionLabel: string; method?: "POST" | "DELETE"; body?: unknown };
-
 const noneValue = "__none__";
 
 export function StreamsView() {
@@ -63,37 +62,35 @@ export function StreamsView() {
     return () => window.removeEventListener("hashchange", syncFromHash);
   }, []);
 
-  const actionMutation = useMutation<unknown, Error, StreamAction>({
-    mutationFn: ({ path, method, body }) => method === "DELETE" ? apiDelete(path) : apiPost(path, body),
-    onMutate: () => setActionNotice(null),
-    onSuccess: async (_, action) => {
-      if (action.method === "DELETE" && action.streamID) setCreatedStreams((current) => current.filter((stream) => stream.id !== action.streamID));
-      await queryClient.invalidateQueries({ queryKey: ["streams"] });
-      setActionNotice({ tone: "success", message: `${action.streamName}の${action.actionLabel}を受け付けました。状態が更新されるまでしばらくお待ちください。` });
-    },
-    onError: (error, action) => {
-      // A failed start/stop can still have advanced the server-side stream
-      // state before returning its conflict. Refresh the row before showing
-      // the next action so a stale `created`/`ready` value does not cause a
-      // second request against an already-starting stream.
-      void queryClient.invalidateQueries({ queryKey: ["streams"] });
-      setActionNotice({ tone: "error", message: streamActionErrorMessage(error, action.actionLabel) });
-    },
-  });
-
-  const superAdmin = currentUser.data?.user.roles?.includes("super_admin") === true;
-  const can = (permission: string) => superAdmin || hasPermission(currentUser.data, permission);
+  const actionController = useMemo(() => createStreamActionController({
+    getPermissions: () => streamPermissionSnapshot(queryClient),
+    getState: (intent) => streamActionStateSnapshot(queryClient, intent),
+    mutate: mutateStreamAction,
+  }), [queryClient]);
+  const can = (permission: string) => hasPermission(currentUser.data, permission);
   const canCreate = can("streams.create");
-  const canStart = can("streams.start");
-  const canStop = can("streams.stop");
   const canUpdate = can("streams.update");
-  const canDelete = can("streams.delete");
-  const confirmStartReadiness = (stream: Stream) => {
-    const latestCurrentUser = queryClient.getQueryData<CurrentUser>(["auth", "me"]);
-    const latestSuperAdmin = latestCurrentUser?.user.roles?.includes("super_admin") === true;
-    if (!latestSuperAdmin && !hasPermission(latestCurrentUser, "streams.start")) return;
-    actionMutation.mutate({ path: `/streams/${stream.id}/start-readiness`, streamName: stream.name, actionLabel: "開始準備の確認" });
-  };
+  const handleStreamActionResult = useCallback((result: StreamActionExecutionResult, intent: StreamActionIntent) => {
+    if (result.kind === "succeeded") {
+      if (intent.id === "STR-10" && intent.stream) {
+        setCreatedStreams((current) => current.filter((stream) => stream.id !== intent.stream?.id));
+      }
+      void queryClient.invalidateQueries({ queryKey: ["streams"] });
+      setActionNotice({ tone: "success", message: `${intent.stream?.name || intent.publicLabel || "配信枠"}の${streamActionLabel(intent.id)}を受け付けました。最新状態を確認してください。` });
+      return;
+    }
+    if (result.kind === "outcome_unknown") {
+      setActionNotice({ tone: "error", message: "操作結果を確認できません。再送せず、配信枠の最新状態または監査ログを確認してください。" });
+    } else if (result.kind === "failed") {
+      setActionNotice({ tone: "error", message: `${t(result.error.messageKey)} 再送せず、最新状態を確認してください。` });
+    } else {
+      setActionNotice({ tone: "error", message: streamActionBlockedMessage(result.reason) });
+    }
+    // Reconciliation fetches are safe and do not resend the mutation. The
+    // controller latch remains closed until an explicit new page lifecycle.
+    void queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+    void queryClient.invalidateQueries({ queryKey: ["streams"] });
+  }, [queryClient, t]);
   const streamRows = useMemo(
     () => [...createdStreams, ...(streams.data || []).filter((stream) => !createdStreams.some((created) => created.id === stream.id))],
     [createdStreams, streams.data],
@@ -142,102 +139,81 @@ export function StreamsView() {
       header: t("actions"),
       cell: ({ row }) => (
         <div className="flex min-w-44 flex-nowrap gap-1">
-           <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={() => setSelectedStream(row.original)}>
-             <Eye />
-           </Button>
-           {String(row.original.status).toLowerCase() === "live" ? <RoleGuard allowed={canUpdate}>
-             <Button
-               variant="outline"
-               size="icon-sm"
-               aria-label={`${row.original.name} ライブ調整`}
-               title="ライブ調整"
-               onClick={() => setEditingStream(row.original)}
-               {...guardedButtonProps(canUpdate)}
-               disabled={!canUpdate || actionMutation.isPending}
-             >
-               <SlidersHorizontal />
-             </Button>
-           </RoleGuard> : null}
-           {streamStatusAllowsEdit(row.original.status) ? <RoleGuard allowed={canUpdate}>
-            <Button variant="outline" size="icon-sm" aria-label={`${row.original.name} を編集`} onClick={() => setEditingStream(row.original)} {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
+          <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={() => setSelectedStream(row.original)}>
+            <Eye />
+          </Button>
+          {String(row.original.status).toLowerCase() === "live" ? (
+            <Button variant="outline" size="icon-sm" aria-label={`${row.original.name} ライブ調整`} title="ライブ調整" onClick={() => setEditingStream(row.original)} disabled={!canUpdate}>
+              <SlidersHorizontal />
+            </Button>
+          ) : null}
+          {streamStatusAllowsEdit(row.original.status) ? (
+            <Button variant="outline" size="icon-sm" aria-label={`${row.original.name} を編集`} onClick={() => setEditingStream(row.original)} disabled={!canUpdate}>
               <Pencil />
             </Button>
-          </RoleGuard> : null}
-          {streamStatusAllowsStart(row.original.status) ? <RoleGuard allowed={canStart}>
-            <DangerConfirm
-              title={`${row.original.name} を開始しますか`}
-              description="配信出力と録画を開始し、担当Nodeへ処理を送ります。対象の配信枠と出力先を確認してから実行してください。"
-              onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/start`, streamName: row.original.name, actionLabel: "開始" })}
-              actionLabel="配信を開始"
-            >
-              <Button variant="outline" size="icon-sm" aria-label={t("start")} {...guardedButtonProps(canStart)} disabled={!canStart || actionMutation.isPending}><Play /></Button>
-            </DangerConfirm>
-          </RoleGuard> : null}
-          {streamStatusAllowsStop(row.original.status) ? <RoleGuard allowed={canStop}>
-            <DangerConfirm title={`${row.original.name} を停止しますか`} description="配信と録画を停止し、録画ファイルの保存処理へ進みます。視聴者への影響を確認してから実行してください。" onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/stop`, streamName: row.original.name, actionLabel: "停止" })} actionLabel="配信を停止">
-              <Button variant="outline" size="icon-sm" aria-label={t("stop")} {...guardedButtonProps(canStop)} disabled={!canStop || actionMutation.isPending}>
-                <Square />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard> : null}
-          {streamStatusAllowsForceStop(row.original.status) ? <RoleGuard allowed={canStop}>
-            <DangerConfirm
-              title={`${row.original.name} を強制停止しますか`}
-              description="通常の停止処理が応答しない場合に、担当Nodeへ停止を要求して枠を失敗状態へ収束させます。録画やアーカイブが途中の場合は未完了として扱われます。"
-              onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/force-stop`, streamName: row.original.name, actionLabel: "強制停止" })}
-              actionLabel="強制停止"
-            >
-              <Button variant="destructive" size="icon-sm" aria-label="強制停止" {...guardedButtonProps(canStop)} disabled={!canStop || actionMutation.isPending}>
-                <AlertCircle />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard> : null}
+          ) : null}
+          {streamStatusAllowsStart(row.original.status) ? (
+            <StreamActionControl
+              controller={actionController}
+              intent={{ id: "STR-04", stream: row.original }}
+              label={`${row.original.name} を開始`}
+              buttonProps={{ variant: "outline", size: "icon-sm" }}
+              onResult={handleStreamActionResult}
+            ><Play /></StreamActionControl>
+          ) : null}
+          {streamStatusAllowsStop(row.original.status) ? (
+            <StreamActionControl
+              controller={actionController}
+              intent={{ id: "STR-05", stream: row.original }}
+              label={`${row.original.name} を停止`}
+              buttonProps={{ variant: "outline", size: "icon-sm" }}
+              onResult={handleStreamActionResult}
+            ><Square /></StreamActionControl>
+          ) : null}
+          {streamStatusAllowsForceStop(row.original.status) ? (
+            <StreamActionControl
+              controller={actionController}
+              intent={{ id: "STR-06", stream: row.original }}
+              label={`${row.original.name} を強制停止`}
+              buttonProps={{ variant: "destructive", size: "icon-sm" }}
+              onResult={handleStreamActionResult}
+            ><AlertCircle /></StreamActionControl>
+          ) : null}
           {staticRelayRecoveryActionAvailable(
             staticRelayOutputIDs.has(row.original.youtube_output_id || "") ? "live_api_relay_static" : "",
             row.original.status,
-          ) ? <RoleGuard allowed={canStop}>
-            <DangerConfirm
-              title={`${row.original.name} の固定Relay回復を実行しますか`}
-              description="開始失敗時に残った固定RelayのYouTube配信枠を安全に解消します。枠が不明な場合は、YouTube Studioで該当候補を削除済みであることを確認してから実行してください。実行中の配信には使用できません。"
-              onConfirm={() => actionMutation.mutate({
-                path: `/streams/${row.original.id}/youtube/relay-static/recovery/resolve`,
-                streamName: row.original.name,
-                actionLabel: "固定Relay回復",
-                body: staticRelayRecoveryConfirmation(),
-              })}
-              actionLabel="固定Relay回復を実行"
-            >
-              <Button variant="outline" size="icon-sm" aria-label="固定Relay回復を実行" {...guardedButtonProps(canStop)} disabled={!canStop || actionMutation.isPending}>
-                <RadioTower />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard> : null}
-          <RoleGuard allowed={canStart}>
-            <DangerConfirm title={`${row.original.name} の開始準備を再確認しますか`} description="担当Node、Discord、出力先、録画設定をもう一度確認します。現在の配信は停止しません。" onConfirm={() => confirmStartReadiness(row.original)} actionLabel="準備を再確認">
-              <Button variant="outline" size="icon-sm" aria-label="開始準備を再確認" {...guardedButtonProps(canStart)} disabled={!canStart || actionMutation.isPending}>
-                <RotateCw />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard>
-          <RoleGuard allowed={canUpdate}>
-            <DangerConfirm title={`${row.original.name} のWorkerテストを実行しますか`} description="担当Workerへテストイベントを送ります。本番配信中は実行前に運用担当者へ確認してください。" onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}/worker-events/test`, streamName: row.original.name, actionLabel: "Workerテスト" })} actionLabel="テストを実行">
-              <Button variant="outline" size="icon-sm" aria-label="Workerテストを実行" {...guardedButtonProps(canUpdate)} disabled={!canUpdate || actionMutation.isPending}>
-                <Shuffle />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard>
-          {streamStatusAllowsDelete(row.original.status) ? <RoleGuard allowed={canDelete}>
-            <DangerConfirm
-              title={`${row.original.name} を削除しますか`}
-              description="配信枠、保存済み設定、担当Nodeの割り当て、関連ログを削除します。この操作は元に戻せません。"
-              onConfirm={() => actionMutation.mutate({ path: `/streams/${row.original.id}`, streamName: row.original.name, streamID: row.original.id, actionLabel: "削除", method: "DELETE" })}
-              actionLabel="配信枠を削除"
-            >
-              <Button variant="destructive" size="icon-sm" aria-label="配信枠を削除" {...guardedButtonProps(canDelete)} disabled={!canDelete || actionMutation.isPending}>
-                <Trash2 />
-              </Button>
-            </DangerConfirm>
-          </RoleGuard> : null}
+          ) ? (
+            <StreamActionControl
+              controller={actionController}
+              intent={{ id: "STR-07", stream: row.original, staticRelayRecoveryAvailable: true }}
+              label={`${row.original.name} の固定Relay回復を実行`}
+              buttonProps={{ variant: "outline", size: "icon-sm" }}
+              onResult={handleStreamActionResult}
+            ><RadioTower /></StreamActionControl>
+          ) : null}
+          <StreamActionControl
+            controller={actionController}
+            intent={{ id: "STR-08", stream: row.original }}
+            label={`${row.original.name} の開始準備を再確認`}
+            buttonProps={{ variant: "outline", size: "icon-sm" }}
+            onResult={handleStreamActionResult}
+          ><RotateCw /></StreamActionControl>
+          <StreamActionControl
+            controller={actionController}
+            intent={{ id: "STR-09", stream: row.original }}
+            label={`${row.original.name} のWorkerテストを実行`}
+            buttonProps={{ variant: "outline", size: "icon-sm" }}
+            onResult={handleStreamActionResult}
+          ><Shuffle /></StreamActionControl>
+          {streamStatusAllowsDelete(row.original.status) ? (
+            <StreamActionControl
+              controller={actionController}
+              intent={{ id: "STR-10", stream: row.original }}
+              label={`${row.original.name} を削除`}
+              buttonProps={{ variant: "destructive", size: "icon-sm" }}
+              onResult={handleStreamActionResult}
+            ><Trash2 /></StreamActionControl>
+          ) : null}
         </div>
       ),
     },
@@ -346,6 +322,8 @@ export function StreamsView() {
           <SheetHeader className="sr-only"><SheetTitle>配信枠を作成</SheetTitle><SheetDescription>Discord VCの開始条件、入力、出力、録画を設定します。</SheetDescription></SheetHeader>
           <StreamSlotForm
             className="min-h-full rounded-none border-0 shadow-none"
+            actionController={actionController}
+            onActionResult={handleStreamActionResult}
             canCreate={canCreate}
             canUpdate={canUpdate}
             canAssignEncoder={can("services.assign")}
@@ -366,6 +344,8 @@ export function StreamsView() {
             key={editingStream.id}
             stream={editingStream}
             className="min-h-full rounded-none border-0 shadow-none"
+            actionController={actionController}
+            onActionResult={handleStreamActionResult}
             canCreate={canCreate}
             canUpdate={canUpdate}
             canAssignEncoder={can("services.assign")}
@@ -381,6 +361,7 @@ export function StreamsView() {
 
       <StreamDetailsDialog
         stream={currentSelectedStream}
+        actionController={actionController}
         onOpenChange={(open) => { if (!open) setSelectedStream(null); }}
         discordLabels={discordLabels}
         youtubeOutputLabels={youtubeOutputLabels}
@@ -413,7 +394,7 @@ function StreamSummary({ rows }: { rows: Stream[] }) {
   return <section className="grid grid-cols-2 overflow-hidden rounded-lg border bg-card sm:grid-cols-5" aria-label="配信状態の集計">{items.map((item) => <div key={item.label} className="border-b border-r p-3 last:border-r-0 sm:border-b-0"><div className="text-xs text-muted-foreground">{item.label}</div><div className={cn("mt-1 text-xl font-semibold tabular-nums", item.tone)}>{item.value}</div></div>)}</section>;
 }
 
-function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutputLabels, archiveAccountLabels, archiveDestinationLabels, archiveProfileLabels, overlayProfileLabels }: { stream: Stream | null; onOpenChange: (open: boolean) => void; discordLabels: Map<string, string>; youtubeOutputLabels: Map<string, string>; archiveAccountLabels: Map<string, string>; archiveDestinationLabels: Map<string, string>; archiveProfileLabels: Map<string, string>; overlayProfileLabels: Map<string, string> }) {
+function StreamDetailsDialog({ stream, actionController, onOpenChange, discordLabels, youtubeOutputLabels, archiveAccountLabels, archiveDestinationLabels, archiveProfileLabels, overlayProfileLabels }: { stream: Stream | null; actionController: ReturnType<typeof createStreamActionController>; onOpenChange: (open: boolean) => void; discordLabels: Map<string, string>; youtubeOutputLabels: Map<string, string>; archiveAccountLabels: Map<string, string>; archiveDestinationLabels: Map<string, string>; archiveProfileLabels: Map<string, string>; overlayProfileLabels: Map<string, string> }) {
   if (!stream) return null;
   const recording = recordingDescriptor(stream);
   return (
@@ -428,7 +409,7 @@ function StreamDetailsDialog({ stream, onOpenChange, discordLabels, youtubeOutpu
           <DetailGroup title="担当Node・映像設定"><DetailLine label="Worker" value={stream.assigned_worker_id || "未割当"} /><DetailLine label="Encoder" value={stream.assigned_encoder_id || "未割当"} /><DetailLine label="Encoder音量" value={`${stream.encoder_audio_gain_db ?? 0} dB`} /><DetailLine label="Watermark" value={optionLabel(overlayProfileLabels, stream.overlay_profile_id) || "OFF"} /></DetailGroup>
         </div>
         <StreamControlPlatformPanel stream={stream} />
-        {isPreviewableStreamStatus(stream.status) ? <StreamPreview stream={stream} /> : null}
+        {isPreviewableStreamStatus(stream.status) ? <StreamPreview stream={stream} controller={actionController} /> : null}
         <div className="flex justify-end"><Button asChild variant="outline" size="sm"><Link href={`/admin/audit-logs/?q=${encodeURIComponent(stream.id)}`}>この配信枠の操作履歴を確認</Link></Button></div>
       </DialogContent>
     </Dialog>
@@ -445,6 +426,8 @@ function DetailLine({ label, value, mono = false }: { label: string; value: stri
 function StreamSlotForm({
   stream,
   className,
+  actionController,
+  onActionResult,
   canCreate,
   canUpdate,
   canAssignEncoder,
@@ -453,12 +436,16 @@ function StreamSlotForm({
 }: {
   stream?: Stream | null;
   className?: string;
+  actionController: ReturnType<typeof createStreamActionController>;
+  onActionResult: (result: StreamActionExecutionResult, intent: StreamActionIntent) => void;
   canCreate: boolean;
   canUpdate: boolean;
   canAssignEncoder: boolean;
   canAssignWorker: boolean;
   onSaved: (stream: Stream) => void;
 }) {
+  const { t } = useI18n();
+  const saveControl = useRef<StreamActionControlHandle>(null);
   const discordConfigs = useResourceOptions("/discord/configs", ["name", "service_id", "id"]);
   const youtubeOutputs = useResourceOptions("/youtube/outputs", ["name", "id"]);
   const encoderProfiles = useResourceOptions("/profiles/encoder", ["name", "id"]);
@@ -492,17 +479,6 @@ function StreamSlotForm({
 
   const effectiveEncoderServiceID = encoderServiceID ?? optionOrNone(stream?.assigned_encoder_id);
   const effectiveWorkerServiceID = workerServiceID ?? optionOrNone(stream?.assigned_worker_id);
-
-  const saveStream = useMutation<Stream, Error, Record<string, unknown>>({
-    mutationFn: (payload) => editing && stream ? apiPut<Stream>(liveEditing ? `/streams/${stream.id}/runtime-settings` : `/streams/${stream.id}/settings`, payload) : apiPost<Stream>("/streams", payload),
-    onSuccess: (stream) => {
-      setMessage(liveEditing ? `${stream.name} のライブ設定を停止せず反映しました。` : editing ? `${stream.name} の設定を更新しました。` : `${stream.name} を配信枠として作成しました。`);
-      onSaved(stream);
-    },
-    onError: (error) => {
-      setMessage(streamSaveErrorMessage(error, editing));
-    },
-  });
 
   const payload = useMemo(
     () =>
@@ -541,6 +517,28 @@ function StreamSlotForm({
   const encoderAudioGainReady = Number.isFinite(encoderAudioGainValue) && encoderAudioGainValue >= -60 && encoderAudioGainValue <= 24;
   const nodeAssignmentReady = !editing || !autoStartFromDiscord || ((!canAssignEncoder || selectedValue(effectiveEncoderServiceID) !== "") && (!canAssignWorker || selectedValue(effectiveWorkerServiceID) !== ""));
   const nodeAssignmentPermissionLimited = editing && autoStartFromDiscord && (!canAssignEncoder || !canAssignWorker);
+  const actionIntent = useMemo<StreamActionIntent>(() => ({
+    id: liveEditing ? "STR-03" : editing ? "STR-02" : "STR-01",
+    ...(stream ? { stream } : {}),
+    payload,
+    publicLabel: name.trim(),
+  }), [editing, liveEditing, name, payload, stream]);
+  const formReady = (editing ? canUpdate : canCreate)
+    && (liveEditing || name.trim() !== "")
+    && (liveEditing || (discordReady && autoStartReady && nodeAssignmentReady))
+    && watermarkReady
+    && encoderAudioGainReady;
+  const handleSaveResult = useCallback((result: StreamActionExecutionResult, intent: StreamActionIntent) => {
+    onActionResult(result, intent);
+    if (result.kind === "succeeded" && isStreamValue(result.value)) {
+      setMessage(liveEditing ? `${result.value.name} のライブ設定を停止せず反映しました。` : editing ? `${result.value.name} の設定を更新しました。` : `${result.value.name} を配信枠として作成しました。`);
+      onSaved(result.value);
+      return;
+    }
+    if (result.kind === "failed") setMessage(t(result.error.messageKey));
+    else if (result.kind === "outcome_unknown") setMessage(t("confirmationOutcomeUnknown"));
+    else if (result.kind === "blocked") setMessage(streamActionBlockedMessage(result.reason));
+  }, [editing, liveEditing, onActionResult, onSaved, t]);
 
   return (
     <Card id="create-stream" className={className}>
@@ -557,7 +555,7 @@ function StreamSlotForm({
           onSubmit={(event) => {
             event.preventDefault();
             setMessage("");
-            saveStream.mutate(payload);
+            if (formReady) saveControl.current?.open();
           }}
         >
           {!liveEditing ? <><FormSection title="基本情報" description="運用中に識別する配信枠名">
@@ -646,10 +644,18 @@ function StreamSlotForm({
           {editing && !canUpdate ? <p className="text-sm text-red-600">配信枠を更新する権限がありません。</p> : null}
           {!editing && !canCreate ? <p className="text-sm text-red-600">配信枠を作成する権限がありません。</p> : null}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!(editing ? canUpdate : canCreate) || saveStream.isPending || (!liveEditing && name.trim() === "") || (!liveEditing && (!discordReady || !autoStartReady || !nodeAssignmentReady)) || !watermarkReady || !encoderAudioGainReady}>
+            <StreamActionControl
+              ref={saveControl}
+              controller={actionController}
+              intent={actionIntent}
+              label={liveEditing ? "ライブ設定を反映" : editing ? "設定を保存" : "配信枠を作成"}
+              buttonProps={{ type: "submit" }}
+              disabled={!formReady}
+              onResult={handleSaveResult}
+            >
               {editing ? <Pencil className="size-4" /> : <Plus className="size-4" />}
-              {saveStream.isPending ? (editing ? "更新中..." : "作成中...") : (liveEditing ? "ライブ設定を反映" : editing ? "設定を保存" : "配信枠を作成")}
-            </Button>
+              {liveEditing ? "ライブ設定を反映" : editing ? "設定を保存" : "配信枠を作成"}
+            </StreamActionControl>
           </div>
         </form>
       </CardContent>
@@ -834,87 +840,29 @@ function optionOrNone(value?: string) {
   return value?.trim() || noneValue;
 }
 
-function streamCreateErrorMessage(error: unknown) {
-  if (error instanceof APIError) {
-    const compatibilityMessage = streamCreateCompatibilityMessage(error.code);
-    if (compatibilityMessage) return compatibilityMessage;
-    const messages: Record<string, string> = {
-      name_required: "配信枠名を入力してください。",
-      auto_start_trigger_invalid: "自動開始条件が無効です。Discord VC参加で自動開始を使う場合は画面のチェック項目から設定してください。",
-      auto_start_discord_required: "Discord VC参加で自動開始する場合は、Discord BOT設定、Guild ID、VC Channel IDを指定してください。",
-      discord_config_required: "Discord Guild/VC/Chatを指定する場合はDiscord BOT設定を選択してください。",
-      discord_config_not_found: "選択したDiscord BOT設定が見つかりません。",
-      archive_profile_not_found: "選択した録画プロファイルが見つかりません。一覧を更新して選び直してください。",
-      encoder_input_url_blocked: "外部入力URLが許可されていません。公開されたSRT/RTMP/HTTPS入力を指定してください。",
-      archive_oauth_account_required: "Archiveを設定する場合はOAuth accountを選択してください。",
-      archive_folder_id_required: "Archiveを設定する場合はDrive Folder IDを入力してください。",
-      archive_shared_drive_id_required: "共有ドライブを使う場合は共有ドライブIDを入力してください。",
-      drive_oauth_account_unavailable: "選択したOAuth accountがGoogle Drive保存に利用できません。接続状態とDrive scopeを確認してください。",
-      secret_encryption_key_required: "Control Panelの暗号化キーが未設定のため、Drive Folder IDを保存できません。",
-      encoder_service_not_found: "選択したEncoder Nodeが見つかりません。",
-      worker_service_not_found: "選択したWorker Nodeが見つかりません。",
-      encoder_service_type_invalid: "選択したEncoder Nodeの種別が正しくありません。",
-      worker_service_type_invalid: "選択したWorker Nodeの種別が正しくありません。",
-      service_registry_not_configured: "Node登録情報を取得できませんでした。",
-      assign_service_failed: "Primary Nodeの割り当てに失敗しました。",
-      permission_denied: "Primary Nodeを保存する権限がありません。",
-    };
-    return messages[error.code || ""] || `作成に失敗しました。${error.code || error.message}`;
-  }
-  if (error instanceof Error) return `作成に失敗しました。${error.message}`;
-  return "作成に失敗しました。";
+function streamActionLabel(id: StreamActionIntent["id"]) {
+  const labels: Record<StreamActionIntent["id"], string> = {
+    "STR-01": "作成", "STR-02": "設定更新", "STR-03": "ライブ設定更新",
+    "STR-04": "開始", "STR-05": "停止", "STR-06": "強制停止",
+    "STR-07": "固定Relay回復", "STR-08": "開始準備確認", "STR-09": "Workerテスト",
+    "STR-10": "削除", "STR-11": "プレビューURL発行",
+  };
+  return labels[id];
 }
 
-function streamSaveErrorMessage(error: unknown, editing: boolean) {
-  if (!editing) return streamCreateErrorMessage(error);
-  if (error instanceof APIError) {
-    const assignmentConflict = streamAssignmentConflictMessage(error.code);
-    if (assignmentConflict) return assignmentConflict;
-    const messages: Record<string, string> = {
-      name_required: "配信枠名を入力してください。",
-      schedule_end_before_start: "終了予定は開始予定より後に設定してください。",
-      permission_denied: "配信枠を更新する権限がありません。",
-      assign_service_failed: "担当Nodeの割り当て更新に失敗しました。",
-      stream_status_not_editable: "開始中または配信中の枠は編集できません。停止後にもう一度お試しください。",
-      stream_runtime_settings_transition_in_progress: "開始処理または停止処理が完了してから、もう一度お試しください。",
-      invalid_encoder_audio_gain_db: "Encoder音量は -60 dB から +24 dB の範囲で指定してください。",
-      encoder_runtime_settings_apply_failed: "設定は保存されましたが、稼働中のEncoderへ反映できませんでした。Encoderの稼働状態を確認して再度保存してください。",
-      encoder_runtime_settings_dispatch_not_supported: "Control PanelまたはEncoderがライブ設定変更に未対応です。両方を同じリリースへ更新してください。",
-    };
-    return messages[error.code || ""] || `設定の更新に失敗しました。${error.code || error.message}`;
-  }
-  if (error instanceof Error) return `設定の更新に失敗しました。${error.message}`;
-  return "設定の更新に失敗しました。";
+function streamActionBlockedMessage(reason: Extract<StreamActionExecutionResult, { kind: "blocked" }>["reason"]) {
+  if (reason === "permission-denied") return "この操作を実行する権限がありません。";
+  if (reason === "authority-changed") return "対象の状態が変更されたため送信しませんでした。最新状態を確認してください。";
+  if (reason === "duplicate") return "同じ操作を処理中です。";
+  if (reason === "reconciliation-required") return "前回の結果を確認できないため再送を抑止しています。最新状態または監査ログを確認してください。";
+  return "最新の権限または配信状態を確認できないため、操作を送信しませんでした。";
 }
 
-function streamActionErrorMessage(error: unknown, actionLabel: string) {
-  if (error instanceof APIError) {
-    const assignmentConflict = streamAssignmentConflictMessage(error.code);
-    if (assignmentConflict) return assignmentConflict;
-    const staticRelayMessage = staticRelayRecoveryErrorMessage(error.code || "");
-    if (staticRelayMessage) return staticRelayMessage;
-    if (error.detailCode === "database_connection_transient") return `${actionLabel}を完了できませんでした。Control PanelとMariaDBの一時的な接続切断が発生しました。少し待ってから再試行してください。`;
-    if (error.detailCode === "database_write_failed") return `${actionLabel}を完了できませんでした。配信ランタイム情報を保存できませんでした。Panelログを確認してください。`;
-    if (error.code === "csrf_failed") return `${actionLabel}を実行できませんでした。セッション検証に失敗しました。ページを再読み込みし、必要なら再ログインしてください。(code: csrf_failed)`;
-    if (error.code === "password_change_required") return `${actionLabel}を実行できません。パスワード変更後に再試行してください。(code: password_change_required)`;
-    if (error.code === "permission_denied") return `${actionLabel}を実行する権限がありません。管理者に操作権限を確認してください。(code: permission_denied)`;
-    if (error.status === 401) return `${actionLabel}を実行できませんでした。ログインセッションが切れています。再ログインしてください。`;
-    if (error.status === 403) return `${actionLabel}を実行できませんでした。セッションまたは操作権限を確認してください。(code: ${error.code || "forbidden"})`;
-    if (error.status === 404) return `対象の配信枠が見つかりません。一覧を更新してからもう一度確認してください。`;
-    if (error.status === 409) {
-      const conflictMessages: Record<string, string> = {
-        stream_status_not_startable: `${actionLabel}できません。配信枠は現在「開始可能ではない状態」です。現在の状態を更新して確認してください。(code: stream_status_not_startable)`,
-        stream_status_not_stoppable: `${actionLabel}できません。配信枠は現在「停止可能ではない状態」です。現在の状態を更新して確認してください。(code: stream_status_not_stoppable)`,
-        stream_status_not_force_stoppable: `${actionLabel}できません。配信枠は強制停止の対象外です。現在の状態を更新して確認してください。(code: stream_status_not_force_stoppable)`,
-        service_update_in_progress: `${actionLabel}できません。担当Nodeの更新処理が完了するまで待ってください。(code: service_update_in_progress)`,
-        missing_stream_assignments: `${actionLabel}できません。配信枠に必要なNode割り当てが不足しています。(code: missing_stream_assignments)`,
-        stream_start_not_ready: `${actionLabel}できません。開始前チェックに失敗しています。(code: stream_start_not_ready)`,
-      };
-      return conflictMessages[error.code || ""] || `${actionLabel}できない状態です。配信状態を更新し、開始中・停止中の処理が終わってから再試行してください。(code: ${error.code || "conflict"})`;
-    }
-    if (error.status >= 500) return `${actionLabel}を完了できませんでした。担当Nodeの接続状態を確認し、配信ログを確認してから再試行してください。`;
-  }
-  return `${actionLabel}を完了できませんでした。通信状態と配信ログを確認してから再試行してください。`;
+function isStreamValue(value: unknown): value is Stream {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.name === "string"
+    && typeof value.status === "string";
 }
 
 function streamStatusAllowsStart(status: Stream["status"]) {

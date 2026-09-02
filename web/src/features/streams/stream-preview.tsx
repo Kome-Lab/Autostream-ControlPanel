@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Hls, { ErrorTypes } from "hls.js";
 import { Check, Copy, ExternalLink, Link2, LoaderCircle, MonitorPlay } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { APIError, apiPost } from "@/lib/api/client";
+import { useI18n } from "@/components/admin/i18n-provider";
+import type { StreamActionController } from "@/features/streams/stream-action-controller";
 import {
   STREAM_PREVIEW_PLAYBACK_DEADLINE_MS,
   isStreamPreviewPlaybackReady,
@@ -42,22 +42,19 @@ type PreviewParticipantFeed = {
   video_overlay_burn_in?: boolean;
 };
 
-const previewLinkCache = new Map<string, PreviewLink>();
-
-function isPreviewLinkFresh(value: PreviewLink | null | undefined) {
-  if (!value?.expires_at) return false;
-  const expiresAt = Date.parse(value.expires_at);
-  return Number.isFinite(expiresAt) && expiresAt > Date.now() + 60_000;
-}
-
-export function StreamPreview({ stream }: { stream: Stream }) {
+export function StreamPreview({ stream, controller }: { stream: Stream; controller: StreamActionController }) {
+  const { t } = useI18n();
+  const streamRef = useRef(stream);
+  useEffect(() => {
+    streamRef.current = stream;
+  }, [stream]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("connecting");
   const [previewLink, setPreviewLink] = useState<PreviewLink | null>(null);
-  const [previewLinkError, setPreviewLinkError] = useState<unknown>(null);
+  const [previewLinkError, setPreviewLinkError] = useState("");
+  const [issuePending, setIssuePending] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
   const [playbackDetail, setPlaybackDetail] = useState("");
-  const [retryNonce, setRetryNonce] = useState(0);
   const [copied, setCopied] = useState(false);
   const [participants, setParticipants] = useState<PreviewParticipant[]>([]);
   const [participantFeedBurnIn, setParticipantFeedBurnIn] = useState<boolean | null>(null);
@@ -65,106 +62,78 @@ export function StreamPreview({ stream }: { stream: Stream }) {
   const playbackDiagnosticRef = useRef<StreamPreviewPlaybackDiagnostic | null>(null);
   const playbackURL = signedStreamPreviewPlaybackURL(previewLink?.playback_url || previewLink?.url);
   const displayURL = previewLink?.player_url || previewLink?.url || "";
-  const issueLink = useMutation({
-    mutationFn: () => apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`),
-    onSuccess: (value) => {
-      const resolvedURL = resolveStreamPreviewURL(value.playback_url || value.url, window.location.origin);
+  const issuePreviewLink = useCallback(async () => {
+    if (issuePending) return;
+    const intent = { id: "STR-11" as const, stream: streamRef.current };
+    setIssuePending(true);
+    setPreviewLinkError("");
+    try {
+      const opened = await controller.open(intent);
+      if (opened.kind !== "allowed") {
+        setPreviewLink(null);
+        setPreviewLinkError(opened.reason === "reconciliation-required"
+          ? t("confirmationOutcomeUnknown")
+          : t("confirmationRevalidationUnavailable"));
+        setPlaybackState("error");
+        return;
+      }
+      const result = await controller.submit(opened, { confirmed: true });
+      if (result.kind !== "succeeded" || !isPreviewLink(result.value)) {
+        setPreviewLink(null);
+        setPreviewLinkError(result.kind === "failed"
+          ? t(result.error.messageKey)
+          : result.kind === "outcome_unknown"
+            ? t("confirmationOutcomeUnknown")
+            : t("confirmationRevalidationUnavailable"));
+        setPlaybackError("");
+        setPlaybackState("error");
+        return;
+      }
+      const resolvedURL = resolveStreamPreviewURL(result.value.playback_url || result.value.url, window.location.origin);
       if (!resolvedURL) {
         setPreviewLink(null);
-        setPreviewLinkError(new Error("署名付きプレビューURLが無効です。"));
+        setPreviewLinkError(t("apiErrorProtocol"));
         setPlaybackError("");
         setPlaybackState("error");
         return;
       }
       const normalized = {
-        ...value,
-        url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
+        ...result.value,
+        url: resolveStreamPreviewURL(result.value.player_url || result.value.url, window.location.origin) || resolvedURL,
         playback_url: resolvedURL,
-        player_url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
+        player_url: resolveStreamPreviewURL(result.value.player_url || result.value.url, window.location.origin) || resolvedURL,
       };
-      previewLinkCache.set(stream.id, normalized);
       setPreviewLink(normalized);
-      setPreviewLinkError(null);
+      setPreviewLinkError("");
       setPlaybackError("");
       setPlaybackState("connecting");
       setCopied(false);
-    },
-    onError: (error) => {
-      setPreviewLinkError(error);
-      if (!previewLink?.playback_url && !previewLink?.url) {
-        setPlaybackError("");
-        setPlaybackState("error");
-      }
-    },
-  });
+    } finally {
+      setIssuePending(false);
+    }
+  }, [controller, issuePending, t]);
 
   // Do not assign a video source until the signed route is available. A
   // relative authenticated playlist can load while its HLS segment requests
   // fail in a browser or proxy, which otherwise leaves the UI spinning.
   useEffect(() => {
     let cancelled = false;
-    let retryTimer: number | undefined;
-    let attempts = 0;
-    const requestLink = () => {
-      void apiPost<PreviewLink>(`/streams/${encodeURIComponent(stream.id)}/preview-links`)
-        .then((value) => {
-          if (cancelled) return;
-          const resolvedURL = resolveStreamPreviewURL(value.playback_url || value.url, window.location.origin);
-          if (!resolvedURL) {
-            setPreviewLink(null);
-            setPreviewLinkError(new Error("署名付きプレビューURLが無効です。"));
-            setPlaybackError("");
-            setPlaybackState("error");
-            return;
-          }
-          const normalized = {
-            ...value,
-            url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
-            playback_url: resolvedURL,
-            player_url: resolveStreamPreviewURL(value.player_url || value.url, window.location.origin) || resolvedURL,
-          };
-          previewLinkCache.set(stream.id, normalized);
-          setPreviewLink(normalized);
-          setPreviewLinkError(null);
-          setPlaybackError("");
-          setPlaybackState("connecting");
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          if (attempts < 4 && isTransientPreviewLinkError(error)) {
-            attempts += 1;
-            retryTimer = window.setTimeout(requestLink, attempts * 1_500);
-            return;
-          }
-          setPreviewLink(null);
-          setPreviewLinkError(error);
-          setPlaybackError("");
-          setPlaybackState("error");
-        });
-    };
     window.queueMicrotask(() => {
       if (cancelled) return;
-      const cached = previewLinkCache.get(stream.id);
-      if (isPreviewLinkFresh(cached)) {
-        setPreviewLink(cached || null);
-        setPreviewLinkError(null);
-        setPlaybackError("");
-        setCopied(false);
-        setPlaybackState("connecting");
-        return;
-      }
       setPreviewLink(null);
-      setPreviewLinkError(null);
+      setPreviewLinkError("");
       setPlaybackError("");
       setCopied(false);
       setPlaybackState("connecting");
-      requestLink();
+      void issuePreviewLink();
     });
     return () => {
       cancelled = true;
-      window.clearTimeout(retryTimer);
     };
-  }, [stream.id, retryNonce]);
+  // Opening the user-requested preview owns exactly one ephemeral issue. A
+  // stream ref avoids issuing again merely because polling replaced the row.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controller, stream.id]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -420,8 +389,8 @@ export function StreamPreview({ stream }: { stream: Stream }) {
       <ParticipantAccessibilityList participants={participants} />
       {participantFeedError ? <p className="text-xs text-amber-600 dark:text-amber-400" role="status">VC参加者情報を更新できません。映像の再生は継続します。</p> : null}
       <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center">
-        <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => issueLink.mutate()} disabled={issueLink.isPending}>
-          {issueLink.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
+        <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void issuePreviewLink()} disabled={issuePending}>
+          {issuePending ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
           ネットワーク再生URLを発行
         </Button>
         {previewLink ? (
@@ -435,12 +404,12 @@ export function StreamPreview({ stream }: { stream: Stream }) {
             </Button>
           </div>
         ) : null}
-        <Button type="button" variant="ghost" size="sm" onClick={() => setRetryNonce((value) => value + 1)} disabled={issueLink.isPending}>
+        <Button type="button" variant="ghost" size="sm" onClick={() => void issuePreviewLink()} disabled={issuePending}>
           再試行
         </Button>
       </div>
       {previewLink ? <p className="text-xs text-muted-foreground">有効期限: {new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}
-      {previewLinkError ? <p className="text-sm text-destructive" role="alert">{previewLinkErrorMessage(previewLinkError)}</p> : null}
+      {previewLinkError ? <p className="text-sm text-destructive" role="alert">{previewLinkError}</p> : null}
       {playbackError ? <p className="text-sm text-destructive" role="alert">{playbackError}</p> : null}
       {playbackError && playbackDetail ? <p className="text-xs text-muted-foreground" role="status">詳細: {playbackDetail}</p> : null}
     </section>
@@ -458,24 +427,14 @@ function PreviewStatus({ state }: { state: PlaybackState }) {
   );
 }
 
-function isTransientPreviewLinkError(error: unknown) {
-  if (!(error instanceof APIError)) return true;
-  if (error.status === 401 || error.status === 403 || error.status === 404) return false;
-  return error.status === 409 || error.status === 425 || error.status === 429 || error.status >= 500;
-}
-
-function previewLinkErrorMessage(error: unknown) {
-  if (error instanceof APIError) {
-    const messages: Record<string, string> = {
-      stream_preview_not_active: "配信中の枠だけURLを発行できます。",
-      stream_preview_signing_key_required: "プレビュー署名鍵が設定されていません。",
-      stream_preview_not_supported: "Encoderがプレビューに対応していません。",
-      missing_stream_assignments: "Encoder Nodeが割り当てられていません。",
-    };
-    return messages[error.code || ""] || `URLを発行できませんでした。HTTP ${error.status}`;
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return "URLを発行できませんでした。";
+function isPreviewLink(value: unknown): value is PreviewLink {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.stream_id === "string"
+    && typeof candidate.url === "string"
+    && typeof candidate.expires_at === "string"
+    && (candidate.playback_url === undefined || typeof candidate.playback_url === "string")
+    && (candidate.player_url === undefined || typeof candidate.player_url === "string");
 }
 
 function ParticipantAccessibilityList({ participants }: { participants: PreviewParticipant[] }) {
