@@ -19,8 +19,16 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-bootstrap-panel";
-import { useUpdaterSettings } from "@/features/queries";
-import { apiPost, apiPut } from "@/lib/api/client";
+import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
+import {
+  createUpdaterActionController,
+  updaterAuthorityFingerprint,
+  type UpdaterActionAuthority,
+  type UpdaterActionIntent,
+} from "@/features/application/updater-action-policy";
+import { useCurrentUser, useUpdaterSettings } from "@/features/queries";
+import { apiGet, apiPost, apiPut } from "@/lib/api/client";
+import { hasPermission } from "@/lib/auth/permissions";
 import {
   applyUpdaterSettingsTargetSelection,
   applyUpdaterSettingsTargetPatch,
@@ -31,6 +39,7 @@ import {
   normalizePullUpdaterOwnershipActivationResponse,
   normalizePullUpdaterOwnershipDeactivationResponse,
   normalizeUpdaterSettingsResponse,
+  normalizeSystemUpdatesResponse,
   pullUpdaterOwnershipActivationEligibility,
   pullUpdaterOwnershipActivationRequest,
   pullUpdaterOwnershipDeactivationEligibility,
@@ -99,6 +108,8 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
   const [ambiguousDeactivationAttempt, setAmbiguousDeactivationAttempt] = useState<PullOwnershipDeactivationAttempt | null>(null);
   const [ownershipFeedback, setOwnershipFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const queryClient = useQueryClient();
+  const currentUser = useCurrentUser();
+  const updaterActionController = useMemo(() => createUpdaterActionController(), []);
   const settings = useUpdaterSettings(updater.updater_id, open);
   const settingsData = useMemo(() => {
     if (!settings.data || updater.transport_mode !== "pull_v2") {
@@ -285,17 +296,89 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
     if (!nextOpen && (bootstrapCloseBlocked || ownershipMutationPending)) return;
     setOpen(nextOpen);
   };
-  const requestOwnershipActivation = () => {
+  const requestOwnershipActivation = async () => {
     if (!settingsData || !ownershipEligibility.ready || !canEdit) return;
     setOwnershipFeedback(null);
-    activateOwnership.mutate(pullUpdaterOwnershipActivationRequest(updater, settingsData));
+    return activateOwnership.mutateAsync(pullUpdaterOwnershipActivationRequest(updater, settingsData));
   };
-  const requestOwnershipDeactivation = () => {
+  const requestOwnershipDeactivation = async () => {
     if (!settingsData || !deactivationEligibility.ready || !activePullOwner || !canEdit) return;
     setOwnershipFeedback(null);
-    deactivateOwnership.mutate({
+    return deactivateOwnership.mutateAsync({
       request: pullUpdaterOwnershipDeactivationRequest(updater, settingsData),
       legacyAgentServiceID: rollbackLegacyAgentServiceID,
+    });
+  };
+  const updaterLabel = updater.name || updater.updater_id;
+  const foundationFreshness: UpdaterActionAuthority["freshness"] = settings.isError || currentUser.isError
+    ? "unavailable"
+    : settings.isFetching || currentUser.isFetching
+      ? "refreshing"
+      : settingsData && currentUser.data
+        ? "fresh"
+        : "stale";
+  const foundationPermission: UpdaterActionAuthority["permission"] = currentUser.data
+    ? (hasPermission(currentUser.data, "system_updates.execute") ? "allowed" : "denied")
+    : "unknown";
+  const activationSnapshot = ownershipActionAuthoritySnapshot(
+    "UPD-06",
+    updater,
+    settingsData,
+    jobs,
+    Boolean(settingsData && ownershipEligibility.ready && !activePullOwner),
+  );
+  const deactivationSnapshot = ownershipActionAuthoritySnapshot(
+    "UPD-07",
+    updater,
+    settingsData,
+    jobs,
+    Boolean(settingsData && deactivationEligibility.ready && activePullOwner),
+  );
+  const activationIntent: UpdaterActionIntent = Object.freeze({
+    id: "UPD-06",
+    resourceId: updater.updater_id,
+    publicLabel: updaterLabel,
+    authorityFingerprint: activationSnapshot.fingerprint,
+  });
+  const deactivationIntent: UpdaterActionIntent = Object.freeze({
+    id: "UPD-07",
+    resourceId: updater.updater_id,
+    authorityFingerprint: deactivationSnapshot.fingerprint,
+  });
+  const currentFoundationAuthority = (snapshot: ReturnType<typeof ownershipActionAuthoritySnapshot>): UpdaterActionAuthority => Object.freeze({
+    permission: foundationPermission,
+    freshness: foundationFreshness,
+    applicability: snapshot.applicable ? "applicable" : "not-applicable",
+    authorityFingerprint: snapshot.fingerprint,
+  });
+  const refreshOwnershipAuthority = async (actionID: "UPD-06" | "UPD-07"): Promise<UpdaterActionAuthority> => {
+    const [systemUpdatesRaw, refreshedSettings, refreshedUser] = await Promise.all([
+      apiGet<unknown>("/system-updates"),
+      settings.refetch(),
+      currentUser.refetch(),
+    ]);
+    if (refreshedSettings.isError || !refreshedSettings.data || refreshedUser.isError || !refreshedUser.data) {
+      return unavailableUpdaterAuthority(updaterAuthorityFingerprint([actionID, updater.updater_id, "unavailable"]));
+    }
+    const systemUpdates = normalizeSystemUpdatesResponse(systemUpdatesRaw);
+    queryClient.setQueryData(["system-updates"], systemUpdates);
+    const refreshedUpdater = systemUpdates.updaters.find((candidate) => candidate.updater_id === updater.updater_id);
+    if (!refreshedUpdater) {
+      return unavailableUpdaterAuthority(updaterAuthorityFingerprint([actionID, updater.updater_id, "missing"]));
+    }
+    const refreshedSettingsData = refreshedUpdater.transport_mode === "pull_v2"
+      ? { ...refreshedSettings.data, transport_mode: "pull_v2" as const, execution_host_id: refreshedUpdater.execution_host_id || "" }
+      : refreshedSettings.data;
+    const activation = actionID === "UPD-06";
+    const eligibility = activation
+      ? pullUpdaterOwnershipActivationEligibility({ updater: refreshedUpdater, settings: refreshedSettingsData, jobs: systemUpdates.jobs, requestState: "idle" })
+      : pullUpdaterOwnershipDeactivationEligibility({ updater: refreshedUpdater, settings: refreshedSettingsData, jobs: systemUpdates.jobs, requestState: "idle" });
+    const snapshot = ownershipActionAuthoritySnapshot(actionID, refreshedUpdater, refreshedSettingsData, systemUpdates.jobs, eligibility.ready);
+    return Object.freeze({
+      permission: hasPermission(refreshedUser.data, "system_updates.execute") ? "allowed" : "denied",
+      freshness: "fresh",
+      applicability: snapshot.applicable ? "applicable" : "not-applicable",
+      authorityFingerprint: snapshot.fingerprint,
     });
   };
 
@@ -385,42 +468,34 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
             ) : null}
             <div className="flex flex-wrap gap-2">
               {!activePullOwner ? (
-                <DangerConfirm
-                  title={`${updater.name || updater.updater_id} へ更新実行権限を切り替えますか`}
-                  description={`実行ホスト ${settingsData.execution_host_id || "未報告"} のSSH更新経路を停止し、検証済みのHost Agentへ切り替えます。active job、recovery、revision、Local Executor policyが直前に再検証され、不一致なら変更されません。`}
-                  onConfirm={requestOwnershipActivation}
-                  actionLabel="Host Agentへ切り替え"
-                >
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={!canEdit || !ownershipEligibility.ready || ownershipMutationPending}
-                    aria-busy={activateOwnership.isPending}
-                    title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(ownershipEligibility.reason) || undefined}
-                  >
-                    {activateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-                    Host Agentへ切り替え
-                  </Button>
-                </DangerConfirm>
+                <UpdaterActionConfirmation
+                  controller={updaterActionController}
+                  intent={activationIntent}
+                  authority={currentFoundationAuthority(activationSnapshot)}
+                  refreshAuthority={() => refreshOwnershipAuthority("UPD-06")}
+                  handler={requestOwnershipActivation}
+                  label="Host Agentへ切り替え"
+                  icon={activateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                  aria-busy={activateOwnership.isPending}
+                  variant="outline"
+                  disabled={!canEdit || !ownershipEligibility.ready || ownershipMutationPending}
+                  title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(ownershipEligibility.reason) || undefined}
+                />
               ) : null}
               {activePullOwner ? (
-                <DangerConfirm
-                  title={`緊急Bridge rollbackで ${rollbackLegacyAgentServiceID} へ戻しますか`}
-                  description={`Bridge期間限定の緊急操作です。実行ホスト ${settingsData.execution_host_id || "未報告"} の保存済みSSH Updater、token、policy、active job、recovery、self-update、runtime-token rotationをサーバーが同一transactionで再検証します。応答が不明な場合は再送しません。`}
-                  onConfirm={requestOwnershipDeactivation}
-                  actionLabel="SSH Updaterへ戻す"
-                >
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    disabled={!canEdit || !deactivationEligibility.ready || ownershipMutationPending}
-                    aria-busy={deactivateOwnership.isPending}
-                    title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(deactivationEligibility.reason) || undefined}
-                  >
-                    {deactivateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-                    緊急Bridge rollback
-                  </Button>
-                </DangerConfirm>
+                <UpdaterActionConfirmation
+                  controller={updaterActionController}
+                  intent={deactivationIntent}
+                  authority={currentFoundationAuthority(deactivationSnapshot)}
+                  refreshAuthority={() => refreshOwnershipAuthority("UPD-07")}
+                  handler={requestOwnershipDeactivation}
+                  label="緊急Bridge rollback"
+                  icon={deactivateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                  aria-busy={deactivateOwnership.isPending}
+                  variant="destructive"
+                  disabled={!canEdit || !deactivationEligibility.ready || ownershipMutationPending}
+                  title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(deactivationEligibility.reason) || undefined}
+                />
               ) : null}
               {ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous" ? (
                 <Button
@@ -455,8 +530,9 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
             availableTargets={availableTargets}
             settings={settingsData}
             canEdit={canEdit}
-            canManageSecrets={canManageSecrets}
-            ownershipOperationBlocked={ownershipMutationPending || ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous"}
+             canManageSecrets={canManageSecrets}
+             updaterActionController={updaterActionController}
+             ownershipOperationBlocked={ownershipMutationPending || ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous"}
             onBootstrapCloseBlockedChange={setBootstrapCloseBlocked}
           />
         ) : null}
@@ -471,6 +547,7 @@ function UpdaterSettingsForm({
   settings,
   canEdit,
   canManageSecrets,
+  updaterActionController,
   ownershipOperationBlocked,
   onBootstrapCloseBlockedChange,
 }: {
@@ -479,10 +556,13 @@ function UpdaterSettingsForm({
   settings: UpdaterSettings;
   canEdit: boolean;
   canManageSecrets: boolean;
+  updaterActionController: ReturnType<typeof createUpdaterActionController>;
   ownershipOperationBlocked: boolean;
   onBootstrapCloseBlockedChange: (blocked: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const currentUser = useCurrentUser();
+  const settingsAuthorityQuery = useUpdaterSettings(updater.updater_id, true);
   const formID = useId();
   const [form, setForm] = useState<UpdaterSettingsFormState>(() => settingsToForm(settings));
   const [baseRevision, setBaseRevision] = useState(settings.revision);
@@ -541,6 +621,9 @@ function UpdaterSettingsForm({
     onError: (error) => {
       setFeedback({ tone: "error", message: updaterSettingsErrorMessage(error) });
     },
+    onSettled: () => {
+      setGithubToken("");
+    },
   });
 
   const updateHost = (index: number, patch: Partial<UpdaterSettingsHost>) => {
@@ -594,6 +677,65 @@ function UpdaterSettingsForm({
     await navigator.clipboard.writeText(publicKey);
     setCopiedHostID(hostID);
     window.setTimeout(() => setCopiedHostID((current) => current === hostID ? "" : current), 2_000);
+  };
+  const formAuthorityFingerprint = updaterSettingsFormFingerprint(
+    baseRevision,
+    form,
+    deleteGitHubToken,
+    Boolean(githubToken),
+  );
+  const settingsActionSnapshot = updaterSettingsActionAuthoritySnapshot(
+    updater,
+    settingsAuthorityQuery.data,
+    formAuthorityFingerprint,
+    Boolean(
+      settingsAuthorityQuery.data
+      && settingsAuthorityQuery.data.revision === baseRevision
+      && !bootstrapActive
+      && !ownershipOperationBlocked
+    ),
+  );
+  const settingsActionIntent: UpdaterActionIntent = Object.freeze({
+    id: "UPD-08",
+    resourceId: updater.updater_id,
+    publicLabel: updater.name || updater.updater_id,
+    authorityFingerprint: settingsActionSnapshot.fingerprint,
+  });
+  const settingsActionFreshness: UpdaterActionAuthority["freshness"] = settingsAuthorityQuery.isError || currentUser.isError
+    ? "unavailable"
+    : settingsAuthorityQuery.isFetching || currentUser.isFetching
+      ? "refreshing"
+      : settingsAuthorityQuery.data && currentUser.data
+        ? "fresh"
+        : "stale";
+  const settingsActionAuthority: UpdaterActionAuthority = Object.freeze({
+    permission: currentUser.data
+      ? (hasPermission(currentUser.data, "system_updates.execute") ? "allowed" : "denied")
+      : "unknown",
+    freshness: settingsActionFreshness,
+    applicability: settingsActionSnapshot.applicable ? "applicable" : "not-applicable",
+    authorityFingerprint: settingsActionSnapshot.fingerprint,
+  });
+  const refreshSettingsActionAuthority = async (): Promise<UpdaterActionAuthority> => {
+    const [refreshedSettings, refreshedUser] = await Promise.all([
+      settingsAuthorityQuery.refetch(),
+      currentUser.refetch(),
+    ]);
+    if (refreshedSettings.isError || !refreshedSettings.data || refreshedUser.isError || !refreshedUser.data) {
+      return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-08", updater.updater_id, "unavailable"]));
+    }
+    const snapshot = updaterSettingsActionAuthoritySnapshot(
+      updater,
+      refreshedSettings.data,
+      formAuthorityFingerprint,
+      refreshedSettings.data.revision === baseRevision && !bootstrapActive && !ownershipOperationBlocked,
+    );
+    return Object.freeze({
+      permission: hasPermission(refreshedUser.data, "system_updates.execute") ? "allowed" : "denied",
+      freshness: "fresh",
+      applicability: snapshot.applicable ? "applicable" : "not-applicable",
+      authorityFingerprint: snapshot.fingerprint,
+    });
   };
 
   return (
@@ -822,6 +964,7 @@ function UpdaterSettingsForm({
               currentTargets={form.targets}
               releaseTokenConfigured={settings.github_token_configured}
               canEdit={canEdit}
+              updaterActionController={updaterActionController}
               onActiveChange={setBootstrapActive}
               onCloseBlockedChange={onBootstrapCloseBlockedChange}
             />
@@ -1035,19 +1178,22 @@ function UpdaterSettingsForm({
 
       <DialogFooter className="mt-6">
         {canEdit ? (
-          <Button
-            type="button"
-            onClick={() => saveSettings.mutate()}
+          <UpdaterActionConfirmation
+            controller={updaterActionController}
+            intent={settingsActionIntent}
+            authority={settingsActionAuthority}
+            refreshAuthority={refreshSettingsActionAuthority}
+            handler={() => saveSettings.mutateAsync()}
+            label="設定を保存"
+            icon={saveSettings.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
+            size="default"
             disabled={saveSettings.isPending || bootstrapActive || ownershipOperationBlocked}
             title={bootstrapActive
               ? "ホストの自動セットアップ完了後に保存できます。"
               : ownershipOperationBlocked
                 ? "更新実行権限の切替状態を確認してから保存できます。"
                 : undefined}
-          >
-            {saveSettings.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
-            設定を保存
-          </Button>
+          />
         ) : null}
       </DialogFooter>
     </>
@@ -1056,6 +1202,126 @@ function UpdaterSettingsForm({
 
 function OwnershipStateItem({ label, value }: { label: string; value: ReactNode }) {
   return <div className="rounded-md border bg-background/70 px-3 py-2"><div className="text-muted-foreground">{label}</div><div className="mt-0.5 break-all font-medium">{value}</div></div>;
+}
+
+function ownershipActionAuthoritySnapshot(
+  actionID: "UPD-06" | "UPD-07",
+  updater: SystemUpdateAgentStatus,
+  settings: UpdaterSettings | undefined,
+  jobs: SystemUpdateJob[],
+  applicable: boolean,
+) {
+  const ownership = settings?.execution_host_ownership;
+  const activation = settings?.pull_activation;
+  const relevantJobs = jobs
+    .filter((job) => job.updater_id === updater.updater_id || settings?.targets.some((target) => target.target_id === job.target_id))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    applicable,
+    fingerprint: updaterAuthorityFingerprint([
+      actionID,
+      updater.updater_id,
+      updater.transport_mode,
+      updater.execution_host_id,
+      updater.ownership_epoch,
+      updater.online,
+      updater.last_heartbeat_at,
+      updater.desired_revision,
+      updater.applied_revision,
+      updater.policy_status,
+      settings?.revision,
+      settings?.projection_revision,
+      settings?.local_executor_policy_revision,
+      settings?.local_executor_policy_sha256,
+      settings?.execution_host_id,
+      ownership?.transport_mode,
+      ownership?.agent_service_id,
+      ownership?.legacy_agent_service_id,
+      ownership?.ownership_epoch,
+      ownership?.policy_revision,
+      activation?.ready,
+      activation?.status,
+      activation?.last_heartbeat_at,
+      activation?.observe_only,
+      activation?.update_executor,
+      activation?.mutation_enabled,
+      activation?.recovery_pending,
+      activation?.reported_ownership_epoch,
+      activation?.reported_projection_revision,
+      ...relevantJobs.flatMap((job) => [job.id, job.status, job.updated_at, job.recovery_required]),
+    ]),
+  };
+}
+
+function updaterSettingsFormFingerprint(
+  baseRevision: number,
+  form: UpdaterSettingsFormState,
+  deleteGitHubToken: boolean,
+  githubTokenPresent: boolean,
+) {
+  return updaterAuthorityFingerprint([
+    "UPD-08-form",
+    baseRevision,
+    form.apiPort,
+    form.pollInterval,
+    form.heartbeatInterval,
+    form.localExecutorPolicySHA256,
+    deleteGitHubToken,
+    githubTokenPresent,
+    ...form.hosts.flatMap((host) => [
+      host.host_id,
+      host.name,
+      host.address,
+      host.port,
+      host.user,
+      host.arch,
+      host.host_public_key,
+    ]),
+    ...form.targets.flatMap((target) => [
+      target.target_id,
+      target.service_id,
+      target.host_id,
+      target.service_type,
+      target.deployment_mode,
+      target.database_name,
+      target.local_listen_port,
+    ]),
+  ]);
+}
+
+function updaterSettingsActionAuthoritySnapshot(
+  updater: SystemUpdateAgentStatus,
+  settings: UpdaterSettings | undefined,
+  formFingerprint: string,
+  applicable: boolean,
+) {
+  return {
+    applicable,
+    fingerprint: updaterAuthorityFingerprint([
+      "UPD-08",
+      updater.updater_id,
+      updater.transport_mode,
+      updater.execution_host_id,
+      updater.ownership_epoch,
+      settings?.revision,
+      settings?.projection_revision,
+      settings?.local_executor_policy_revision,
+      settings?.local_executor_policy_sha256,
+      settings?.github_token_configured,
+      settings?.transport_mode,
+      settings?.execution_host_id,
+      formFingerprint,
+    ]),
+  };
+}
+
+function unavailableUpdaterAuthority(authorityFingerprint: string): UpdaterActionAuthority {
+  return Object.freeze({
+    permission: "unknown",
+    freshness: "unavailable",
+    applicability: "unknown",
+    authorityFingerprint,
+  });
 }
 
 function ownershipEligibilityMessage(reason: string) {

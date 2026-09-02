@@ -8,18 +8,27 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useUpdaterHostBootstrapJobs } from "@/features/queries";
+import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
+import {
+  updaterAuthorityFingerprint,
+  type UpdaterActionAuthority,
+  type UpdaterActionController,
+  type UpdaterActionIntent,
+} from "@/features/application/updater-action-policy";
+import { useCurrentUser, useUpdaterHostBootstrapJobs } from "@/features/queries";
 import {
   canonicalBootstrapHostIDs,
   encryptBootstrapCredentials,
 } from "@/lib/bootstrap-envelope";
 import { apiGet, apiPost } from "@/lib/api/client";
+import { hasPermission } from "@/lib/auth/permissions";
 import {
   activeUpdaterHostBootstrapStatus,
   isUpdaterHostBootstrapJobActive,
   isUpdaterHostBootstrapBulkCandidate,
   normalizeUpdaterHostBootstrapJobsResponse,
   normalizeSystemUpdatesResponse,
+  normalizeUpdaterSettingsResponse,
   recoverUpdaterHostBootstrapRequest,
   requestUpdaterHostBootstrapWithRecovery,
   systemUpdateErrorMessage,
@@ -49,6 +58,7 @@ type UpdaterHostBootstrapPanelProps = {
   currentTargets: UpdaterSettingsTarget[];
   releaseTokenConfigured: boolean;
   canEdit: boolean;
+  updaterActionController: UpdaterActionController;
   onActiveChange: (active: boolean) => void;
   onCloseBlockedChange: (blocked: boolean) => void;
 };
@@ -67,11 +77,13 @@ export function UpdaterHostBootstrapPanel({
   currentTargets,
   releaseTokenConfigured,
   canEdit,
+  updaterActionController,
   onActiveChange,
   onCloseBlockedChange,
 }: UpdaterHostBootstrapPanelProps) {
   const formID = useId();
   const queryClient = useQueryClient();
+  const currentUser = useCurrentUser();
   const bootstrapJobs = useUpdaterHostBootstrapJobs(updater.updater_id);
   const [selectedHostIDs, setSelectedHostIDs] = useState<string[]>([]);
   const [selectionMode, setSelectionMode] = useState<"single" | "bulk" | null>(null);
@@ -82,6 +94,7 @@ export function UpdaterHostBootstrapPanel({
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [preparingEnvelope, setPreparingEnvelope] = useState(false);
   const [ambiguousRequest, setAmbiguousRequest] = useState<UpdaterHostBootstrapRequestIdentity | null>(null);
+  const [ambiguousFoundationIntent, setAmbiguousFoundationIntent] = useState<UpdaterActionIntent | null>(null);
   const mountedRef = useRef(true);
   const activeBootstrapRequestRef = useRef<UpdaterHostBootstrapRequest | null>(null);
   const submitGenerationRef = useRef(0);
@@ -197,6 +210,10 @@ export function UpdaterHostBootstrapPanel({
     request: UpdaterHostBootstrapRequestIdentity,
   ) => {
     setAmbiguousRequest(null);
+    if (ambiguousFoundationIntent) {
+      updaterActionController.reconcile(ambiguousFoundationIntent);
+      setAmbiguousFoundationIntent(null);
+    }
     queryClient.setQueryData<UpdaterHostBootstrapJobsResponse>(queryKey, (current) => ({
       jobs: mergeBootstrapJobs(created.jobs, current?.jobs || []),
     }));
@@ -231,6 +248,7 @@ export function UpdaterHostBootstrapPanel({
     onSuccess: async (created, request) => {
       clearBootstrapRequestEnvelope(request);
       if (activeBootstrapRequestRef.current === request) activeBootstrapRequestRef.current = null;
+      setAmbiguousFoundationIntent(null);
       await recordBootstrapAcceptance(created, request);
     },
     onError: (error, request) => {
@@ -239,6 +257,7 @@ export function UpdaterHostBootstrapPanel({
         clearBootstrapRequestEnvelope(request);
         if (activeBootstrapRequestRef.current === request) activeBootstrapRequestRef.current = null;
         setAmbiguousRequest(identity);
+        setAmbiguousFoundationIntent(foundationIntent);
         setFeedback({
           tone: "pending",
           message: "セットアップ要求の受付結果を確認中です。要求識別子だけで状態を自動確認し、POSTの再送や新しいセットアップは開始しません。",
@@ -296,6 +315,116 @@ export function UpdaterHostBootstrapPanel({
     || bootstrapMutationPending
     || ambiguousRecoveryPending
     || Boolean(ambiguousRequest);
+  const foundationActionID = selectionMode === "single" ? "UPD-09" as const : "UPD-10" as const;
+  const foundationSnapshot = bootstrapActionAuthoritySnapshot({
+    actionID: foundationActionID,
+    updater,
+    expectedRevision,
+    selectedHostIDs,
+    savedHosts,
+    currentHosts,
+    savedTargets,
+    currentTargets,
+    releaseTokenConfigured,
+    bootstrapJobs: bootstrapJobs.data?.jobs || [],
+    selectionMode,
+    confirmedContext,
+    confirmationContext,
+    credentialsPresent: Boolean(administratorUser.trim() && privateKey.trim()),
+    applicable: selectedHostsStillReady && hostKeysConfirmed && !busy,
+  });
+  const foundationIntent: UpdaterActionIntent = Object.freeze({
+    id: foundationActionID,
+    resourceId: foundationActionID === "UPD-09" ? selectedHostIDs[0] || "bootstrap-host" : updater.updater_id,
+    ...(foundationActionID === "UPD-09" ? { publicLabel: selectedHostIDs[0] || "bootstrap-host" } : {}),
+    authorityFingerprint: foundationSnapshot.fingerprint,
+  });
+  const foundationFreshness: UpdaterActionAuthority["freshness"] = bootstrapJobs.isError || currentUser.isError
+    ? "unavailable"
+    : bootstrapJobs.isFetching || currentUser.isFetching
+      ? "refreshing"
+      : bootstrapJobs.isSuccess && currentUser.data
+        ? "fresh"
+        : "stale";
+  const foundationAuthority: UpdaterActionAuthority = Object.freeze({
+    permission: currentUser.data
+      ? (hasPermission(currentUser.data, "system_updates.execute") ? "allowed" : "denied")
+      : "unknown",
+    freshness: foundationFreshness,
+    applicability: foundationSnapshot.applicable ? "applicable" : "not-applicable",
+    authorityFingerprint: foundationSnapshot.fingerprint,
+  });
+  const refreshFoundationAuthority = async (): Promise<UpdaterActionAuthority> => {
+    const [systemUpdatesRaw, refreshedBootstrapJobs] = await Promise.all([
+      apiGet<unknown>("/system-updates"),
+      bootstrapJobs.refetch(),
+    ]);
+    const [updaterSettingsRaw, refreshedUser] = await Promise.all([
+      apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/settings`),
+      currentUser.refetch(),
+    ]);
+    if (refreshedBootstrapJobs.isError || !refreshedBootstrapJobs.data || refreshedUser.isError || !refreshedUser.data) {
+      return unavailableBootstrapAuthority(updaterAuthorityFingerprint([foundationActionID, updater.updater_id, "unavailable"]));
+    }
+    const systemUpdates = normalizeSystemUpdatesResponse(systemUpdatesRaw);
+    const refreshedUpdater = systemUpdates.updaters.find((candidate) => candidate.updater_id === updater.updater_id);
+    const refreshedSettings = normalizeUpdaterSettingsResponse(updaterSettingsRaw, updater.updater_id);
+    if (!refreshedUpdater || refreshedSettings.revision !== expectedRevision) {
+      return unavailableBootstrapAuthority(updaterAuthorityFingerprint([foundationActionID, updater.updater_id, "authority-changed"]));
+    }
+    queryClient.setQueryData(["system-updates"], systemUpdates);
+    queryClient.setQueryData(["system-updates", "updaters", updater.updater_id, "settings"], refreshedSettings);
+    const refreshedSavedHostsByID = new Map(refreshedSettings.hosts.map((host) => [host.host_id, host]));
+    const refreshedSelectedHosts = selectedHostIDs
+      .map((hostID) => refreshedSavedHostsByID.get(hostID))
+      .filter((host): host is UpdaterSettingsHost => Boolean(host));
+    const refreshedLatestResults = latestBootstrapResults(refreshedBootstrapJobs.data.jobs, expectedRevision);
+    const refreshedActiveStatus = activeUpdaterHostBootstrapStatus(refreshedBootstrapJobs.data.jobs);
+    const refreshedReady = selectedHostIDs.length > 0 && selectedHostIDs.every((hostID) => {
+      const eligibility = updaterHostBootstrapEligibility({
+        updater: refreshedUpdater,
+        expectedRevision,
+        savedHost: refreshedSavedHostsByID.get(hostID),
+        currentHost: currentHosts.find((host) => host.host_id === hostID),
+        savedTargets: refreshedSettings.targets,
+        currentTargets,
+        releaseTokenConfigured: refreshedSettings.github_token_configured,
+        bootstrapStatus: refreshedActiveStatus || refreshedLatestResults.get(hostID)?.status,
+      });
+      return selectionMode === "bulk"
+        ? isUpdaterHostBootstrapBulkCandidate(eligibility)
+        : eligibility.ready;
+    });
+    const refreshedConfirmationContext = updaterHostBootstrapConfirmationContext(
+      refreshedUpdater,
+      expectedRevision,
+      selectedHostIDs,
+      refreshedSelectedHosts,
+    );
+    const snapshot = bootstrapActionAuthoritySnapshot({
+      actionID: foundationActionID,
+      updater: refreshedUpdater,
+      expectedRevision,
+      selectedHostIDs,
+      savedHosts: refreshedSettings.hosts,
+      currentHosts,
+      savedTargets: refreshedSettings.targets,
+      currentTargets,
+      releaseTokenConfigured: refreshedSettings.github_token_configured,
+      bootstrapJobs: refreshedBootstrapJobs.data.jobs,
+      selectionMode,
+      confirmedContext,
+      confirmationContext: refreshedConfirmationContext,
+      credentialsPresent: Boolean(administratorUser.trim() && privateKey.trim()),
+      applicable: refreshedReady && confirmedContext === refreshedConfirmationContext && !busy,
+    });
+    return Object.freeze({
+      permission: hasPermission(refreshedUser.data, "system_updates.execute") ? "allowed" : "denied",
+      freshness: "fresh",
+      applicability: snapshot.applicable ? "applicable" : "not-applicable",
+      authorityFingerprint: snapshot.fingerprint,
+    });
+  };
   useLayoutEffect(() => {
     onActiveChange(Boolean(activeBootstrapStatus) || busy);
   }, [activeBootstrapStatus, busy, onActiveChange]);
@@ -309,6 +438,7 @@ export function UpdaterHostBootstrapPanel({
 
   const submitBootstrap = async () => {
     const generation = submitGenerationRef.current + 1;
+    let mutationStarted = false;
     submitGenerationRef.current = generation;
     const initialOperationContext = operationContext;
     const operationStillCurrent = () => {
@@ -325,23 +455,30 @@ export function UpdaterHostBootstrapPanel({
       if (!canEdit || !selectedHostsStillReady) throw new Error("updater_host_bootstrap_not_ready");
       if (!hostKeysConfirmed) throw new Error("bootstrap_host_keys_unconfirmed");
 
-      const [refreshedSystemUpdatesRaw, refreshedBootstrapJobs] = await Promise.all([
+      const [refreshedSystemUpdatesRaw, refreshedBootstrapJobs, refreshedSettingsRaw] = await Promise.all([
         apiGet<unknown>("/system-updates"),
         bootstrapJobs.refetch(),
+        apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/settings`),
       ]);
       if (!operationStillCurrent()) return;
       const refreshedSystemUpdates = normalizeSystemUpdatesResponse(refreshedSystemUpdatesRaw);
+      const refreshedSettings = normalizeUpdaterSettingsResponse(refreshedSettingsRaw, updater.updater_id);
       queryClient.setQueryData(["system-updates"], refreshedSystemUpdates);
+      queryClient.setQueryData(["system-updates", "updaters", updater.updater_id, "settings"], refreshedSettings);
       const refreshedUpdater = refreshedSystemUpdates.updaters.find((candidate) => candidate.updater_id === updater.updater_id);
-      if (!refreshedUpdater || refreshedBootstrapJobs.isError || !refreshedBootstrapJobs.data) {
+      if (!refreshedUpdater || refreshedSettings.revision !== expectedRevision || refreshedBootstrapJobs.isError || !refreshedBootstrapJobs.data) {
         throw new Error("updater_host_bootstrap_status_unavailable");
       }
+      const refreshedSavedHostsByID = new Map(refreshedSettings.hosts.map((host) => [host.host_id, host]));
+      const refreshedSelectedHosts = selectedHostIDs
+        .map((hostID) => refreshedSavedHostsByID.get(hostID))
+        .filter((host): host is UpdaterSettingsHost => Boolean(host));
       if (
         confirmedContext !== updaterHostBootstrapConfirmationContext(
           refreshedUpdater,
           expectedRevision,
           selectedHostIDs,
-          selectedHosts,
+          refreshedSelectedHosts,
         )
       ) {
         throw new Error("bootstrap_host_keys_unconfirmed");
@@ -353,11 +490,11 @@ export function UpdaterHostBootstrapPanel({
         const eligibility = updaterHostBootstrapEligibility({
           updater: refreshedUpdater,
           expectedRevision,
-          savedHost: savedHostsByID.get(hostID),
+          savedHost: refreshedSavedHostsByID.get(hostID),
           currentHost,
-          savedTargets,
+          savedTargets: refreshedSettings.targets,
           currentTargets,
-          releaseTokenConfigured,
+          releaseTokenConfigured: refreshedSettings.github_token_configured,
           bootstrapStatus: refreshedActiveStatus || refreshedLatestResults.get(hostID)?.status,
         });
         return selectionMode === "bulk"
@@ -409,13 +546,22 @@ export function UpdaterHostBootstrapPanel({
       if (!operationStillCurrent()) return;
       // Commit the cleared form before the mutation receives its envelope-only request.
       flushSync(clearPlaintext);
-      startBootstrap.mutate(request);
+      mutationStarted = true;
+      return await startBootstrap.mutateAsync(request);
     } catch (error) {
       if (!mountedRef.current || submitGenerationRef.current !== generation) return;
       clearPlaintext();
-      setFeedback({
-        tone: "error",
-        message: systemUpdateErrorMessage(error, "ホストのセットアップを開始できませんでした。認証情報と状態を確認してください。"),
+      if (!(error instanceof UpdaterHostBootstrapRequestAmbiguousError)) {
+        setFeedback({
+          tone: "error",
+          message: systemUpdateErrorMessage(error, "ホストのセットアップを開始できませんでした。認証情報と状態を確認してください。"),
+        });
+      }
+      if (mutationStarted) throw error;
+      throw Object.assign(new Error("bootstrap_preflight_failed", { cause: error }), {
+        name: "APIError",
+        status: 422,
+        code: "invalid_request",
       });
     } finally {
       if (mountedRef.current && submitGenerationRef.current === generation) {
@@ -487,7 +633,7 @@ export function UpdaterHostBootstrapPanel({
               <div className="min-w-0">
                 <div className="truncate font-medium">{host.name || host.host_id}</div>
                 <div className="mt-0.5 text-xs text-muted-foreground">{host.address || "接続先未入力"}:{host.port || 22}</div>
-                {result?.message ? <div className="mt-1 break-words text-xs text-muted-foreground">{result.message}</div> : null}
+                {result ? <div className="mt-1 break-words text-xs text-muted-foreground">{bootstrapResultSafeMessage(result.status)}</div> : null}
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant={bootstrapBadgeTone(displayStatus)}>{systemUpdateHostBootstrapStatusLabel(displayStatus)}</Badge>
@@ -588,9 +734,15 @@ export function UpdaterHostBootstrapPanel({
 
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" onClick={closeCredentialForm} disabled={busy}>キャンセル</Button>
-            <Button
-              type="button"
-              onClick={() => void submitBootstrap()}
+            <UpdaterActionConfirmation
+              controller={updaterActionController}
+              intent={foundationIntent}
+              authority={foundationAuthority}
+              refreshAuthority={refreshFoundationAuthority}
+              handler={submitBootstrap}
+              label="セットアップを開始"
+              icon={busy ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
+              size="default"
               disabled={
                 busy
                 || !canEdit
@@ -599,10 +751,7 @@ export function UpdaterHostBootstrapPanel({
                 || !administratorUser.trim()
                 || !privateKey.trim()
               }
-            >
-              {busy ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
-              セットアップを開始
-            </Button>
+            />
           </div>
         </div>
       ) : null}
@@ -621,6 +770,119 @@ export function UpdaterHostBootstrapPanel({
       ) : null}
     </div>
   );
+}
+
+function bootstrapActionAuthoritySnapshot({
+  actionID,
+  updater,
+  expectedRevision,
+  selectedHostIDs,
+  savedHosts,
+  currentHosts,
+  savedTargets,
+  currentTargets,
+  releaseTokenConfigured,
+  bootstrapJobs,
+  selectionMode,
+  confirmedContext,
+  confirmationContext,
+  credentialsPresent,
+  applicable,
+}: Readonly<{
+  actionID: "UPD-09" | "UPD-10";
+  updater: SystemUpdateAgentStatus;
+  expectedRevision: number;
+  selectedHostIDs: string[];
+  savedHosts: UpdaterSettingsHost[];
+  currentHosts: UpdaterSettingsHost[];
+  savedTargets: UpdaterSettingsTarget[];
+  currentTargets: UpdaterSettingsTarget[];
+  releaseTokenConfigured: boolean;
+  bootstrapJobs: UpdaterHostBootstrapJobsResponse["jobs"];
+  selectionMode: "single" | "bulk" | null;
+  confirmedContext: string;
+  confirmationContext: string;
+  credentialsPresent: boolean;
+  applicable: boolean;
+}>) {
+  const selected = new Set(selectedHostIDs);
+  const hostParts = (hosts: UpdaterSettingsHost[]) => hosts
+    .filter((host) => selected.has(host.host_id))
+    .sort((left, right) => left.host_id.localeCompare(right.host_id))
+    .flatMap((host) => [
+      host.host_id,
+      host.address,
+      host.port,
+      host.user,
+      host.arch,
+      host.host_key_fingerprint,
+      host.host_public_key_fingerprint,
+      host.ssh_client_key_fingerprint,
+    ]);
+  const targetParts = (targets: UpdaterSettingsTarget[]) => targets
+    .filter((target) => selected.has(target.host_id))
+    .sort((left, right) => left.target_id.localeCompare(right.target_id))
+    .flatMap((target) => [
+      target.target_id,
+      target.service_id,
+      target.host_id,
+      target.service_type,
+      target.deployment_mode,
+      target.database_name,
+      target.local_listen_port,
+    ]);
+  const jobParts = bootstrapJobs
+    .filter((job) => job.host_ids.some((hostID) => selected.has(hostID)))
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((job) => [job.id, job.idempotency_key, job.expected_revision, job.status, ...job.host_ids]);
+  return {
+    applicable,
+    fingerprint: updaterAuthorityFingerprint([
+      actionID,
+      updater.updater_id,
+      updater.online,
+      updater.transport_mode,
+      updater.execution_host_id,
+      updater.ownership_epoch,
+      updater.desired_revision,
+      updater.applied_revision,
+      updater.policy_status,
+      updater.bootstrap_encryption_key_fingerprint,
+      expectedRevision,
+      selectionMode,
+      releaseTokenConfigured,
+      credentialsPresent,
+      confirmedContext,
+      confirmationContext,
+      ...selectedHostIDs,
+      ...hostParts(savedHosts),
+      ...hostParts(currentHosts),
+      ...targetParts(savedTargets),
+      ...targetParts(currentTargets),
+      ...jobParts,
+    ]),
+  };
+}
+
+function unavailableBootstrapAuthority(authorityFingerprint: string): UpdaterActionAuthority {
+  return Object.freeze({
+    permission: "unknown",
+    freshness: "unavailable",
+    applicability: "unknown",
+    authorityFingerprint,
+  });
+}
+
+function bootstrapResultSafeMessage(status?: string) {
+  const messages: Record<string, string> = {
+    succeeded: "検証済みhelperの導入と動作確認が完了しました。",
+    failed: "セットアップは完了しませんでした。状態を再取得し、安全な手順で確認してください。",
+    partial_failed: "一部の手順が完了しませんでした。状態を再取得して確認してください。",
+    credential_expired: "一時認証情報の有効期間が終了しました。再実行時は新しい認証情報を入力してください。",
+    running: "暗号化された要求を独立Updaterが処理しています。",
+    queued: "独立Updaterでの処理開始を待っています。",
+  };
+  return messages[String(status || "").toLowerCase()] || "セットアップ状態を独立Updaterから取得しました。";
 }
 
 function latestBootstrapResults(

@@ -2,20 +2,8 @@
 
 import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Activity, Download, GitCommit, History, LoaderCircle, RefreshCcw, ServerCog, ShieldAlert, XCircle } from "lucide-react";
+import { Activity, Download, GitCommit, History, LoaderCircle, RefreshCcw, ServerCog, XCircle } from "lucide-react";
 import { StatusBadge } from "@/components/admin/status-badge";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +11,13 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAppSettings, useCurrentUser, useNodes, useServiceHealth, useSystemUpdates, useVersion } from "@/features/queries";
 import { UpdaterSettingsPanel } from "@/features/application/updater-settings-panel";
+import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
+import {
+  createUpdaterActionController,
+  updaterAuthorityFingerprint,
+  type UpdaterActionAuthority,
+  type UpdaterActionIntent,
+} from "@/features/application/updater-action-policy";
 import { apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
@@ -62,10 +57,22 @@ import { nodeEndpointState } from "@/lib/node-registration";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import type { AppVersion, ServiceUpdateInfo, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdatePortReconfigureCreateRequest, SystemUpdateTarget, SystemUpdatesResponse, WorkerNode } from "@/types/domain";
 
-type Confirmation = { kind: "target"; target: SystemUpdateTarget } | { kind: "batch"; targets: SystemUpdateTarget[] };
 type Feedback = { tone: "success" | "error"; message: string };
 type SystemUpdateOperation = { target: SystemUpdateTarget; idempotencyKey: string };
 type PortReconfigureOperation = { request: SystemUpdatePortReconfigureCreateRequest };
+type PortReconfigureProposal = Readonly<{
+  mode: "service";
+  newPort: number;
+}> | Readonly<{
+  mode: "docker";
+  newAdvertisedPort: number;
+  newPublishedPort: number;
+  newContainerPort: number;
+}>;
+type PortReconfigureAuthorityContext = Readonly<{
+  targetID: string;
+  proposal: PortReconfigureProposal;
+}>;
 type RegisteredServiceOperation = {
   target?: SystemUpdateTarget;
   updater?: SystemUpdateAgentStatus;
@@ -87,7 +94,7 @@ export function ApplicationInfoView() {
   const serviceHealth = useServiceHealth(canReadServiceHealth);
   const systemUpdates = useSystemUpdates(canReadSystemUpdates);
   const timezone = appSettings.data?.timezone;
-  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const updaterActionController = useMemo(() => createUpdaterActionController(), []);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [batchProgress, setBatchProgress] = useState<{ completed: number; total: number } | null>(null);
   const [selfUpdateJobID, setSelfUpdateJobID] = useState("");
@@ -120,8 +127,6 @@ export function ApplicationInfoView() {
     ? { tone: "success", message: `${recoveredAmbiguousPortJob.target_id}: 応答を確認できなかったポート変更ジョブを履歴から確認しました。` }
     : null;
   const visibleFeedback = terminalSelfUpdateFeedback || recoveredPortFeedback || feedback;
-  const confirmationTargets = confirmation ? (confirmation.kind === "target" ? [confirmation.target] : confirmation.targets) : [];
-  const confirmationIncludesControlPanel = confirmationTargets.some(isControlPanelUpdateTarget);
 
   useEffect(() => {
     if (!selfUpdateJob || !systemUpdateSucceeded(selfUpdateJob.status) || scheduledReloadJobID.current === selfUpdateJob.id) return;
@@ -185,11 +190,13 @@ export function ApplicationInfoView() {
     clearTerminalSelfUpdate();
     setFeedback(null);
     try {
-      await createUpdate.mutateAsync({ target, idempotencyKey: newIdempotencyKey(target.target_id) });
+      const job = await createUpdate.mutateAsync({ target, idempotencyKey: newIdempotencyKey(target.target_id) });
       const suffix = systemUpdateStrategyForTarget(target) === "when_idle" ? "配信終了後に更新を開始します。" : "更新ジョブを受け付けました。";
       setFeedback({ tone: "success", message: `${target.name || target.target_id}: ${suffix}` });
+      return job;
     } catch (error) {
       setFeedback({ tone: "error", message: systemUpdateErrorMessage(error) });
+      throw error;
     }
   };
 
@@ -200,7 +207,7 @@ export function ApplicationInfoView() {
     let completed = 0;
     let currentTarget: SystemUpdateTarget | undefined;
     try {
-      await runSystemUpdatesSequentially(batchTargets, async (target, index) => {
+      const accepted = await runSystemUpdatesSequentially(batchTargets, async (target, index) => {
         currentTarget = target;
         const job = await createUpdate.mutateAsync({ target, idempotencyKey: newIdempotencyKey(target.target_id) });
         completed = index + 1;
@@ -208,12 +215,21 @@ export function ApplicationInfoView() {
         return job;
       });
       setFeedback({ tone: "success", message: `${batchTargets.length}件の更新ジョブを順番に受け付けました。` });
+      return accepted;
     } catch (error) {
       const targetName = currentTarget?.name || currentTarget?.target_id || "不明な対象";
       setFeedback({ tone: "error", message: `${completed}/${batchTargets.length}件を受付済みです。${targetName} の受付で停止しました。${systemUpdateErrorMessage(error)}` });
+      if (completed > 0) throw new Error("system_update_batch_partially_accepted", { cause: error });
+      throw error;
     } finally {
       setBatchProgress(null);
     }
+  };
+
+  const executeCancel = async (job: SystemUpdateJob) => {
+    clearTerminalSelfUpdate();
+    setFeedback(null);
+    return cancelUpdate.mutateAsync(job);
   };
 
   const executePortReconfigure = async (request: SystemUpdatePortReconfigureCreateRequest) => {
@@ -234,7 +250,7 @@ export function ApplicationInfoView() {
       if (error instanceof SystemUpdateRequestAmbiguousError) {
         setAmbiguousPortRequest(error.request);
         setFeedback({ tone: "error", message: "ポート変更要求の結果を確認できません。安全のため同じ対象への再送を停止し、更新履歴を自動確認します。" });
-        return;
+        throw error;
       }
       if (isSystemUpdateEndpointRevisionConflict(error)) {
         const refreshes: Promise<unknown>[] = [systemUpdates.refetch()];
@@ -247,33 +263,155 @@ export function ApplicationInfoView() {
             ? "Endpoint revisionが変わったため送信しませんでした。最新のNode状態を再取得しました。内容を確認してからやり直してください。"
             : "Endpoint revisionが変わったため送信しませんでした。Node状態を再取得できなかったため、手動で再取得してからやり直してください。",
         });
-        return;
+        throw error;
       }
       setFeedback({ tone: "error", message: systemUpdateErrorMessage(error, "ポート変更ジョブを開始できませんでした。") });
+      throw error;
     } finally {
       activePortRequestTargets.current.delete(targetID);
       setPortRequestTargetID((current) => current === targetID ? "" : current);
     }
   };
 
-  const requestTarget = (target: SystemUpdateTarget) => {
-    if (isControlPanelUpdateTarget(target)) {
-      setConfirmation({ kind: "target", target });
-      return;
+  const updaterAuthorityFreshness: UpdaterActionAuthority["freshness"] = currentUser.isError || systemUpdates.isError
+    ? "unavailable"
+    : currentUser.isFetching || systemUpdates.isFetching
+      ? "refreshing"
+      : currentUser.data && systemUpdates.data
+        ? "fresh"
+        : "stale";
+  const updaterAuthorityPermission: UpdaterActionAuthority["permission"] = currentUser.data
+    ? (canExecuteSystemUpdates ? "allowed" : "denied")
+    : "unknown";
+  const currentUpdaterAuthority = (applicable: boolean, authorityFingerprint: string): UpdaterActionAuthority => Object.freeze({
+    permission: updaterAuthorityPermission,
+    freshness: updaterAuthorityFreshness,
+    applicability: applicable ? "applicable" : "not-applicable",
+    authorityFingerprint,
+  });
+  const refreshTargetAuthority = async (actionID: "UPD-01" | "UPD-02", targetID: string): Promise<UpdaterActionAuthority> => {
+    const [refreshedUpdates, refreshedUser] = await Promise.all([systemUpdates.refetch(), currentUser.refetch()]);
+    if (refreshedUpdates.isError || !refreshedUpdates.data || refreshedUser.isError || !refreshedUser.data) {
+      return unavailableUpdaterAuthority(updaterAuthorityFingerprint([actionID, targetID, "unavailable"]));
     }
-    void executeTarget(target);
+    const target = refreshedUpdates.data.targets.find((candidate) => candidate.target_id === targetID);
+    const snapshot = target
+      ? softwareUpdateAuthoritySnapshot(actionID, target, refreshedUpdates.data)
+      : { applicable: false, fingerprint: updaterAuthorityFingerprint([actionID, targetID, "missing"]) };
+    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
   };
-
-  const requestBatch = () => {
-    setConfirmation({ kind: "batch", targets: availableTargets });
+  const refreshBatchAuthority = async (): Promise<UpdaterActionAuthority> => {
+    const [refreshedUpdates, refreshedUser] = await Promise.all([systemUpdates.refetch(), currentUser.refetch()]);
+    if (refreshedUpdates.isError || !refreshedUpdates.data || refreshedUser.isError || !refreshedUser.data) {
+      return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-03", "fleet", "unavailable"]));
+    }
+    const refreshedTargets = availableSystemUpdateTargets(refreshedUpdates.data);
+    const snapshot = batchUpdateAuthoritySnapshot(refreshedTargets, refreshedUpdates.data);
+    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
   };
-
-  const confirmUpdate = () => {
-    const pending = confirmation;
-    setConfirmation(null);
-    if (!pending) return;
-    if (pending.kind === "target") void executeTarget(pending.target);
-    else void executeBatch(pending.targets);
+  const refreshCancelAuthority = async (jobID: string): Promise<UpdaterActionAuthority> => {
+    const [refreshedUpdates, refreshedUser] = await Promise.all([systemUpdates.refetch(), currentUser.refetch()]);
+    if (refreshedUpdates.isError || !refreshedUpdates.data || refreshedUser.isError || !refreshedUser.data) {
+      return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-04", jobID, "unavailable"]));
+    }
+    const job = refreshedUpdates.data.jobs.find((candidate) => candidate.id === jobID);
+    const snapshot = cancelUpdateAuthoritySnapshot(jobID, job);
+    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
+  };
+  const refreshPortAuthority = async (context: PortReconfigureAuthorityContext): Promise<UpdaterActionAuthority> => {
+    const [refreshedUpdates, refreshedUser, refreshedRegisteredNodes, refreshedServiceHealth] = await Promise.all([
+      systemUpdates.refetch(),
+      currentUser.refetch(),
+      canReadRegisteredNodes ? registeredNodes.refetch() : Promise.resolve(undefined),
+      canReadServiceHealth ? serviceHealth.refetch() : Promise.resolve(undefined),
+    ]);
+    if (
+      refreshedUpdates.isError
+      || !refreshedUpdates.data
+      || refreshedUser.isError
+      || !refreshedUser.data
+      || refreshedRegisteredNodes?.isError
+      || refreshedServiceHealth?.isError
+    ) {
+      return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-05", context.targetID, "unavailable"]));
+    }
+    const refreshedNodeRows = mergeRegisteredNodeRows(
+      refreshedRegisteredNodes?.data || [],
+      refreshedServiceHealth?.data || [],
+    );
+    const target = refreshedUpdates.data.targets.find((candidate) => candidate.target_id === context.targetID);
+    const updater = target?.updater_id
+      ? refreshedUpdates.data.updaters.find((candidate) => candidate.updater_id === target.updater_id)
+      : undefined;
+    const node = refreshedNodeRows.find((candidate) => nodeIdentity(candidate) === context.targetID);
+    const latestJob = latestJobsByTarget([...refreshedUpdates.data.jobs].sort(compareUpdateJobs)).get(context.targetID);
+    const requestState: SystemUpdateRequestState = activePortRequestTargets.current.has(context.targetID)
+      ? "pending"
+      : unresolvedAmbiguousPortRequest?.target_id === context.targetID
+        ? "ambiguous"
+        : "idle";
+    const snapshot = portReconfigureAuthoritySnapshot({
+      target,
+      updater,
+      node,
+      latestJob,
+      requestState,
+      proposal: context.proposal,
+    });
+    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
+  };
+  const batchAuthoritySnapshot = batchUpdateAuthoritySnapshot(availableTargets, systemUpdates.data);
+  const batchIntent: UpdaterActionIntent = Object.freeze({
+    id: "UPD-03",
+    resourceId: "fleet",
+    authorityFingerprint: batchAuthoritySnapshot.fingerprint,
+  });
+  const renderTargetAction = (target: SystemUpdateTarget, disabled: boolean) => {
+    const actionID = isControlPanelUpdateTarget(target) ? "UPD-02" as const : "UPD-01" as const;
+    const snapshot = softwareUpdateAuthoritySnapshot(actionID, target, systemUpdates.data);
+    const intent: UpdaterActionIntent = Object.freeze({
+      id: actionID,
+      resourceId: target.target_id,
+      ...(actionID === "UPD-02" ? { publicLabel: target.name || target.target_id } : {}),
+      authorityFingerprint: snapshot.fingerprint,
+    });
+    const strategy = systemUpdateStrategyForTarget(target);
+    return (
+      <UpdaterActionConfirmation
+        controller={updaterActionController}
+        intent={intent}
+        authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
+        refreshAuthority={() => refreshTargetAuthority(actionID, target.target_id)}
+        handler={() => executeTarget(target)}
+        label={strategy === "when_idle" ? "空き次第更新" : "更新"}
+        icon={createUpdate.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+        className="mt-3 w-full"
+        disabled={disabled}
+        title={!canExecuteSystemUpdates ? "system_updates.execute 権限が必要です。" : undefined}
+      />
+    );
+  };
+  const renderCancelAction = (job: SystemUpdateJob) => {
+    const snapshot = cancelUpdateAuthoritySnapshot(job.id, job);
+    const intent: UpdaterActionIntent = Object.freeze({
+      id: "UPD-04",
+      resourceId: job.id,
+      authorityFingerprint: snapshot.fingerprint,
+    });
+    return (
+      <UpdaterActionConfirmation
+        controller={updaterActionController}
+        intent={intent}
+        authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
+        refreshAuthority={() => refreshCancelAuthority(job.id)}
+        handler={() => executeCancel(job)}
+        label="キャンセル"
+        icon={cancelUpdate.isPending && cancelUpdate.variables?.id === job.id ? <LoaderCircle className="size-4 animate-spin" /> : <XCircle className="size-4" />}
+        variant="outline"
+        disabled={cancelUpdate.isPending && cancelUpdate.variables?.id === job.id}
+        title={!canExecuteSystemUpdates ? "system_updates.execute 権限が必要です。" : undefined}
+      />
+    );
   };
 
   const refreshInformation = () => {
@@ -337,14 +475,24 @@ export function ApplicationInfoView() {
         isError={systemUpdates.isError}
         error={systemUpdates.error}
         isCreating={createUpdate.isPending || Boolean(batchProgress)}
-        cancellingJobID={cancelUpdate.isPending ? cancelUpdate.variables?.id : undefined}
         batchProgress={batchProgress}
-        availableCount={availableTargets.length}
         timezone={timezone}
         onRefresh={() => void systemUpdates.refetch()}
-        onRequestTarget={requestTarget}
-        onRequestBatch={requestBatch}
-        onCancel={(job) => { clearTerminalSelfUpdate(); setFeedback(null); cancelUpdate.mutate(job); }}
+        batchAction={(
+          <UpdaterActionConfirmation
+            controller={updaterActionController}
+            intent={batchIntent}
+            authority={currentUpdaterAuthority(batchAuthoritySnapshot.applicable, batchAuthoritySnapshot.fingerprint)}
+            refreshAuthority={refreshBatchAuthority}
+            handler={() => executeBatch(availableTargets)}
+            label={batchProgress ? `${batchProgress.completed}/${batchProgress.total} 受付中` : `更新可能なものを順次受付（ホストごと並行）${availableTargets.length ? ` (${availableTargets.length})` : ""}`}
+            icon={createUpdate.isPending || batchProgress ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+            className="h-auto max-w-full whitespace-normal text-left sm:h-8 sm:whitespace-nowrap"
+            disabled={createUpdate.isPending || Boolean(batchProgress) || availableTargets.length === 0}
+          />
+        )}
+        renderTargetAction={renderTargetAction}
+        renderCancelAction={renderCancelAction}
       />
 
       <div className="grid min-w-0 gap-4">
@@ -375,30 +523,17 @@ export function ApplicationInfoView() {
           updaters={updaters}
           jobsByTarget={jobsByTarget}
           canExecuteSystemUpdates={canExecuteSystemUpdates}
+          updaterActionController={updaterActionController}
+          updaterAuthorityPermission={updaterAuthorityPermission}
+          updaterAuthorityFreshness={updaterAuthorityFreshness}
           portRequestTargetID={portRequestTargetID || undefined}
           ambiguousPortTargetID={unresolvedAmbiguousPortRequest?.target_id}
           onPortReconfigure={executePortReconfigure}
+          onRefreshPortAuthority={refreshPortAuthority}
           onRefresh={() => { if (canReadRegisteredNodes) void registeredNodes.refetch(); if (canReadServiceHealth) void serviceHealth.refetch(); }}
         />
       </div>
 
-      <AlertDialog open={Boolean(confirmation)} onOpenChange={(open) => { if (!open) setConfirmation(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogMedia className="bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"><ShieldAlert /></AlertDialogMedia>
-            <AlertDialogTitle>{confirmationIncludesControlPanel ? "Control Panel自身を含む更新を開始しますか？" : `${confirmationTargets.length}件の更新を依頼しますか？`}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmationIncludesControlPanel
-                ? `対象: ${confirmationTargets.map((target) => target.name || target.target_id).join("、")}。Control Panelは受付順の最後に配置し、再起動中は管理画面とAPI接続が一時的に切断されます。`
-                : `対象: ${confirmationTargets.map((target) => target.name || target.target_id).join("、")}。更新ジョブの受付後、対象の更新エージェントが接続状態を確認して適用します。`}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>キャンセル</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmUpdate}>更新を開始</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
@@ -416,14 +551,12 @@ function SystemUpdatesCard({
   isError,
   error,
   isCreating,
-  cancellingJobID,
   batchProgress,
-  availableCount,
   timezone,
   onRefresh,
-  onRequestTarget,
-  onRequestBatch,
-  onCancel,
+  batchAction,
+  renderTargetAction,
+  renderCancelAction,
 }: {
   canRead: boolean;
   canExecute: boolean;
@@ -437,14 +570,12 @@ function SystemUpdatesCard({
   isError: boolean;
   error: unknown;
   isCreating: boolean;
-  cancellingJobID?: string;
   batchProgress: { completed: number; total: number } | null;
-  availableCount: number;
   timezone?: string;
   onRefresh: () => void;
-  onRequestTarget: (target: SystemUpdateTarget) => void;
-  onRequestBatch: () => void;
-  onCancel: (job: SystemUpdateJob) => void;
+  batchAction: ReactNode;
+  renderTargetAction: (target: SystemUpdateTarget, disabled: boolean) => ReactNode;
+  renderCancelAction: (job: SystemUpdateJob) => ReactNode;
 }) {
   return (
     <Card className="min-w-0">
@@ -455,10 +586,7 @@ function SystemUpdatesCard({
         </div>
         <div className="flex min-w-0 flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={!canRead || isLoading}><RefreshCcw className="size-4" />再取得</Button>
-          <Button className="h-auto max-w-full whitespace-normal text-left sm:h-8 sm:whitespace-nowrap" size="sm" onClick={onRequestBatch} disabled={!canExecute || availableCount === 0 || isCreating} title={!canExecute ? "system_updates.execute 権限が必要です。" : undefined}>
-            {isCreating ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-            {batchProgress ? `${batchProgress.completed}/${batchProgress.total} 受付中` : `更新可能なものを順次受付（ホストごと並行）${availableCount ? ` (${availableCount})` : ""}`}
-          </Button>
+          {batchAction}
           {batchProgress ? <span className="sr-only" role="status" aria-live="polite">{batchProgress.completed}/{batchProgress.total}件の更新ジョブを受付済みです。</span> : null}
         </div>
       </CardHeader>
@@ -501,8 +629,7 @@ function SystemUpdatesCard({
                 timezone={timezone}
                 activeJob={jobsByTarget.get(target.target_id)}
                 canExecute={canExecute}
-                disabled={isCreating}
-                onRequest={() => onRequestTarget(target)}
+                action={renderTargetAction(target, isCreating)}
               />
             ))}
           </div>
@@ -539,7 +666,7 @@ function SystemUpdatesCard({
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-xs"><div>{job.requested_by || "-"}</div><div className="text-muted-foreground">{formatOptionalDate(job.created_at, timezone)}</div></TableCell>
                         <TableCell className="text-right">
-                          {isSystemUpdateJobCancellable(job.status) ? <Button variant="outline" size="sm" aria-label={`${targetDisplayName(job, targets)} の更新ジョブをキャンセル`} onClick={() => onCancel(job)} disabled={!canExecute || cancellingJobID === job.id}>{cancellingJobID === job.id ? <LoaderCircle className="size-4 animate-spin" /> : <XCircle className="size-4" />}キャンセル</Button> : <span className="text-xs text-muted-foreground">-</span>}
+                          {isSystemUpdateJobCancellable(job.status) ? renderCancelAction(job) : <span className="text-xs text-muted-foreground">-</span>}
                         </TableCell>
                       </TableRow>
                     );
@@ -605,12 +732,11 @@ function UpdateAgentStatus({
   );
 }
 
-function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob, canExecute, disabled, onRequest }: { target: SystemUpdateTarget; updaters: SystemUpdateAgentStatus[]; hosts: SystemUpdateHostStatus[]; timezone?: string; activeJob?: SystemUpdateJob; canExecute: boolean; disabled: boolean; onRequest: () => void }) {
+function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob, canExecute, action }: { target: SystemUpdateTarget; updaters: SystemUpdateAgentStatus[]; hosts: SystemUpdateHostStatus[]; timezone?: string; activeJob?: SystemUpdateJob; canExecute: boolean; action: ReactNode }) {
   const strategy = systemUpdateStrategyForTarget(target);
   const connectivity = systemUpdateConnectivity(target, updaters, hosts);
   const updaterPolicy = connectivity.updater ? systemUpdateUpdaterPolicyState(connectivity.updater) : null;
   const operationEligibility = systemUpdateSoftwareOperationEligibility(target);
-  const canStart = updateCanStart(target, activeJob, updaters, hosts);
   const hostName = connectivity.host?.name || target.host_id || "ホスト未設定";
   const reachabilityLabel = systemUpdateHostReachabilityLabel(connectivity.reachability);
   const reachabilityMessage = systemUpdateHostReachabilityMessage(connectivity.host?.reachability_code);
@@ -657,9 +783,7 @@ function SystemUpdateTargetPanel({ target, updaters, hosts, timezone, activeJob,
       {reachabilityMessage ? <p className="mt-3 text-xs text-red-700 dark:text-red-300">接続エラー: {reachabilityMessage}</p> : null}
       {blocked ? <p className={target.update_check_error ? "mt-1 text-xs text-amber-700 dark:text-amber-300" : "mt-3 text-xs text-amber-700 dark:text-amber-300"}>{blocked}</p> : null}
       {!canExecute ? <p className="mt-1 text-xs text-muted-foreground">更新の実行には system_updates.execute 権限が必要です。</p> : null}
-      <Button className="mt-3 w-full" size="sm" aria-label={`${target.name || target.target_id} を${strategy === "when_idle" ? "空き次第更新" : "更新"}`} onClick={onRequest} disabled={!canExecute || !canStart || disabled} title={!canExecute ? "system_updates.execute 権限が必要です。" : blocked || undefined}>
-        <Download className="size-4" />{strategy === "when_idle" ? "空き次第更新" : "更新"}
-      </Button>
+      {action}
     </div>
   );
 }
@@ -675,9 +799,13 @@ function RegisteredServicesCard({
   updaters,
   jobsByTarget,
   canExecuteSystemUpdates,
+  updaterActionController,
+  updaterAuthorityPermission,
+  updaterAuthorityFreshness,
   portRequestTargetID,
   ambiguousPortTargetID,
   onPortReconfigure,
+  onRefreshPortAuthority,
   onRefresh,
 }: {
   canViewNodeInfo: boolean;
@@ -690,9 +818,13 @@ function RegisteredServicesCard({
   updaters: SystemUpdateAgentStatus[];
   jobsByTarget: Map<string, SystemUpdateJob>;
   canExecuteSystemUpdates: boolean;
+  updaterActionController: ReturnType<typeof createUpdaterActionController>;
+  updaterAuthorityPermission: UpdaterActionAuthority["permission"];
+  updaterAuthorityFreshness: UpdaterActionAuthority["freshness"];
   portRequestTargetID?: string;
   ambiguousPortTargetID?: string;
   onPortReconfigure: (request: SystemUpdatePortReconfigureCreateRequest) => Promise<void>;
+  onRefreshPortAuthority: (context: PortReconfigureAuthorityContext) => Promise<UpdaterActionAuthority>;
   onRefresh: () => void;
 }) {
   const nodeOperation = (node: WorkerNode) => {
@@ -736,8 +868,12 @@ function RegisteredServicesCard({
                                   operation={nodeOperation(node)}
                                   timezone={timezone}
                                   appVersion={appVersion}
-                                  canExecute={canExecuteSystemUpdates}
-                                  onRequest={onPortReconfigure}
+                                   canExecute={canExecuteSystemUpdates}
+                                   onRequest={onPortReconfigure}
+                                   updaterActionController={updaterActionController}
+                                   updaterAuthorityPermission={updaterAuthorityPermission}
+                                   updaterAuthorityFreshness={updaterAuthorityFreshness}
+                                   onRefreshAuthority={onRefreshPortAuthority}
                                 />
                               ))}
                             </div>
@@ -754,8 +890,12 @@ function RegisteredServicesCard({
                                   operation={nodeOperation(node)}
                                   timezone={timezone}
                                   appVersion={appVersion}
-                                  canExecute={canExecuteSystemUpdates}
-                                  onRequest={onPortReconfigure}
+                                   canExecute={canExecuteSystemUpdates}
+                                   onRequest={onPortReconfigure}
+                                   updaterActionController={updaterActionController}
+                                   updaterAuthorityPermission={updaterAuthorityPermission}
+                                   updaterAuthorityFreshness={updaterAuthorityFreshness}
+                                   onRefreshAuthority={onRefreshPortAuthority}
                                 />
                               ))}
                             </div>
@@ -805,8 +945,12 @@ function RegisteredServicesCard({
                                     updater={operation.updater}
                                     latestJob={operation.latestJob}
                                     requestState={operation.requestState}
-                                    canExecute={canExecuteSystemUpdates}
-                                    onRequest={onPortReconfigure}
+                                     canExecute={canExecuteSystemUpdates}
+                                     onRequest={onPortReconfigure}
+                                     updaterActionController={updaterActionController}
+                                     updaterAuthorityPermission={updaterAuthorityPermission}
+                                     updaterAuthorityFreshness={updaterAuthorityFreshness}
+                                     onRefreshAuthority={onRefreshPortAuthority}
                                   />
                                 </TableCell>
                                </TableRow>
@@ -841,6 +985,10 @@ function RegisteredServiceMobileCard({
   appVersion,
   canExecute,
   onRequest,
+  updaterActionController,
+  updaterAuthorityPermission,
+  updaterAuthorityFreshness,
+  onRefreshAuthority,
 }: {
   node: WorkerNode;
   operation: RegisteredServiceOperation;
@@ -848,6 +996,10 @@ function RegisteredServiceMobileCard({
   appVersion?: AppVersion;
   canExecute: boolean;
   onRequest: (request: SystemUpdatePortReconfigureCreateRequest) => Promise<void>;
+  updaterActionController: ReturnType<typeof createUpdaterActionController>;
+  updaterAuthorityPermission: UpdaterActionAuthority["permission"];
+  updaterAuthorityFreshness: UpdaterActionAuthority["freshness"];
+  onRefreshAuthority: (context: PortReconfigureAuthorityContext) => Promise<UpdaterActionAuthority>;
 }) {
   return (
     <article className="min-w-0 overflow-hidden rounded-md border bg-background/60 p-3">
@@ -881,6 +1033,10 @@ function RegisteredServiceMobileCard({
             requestState={operation.requestState}
             canExecute={canExecute}
             onRequest={onRequest}
+            updaterActionController={updaterActionController}
+            updaterAuthorityPermission={updaterAuthorityPermission}
+            updaterAuthorityFreshness={updaterAuthorityFreshness}
+            onRefreshAuthority={onRefreshAuthority}
           />
         </div>
       </div>
@@ -977,6 +1133,10 @@ function PortReconfigureControl({
   requestState,
   canExecute,
   onRequest,
+  updaterActionController,
+  updaterAuthorityPermission,
+  updaterAuthorityFreshness,
+  onRefreshAuthority,
 }: {
   node: WorkerNode;
   target?: SystemUpdateTarget;
@@ -985,6 +1145,10 @@ function PortReconfigureControl({
   requestState: "idle" | "pending" | "ambiguous";
   canExecute: boolean;
   onRequest: (request: SystemUpdatePortReconfigureCreateRequest) => Promise<void>;
+  updaterActionController: ReturnType<typeof createUpdaterActionController>;
+  updaterAuthorityPermission: UpdaterActionAuthority["permission"];
+  updaterAuthorityFreshness: UpdaterActionAuthority["freshness"];
+  onRefreshAuthority: (context: PortReconfigureAuthorityContext) => Promise<UpdaterActionAuthority>;
 }) {
   const inputID = useId();
   const reasonID = `${inputID}-reason`;
@@ -996,7 +1160,6 @@ function PortReconfigureControl({
   const [newPublishedPort, setNewPublishedPort] = useState(String(target?.port_mapping?.published_port || ""));
   const [newContainerPort, setNewContainerPort] = useState(String(target?.port_mapping?.container_port || ""));
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [locallySubmitting, setLocallySubmitting] = useState(false);
   const submittingRef = useRef(false);
   const eligibility = systemUpdatePortReconfigureEligibility({ target, updater, node, latestJob, requestState });
@@ -1053,7 +1216,31 @@ function PortReconfigureControl({
     ? systemUpdatePortReconfigureResultLabel(latestJob.port_reconfigure?.result)
     : "";
 
-  const confirm = async () => {
+  const proposal: PortReconfigureProposal = dockerMode
+    ? Object.freeze({
+        mode: "docker" as const,
+        newAdvertisedPort: parsedAdvertisedPort,
+        newPublishedPort: parsedPublishedPort,
+        newContainerPort: parsedContainerPort,
+      })
+    : Object.freeze({ mode: "service" as const, newPort: parsedPort });
+  const authoritySnapshot = portReconfigureAuthoritySnapshot({
+    target,
+    updater,
+    node,
+    latestJob,
+    requestState,
+    proposal,
+  });
+  const actionIntent: UpdaterActionIntent | undefined = target
+    ? Object.freeze({
+        id: "UPD-05",
+        resourceId: target.target_id,
+        publicLabel: target.name || target.target_id,
+        authorityFingerprint: authoritySnapshot.fingerprint,
+      })
+    : undefined;
+  const submitPortReconfigure = async () => {
     if (
       !ready
       || submittingRef.current
@@ -1081,9 +1268,8 @@ function PortReconfigureControl({
         });
     submittingRef.current = true;
     setLocallySubmitting(true);
-    setConfirmationOpen(false);
     try {
-      await onRequest(request);
+      return await onRequest(request);
     } finally {
       submittingRef.current = false;
       setLocallySubmitting(false);
@@ -1181,36 +1367,25 @@ function PortReconfigureControl({
             </div>
           )}
         </div>
-        <AlertDialog open={confirmationOpen} onOpenChange={setConfirmationOpen}>
-          <AlertDialogTrigger asChild>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!ready}
-              aria-busy={submitting}
-              title={reasonMessage || undefined}
-            >
-              {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
-              ポート変更
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogMedia className="bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"><ShieldAlert /></AlertDialogMedia>
-              <AlertDialogTitle>{target?.name || target?.target_id} のポートを変更しますか？</AlertDialogTitle>
-              <AlertDialogDescription>
-                {dockerMode
-                  ? `広告 ${eligibility.dockerMapping?.advertised_port} → ${parsedAdvertisedPort}、localhost published ${eligibility.dockerMapping?.published_port} → ${parsedPublishedPort}、container待受 ${eligibility.dockerMapping?.container_port} → ${parsedContainerPort} に変更します。reverse proxy設定は変更しません。`
-                  : `現在適用中の ${eligibility.currentPort} から ${parsedPort} へ変更します。`}
-                失敗時は以前のポートへロールバックし、結果を更新履歴とendpoint状態に表示します。
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>キャンセル</AlertDialogCancel>
-              <AlertDialogAction onClick={() => void confirm()} disabled={submitting}>ポート変更を開始</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        {actionIntent ? (
+          <UpdaterActionConfirmation
+            controller={updaterActionController}
+            intent={actionIntent}
+            authority={Object.freeze({
+              permission: updaterAuthorityPermission,
+              freshness: updaterAuthorityFreshness,
+              applicability: authoritySnapshot.applicable ? "applicable" : "not-applicable",
+              authorityFingerprint: authoritySnapshot.fingerprint,
+            })}
+            refreshAuthority={() => onRefreshAuthority({ targetID: actionIntent.resourceId, proposal })}
+            handler={submitPortReconfigure}
+            label="ポート変更"
+            icon={submitting ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
+            disabled={!ready}
+            aria-busy={submitting}
+            title={reasonMessage || undefined}
+          />
+        ) : null}
       </div>
       <div id={reasonID} className={reason === "request_ambiguous" || reason === "recovery_required" ? "text-xs text-destructive" : "text-xs text-muted-foreground"} role="status" aria-live="polite">
         {reasonMessage || "変更前に現在のendpoint revisionを固定して送信します。"}
@@ -1351,16 +1526,178 @@ function updateCanStart(target: SystemUpdateTarget, latestJob: SystemUpdateJob |
     && !(latestJob && isSystemUpdateJobActive(latestJob.status));
 }
 function orderBatchTargets(targets: SystemUpdateTarget[]) { return [...targets].sort((a, b) => Number(isControlPanelUpdateTarget(a)) - Number(isControlPanelUpdateTarget(b))); }
+function availableSystemUpdateTargets(response: SystemUpdatesResponse) {
+  const jobsByTarget = latestJobsByTarget([...response.jobs].sort(compareUpdateJobs));
+  return orderBatchTargets(response.targets.filter((target) => updateCanStart(target, jobsByTarget.get(target.target_id), response.updaters, response.hosts)));
+}
+function softwareUpdateAuthoritySnapshot(actionID: "UPD-01" | "UPD-02", target: SystemUpdateTarget, response?: SystemUpdatesResponse) {
+  const jobs = response?.jobs || [];
+  const updaters = response?.updaters || [];
+  const hosts = response?.hosts || [];
+  const latestJob = latestJobsByTarget([...jobs].sort(compareUpdateJobs)).get(target.target_id);
+  const connectivity = systemUpdateConnectivity(target, updaters, hosts);
+  const updater = connectivity.updater;
+  const host = connectivity.host;
+  const policy = updater ? systemUpdateUpdaterPolicyState(updater) : undefined;
+  return {
+    applicable: Boolean(response) && updateCanStart(target, latestJob, updaters, hosts),
+    fingerprint: updaterAuthorityFingerprint([
+      actionID,
+      target.target_id,
+      target.target_type,
+      target.host_id,
+      target.updater_id,
+      target.current_version,
+      target.latest_version,
+      target.update_available,
+      target.eligible,
+      target.busy,
+      target.current_stream_id,
+      target.blocked_reason,
+      target.deployment_mode,
+      systemUpdateStrategyForTarget(target),
+      latestJob?.id,
+      latestJob?.status,
+      latestJob?.updated_at,
+      latestJob?.recovery_required,
+      updater?.updater_id,
+      updater?.online,
+      updater?.last_heartbeat_at,
+      updater?.desired_revision,
+      updater?.applied_revision,
+      updater?.policy_status,
+      updater?.transport_mode,
+      updater?.execution_host_id,
+      updater?.ownership_epoch,
+      policy?.label,
+      host?.host_id,
+      host?.reachability,
+      host?.reachability_checked_at,
+    ]),
+  };
+}
+function batchUpdateAuthoritySnapshot(targets: SystemUpdateTarget[], response?: SystemUpdatesResponse) {
+  const fingerprints = targets.map((target) => softwareUpdateAuthoritySnapshot(
+    isControlPanelUpdateTarget(target) ? "UPD-02" : "UPD-01",
+    target,
+    response,
+  ).fingerprint);
+  return {
+    applicable: Boolean(response) && targets.length > 0,
+    fingerprint: updaterAuthorityFingerprint(["UPD-03", "fleet", targets.length, ...fingerprints]),
+  };
+}
+function cancelUpdateAuthoritySnapshot(jobID: string, job?: SystemUpdateJob) {
+  return {
+    applicable: Boolean(job && isSystemUpdateJobCancellable(job.status)),
+    fingerprint: updaterAuthorityFingerprint([
+      "UPD-04",
+      jobID,
+      job?.target_id,
+      job?.updater_id,
+      job?.status,
+      job?.updated_at,
+      job?.sequence,
+      job?.report_sequence,
+      job?.lease_generation,
+      job?.recovery_required,
+    ]),
+  };
+}
+function portReconfigureAuthoritySnapshot({
+  target,
+  updater,
+  node,
+  latestJob,
+  requestState,
+  proposal,
+}: Readonly<{
+  target?: SystemUpdateTarget;
+  updater?: SystemUpdateAgentStatus;
+  node?: WorkerNode;
+  latestJob?: SystemUpdateJob;
+  requestState: SystemUpdateRequestState;
+  proposal: PortReconfigureProposal;
+}>) {
+  const eligibility = systemUpdatePortReconfigureEligibility({ target, updater, node, latestJob, requestState });
+  const proposalApplicable = proposal.mode === "docker"
+    ? validPortNumber(proposal.newAdvertisedPort, 1)
+      && validPortNumber(proposal.newPublishedPort, 1024)
+      && validPortNumber(proposal.newContainerPort, 1024)
+      && Boolean(eligibility.dockerMapping)
+      && (
+        proposal.newAdvertisedPort !== eligibility.dockerMapping?.advertised_port
+        || proposal.newPublishedPort !== eligibility.dockerMapping?.published_port
+        || proposal.newContainerPort !== eligibility.dockerMapping?.container_port
+      )
+    : validPortNumber(proposal.newPort, 1024)
+      && proposal.newPort !== eligibility.currentPort;
+  return {
+    applicable: eligibility.ready && proposalApplicable,
+    fingerprint: updaterAuthorityFingerprint([
+      "UPD-05",
+      target?.target_id,
+      target?.host_id,
+      target?.updater_id,
+      target?.deployment_mode,
+      target?.eligible_operations?.join(","),
+      target?.operation_blocked_reasons?.port_reconfigure,
+      target?.port_mapping?.state,
+      target?.port_mapping?.advertised_port,
+      target?.port_mapping?.published_host_ip,
+      target?.port_mapping?.published_port,
+      target?.port_mapping?.container_port,
+      target?.port_mapping?.config_revision,
+      updater?.updater_id,
+      updater?.online,
+      updater?.last_heartbeat_at,
+      updater?.desired_revision,
+      updater?.applied_revision,
+      updater?.policy_status,
+      updater?.transport_mode,
+      updater?.execution_host_id,
+      updater?.ownership_epoch,
+      node ? nodeIdentity(node) : undefined,
+      node?.endpoint_revision,
+      node?.applied_endpoint?.public_url,
+      node?.applied_endpoint?.port,
+      latestJob?.id,
+      latestJob?.status,
+      latestJob?.updated_at,
+      latestJob?.recovery_required,
+      requestState,
+      proposal.mode,
+      proposal.mode === "docker" ? proposal.newAdvertisedPort : proposal.newPort,
+      proposal.mode === "docker" ? proposal.newPublishedPort : undefined,
+      proposal.mode === "docker" ? proposal.newContainerPort : undefined,
+    ]),
+  };
+}
+function validPortNumber(value: number, minimum: number) {
+  return Number.isSafeInteger(value) && value >= minimum && value <= 65_535;
+}
+function freshUpdaterAuthority(allowed: boolean, applicable: boolean, authorityFingerprint: string): UpdaterActionAuthority {
+  return Object.freeze({
+    permission: allowed ? "allowed" : "denied",
+    freshness: "fresh",
+    applicability: applicable ? "applicable" : "not-applicable",
+    authorityFingerprint,
+  });
+}
+function unavailableUpdaterAuthority(authorityFingerprint: string): UpdaterActionAuthority {
+  return Object.freeze({
+    permission: "unknown",
+    freshness: "unavailable",
+    applicability: "unknown",
+    authorityFingerprint,
+  });
+}
 function targetDisplayName(job: SystemUpdateJob, targets: SystemUpdateTarget[]) { return targets.find((target) => target.target_id === job.target_id)?.name || job.target_id; }
 function systemUpdateJobMessage(job: SystemUpdateJob) {
   const fallback = systemUpdateJobStatusLabel(job.status);
   const summary = job.code ? systemUpdateErrorMessage({ code: job.code }, fallback) : fallback;
-  const detail = String(job.message || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
   const result = job.operation === "port_reconfigure" ? systemUpdatePortReconfigureResultLabel(job.port_reconfigure?.result) : "";
-  const lines = [result ? `${summary} · ${result}` : summary];
-  if (job.code) lines.push(`code: ${job.code}`);
-  if (detail && detail !== summary && detail !== fallback && detail !== job.code) lines.push(detail);
-  return lines.join("\n");
+  return result ? `${summary} · ${result}` : summary;
 }
 function systemUpdateJobDisplayStatus(job: SystemUpdateJob) {
   const status = job.status === "queued" && job.strategy === "when_idle" ? "配信終了待ち" : systemUpdateJobStatusLabel(job.status);

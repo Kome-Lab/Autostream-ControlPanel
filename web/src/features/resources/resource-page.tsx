@@ -20,6 +20,15 @@ import { APIError, apiDelete, apiDeleteJSON, apiGet, apiPost, apiPut } from "@/l
 import { auditActionLabel } from "@/lib/audit-action";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
+import {
+  createObservabilityActionController,
+  findRefreshedObservabilityPlan,
+  observabilityActionPlans,
+  type ObservabilityActionController,
+  type ObservabilityActionExecutionResult,
+  type ObservabilityActionPlan,
+} from "@/features/observability/action-policy";
+import { ObservabilityActionControl } from "@/features/observability/observability-action-control";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
@@ -40,7 +49,7 @@ import {
 } from "@/lib/oauth-account";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { buildDiscordTargetPresetPayload, validDiscordTargetPreset } from "@/features/resources/discord-target-preset";
-import type { WorkerNode } from "@/types/domain";
+import type { CurrentUser, WorkerNode } from "@/types/domain";
 
 const watermarkCanvasWidth = 1920;
 const watermarkCanvasHeight = 1080;
@@ -145,6 +154,7 @@ function QueryErrorNotice({ onRetry }: { onRetry: () => void }) {
 }
 
 function GenericResourcePanel({ resource, access, currentUser }: { resource: ResourceDefinition; access: ResourceAccess; currentUser: Parameters<typeof hasPermission>[0] }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const query = useResourceData<unknown>(resource.path, access.read);
   const appSettings = useAppSettings();
@@ -188,29 +198,46 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
     },
     onError: () => setActionMessage("過去の履歴を取得できませんでした。通信状態を確認して再試行してください。"),
   });
-  const actionMutation = useMutation<unknown, Error, { path: string; label: string }>({
-    mutationFn: async ({ path }) => apiPost(path),
-    onSuccess: async (response, action) => {
-      setActionMessage(observabilityActionSuccessMessage(action, response));
-      const affectedResources = action.path.includes("/diagnostics/rerun")
-        ? [resource.path, "/observability/incidents", "/observability/diagnostics"]
-        : [resource.path];
+  const observabilityController = useMemo(() => createObservabilityActionController({
+    refresh: async (plan) => {
+      const [data, freshUser] = await Promise.all([
+        apiGet<unknown>(plan.sourcePath),
+        apiGet<CurrentUser>("/auth/me"),
+      ]);
+      const freshPlan = findRefreshedObservabilityPlan(data, plan);
+      if (!freshPlan) return { plan, evaluation: "unknown" as const, freshness: "fresh" as const };
+      queryClient.setQueryData(["resource", plan.sourcePath], data);
+      queryClient.setQueryData(["auth", "me"], freshUser);
+      const allowed = freshUser.user.roles?.includes("super_admin") === true || hasPermission(freshUser, freshPlan.permission);
+      return { plan: freshPlan, evaluation: allowed ? "allowed" as const : "denied" as const, freshness: "fresh" as const };
+    },
+    mutate: (plan) => apiPost(plan.path),
+  }), [queryClient]);
+  const handleObservabilityResult = async (plan: ObservabilityActionPlan, result: ObservabilityActionExecutionResult) => {
+    const affectedResources = plan.path.includes("/diagnostics/rerun")
+      ? [resource.path, "/observability/incidents", "/observability/diagnostics"]
+      : [resource.path];
+    if (result.kind === "succeeded") {
+      setActionMessage(observabilityActionSuccessMessage(plan, result.value));
       await Promise.all([...new Set(affectedResources)].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
-    },
-    onError: async (error, action) => {
-      const conflictMessage = observabilityRemediationExecutionConflictMessage(action.path, error);
-      if (conflictMessage) {
-        setActionMessage(conflictMessage);
-        await Promise.all(
-          ["/observability/remediation-actions", "/observability/incidents", "/observability/diagnostics"].map((path) =>
-            queryClient.invalidateQueries({ queryKey: ["resource", path] }),
-          ),
-        );
-        return;
-      }
-      setActionMessage(resourceWriteErrorMessage(resource, error, "更新"));
-    },
-  });
+      return;
+    }
+    if (result.kind === "outcome_unknown") {
+      setActionMessage("操作結果を確認できません。再送せず、最新状態または監査ログを確認してください。");
+      await Promise.all([...new Set(affectedResources)].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
+      return;
+    }
+    if (result.kind === "conflict") {
+      setActionMessage("状態が更新されたため操作を再送しませんでした。最新状態を確認してください。");
+      await Promise.all(["/observability/remediation-actions", "/observability/incidents", "/observability/diagnostics"].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
+      return;
+    }
+    if (result.kind === "failed") {
+      setActionMessage(t(result.error.messageKey));
+      return;
+    }
+    setActionMessage("最新の権限または状態を確認できないため、操作を送信しませんでした。");
+  };
   const deleteMutation = useMutation<unknown, Error, ResourceRow>({
     mutationFn: async (row) => revisionedDeleteResource(resource.path)
       ? apiDeleteJSON(deletePathForResource(resource, row), { expected_revision: numberValue(rowString(row, ["revision"]), 0) })
@@ -258,10 +285,10 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
               canDelete={access.delete}
               canTest={access.test}
               currentUser={currentUser}
-              actionPending={actionMutation.isPending}
-              onAction={(path, label) => {
+              observabilityController={observabilityController}
+              onObservabilityResult={(plan, result) => {
                 setActionMessage("");
-                actionMutation.mutate({ path, label });
+                return handleObservabilityResult(plan, result);
               }}
               onDelete={(row) => {
                 setDeleteMessage("");
@@ -413,7 +440,7 @@ function ServiceHealthResourcePanel({ resource, access }: { resource: ResourceDe
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} actionPending={false} onAction={() => undefined} onDelete={() => undefined} />}
+        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} onDelete={() => undefined} />}
       </CardContent>
     </Card>
   );
@@ -2029,8 +2056,8 @@ function ResourceTable({
   canDelete,
   canTest,
   currentUser,
-  actionPending,
-  onAction,
+  observabilityController,
+  onObservabilityResult,
   onDelete,
 }: {
   rows: ResourceRow[];
@@ -2042,8 +2069,8 @@ function ResourceTable({
   canDelete: boolean;
   canTest: boolean;
   currentUser: Parameters<typeof hasPermission>[0];
-  actionPending: boolean;
-  onAction: (path: string, label: string) => void;
+  observabilityController?: ObservabilityActionController;
+  onObservabilityResult?: (plan: ObservabilityActionPlan, result: ObservabilityActionExecutionResult) => void | Promise<void>;
   onDelete: (row: ResourceRow) => void;
 }) {
   const [copiedID, setCopiedID] = useState("");
@@ -2103,19 +2130,16 @@ function ResourceTable({
             {testMutation.isPending && testNotice?.id === resourceRowID(row) ? "送信中" : "テスト送信"}
           </Button>
         ) : null}
-        {observabilityActionButtons(resource, row, currentUser).map((action) => (
-          <Button
-            key={action.key}
-            variant={action.emphasis ? "default" : "outline"}
-            size="sm"
-            disabled={action.disabled || actionPending}
-            title={action.disabled ? action.permissionText : undefined}
-            onClick={() => onAction(action.path, action.label)}
-          >
-            {actionPending ? <LoaderCircle className="size-4 animate-spin" /> : null}
-            {action.label}
-          </Button>
-        ))}
+        {observabilityController && onObservabilityResult ? observabilityActionButtons(resource, row, currentUser).map((action) => (
+          <ObservabilityActionControl
+            key={action.plan.key}
+            controller={observabilityController}
+            plan={action.plan}
+            allowed={action.allowed}
+            permissionText={action.permissionText}
+            onResult={onObservabilityResult}
+          />
+        )) : null}
         {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onDelete={onDelete} /> : null}
       </div>
       {testNotice?.id === resourceRowID(row) ? (
@@ -2233,94 +2257,19 @@ function OAuthAccountRelinkButton({ row, disabled }: { row: ResourceRow; disable
 }
 
 type ObservabilityAction = {
-  key: string;
-  label: string;
-  path: string;
-  disabled: boolean;
+  plan: ObservabilityActionPlan;
+  allowed: boolean;
   permissionText?: string;
-  emphasis?: boolean;
 };
 
 function observabilityActionButtons(resource: ResourceDefinition, row: ResourceRow, currentUser: Parameters<typeof hasPermission>[0]): ObservabilityAction[] {
   const isSuperAdmin = currentUser?.user.roles?.includes("super_admin") === true;
   const allowed = (permission: string) => isSuperAdmin || hasPermission(currentUser, permission);
-  const status = rowString(row, ["status"]).trim().toLowerCase();
-  if (resource.path === "/observability/incidents") {
-    const id = rowString(row, ["id"]);
-    if (!id || ["resolved", "closed", "ignored"].includes(status)) return [];
-    const actions: ObservabilityAction[] = [];
-    if (status !== "acknowledged") {
-      actions.push({
-        key: "acknowledge",
-        label: "確認済みにする",
-        path: `/observability/incidents/${encodeURIComponent(id)}/acknowledge`,
-        disabled: !allowed("incidents.acknowledge"),
-        permissionText: requiredPermissionText("incidents.acknowledge"),
-      });
-    }
-    actions.push({
-      key: "resolve",
-      label: "解決済みにする",
-      path: `/observability/incidents/${encodeURIComponent(id)}/resolve`,
-      disabled: !allowed("incidents.resolve"),
-      permissionText: requiredPermissionText("incidents.resolve"),
-      emphasis: true,
-    });
-    return actions;
-  }
-  if (resource.path === "/observability/diagnostics") {
-    const incidentID = rowString(row, ["incident_id"]);
-    if (!incidentID) return [];
-    return [{
-      key: "diagnostic-rerun",
-      label: "診断を再評価",
-      path: `/observability/incidents/${encodeURIComponent(incidentID)}/diagnostics/rerun`,
-      disabled: !allowed("diagnostics.run"),
-      permissionText: requiredPermissionText("diagnostics.run"),
-      emphasis: true,
-    }];
-  }
-  if (resource.path === "/observability/remediation-actions") {
-    const id = rowString(row, ["id"]);
-    const incidentID = rowString(row, ["incident_id"]);
-    const actionName = rowString(row, ["action"]).trim().toLowerCase();
-    if (actionName === "rerun_diagnostics") {
-      if (!incidentID) return [];
-      return [{
-        key: "diagnostic-rerun",
-        label: "診断を再評価",
-        path: `/observability/incidents/${encodeURIComponent(incidentID)}/diagnostics/rerun`,
-        disabled: !allowed("diagnostics.run"),
-        permissionText: requiredPermissionText("diagnostics.run"),
-        emphasis: true,
-      }];
-    }
-    const mode = rowString(row, ["mode"]).trim().toLowerCase();
-    if (!id || mode === "suggest_only" || mode === "disabled" || ["executed", "skipped", "blocked", "failed", "cancelled", "disabled"].includes(status)) return [];
-    const requiresApproval = rowBoolean(row, ["requires_approval"], false);
-    const safeAuto = rowBoolean(row, ["safe_auto"], false);
-    if (status === "pending_approval" || (status === "suggested" && requiresApproval)) {
-      return [{
-        key: "approve",
-        label: "承認",
-        path: `/observability/remediation-actions/${encodeURIComponent(id)}/approve`,
-        disabled: !allowed("remediation.approve"),
-        permissionText: requiredPermissionText("remediation.approve"),
-        emphasis: true,
-      }];
-    }
-    if (status === "approved" || (status === "suggested" && safeAuto)) {
-      return [{
-        key: "execute",
-        label: "実行",
-        path: `/observability/remediation-actions/${encodeURIComponent(id)}/execute`,
-        disabled: !allowed("remediation.execute"),
-        permissionText: requiredPermissionText("remediation.execute"),
-        emphasis: true,
-      }];
-    }
-  }
-  return [];
+  return observabilityActionPlans(resource.path, row).map((plan) => ({
+    plan,
+    allowed: allowed(plan.permission),
+    permissionText: requiredPermissionText(plan.permission),
+  }));
 }
 
 function observabilityActionSuccessMessage(action: { path: string; label: string }, response: unknown) {
@@ -2330,22 +2279,6 @@ function observabilityActionSuccessMessage(action: { path: string; label: string
     return "診断を再評価しました。";
   }
   return `${action.label}を実行しました。`;
-}
-
-function observabilityRemediationExecutionConflictMessage(path: string, error: Error) {
-  if (!isRemediationExecutionPath(path) || !(error instanceof APIError) || error.status !== 409) return "";
-  switch (error.code) {
-    case "remediation_action_terminal":
-      return "この復旧操作は既に最終状態です。再実行せず、最新の状態を確認してください。";
-    case "remediation_action_not_executable":
-      return "この復旧操作は現在の状態では実行できません。最新の状態を確認してから、必要な承認または診断の再評価を行ってください。";
-    default:
-      return "復旧操作の状態が更新されたため実行できませんでした。最新の状態を読み込みました。再実行せず、現在の状態を確認してください。";
-  }
-}
-
-function isRemediationExecutionPath(path: string) {
-  return /^\/observability\/remediation-actions\/[^/]+\/execute$/.test(path);
 }
 
 function EditResourceButton({ resource, row, disabled }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean }) {
