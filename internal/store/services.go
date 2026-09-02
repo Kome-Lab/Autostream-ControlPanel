@@ -3080,6 +3080,14 @@ func validateServiceScopes(scopes []string) error {
 	return nil
 }
 
+// ValidateServiceTokenScopes classifies persisted or projected service-token
+// scopes against the single store-owned allowlist. HTTP permission projections
+// and mutations use this function so an unknown stored scope always fails
+// closed instead of being interpreted by a consumer.
+func ValidateServiceTokenScopes(scopes []string) error {
+	return validateServiceScopes(scopes)
+}
+
 func validateRequiredUpdateAgentScopes(serviceType string, scopes []string) error {
 	if strings.TrimSpace(serviceType) != "update_agent" {
 		return nil
@@ -3090,6 +3098,13 @@ func validateRequiredUpdateAgentScopes(serviceType string, scopes []string) erro
 		}
 	}
 	return nil
+}
+
+// ValidateRequiredUpdateAgentScopes preserves the mandatory Host Agent
+// authority as a shared invariant for token creation, rotation, and read-only
+// permission projection.
+func ValidateRequiredUpdateAgentScopes(serviceType string, scopes []string) error {
+	return validateRequiredUpdateAgentScopes(serviceType, scopes)
 }
 
 func hasString(items []string, needle string) bool {

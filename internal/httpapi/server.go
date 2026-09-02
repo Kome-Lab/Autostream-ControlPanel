@@ -615,6 +615,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api-tokens/{id}/rotate", s.requirePermission("api_tokens.create", s.rotateServiceToken))
 	s.mux.HandleFunc("DELETE /api-tokens/{id}", s.requirePermission("api_tokens.revoke", s.revokeServiceToken))
 	s.mux.HandleFunc("GET /nodes", s.requirePermission("api_tokens.create", s.listNodes))
+	s.mux.HandleFunc("GET /nodes/action-permissions", nodeActionProjectionBoundary(s.requirePermission("api_tokens.create", s.nodeActionPermissionProjection)))
 	s.mux.HandleFunc("POST /nodes/registration-tokens", s.requirePermission("api_tokens.create", s.createNodeRegistrationToken))
 	s.mux.HandleFunc("PUT /nodes/{id}", s.requirePermission("api_tokens.create", s.updateNode))
 	s.mux.HandleFunc("GET /nodes/{id}/configuration", s.requireAnyPermission([]string{"service_health.read", "api_tokens.create"}, s.nodeConfiguration))
@@ -6262,15 +6263,7 @@ func validateServiceTokenScopePermissions(actorPermissions, scopes []string) err
 }
 
 func validUpdateAgentServiceTokenScopes(serviceType string, scopes []string) bool {
-	if strings.TrimSpace(serviceType) != "update_agent" {
-		return true
-	}
-	for _, required := range []string{"updates.claim", "updates.report", "updates.authorize"} {
-		if !stringSliceContains(scopes, required) {
-			return false
-		}
-	}
-	return true
+	return store.ValidateRequiredUpdateAgentScopes(serviceType, scopes) == nil
 }
 
 func validateNodeConfigurationSecretPermissions(actorPermissions []string, serviceType string) error {
@@ -6284,19 +6277,12 @@ func validateNodeConfigurationSecretPermissions(actorPermissions []string, servi
 }
 
 func (s *Server) requireNodeTokenScopePermissions(w http.ResponseWriter, r *http.Request, service store.RegisteredService) bool {
-	tokens, err := s.services.ListServiceTokens(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_service_tokens_failed"})
+	token, failure := s.selectNodeActionToken(r.Context(), nodeActionRuntimeTokenRotate, service)
+	if failure != nil {
+		writeJSON(w, failure.status, map[string]string{"code": failure.code})
 		return false
 	}
-	for _, token := range tokens {
-		if token.ID != service.TokenID || token.RevokedAt != nil {
-			continue
-		}
-		return validateNodeTokenScopePermissions(w, r, service, token)
-	}
-	writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
-	return false
+	return validateNodeTokenScopePermissions(w, r, service, token)
 }
 
 func (s *Server) requireNodeConfigureTokenScopePermissions(
@@ -6304,49 +6290,12 @@ func (s *Server) requireNodeConfigureTokenScopePermissions(
 	r *http.Request,
 	service store.RegisteredService,
 ) bool {
-	tokens, err := s.services.ListServiceTokens(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_service_tokens_failed"})
+	token, failure := s.selectNodeActionToken(r.Context(), nodeActionConfigureTokenRegenerate, service)
+	if failure != nil {
+		writeJSON(w, failure.status, map[string]string{"code": failure.code})
 		return false
 	}
-	for _, token := range tokens {
-		if token.ID == service.TokenID && token.RevokedAt == nil {
-			return validateNodeTokenScopePermissions(w, r, service, token)
-		}
-	}
-	identityFenceStore, ok := s.systemUpdates.(store.SystemUpdateIdentityMutationFenceStore)
-	if !ok {
-		writeJSON(
-			w,
-			http.StatusServiceUnavailable,
-			map[string]string{"code": "system_update_identity_fence_unavailable"},
-		)
-		return false
-	}
-	recovery, err := identityFenceStore.IsSystemUpdateEmergencyIdentityRecovery(
-		r.Context(),
-		s.services,
-		service.ServiceID,
-	)
-	if err != nil {
-		writeJSON(
-			w,
-			http.StatusInternalServerError,
-			map[string]string{"code": "check_system_update_emergency_recovery_failed"},
-		)
-		return false
-	}
-	if !recovery {
-		writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
-		return false
-	}
-	for _, token := range tokens {
-		if token.ID == service.TokenID {
-			return validateNodeTokenScopePermissions(w, r, service, token)
-		}
-	}
-	writeJSON(w, http.StatusNotFound, map[string]string{"code": "runtime_token_not_found"})
-	return false
+	return validateNodeTokenScopePermissions(w, r, service, token)
 }
 
 func validateNodeTokenScopePermissions(
@@ -6355,20 +6304,12 @@ func validateNodeTokenScopePermissions(
 	service store.RegisteredService,
 	token store.ServiceToken,
 ) bool {
-	if token.ServiceType != service.ServiceType ||
-		!validUpdateAgentServiceTokenScopes(service.ServiceType, token.Scopes) {
+	authority := evaluateNodeTokenAuthority(currentFromContext(r.Context()).Permissions, service, token)
+	if authority.reason == nodeAuthorityInvalidServiceScope {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_service_scope"})
 		return false
 	}
-	// Node Configure and Node Runtime Token rotation issue a replacement token.
-	// Validate the scopes that replacement will receive, not only the legacy
-	// token, so an operator cannot turn a safe compatibility upgrade into a
-	// permission escalation.
-	if err := validateServiceTokenScopePermissions(currentFromContext(r.Context()).Permissions, store.ProjectedServiceTokenScopesForRotation(token)); err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
-		return false
-	}
-	if err := validateNodeConfigurationSecretPermissions(currentFromContext(r.Context()).Permissions, service.ServiceType); err != nil {
+	if len(authority.missingPermissions) > 0 {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
 		return false
 	}

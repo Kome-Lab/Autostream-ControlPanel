@@ -122,7 +122,7 @@ func SecretFingerprint(value string) string {
 
 func HasPermission(grants []string, required string) bool {
 	for _, grant := range grants {
-		if grant == required {
+		if grant == "*" || grant == required {
 			return true
 		}
 	}

@@ -55,6 +55,9 @@ func TestPermissionFailsClosed(t *testing.T) {
 	if !HasPermission([]string{"streams.start"}, "streams.start") {
 		t.Fatal("explicit permission should allow")
 	}
+	if !HasPermission([]string{"*"}, "streams.start") {
+		t.Fatal("wildcard permission should allow")
+	}
 }
 
 func TestTokenHash(t *testing.T) {
