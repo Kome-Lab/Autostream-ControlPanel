@@ -30,6 +30,8 @@ import {
   type UpdaterTransportMode,
 } from "@/lib/node-registration";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
+import { NODE_FOUNDATION_SOURCE_ENABLED } from "@/features/nodes/node-action-descriptors";
+import { NodeFoundationRegistrationArtifact } from "@/features/nodes/node-foundation-artifact";
 
 const nodeTypes = [
   { value: "worker", label: "Worker Node Agent", defaultPort: 8084, runtimeSecretsRequired: false, description: "番組配信と録画を担当するWorker Node Agent" },
@@ -67,6 +69,12 @@ type NodeEditForm = {
 type NodeRegistrationViewMode = "registration" | "registered" | "all";
 
 export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeRegistrationViewMode }) {
+  return NODE_FOUNDATION_SOURCE_ENABLED
+    ? <NodeFoundationRegistrationArtifact mode={mode} />
+    : <LegacyNodeRegistrationView mode={mode} />;
+}
+
+function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegistrationViewMode }) {
   const { t } = useI18n();
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
