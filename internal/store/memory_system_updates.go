@@ -219,6 +219,14 @@ func (s *MemorySystemUpdateStore) InspectSystemUpdateActiveJob(ctx context.Conte
 }
 
 func (s *MemorySystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, false)
+}
+
+func (s *MemorySystemUpdateStore) ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, true)
+}
+
+func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration, resetSequence bool) (SystemUpdateClaim, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemUpdateClaim{}, false, err
 	}
@@ -323,11 +331,31 @@ func (s *MemorySystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agen
 	expiresAt := now.Add(leaseTTL)
 	job.AgentServiceID = agentServiceID
 	job.LeaseGeneration++
+	if resetSequence {
+		job.Sequence = 0
+	}
 	job.leaseTokenHash = security.HashToken(leaseToken)
 	job.LeaseExpiresAt = &expiresAt
 	job.UpdatedAt = now
 	s.jobs[job.ID] = job
 	return SystemUpdateClaim{Job: publicMemorySystemUpdateJob(job), LeaseToken: leaseToken, LeaseExpiresAt: expiresAt, LeaseGeneration: job.LeaseGeneration, ReportSequence: job.Sequence + 1, RecoveryRequired: recoveryRequired, LastStatus: lastStatus}, false, nil
+}
+
+func (s *MemorySystemUpdateStore) GetSystemUpdateJob(ctx context.Context, id string) (SystemUpdateJob, error) {
+	if err := ctx.Err(); err != nil {
+		return SystemUpdateJob{}, err
+	}
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 64 || containsControl(id) {
+		return SystemUpdateJob{}, ErrInvalidSystemUpdate
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[id]
+	if !ok {
+		return SystemUpdateJob{}, ErrNotFound
+	}
+	return publicMemorySystemUpdateJob(job), nil
 }
 
 func sortSystemUpdateJobsOldestFirst(jobs []SystemUpdateJob) {
@@ -376,7 +404,7 @@ func (s *MemorySystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id 
 		return SystemUpdateJob{}, false, err
 	}
 	if isTerminalSystemUpdateStatus(job.Status) {
-		if job.AgentServiceID != report.AgentServiceID || job.LeaseGeneration != report.LeaseGeneration || !security.VerifyTokenHash(report.LeaseToken, job.leaseTokenHash) {
+		if !systemUpdateReportLeaseMatches(job, report, now, false) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateLeaseInvalid
 		}
 		if report.Sequence != job.Sequence || !sameSystemUpdateReport(job, report) {
@@ -384,13 +412,16 @@ func (s *MemorySystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id 
 		}
 		return publicMemorySystemUpdateJob(job), false, nil
 	}
-	if job.AgentServiceID != report.AgentServiceID || job.LeaseGeneration != report.LeaseGeneration || job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(now) || !security.VerifyTokenHash(report.LeaseToken, job.leaseTokenHash) {
+	if !systemUpdateReportLeaseMatches(job, report, now, true) {
 		return SystemUpdateJob{}, false, ErrSystemUpdateLeaseInvalid
 	}
 	if report.Sequence < job.Sequence || report.Sequence > job.Sequence+1 || (report.Sequence == job.Sequence && !sameSystemUpdateReport(job, report)) {
 		return SystemUpdateJob{}, false, ErrSystemUpdateSequenceStale
 	}
 	if report.Sequence == job.Sequence {
+		if report.ProtocolVersion == 2 {
+			return publicMemorySystemUpdateJob(job), false, nil
+		}
 		expiresAt := now.Add(leaseTTL)
 		job.LeaseExpiresAt = &expiresAt
 		job.UpdatedAt = now
@@ -421,8 +452,10 @@ func (s *MemorySystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id 
 		job.LeaseExpiresAt = nil
 		job.CompletedAt = &now
 	} else {
-		expiresAt := now.Add(leaseTTL)
-		job.LeaseExpiresAt = &expiresAt
+		if report.ProtocolVersion != 2 {
+			expiresAt := now.Add(leaseTTL)
+			job.LeaseExpiresAt = &expiresAt
+		}
 	}
 	s.jobs[id] = job
 	return publicMemorySystemUpdateJob(job), true, nil

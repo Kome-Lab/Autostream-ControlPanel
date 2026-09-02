@@ -115,10 +115,13 @@ type SystemUpdateClaim struct {
 }
 
 type SystemUpdateReport struct {
+	ProtocolVersion int
 	AgentServiceID  string
 	ExecutionHostID string
 	LeaseToken      string
 	LeaseGeneration int64
+	DesiredRevision int64
+	Fence           int64
 	Sequence        int64
 	Status          string
 	Progress        int
@@ -150,6 +153,27 @@ type SystemUpdateStore interface {
 	ReportSystemUpdateJob(ctx context.Context, id string, report SystemUpdateReport, now time.Time, leaseTTL time.Duration) (job SystemUpdateJob, applied bool, err error)
 	AuthorizeSystemUpdateMutation(ctx context.Context, id string, authorization SystemUpdateAuthorization, now time.Time) error
 	HasActiveSystemUpdateReference(ctx context.Context, serviceID string) (bool, error)
+}
+
+// SystemUpdateV2Store is the durable adapter seam for the independent
+// Updater protocol. V2 report sequences are scoped to one lease generation,
+// so a v2 claim atomically resets the persisted sequence before returning the
+// new lease. Legacy claim/report behavior remains unchanged during migration.
+type SystemUpdateV2Store interface {
+	GetSystemUpdateJob(ctx context.Context, id string) (SystemUpdateJob, error)
+	ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (claim SystemUpdateClaim, clearActiveJob bool, err error)
+}
+
+func (s *MariaDBSystemUpdateStore) GetSystemUpdateJob(ctx context.Context, id string) (SystemUpdateJob, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 64 || containsControl(id) {
+		return SystemUpdateJob{}, ErrInvalidSystemUpdate
+	}
+	job, err := scanSystemUpdateJob(s.db.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return SystemUpdateJob{}, ErrNotFound
+	}
+	return job, err
 }
 
 type SystemUpdateIdentityMutationFenceStore interface {
@@ -363,6 +387,14 @@ func (s *MariaDBSystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id
 }
 
 func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, false)
+}
+
+func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, true)
+}
+
+func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration, resetSequence bool) (SystemUpdateClaim, bool, error) {
 	agentServiceID = strings.TrimSpace(agentServiceID)
 	executionHostID = normalizeSystemUpdateExecutionHostID(agentServiceID, executionHostID)
 	activeJobID = strings.TrimSpace(activeJobID)
@@ -447,7 +479,11 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, age
 		claimedAt = &now
 	}
 	leaseGeneration := job.LeaseGeneration + 1
-	result, err := tx.ExecContext(ctx, `UPDATE system_update_jobs SET status = ?, agent_service_id = ?, lease_generation = ?, lease_token_hash = ?, lease_expires_at = ?, claimed_at = ?, updated_at = ? WHERE id = ?`, status, agentServiceID, leaseGeneration, security.HashToken(leaseToken), leaseExpiresAt, claimedAt, now, job.ID)
+	sequence := job.Sequence
+	if resetSequence {
+		sequence = 0
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE system_update_jobs SET status = ?, agent_service_id = ?, lease_generation = ?, lease_token_hash = ?, lease_expires_at = ?, claimed_at = ?, sequence = ?, updated_at = ? WHERE id = ?`, status, agentServiceID, leaseGeneration, security.HashToken(leaseToken), leaseExpiresAt, claimedAt, sequence, now, job.ID)
 	if err != nil {
 		if isDuplicateKeyError(err) {
 			return SystemUpdateClaim{}, false, ErrNotFound
@@ -463,10 +499,11 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, age
 	job.Status = status
 	job.AgentServiceID = agentServiceID
 	job.LeaseGeneration = leaseGeneration
+	job.Sequence = sequence
 	job.LeaseExpiresAt = &leaseExpiresAt
 	job.ClaimedAt = claimedAt
 	job.UpdatedAt = now
-	return SystemUpdateClaim{Job: job, LeaseToken: leaseToken, LeaseExpiresAt: leaseExpiresAt, LeaseGeneration: leaseGeneration, ReportSequence: job.Sequence + 1, RecoveryRequired: recoveryRequired, LastStatus: lastStatus}, false, nil
+	return SystemUpdateClaim{Job: job, LeaseToken: leaseToken, LeaseExpiresAt: leaseExpiresAt, LeaseGeneration: leaseGeneration, ReportSequence: sequence + 1, RecoveryRequired: recoveryRequired, LastStatus: lastStatus}, false, nil
 }
 
 func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id string, report SystemUpdateReport, now time.Time, leaseTTL time.Duration) (SystemUpdateJob, bool, error) {
@@ -507,7 +544,7 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 		return SystemUpdateJob{}, false, err
 	}
 	if isTerminalSystemUpdateStatus(job.Status) {
-		if job.AgentServiceID != report.AgentServiceID || job.LeaseGeneration != report.LeaseGeneration || !security.VerifyTokenHash(report.LeaseToken, job.leaseTokenHash) {
+		if !systemUpdateReportLeaseMatches(job, report, now, false) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateLeaseInvalid
 		}
 		if report.Sequence != job.Sequence || !sameSystemUpdateReport(job, report) {
@@ -515,13 +552,16 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 		}
 		return job, false, nil
 	}
-	if job.AgentServiceID != report.AgentServiceID || job.LeaseGeneration != report.LeaseGeneration || job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(now) || !security.VerifyTokenHash(report.LeaseToken, job.leaseTokenHash) {
+	if !systemUpdateReportLeaseMatches(job, report, now, true) {
 		return SystemUpdateJob{}, false, ErrSystemUpdateLeaseInvalid
 	}
 	if report.Sequence < job.Sequence || report.Sequence > job.Sequence+1 || (report.Sequence == job.Sequence && !sameSystemUpdateReport(job, report)) {
 		return SystemUpdateJob{}, false, ErrSystemUpdateSequenceStale
 	}
 	if report.Sequence == job.Sequence {
+		if report.ProtocolVersion == 2 {
+			return job, false, nil
+		}
 		expires := now.Add(leaseTTL)
 		if _, err := tx.ExecContext(ctx, `UPDATE system_update_jobs SET lease_expires_at = ?, updated_at = ? WHERE id = ?`, expires, now, id); err != nil {
 			return SystemUpdateJob{}, false, err
@@ -550,7 +590,11 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 			}
 		}
 	} else {
-		leaseExpires = now.Add(leaseTTL)
+		if report.ProtocolVersion == 2 {
+			leaseExpires = job.LeaseExpiresAt.UTC()
+		} else {
+			leaseExpires = now.Add(leaseTTL)
+		}
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE system_update_jobs SET status = ?, sequence = ?, progress = ?, code = ?, message = ?, artifact_digest = ?, previous_digest = ?, lease_expires_at = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
 		report.Status, report.Sequence, report.Progress, report.Code, report.Message, report.ArtifactDigest, report.PreviousDigest, leaseExpires, completedAt, now, id)
@@ -1086,7 +1130,19 @@ func normalizeSystemUpdateReport(report SystemUpdateReport) SystemUpdateReport {
 }
 
 func validateSystemUpdateReport(report SystemUpdateReport) error {
-	if report.AgentServiceID == "" || report.LeaseToken == "" || report.LeaseGeneration <= 0 || report.Sequence <= 0 || report.Progress < 0 || report.Progress > 100 || !validSystemUpdateCode(report.Code) || len(report.Message) > 500 || !validSystemUpdateDigest(report.ArtifactDigest) || !validSystemUpdateDigest(report.PreviousDigest) || !isReportableSystemUpdateStatus(report.Status) {
+	if report.AgentServiceID == "" || report.LeaseGeneration <= 0 || report.Sequence <= 0 || report.Progress < 0 || report.Progress > 100 || !validSystemUpdateCode(report.Code) || len(report.Message) > 500 || !validSystemUpdateDigest(report.ArtifactDigest) || !validSystemUpdateDigest(report.PreviousDigest) || !isReportableSystemUpdateStatus(report.Status) {
+		return ErrInvalidSystemUpdate
+	}
+	switch report.ProtocolVersion {
+	case 0, 1:
+		if report.LeaseToken == "" || report.DesiredRevision != 0 || report.Fence != 0 {
+			return ErrInvalidSystemUpdate
+		}
+	case 2:
+		if report.LeaseToken != "" || report.DesiredRevision < 1 || report.Fence < 1 {
+			return ErrInvalidSystemUpdate
+		}
+	default:
 		return ErrInvalidSystemUpdate
 	}
 	if report.ExecutionHostID != "" && !validSystemUpdateExecutionHostID(report.ExecutionHostID) {
@@ -1096,6 +1152,26 @@ func validateSystemUpdateReport(report SystemUpdateReport) error {
 		return ErrInvalidSystemUpdate
 	}
 	return nil
+}
+
+func systemUpdateReportLeaseMatches(job SystemUpdateJob, report SystemUpdateReport, now time.Time, requireUnexpired bool) bool {
+	if job.AgentServiceID != report.AgentServiceID || job.LeaseGeneration != report.LeaseGeneration {
+		return false
+	}
+	if requireUnexpired && (job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(now)) {
+		return false
+	}
+	switch report.ProtocolVersion {
+	case 0, 1:
+		return security.VerifyTokenHash(report.LeaseToken, job.leaseTokenHash)
+	case 2:
+		return normalizedSystemUpdateTransportMode(job.TransportMode) == SystemUpdateTransportPullV2 &&
+			report.LeaseToken == "" &&
+			report.ExecutionHostID == job.ExecutionHostID &&
+			report.Fence == job.OwnershipEpoch
+	default:
+		return false
+	}
 }
 
 func validSystemUpdateCode(value string) bool {

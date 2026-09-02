@@ -45,6 +45,10 @@ func (body systemUpdateMutationGrantBindingBody) storeBinding() store.SystemUpda
 }
 
 func (s *Server) serviceSystemUpdateMutationGrantIssue(w http.ResponseWriter, r *http.Request) {
+	if isSystemUpdateV2Request(r) {
+		s.serviceSystemUpdateMutationGrantIssueV2(w, r)
+		return
+	}
 	token, ok := s.authenticateService(w, r, "updates.authorize")
 	if !ok {
 		return
@@ -127,6 +131,10 @@ func (s *Server) serviceSystemUpdateMutationGrantIssue(w http.ResponseWriter, r 
 }
 
 func (s *Server) serviceSystemUpdateMutationGrantConsume(w http.ResponseWriter, r *http.Request) {
+	if isSystemUpdateV2Request(r) {
+		s.serviceSystemUpdateMutationGrantConsumeV2(w, r)
+		return
+	}
 	grantToken, ok := systemUpdateMutationGrantBearer(r)
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="system-update-mutation-grant"`)

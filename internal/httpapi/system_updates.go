@@ -584,6 +584,7 @@ func (s *Server) cancelSystemUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request) {
+	v2 := isSystemUpdateV2Request(r)
 	token, ok := s.authenticateService(w, r, "updates.claim")
 	if !ok {
 		return
@@ -595,7 +596,8 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
+	if err := decoder.Decode(&body); err != nil ||
+		!errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
@@ -659,17 +661,21 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if clearActiveJob {
-			if !systemUpdateTerminalRecoveryProofSupported(agent) {
+			if !v2 && !systemUpdateTerminalRecoveryProofSupported(agent) {
 				writeJSON(w, http.StatusConflict, map[string]string{
 					"code": "system_update_terminal_proof_upgrade_required",
 				})
 				return
 			}
-			w.Header().Set("Cache-Control", "no-store")
-			writeJSON(w, http.StatusOK, systemUpdateTerminalRecoveryResponse{
-				ClearActiveJobID: true,
-				TerminalJob:      terminalJob,
-			})
+			if v2 {
+				writeSystemUpdateV2Clear(w)
+			} else {
+				w.Header().Set("Cache-Control", "no-store")
+				writeJSON(w, http.StatusOK, systemUpdateTerminalRecoveryResponse{
+					ClearActiveJobID: true,
+					TerminalJob:      terminalJob,
+				})
+			}
 			return
 		}
 		activeJob = &terminalJob
@@ -718,7 +724,20 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	claim, clearActiveJob, err := s.systemUpdates.ClaimSystemUpdateJob(r.Context(), agent.ServiceID, hostID, activeJobID, eligibleTargets, now, systemUpdateClaimLeaseTTL)
+	claimTTL := systemUpdateClaimLeaseTTL
+	var claim store.SystemUpdateClaim
+	var clearActiveJob bool
+	if v2 {
+		claimTTL = systemUpdateExecutionLeaseTTL
+		v2Store, available := s.systemUpdates.(store.SystemUpdateV2Store)
+		if !available {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "updater_v2_adapter_unavailable"})
+			return
+		}
+		claim, clearActiveJob, err = v2Store.ClaimSystemUpdateJobV2(r.Context(), agent.ServiceID, hostID, activeJobID, eligibleTargets, now, claimTTL)
+	} else {
+		claim, clearActiveJob, err = s.systemUpdates.ClaimSystemUpdateJob(r.Context(), agent.ServiceID, hostID, activeJobID, eligibleTargets, now, claimTTL)
+	}
 	if err == nil && clearActiveJob {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "claim_system_update_recovery_proof_missing"})
 		return
@@ -775,6 +794,15 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 		"reported_recovery_pending": capabilityBool(agent.ReportedCapabilities["recovery_pending"]),
 		"active_job_present":        activeJobID != "",
 	})
+	if v2 {
+		if err := s.writeSystemUpdateV2Lease(w, r.Context(), claim.Job); err != nil {
+			s.writeServiceAudit(r, token, "system_updates.claim", "system_update", claim.Job.ID, "failure", map[string]any{
+				"reason": "updater_v2_lease_projection_failed",
+			})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "updater_v2_lease_projection_failed"})
+		}
+		return
+	}
 	writeOneTimeSecretJSON(w, http.StatusOK, systemUpdateClaimResponse{SystemUpdateClaim: claim, ReleaseToken: releaseToken})
 }
 
@@ -792,6 +820,10 @@ func systemUpdateTerminalRecoveryProofSupported(
 }
 
 func (s *Server) serviceSystemUpdateReport(w http.ResponseWriter, r *http.Request) {
+	if isSystemUpdateV2Request(r) {
+		s.serviceSystemUpdateReportV2(w, r)
+		return
+	}
 	token, ok := s.authenticateService(w, r, "updates.report")
 	if !ok {
 		return

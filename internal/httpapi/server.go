@@ -429,7 +429,7 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 		}
 	}
 	s.routes()
-	s.handler = secureHeaders(limitRequestBody(s.mux, maxControlRequestBytes))
+	s.handler = secureHeaders(limitRequestBody(systemUpdateV2ContractBoundary(s.mux), maxControlRequestBytes))
 	return s
 }
 

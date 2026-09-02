@@ -49,6 +49,7 @@ type SystemUpdateMutationGrantBinding struct {
 }
 
 type IssueSystemUpdateMutationGrantParams struct {
+	ProtocolVersion int
 	AgentServiceID  string
 	ExecutionHostID string
 	LeaseToken      string
@@ -506,8 +507,19 @@ func normalizeSystemUpdateMutationGrantBinding(binding SystemUpdateMutationGrant
 }
 
 func validateSystemUpdateMutationGrantIssue(params IssueSystemUpdateMutationGrantParams) error {
-	if params.AgentServiceID == "" || len(params.AgentServiceID) > 191 || containsControl(params.AgentServiceID) ||
-		len(params.LeaseToken) < 32 || len(params.LeaseToken) > 256 || containsControl(params.LeaseToken) || params.LeaseGeneration <= 0 {
+	if params.AgentServiceID == "" || len(params.AgentServiceID) > 191 || containsControl(params.AgentServiceID) || params.LeaseGeneration <= 0 {
+		return ErrInvalidSystemUpdate
+	}
+	switch params.ProtocolVersion {
+	case 0, 1:
+		if len(params.LeaseToken) < 32 || len(params.LeaseToken) > 256 || containsControl(params.LeaseToken) {
+			return ErrInvalidSystemUpdate
+		}
+	case 2:
+		if params.LeaseToken != "" || params.Binding.TransportMode != SystemUpdateTransportPullV2 {
+			return ErrInvalidSystemUpdate
+		}
+	default:
 		return ErrInvalidSystemUpdate
 	}
 	if params.ExecutionHostID != "" && !validSystemUpdateExecutionHostID(params.ExecutionHostID) {
@@ -556,6 +568,30 @@ func validateSystemUpdateMutationGrantBinding(binding SystemUpdateMutationGrantB
 }
 
 func authorizeSystemUpdateMutationGrantIssue(job SystemUpdateJob, params IssueSystemUpdateMutationGrantParams, now time.Time) error {
+	if params.ProtocolVersion == 2 {
+		if job.Status != SystemUpdateStatusInstalling && job.Status != SystemUpdateStatusReconciling {
+			return ErrSystemUpdateAuthorizationState
+		}
+		if normalizedSystemUpdateTransportMode(job.TransportMode) != SystemUpdateTransportPullV2 ||
+			job.AgentServiceID != params.AgentServiceID ||
+			job.LeaseGeneration != params.LeaseGeneration ||
+			job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(now) {
+			return ErrSystemUpdateLeaseInvalid
+		}
+		if job.ExecutionHostID != params.Binding.HostID ||
+			job.TargetID != params.Binding.TargetID ||
+			job.TargetVersion != params.Binding.TargetVersion ||
+			job.DeploymentMode != params.Binding.DeploymentMode {
+			return ErrSystemUpdateAuthorizationMismatch
+		}
+		if !systemUpdateMutationGrantBindingMatchesJob(params.Binding, job) {
+			return ErrSystemUpdateAuthorizationMismatch
+		}
+		if !systemUpdateMutationGrantOperationMatchesStatus(params.Binding, job.Status) {
+			return ErrSystemUpdateAuthorizationState
+		}
+		return nil
+	}
 	authorization := SystemUpdateAuthorization{
 		AgentServiceID: params.AgentServiceID, ExecutionHostID: params.Binding.HostID,
 		LeaseToken: params.LeaseToken, LeaseGeneration: params.LeaseGeneration,
@@ -811,6 +847,14 @@ func computeSystemUpdatePortRuntimePlanSHA256(job SystemUpdateJob, sessionID str
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// ComputeSystemUpdatePortRuntimePlanSHA256 exposes the existing canonical
+// Local Executor plan binding to the HTTP v2 adapter. The adapter cannot use a
+// caller-provided plan hash because the strict v2 grant body intentionally
+// carries only the authoritative lease, closed operation and session.
+func ComputeSystemUpdatePortRuntimePlanSHA256(job SystemUpdateJob, sessionID string) (string, error) {
+	return computeSystemUpdatePortRuntimePlanSHA256(job, sessionID)
 }
 
 func boundedSystemUpdateMutationGrantTTL(ttl time.Duration) time.Duration {

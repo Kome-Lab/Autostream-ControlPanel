@@ -3,6 +3,7 @@ module github.com/example/autostream-control-panel
 go 1.26.5
 
 require (
+	github.com/example/autostream-contracts v0.0.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/in-toto/attestation v1.2.0
@@ -18,6 +19,8 @@ require (
 	google.golang.org/api v0.293.0
 	google.golang.org/protobuf v1.36.12
 )
+
+replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab
 
 require (
 	cloud.google.com/go/auth v0.23.0 // indirect
