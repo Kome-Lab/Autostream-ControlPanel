@@ -97,7 +97,7 @@ password supplied outside shell history:
 CREATE USER IF NOT EXISTS 'autostream_backup'@'127.0.0.1' IDENTIFIED BY 'replace-with-a-long-random-password';
 ```
 
-Select the database name once and keep the same shell open. The same exact
+Select the database name once and keep the same shell open. The exact
 `DATABASE_NAME` must be used for the MariaDB grant, the real dump, and the
 server-owned target setting:
 

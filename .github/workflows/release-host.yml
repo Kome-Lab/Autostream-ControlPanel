@@ -28,6 +28,14 @@ jobs:
       version: ${{ steps.release-metadata.outputs.version }}
       push_release: ${{ steps.release-metadata.outputs.push_release }}
     steps:
+      - name: Require GitHub-hosted build runner
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if [[ "${RUNNER_ENVIRONMENT}" != "github-hosted" ]]; then
+            echo "Control Panel release builds must run on a GitHub-hosted runner." >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -115,6 +123,14 @@ jobs:
       group: control-panel-release-publish-${{ needs.release-host.outputs.version }}
       cancel-in-progress: false
     steps:
+      - name: Require GitHub-hosted publication runner
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if [[ "${RUNNER_ENVIRONMENT}" != "github-hosted" ]]; then
+            echo "Control Panel release publication must run on a GitHub-hosted runner." >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@96dc968c16b1e91bb81db51b7a8786906658a842 # v8.0.0
         with:
           name: control-panel-release-${{ needs.release-host.outputs.version }}-${{ github.sha }}

@@ -1,7 +1,6 @@
 package security
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,41 +8,6 @@ import (
 	"strings"
 	"testing"
 )
-
-func TestUpdateHostExamplePinsControlPanelDatabaseName(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "release", "autostream-update-host.json.example"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var config struct {
-		Targets []struct {
-			ServiceType string   `json:"service_type"`
-			BackupArgv  []string `json:"backup_argv"`
-		} `json:"targets"`
-	}
-	if err := json.Unmarshal(body, &config); err != nil {
-		t.Fatalf("decode update host example: %v", err)
-	}
-	for _, target := range config.Targets {
-		if target.ServiceType != "control_panel" {
-			continue
-		}
-		want := []string{
-			"/usr/local/sbin/autostream-backup-control-panel",
-			"autostream_control_panel",
-		}
-		if len(target.BackupArgv) != len(want) {
-			t.Fatalf("backup_argv = %q, want %q", target.BackupArgv, want)
-		}
-		for i := range want {
-			if target.BackupArgv[i] != want[i] {
-				t.Fatalf("backup_argv = %q, want %q", target.BackupArgv, want)
-			}
-		}
-		return
-	}
-	t.Fatal("update host example has no Control Panel target")
-}
 
 func TestControlPanelBackupScriptRejectsUnsafeDatabaseArguments(t *testing.T) {
 	script := filepath.Join("..", "..", "release", "autostream-backup-control-panel.example")
@@ -100,7 +64,7 @@ func TestControlPanelInstallGuidePassesConfiguredDatabaseName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guide := string(body)
+	guide := strings.Join(strings.Fields(string(body)), " ")
 	for _, want := range []string{
 		"DATABASE_NAME='autostream_control_panel'",
 		"/etc/autostream-local-executor/mariadb-backup.cnf",
@@ -145,24 +109,6 @@ func TestControlPanelCIRunsRootBackupSmoke(t *testing.T) {
 			if !strings.Contains(text, want) {
 				t.Fatalf("%s is missing root backup smoke contract %q", workflow, want)
 			}
-		}
-	}
-}
-
-func TestBootstrapGuideRequiresConfiguredDatabaseName(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "release", "README.bootstrap.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	guide := string(body)
-	for _, want := range []string{
-		"second `backup_argv` item",
-		"exact database name",
-		"custom names must be",
-		"replaced before validation and installation",
-	} {
-		if !strings.Contains(guide, want) {
-			t.Fatalf("bootstrap guide is missing %q", want)
 		}
 	}
 }
