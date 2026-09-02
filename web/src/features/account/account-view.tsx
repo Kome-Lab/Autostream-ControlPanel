@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, CheckCircle2, Copy, KeyRound, Link2, Mail, Palette, Plus, QrCode, RefreshCcw, Save, ShieldCheck, ShieldOff, Trash2, Upload, UserCog, X } from "lucide-react";
+import { Camera, CheckCircle2, KeyRound, Link2, Mail, Palette, Plus, QrCode, RefreshCcw, Save, ShieldCheck, ShieldOff, Trash2, Upload, UserCog, X } from "lucide-react";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
+import { useI18n } from "@/components/admin/i18n-provider";
+import { OneTimeSecretReveal } from "@/components/foundation/secrets/one-time-secret-reveal";
 import { AccountAvatar } from "@/components/ui/account-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,12 +16,23 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { APIError, apiDelete, apiGet, apiPost, apiPut, apiPutBinary } from "@/lib/api/client";
+import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
+import { createOneTimeSecretLifecycleOwner } from "@/lib/foundation/secrets/lifecycle-owner";
 import { qrCodeDataURL } from "@/lib/qr-code";
 import { useAppSettings, useCurrentUser } from "@/features/queries";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { passkeyRegistrationCredentialToJSON, passkeysSupported, publicKeyCreationOptionsFromJSON } from "@/lib/passkeys";
-import type { MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
+import type { CurrentUser, MFAEnrollResponse, MFAStatus, OAuthLinkStartResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, PasskeyRegistrationStart } from "@/types/domain";
 import { AppearancePanel } from "@/features/account/appearance-panel";
+import { AccountActionConfirmation } from "@/features/account/account-action-confirmation";
+import {
+  createAccountActionController,
+  type AccountActionController,
+  type AccountActionIntent,
+  type AccountAuthoritySnapshot,
+} from "@/features/account/account-action-policy";
+import { adoptAccountOneTimeOutput, type AccountOneTimeSecretValue } from "@/features/account/account-one-time-secret";
+import { validatedOAuthRedirect } from "@/features/account/oauth-redirect-handoff";
 
 type AccountNotice = { tone: "success" | "error"; text: string } | null;
 
@@ -35,6 +48,7 @@ const minAvatarDimension = 32;
 const maxAvatarDimension = 2048;
 
 export function AccountView() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
@@ -46,10 +60,19 @@ export function AccountView() {
   const user = currentUser.data?.user;
   const username = user?.username || "-";
   const roles = user?.roles || [];
+  const accountResourceID = user?.id || "current-account";
+  const authority = readAccountAuthority(queryClient);
+  const actionController = useMemo(() => createAccountActionController({
+    readAuthority: () => readAccountAuthority(queryClient),
+  }), [queryClient]);
+  const refreshAuthority = async () => {
+    await currentUser.refetch();
+    return readAccountAuthority(queryClient);
+  };
 
   const showError = (error: unknown, fallback: string) => {
-    const code = error instanceof APIError ? error.code : "";
-    setNotice({ tone: "error", text: code ? `${fallback} (${code})` : fallback });
+    const adapted = adaptAPIError(error);
+    setNotice({ tone: "error", text: adapted.kind === "unknown" ? fallback : t(adapted.messageKey) });
   };
 
   return (
@@ -117,22 +140,28 @@ export function AccountView() {
               setNotice={setNotice}
               onUpdated={() => queryClient.invalidateQueries({ queryKey: ["auth", "me"] })}
               onDeleted={() => queryClient.invalidateQueries({ queryKey: ["auth", "oauth-links"] })}
-              onError={showError}
+              actionController={actionController}
+              authority={authority}
+              refreshAuthority={refreshAuthority}
+              accountResourceID={accountResourceID}
             />
           </div>
         </TabsContent>
         <TabsContent value="security">
           <div className="grid items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-            <PasswordPanel setNotice={setNotice} onError={showError} />
-            <MFAPanel status={mfaStatus.data} loading={mfaStatus.isLoading} setNotice={setNotice} onError={showError} refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] })} />
+            <PasswordPanel setNotice={setNotice} actionController={actionController} authority={authority} refreshAuthority={refreshAuthority} accountResourceID={accountResourceID} />
+            <MFAPanel status={mfaStatus.data} loading={mfaStatus.isLoading} username={username} sessionAvailable={Boolean(user)} setNotice={setNotice} refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] })} actionController={actionController} authority={authority} refreshAuthority={refreshAuthority} accountResourceID={accountResourceID} />
             <PasskeyPanel
               passkeys={passkeys.data || []}
               loading={passkeys.isLoading}
               username={username}
               timezone={appSettings.data?.timezone}
               setNotice={setNotice}
-              onError={showError}
               refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "passkeys"] })}
+              actionController={actionController}
+              authority={authority}
+              refreshAuthority={refreshAuthority}
+              accountResourceID={accountResourceID}
             />
           </div>
         </TabsContent>
@@ -283,20 +312,25 @@ function AvatarPanel({
   );
 }
 
-function PasswordPanel({ setNotice, onError }: { setNotice: (notice: AccountNotice) => void; onError: (error: unknown, fallback: string) => void }) {
+function PasswordPanel({
+  setNotice,
+  actionController,
+  authority,
+  refreshAuthority,
+  accountResourceID,
+}: {
+  setNotice: (notice: AccountNotice) => void;
+  actionController: AccountActionController;
+  authority: AccountAuthoritySnapshot;
+  refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
+  accountResourceID: string;
+}) {
   const router = useRouter();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const mismatch = newPassword !== "" && confirmPassword !== "" && newPassword !== confirmPassword;
-  const changePassword = useMutation({
-    mutationFn: () => apiPost<{ status: string }>("/auth/change-password", { current_password: currentPassword, new_password: newPassword }),
-    onSuccess: () => {
-      setNotice({ tone: "success", text: "パスワードを変更しました。再ログインしてください。" });
-      window.setTimeout(() => router.push("/login"), 900);
-    },
-    onError: (error) => onError(error, "パスワードを変更できませんでした"),
-  });
+  const intent: AccountActionIntent = { id: "AUTH-11", resourceId: accountResourceID };
 
   return (
     <Card>
@@ -312,9 +346,24 @@ function PasswordPanel({ setNotice, onError }: { setNotice: (notice: AccountNoti
         <Input type="password" autoComplete="new-password" placeholder="新しいパスワード" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
         <Input type="password" autoComplete="new-password" placeholder="新しいパスワードを再入力" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
         {mismatch ? <div className="text-sm text-red-600">新しいパスワードが一致していません。</div> : null}
-        <Button className="w-full" onClick={() => changePassword.mutate()} disabled={!currentPassword || !newPassword || mismatch || changePassword.isPending}>
-          変更して再ログイン
-        </Button>
+        <AccountActionConfirmation
+          controller={actionController}
+          intent={intent}
+          authority={authority}
+          refreshAuthority={refreshAuthority}
+          label="変更して再ログイン"
+          className="w-full"
+          disabled={!currentPassword || !newPassword || mismatch}
+          handler={() => apiPost<{ status: string }>("/auth/change-password", { current_password: currentPassword, new_password: newPassword })}
+          onSucceeded={() => {
+            setCurrentPassword("");
+            setNewPassword("");
+            setConfirmPassword("");
+            setNotice({ tone: "success", text: "パスワードを変更しました。再ログインしてください。" });
+            window.setTimeout(() => router.push("/login"), 900);
+          }}
+          onOutcomeUnknown={() => setNotice({ tone: "error", text: "変更結果を確認できません。再送せず、再ログインまたは監査ログで確認してください。" })}
+        />
       </CardContent>
     </Card>
   );
@@ -328,7 +377,10 @@ function EmailPanel({
   setNotice,
   onUpdated,
   onDeleted,
-  onError,
+  actionController,
+  authority,
+  refreshAuthority,
+  accountResourceID,
 }: {
   currentEmail: string;
   links: OAuthUserLink[];
@@ -337,33 +389,13 @@ function EmailPanel({
   setNotice: (notice: AccountNotice) => void;
   onUpdated: () => void;
   onDeleted: () => void;
-  onError: (error: unknown, fallback: string) => void;
+  actionController: AccountActionController;
+  authority: AccountAuthoritySnapshot;
+  refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
+  accountResourceID: string;
 }) {
   const [email, setEmail] = useState(currentEmail);
-  const updateEmail = useMutation({
-    mutationFn: () => apiPut<{ status: string; target?: string }>("/auth/email", { email: email.trim() }),
-    onSuccess: (response) => {
-      if (response.status === "unchanged") {
-        setNotice({ tone: "success", text: "メールアドレスは変更されていません。" });
-      } else {
-        setNotice({ tone: "success", text: response.target ? `確認メールを送信しました。宛先: ${response.target}` : "確認メールを送信しました。" });
-      }
-      onUpdated();
-    },
-    onError: (error) => onError(error, "メールアドレスを保存できませんでした"),
-  });
-  const deleteLink = useMutation({
-    mutationFn: (id: string) => apiDelete<{ status: string }>(`/auth/oauth-links/${encodeURIComponent(id)}`),
-    onSuccess: onDeleted,
-    onError: (error) => onError(error, "OAuth連携を解除できませんでした"),
-  });
-  const startLink = useMutation({
-    mutationFn: (providerID: string) => apiPost<OAuthLinkStartResponse>(`/auth/oauth-links/${encodeURIComponent(providerID)}/start`, { redirect_after: "/admin/account/" }),
-    onSuccess: (data) => {
-      window.location.assign(data.authorization_url);
-    },
-    onError: (error) => onError(error, "OAuth連携を開始できませんでした"),
-  });
+  const outcomeUnknown = () => setNotice({ tone: "error", text: "操作結果を確認できません。再送せず、アカウント状態または監査ログを確認してください。" });
   return (
     <Card>
       <CardHeader>
@@ -378,18 +410,42 @@ function EmailPanel({
           <label className="text-sm font-medium">アカウントメール</label>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input type="email" autoComplete="email" placeholder="operator@example.jp" value={email} onChange={(event) => setEmail(event.target.value)} />
-            <Button onClick={() => updateEmail.mutate()} disabled={updateEmail.isPending || email.trim() === currentEmail.trim() || !email.trim()}>
-              確認メール送信
-            </Button>
+            <AccountActionConfirmation
+              controller={actionController}
+              intent={{ id: "AUTH-12", resourceId: accountResourceID }}
+              authority={authority}
+              refreshAuthority={refreshAuthority}
+              label="確認メール送信"
+              variant="default"
+              disabled={email.trim() === currentEmail.trim() || !email.trim()}
+              handler={() => apiPut<{ status: string; target?: string }>("/auth/email", { email: email.trim() })}
+              onSucceeded={() => {
+                setNotice({ tone: "success", text: "確認メールを送信しました。メール内のワンタイムURLを開くまで変更は完了しません。" });
+                onUpdated();
+              }}
+              onOutcomeUnknown={outcomeUnknown}
+            />
           </div>
           <div className="text-xs text-muted-foreground">変更すると新しい宛先へ確認メールを送信します。メール内のワンタイムURLを開くまで変更は完了しません。</div>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {providers.map((provider) => (
-            <Button key={provider.id} variant="outline" className="justify-start" onClick={() => startLink.mutate(provider.id)} disabled={startLink.isPending}>
-              <Plus className="size-4" />
-              {provider.name || providerLabel(provider.provider_type)}を連携
-            </Button>
+            <AccountActionConfirmation
+              key={provider.id}
+              controller={actionController}
+              intent={{ id: "AUTH-13", resourceId: accountResourceID }}
+              authority={authority}
+              refreshAuthority={refreshAuthority}
+              label={`${provider.name || providerLabel(provider.provider_type)}を連携`}
+              icon={<Plus className="size-4" />}
+              className="justify-start"
+              handler={async () => {
+                const data = await apiPost<OAuthLinkStartResponse>(`/auth/oauth-links/${encodeURIComponent(provider.id)}/start`, { redirect_after: "/admin/account/" });
+                window.location.assign(validatedOAuthRedirect(data.authorization_url));
+                return undefined;
+              }}
+              onOutcomeUnknown={outcomeUnknown}
+            />
           ))}
           {providers.length === 0 ? <div className="text-sm text-muted-foreground">{loading ? "読み込み中" : "利用可能なOAuthプロバイダはありません。"}</div> : null}
         </div>
@@ -405,11 +461,20 @@ function EmailPanel({
                 </div>
                 <div className="truncate text-xs text-muted-foreground">{link.email || link.subject}</div>
               </div>
-              <DangerConfirm title="OAuth連携を解除" description="このログイン連携をこのアカウントから解除します。" onConfirm={() => deleteLink.mutate(link.id)} actionLabel="解除">
-                <Button variant="outline" size="icon-sm" aria-label="OAuth連携を解除">
-                  <Trash2 />
-                </Button>
-              </DangerConfirm>
+              <AccountActionConfirmation
+                controller={actionController}
+                intent={{ id: "AUTH-14", resourceId: accountResourceID }}
+                authority={authority}
+                refreshAuthority={refreshAuthority}
+                label="OAuth連携を解除"
+                icon={<Trash2 />}
+                handler={() => apiDelete<{ status: string }>(`/auth/oauth-links/${encodeURIComponent(link.id)}`)}
+                onSucceeded={() => {
+                  setNotice({ tone: "success", text: "OAuth連携を解除しました。" });
+                  onDeleted();
+                }}
+                onOutcomeUnknown={outcomeUnknown}
+              />
             </div>
           ))}
         </div>
@@ -421,73 +486,89 @@ function EmailPanel({
 function MFAPanel({
   status,
   loading,
+  username,
+  sessionAvailable,
   setNotice,
-  onError,
   refresh,
+  actionController,
+  authority,
+  refreshAuthority,
+  accountResourceID,
 }: {
   status?: MFAStatus;
   loading: boolean;
+  username: string;
+  sessionAvailable: boolean;
   setNotice: (notice: AccountNotice) => void;
-  onError: (error: unknown, fallback: string) => void;
   refresh: () => void;
+  actionController: AccountActionController;
+  authority: AccountAuthoritySnapshot;
+  refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
+  accountResourceID: string;
 }) {
+  const { t } = useI18n();
+  const pathname = usePathname();
+  const previousPathname = useRef(pathname);
   const [currentCode, setCurrentCode] = useState("");
   const [verifyCode, setVerifyCode] = useState("");
   const [disableCode, setDisableCode] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
-  const [enrollment, setEnrollment] = useState<MFAEnrollResponse | null>(null);
-  const [copiedRecoveryCodes, setCopiedRecoveryCodes] = useState(false);
+  const [registrationInProgress, setRegistrationInProgress] = useState(false);
+  const [recoveryOnlyResult, setRecoveryOnlyResult] = useState(false);
+  const [verifyPending, setVerifyPending] = useState(false);
+  const [secretOwner] = useState(() => createOneTimeSecretLifecycleOwner<AccountOneTimeSecretValue>({
+    epochNowMs: () => Date.now(),
+    monotonicNowMs: () => Math.floor(typeof performance === "undefined" ? Date.now() : performance.now()),
+    schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  }));
+  const secretSnapshot = useSyncExternalStore(secretOwner.subscribe, secretOwner.getSnapshot, secretOwner.getSnapshot);
   const policyMode = status?.policy_mode || "";
   const totpEnrollmentAvailable = Boolean(status?.available && policyMode !== "passkey");
-  const recoveryCodes = enrollment?.recovery_codes || [];
-  const qrImage = enrollment?.provisioning_uri ? qrCodeDataURL(enrollment.provisioning_uri) : "";
-  const registrationInProgress = Boolean(enrollment?.secret);
-  const recoveryOnlyResult = Boolean(enrollment && !enrollment.secret && recoveryCodes.length > 0);
-  const enroll = useMutation({
-    mutationFn: () => apiPost<MFAEnrollResponse>("/auth/mfa/enroll", status?.enabled ? { code: currentCode } : {}),
-    onSuccess: (data) => {
-      setEnrollment(data);
-      setCopiedRecoveryCodes(false);
-      setNotice({ tone: "success", text: "MFA登録を開始しました。確認コードを入力してください。" });
-      refresh();
-    },
-    onError: (error) => onError(error, "MFA登録を開始できませんでした"),
-  });
-  const verify = useMutation({
-    mutationFn: () => apiPost<{ status: string }>("/auth/mfa/verify", { code: verifyCode }),
-    onSuccess: () => {
-      setEnrollment(null);
-      setVerifyCode("");
-      setNotice({ tone: "success", text: "MFAを有効化しました。" });
-      refresh();
-    },
-    onError: (error) => onError(error, "MFAを有効化できませんでした"),
-  });
-  const disable = useMutation({
-    mutationFn: () => apiPost<{ status: string }>("/auth/mfa/disable", { code: disableCode }),
-    onSuccess: () => {
-      setDisableCode("");
-      setNotice({ tone: "success", text: "MFAを無効化しました。" });
-      refresh();
-    },
-    onError: (error) => onError(error, "MFAを無効化できませんでした"),
-  });
-  const regenerate = useMutation({
-    mutationFn: () => apiPost<{ recovery_codes: string[] }>("/auth/recovery-codes/regenerate", { code: recoveryCode }),
-    onSuccess: (data) => {
-      setEnrollment({ method: "totp", secret: "", provisioning_uri: "", recovery_codes: data.recovery_codes });
-      setCopiedRecoveryCodes(false);
-      setRecoveryCode("");
-      setNotice({ tone: "success", text: "リカバリーコードを再発行しました。" });
-      refresh();
-    },
-    onError: (error) => onError(error, "リカバリーコードを再発行できませんでした"),
-  });
-  const canStartEnrollment = totpEnrollmentAvailable && !loading && !enroll.isPending && (!status?.enabled || currentCode.length >= 6);
-  const copyRecoveryCodes = async () => {
-    if (recoveryCodes.length === 0 || typeof navigator === "undefined") return;
-    await navigator.clipboard.writeText(recoveryCodes.join("\n"));
-    setCopiedRecoveryCodes(true);
+  const canStartEnrollment = totpEnrollmentAvailable && !loading && (!status?.enabled || currentCode.length >= 6);
+  const typedIntent = (id: "AUTH-15" | "AUTH-17" | "AUTH-18"): AccountActionIntent => ({ id, resourceId: accountResourceID, publicUsername: username });
+  const outcomeUnknown = () => setNotice({ tone: "error", text: "MFA操作の結果を確認できません。再送せず、セッション状態または監査ログを確認してください。" });
+
+  useEffect(() => () => { secretOwner.dispose(); }, [secretOwner]);
+  useEffect(() => {
+    if (!loading && !sessionAvailable) secretOwner.clearForSessionLoss();
+  }, [loading, secretOwner, sessionAvailable]);
+  useEffect(() => {
+    if (previousPathname.current !== pathname) secretOwner.clearForNavigation();
+    previousPathname.current = pathname;
+  }, [pathname, secretOwner]);
+
+  const adoptOneTimeOutput = (value: unknown) => {
+    const adoption = adoptAccountOneTimeOutput(secretOwner, value);
+    if (!adoption.adopted) throw new APIError("Invalid MFA one-time response.", 502, "invalid_mfa_one_time_response");
+    return adoption.publicResult;
+  };
+
+  const verifyEnrollment = async () => {
+    if (verifyPending) return;
+    setVerifyPending(true);
+    try {
+      const refreshed = await refreshAuthority();
+      const result = await actionController.execute(
+        { id: "AUTH-16", resourceId: accountResourceID, authorityRevision: refreshed.revision },
+        { confirmed: true },
+        () => apiPost<{ status: string }>("/auth/mfa/verify", { code: verifyCode }),
+      );
+      if (result.kind === "succeeded") {
+        setRegistrationInProgress(false);
+        setVerifyCode("");
+        setNotice({ tone: "success", text: "MFAを有効化しました。発行済みの情報は確認後に破棄してください。" });
+        refresh();
+      } else if (result.kind === "failed") {
+        setNotice({ tone: "error", text: t(result.error.messageKey) });
+      } else if (result.kind === "outcome_unknown") {
+        outcomeUnknown();
+      } else {
+        setNotice({ tone: "error", text: "最新のセッションを確認できないため、MFA確認を送信しませんでした。" });
+      }
+    } finally {
+      setVerifyPending(false);
+    }
   };
 
   return (
@@ -516,40 +597,73 @@ function MFAPanel({
           </div>
         ) : null}
         {totpEnrollmentAvailable ? (
-          <Button variant="outline" className="w-full" onClick={() => enroll.mutate()} disabled={!canStartEnrollment}>
-            <QrCode className="size-4" />
-            {status?.enabled ? "TOTPを再登録" : status?.pending_enrollment ? "TOTP登録をやり直す" : "TOTP登録を開始"}
-          </Button>
+          <AccountActionConfirmation
+            controller={actionController}
+            intent={typedIntent("AUTH-15")}
+            authority={authority}
+            refreshAuthority={refreshAuthority}
+            label={status?.enabled ? "TOTPを再登録" : status?.pending_enrollment ? "TOTP登録をやり直す" : "TOTP登録を開始"}
+            icon={<QrCode className="size-4" />}
+            className="w-full"
+            disabled={!canStartEnrollment}
+            handler={async () => adoptOneTimeOutput(await apiPost<MFAEnrollResponse>("/auth/mfa/enroll", status?.enabled ? { code: currentCode } : {}))}
+            onSucceeded={(value) => {
+              const result = value as { enrollmentPending?: boolean; recoveryCodeCount?: number };
+              setRegistrationInProgress(result.enrollmentPending === true);
+              setRecoveryOnlyResult(result.enrollmentPending !== true && Number(result.recoveryCodeCount) > 0);
+              setNotice({ tone: "success", text: "MFA登録情報を受信しました。明示的に表示して確認してください。" });
+              refresh();
+            }}
+            onOutcomeUnknown={outcomeUnknown}
+          />
         ) : null}
-        {enrollment ? (
+        {secretSnapshot.generation > 0 ? (
           <div className="space-y-4 rounded-md border p-3">
-            {registrationInProgress ? (
-              <div className="grid gap-3 md:grid-cols-[180px_1fr]">
-                <div className="flex min-h-44 items-center justify-center rounded-md border bg-white p-3">
-                  {qrImage ? <Image src={qrImage} alt="TOTP登録用QRコード" width={160} height={160} unoptimized /> : <div className="text-center text-sm text-muted-foreground">QRコードを生成できませんでした。手動入力キーを使ってください。</div>}
-                </div>
-                <div className="space-y-3">
-                  <div>
-                    <div className="text-sm font-medium">1. 認証アプリでQRコードを読み取る</div>
-                    <p className="mt-1 text-xs text-muted-foreground">Google Authenticator、1Password、Microsoft AuthenticatorなどのTOTP対応アプリで読み取ります。</p>
+            <OneTimeSecretReveal
+              snapshot={secretSnapshot}
+              translate={t}
+              renderRevealedContent={() => {
+                const revealed = secretOwner.readRevealedValue();
+                const qrImage = revealed?.provisioningURI ? qrCodeDataURL(revealed.provisioningURI) : "";
+                return revealed ? (
+                  <div className="space-y-4">
+                    {registrationInProgress ? (
+                      <div className="grid gap-3 md:grid-cols-[180px_1fr]">
+                        <div className="flex min-h-44 items-center justify-center rounded-md border bg-white p-3">
+                          {qrImage ? <Image src={qrImage} alt="TOTP登録用QRコード" width={160} height={160} unoptimized /> : <div className="text-center text-sm text-muted-foreground">QRコードを生成できませんでした。手動入力キーを使ってください。</div>}
+                        </div>
+                        <div className="space-y-3">
+                          <div>
+                            <div className="text-sm font-medium">1. 認証アプリでQRコードを読み取る</div>
+                            <p className="mt-1 text-xs text-muted-foreground">TOTP対応アプリで読み取ります。</p>
+                          </div>
+                          {revealed.mfaSecret ? <Input readOnly value={revealed.mfaSecret} aria-label="TOTP secret" className="font-mono" /> : null}
+                          {revealed.provisioningURI ? <Textarea readOnly value={revealed.provisioningURI} rows={2} aria-label="Provisioning URI" className="font-mono text-xs" /> : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    {revealed.recoveryCodes?.length ? <RecoveryCodesBlock codes={revealed.recoveryCodes} recoveryOnly={recoveryOnlyResult} /> : null}
                   </div>
-                  {enrollment.secret ? (
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">手動入力キー</label>
-                      <Input readOnly value={enrollment.secret} aria-label="TOTP secret" className="font-mono" />
-                    </div>
-                  ) : null}
-                  {enrollment.provisioning_uri ? <Textarea readOnly value={enrollment.provisioning_uri} rows={2} aria-label="Provisioning URI" className="font-mono text-xs" /> : null}
-                </div>
-              </div>
-            ) : null}
-            {recoveryCodes.length ? <RecoveryCodesBlock codes={recoveryCodes} copied={copiedRecoveryCodes} onCopy={copyRecoveryCodes} recoveryOnly={recoveryOnlyResult} /> : null}
+                ) : <span />;
+              }}
+              canCopy
+              onRevealIntent={() => { secretOwner.reveal(); }}
+              onConcealIntent={() => { secretOwner.conceal(); }}
+              onCopyIntent={() => { void secretOwner.copyWith((value) => navigator.clipboard.writeText([
+                value.mfaSecret,
+                value.provisioningURI,
+                ...(value.recoveryCodes ?? []),
+              ].filter((entry): entry is string => Boolean(entry)).join("\n"))); }}
+              onAcknowledgeIntent={() => { secretOwner.acknowledge(); }}
+              onDismissIntent={() => { secretOwner.dismiss(); }}
+              onUnmountIntent={() => { secretOwner.dispose(); }}
+            />
             {registrationInProgress ? (
               <div className="space-y-2 rounded-md border bg-muted/20 p-3">
                 <label className="text-sm font-medium">2. アプリに表示された6桁コードで有効化</label>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <Input inputMode="numeric" placeholder="確認コード" value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
-                  <Button onClick={() => verify.mutate()} disabled={verifyCode.length < 6 || verify.isPending}>
+                  <Button onClick={() => { void verifyEnrollment(); }} disabled={verifyCode.length < 6 || verifyPending}>
                     有効化
                   </Button>
                 </div>
@@ -566,9 +680,24 @@ function MFAPanel({
               </div>
               <p className="text-xs text-muted-foreground">新しいリカバリーコードを発行します。発行後、古いリカバリーコードは使えません。</p>
               <Input inputMode="numeric" placeholder="現在のMFAコード" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
-              <Button variant="outline" className="w-full" onClick={() => regenerate.mutate()} disabled={recoveryCode.length < 6 || regenerate.isPending}>
-                リカバリーコードを再発行
-              </Button>
+              <AccountActionConfirmation
+                controller={actionController}
+                intent={typedIntent("AUTH-18")}
+                authority={authority}
+                refreshAuthority={refreshAuthority}
+                label="リカバリーコードを再発行"
+                className="w-full"
+                disabled={recoveryCode.length < 6}
+                handler={async () => adoptOneTimeOutput(await apiPost<{ recovery_codes: string[] }>("/auth/recovery-codes/regenerate", { code: recoveryCode }))}
+                onSucceeded={() => {
+                  setRegistrationInProgress(false);
+                  setRecoveryOnlyResult(true);
+                  setRecoveryCode("");
+                  setNotice({ tone: "success", text: "新しいリカバリーコードを受信しました。明示的に表示して確認してください。" });
+                  refresh();
+                }}
+                onOutcomeUnknown={outcomeUnknown}
+              />
             </div>
             <div className="space-y-2 rounded-md border border-red-200 bg-red-50/50 p-3">
               <div className="flex items-center gap-2 text-sm font-medium text-red-700">
@@ -577,11 +706,26 @@ function MFAPanel({
               </div>
               <p className="text-xs text-red-700/80">無効化すると次回ログイン時のTOTP確認が不要になります。現在のMFAコードで確認してください。</p>
               <Input inputMode="numeric" placeholder="現在のMFAコード" value={disableCode} onChange={(event) => setDisableCode(event.target.value)} />
-              <DangerConfirm title="MFAを無効化しますか" description="このアカウントの多要素認証を無効化します。必要な場合は後で再登録してください。" onConfirm={() => disable.mutate()} actionLabel="MFAを無効化">
-                <Button variant="destructive" className="w-full" disabled={disableCode.length < 6 || disable.isPending}>
-                  MFAを無効化
-                </Button>
-              </DangerConfirm>
+              <AccountActionConfirmation
+                controller={actionController}
+                intent={typedIntent("AUTH-17")}
+                authority={authority}
+                refreshAuthority={refreshAuthority}
+                label="MFAを無効化"
+                variant="destructive"
+                className="w-full"
+                disabled={disableCode.length < 6}
+                handler={() => apiPost<{ status: string }>("/auth/mfa/disable", { code: disableCode })}
+                onSucceeded={() => {
+                  secretOwner.dismiss();
+                  setDisableCode("");
+                  setRegistrationInProgress(false);
+                  setRecoveryOnlyResult(false);
+                  setNotice({ tone: "success", text: "MFAを無効化しました。" });
+                  refresh();
+                }}
+                onOutcomeUnknown={outcomeUnknown}
+              />
             </div>
           </div>
         ) : null}
@@ -590,18 +734,12 @@ function MFAPanel({
   );
 }
 
-function RecoveryCodesBlock({ codes, copied, onCopy, recoveryOnly }: { codes: string[]; copied: boolean; onCopy: () => void; recoveryOnly: boolean }) {
+function RecoveryCodesBlock({ codes, recoveryOnly }: { codes: readonly string[]; recoveryOnly: boolean }) {
   return (
     <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-950">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <div className="text-sm font-semibold">{recoveryOnly ? "再発行されたリカバリーコード" : "リカバリーコード"}</div>
-          <p className="mt-1 text-xs text-amber-800">ここに表示されているコードが保存対象です。MFAアプリを使えない時のログインに使います。表示は今回だけです。</p>
-        </div>
-        <Button type="button" variant="outline" size="sm" className="bg-white" onClick={onCopy}>
-          <Copy className="size-4" />
-          {copied ? "コピー済み" : "まとめてコピー"}
-        </Button>
+      <div>
+        <div className="text-sm font-semibold">{recoveryOnly ? "再発行されたリカバリーコード" : "リカバリーコード"}</div>
+        <p className="mt-1 text-xs text-amber-800">MFAアプリを使えない時のログインに使います。この一時表示を確認後に破棄してください。</p>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         {codes.map((code) => (
@@ -644,20 +782,26 @@ function PasskeyPanel({
   username,
   timezone,
   setNotice,
-  onError,
   refresh,
+  actionController,
+  authority,
+  refreshAuthority,
+  accountResourceID,
 }: {
   passkeys: PasskeyCredential[];
   loading: boolean;
   username: string;
   timezone?: string;
   setNotice: (notice: AccountNotice) => void;
-  onError: (error: unknown, fallback: string) => void;
   refresh: () => void;
+  actionController: AccountActionController;
+  authority: AccountAuthoritySnapshot;
+  refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
+  accountResourceID: string;
 }) {
   const [name, setName] = useState("メイン端末");
-  const register = useMutation({
-    mutationFn: async () => {
+  const outcomeUnknown = () => setNotice({ tone: "error", text: "Passkey操作の結果を確認できません。再送せず、登録一覧または監査ログを確認してください。" });
+  const registerPasskey = async () => {
       if (!passkeysSupported()) {
         throw new Error("passkey unsupported");
       }
@@ -666,26 +810,13 @@ function PasskeyPanel({
       if (!credential || !(credential instanceof PublicKeyCredential)) {
         throw new Error("passkey creation cancelled");
       }
-      return apiPost<PasskeyCredential>("/auth/passkeys/register/finish", {
+      await apiPost<PasskeyCredential>("/auth/passkeys/register/finish", {
         registration_token: start.registration_token,
         name: name.trim() || "Passkey",
         credential: passkeyRegistrationCredentialToJSON(credential),
       });
-    },
-    onSuccess: () => {
-      setNotice({ tone: "success", text: "Passkeyを登録しました。" });
-      refresh();
-    },
-    onError: (error) => onError(error, "Passkeyを登録できませんでした"),
-  });
-  const remove = useMutation({
-    mutationFn: (id: string) => apiDelete<void>(`/auth/passkeys/${encodeURIComponent(id)}`),
-    onSuccess: () => {
-      setNotice({ tone: "success", text: "Passkeyを削除しました。" });
-      refresh();
-    },
-    onError: (error) => onError(error, "Passkeyを削除できませんでした"),
-  });
+      return undefined;
+  };
   return (
     <Card>
       <CardHeader>
@@ -698,9 +829,21 @@ function PasskeyPanel({
       <CardContent className="space-y-4">
         <div className="flex gap-2">
           <Input placeholder="Passkey名" value={name} onChange={(event) => setName(event.target.value)} />
-          <Button onClick={() => register.mutate()} disabled={register.isPending}>
-            登録
-          </Button>
+          <AccountActionConfirmation
+            controller={actionController}
+            intent={{ id: "AUTH-19", resourceId: accountResourceID }}
+            authority={authority}
+            refreshAuthority={refreshAuthority}
+            label="登録"
+            variant="default"
+            disabled={!name.trim()}
+            handler={registerPasskey}
+            onSucceeded={() => {
+              setNotice({ tone: "success", text: "Passkeyを登録しました。" });
+              refresh();
+            }}
+            onOutcomeUnknown={outcomeUnknown}
+          />
         </div>
         <div className="space-y-2">
           {passkeys.length === 0 ? <div className="text-sm text-muted-foreground">{loading ? "読み込み中" : "登録済みPasskeyはありません。"}</div> : null}
@@ -710,17 +853,53 @@ function PasskeyPanel({
                 <div className="truncate text-sm font-medium">{passkey.name || "Passkey"}</div>
                 <div className="text-xs text-muted-foreground">最終使用 {passkey.last_used_at ? formatDateTime(passkey.last_used_at, timezone) : "-"}</div>
               </div>
-              <DangerConfirm title="Passkeyを削除" description="このPasskeyではログインできなくなります。" onConfirm={() => remove.mutate(passkey.id)} actionLabel="削除">
-                <Button variant="outline" size="icon-sm" aria-label="Passkeyを削除">
-                  <Trash2 />
-                </Button>
-              </DangerConfirm>
+              <AccountActionConfirmation
+                controller={actionController}
+                intent={{ id: "AUTH-21", resourceId: accountResourceID }}
+                authority={authority}
+                refreshAuthority={refreshAuthority}
+                label="Passkeyを削除"
+                icon={<Trash2 />}
+                handler={() => apiDelete<void>(`/auth/passkeys/${encodeURIComponent(passkey.id)}`)}
+                onSucceeded={() => {
+                  setNotice({ tone: "success", text: "Passkeyを削除しました。" });
+                  refresh();
+                }}
+                onOutcomeUnknown={outcomeUnknown}
+              />
             </div>
           ))}
         </div>
       </CardContent>
     </Card>
   );
+}
+
+function readAccountAuthority(queryClient: ReturnType<typeof useQueryClient>): AccountAuthoritySnapshot {
+  const state = queryClient.getQueryState<CurrentUser>(["auth", "me"]);
+  const current = queryClient.getQueryData<CurrentUser>(["auth", "me"]);
+  if (state?.fetchStatus === "fetching") {
+    return Object.freeze({ session: "authenticated", freshness: "refreshing", revision: accountAuthorityRevision(current) });
+  }
+  if (state?.status !== "success" || !current?.user?.id || !current.user.username) {
+    return Object.freeze({ session: "unavailable", freshness: "unavailable", revision: "unavailable" });
+  }
+  return Object.freeze({
+    session: "authenticated",
+    freshness: "fresh",
+    revision: accountAuthorityRevision(current),
+  });
+}
+
+function accountAuthorityRevision(current: CurrentUser | undefined) {
+  if (!current?.user) return "unavailable";
+  return JSON.stringify([
+    current.user.id,
+    current.user.username,
+    current.user.status ?? "",
+    [...(current.user.roles ?? [])].sort(),
+    [...(current.permissions ?? [])].sort(),
+  ]);
 }
 
 function providerLabel(value: string) {

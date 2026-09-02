@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { Copy, Download, ExternalLink, Link2, Pencil, PlayCircle, RefreshCw, Share2, Trash2 } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Download, ExternalLink, Link2, Pencil, PlayCircle, RefreshCw, Share2, Trash2 } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { ResourcePanel } from "@/features/resources/resource-page";
 import { resourcePages } from "@/features/resources/resource-config";
@@ -17,11 +17,22 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DangerConfirm } from "@/components/admin/danger-confirm";
+import { HighRiskConfirmation, type ConfirmationDialogState } from "@/components/foundation/confirmation/high-risk-confirmation";
+import { ActionAvailabilityBoundary } from "@/components/foundation/permissions/action-availability-boundary";
+import { OneTimeSecretReveal } from "@/components/foundation/secrets/one-time-secret-reveal";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import type { Stream } from "@/types/domain";
 import { archiveArtifactPollInterval } from "@/features/archive/archive-artifact-polling";
 import { archiveRunStartedAt, effectiveArchiveStreamID, isArchiveRecordingArtifact, sortArchiveArtifactsNewest, visibleArchiveProcessingStreams } from "@/features/archive/archive-artifact";
+import {
+  buildArchiveActionDescriptor,
+  createArchiveActionController,
+  type ArchiveActionIntent,
+  type ArchiveActionResult,
+  type ArchiveOpenResult,
+} from "@/features/archive/archive-action-policy";
+import { adoptArchiveShareCapability, type ArchiveShareCapability } from "@/features/archive/archive-share-capability";
+import { createOneTimeSecretLifecycleOwner } from "@/lib/foundation/secrets/lifecycle-owner";
 
 type StreamArtifact = {
   id: string;
@@ -268,13 +279,19 @@ function ArchiveArtifacts({
 }
 
 function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModify }: { streamID: string; artifact: StreamArtifact; timezone?: string; canDownload: boolean; canModify: boolean }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [name, setName] = useState(artifact.name);
   const [message, setMessage] = useState("");
   const [shareHours, setShareHours] = useState("24");
   const [shareAllowDownload, setShareAllowDownload] = useState(true);
-  const [latestShareURL, setLatestShareURL] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [shareOwner] = useState(() => createOneTimeSecretLifecycleOwner<ArchiveShareCapability>({
+    epochNowMs: () => Date.now(),
+    monotonicNowMs: () => Math.floor(typeof performance === "undefined" ? Date.now() : performance.now()),
+    schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  }));
+  const shareSnapshot = useSyncExternalStore(shareOwner.subscribe, shareOwner.getSnapshot, shareOwner.getSnapshot);
   const artifactPath = `/streams/${encodeURIComponent(streamID)}/artifacts/${encodeURIComponent(artifact.id)}`;
   const sharesPath = `${artifactPath}/shares`;
   const playable = isArchiveRecordingArtifact(artifact);
@@ -286,52 +303,52 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
   const invalidateArtifacts = () => queryClient.invalidateQueries({ queryKey: ["resource", `/streams/${encodeURIComponent(streamID)}/artifacts`] });
   const invalidateArchiveStreams = () => queryClient.invalidateQueries({ queryKey: ["archive-streams"] });
   const invalidateShares = () => queryClient.invalidateQueries({ queryKey: ["resource", sharesPath] });
+  const artifactRevision = archiveArtifactRevision(artifact);
+  const actionController = useMemo(() => createArchiveActionController({
+    readAuthority: (intent) => {
+      const permission = intent.id === "ARC-03" || intent.id === "ARC-05" ? canDownload : canModify;
+      return Object.freeze({
+        permission: permission ? "allowed" as const : "denied" as const,
+        freshness: "fresh" as const,
+        applicability: playable ? "applicable" as const : "not-applicable" as const,
+        revision: artifactRevision,
+      });
+    },
+  }), [artifactRevision, canDownload, canModify, playable]);
 
-  const rename = useMutation({
-    mutationFn: () => apiPut<StreamArtifact>(artifactPath, { name }),
-    onSuccess: async () => {
-      setMessage("リネームしました。");
-      await invalidateArtifacts();
-    },
-    onError: (error) => setMessage(archiveErrorMessage(error, "リネームできませんでした。")),
-  });
-  const remove = useMutation({
-    mutationFn: () => apiDelete<{ status: string }>(artifactPath),
-    onSuccess: async () => {
-      setMessage("削除しました。");
-      await invalidateArtifacts();
-      await invalidateArchiveStreams();
-    },
-    onError: (error) => setMessage(archiveErrorMessage(error, "削除できませんでした。")),
-  });
-  const createShare = useMutation({
-    mutationFn: () =>
-      apiPost<StreamArtifactShare>(sharesPath, {
-        expires_in_hours: normalizedShareHours(shareHours),
-        allow_download: shareAllowDownload,
-    }),
-    onSuccess: async (share) => {
-      const url = share.url || (share.token ? `${window.location.origin}/archive/share/?token=${encodeURIComponent(share.token)}` : "");
-      setLatestShareURL(url);
-      setCopied(false);
-      setMessage("共有リンクを作成しました。URLはこの画面で一度だけ表示されます。");
-      await invalidateShares();
-    },
-    onError: (error) => setMessage(archiveErrorMessage(error, "共有リンクを作成できませんでした。")),
-  });
-  const revokeShare = useMutation({
-    mutationFn: (shareID: string) => apiDelete<{ status: string }>(`${sharesPath}/${encodeURIComponent(shareID)}`),
-    onSuccess: async () => {
-      setMessage("共有リンクを停止しました。");
-      await invalidateShares();
-    },
-    onError: (error) => setMessage(archiveErrorMessage(error, "共有リンクを停止できませんでした。")),
+  useEffect(() => {
+    const clearForNavigation = () => { shareOwner.clearForNavigation(); };
+    window.addEventListener("pagehide", clearForNavigation);
+    return () => {
+      window.removeEventListener("pagehide", clearForNavigation);
+      shareOwner.dispose();
+    };
+  }, [shareOwner]);
+
+  const baseIntent = (id: ArchiveActionIntent["id"], shareId?: string): ArchiveActionIntent => ({
+    id,
+    streamId: streamID,
+    artifactId: artifact.id,
+    artifactLabel: artifact.name,
+    ...(shareId ? { shareId } : {}),
   });
 
-  const copyLatestShareURL = async () => {
-    if (!latestShareURL || typeof navigator === "undefined") return;
-    await navigator.clipboard.writeText(latestShareURL);
-    setCopied(true);
+  const handleResult = async (result: ArchiveActionResult, successMessage: string, refresh: () => Promise<unknown> | Promise<unknown>[]) => {
+    if (result.kind === "succeeded") {
+      setMessage(successMessage);
+      const pendingRefresh = refresh();
+      await (Array.isArray(pendingRefresh) ? Promise.all(pendingRefresh) : pendingRefresh);
+      return;
+    }
+    if (result.kind === "outcome_unknown") {
+      setMessage("操作結果を確認できません。再送せず、最新状態または監査ログを確認してください。");
+      return;
+    }
+    if (result.kind === "failed") {
+      setMessage(t(result.error.messageKey));
+      return;
+    }
+    setMessage("最新の権限または状態を確認できないため、操作を送信しませんでした。");
   };
 
   return (
@@ -355,13 +372,37 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
               {playable ? "再生" : "表示"}
             </a>
           </Button>
-          <RoleGuard allowed={canDownload}>{canDownload ? <Button asChild size="sm" variant="outline"><a href={`${artifactPath}/download`}><Download className="size-4" />ダウンロード</a></Button> : <Button size="sm" variant="outline" {...guardedButtonProps(false)}><Download className="size-4" />ダウンロード</Button>}</RoleGuard>
+          <RoleGuard allowed={canDownload}>{canDownload ? <Button asChild size="sm" variant="outline"><a href={`${artifactPath}/download`} onClick={(event) => {
+            const handoff = actionController.downloadHandoff(baseIntent("ARC-05"));
+            if (handoff.kind !== "handoff-ready") {
+              event.preventDefault();
+              setMessage("最新の権限または状態を確認できないため、ダウンロードを開始しませんでした。");
+              return;
+            }
+            setMessage("ブラウザへのダウンロード引き渡しを開始しました。転送完了はブラウザで確認してください。");
+          }}><Download className="size-4" />ダウンロード</a></Button> : <Button size="sm" variant="outline" {...guardedButtonProps(false)}><Download className="size-4" />ダウンロード</Button>}</RoleGuard>
           <div className="grid gap-1"><Input className="h-9 w-full sm:w-44" value={name} onChange={(event) => setName(event.target.value)} aria-label="アーカイブ名" aria-invalid={!nameReady} />{name && !nameReady ? <span className="text-xs text-red-600 dark:text-red-300">ファイル名に / または \\ は使えません。</span> : null}</div>
-          <RoleGuard allowed={canModify}><Button size="sm" variant="outline" onClick={() => rename.mutate()} disabled={!canModify || rename.isPending || !nameReady || name === artifact.name}><Pencil className="size-4" />リネーム</Button></RoleGuard>
           <RoleGuard allowed={canModify}>
-            <DangerConfirm title={`${artifact.name} を削除しますか`} description="Encoderに保管されている録画成果物を削除します。削除後はこの管理画面から復元できません。" onConfirm={() => remove.mutate()} actionLabel="録画を削除">
-              <Button size="sm" variant="destructive" disabled={!canModify || remove.isPending}><Trash2 className="size-4" />削除</Button>
-            </DangerConfirm>
+            <ArchiveActionConfirmation
+              controller={actionController}
+              intent={baseIntent("ARC-01")}
+              label="リネーム"
+              icon={<Pencil className="size-4" />}
+              disabled={!nameReady || name === artifact.name}
+              submit={(opened) => actionController.submit(opened, { confirmed: true }, () => apiPut<StreamArtifact>(artifactPath, { name }))}
+              onResult={(result) => handleResult(result, "リネームしました。", invalidateArtifacts)}
+            />
+          </RoleGuard>
+          <RoleGuard allowed={canModify}>
+            <ArchiveActionConfirmation
+              controller={actionController}
+              intent={baseIntent("ARC-02")}
+              label="削除"
+              icon={<Trash2 className="size-4" />}
+              variant="destructive"
+              submit={(opened) => actionController.submit(opened, { confirmed: true, typedValue: artifact.name }, () => apiDelete<{ status: string }>(artifactPath))}
+              onResult={(result) => handleResult(result, "削除しました。", () => [invalidateArtifacts(), invalidateArchiveStreams()])}
+            />
           </RoleGuard>
         </div>
       </div>
@@ -374,25 +415,47 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
             <Checkbox checked={shareAllowDownload} onCheckedChange={(checked) => setShareAllowDownload(checked === true)} />
             ダウンロード許可
           </label>
-          <Button size="sm" onClick={() => createShare.mutate()} disabled={!canDownload || createShare.isPending || !shareHoursReady}>
-            <Share2 className="size-4" />
-            共有リンク作成
-          </Button>
+          <ArchiveActionConfirmation
+            controller={actionController}
+            intent={baseIntent("ARC-03")}
+            label="共有リンク作成"
+            icon={<Share2 className="size-4" />}
+            disabled={!shareHoursReady}
+            submit={(opened) => actionController.submit(opened, { confirmed: true }, async () => {
+              const share = await apiPost<StreamArtifactShare>(sharesPath, {
+                expires_in_hours: normalizedShareHours(shareHours),
+                allow_download: shareAllowDownload,
+              });
+              const adoption = adoptArchiveShareCapability(shareOwner, share, window.location.origin);
+              if (!adoption.adopted) throw new APIError("Invalid archive share response.", 502, "invalid_archive_share_response");
+              return adoption.publicResult;
+            })}
+            onResult={(result) => handleResult(result, "共有リンクを作成しました。明示的に表示した場合だけ確認できます。", invalidateShares)}
+          />
         </div>
         {!shareHoursReady ? <p className="mt-2 text-xs text-red-600 dark:text-red-300">共有期限は1時間から720時間の範囲で入力してください。</p> : null}
-        {latestShareURL ? (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Input className="h-9 min-w-0 flex-[1_1_22rem]" value={latestShareURL} readOnly aria-label="作成した共有URL" />
-            <Button size="sm" variant="outline" onClick={copyLatestShareURL}>
-              <Copy className="size-4" />
-              {copied ? "コピー済み" : "コピー"}
-            </Button>
-            <Button asChild size="sm" variant="outline">
-              <a href={latestShareURL} target="_blank" rel="noreferrer">
-                <ExternalLink className="size-4" />
-                開く
-              </a>
-            </Button>
+        {shareSnapshot.generation > 0 ? (
+          <div className="mt-3">
+            <OneTimeSecretReveal
+              snapshot={shareSnapshot}
+              translate={t}
+              renderRevealedContent={() => {
+                const capability = shareOwner.readRevealedValue();
+                return capability ? (
+                  <div className="space-y-2">
+                    <Input className="h-9" value={capability.url} readOnly aria-label="今回作成した共有URL" />
+                    <Button asChild size="sm" variant="outline"><a href={capability.url} target="_blank" rel="noreferrer"><ExternalLink className="size-4" />開く</a></Button>
+                  </div>
+                ) : <span />;
+              }}
+              canCopy
+              onRevealIntent={() => { shareOwner.reveal(); }}
+              onConcealIntent={() => { shareOwner.conceal(); }}
+              onCopyIntent={() => { void shareOwner.copyWith((capability) => navigator.clipboard.writeText(capability.url)); }}
+              onAcknowledgeIntent={() => { shareOwner.acknowledge(); }}
+              onDismissIntent={() => { shareOwner.dismiss(); }}
+              onUnmountIntent={() => { shareOwner.dispose(); }}
+            />
           </div>
         ) : null}
         <div className="mt-3 space-y-2">
@@ -408,7 +471,15 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
                   <span className="truncate">期限: {formatDateTime(share.expires_at, timezone)}</span>
                   <span className="text-muted-foreground">{share.allow_download ? "DL許可" : "再生のみ"}</span>
                 </div>
-                <RoleGuard allowed={canModify}><DangerConfirm title="この共有リンクを停止しますか" description="停止すると、このリンクを知っている利用者も録画を開けなくなります。" onConfirm={() => revokeShare.mutate(share.id)} actionLabel="共有を停止"><Button size="sm" variant="outline" disabled={!canModify || revokeShare.isPending}>停止</Button></DangerConfirm></RoleGuard>
+                <RoleGuard allowed={canModify}>
+                  <ArchiveActionConfirmation
+                    controller={actionController}
+                    intent={baseIntent("ARC-04", share.id)}
+                    label="共有を停止"
+                    submit={(opened) => actionController.submit(opened, { confirmed: true }, () => apiDelete<{ status: string }>(`${sharesPath}/${encodeURIComponent(share.id)}`))}
+                    onResult={(result) => handleResult(result, "共有リンクを停止しました。", invalidateShares)}
+                  />
+                </RoleGuard>
               </div>
             ))
           )}
@@ -418,21 +489,99 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
   );
 }
 
-function archiveErrorMessage(error: Error, fallback: string) {
-  if (error instanceof APIError) {
-    const messages: Record<string, string> = {
-      invalid_stream_artifact: "ファイル名に使えない文字または拡張子があります。",
-      stream_artifact_exists: "同じ名前のアーカイブが既にあります。",
-      missing_stream_assignments: "Primary Encoder Nodeが配信枠に割り当てられていません。",
-      archive_artifact_delete_failed: "Encoder側の削除に失敗しました。",
-      archive_artifact_rename_failed: "Encoder側のリネームに失敗しました。",
-      archive_share_download_disabled: "この共有リンクではダウンロードが許可されていません。",
-      archive_share_expired: "共有リンクの期限が切れています。",
-      archive_share_revoked: "共有リンクは停止済みです。",
-    };
-    return messages[error.code || ""] || fallback;
+type ArchiveActionController = ReturnType<typeof createArchiveActionController>;
+
+function ArchiveActionConfirmation({
+  controller,
+  intent,
+  label,
+  icon,
+  variant = "outline",
+  disabled = false,
+  submit,
+  onResult,
+}: Readonly<{
+  controller: ArchiveActionController;
+  intent: ArchiveActionIntent;
+  label: string;
+  icon?: ReactNode;
+  variant?: "outline" | "destructive";
+  disabled?: boolean;
+  submit: (opened: Extract<ArchiveOpenResult, { kind: "allowed" }>) => Promise<ArchiveActionResult>;
+  onResult: (result: ArchiveActionResult) => void | Promise<void>;
+}>) {
+  const { t } = useI18n();
+  const descriptor = buildArchiveActionDescriptor(intent);
+  const initial = controller.open(intent);
+  const evaluation = archiveEvaluation(initial);
+  const [opened, setOpened] = useState<Extract<ArchiveOpenResult, { kind: "allowed" }>>();
+  const [state, setState] = useState<ConfirmationDialogState>({ kind: "ready" });
+  if (!descriptor) return null;
+  const handleConfirm = async () => {
+    if (!opened) return;
+    setState({ kind: "submitting" });
+    const result = await submit(opened);
+    await onResult(result);
+    if (result.kind === "succeeded") {
+      setOpened(undefined);
+      setState({ kind: "ready" });
+    } else if (result.kind === "outcome_unknown") {
+      setState({ kind: "outcome-unknown", nextAction: result.nextAction });
+    } else if (result.kind === "failed") {
+      setState(result.error.kind === "conflict"
+        ? { kind: "conflict", error: result.error }
+        : { kind: "failed", error: result.error });
+    } else {
+      setState(result.reason === "authority-changed" ? { kind: "stale-blocked" } : { kind: "revalidation-unavailable" });
+    }
+  };
+  return (
+    <ActionAvailabilityBoundary evaluation={evaluation} translate={t} reasonPresentation="sr-only">
+      {(availabilityProps) => (
+        <HighRiskConfirmation
+          descriptor={descriptor}
+          open={opened !== undefined}
+          evaluation={evaluation}
+          state={state}
+          translate={t}
+          trigger={(confirmationProps) => (
+            <Button type="button" size="sm" variant={variant} {...availabilityProps} disabled={disabled || availabilityProps.disabled || confirmationProps.disabled}>
+              {icon}{label}
+            </Button>
+          )}
+          onOpenIntent={() => {
+            const next = controller.open(intent);
+            if (next.kind === "allowed") {
+              setOpened(next);
+              setState({ kind: "ready" });
+            } else {
+              setState({ kind: "revalidation-unavailable" });
+            }
+          }}
+          onCloseIntent={() => {
+            setOpened(undefined);
+            setState({ kind: "ready" });
+          }}
+          onConfirmIntent={() => { void handleConfirm(); }}
+        />
+      )}
+    </ActionAvailabilityBoundary>
+  );
+}
+
+function archiveEvaluation(result: ArchiveOpenResult) {
+  if (result.kind === "allowed") return Object.freeze({ visibility: Object.freeze({ kind: "visible" as const }), availability: Object.freeze({ kind: "allowed" as const }) });
+  if (result.reason === "not-applicable" || result.reason === "invalid-intent") {
+    return Object.freeze({ visibility: Object.freeze({ kind: "hidden" as const, reason: "not-applicable" as const }), availability: Object.freeze({ kind: "blocked" as const, reasonKey: "actionStateBlocked" as const }) });
   }
-  return fallback;
+  if (result.reason === "permission-denied") {
+    return Object.freeze({ visibility: Object.freeze({ kind: "visible" as const }), availability: Object.freeze({ kind: "denied" as const, reasonKey: "actionPermissionDenied" as const }) });
+  }
+  return Object.freeze({ visibility: Object.freeze({ kind: "visible" as const }), availability: Object.freeze({ kind: "unknown" as const, reasonKey: "actionPermissionUnknown" as const }) });
+}
+
+function archiveArtifactRevision(artifact: StreamArtifact) {
+  return JSON.stringify([artifact.id, artifact.name, artifact.size_bytes, artifact.created_at, artifact.archive_run_id ?? null]);
 }
 
 function archiveListErrorMessage(error: unknown) {
@@ -441,7 +590,7 @@ function archiveListErrorMessage(error: unknown) {
     if (error.code === "unauthorized" || error.status === 401) return "ログインセッションが切れています。再ログインしてから再試行してください。";
     if (error.code === "permission_denied" || error.status === 403) return "録画成果物を表示する権限がありません。管理者に権限を確認してください。";
     if (error.code === "list_stream_artifacts_failed" || error.status >= 500) return "録画成果物を取得できませんでした。Control PanelまたはMariaDBの状態を確認して再試行してください。";
-    return `録画成果物を取得できませんでした。(code: ${error.code || "api_error"})`;
+    return "録画成果物を取得できませんでした。最新状態を確認して再試行してください。";
   }
   return "録画成果物を取得できませんでした。通信状態を確認して再試行してください。";
 }

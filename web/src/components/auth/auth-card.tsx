@@ -5,19 +5,24 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { KeyRound, Moon, RadioTower, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TurnstileWidget } from "@/components/auth/turnstile-widget";
 import { APIError, apiGet, apiPost, clearCSRFToken, setCSRFToken } from "@/lib/api/client";
+import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import { safePostLoginPath } from "@/lib/auth/post-login-redirect";
 import { passkeyAssertionCredentialToJSON, passkeysSupported, publicKeyRequestOptionsFromJSON } from "@/lib/passkeys";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useTheme } from "@/components/admin/theme-provider";
 import { useAppSettings, useSetupStatus } from "@/features/queries";
-import type { OAuthLinkStartResponse, OAuthLoginProvider, PasskeyLoginStart } from "@/types/domain";
+import type { OAuthLinkStartResponse, OAuthLoginProvider, PasskeyLoginStart, SetupStatus } from "@/types/domain";
+import { AccountActionConfirmation } from "@/features/account/account-action-confirmation";
+import { createAccountActionController, type AccountAuthoritySnapshot } from "@/features/account/account-action-policy";
+import { validatedOAuthRedirect } from "@/features/account/oauth-redirect-handoff";
+import type { TranslationKey, TranslationValues } from "@/lib/i18n";
 
 type LoginResponse = {
   csrf_token?: string;
@@ -75,7 +80,7 @@ export function LoginCard() {
       router.replace(postLoginPath);
     } catch (error) {
       resetTurnstile();
-      setMessage(authErrorMessage(error, "ログインできませんでした。ユーザー名とパスワードを確認してください。"));
+      setMessage(authErrorMessage(error, "ログインできませんでした。ユーザー名とパスワードを確認してください。", t));
     } finally {
       setBusy(false);
     }
@@ -90,7 +95,7 @@ export function LoginCard() {
       setCSRFToken(body.csrf_token);
       router.replace(postLoginPath);
     } catch (error) {
-      setMessage(authErrorMessage(error, "2FAコードを確認してください。"));
+      setMessage(authErrorMessage(error, "2FAコードを確認してください。", t));
     } finally {
       setBusy(false);
     }
@@ -104,10 +109,10 @@ export function LoginCard() {
         redirect_after: postLoginPath,
         turnstile_token: turnstileToken,
       });
-      window.location.assign(body.authorization_url);
+      window.location.assign(validatedOAuthRedirect(body.authorization_url));
     } catch (error) {
       resetTurnstile();
-      setMessage(authErrorMessage(error, "OAuthログインを開始できませんでした。"));
+      setMessage(authErrorMessage(error, "OAuthログインを開始できませんでした。", t));
       setBusy(false);
     }
   };
@@ -142,7 +147,7 @@ export function LoginCard() {
       router.replace(postLoginPath);
     } catch (error) {
       resetTurnstile();
-      setMessage(authErrorMessage(error, "Passkeyでログインできませんでした。"));
+      setMessage(authErrorMessage(error, "Passkeyでログインできませんでした。", t));
     } finally {
       setBusy(false);
     }
@@ -204,37 +209,44 @@ export function EmailConfirmCard({ token }: { token?: string }) {
   const [turnstileToken, setTurnstileToken] = useState("");
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
   const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
   const turnstileSiteKey = appSettings.data?.turnstile_site_key || "";
   const tokenFromURL = searchParams.get("token") || searchParams.get("t") || searchParams.get("confirmation_token") || "";
   const trimmedToken = (token || tokenFromURL).trim();
+  const authority = emailConfirmationAuthority(trimmedToken);
+  const actionController = useMemo(() => createAccountActionController({
+    readAuthority: () => emailConfirmationAuthority(trimmedToken),
+  }), [trimmedToken]);
 
-  const confirm = async (event: FormEvent) => {
-    event.preventDefault();
-    setBusy(true);
-    setMessage("");
+  const confirm = async () => {
     try {
-      const body = await apiPost<{ status: string; target?: string }>("/auth/email/confirm", { token: trimmedToken, turnstile_token: turnstileToken });
-      setMessage(body.target ? `メールアドレスを変更しました。宛先: ${body.target}` : "メールアドレスを変更しました。");
+      return await apiPost<{ status: string; target?: string }>("/auth/email/confirm", { token: trimmedToken, turnstile_token: turnstileToken });
     } catch (error) {
       setTurnstileToken("");
       setTurnstileResetKey((value) => value + 1);
-      setMessage(authErrorMessage(error, "メールアドレス変更を確認できませんでした。"));
-    } finally {
-      setBusy(false);
+      throw error;
     }
   };
 
   return (
     <AuthFrame title="メールアドレス変更確認" description="ワンタイムURLの確認を完了します。">
-      <form className="space-y-3" onSubmit={confirm}>
+      <form className="space-y-3" onSubmit={(event) => event.preventDefault()}>
         {!trimmedToken ? <p className="text-sm text-destructive">確認トークンがありません。</p> : null}
         {turnstileEnabled ? <TurnstileWidget siteKey={turnstileSiteKey} action="email_confirm" resetKey={turnstileResetKey} onToken={setTurnstileToken} /> : null}
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
-        <Button className="w-full" type="submit" disabled={busy || !trimmedToken || (turnstileEnabled && !turnstileToken)}>
-          確認する
-        </Button>
+        <AccountActionConfirmation
+          controller={actionController}
+          intent={{ id: "AUTH-07", resourceId: "email-change" }}
+          authority={authority}
+          refreshAuthority={async () => emailConfirmationAuthority(trimmedToken)}
+          label="確認する"
+          variant="default"
+          className="w-full"
+          disabled={!trimmedToken || (turnstileEnabled && !turnstileToken)}
+          handler={confirm}
+          onSucceeded={() => setMessage("メールアドレスを変更しました。")}
+          onOutcomeUnknown={() => setMessage("変更結果を確認できません。再送せず、ログイン後のアカウント状態を確認してください。")}
+        />
       </form>
       <Button asChild variant="outline" className="w-full">
         <Link href="/login">ログインへ戻る</Link>
@@ -243,7 +255,11 @@ export function EmailConfirmCard({ token }: { token?: string }) {
   );
 }
 
-function authErrorMessage(error: unknown, fallback: string) {
+function authErrorMessage(
+  error: unknown,
+  fallback: string,
+  translate: (key: TranslationKey, values?: TranslationValues) => string,
+) {
   if (error instanceof APIError) {
     const messages: Record<string, string> = {
       invalid_credentials: "ユーザー名またはパスワードを確認してください。",
@@ -264,9 +280,24 @@ function authErrorMessage(error: unknown, fallback: string) {
       turnstile_not_configured: "BOT確認設定が未完了です。管理者に確認してください。",
       invalid_email_change_token: "メールアドレス変更URLの有効期限が切れています。",
     };
-    return messages[error.code || ""] || `${fallback} (${error.code || error.status})`;
+    if (messages[error.code || ""]) return messages[error.code || ""];
   }
-  return fallback;
+  const adapted = adaptAPIError(error);
+  return adapted.kind === "unknown" ? fallback : translate(adapted.messageKey);
+}
+
+function emailConfirmationAuthority(token: string): AccountAuthoritySnapshot {
+  return token
+    ? Object.freeze({ session: "one-time-token", freshness: "fresh", revision: "email-confirmation-present" })
+    : Object.freeze({ session: "unavailable", freshness: "unavailable", revision: "email-confirmation-missing" });
+}
+
+function setupAuthority(status: SetupStatus | undefined, fetching: boolean): AccountAuthoritySnapshot {
+  if (fetching) return Object.freeze({ session: "setup", freshness: "refreshing", revision: "setup-refreshing" });
+  if (!status?.setup_enabled || !status.setup_required) {
+    return Object.freeze({ session: "unavailable", freshness: "fresh", revision: "setup-unavailable" });
+  }
+  return Object.freeze({ session: "setup", freshness: "fresh", revision: "setup-enabled-required" });
 }
 
 function oauthMFAChallengeFromHash() {
@@ -284,21 +315,13 @@ export function SetupCard() {
   const [password, setPassword] = useState("");
   const [setupToken, setSetupToken] = useState("");
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const create = async (event: FormEvent) => {
-    event.preventDefault();
-    setBusy(true);
-    setMessage("");
-    try {
-      await apiPost("/setup/first-admin", { username, password, setup_token: setupToken });
-      setMessage("初期管理者を作成しました。ログインページへ進みます。");
-      setTimeout(() => router.push("/login"), 600);
-    } catch {
-      setMessage("初期作成に失敗しました。セットアップトークン、ユーザー名、設定された最低文字数を満たすパスワードを確認してください。");
-    } finally {
-      setBusy(false);
-    }
+  const authority = setupAuthority(setupStatus.data, setupStatus.isFetching);
+  const actionController = useMemo(() => createAccountActionController({
+    readAuthority: () => setupAuthority(setupStatus.data, setupStatus.isFetching),
+  }), [setupStatus.data, setupStatus.isFetching]);
+  const refreshAuthority = async () => {
+    const result = await setupStatus.refetch();
+    return setupAuthority(result.data, false);
   };
 
   const disabled = setupStatus.data ? !setupStatus.data.setup_required : false;
@@ -318,14 +341,29 @@ export function SetupCard() {
           へ進んでください。
         </div>
       ) : null}
-      <form className="space-y-3" onSubmit={create}>
-        <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" disabled={disabled || busy} />
-        <Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="new-password" disabled={disabled || busy} />
-        <Input value={setupToken} onChange={(event) => setSetupToken(event.target.value)} placeholder="Setup token" type="password" disabled={disabled || busy} />
+      <form className="space-y-3" onSubmit={(event) => event.preventDefault()}>
+        <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" disabled={disabled} />
+        <Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="new-password" disabled={disabled} />
+        <Input value={setupToken} onChange={(event) => setSetupToken(event.target.value)} placeholder="Setup token" type="password" disabled={disabled} />
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
-        <Button className="w-full" type="submit" disabled={disabled || busy}>
-          {t("createFirstAdmin")}
-        </Button>
+        <AccountActionConfirmation
+          controller={actionController}
+          intent={{ id: "AUTH-01", resourceId: "first-admin", publicUsername: username }}
+          authority={authority}
+          refreshAuthority={refreshAuthority}
+          label={t("createFirstAdmin")}
+          variant="default"
+          className="w-full"
+          disabled={disabled || !username.trim() || !password || !setupToken}
+          handler={() => apiPost("/setup/first-admin", { username, password, setup_token: setupToken })}
+          onSucceeded={() => {
+            setPassword("");
+            setSetupToken("");
+            setMessage("初期管理者を作成しました。ログインページへ進みます。");
+            setTimeout(() => router.push("/login"), 600);
+          }}
+          onOutcomeUnknown={() => setMessage("初期作成の結果を確認できません。再送せず、ログイン可能か確認してください。")}
+        />
       </form>
     </AuthFrame>
   );
