@@ -505,6 +505,10 @@ jobs:
         env:
           AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
         run: npm run test:control-platform-browser
+      - name: Test Bundle 6 Observability and Updater UI witnesses
+        run: npm run test:bundle6-witnesses
+      - name: Test Bundle 6 migrated action denominator
+        run: npm run test:bundle6-features
       - run: npm run test:system-updates
       - run: npm run test:stream-regressions
       - run: npm run lint

@@ -19,6 +19,8 @@
     "test:notifications": "node --no-warnings --test tests/notification-channel.test.mts",
     "test:observability-ui": "node --no-warnings --test tests/observability-ui-regressions.test.mts",
     "test:system-updates": "node --no-warnings --test tests/system-updates.test.mts",
+    "test:bundle6-features": "node --no-warnings --test tests/node-foundation-migration.test.mts tests/account-archive-foundation-migration.test.mts tests/observability-actions.test.mts tests/updater-foundation-migration.test.mts",
+    "test:bundle6-witnesses": "node --no-warnings --test tests/bundle6-witness-gate.test.mts && node --no-warnings tests/helpers/run-bundle6-witnesses.mts",
     "test:stream-create": "node --no-warnings --test tests/stream-create.test.mts",
     "test:preview": "node --no-warnings --test tests/stream-preview.test.mts",
     "test:stream-regressions": "node --no-warnings --test tests/stream-create.test.mts tests/stream-preview.test.mts tests/archive-artifact-refresh.test.mts tests/resource-page-observability-actions.test.mts tests/stream-static-relay-recovery.test.mts tests/youtube-output-static-relay.test.mts tests/navigation-section.test.mts tests/service-health.test.mts"

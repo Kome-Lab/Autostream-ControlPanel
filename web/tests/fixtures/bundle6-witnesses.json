@@ -1,0 +1,58 @@
+{
+  "format_version": 1,
+  "expected_task_count": 2,
+  "witnesses": [
+    {
+      "task_id": "UI-FOUNDATION-001B-B09C-OBSERVABILITY",
+      "objective_clauses": [
+        "permission and applicability are evaluated for all five observability actions",
+        "confirmation and ambiguous outcomes never cause an automatic resend"
+      ],
+      "production_sources": [
+        "src/features/observability/action-policy.ts",
+        "src/features/resources/resource-page.tsx"
+      ],
+      "behaviors": [
+        "exact permission and state applicability for OBS-01 through OBS-05",
+        "duplicate and ambiguous mutation outcomes remain fail closed"
+      ],
+      "behavior_test": "tests/observability-actions.test.mts",
+      "package_script": "test:bundle6-witnesses",
+      "workflow_command": "npm run test:bundle6-witnesses",
+      "primary_oracle": "runtime-behavior",
+      "required_scenarios": [
+        "observability action policy preserves all five exact authorities and state applicability",
+        "observability duplicate and ambiguous outcomes never resend a mutation"
+      ]
+    },
+    {
+      "task_id": "UI-FOUNDATION-001B-B09E-UPDATER-UI",
+      "objective_clauses": [
+        "independent Updater state remains distinct from target reachability",
+        "confirmation uses fresh context and response loss is reconciled without blind resend"
+      ],
+      "production_sources": [
+        "src/lib/system-updates.ts",
+        "src/features/application/application-info-view.tsx",
+        "src/features/application/updater-settings-panel.tsx",
+        "src/features/application/updater-host-bootstrap-panel.tsx"
+      ],
+      "behaviors": [
+        "partial and unavailable independent Updater state is fail closed",
+        "fresh confirmation context is required",
+        "ambiguous outcomes use lookup reconciliation without POST resend"
+      ],
+      "behavior_test": "tests/system-updates.test.mts",
+      "package_script": "test:bundle6-witnesses",
+      "workflow_command": "npm run test:bundle6-witnesses",
+      "primary_oracle": "runtime-behavior",
+      "required_scenarios": [
+        "operation eligibility is strict when reported while legacy software eligibility stays compatible",
+        "port reconfiguration response loss never resends POST and remains visibly ambiguous",
+        "bootstrap ambiguity keeps only one identity and later recovery polls never POST again",
+        "bootstrap confirmation follows fresh updater client-key rotation instead of stale settings",
+        "central updater availability and target host reachability stay independent and fail closed"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { usePathname } from "next/navigation";
 import { KeyRound, Pencil, RotateCw, Server, Trash2 } from "lucide-react";
@@ -223,13 +223,12 @@ function NodeFoundationActionButton({
 }>) {
   const { t } = useI18n();
   const descriptor = buildNodeActionDescriptor(intent);
-  const intentRef = useRef(intent);
-  intentRef.current = intent;
+  const readIntent = useEffectEvent(() => intent);
   const intentFingerprint = nodeActionFingerprint(intent);
   const [, setProjectionGeneration] = useState(0);
   useEffect(() => {
     let current = true;
-    const preparedIntent = intentRef.current;
+    const preparedIntent = readIntent();
     void controller.prepare(preparedIntent).finally(() => {
       if (current) setProjectionGeneration((generation) => generation + 1);
     });
