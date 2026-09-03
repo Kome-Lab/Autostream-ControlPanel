@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "scope": [
+    "web/src/features/audit/audit-logs-view.tsx",
+    "web/src/features/workers/workers-view.tsx",
+    "web/src/features/nodes/node-registration-view.tsx",
+    "web/src/features/archive/archive-view.tsx",
+    "web/src/features/settings/settings-view.tsx"
+  ],
+  "unownedResidualCount": 0,
+  "reviewedLaterOwnerRecordCount": 10,
+  "expectedEvidenceRecordCount": 10,
+  "records": [
+    {
+      "id": "W3C-AUDIT-HARDCODED-COPY",
+      "category": "hard-coded-user-facing-strings",
+      "path": "web/src/features/audit/audit-logs-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 29,
+      "sha256": "e52ffd383fb14479e203fb90f671bc490e7ce0cc7a70e8b78c014612c7cfb344",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION",
+      "ownerMilestone": "Bundle 9"
+    },
+    {
+      "id": "W3C-AUDIT-MISSING-I18N",
+      "category": "missing-ja-en-keys",
+      "path": "web/src/features/audit/audit-logs-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 29,
+      "sha256": "e52ffd383fb14479e203fb90f671bc490e7ce0cc7a70e8b78c014612c7cfb344",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION",
+      "ownerMilestone": "Bundle 9"
+    },
+    {
+      "id": "W3C-NODES-HARDCODED-COPY",
+      "category": "hard-coded-user-facing-strings",
+      "path": "web/src/features/nodes/node-registration-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 150,
+      "sha256": "50b9137772559c5c9001564e58be3cb9775bae0e9654ab5c9d3908a1e7177942",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "Node A3",
+      "ownerMilestone": "V2_RC"
+    },
+    {
+      "id": "W3C-NODES-MISSING-I18N",
+      "category": "missing-ja-en-keys",
+      "path": "web/src/features/nodes/node-registration-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 150,
+      "sha256": "50b9137772559c5c9001564e58be3cb9775bae0e9654ab5c9d3908a1e7177942",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "Node A3",
+      "ownerMilestone": "V2_RC"
+    },
+    {
+      "id": "W3C-NODES-LEGACY-CONFIRMATION",
+      "category": "old-direct-confirmation-path",
+      "path": "web/src/features/nodes/node-registration-view.tsx",
+      "matcher": "danger-confirm-line",
+      "matchCount": 5,
+      "sha256": "01e75d81c06eaa6c7c3597bbe880db6dc3ed8d4c0393d41ba333cbfbed889800",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "Node A3",
+      "ownerMilestone": "V2_RC"
+    },
+    {
+      "id": "W3C-NODES-LEGACY-WRITES",
+      "category": "old-unguarded-action-path",
+      "path": "web/src/features/nodes/node-registration-view.tsx",
+      "matcher": "legacy-write-line",
+      "matchCount": 5,
+      "sha256": "d8a666008d8daa88cbd6c8588e0a5d821df696dc7d38b4a6ccfb32da878f30ec",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "Node A3",
+      "ownerMilestone": "V2_RC"
+    },
+    {
+      "id": "W3C-ARCHIVE-HARDCODED-COPY",
+      "category": "hard-coded-user-facing-strings",
+      "path": "web/src/features/archive/archive-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 61,
+      "sha256": "2a894f72f98a6dac2937eeb44d2d86714badaf4d543453210f466535ac314658",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION",
+      "ownerMilestone": "Bundle 9"
+    },
+    {
+      "id": "W3C-ARCHIVE-MISSING-I18N",
+      "category": "missing-ja-en-keys",
+      "path": "web/src/features/archive/archive-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 61,
+      "sha256": "2a894f72f98a6dac2937eeb44d2d86714badaf4d543453210f466535ac314658",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION",
+      "ownerMilestone": "Bundle 9"
+    },
+    {
+      "id": "W3C-SETTINGS-HARDCODED-COPY",
+      "category": "hard-coded-user-facing-strings",
+      "path": "web/src/features/settings/settings-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 28,
+      "sha256": "048431cc3732076ea4b4dccd4035a0d25d182d8c0ef07f2acf994fa6eb8fe881",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION",
+      "ownerMilestone": "Bundle 9"
+    },
+    {
+      "id": "W3C-SETTINGS-MISSING-I18N",
+      "category": "missing-ja-en-keys",
+      "path": "web/src/features/settings/settings-view.tsx",
+      "matcher": "japanese-line",
+      "matchCount": 28,
+      "sha256": "048431cc3732076ea4b4dccd4035a0d25d182d8c0ef07f2acf994fa6eb8fe881",
+      "disposition": "reviewed-later-owner",
+      "ownerTask": "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION",
+      "ownerMilestone": "Bundle 9"
+    }
+  ]
+}

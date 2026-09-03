@@ -24,7 +24,10 @@ import { ActionAvailabilityBoundary } from "@/components/foundation/permissions/
 import { RemoteStateBoundary } from "@/components/foundation/remote-state/remote-state-boundary";
 import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
 import { hasPermission } from "@/lib/auth/permissions";
+import { remoteStateAllowsPositiveSummary } from "@/lib/foundation/remote-state/aggregate";
 import { useCurrentUser, useNodes, useServiceHealth, useWorkers } from "@/features/queries";
+import { aggregateRemainingQueries, knownEmptyRemainingQuery, remainingQuerySnapshot } from "@/features/remote-state/remaining-remote-state";
+import { RemainingStateNotice } from "@/features/remote-state/remaining-state-notice";
 import { useI18n } from "@/components/admin/i18n-provider";
 import type { WorkerNode } from "@/types/domain";
 import { formatNodeMetricPercent, formatWorkerHeartbeat } from "./node-operational-display";
@@ -87,11 +90,20 @@ export function WorkersView() {
   const [copied, setCopied] = useState("");
   const [restartDialog, setRestartDialog] = useState<RestartDialogModel | null>(null);
   const [restartNotice, setRestartNotice] = useState("");
+  const remoteState = aggregateRemainingQueries("workers", {
+    workers: canReadWorkers ? remainingQuerySnapshot(workers) : knownEmptyRemainingQuery(),
+    "registered-nodes": canReadRegisteredNodes ? remainingQuerySnapshot(registeredNodes) : knownEmptyRemainingQuery(),
+    "service-health": canReadServiceHealth ? remainingQuerySnapshot(serviceHealth) : knownEmptyRemainingQuery(),
+  });
 
   const rows = mergeOperationalNodes(workers.data || [], registeredNodes.data || [], serviceHealth.data || []);
   const operationalSummary = summarizeWorkerOperations(rows);
   const activeJobs = rows.reduce((sum, node) => sum + Number(node.metrics?.active_jobs || node.metrics?.runningJobs || 0), 0);
   const warning = operationalSummary.attention;
+  const summaryConfirmed = remoteStateAllowsPositiveSummary(remoteState, 0, canReadWorkers || canReadRegisteredNodes || canReadServiceHealth);
+  const onlineValue = rows.length > 0 || summaryConfirmed ? `${operationalSummary.healthy}/${operationalSummary.total}` : "—";
+  const attentionValue = rows.length > 0 || summaryConfirmed ? warning : "—";
+  const unknownSummaryDetail = locale === "ja" ? "全Nodeの最新状態を確認できません" : "The latest state of every node is unavailable";
 
   const copyValue = async (key: string, value?: string) => {
     if (!value) return;
@@ -238,9 +250,9 @@ export function WorkersView() {
   return (
     <div className="space-y-4">
       <section className="grid gap-4 md:grid-cols-3">
-        <MetricCard title={t("onlineNodes")} value={`${operationalSummary.healthy}/${operationalSummary.total}`} detail={t("statusNodeHealthy")} tone={warning > 0 ? "warning" : "ok"} />
+        <MetricCard title={t("onlineNodes")} value={onlineValue} detail={summaryConfirmed ? t("statusNodeHealthy") : unknownSummaryDetail} tone={summaryConfirmed && warning === 0 ? "ok" : "warning"} />
         <MetricCard title={t("workerActiveJobs")} value={activeJobs} detail={t("workerCurrentlyProcessing")} />
-        <MetricCard title={t("attentionRequired")} value={warning} detail={t("workerAttentionDetail")} tone={warning > 0 ? "danger" : "ok"} />
+        <MetricCard title={t("attentionRequired")} value={attentionValue} detail={summaryConfirmed ? t("workerAttentionDetail") : unknownSummaryDetail} tone={warning > 0 ? "danger" : summaryConfirmed ? "ok" : "warning"} />
       </section>
 
       {restartNotice ? <p role="status" className="rounded-md border bg-muted px-3 py-2 text-sm">{restartNotice}</p> : null}
@@ -291,11 +303,7 @@ export function WorkersView() {
           <p className="text-sm text-muted-foreground">{t("workerPageDescription")}</p>
         </CardHeader>
         <CardContent>
-          {registeredNodes.isError || serviceHealth.isError ? (
-            <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100" role="status">
-              {t("workerPartialNodeInformation")}
-            </div>
-          ) : null}
+          {remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh" ? <div className="mb-3"><RemainingStateNotice state={remoteState} consumer="workers" /></div> : null}
           <WorkerActionsContext.Provider value={workerActionsContextValue}>
             <DataTable columns={columns} data={rows} filterPlaceholder={t("workerFilterPlaceholder")} getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
           </WorkerActionsContext.Provider>

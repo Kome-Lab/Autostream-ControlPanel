@@ -16,7 +16,7 @@ import { StreamActionControl } from "@/features/streams/stream-action-control";
 import { createStreamActionController, type StreamActionExecutionResult } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent } from "@/features/streams/stream-action-descriptors";
 import { streamActionBlockedMessage, streamActionLabel } from "@/features/streams/stream-action-feedback";
-import { mutateStreamAction, streamActionStateSnapshot, streamPermissionSnapshot } from "@/features/streams/stream-action-runtime";
+import { mutateStreamAction, refreshStreamActionAuthority, streamActionStateSnapshot, streamPermissionSnapshot } from "@/features/streams/stream-action-runtime";
 import { StreamDetailsDialog } from "@/features/streams/stream-details-dialog";
 import { streamStatusAllowsDelete, streamStatusAllowsEdit, streamStatusAllowsForceStop, streamStatusAllowsStart, streamStatusAllowsStop } from "@/features/streams/stream-lifecycle";
 import { StreamSlotForm } from "@/features/streams/stream-slot-form";
@@ -42,6 +42,7 @@ export function StreamsView() {
   const [editingStream, setEditingStream] = useState<Stream | null>(null);
   const [selectedStream, setSelectedStream] = useState<Stream | null>(null);
   const [actionNotice, setActionNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const [, setActionAuthorityRevision] = useState(0);
 
   useEffect(() => {
     const syncFromHash = () => setCreateOpen(window.location.hash === "#create-stream");
@@ -74,10 +75,23 @@ export function StreamsView() {
     } else {
       setActionNotice({ tone: "error", message: streamActionBlockedMessage(result.reason) });
     }
+    if (result.kind === "failed" && intent.id === "STR-08") {
+      // The control clears its latch only when both permission and resource
+      // authorities have completed a safe read-only refresh.
+      return refreshStreamActionAuthority(queryClient).then((refreshed) => {
+        if (refreshed) {
+          actionController.reconcile(intent);
+          // Query data replacement can remount a row control. Re-render the
+          // feature owner so the current control evaluates the cleared latch.
+          setActionAuthorityRevision((revision) => revision + 1);
+        }
+        return refreshed;
+      });
+    }
     // Reconciliation fetches are safe and never resend the mutation.
     void queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
     void queryClient.invalidateQueries({ queryKey: ["streams"] });
-  }, [queryClient, t]);
+  }, [actionController, queryClient, t]);
   const streamRows = useMemo(
     () => [...createdStreams, ...(streams.data || []).filter((stream) => !createdStreams.some((created) => created.id === stream.id))],
     [createdStreams, streams.data],

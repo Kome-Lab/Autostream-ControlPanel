@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Check, Copy, Download, RefreshCcw, Search } from "lucide-react";
+import { Check, Copy, Download, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,8 @@ import { useAppSettings, useAuditLogs } from "@/features/queries";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { auditActionLabel } from "@/lib/audit-action";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import { aggregateRemainingQueries, remainingQuerySnapshot } from "@/features/remote-state/remaining-remote-state";
+import { RemainingStateNotice } from "@/features/remote-state/remaining-state-notice";
 import type { AuditLog } from "@/types/domain";
 
 const nodeActivityActionGroup = "node_activity";
@@ -40,6 +42,7 @@ export function AuditLogsView() {
       : { excludeActionGroup: nodeActivityActionGroup }),
   });
   const appSettings = useAppSettings();
+  const remoteState = aggregateRemainingQueries("audit", { "audit-logs": remainingQuerySnapshot(auditLogs) });
   const timezone = appSettings.data?.timezone;
   const [copiedResourceID, setCopiedResourceID] = useState("");
 
@@ -110,12 +113,7 @@ export function AuditLogsView() {
         <h1 className="mt-1 text-xl font-semibold">監査ログ</h1>
         <p className="mt-1 text-sm text-muted-foreground">担当者の操作と、Node / Host Agentからの定期報告・設定参照・Observability送信を分けて確認できます。</p>
       </section>
-      {auditLogs.isError ? (
-        <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
-          <div><div className="text-sm font-semibold">{nodeActivityView ? "Node報告・通信を取得できませんでした" : "操作履歴を取得できませんでした"}</div><p className="mt-0.5 text-xs">通信状態と権限を確認し、再試行してください。</p></div>
-          <Button variant="outline" size="sm" onClick={() => auditLogs.refetch()}><RefreshCcw className="size-4" />再試行</Button>
-        </div>
-      ) : null}
+      {remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh" ? <RemainingStateNotice state={remoteState} consumer="audit" /> : null}
       <Tabs value={view} onValueChange={(value) => setView(value as AuditView)} className="space-y-4">
         <TabsList variant="line" className="h-auto w-full justify-start border-b pb-1">
           <TabsTrigger value="operations">操作履歴</TabsTrigger>

@@ -28,7 +28,7 @@ type Props = Readonly<{
   context?: HighRiskConfirmationContext;
   buttonProps?: Omit<ComponentProps<typeof Button>, "children" | "onClick">;
   disabled?: boolean;
-  onResult: (result: StreamActionExecutionResult, intent: StreamActionIntent) => void;
+  onResult: (result: StreamActionExecutionResult, intent: StreamActionIntent) => boolean | void | Promise<boolean | void>;
 }>;
 
 export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(function StreamActionControl({
@@ -63,8 +63,16 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
       confirmed: true,
       ...(allowed.typedToken === undefined ? {} : { typedValue: allowed.typedToken }),
     });
-    onResult(result, allowed.intent);
+    const authorityRefreshed = await onResult(result, allowed.intent);
     if (result.kind === "succeeded") {
+      setOpened(null);
+      setDialogState({ kind: "ready" });
+      return;
+    }
+    if (result.kind === "failed" && allowed.descriptor.retry.kind === "manual-after-refresh" && authorityRefreshed === true) {
+      // Deterministic failures may return to the trigger only after its owner
+      // proves a fresh authority snapshot. The next attempt remains deliberate;
+      // this path never resends automatically and excludes ambiguous outcomes.
       setOpened(null);
       setDialogState({ kind: "ready" });
       return;

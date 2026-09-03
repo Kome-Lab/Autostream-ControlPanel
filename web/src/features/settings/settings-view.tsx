@@ -1,30 +1,30 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Save, Send } from "lucide-react";
+import { RemoteStateBoundary } from "@/components/foundation/remote-state/remote-state-boundary";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { APIError, apiPost, apiPut } from "@/lib/api/client";
 import { defaultTimeZone, formatDateTimeInTimeZone, isValidTimeZone, normalizeTimeZone, timeZoneLabel, timeZoneOptions } from "@/lib/timezone";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useCurrentUser, useManagedAppSettings } from "@/features/queries";
+import { AppSettingsActionConfirmationHost } from "@/features/settings/app-settings-action-control";
+import { createAppSettingsActionController, type AppSettingsActionIntent, type AppSettingsActionResult } from "@/features/settings/app-settings-action-policy";
+import { appSettingsIntent, appSettingsPermissionSnapshot, appSettingsStateSnapshot, managedAppSettingsRemoteState, mutateAppSettingsAction, refreshAppSettingsAction } from "@/features/settings/app-settings-action-runtime";
+import { hasPermission } from "@/lib/auth/permissions";
 import type { ManagedAppSettings } from "@/types/domain";
-
-type TestEmailResponse = {
-  status: string;
-  target?: string;
-};
 
 const customTimeZoneValue = "__custom_timezone__";
 
 export function SettingsView() {
   const { t } = useI18n();
   const appSettings = useManagedAppSettings();
+  const state = managedAppSettingsRemoteState(appSettings);
 
   return (
     <div className="space-y-6">
@@ -39,14 +39,21 @@ export function SettingsView() {
           <CardDescription>サイドバー、ログイン、初期作成画面の表示名と、画面上の時刻表示に使うタイムゾーンです。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {appSettings.isLoading ? (
-            <Skeleton className="h-10 w-full" />
-          ) : (
-            <AppSettingsForm
-              key={`${appSettings.data?.app_name || "default"}-${appSettings.data?.timezone || defaultTimeZone}-${appSettings.data?.smtp_enabled ? "smtp-on" : "smtp-off"}-${appSettings.data?.turnstile_enabled ? "turnstile-on" : "turnstile-off"}-${appSettings.data?.google_analytics_enabled ? "analytics-on" : "analytics-off"}`}
-              initialSettings={appSettings.data}
-            />
-          )}
+          <RemoteStateBoundary
+            state={state}
+            noticeId="app-settings-remote-state"
+            translate={t}
+            formatTimestamp={(timestamp) => formatDateTimeInTimeZone(new Date(timestamp).toISOString(), appSettings.data?.timezone || defaultTimeZone, { dateStyle: "medium", timeStyle: "medium" })}
+            renderLoading={() => <Skeleton className="h-10 w-full" />}
+            renderData={(settings) => (
+              <AppSettingsForm
+                key={`${settings.app_name || "default"}-${settings.timezone || defaultTimeZone}-${settings.smtp_enabled ? "smtp-on" : "smtp-off"}-${settings.turnstile_enabled ? "turnstile-on" : "turnstile-off"}-${settings.google_analytics_enabled ? "analytics-on" : "analytics-off"}`}
+                initialSettings={settings}
+              />
+            )}
+            onRetry={() => void appSettings.refetch()}
+            retryPending={appSettings.isFetching}
+          />
         </CardContent>
       </Card>
     </div>
@@ -74,6 +81,8 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
   const [googleAnalyticsMeasurementID, setGoogleAnalyticsMeasurementID] = useState(initialSettings?.google_analytics_measurement_id || "");
   const [testEmailOverride, setTestEmailOverride] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [pending, setPending] = useState<AppSettingsActionIntent | null>(null);
+  const [dispatching, setDispatching] = useState(false);
   const trimmedTimezone = timezone.trim();
   const effectiveTimezone = trimmedTimezone || defaultTimeZone;
   const timezoneValid = trimmedTimezone === "" || isValidTimeZone(trimmedTimezone);
@@ -81,38 +90,49 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
   const options = timeZoneOptions.some((option) => option.value === normalizedTimezone) ? timeZoneOptions : [{ value: normalizedTimezone, label: timeZoneLabel(normalizedTimezone) }, ...timeZoneOptions];
   const timezoneSelectValue = options.some((option) => option.value === effectiveTimezone) ? effectiveTimezone : customTimeZoneValue;
   const testEmailTo = testEmailOverride ?? currentUserEmail;
-  const saveAppSettings = useMutation({
-    mutationFn: () =>
-      apiPut<ManagedAppSettings>("/settings/app", {
-        app_name: appName,
-        timezone: normalizedTimezone,
-        smtp_enabled: smtpEnabled,
-        smtp_host: smtpHost,
-        smtp_port: Number.parseInt(smtpPort, 10),
-        smtp_starttls: smtpStartTLS,
-        smtp_from: smtpFrom,
-        smtp_username: smtpUsername,
-        smtp_password: smtpPassword,
-        turnstile_enabled: turnstileEnabled,
-        turnstile_site_key: turnstileSiteKey,
-        turnstile_secret: turnstileSecret,
-        google_analytics_enabled: googleAnalyticsEnabled,
-        google_analytics_measurement_id: googleAnalyticsMeasurementID,
-      }),
-    onSuccess: async () => {
-      setSMTPPassword("");
-      setTurnstileSecret("");
-      setMessage("保存しました。");
-      await queryClient.invalidateQueries({ queryKey: ["settings", "app"] });
-    },
-    onError: () => setMessage("保存に失敗しました。権限と入力内容を確認してください。"),
-  });
-  const testEmail = useMutation({
-    mutationFn: () => apiPost<TestEmailResponse>("/settings/app/test-email", { to: testEmailTo.trim() }),
-    onMutate: () => setMessage("テストメールを送信しています。"),
-    onSuccess: (response) => setMessage(response.target ? `テストメールを送信しました。宛先: ${response.target}` : "テストメールを送信しました。"),
-    onError: (error) => setMessage(testEmailErrorMessage(error)),
-  });
+  const actionController = useMemo(() => createAppSettingsActionController({
+    getPermissions: () => appSettingsPermissionSnapshot(queryClient),
+    getState: () => appSettingsStateSnapshot(queryClient),
+    refresh: () => refreshAppSettingsAction(queryClient),
+    mutate: mutateAppSettingsAction,
+  }), [queryClient]);
+  const savePayload = {
+    app_name: appName,
+    timezone: normalizedTimezone,
+    smtp_enabled: smtpEnabled,
+    smtp_host: smtpHost,
+    smtp_port: Number.parseInt(smtpPort, 10),
+    smtp_starttls: smtpStartTLS,
+    smtp_from: smtpFrom,
+    smtp_username: smtpUsername,
+    smtp_password: smtpPassword,
+    turnstile_enabled: turnstileEnabled,
+    turnstile_site_key: turnstileSiteKey,
+    turnstile_secret: turnstileSecret,
+    google_analytics_enabled: googleAnalyticsEnabled,
+    google_analytics_measurement_id: googleAnalyticsMeasurementID,
+  };
+  const saveIntent = appSettingsIntent("APP-01", savePayload);
+  const testEmailIntent = appSettingsIntent("APP-02", { to: testEmailTo.trim() });
+  const saveEvaluation = actionController.evaluate(saveIntent);
+  const testEvaluation = actionController.evaluate(testEmailIntent);
+  const canUpdate = hasPermission(currentUser.data, "system_settings.update");
+  const handleActionResult = useCallback((result: AppSettingsActionResult, intent: AppSettingsActionIntent) => {
+    setDispatching(false);
+    if (result.kind === "succeeded") {
+      if (intent.id === "APP-01") {
+        setMessage("保存しました。");
+        void queryClient.invalidateQueries({ queryKey: ["settings", "app"] });
+        void queryClient.invalidateQueries({ queryKey: ["settings", "app", "manage"] });
+      } else {
+        setMessage("テストメールを送信しました。");
+      }
+      setPending(null);
+      return;
+    }
+    setMessage(appSettingsActionResultMessage(result, t));
+    if (result.kind === "blocked") setPending(null);
+  }, [queryClient, t]);
   const smtpRequiredMissing = smtpEnabled && (!smtpHost.trim() || !smtpFrom.trim());
   const turnstileRequiredMissing = turnstileEnabled && (!turnstileSiteKey.trim() || (!turnstileSecret.trim() && !initialSettings?.turnstile_configured));
   const googleAnalyticsIDValid = !googleAnalyticsEnabled || /^G-[A-Z0-9]{4,22}$/.test(googleAnalyticsMeasurementID.trim().toUpperCase());
@@ -213,8 +233,11 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => testEmail.mutate()}
-                  disabled={testEmail.isPending || saveAppSettings.isPending || !smtpEnabled || smtpRequiredMissing || !testEmailTo.trim()}
+                  onClick={() => {
+                    setMessage("");
+                    setPending(testEmailIntent);
+                  }}
+                  disabled={Boolean(pending) || dispatching || !canUpdate || testEvaluation.availability.kind !== "allowed" || !smtpEnabled || smtpRequiredMissing || !testEmailTo.trim()}
                 >
                   <Send className="size-4" />
                   テスト送信
@@ -263,10 +286,30 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
         </SettingsSection>
       </div>
       {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
-      <Button onClick={() => saveAppSettings.mutate()} disabled={saveAppSettings.isPending || !appName.trim() || !timezoneValid || smtpRequiredMissing || turnstileRequiredMissing || !googleAnalyticsIDValid}>
+      <Button onClick={() => {
+        setMessage("");
+        setPending(saveIntent);
+      }} disabled={Boolean(pending) || dispatching || !canUpdate || saveEvaluation.availability.kind !== "allowed" || !appName.trim() || !timezoneValid || smtpRequiredMissing || turnstileRequiredMissing || !googleAnalyticsIDValid}>
         <Save className="size-4" />
         {t("save")}
       </Button>
+      {pending ? (
+        <AppSettingsActionConfirmationHost
+          key={pending.id}
+          controller={actionController}
+          intent={pending}
+          onDispatch={() => {
+            if (pending.id === "APP-01") {
+              setSMTPPassword("");
+              setTurnstileSecret("");
+            }
+            setPending(null);
+            setDispatching(true);
+          }}
+          onResult={handleActionResult}
+          onCancel={() => setPending(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -286,63 +329,16 @@ function SettingsSection({ title, description, action, className = "", children 
   );
 }
 
-function testEmailErrorMessage(error: unknown) {
-  if (error instanceof APIError) {
-    if (error.code === "non_json_response") {
-      return testEmailNonJSONErrorMessage(error.status);
-    }
-    if (error.code === "invalid_json_response") {
-      return "Control Panel APIから壊れたJSON応答が返りました。デプロイ中の不整合、プロキシのエラーページ、またはサーバーログを確認してください。";
-    }
-    const messages: Record<string, string> = {
-      invalid_email_recipient: "テスト送信先のメールアドレスを確認してください。",
-      smtp_not_configured: "メールサーバー設定を保存してからテスト送信してください。",
-      smtp_requires_tls: "外部SMTPではSTARTTLSを有効にしてください。",
-      secret_encryption_key_required: "SMTPパスワードを読み出せません。Secret encryption keyを設定してください。",
-      smtp_dial_failed: "SMTPサーバーへ接続できません。ホスト名、ポート、ファイアウォール、DNSを確認してください。",
-      smtp_starttls_failed: "STARTTLSに失敗しました。ポート番号、STARTTLS設定、証明書設定を確認してください。",
-      smtp_auth_failed: "SMTP認証に失敗しました。ユーザー名、パスワード、SMTP認証方式を確認してください。",
-      smtp_from_rejected: "SMTPサーバーに送信元アドレスが拒否されました。Fromアドレスと送信許可設定を確認してください。",
-      smtp_recipient_rejected: "SMTPサーバーにテスト送信先が拒否されました。送信先アドレスとリレー許可設定を確認してください。",
-      smtp_data_failed: "SMTPサーバーがメール本文の送信開始を拒否しました。サーバーの制限や認証設定を確認してください。",
-      smtp_write_failed: "SMTPサーバーへのメール本文送信中に失敗しました。通信経路とサーバーログを確認してください。",
-      smtp_close_failed: "SMTPサーバーへのメール送信完了処理に失敗しました。サーバーログを確認してください。",
-      send_failed: "テストメール送信に失敗しました。SMTPサーバー設定と到達性を確認してください。",
-      unauthorized: "ログイン状態が切れています。再ログインしてからテスト送信してください。",
-      csrf_failed: "セキュリティトークンを確認できませんでした。ページを再読み込みしてからテスト送信してください。",
-      permission_denied: "メールサーバー設定を更新する権限がありません。",
-      password_change_required: "パスワード変更が必要な状態です。パスワード変更後にテスト送信してください。",
-    };
-    return messages[error.code || ""] || testEmailStatusErrorMessage(error.status, error.code || error.message);
-  }
-  if (error instanceof Error) return `テストメール送信に失敗しました。${error.message}`;
-  return "テストメール送信に失敗しました。";
-}
-
-function testEmailNonJSONErrorMessage(status: number) {
-  if (status === 502 || status === 503 || status === 504) {
-    return `Control Panel APIからJSONではないHTTP ${status}応答が返りました。SMTPサーバーではなく、Cloudflare、リバースプロキシ、またはControl Panelプロセスの上流障害を確認してください。`;
-  }
-  return `Control Panel APIからJSONではないHTTP ${status}応答が返りました。NetworkのResponseとプロキシ/アプリログを確認してください。`;
-}
-
-function testEmailStatusErrorMessage(status: number, detail: string) {
-  switch (status) {
-    case 401:
-      return "ログイン状態が切れています。再ログインしてからテスト送信してください。";
-    case 403:
-      return "テストメール送信が拒否されました。権限を確認し、ページを再読み込みしてから再実行してください。";
-    case 404:
-      return "テストメール送信APIが見つかりません。デプロイ済みControl Panelが最新か確認してください。";
-    case 409:
-      return "メールサーバー設定が未完了です。設定を保存してからテスト送信してください。";
-    case 502:
-    case 503:
-    case 504:
-      return "テストメール送信に失敗しました。SMTPサーバーへ到達できないか、上流サービスが応答していません。SMTP設定とサーバーログを確認してください。";
-    default:
-      return `テストメール送信に失敗しました。HTTP ${status}: ${detail}`;
-  }
+function appSettingsActionResultMessage(result: AppSettingsActionResult, translate: ReturnType<typeof useI18n>["t"]) {
+  if (result.kind === "failed") return translate(result.error.messageKey);
+  if (result.kind === "outcome_unknown") return translate("confirmationOutcomeUnknown");
+  if (result.kind === "succeeded") return "";
+  if (result.reason === "permission-denied") return translate("actionPermissionDenied");
+  if (result.reason === "permission-unknown") return translate("actionPermissionUnknown");
+  if (result.reason === "duplicate") return translate("actionAlreadyPending");
+  if (result.reason === "authority-changed") return translate("confirmationStaleBlocked");
+  if (result.reason === "reconciliation-required") return translate("confirmationRefreshRequired");
+  return translate("confirmationRevalidationUnavailable");
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

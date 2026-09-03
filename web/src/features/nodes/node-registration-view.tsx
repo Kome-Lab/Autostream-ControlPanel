@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/tables/data-table";
 import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
-import { StatusBadge } from "@/components/admin/status-badge";
+import { StatusBadge, statusDescriptor } from "@/components/admin/status-badge";
 import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { useAppSettings, useCurrentUser, useNodes } from "@/features/queries";
@@ -32,6 +32,8 @@ import {
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 import { NODE_FOUNDATION_SOURCE_ENABLED } from "@/features/nodes/node-action-descriptors";
 import { NodeFoundationRegistrationArtifact } from "@/features/nodes/node-foundation-artifact";
+import { aggregateRemainingQueries, remainingQuerySnapshot } from "@/features/remote-state/remaining-remote-state";
+import { RemainingStateNotice } from "@/features/remote-state/remaining-state-notice";
 
 const nodeTypes = [
   { value: "worker", label: "Worker Node Agent", defaultPort: 8084, runtimeSecretsRequired: false, description: "番組配信と録画を担当するWorker Node Agent" },
@@ -205,6 +207,9 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   const createError = nodeRegistrationErrorMessage(createToken.error);
   const actionError = nodeRegistrationErrorMessage(updateNode.error || deleteNode.error || loadConfiguration.error || regenerateConfigureToken.error || rotateRuntimeToken.error);
   const registeredRows = registeredNodes.data || [];
+  const registeredRemoteState = aggregateRemainingQueries("nodes", {
+    "registered-nodes": remainingQuerySnapshot(registeredNodes),
+  });
   const operationalRegisteredRows = registeredRows.filter((node) => node.service_type !== "update_agent");
   const updaterRegisteredRows = registeredRows.filter((node) => node.service_type === "update_agent");
 
@@ -528,7 +533,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
               <div className="grid gap-2 rounded-md border bg-muted/40 p-3 text-sm">
                 <div className="font-medium">接続状態</div>
                 <div className="text-muted-foreground">
-                  {configuration.node?.service_name || "選択中のNode"} / {configuration.node?.status ?? "pending"} / 報告バージョン:{" "}
+                  {configuration.node?.service_name || "選択中のNode"} / {statusDescriptor(configuration.node?.status).label} / 報告バージョン:{" "}
                   {configuration.node?.reported_version || "未取得"} / Capability: {Object.keys(configuration.node?.reported_capabilities ?? {}).length > 0 ? "報告済み" : "未取得"}
                 </div>
                 {configuration.configure_token_expires_at ? <div className="text-xs text-muted-foreground">Configure Token期限: {formatNodeDateTime(configuration.configure_token_expires_at, timezone)}</div> : null}
@@ -662,14 +667,12 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
+          {registeredRemoteState.kind !== "ready" || registeredRemoteState.freshness.kind !== "fresh" ? (
+            <RemainingStateNotice state={registeredRemoteState} consumer="nodes" />
+          ) : null}
           {createToken.data?.node ? (
             <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
               {createToken.data.node.service_name} を登録しました。一覧に表示されない場合は「更新」を押してください。
-            </div>
-          ) : null}
-          {registeredNodes.isError ? (
-            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
-              登録済みNodeを取得できませんでした。Nodeの登録・編集権限とControl Panelのログを確認してください。
             </div>
           ) : null}
           {actionError ? (
@@ -1146,9 +1149,9 @@ function nodeRegistrationErrorMessage(error: unknown) {
       delete_service_failed: "Nodeの削除に失敗しました。割り当て状態とControl Panelのログを確認してください。",
       precreate_node_failed: "Nodeの作成に失敗しました。database接続とControl Panelのログを確認してください。",
     };
-    return messages[error.code || ""] || `API error: ${error.code || error.message} (HTTP ${error.status})`;
+    return messages[error.code || ""] || "Node操作に失敗しました。最新状態とControl Panelのログを確認して再試行してください。";
   }
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) return "Node操作に失敗しました。通信状態を確認して再試行してください。";
   return "不明なエラーが発生しました。Control Panelのログを確認してください。";
 }
 

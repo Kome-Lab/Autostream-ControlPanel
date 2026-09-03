@@ -183,7 +183,9 @@ export function createStreamActionController(dependencies: StreamActionControlle
     },
     reconcile: (intent) => {
       const scope = streamActionScope(intent);
-      if (scope) unresolved.delete(scope);
+      if (scope) {
+        unresolved.delete(scope);
+      }
     },
     isPending: (intent) => {
       const scope = streamActionScope(intent);

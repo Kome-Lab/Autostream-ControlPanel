@@ -33,6 +33,8 @@ import {
 } from "@/features/archive/archive-action-policy";
 import { adoptArchiveShareCapability, type ArchiveShareCapability } from "@/features/archive/archive-share-capability";
 import { createOneTimeSecretLifecycleOwner } from "@/lib/foundation/secrets/lifecycle-owner";
+import { aggregateRemainingQueries, remainingQuerySnapshot } from "@/features/remote-state/remaining-remote-state";
+import { RemainingStateNotice } from "@/features/remote-state/remaining-state-notice";
 
 type StreamArtifact = {
   id: string;
@@ -64,8 +66,7 @@ export function ArchiveView() {
   const { t } = useI18n();
   const currentUser = useCurrentUser();
   const page = resourcePages.archive;
-  const superAdmin = currentUser.data?.user.roles?.includes("super_admin") === true;
-  const can = (permission: string) => superAdmin || hasPermission(currentUser.data, permission);
+  const can = (permission: string) => hasPermission(currentUser.data, permission);
   const canRead = can("archives.read");
   const streams = useArchiveStreams(canRead);
   const processingStreams = useArchiveProcessingStreams(canRead);
@@ -75,6 +76,10 @@ export function ArchiveView() {
     () => visibleArchiveProcessingStreams(processingStreams.data || [], streamRows),
     [processingStreams.data, streamRows],
   );
+  const remoteState = aggregateRemainingQueries("archive", {
+    streams: remainingQuerySnapshot(streams),
+    "processing-streams": remainingQuerySnapshot(processingStreams),
+  });
   const selected = effectiveArchiveStreamID(streamRows, selectedStreamID);
   const refreshArchiveState = () => {
     void Promise.all([streams.refetch(), processingStreams.refetch()]);
@@ -107,6 +112,9 @@ export function ArchiveView() {
                 <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">録画成果物を確認する権限がありません。管理者に「録画の閲覧」権限を依頼してください。</div>
               ) : (
                 <div className="space-y-4">
+                  {remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh" ? (
+                    <RemainingStateNotice state={remoteState} consumer="archive" />
+                  ) : null}
                   <ArchiveProcessingNotice
                     items={processingRows}
                     isLoading={processingStreams.isLoading}
@@ -114,9 +122,9 @@ export function ArchiveView() {
                     isFetching={processingStreams.isFetching || streams.isFetching}
                     onRefresh={refreshArchiveState}
                   />
-                  {streams.isError ? (
+                  {streams.isError && streamRows.length === 0 ? (
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>配信枠を取得できませんでした。通信状態を確認して再試行してください。</span><Button variant="outline" size="sm" onClick={refreshArchiveState}>再試行</Button></div>
-                  ) : streams.isLoading ? (
+                  ) : streams.isLoading && streamRows.length === 0 ? (
                     <Skeleton className="h-12 w-full" />
                   ) : streamRows.length === 0 ? (
                     <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
@@ -156,8 +164,8 @@ function ArchiveProcessingNotice({
   isFetching: boolean;
   onRefresh: () => void;
 }) {
-  if (isLoading) return <Skeleton className="h-20 w-full" />;
-  if (isError) {
+  if (isLoading && items.length === 0) return <Skeleton className="h-20 w-full" />;
+  if (isError && items.length === 0) {
     return (
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
         <span>アーカイブの処理状況を取得できませんでした。完成済み成果物の一覧は引き続き利用できます。</span>
@@ -189,7 +197,7 @@ function ArchiveProcessingNotice({
               <div className="truncate font-medium" title={stream.name || stream.id}>{stream.name || stream.id}</div>
               {stream.archive_started_at ? <div className="mt-0.5 text-xs text-muted-foreground">配信開始 {formatDateTime(stream.archive_started_at)}</div> : null}
             </div>
-            <span className="shrink-0 text-xs text-muted-foreground">{String(stream.status).toLowerCase() === "stopping" ? "停止処理中" : "成果物の報告待ち"}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{archiveProcessingStateLabel(stream.status)}</span>
           </div>
         ))}
       </div>
@@ -250,8 +258,8 @@ function ArchiveArtifacts({
     void query.refetch();
   };
 
-  if (query.isLoading) return <Skeleton className="h-36 w-full" />;
-  if (query.isError) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>{archiveListErrorMessage(query.error)}</span><Button variant="outline" size="sm" onClick={refreshArtifacts}>再試行</Button></div>;
+  if (query.isLoading && artifacts.length === 0) return <Skeleton className="h-36 w-full" />;
+  if (query.isError && artifacts.length === 0) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100"><span>{archiveListErrorMessage(query.error)}</span><Button variant="outline" size="sm" onClick={refreshArtifacts}>再試行</Button></div>;
   if (artifacts.length === 0) {
     return (
       <div className="space-y-3 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
@@ -271,6 +279,11 @@ function ArchiveArtifacts({
 
   return (
     <div className="space-y-3">
+      {query.isError ? (
+        <div role="status" aria-live="polite" data-artifact-state="stale" className="forced-color-adjust-auto rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
+          更新に失敗したため、取得済みの録画成果物を表示しています。
+        </div>
+      ) : null}
       {artifacts.map((artifact) => (
         <ArchiveArtifactRow key={artifact.id} streamID={streamID} artifact={artifact} timezone={timezone} canDownload={canDownload} canModify={canModify} />
       ))}
@@ -593,6 +606,14 @@ function archiveListErrorMessage(error: unknown) {
     return "録画成果物を取得できませんでした。最新状態を確認して再試行してください。";
   }
   return "録画成果物を取得できませんでした。通信状態を確認して再試行してください。";
+}
+
+function archiveProcessingStateLabel(status?: string) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "stopping") return "停止処理中";
+  if (normalized === "stopped" || normalized === "completed") return "成果物の報告待ち";
+  if (normalized === "failed" || normalized === "error") return "要確認";
+  return "状態不明";
 }
 
 function artifactKindLabel(kind: string) {

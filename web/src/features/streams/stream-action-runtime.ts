@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import { apiDelete, apiPost, apiPut } from "@/lib/api/client";
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import type { PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
 import type { CurrentUser, Stream } from "@/types/domain";
 import type { StreamActionStateSnapshot } from "@/features/streams/stream-action-controller";
@@ -37,6 +37,30 @@ export function streamActionStateSnapshot(queryClient: QueryClient, intent: Stre
   const row = rows.find((value) => value.id === intent.stream?.id);
   if (!row) return Object.freeze({ kind: "missing", freshness });
   return Object.freeze({ kind: "ready", freshness, fingerprint: JSON.stringify(streamFingerprintFields(row)) });
+}
+
+export async function refreshStreamActionAuthority(queryClient: QueryClient) {
+  try {
+    const [currentUser, streams] = await Promise.all([
+      apiGet<CurrentUser>("/auth/me"),
+      apiGet<Stream[]>("/streams"),
+    ]);
+    if (!Array.isArray(currentUser.permissions) || !Array.isArray(streams)) return false;
+    // A periodic observer refetch can otherwise replace a just-proven authority
+    // with a transient refreshing snapshot before the control renders again.
+    await Promise.all([
+      queryClient.cancelQueries({ queryKey: ["auth", "me"], exact: true }),
+      queryClient.cancelQueries({ queryKey: ["streams"], exact: true }),
+    ]);
+    queryClient.setQueryData(["auth", "me"], currentUser);
+    queryClient.setQueryData(["streams"], streams);
+  } catch {
+    return false;
+  }
+  // The two validated GET results are the fresh authority. After the latch is
+  // cleared, the normal evaluator still blocks removed permissions, a missing
+  // target, an inapplicable lifecycle, or any later refreshing/stale state.
+  return true;
 }
 
 export async function mutateStreamAction(request: StreamActionRequest & Readonly<{ signal: AbortSignal }>) {

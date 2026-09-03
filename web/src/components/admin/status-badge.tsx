@@ -40,8 +40,8 @@ const statusMap: Record<string, { label: string; detail: string; className: stri
 export function statusDescriptor(status?: string) {
   const normalized = String(status || "").toLowerCase();
   return statusMap[normalized] ?? {
-    label: status || "-",
-    detail: "状態を確認してください",
+    label: "状態不明",
+    detail: "既知の状態として判定できません",
     className: "border-slate-200 bg-slate-50 text-slate-700",
   };
 }
