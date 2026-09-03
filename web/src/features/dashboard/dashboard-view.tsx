@@ -23,24 +23,37 @@ import { StatusBadge, statusDescriptor } from "@/components/admin/status-badge";
 import { PageActions } from "@/components/shell/page-actions";
 import { PageHeader } from "@/components/shell/page-header";
 import { useCurrentUser, useServiceHealth, useStreams } from "@/features/queries";
+import { OperationalStateNotice } from "@/features/monitoring/operational-state-notice";
+import {
+  aggregateOperationalQueries,
+  countOperationalStreams,
+  knownEmptyOperationalQuery,
+  operationalQuerySnapshot,
+  remoteStateAllowsPositiveSummary,
+  serviceAvailabilityContribution,
+  summarizeServiceAvailability,
+} from "@/features/monitoring/operational-remote-state";
 import { hasPermission } from "@/lib/auth/permissions";
-import { isServiceAvailable } from "@/lib/service-health";
 import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
 import { cn } from "@/lib/utils";
-import type { CurrentUser, Stream } from "@/types/domain";
+import type { Stream } from "@/types/domain";
 
 export function DashboardView() {
   const currentUser = useCurrentUser();
-  const superAdmin = isSuperAdmin(currentUser.data);
-  const canReadStreams = superAdmin || hasPermission(currentUser.data, "streams.read");
-  const canCreateStreams = superAdmin || hasPermission(currentUser.data, "streams.create");
-  const canReadServices = superAdmin || hasPermission(currentUser.data, "service_health.read");
+  const canReadStreams = hasPermission(currentUser.data, "streams.read");
+  const canCreateStreams = hasPermission(currentUser.data, "streams.create");
+  const canReadServices = hasPermission(currentUser.data, "service_health.read");
   const streams = useStreams(canReadStreams);
   const services = useServiceHealth(canReadServices);
 
   const streamRows = useMemo(() => [...(streams.data || [])].sort(compareStreams), [streams.data]);
   const serviceRows = useMemo(() => services.data || [], [services.data]);
-  const statusCounts = useMemo(() => countStreamStatus(streamRows), [streamRows]);
+  const statusCounts = useMemo(() => countOperationalStreams(streamRows), [streamRows]);
+  const serviceCoverage = useMemo(() => summarizeServiceAvailability(serviceRows), [serviceRows]);
+  const remoteState = aggregateOperationalQueries("dashboard", {
+    streams: canReadStreams ? operationalQuerySnapshot(streams) : knownEmptyOperationalQuery(),
+    services: canReadServices ? operationalQuerySnapshot(services) : knownEmptyOperationalQuery(),
+  });
   const serviceNameByID = useMemo(
     () => new Map(serviceRows.flatMap((row) => compactValues([row.id, row.service_id]).map((id) => [id, row.service_name || id] as const))),
     [serviceRows],
@@ -56,12 +69,21 @@ export function DashboardView() {
   }, [serviceRows]);
   const streamNameByID = useMemo(() => new Map(streamRows.map((stream) => [stream.id, stream.name])), [streamRows]);
   const operationRows = streamRows.filter((stream) => !isFinished(stream.status)).slice(0, 6);
-  const availableServices = serviceRows.filter(isAvailableService).length;
   const streamIssues = streamRows.filter((stream) => ["failed", "error"].includes(String(stream.status).toLowerCase()));
-  const serviceIssues = serviceRows.filter((service) => !isAvailableService(service));
+  const serviceIssues = serviceRows.filter((service) => {
+    const contribution = serviceAvailabilityContribution(service);
+    return contribution.kind === "known" && !contribution.positive;
+  });
   const refreshing = streams.isFetching || services.isFetching;
+  const issueCount = streamIssues.length + serviceIssues.length;
+  const unknownIssueCount = statusCounts.unknown + serviceCoverage.unknownCount;
+  const issueSummaryConfirmed = remoteStateAllowsPositiveSummary(remoteState, unknownIssueCount, canReadStreams || canReadServices);
+  const serviceSummaryConfirmed = canReadServices
+    && services.status === "success"
+    && !services.isFetching
+    && serviceCoverage.unknownCount === 0;
 
-  if (currentUser.isLoading || ((streams.isLoading || services.isLoading) && streamRows.length === 0 && serviceRows.length === 0)) {
+  if (currentUser.isLoading || remoteState.kind === "initial-loading") {
     return <DashboardSkeleton />;
   }
 
@@ -100,6 +122,8 @@ export function DashboardView() {
         )}
       />
 
+      <OperationalStateNotice state={remoteState} consumer="dashboard" />
+
       {streams.isError || services.isError ? (
         <QueryWarning
           streamsFailed={canReadStreams && streams.isError}
@@ -112,15 +136,15 @@ export function DashboardView() {
       ) : null}
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="運用サマリー">
-        <OperationMetric icon={RadioTower} label="配信中" value={canReadStreams ? statusCounts.live : "-"} detail={canReadStreams ? "映像と録画を監視中" : "配信の参照権限がありません"} tone={statusCounts.live > 0 ? "ok" : "default"} />
-        <OperationMetric icon={Headphones} label="待機中" value={canReadStreams ? statusCounts.waiting : "-"} detail={canReadStreams ? "VC参加または手動開始を待機" : "管理者へ権限を確認してください"} />
-        <OperationMetric icon={AlertTriangle} label="要対応" value={canReadStreams || canReadServices ? statusCounts.attention + serviceIssues.length : "-"} detail={canReadStreams || canReadServices ? "配信と基盤の確認項目" : "確認できる対象がありません"} tone={statusCounts.attention + serviceIssues.length > 0 ? "danger" : "ok"} />
+        <OperationMetric icon={RadioTower} label="配信中" value={canReadStreams ? statusCounts.live : "-"} detail={canReadStreams ? statusCounts.unknown > 0 ? `${statusCounts.unknown}件は状態不明` : "映像と録画を監視中" : "配信の参照権限がありません"} tone={statusCounts.live > 0 ? "ok" : "default"} />
+        <OperationMetric icon={Headphones} label="待機中" value={canReadStreams ? statusCounts.waiting : "-"} detail={canReadStreams ? statusCounts.unknown > 0 ? `${statusCounts.unknown}件は待機数から除外` : "VC参加または手動開始を待機" : "管理者へ権限を確認してください"} />
+        <OperationMetric icon={AlertTriangle} label="要対応" value={canReadStreams || canReadServices ? statusCounts.attention + serviceCoverage.negativeCount : "-"} detail={issueSummaryConfirmed ? "配信と基盤の確認項目" : unknownIssueCount > 0 ? `${unknownIssueCount}件は判定不能` : "全件の最新状態を確認できません"} tone={issueCount > 0 ? "danger" : issueSummaryConfirmed ? "ok" : "warning"} />
         <OperationMetric
           icon={ServerCog}
           label="サービス稼働"
-          value={canReadServices ? `${availableServices}/${serviceRows.length}` : "-"}
-          detail={canReadServices ? (serviceRows.length > 0 && availableServices === serviceRows.length ? "すべて正常" : "未接続・警告を確認") : "サービス状態の参照権限がありません"}
-          tone={canReadServices && serviceRows.length > 0 && availableServices === serviceRows.length ? "ok" : canReadServices ? "warning" : "default"}
+          value={canReadServices ? `${serviceCoverage.positiveCount}/${serviceCoverage.knownCount}` : "-"}
+          detail={canReadServices ? serviceCoverage.unknownCount > 0 ? `${serviceCoverage.unknownCount}件は状態不明` : serviceCoverage.totalCount > 0 && serviceCoverage.positiveCount === serviceCoverage.knownCount ? "すべて正常" : "未接続・警告を確認" : "サービス状態の参照権限がありません"}
+          tone={serviceSummaryConfirmed && serviceCoverage.totalCount > 0 && serviceCoverage.positiveCount === serviceCoverage.knownCount ? "ok" : canReadServices ? "warning" : "default"}
         />
       </section>
 
@@ -196,11 +220,18 @@ export function DashboardView() {
                 <CardTitle>要対応</CardTitle>
                 <CardDescription>優先して確認する項目</CardDescription>
               </div>
-              <span className={cn("rounded-md border px-2 py-1 text-xs font-semibold", streamIssues.length + serviceIssues.length > 0 ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/35 dark:text-red-200" : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200")}>{streamIssues.length + serviceIssues.length}件</span>
+              <span className={cn(
+                "rounded-md border px-2 py-1 text-xs font-semibold",
+                issueCount > 0
+                  ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/35 dark:text-red-200"
+                  : issueSummaryConfirmed
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200"
+                    : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-200",
+              )}>{issueCount > 0 || issueSummaryConfirmed ? `${issueCount}件` : "判定保留"}</span>
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            {streamIssues.length + serviceIssues.length > 0 ? (
+            {issueCount > 0 ? (
               <div className="divide-y">
                 {streamIssues.slice(0, 3).map((stream) => (
                   <IssueRow key={stream.id} href="/admin/streams/" title={stream.name} detail={statusDescriptor(stream.status).detail} tone="danger" />
@@ -209,13 +240,21 @@ export function DashboardView() {
                   <IssueRow key={service.id || service.service_id} href="/admin/service-health/" title={service.service_name || service.service_id || service.id} detail={`${serviceTypeLabel(service.service_type)} / ${statusDescriptor(service.health_status || service.status).label}`} tone={String(service.status).toLowerCase() === "online" ? "warning" : "danger"} />
                 ))}
               </div>
-            ) : (
+            ) : issueSummaryConfirmed ? (
               <div className="flex min-h-48 flex-col items-center justify-center px-6 py-8 text-center">
                 <span className="flex size-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
                   <CheckCircle2 className="size-5" />
                 </span>
                 <div className="mt-3 text-sm font-semibold">対応待ちはありません</div>
-                <div className="mt-1 text-xs text-muted-foreground">確認できる配信とサービスは正常です。</div>
+                <div className="mt-1 text-xs text-muted-foreground">参照可能な配信とサービスは正常です。</div>
+              </div>
+            ) : (
+              <div className="flex min-h-48 flex-col items-center justify-center px-6 py-8 text-center">
+                <span className="flex size-10 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                  <AlertTriangle className="size-5" />
+                </span>
+                <div className="mt-3 text-sm font-semibold">要対応の有無を判定できません</div>
+                <div className="mt-1 text-xs text-muted-foreground">未取得・更新中・古いデータを解消してから確認してください。</div>
               </div>
             )}
           </CardContent>
@@ -268,9 +307,9 @@ export function DashboardView() {
             <CardDescription>確認・報告に使う管理情報</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            {superAdmin || hasPermission(currentUser.data, "audit_logs.read") ? <QuickLink href="/admin/audit-logs/" icon={ClipboardList} title="監査ログ" detail="担当者の操作履歴" /> : null}
-            {superAdmin || hasPermission(currentUser.data, "archives.read") ? <QuickLink href="/admin/archive/" icon={Archive} title="録画・アーカイブ" detail="成果物と保存状態" /> : null}
-            {superAdmin || hasPermission(currentUser.data, "system_settings.read") ? <QuickLink href="/admin/security/" icon={ShieldCheck} title="セキュリティ" detail="MFAと運用ポリシー" /> : null}
+            {hasPermission(currentUser.data, "audit_logs.read") ? <QuickLink href="/admin/audit-logs/" icon={ClipboardList} title="監査ログ" detail="担当者の操作履歴" /> : null}
+            {hasPermission(currentUser.data, "archives.read") ? <QuickLink href="/admin/archive/" icon={Archive} title="録画・アーカイブ" detail="成果物と保存状態" /> : null}
+            {hasPermission(currentUser.data, "system_settings.read") ? <QuickLink href="/admin/security/" icon={ShieldCheck} title="セキュリティ" detail="MFAと運用ポリシー" /> : null}
           </CardContent>
         </Card>
       </section>
@@ -356,17 +395,6 @@ function QueryWarning({ streamsFailed, servicesFailed, retry }: { streamsFailed:
   );
 }
 
-function countStreamStatus(streams: Stream[]) {
-  return streams.reduce((counts, stream) => {
-    const status = String(stream.status).toLowerCase();
-    if (["live", "starting"].includes(status)) counts.live += 1;
-    else if (["created", "scheduled", "ready", "draft"].includes(status)) counts.waiting += 1;
-    else if (["failed", "error"].includes(status)) counts.attention += 1;
-    else counts.done += 1;
-    return counts;
-  }, { live: 0, waiting: 0, attention: 0, done: 0 });
-}
-
 function compareStreams(left: Stream, right: Stream) {
   const priority = (stream: Stream) => {
     const status = String(stream.status).toLowerCase();
@@ -379,9 +407,6 @@ function compareStreams(left: Stream, right: Stream) {
 }
 
 function isFinished(status?: string) { return ["completed", "stopped"].includes(String(status || "").toLowerCase()); }
-const isAvailableService = isServiceAvailable;
-function isSuperAdmin(currentUser?: CurrentUser) { return currentUser?.user.roles?.includes("super_admin") === true; }
-
 function assignedNodeLabels(stream: Stream, labels: Map<string, string>, servicesByStream: Map<string, string[]>) {
   const ids = compactValues([stream.assigned_worker_id, stream.assigned_encoder_id]);
   const resolved = [...ids.map((id) => labels.get(id) || id), ...(servicesByStream.get(stream.id) || [])];

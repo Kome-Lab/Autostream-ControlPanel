@@ -11,6 +11,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { MetricCard } from "@/components/admin/metric-card";
 import { EChartsPanel, type ChartOption } from "@/components/charts/echarts-panel";
 import { metricGroup, type MetricUnit } from "@/features/metrics/metric-classification";
+import { OperationalStateNotice } from "@/features/monitoring/operational-state-notice";
+import { aggregateOperationalQueries, operationalQuerySnapshot } from "@/features/monitoring/operational-remote-state";
 import { useAppSettings, useServiceHealth, useWorkerMetrics } from "@/features/queries";
 import { formatTimeInTimeZone } from "@/lib/timezone";
 import type { MetricSnapshot, WorkerNode } from "@/types/domain";
@@ -48,6 +50,10 @@ export function MetricsView() {
   const [timeRange, setTimeRange] = useState(String(3 * 60 * 60 * 1000));
   const metrics = useWorkerMetrics(Number.parseInt(timeRange, 10));
   const services = useServiceHealth();
+  const remoteState = aggregateOperationalQueries("metrics", {
+    metrics: operationalQuerySnapshot(metrics),
+    services: operationalQuerySnapshot(services),
+  });
   const timezone = appSettings.data?.timezone;
   const numericMetrics = useMemo(() => numericMetricSnapshots(metrics.data || []), [metrics.data]);
   const serviceLabels = useMemo(() => serviceLabelMap(services.data || []), [services.data]);
@@ -80,10 +86,10 @@ export function MetricsView() {
   const serviceCount = new Set(allSeries.map((series) => series.serviceID || series.serviceType).filter(Boolean)).size;
   const lastUpdated = metrics.dataUpdatedAt ? formatTime(metrics.dataUpdatedAt, timezone) : "未取得";
   const hasMetricData = allSeries.length > 0;
-  const metricsStatus = metrics.isError ? "取得失敗" : hasMetricData ? "正常" : metrics.isLoading ? "取得中" : "データなし";
-  const metricsStatusTone = metrics.isError ? "danger" : hasMetricData ? "ok" : "warning";
+  const metricsStatus = metrics.isError ? hasMetricData ? "更新失敗（取得済みデータ）" : "取得失敗" : hasMetricData ? "正常" : metrics.isLoading ? "取得中" : "データなし";
+  const metricsStatusTone = metrics.isError ? hasMetricData ? "warning" : "danger" : hasMetricData ? "ok" : "warning";
 
-  if (metrics.isLoading && allSeries.length === 0) {
+  if (remoteState.kind === "initial-loading") {
     return <Skeleton className="h-[520px] w-full" />;
   }
 
@@ -106,6 +112,7 @@ export function MetricsView() {
           </div>
         </div>
       </section>
+      <OperationalStateNotice state={remoteState} consumer="metrics" />
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
         <MetricCard title="CPU使用率" value={formatStat(maxCPU, "percent")} detail={resourceDetail(effectiveNodeLabel, maxCPU, 80, 95, "CPU")} tone={thresholdTone(maxCPU, 80, 95)} />
         <MetricCard title="メモリ使用率" value={formatStat(maxMemory, "percent")} detail={resourceDetail(effectiveNodeLabel, maxMemory, 75, 90, "メモリ")} tone={thresholdTone(maxMemory, 75, 90)} />

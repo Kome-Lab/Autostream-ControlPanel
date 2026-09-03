@@ -96,6 +96,15 @@ export function summarizeRemoteCoverage(
   return coverageSummary(totalCount, knownCount, positiveCount, negativeCount, unknownCount);
 }
 
+export function remoteStateAllowsPositiveSummary(
+  state: RemoteState<unknown>,
+  unknownCount: number,
+  hasAuthority: boolean,
+) {
+  if (!hasAuthority || unknownCount !== 0) return false;
+  return (state.kind === "ready" || state.kind === "empty") && state.freshness.kind === "fresh";
+}
+
 function aggregateRemoteStateSafely<T>(input: unknown): RemoteState<T> {
   if (!isObjectLike(input)) return protocolBlockingError();
   const sectionsValue = Reflect.get(input, "sections");
