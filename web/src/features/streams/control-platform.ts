@@ -20,6 +20,9 @@ export type StreamVisualSettings = {
   discord_target_preset_id?: string;
   discord_target_preset_revision?: number;
   discord_snapshot_revision: number;
+  discord_guild_id?: string;
+  discord_text_channel_id?: string;
+  discord_voice_channel_id?: string;
   discord_preset_deleted?: boolean;
   cover_source: "none" | "preset" | "upload";
   cover_preset_id?: string;
@@ -73,38 +76,47 @@ export function buildVisualUpdate(
   };
 }
 
-export function visualPresentation(settings: StreamVisualSettings | undefined, streamName: string) {
-  if (!settings) return { title: streamName, background: "既定", discord: "従来設定", cover: "OFF", warning: "" };
+export function visualPresentation(settings: StreamVisualSettings | undefined, streamName: string, locale: "ja" | "en" = "ja") {
+  if (!settings) return { title: streamName, background: locale === "ja" ? "既定" : "Default", discord: locale === "ja" ? "従来設定" : "Legacy settings", cover: "OFF", warning: "" };
   const title = settings.header_title_mode === "custom" ? settings.header_title_value?.trim() || streamName : streamName;
   const discord = settings.discord_target_mode === "preset"
-    ? `プリセット snapshot r${settings.discord_target_preset_revision || 0}`
-    : settings.discord_target_mode === "manual" ? "手動 snapshot" : "継承";
+    ? `${locale === "ja" ? "プリセット" : "Preset"} snapshot r${settings.discord_target_preset_revision || 0}`
+    : settings.discord_target_mode === "manual" ? (locale === "ja" ? "手動 snapshot" : "Manual snapshot") : (locale === "ja" ? "継承" : "Inherited");
   return {
     title,
-    background: settings.background_mode === "image" ? "カスタム背景（cover / center crop）" : "既定",
+    background: settings.background_mode === "image" ? (locale === "ja" ? "カスタム背景（cover / center crop）" : "Custom background (cover / center crop)") : (locale === "ja" ? "既定" : "Default"),
     discord,
-    cover: settings.cover_source === "none" ? "OFF" : `${settings.cover_source === "preset" ? "プリセット" : "アップロード"}${settings.cover_start_active ? " / 開始時ON" : " / 開始時OFF"}`,
-    warning: settings.discord_preset_deleted ? "元のDiscordプリセットは削除済みです。保存済みsnapshotを継続します。" : "",
+    cover: settings.cover_source === "none" ? "OFF" : `${settings.cover_source === "preset" ? (locale === "ja" ? "プリセット" : "Preset") : (locale === "ja" ? "アップロード" : "Upload")}${settings.cover_start_active ? (locale === "ja" ? " / 開始時ON" : " / ON at start") : (locale === "ja" ? " / 開始時OFF" : " / OFF at start")}`,
+    warning: settings.discord_preset_deleted ? (locale === "ja" ? "元のDiscordプリセットは削除済みです。保存済みsnapshotを継続します。" : "The original Discord preset was deleted; the saved snapshot remains active.") : "",
   };
 }
 
 export type CoverPermissionSnapshot = {
   status: "loading" | "ready" | "error";
   permissions: readonly string[];
-  superAdmin?: boolean;
+};
+
+export type CoverCapabilitySnapshot = {
+  status: "loading" | "ready" | "error";
+  supported: boolean;
 };
 
 export function coverActionAvailability(
   active: boolean,
   permission: CoverPermissionSnapshot,
   pending: boolean,
+  capability: CoverCapabilitySnapshot = { status: "ready", supported: true },
+  unresolved = false,
 ) {
   const required = active ? "streams.show_cover" : "streams.hide_cover";
   if (permission.status !== "ready") return { allowed: false, required, reason: "権限を確認できるまで操作できません。", confirmationRequired: !active };
-  if (!permission.superAdmin && !permission.permissions.includes("*") && !permission.permissions.includes(required)) {
+  if (!permission.permissions.includes("*") && !permission.permissions.includes(required)) {
     return { allowed: false, required, reason: `この操作には ${required} 権限が必要です。`, confirmationRequired: !active };
   }
+  if (capability.status !== "ready") return { allowed: false, required, reason: "Encoder capabilityを確認できるまで操作できません。", confirmationRequired: !active };
+  if (!capability.supported) return { allowed: false, required, reason: "割当済みEncoderが live_video_cover_v1 を報告していません。", confirmationRequired: !active };
   if (pending) return { allowed: false, required, reason: "同じ操作を処理中です。", confirmationRequired: !active };
+  if (unresolved) return { allowed: false, required, reason: "前回結果が未確定です。再送せず最新状態を確認してください。", confirmationRequired: !active };
   return { allowed: true, required, reason: "", confirmationRequired: !active };
 }
 
@@ -133,22 +145,30 @@ export function newVideoCoverIdempotencyKey(random: Pick<Crypto, "getRandomValue
 export function createVideoCoverActionController<T>(
 	permission: () => CoverPermissionSnapshot,
 	send: (request: VideoCoverActionRequest) => Promise<T>,
+	capability: () => CoverCapabilitySnapshot = () => ({ status: "ready", supported: true }),
 ) {
 	let pending = false;
+	let unresolved = false;
 	const issueRequest = async (request: VideoCoverActionRequest) => {
-		const availability = coverActionAvailability(request.active, permission(), pending);
+		const availability = coverActionAvailability(request.active, permission(), pending, capability(), unresolved);
 		if (!availability.allowed || (!request.active && request.hide_confirmed !== true)) {
 			return { sent: false as const, reason: availability.reason || "確認が必要です。" };
 		}
 		pending = true;
 		try {
 			return { sent: true as const, value: await send(request) };
+		} catch (error) {
+			unresolved = true;
+			throw error;
 		} finally {
 			pending = false;
 		}
 	};
 	return {
 		get pending() { return pending; },
+		get unresolved() { return unresolved; },
+		holdForReconciliation() { unresolved = true; },
+		reconcile() { unresolved = false; },
 		issueRequest,
 		async issue(active: boolean, state: VideoCoverState, idempotencyKey: string, hideConfirmed = false) {
 			return issueRequest(buildVideoCoverAction(active, state, idempotencyKey, hideConfirmed));

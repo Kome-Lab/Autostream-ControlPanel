@@ -165,7 +165,7 @@ test("cover idempotency keys retain cryptographic UUID v4 semantics without rand
   );
 });
 
-test("ambiguous cover reconciliation resends the exact original generation and revision payload", async () => {
+test("ambiguous cover state blocks resend until a read-only reconciliation refresh", async () => {
 	const requests: ReturnType<typeof buildVideoCoverAction>[] = [];
 	const controller = createVideoCoverActionController(
 		() => ({ status: "ready", permissions: ["streams.hide_cover"] }),
@@ -174,10 +174,11 @@ test("ambiguous cover reconciliation resends the exact original generation and r
 	const originalState: VideoCoverState = { stream_id: "stream-1", job_generation: 9, desired_active: true, desired_revision: 12, applied_active: true, applied_revision: 12, status: "applied", pipeline_order: [], cover_watermark_independent: true };
 	const original = buildVideoCoverAction(false, originalState, "hide-reconcile", true);
 	assert.equal((await controller.issueRequest(original)).sent, true);
-	const serverStateAfterAmbiguity: VideoCoverState = { ...originalState, desired_active: false, desired_revision: 13, status: "confirming" };
-	assert.notEqual(serverStateAfterAmbiguity.desired_revision, original.expected_revision);
-	assert.equal((await controller.issueRequest(original)).sent, true);
-	assert.deepEqual(requests, [original, original]);
+	controller.holdForReconciliation();
+	assert.equal((await controller.issueRequest(original)).sent, false);
+	assert.deepEqual(requests, [original]);
+	controller.reconcile();
+	assert.equal(controller.unresolved, false);
 });
 
 test("backend cover rejection is one request with no automatic resend", async () => {

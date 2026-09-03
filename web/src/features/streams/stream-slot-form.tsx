@@ -13,6 +13,7 @@ import { StreamActionControl, type StreamActionControlHandle } from "@/features/
 import type { StreamActionController, StreamActionExecutionResult } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent } from "@/features/streams/stream-action-descriptors";
 import { isStreamValue, streamActionBlockedMessage } from "@/features/streams/stream-action-feedback";
+import { StreamVisualSettingsSection, type StreamCreateVisualState } from "@/features/streams/stream-visual-settings-section";
 import {
   noneValue,
   optionOrNone,
@@ -66,6 +67,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
   const [scheduledStartAt, setScheduledStartAt] = useState(() => streamScheduleInputValue(stream?.scheduled_start_at));
+  const [createVisualState, setCreateVisualState] = useState<StreamCreateVisualState>({ extension: {}, ready: true });
   const [message, setMessage] = useState("");
   const effectiveEncoderServiceID = encoderServiceID ?? optionOrNone(stream?.assigned_encoder_id);
   const effectiveWorkerServiceID = workerServiceID ?? optionOrNone(stream?.assigned_worker_id);
@@ -74,7 +76,8 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
     () => liveEditing ? {
       encoder_audio_gain_db: Number(encoderAudioGainDB),
       overlay_profile_id: watermarkEnabled ? selectedValue(overlayProfileID) : "",
-    } : (editing ? buildStreamSettingsPayload : buildStreamCreatePayload)({
+    } : {
+      ...(editing ? buildStreamSettingsPayload : buildStreamCreatePayload)({
       name,
       discordConfigID: selectedValue(discordConfigID),
       discordGuildID: guildID,
@@ -92,9 +95,11 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
       workerServiceID: canAssignWorker && workerServiceID !== null ? selectedValue(effectiveWorkerServiceID) : undefined,
       scheduledStartAt: streamScheduleRFC3339(scheduledStartAt),
       scheduledEndAt: stream?.scheduled_end_at || "",
-      encoderInputURL: stream?.encoder_input_url || "",
-    }),
-    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderAudioGainDB, encoderProfileID, encoderServiceID, guildID, liveEditing, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, workerServiceID, youtubeOutputID],
+        encoderInputURL: stream?.encoder_input_url || "",
+      }),
+      ...(!editing ? createVisualState.extension : {}),
+    },
+    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, createVisualState.extension, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderAudioGainDB, encoderProfileID, encoderServiceID, guildID, liveEditing, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, workerServiceID, youtubeOutputID],
   );
   const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
   const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
@@ -113,6 +118,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   const formReady = (editing ? canUpdate : canCreate)
     && (liveEditing || name.trim() !== "")
     && (liveEditing || (discordReady && autoStartReady && nodeAssignmentReady))
+    && (editing || createVisualState.ready)
     && watermarkReady
     && encoderAudioGainReady;
   const handleSaveResult = useCallback((result: StreamActionExecutionResult, intent: StreamActionIntent) => {
@@ -149,6 +155,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
             </FormSection>
             {!editing ? <div className="flex gap-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground"><AlertCircle className="mt-0.5 size-4 shrink-0" />新規作成では既存配信のNode割り当てを変更しません。作成後に配信枠を編集し、開始前に担当Nodeを割り当ててください。</div> : null}
             <FormSection title="出力と録画" description="視聴先と事前登録した録画設定"><div className="grid gap-3 md:grid-cols-2"><SelectField label="YouTube出力" value={youtubeOutputID} onChange={setYouTubeOutputID} options={[{ value: noneValue, label: "未選択" }, ...youtubeOutputs]} /><SelectField label="録画プロファイル" value={archiveProfileID} onChange={setArchiveProfileID} options={[{ value: noneValue, label: "録画しない" }, ...archiveProfiles]} /></div>{archiveProfiles.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">録画する場合は、先に<Link href="/admin/archive/" className="mx-1 underline underline-offset-2">録画・アーカイブ</Link>で録画プロファイルと保存先を作成してください。</p> : null}</FormSection>
+            <StreamVisualSettingsSection stream={stream} legacyDiscord={{ guildID, textChannelID, voiceChannelID }} canUpdate={canUpdate} onCreateState={setCreateVisualState} />
           </> : null}
           <FormSection title="Encoderライブ調整" description="音量とウォーターマークは配信中でも停止せず反映されます。"><div className="grid gap-3 md:grid-cols-2">{!liveEditing ? <SelectField label="エンコード設定" value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: "未選択" }, ...encoderProfiles]} /> : null}{!liveEditing ? <SelectField label="字幕設定" value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: "未選択" }, ...captionProfiles]} /> : null}<TextField label="Encoder音量（dB）" type="number" value={encoderAudioGainDB} onChange={setEncoderAudioGainDB} min="-60" max="24" step="0.1" /><label className="flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={watermarkEnabled} onCheckedChange={(value) => setWatermarkEnabled(value === true)} />ウォーターマークを使用</label><SelectField label="ウォーターマーク設定" value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: "未選択" }, ...overlayProfiles]} disabled={!watermarkEnabled} /></div></FormSection>
           {!encoderAudioGainReady ? <Warning>Encoder音量は -60 dB から +24 dB の範囲で指定してください。</Warning> : null}
