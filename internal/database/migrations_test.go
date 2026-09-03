@@ -1,8 +1,11 @@
 package database
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSplitSQLStatements(t *testing.T) {
@@ -344,5 +347,211 @@ func TestServiceEndpointStateMigrationSeparatesDesiredAppliedAndReported(t *test
 	}
 	if strings.Contains(strings.ToLower(text), "runtime_token") {
 		t.Fatalf("service endpoint state migration must not persist runtime tokens:\n%s", text)
+	}
+}
+
+func TestBundle8AV2MigrationIsAdditiveAndBackupFirst(t *testing.T) {
+	body, err := embeddedMigrations.ReadFile("migrations/080_bundle8a_v2_migration.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(body))
+	for _, table := range []string{
+		"v2_migration_drive_destinations_backup",
+		"v2_migration_archive_artifacts_backup",
+		"v2_migration_stream_key_refs_backup",
+		"v2_migration_service_tokens_backup",
+		"v2_migration_oauth_accounts_backup",
+		"v2_migration_discord_targets_backup",
+		"v2_migration_update_hosts_backup",
+		"v2_migration_legacy_agent_export",
+		"v2_migration_bundle8a_gate",
+	} {
+		if !strings.Contains(text, "create table if not exists "+table) {
+			t.Fatalf("migration is missing additive backup/export table %s", table)
+		}
+	}
+	for _, id := range []string{
+		"dep-con-0001", "dep-con-0003", "dep-con-0005", "dep-con-0012",
+		"dep-cp-0005", "dep-cp-0006", "dep-cp-0007", "dep-cp-0017", "dep-cp-0030",
+	} {
+		if !strings.Contains(text, "'"+id+"'") {
+			t.Fatalf("migration count view is missing %s", id)
+		}
+	}
+	for _, statement := range splitSQLStatements(string(body)) {
+		normalized := strings.ToLower(strings.TrimSpace(statement))
+		for _, forbidden := range []string{"drop table", "drop column", "truncate table", "delete from"} {
+			if strings.Contains(normalized, forbidden) {
+				t.Fatalf("Bundle 8A migration contains physical deletion %q:\n%s", forbidden, statement)
+			}
+		}
+	}
+	archiveBackup := strings.Index(text, "insert ignore into v2_migration_archive_artifacts_backup")
+	archiveTransform := strings.Index(text, "update stream_artifacts as artifact")
+	discordBackup := strings.Index(text, "insert ignore into v2_migration_discord_targets_backup")
+	discordTransform := strings.Index(text, "insert ignore into stream_visual_settings")
+	if archiveBackup < 0 || archiveTransform < 0 || archiveBackup >= archiveTransform ||
+		discordBackup < 0 || discordTransform < 0 || discordBackup >= discordTransform {
+		t.Fatal("persistent data transforms must occur after their immutable backup statements")
+	}
+	for _, preserved := range []string{"base_path", "legacy_agent_service_id", "stream_key_secret_name"} {
+		if !strings.Contains(text, preserved) {
+			t.Fatalf("migration does not represent retained compatibility data %s", preserved)
+		}
+	}
+	if !strings.Contains(text, "chk_v2_migration_bundle8a_zero_mismatch") || !strings.Contains(text, "orphan_count <> 0") {
+		t.Fatal("migration must fail closed when pre/post/backup counts or orphan checks mismatch")
+	}
+}
+
+func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
+	db, ctx := openMariaDBOAuthMigrationTest(t)
+	now := time.Now().UTC()
+	streamID := controlPlatformTestUUID(t)
+	artifactID := controlPlatformTestUUID(t)
+	driveID := controlPlatformTestUUID(t)
+	providerID := controlPlatformTestUUID(t)
+	oauthID := controlPlatformTestUUID(t)
+	tokenID := controlPlatformTestUUID(t)
+	agentID := "bundle8a-agent-" + streamID[:8]
+	hostID := "bundle8a-host-" + streamID[:8]
+
+	t.Cleanup(func() {
+		cleanup := []struct {
+			query string
+			args  []any
+		}{
+			{"DELETE FROM v2_migration_legacy_agent_export WHERE execution_host_id=?", []any{hostID}},
+			{"DELETE FROM v2_migration_update_hosts_backup WHERE execution_host_id=?", []any{hostID}},
+			{"DELETE FROM v2_migration_discord_targets_backup WHERE stream_id=?", []any{streamID}},
+			{"DELETE FROM v2_migration_oauth_accounts_backup WHERE id=?", []any{oauthID}},
+			{"DELETE FROM v2_migration_stream_key_refs_backup WHERE stream_id=?", []any{streamID}},
+			{"DELETE FROM v2_migration_service_tokens_backup WHERE token_id=?", []any{tokenID}},
+			{"DELETE FROM v2_migration_archive_artifacts_backup WHERE artifact_id=?", []any{artifactID}},
+			{"DELETE FROM v2_migration_drive_destinations_backup WHERE id=?", []any{driveID}},
+			{"DELETE FROM stream_visual_settings WHERE stream_id=?", []any{streamID}},
+			{"DELETE FROM stream_artifacts WHERE id=?", []any{artifactID}},
+			{"DELETE FROM stream_youtube_runtimes WHERE stream_id=?", []any{streamID}},
+			{"DELETE FROM stream_settings WHERE stream_id=?", []any{streamID}},
+			{"DELETE FROM streams WHERE id=?", []any{streamID}},
+			{"DELETE FROM oauth_accounts WHERE id=?", []any{oauthID}},
+			{"DELETE FROM oauth_providers WHERE id=?", []any{providerID}},
+			{"DELETE FROM drive_destinations WHERE id=?", []any{driveID}},
+			{"DELETE FROM system_update_execution_hosts WHERE execution_host_id=?", []any{hostID}},
+			{"DELETE FROM services WHERE service_id=?", []any{agentID}},
+			{"DELETE FROM service_tokens WHERE id=?", []any{tokenID}},
+		}
+		for _, current := range cleanup {
+			_, _ = db.ExecContext(ctx, current.query, current.args...)
+		}
+	})
+
+	mustExecBundle8A(t, db, ctx, `INSERT INTO streams(id,name,status,created_at,updated_at) VALUES(?,?,'created',?,?)`, streamID, "Bundle 8A rehearsal", now, now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO stream_settings(stream_id,discord_guild_id,discord_voice_channel_id,discord_text_channel_id,updated_at) VALUES(?,?,?,?,?)`, streamID, "100000000000000001", "100000000000000002", "100000000000000003", now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO stream_artifacts(id,stream_id,archive_run_id,archive_started_at,kind,name,relative_path,size_bytes,created_at) VALUES(?,?,'',NULL,'archive','final.mp4',?,7,?)`, artifactID, streamID, "final/"+streamID+"/final.mp4", now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO stream_youtube_runtimes(stream_id,youtube_output,mode,stream_key_secret_name,created_at,updated_at) VALUES(?,'primary','manual',?,?,?)`, streamID, "stream:"+streamID+":youtube", now, now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO drive_destinations(id,name,auth_mode,folder_id_ciphertext,folder_id_nonce,folder_id_fingerprint,masked_folder_id,shared_drive,base_path,created_at,updated_at) VALUES(?,?,'oauth2','encrypted','nonce','abcdef0123456789','folder-masked',FALSE,'AutoStream/Archives',?,?)`, driveID, "Bundle 8A "+driveID[:8], now, now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO oauth_providers(id,provider_type,name,enabled,client_id,scopes,allowed_domains,redirect_uri,created_at,updated_at) VALUES(?,'google',?,TRUE,'client','[]','[]','https://example.com/callback',?,?)`, providerID, "Bundle 8A "+providerID[:8], now, now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO oauth_accounts(id,provider_id,provider_type,account_label,subject,email,scopes,refresh_token_ciphertext,refresh_token_nonce,token_fingerprint,created_at,updated_at) VALUES(?,?,'google','linked','subject','ops@example.com','[]','encrypted','nonce','abcdef0123456789',?,?)`, oauthID, providerID, now, now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO service_tokens(id,service_type,token_hash,scopes,created_at) VALUES(?,'update_agent',?,'["system_updates.execute"]',?)`, tokenID, strings.Repeat("a", 64), now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO services(service_id,service_type,service_name,public_url,version,status,capabilities,token_id,transport_mode,execution_host_id,ownership_epoch,created_at,updated_at) VALUES(?,'update_agent',?,'https://agent.example.com','v2','healthy','[]',?,'ssh_v1',?,1,?,?)`, agentID, "Bundle 8A agent", tokenID, hostID, now, now)
+	mustExecBundle8A(t, db, ctx, `INSERT INTO system_update_execution_hosts(execution_host_id,transport_mode,agent_service_id,legacy_agent_service_id,ownership_epoch,policy_revision,created_at,updated_at) VALUES(?,'ssh_v1',?,?,1,1,?,?)`, hostID, agentID, agentID, now, now)
+
+	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
+	assertBundle8ACounts(t, db, ctx, 1)
+
+	// Replaying models both an interrupted migration before schema_migrations is
+	// recorded and a normal idempotent operator rehearsal.
+	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
+	assertBundle8ACounts(t, db, ctx, 1)
+	mustExecBundle8A(t, db, ctx, `UPDATE stream_visual_settings SET discord_guild_id='999' WHERE stream_id=?`, streamID)
+	var discordPostCount, discordOrphanCount int
+	if err := db.QueryRowContext(ctx, `SELECT post_count,orphan_count FROM v2_migration_bundle8a_counts WHERE inventory_id='DEP-CP-0005'`).Scan(&discordPostCount, &discordOrphanCount); err != nil {
+		t.Fatal(err)
+	}
+	if discordPostCount != 0 || discordOrphanCount != 1 {
+		t.Fatalf("Discord orphan fixture post=%d orphan=%d, want 0/1", discordPostCount, discordOrphanCount)
+	}
+	mustExecBundle8A(t, db, ctx, `UPDATE stream_visual_settings SET discord_guild_id='100000000000000001' WHERE stream_id=?`, streamID)
+	assertBundle8ACounts(t, db, ctx, 1)
+
+	// Force a post-state mismatch.  The count view must reject it, then the
+	// backup-backed restore must recover the exact pre-state.
+	mustExecBundle8A(t, db, ctx, `UPDATE stream_artifacts SET archive_run_id='' WHERE id=?`, artifactID)
+	var postCount, orphanCount int
+	if err := db.QueryRowContext(ctx, `SELECT post_count,orphan_count FROM v2_migration_bundle8a_counts WHERE inventory_id='DEP-CON-0003'`).Scan(&postCount, &orphanCount); err != nil {
+		t.Fatal(err)
+	}
+	if postCount != 0 || orphanCount != 1 {
+		t.Fatalf("negative count fixture post=%d orphan=%d, want 0/1", postCount, orphanCount)
+	}
+	restoreBundle8ARehearsal(t, db, ctx, streamID, artifactID)
+	assertBundle8APreState(t, db, ctx, streamID, artifactID)
+
+	// The migration remains executable after restore and returns to a complete,
+	// orphan-free state.
+	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
+	assertBundle8ACounts(t, db, ctx, 1)
+}
+
+func mustExecBundle8A(t *testing.T, db *sql.DB, ctx context.Context, query string, args ...any) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, query, args...); err != nil {
+		t.Fatalf("Bundle 8A rehearsal SQL failed: %v\n%s", err, query)
+	}
+}
+
+func assertBundle8ACounts(t *testing.T, db *sql.DB, ctx context.Context, want int) {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT inventory_id,pre_count,backup_count,post_count,orphan_count FROM v2_migration_bundle8a_counts ORDER BY inventory_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var id string
+		var pre, backup, post, orphan int
+		if err := rows.Scan(&id, &pre, &backup, &post, &orphan); err != nil {
+			t.Fatal(err)
+		}
+		if pre != want || backup != want || post != want || orphan != 0 {
+			t.Fatalf("%s counts=%d/%d/%d orphan=%d, want %d/%d/%d orphan=0", id, pre, backup, post, orphan, want, want, want)
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 9 {
+		t.Fatalf("migration count row denominator=%d, want 9", seen)
+	}
+}
+
+func restoreBundle8ARehearsal(t *testing.T, db *sql.DB, ctx context.Context, streamID, artifactID string) {
+	t.Helper()
+	mustExecBundle8A(t, db, ctx, `UPDATE stream_artifacts AS current JOIN v2_migration_archive_artifacts_backup AS backup ON backup.artifact_id=current.id SET current.archive_run_id=backup.archive_run_id,current.archive_started_at=backup.archive_started_at WHERE current.id=?`, artifactID)
+	mustExecBundle8A(t, db, ctx, `UPDATE stream_settings AS current JOIN v2_migration_discord_targets_backup AS backup ON backup.stream_id=current.stream_id SET current.discord_target_mode=backup.settings_target_mode,current.discord_target_preset_id=backup.settings_target_preset_id,current.discord_target_preset_revision=backup.settings_target_preset_revision,current.discord_guild_id=backup.discord_guild_id,current.discord_text_channel_id=backup.discord_text_channel_id,current.discord_voice_channel_id=backup.discord_voice_channel_id WHERE current.stream_id=?`, streamID)
+	mustExecBundle8A(t, db, ctx, `DELETE visual FROM stream_visual_settings AS visual JOIN v2_migration_discord_targets_backup AS backup ON backup.stream_id=visual.stream_id WHERE backup.visual_row_existed=FALSE AND visual.stream_id=?`, streamID)
+}
+
+func assertBundle8APreState(t *testing.T, db *sql.DB, ctx context.Context, streamID, artifactID string) {
+	t.Helper()
+	var runID string
+	var startedAt sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT archive_run_id,archive_started_at FROM stream_artifacts WHERE id=?`, artifactID).Scan(&runID, &startedAt); err != nil {
+		t.Fatal(err)
+	}
+	var mode sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT discord_target_mode FROM stream_settings WHERE stream_id=?`, streamID).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	var visualCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM stream_visual_settings WHERE stream_id=?`, streamID).Scan(&visualCount); err != nil {
+		t.Fatal(err)
+	}
+	if runID != "" || startedAt.Valid || mode.Valid || visualCount != 0 {
+		t.Fatalf("restore did not reproduce pre-state: run=%q started=%v mode=%v visual=%d", runID, startedAt, mode, visualCount)
 	}
 }
