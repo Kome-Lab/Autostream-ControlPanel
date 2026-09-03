@@ -407,6 +407,8 @@ func TestBundle8AV2MigrationIsAdditiveAndBackupFirst(t *testing.T) {
 
 func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	db, ctx := openMariaDBOAuthMigrationTest(t)
+	baseline := readBundle8ACounts(t, db, ctx)
+	assertBundle8ACounts(t, db, ctx, baseline, 0)
 	now := time.Now().UTC()
 	streamID := controlPlatformTestUUID(t)
 	artifactID := controlPlatformTestUUID(t)
@@ -459,22 +461,23 @@ func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	mustExecBundle8A(t, db, ctx, `INSERT INTO system_update_execution_hosts(execution_host_id,transport_mode,agent_service_id,legacy_agent_service_id,ownership_epoch,policy_revision,created_at,updated_at) VALUES(?,'ssh_v1',?,?,1,1,?,?)`, hostID, agentID, agentID, now, now)
 
 	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
-	assertBundle8ACounts(t, db, ctx, 1)
+	assertBundle8ACounts(t, db, ctx, baseline, 1)
 
 	// Replaying models both an interrupted migration before schema_migrations is
 	// recorded and a normal idempotent operator rehearsal.
 	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
-	assertBundle8ACounts(t, db, ctx, 1)
+	assertBundle8ACounts(t, db, ctx, baseline, 1)
 	mustExecBundle8A(t, db, ctx, `UPDATE stream_visual_settings SET discord_guild_id='999' WHERE stream_id=?`, streamID)
 	var discordPostCount, discordOrphanCount int
 	if err := db.QueryRowContext(ctx, `SELECT post_count,orphan_count FROM v2_migration_bundle8a_counts WHERE inventory_id='DEP-CP-0005'`).Scan(&discordPostCount, &discordOrphanCount); err != nil {
 		t.Fatal(err)
 	}
-	if discordPostCount != 0 || discordOrphanCount != 1 {
-		t.Fatalf("Discord orphan fixture post=%d orphan=%d, want 0/1", discordPostCount, discordOrphanCount)
+	discordBaseline := baseline["DEP-CP-0005"]
+	if discordPostCount != discordBaseline.post || discordOrphanCount != discordBaseline.orphan+1 {
+		t.Fatalf("Discord orphan fixture post=%d orphan=%d, want baseline post=%d orphan=%d", discordPostCount, discordOrphanCount, discordBaseline.post, discordBaseline.orphan+1)
 	}
 	mustExecBundle8A(t, db, ctx, `UPDATE stream_visual_settings SET discord_guild_id='100000000000000001' WHERE stream_id=?`, streamID)
-	assertBundle8ACounts(t, db, ctx, 1)
+	assertBundle8ACounts(t, db, ctx, baseline, 1)
 
 	// Force a post-state mismatch.  The count view must reject it, then the
 	// backup-backed restore must recover the exact pre-state.
@@ -483,8 +486,9 @@ func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT post_count,orphan_count FROM v2_migration_bundle8a_counts WHERE inventory_id='DEP-CON-0003'`).Scan(&postCount, &orphanCount); err != nil {
 		t.Fatal(err)
 	}
-	if postCount != 0 || orphanCount != 1 {
-		t.Fatalf("negative count fixture post=%d orphan=%d, want 0/1", postCount, orphanCount)
+	archiveBaseline := baseline["DEP-CON-0003"]
+	if postCount != archiveBaseline.post || orphanCount != archiveBaseline.orphan+1 {
+		t.Fatalf("negative count fixture post=%d orphan=%d, want baseline post=%d orphan=%d", postCount, orphanCount, archiveBaseline.post, archiveBaseline.orphan+1)
 	}
 	restoreBundle8ARehearsal(t, db, ctx, streamID, artifactID)
 	assertBundle8APreState(t, db, ctx, streamID, artifactID)
@@ -492,7 +496,7 @@ func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	// The migration remains executable after restore and returns to a complete,
 	// orphan-free state.
 	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
-	assertBundle8ACounts(t, db, ctx, 1)
+	assertBundle8ACounts(t, db, ctx, baseline, 1)
 }
 
 func mustExecBundle8A(t *testing.T, db *sql.DB, ctx context.Context, query string, args ...any) {
@@ -502,30 +506,53 @@ func mustExecBundle8A(t *testing.T, db *sql.DB, ctx context.Context, query strin
 	}
 }
 
-func assertBundle8ACounts(t *testing.T, db *sql.DB, ctx context.Context, want int) {
+type bundle8ACount struct {
+	pre    int
+	backup int
+	post   int
+	orphan int
+}
+
+func readBundle8ACounts(t *testing.T, db *sql.DB, ctx context.Context) map[string]bundle8ACount {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, `SELECT inventory_id,pre_count,backup_count,post_count,orphan_count FROM v2_migration_bundle8a_counts ORDER BY inventory_id`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	seen := 0
+	counts := make(map[string]bundle8ACount, 9)
 	for rows.Next() {
 		var id string
-		var pre, backup, post, orphan int
-		if err := rows.Scan(&id, &pre, &backup, &post, &orphan); err != nil {
+		var count bundle8ACount
+		if err := rows.Scan(&id, &count.pre, &count.backup, &count.post, &count.orphan); err != nil {
 			t.Fatal(err)
 		}
-		if pre != want || backup != want || post != want || orphan != 0 {
-			t.Fatalf("%s counts=%d/%d/%d orphan=%d, want %d/%d/%d orphan=0", id, pre, backup, post, orphan, want, want, want)
+		if _, exists := counts[id]; exists {
+			t.Fatalf("duplicate migration count row %s", id)
 		}
-		seen++
+		counts[id] = count
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if seen != 9 {
-		t.Fatalf("migration count row denominator=%d, want 9", seen)
+	if len(counts) != 9 {
+		t.Fatalf("migration count row denominator=%d, want 9", len(counts))
+	}
+	return counts
+}
+
+func assertBundle8ACounts(t *testing.T, db *sql.DB, ctx context.Context, baseline map[string]bundle8ACount, added int) {
+	t.Helper()
+	got := readBundle8ACounts(t, db, ctx)
+	for id, count := range got {
+		before, exists := baseline[id]
+		if !exists {
+			t.Fatalf("migration count row %s was absent from pre-state", id)
+		}
+		want := before.pre + added
+		if count.pre != want || count.backup != want || count.post != want || count.orphan != before.orphan || before.pre != before.backup || before.pre != before.post || before.orphan != 0 {
+			t.Fatalf("%s counts=%d/%d/%d orphan=%d, want pre-state %d/%d/%d orphan=%d plus %d represented row", id, count.pre, count.backup, count.post, count.orphan, before.pre, before.backup, before.post, before.orphan, added)
+		}
 	}
 }
 
