@@ -114,6 +114,7 @@ export function verifyStatusAuthoritySources(webRoot, authority) {
     "Autostream-Observability": resolve(controlPanelRoot, "..", "Autostream-Observability"),
   });
   let verifiedSources = 0;
+  let verifiedControlPanelSources = 0;
   const unavailableSources = [];
   for (const source of authority.authorities) {
     const root = repositoryRoots[source.repository];
@@ -134,10 +135,12 @@ export function verifyStatusAuthoritySources(webRoot, authority) {
       );
     }
     verifiedSources += 1;
+    if (source.repository === "Autostream-ControlPanel") verifiedControlPanelSources += 1;
   }
-  assert.equal(verifiedSources >= 5, true, "repository-contained Control Panel authority was not verified");
+  assert.equal(verifiedControlPanelSources >= 4, true, "repository-contained Control Panel authority was not verified");
   return Object.freeze({
     verifiedSources,
+    verifiedControlPanelSources,
     unavailableSources: Object.freeze(unavailableSources),
     excerptMismatches: 0,
   });

@@ -88,6 +88,7 @@ test("source-derived authority exactly owns every mapping value and every mappin
   assert.deepEqual(compareStatusMappingInventory(authority, fixture), []);
   const sourceEvidence = verifyStatusAuthoritySources(webRoot, authority);
   assert.equal(sourceEvidence.verifiedSources + sourceEvidence.unavailableSources.length, authority.authorities.length);
+  assert.equal(sourceEvidence.verifiedControlPanelSources >= 4, true);
   assert.equal(sourceEvidence.excerptMismatches, 0);
   assert.deepEqual(
     authority.authorities.map((entry) => [entry.repository, entry.head]),
@@ -139,7 +140,7 @@ test("mechanical authority oracle rejects omissions, inventions, duplicates, wro
   }
 
   const changedSourceDigest = structuredClone(authority);
-  changedSourceDigest.authorities[0].sourceSha256 = "0".repeat(64);
+  changedSourceDigest.authorities.find(({ id }) => id === "control-panel-domain").sourceSha256 = "0".repeat(64);
   assert.throws(() => verifyStatusAuthoritySources(webRoot, changedSourceDigest), /source digest/);
   const changedSnapshot = structuredClone(authority);
   changedSnapshot.vocabularies[0].excerpt += "\n// invented";
