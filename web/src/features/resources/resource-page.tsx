@@ -30,6 +30,10 @@ import {
 } from "@/features/observability/action-policy";
 import { ObservabilityActionControl } from "@/features/observability/observability-action-control";
 import { resourcePages, type ResourceDefinition, type ResourcePageId } from "@/features/resources/resource-config";
+import { ResourceActionConfirmationHost, ResourceActionControl } from "@/features/resources/resource-action-control";
+import { createResourceActionController, type ResourceActionController, type ResourceActionExecutionResult } from "@/features/resources/resource-action-controller";
+import { resourceActionID, type ResourceActionIntent, type ResourceActionOperation } from "@/features/resources/resource-action-descriptors";
+import { mutateResourceAction, refreshResourceAction, resourceActionStateSnapshot, resourcePermissionSnapshot } from "@/features/resources/resource-action-runtime";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
   buildNotificationChannelPayload,
@@ -48,6 +52,7 @@ import {
   type OAuthAccountPurpose,
 } from "@/lib/oauth-account";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
+import type { TranslationKey } from "@/lib/i18n";
 import { buildDiscordTargetPresetPayload, validDiscordTargetPreset } from "@/features/resources/discord-target-preset";
 import type { CurrentUser, WorkerNode } from "@/types/domain";
 
@@ -108,8 +113,7 @@ type ResourceAccess = {
 };
 
 function resourceAccess(resource: ResourceDefinition, currentUser: Parameters<typeof hasPermission>[0]): ResourceAccess {
-  const isSuperAdmin = currentUser?.user.roles?.includes("super_admin") === true;
-  const allowed = (permission?: string) => isSuperAdmin || (permission ? hasPermission(currentUser, permission) : false);
+  const allowed = (permission?: string) => permission ? hasPermission(currentUser, permission) : false;
   return {
     read: allowed(resource.permissions?.read),
     create: allowed(resource.permissions?.create),
@@ -177,6 +181,12 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
   const showTable = resource.form !== "security-settings";
   const [deleteMessage, setDeleteMessage] = useState("");
   const [actionMessage, setActionMessage] = useState("");
+  const resourceActionController = useMemo(() => createResourceActionController({
+    getPermissions: () => resourcePermissionSnapshot(queryClient),
+    getState: (intent) => resourceActionStateSnapshot(queryClient, intent),
+    refresh: (intent) => refreshResourceAction(queryClient, intent),
+    mutate: mutateResourceAction,
+  }), [queryClient]);
   const historyMutation = useMutation<ResourceRow[], Error, void>({
     mutationFn: async () => {
       if (!historyConfig || rows.length === 0) return [];
@@ -208,7 +218,7 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
       if (!freshPlan) return { plan, evaluation: "unknown" as const, freshness: "fresh" as const };
       queryClient.setQueryData(["resource", plan.sourcePath], data);
       queryClient.setQueryData(["auth", "me"], freshUser);
-      const allowed = freshUser.user.roles?.includes("super_admin") === true || hasPermission(freshUser, freshPlan.permission);
+      const allowed = hasPermission(freshUser, freshPlan.permission);
       return { plan: freshPlan, evaluation: allowed ? "allowed" as const : "denied" as const, freshness: "fresh" as const };
     },
     mutate: (plan) => apiPost(plan.path),
@@ -238,7 +248,7 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
     }
     setActionMessage("最新の権限または状態を確認できないため、操作を送信しませんでした。");
   };
-  const deleteMutation = useMutation<unknown, Error, ResourceRow>({
+  const legacyDeleteMutation = useMutation<unknown, Error, ResourceRow>({
     mutationFn: async (row) => revisionedDeleteResource(resource.path)
       ? apiDeleteJSON(deletePathForResource(resource, row), { expected_revision: numberValue(rowString(row, ["revision"]), 0) })
       : apiDelete(deletePathForResource(resource, row)),
@@ -248,7 +258,6 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
     },
     onError: (error) => setDeleteMessage(resourceDeleteErrorMessage(error)),
   });
-
   if (!access.read) return <PermissionNotice resource={resource} action="参照" permission={resource.permissions?.read} />;
 
   return (
@@ -259,40 +268,55 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
           <CardDescription>{resource.description}</CardDescription>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => void query.refetch()}>
+          <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => {
+            void query.refetch().then((result) => {
+              if (result.isSuccess) resourceActionController.reconcile();
+            });
+          }}>
             <RefreshCcw className="size-4" />
             更新
           </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4 py-4">
-        {query.isError ? <QueryErrorNotice onRetry={() => void query.refetch()} /> : null}
-        {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} disabled={!access.update} /> : null}
-        {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} allowed={access.create} permission={resource.permissions?.create} /> : null}
+        {query.isError ? <QueryErrorNotice onRetry={() => {
+          void query.refetch().then((result) => {
+            if (result.isSuccess) resourceActionController.reconcile();
+          });
+        }} /> : null}
+        {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} disabled={!access.update} controller={resourceActionController} /> : null}
+        {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} allowed={access.create} permission={resource.permissions?.create} controller={resourceActionController} /> : null}
         {deleteMessage ? <p className="text-sm text-muted-foreground">{deleteMessage}</p> : null}
         {actionMessage ? <p className="text-sm text-muted-foreground">{actionMessage}</p> : null}
         {showTable ? (
-          query.isLoading ? (
+          query.isLoading && rows.length === 0 ? (
             <Skeleton className="h-48 w-full" />
-          ) : query.isError ? null : (
+          ) : rows.length === 0 && query.isError ? null : (
             <ResourceTable
               rows={rows}
               columns={columns}
               resource={resource}
               timezone={timezone}
-              deletePending={deleteMutation.isPending}
+              deletePending={legacyDeleteMutation.isPending}
               canEdit={access.update}
               canDelete={access.delete}
               canTest={access.test}
               currentUser={currentUser}
+              resourceActionController={resourceActionController}
               observabilityController={observabilityController}
               onObservabilityResult={(plan, result) => {
                 setActionMessage("");
                 return handleObservabilityResult(plan, result);
               }}
-              onDelete={(row) => {
+              onDeleteResult={(result) => {
+                setDeleteMessage(resourceActionResultMessage(result, t, "削除しました。"));
+                if (result.kind === "succeeded") {
+                  void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+                }
+              }}
+              onLegacyDelete={(row) => {
                 setDeleteMessage("");
-                deleteMutation.mutate(row);
+                legacyDeleteMutation.mutate(row);
               }}
             />
           )
@@ -323,6 +347,8 @@ type SubmitOptions = {
   invalidatePath?: string;
   successMessage?: string;
   redirectToAuthorizationURL?: boolean;
+  secretValue?: string;
+  onSensitiveDispatched?: () => void;
 };
 type Submission = {
   path: string;
@@ -332,15 +358,54 @@ type Submission = {
   redirectToAuthorizationURL?: boolean;
 };
 type SubmitResource = (payload: Record<string, unknown>, options?: SubmitOptions) => void;
+type PendingResourceSubmission = Omit<Submission, "payload"> & {
+  intents: readonly ResourceActionIntent[];
+  index: number;
+  onSensitiveDispatched?: () => void;
+};
 
 const noneValue = "__none__";
 
-function CreateResourceForm({ resource, allowed, permission }: { resource: ResourceDefinition; allowed: boolean; permission?: string }) {
+function resourcePayloadLabel(payload: Readonly<Record<string, unknown>>) {
+  return firstNonEmpty(
+    typeof payload.name === "string" ? payload.name : "",
+    typeof payload.username === "string" ? payload.username : "",
+    typeof payload.provider_type === "string" ? payload.provider_type : "",
+    "OAuth connection",
+  );
+}
+
+function resourceActionResultMessage(
+  result: ResourceActionExecutionResult,
+  translate: (key: TranslationKey) => string,
+  successMessage: string,
+) {
+  if (result.kind === "succeeded") return successMessage;
+  if (result.kind === "failed") return translate(result.error.messageKey);
+  if (result.kind === "outcome_unknown") return translate("confirmationOutcomeUnknown");
+  const key: TranslationKey = result.reason === "permission-denied"
+    ? "actionPermissionDenied"
+    : result.reason === "permission-unknown"
+      ? "actionPermissionUnknown"
+      : result.reason === "duplicate"
+        ? "actionAlreadyPending"
+        : result.reason === "authority-changed"
+          ? "confirmationStaleBlocked"
+          : result.reason === "reconciliation-required"
+            ? "confirmationRefreshRequired"
+            : "confirmationRevalidationUnavailable";
+  return translate(key);
+}
+
+function CreateResourceForm({ resource, allowed, permission, controller }: { resource: ResourceDefinition; allowed: boolean; permission?: string; controller: ResourceActionController }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
+  const [pending, setPending] = useState<PendingResourceSubmission | null>(null);
+  const [dispatching, setDispatching] = useState(false);
   const hasSensitiveFields = Object.keys(resource.createTemplate || {}).some(isSensitiveKey);
-  const mutation = useMutation<unknown, Error, Submission>({
+  const legacyMutation = useMutation<unknown, Error, Submission>({
     mutationFn: async (submission) => apiPost(submission.path, submission.payload),
     onSuccess: async (data, submission) => {
       setMessage(submission.successMessage);
@@ -359,13 +424,70 @@ function CreateResourceForm({ resource, allowed, permission }: { resource: Resou
 
   const submit: SubmitResource = (payload, options) => {
     setMessage("");
-    mutation.mutate({
+    const submission: Submission = {
       path: options?.path || resource.path,
       payload,
       invalidatePath: options?.invalidatePath || resource.path,
       successMessage: options?.successMessage || "作成しました。",
       redirectToAuthorizationURL: options?.redirectToAuthorizationURL,
+    };
+    const operation: ResourceActionOperation = submission.path === "/integrations/oauth-accounts/start" ? "connect" : "create";
+    const actionID = resourceActionID(resource.path, operation);
+    if (!actionID) {
+      legacyMutation.mutate(submission);
+      options?.onSensitiveDispatched?.();
+      return;
+    }
+    const intents: ResourceActionIntent[] = [];
+    if (options?.secretValue) {
+      intents.push(Object.freeze({ id: "RES-13", payload: Object.freeze({ value: options.secretValue }), publicLabel: "Deepgram API key" }));
+    }
+    intents.push(Object.freeze({ id: actionID, payload: Object.freeze({ ...payload }), publicLabel: resourcePayloadLabel(payload) }));
+    setPending({
+      path: submission.path,
+      invalidatePath: submission.invalidatePath,
+      successMessage: submission.successMessage,
+      redirectToAuthorizationURL: submission.redirectToAuthorizationURL,
+      intents: Object.freeze(intents),
+      index: 0,
+      onSensitiveDispatched: options?.onSensitiveDispatched,
     });
+  };
+
+  const handleResult = (submission: PendingResourceSubmission, result: ResourceActionExecutionResult, intent: ResourceActionIntent) => {
+    setDispatching(false);
+    setMessage(resourceActionResultMessage(result, t, submission.successMessage));
+    if (result.kind !== "succeeded") {
+      if (result.kind === "blocked") setPending(null);
+      return;
+    }
+    if (intent.id === "RES-13") {
+      void queryClient.invalidateQueries({ queryKey: ["resource", "/secrets/status"] });
+    }
+    const remainingIntents = submission.intents.slice(submission.index + 1);
+    if (remainingIntents.length > 0) {
+      setPending({
+        path: submission.path,
+        invalidatePath: submission.invalidatePath,
+        successMessage: submission.successMessage,
+        redirectToAuthorizationURL: submission.redirectToAuthorizationURL,
+        intents: Object.freeze(remainingIntents),
+        index: 0,
+      });
+      return;
+    }
+    setPending(null);
+    void queryClient.invalidateQueries({ queryKey: ["resource", submission.invalidatePath] });
+    if (submission.redirectToAuthorizationURL) {
+      const authorizationURL = isRecord(result.value) && typeof result.value.authorization_url === "string" ? result.value.authorization_url : "";
+      if (authorizationURL && typeof window !== "undefined") {
+        window.location.assign(authorizationURL);
+        return;
+      }
+      setMessage("OAuth認可URLを取得できませんでした。プロバイダ設定を確認してください。");
+      return;
+    }
+    setOpen(false);
   };
 
   return (
@@ -376,7 +498,7 @@ function CreateResourceForm({ resource, allowed, permission }: { resource: Resou
       </div>
       <Dialog open={open} onOpenChange={(value) => {
         setOpen(value);
-        if (!value && !mutation.isPending) setMessage("");
+        if (!value && !legacyMutation.isPending && !pending && !dispatching) setMessage("");
       }}>
         <DialogTrigger asChild>
           <Button size="sm" disabled={!allowed} title={allowed ? undefined : requiredPermissionText(permission)}>
@@ -393,8 +515,22 @@ function CreateResourceForm({ resource, allowed, permission }: { resource: Resou
                 : "必要項目を入力します。作成後も一覧から確認・編集できます。"}
             </DialogDescription>
           </DialogHeader>
-          <ResourceFormFields resource={resource} disabled={mutation.isPending || !allowed} submit={submit} />
+          <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching || !allowed} submit={submit} />
           {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+          {pending ? (
+            <ResourceActionConfirmationHost
+              key={`${pending.intents[pending.index].id}:${pending.index}`}
+              controller={controller}
+              intent={pending.intents[pending.index]}
+              onDispatch={() => {
+                pending.onSensitiveDispatched?.();
+                setPending(null);
+                setDispatching(true);
+              }}
+              onResult={(result, intent) => handleResult(pending, result, intent)}
+              onCancel={() => setPending(null)}
+            />
+          ) : null}
         </DialogContent>
       </Dialog>
       {!allowed ? <p className="w-full text-xs text-muted-foreground">{requiredPermissionText(permission)}</p> : null}
@@ -440,7 +576,7 @@ function ServiceHealthResourcePanel({ resource, access }: { resource: ResourceDe
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} onDelete={() => undefined} />}
+        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} />}
       </CardContent>
     </Card>
   );
@@ -545,6 +681,7 @@ function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { disable
             reconnect_max_delay: "30s",
             audio_forward_enabled: true,
           }),
+          botToken ? { onSensitiveDispatched: () => setBotToken("") } : undefined,
         );
       }}
     >
@@ -658,6 +795,7 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
             enable_auto_stop: autoStop,
             complete_on_stop: staticRelayMode ? true : completeOnStop,
           }),
+          streamKey ? { onSensitiveDispatched: () => setStreamKey("") } : undefined,
         );
       }}
     >
@@ -742,7 +880,6 @@ function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disable
 }
 
 function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
-  const queryClient = useQueryClient();
   const row = initial || {};
   const [name, setName] = useState(() => rowString(row, ["name"]) || "日本語ライブ字幕");
   const [language, setLanguage] = useState(() => normalizeDeepgramLanguage(rowString(row, ["language", "config.language"]) || "ja"));
@@ -765,56 +902,42 @@ function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabl
   const [showVoiceTranscripts, setShowVoiceTranscripts] = useState(() => rowBoolean(row, ["show_voice_transcripts", "config.show_voice_transcripts"], true));
   const [showLegacyCaptionBar, setShowLegacyCaptionBar] = useState(() => rowBoolean(row, ["show_legacy_caption_bar", "config.show_legacy_caption_bar"], false));
   const [apiKey, setAPIKey] = useState("");
-  const [secretMessage, setSecretMessage] = useState("");
-  const [secretSaving, setSecretSaving] = useState(false);
 
   return (
     <form
       className="space-y-3"
-      onSubmit={async (event) => {
+      onSubmit={(event) => {
         event.preventDefault();
-        setSecretMessage("");
-        if (apiKey.trim()) {
-          setSecretSaving(true);
-          try {
-            await apiPut("/secrets/deepgram_api_key", { value: apiKey.trim() });
-            await queryClient.invalidateQueries({ queryKey: ["resource", "/secrets/status"] });
-            setAPIKey("");
-          } catch (error) {
-            const code = error instanceof APIError ? error.code || "" : "";
-            setSecretMessage(code === "forbidden" ? "Deepgram APIキーを更新する権限がありません。" : "Deepgram APIキーを保存できませんでした。");
-            setSecretSaving(false);
-            return;
-          }
-          setSecretSaving(false);
-        }
-        submit({
-          name,
-          config: {
-            provider: "deepgram",
-            model: "nova-3",
-            language,
-            api_key_secret_name: "deepgram_api_key",
-            endpointing_ms: numberValue(endpointingMs, 300),
-            utterance_end_ms: numberValue(utteranceEndMs, 1000),
-            local_finalize_ms: numberValue(localFinalizeMs, 1500),
-            speaker_idle_close_seconds: numberValue(speakerIdleCloseSeconds, 8),
-            keepalive_interval_seconds: numberValue(keepaliveIntervalSeconds, 4),
-            interim_results: interimResults,
-            smart_format: smartFormat,
-            replay_buffer_max_ms: numberValue(replayBufferMaxMs, 2000),
-            delay_ms: numberValue(delayMs, 800),
-            caption_audio_flush_ms: numberValue(captionAudioFlushMs, 100),
-            caption_audio_max_batch_packets: numberValue(captionAudioMaxBatchPackets, 5),
-            unresolved_ssrc_buffer_ms: numberValue(unresolvedSSRCBufferMs, 1000),
-            conversation_max_items: numberValue(conversationMaxItems, 12),
-            conversation_reorder_window_ms: numberValue(conversationReorderWindowMs, 500),
-            voice_interim_ttl_seconds: numberValue(voiceInterimTTLSeconds, 6),
-            voice_final_ttl_seconds: numberValue(voiceFinalTTLSeconds, 15),
-            show_voice_transcripts: showVoiceTranscripts,
-            show_legacy_caption_bar: showLegacyCaptionBar,
+        submit(
+          {
+            name,
+            config: {
+              provider: "deepgram",
+              model: "nova-3",
+              language,
+              api_key_secret_name: "deepgram_api_key",
+              endpointing_ms: numberValue(endpointingMs, 300),
+              utterance_end_ms: numberValue(utteranceEndMs, 1000),
+              local_finalize_ms: numberValue(localFinalizeMs, 1500),
+              speaker_idle_close_seconds: numberValue(speakerIdleCloseSeconds, 8),
+              keepalive_interval_seconds: numberValue(keepaliveIntervalSeconds, 4),
+              interim_results: interimResults,
+              smart_format: smartFormat,
+              replay_buffer_max_ms: numberValue(replayBufferMaxMs, 2000),
+              delay_ms: numberValue(delayMs, 800),
+              caption_audio_flush_ms: numberValue(captionAudioFlushMs, 100),
+              caption_audio_max_batch_packets: numberValue(captionAudioMaxBatchPackets, 5),
+              unresolved_ssrc_buffer_ms: numberValue(unresolvedSSRCBufferMs, 1000),
+              conversation_max_items: numberValue(conversationMaxItems, 12),
+              conversation_reorder_window_ms: numberValue(conversationReorderWindowMs, 500),
+              voice_interim_ttl_seconds: numberValue(voiceInterimTTLSeconds, 6),
+              voice_final_ttl_seconds: numberValue(voiceFinalTTLSeconds, 15),
+              show_voice_transcripts: showVoiceTranscripts,
+              show_legacy_caption_bar: showLegacyCaptionBar,
+            },
           },
-        });
+          apiKey.trim() ? { secretValue: apiKey.trim(), onSensitiveDispatched: () => setAPIKey("") } : undefined,
+        );
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
@@ -851,8 +974,7 @@ function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabl
         <SwitchField label="Show voice transcripts" checked={showVoiceTranscripts} onCheckedChange={setShowVoiceTranscripts} />
         <SwitchField label="Show legacy caption bar" checked={showLegacyCaptionBar} onCheckedChange={setShowLegacyCaptionBar} />
       </div>
-      {secretMessage ? <p className="text-sm text-red-600 dark:text-red-300">{secretMessage}</p> : null}
-      <FormActions label={submitLabel} disabled={disabled || secretSaving} />
+      <FormActions label={submitLabel} disabled={disabled} />
     </form>
   );
 }
@@ -1078,17 +1200,20 @@ function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { disable
       className="space-y-3"
       onSubmit={(event) => {
         event.preventDefault();
-        submit({
-          provider_type: providerType,
-          name,
-          enabled,
-          client_id: clientID,
-          client_secret: clientSecret,
-          redirect_uri: redirectURI,
-          allowed_domains: splitList(allowedDomains),
-          auto_provision: autoProvision,
-          default_role_ids: defaultRoleIDs,
-        });
+        submit(
+          {
+            provider_type: providerType,
+            name,
+            enabled,
+            client_id: clientID,
+            client_secret: clientSecret,
+            redirect_uri: redirectURI,
+            allowed_domains: splitList(allowedDomains),
+            auto_provision: autoProvision,
+            default_role_ids: defaultRoleIDs,
+          },
+          clientSecret ? { onSensitiveDispatched: () => setClientSecret("") } : undefined,
+        );
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
@@ -1230,7 +1355,7 @@ function UserForm({ disabled, submit, initial, submitLabel }: { disabled: boolea
   const [roleIDs, setRoleIDs] = useState<string[]>(() => initialRoleIDs);
   const [rolesChanged, setRolesChanged] = useState(false);
   const [sendWelcomeEmail, setSendWelcomeEmail] = useState(false);
-  const canAssignRoles = currentUser.data?.user.roles?.includes("super_admin") === true || hasPermission(currentUser.data, "roles.assign");
+  const canAssignRoles = hasPermission(currentUser.data, "roles.assign");
   const editingSelf = editing && resourceRowID(row) === currentUser.data?.user.id;
   const roleSelectionUnavailable = editing && initialRoleNames.length > 0 && initialRoleIDs.length === 0;
 
@@ -1247,7 +1372,7 @@ function UserForm({ disabled, submit, initial, submitLabel }: { disabled: boolea
         }
         const payload: Record<string, unknown> = { username: username.trim(), email: email.trim(), temporary_password: temporaryPassword, send_welcome_email: sendWelcomeEmail };
         if (canAssignRoles && roleIDs.length > 0) payload.role_ids = roleIDs;
-        submit(payload);
+        submit(payload, { onSensitiveDispatched: () => setTemporaryPassword("") });
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
@@ -1340,6 +1465,7 @@ function NotificationChannelForm({ disabled, submit, initial, submitLabel }: { d
             eventTypeFilter,
             enabled,
           }),
+          webhookURL ? { onSensitiveDispatched: () => setWebhookURL("") } : undefined,
         );
       }}
     >
@@ -1447,7 +1573,8 @@ type SecuritySettingsPayload = {
   mfa_required_roles: string[];
 };
 
-function SecuritySettingsEditor({ resource, data, loading, disabled }: { resource: ResourceDefinition; data: unknown; loading: boolean; disabled: boolean }) {
+function SecuritySettingsEditor({ resource, data, loading, disabled, controller }: { resource: ResourceDefinition; data: unknown; loading: boolean; disabled: boolean; controller: ResourceActionController }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const roles = useResourceOptions("/roles", ["name"], ["name"], ["permissions"]);
   const [passwordMinLength, setPasswordMinLength] = useState("12");
@@ -1457,24 +1584,7 @@ function SecuritySettingsEditor({ resource, data, loading, disabled }: { resourc
   const [mfaMode, setMFAMode] = useState("disabled");
   const [mfaRequiredRoles, setMFARequiredRoles] = useState<string[]>([]);
   const [message, setMessage] = useState("");
-  const save = useMutation<unknown, Error, SecuritySettingsPayload>({
-    mutationFn: (payload) => apiPut(resource.path, payload),
-    onSuccess: async () => {
-      setMessage("セキュリティ設定を保存しました。");
-      await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
-      await queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] });
-    },
-    onError: (error) => {
-      const code = error instanceof APIError ? error.code || "" : "";
-      const details: Record<string, string> = {
-        invalid_security_settings: "入力値がセキュリティポリシーを満たしていません。",
-        production_mfa_required: "本番環境ではMFAを無効化できません。全ユーザーまたはsuper_adminをMFA対象にしてください。",
-        forbidden: "セキュリティ設定を更新する権限がありません。",
-        csrf_failed: "ログイン状態が古くなっています。再読み込みしてから保存してください。",
-      };
-      setMessage(details[code] || "セキュリティ設定を保存できませんでした。");
-    },
-  });
+  const [pending, setPending] = useState<ResourceActionIntent | null>(null);
 
   useEffect(() => {
     if (!isRecord(data)) return;
@@ -1517,7 +1627,7 @@ function SecuritySettingsEditor({ resource, data, loading, disabled }: { resourc
           className="space-y-3"
           onSubmit={(event) => {
             event.preventDefault();
-            save.mutate({
+            const payload: SecuritySettingsPayload = {
               password_min_length: numberValue(passwordMinLength, 12),
               password_hash: "argon2id",
               login_lockout_threshold: numberValue(loginLockoutThreshold, 5),
@@ -1526,7 +1636,9 @@ function SecuritySettingsEditor({ resource, data, loading, disabled }: { resourc
               remember_me_enabled: false,
               mfa_mode: mfaMode,
               mfa_required_roles: mfaRequiredRoles,
-            });
+            };
+            setMessage("");
+            setPending(Object.freeze({ id: "RES-40", payload: Object.freeze(payload), publicLabel: "Security policy" }));
           }}
         >
           <fieldset disabled={disabled} className="space-y-3">
@@ -1558,11 +1670,28 @@ function SecuritySettingsEditor({ resource, data, loading, disabled }: { resourc
           />
           <p className="text-xs text-muted-foreground">MFAポリシー有効時にロールを未選択で保存すると、全ユーザーが対象になります。</p>
           </fieldset>
-          <Button type="submit" disabled={save.isPending || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update) : undefined}>
+          <Button type="submit" disabled={Boolean(pending) || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update) : undefined}>
             保存
           </Button>
           {disabled ? <p className="text-xs text-muted-foreground">{requiredPermissionText(resource.permissions?.update)}</p> : null}
           {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+          {pending ? (
+            <ResourceActionConfirmationHost
+              controller={controller}
+              intent={pending}
+              onResult={(result) => {
+                setMessage(resourceActionResultMessage(result, t, "セキュリティ設定を保存しました。"));
+                if (result.kind === "succeeded") {
+                  setPending(null);
+                  void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+                  void queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] });
+                } else if (result.kind === "blocked") {
+                  setPending(null);
+                }
+              }}
+              onCancel={() => setPending(null)}
+            />
+          ) : null}
         </form>
       )}
     </div>
@@ -2056,9 +2185,11 @@ function ResourceTable({
   canDelete,
   canTest,
   currentUser,
+  resourceActionController,
   observabilityController,
   onObservabilityResult,
-  onDelete,
+  onDeleteResult,
+  onLegacyDelete,
 }: {
   rows: ResourceRow[];
   columns: string[];
@@ -2069,29 +2200,15 @@ function ResourceTable({
   canDelete: boolean;
   canTest: boolean;
   currentUser: Parameters<typeof hasPermission>[0];
+  resourceActionController?: ResourceActionController;
   observabilityController?: ObservabilityActionController;
   onObservabilityResult?: (plan: ObservabilityActionPlan, result: ObservabilityActionExecutionResult) => void | Promise<void>;
-  onDelete: (row: ResourceRow) => void;
+  onDeleteResult?: (result: ResourceActionExecutionResult, intent: ResourceActionIntent) => void;
+  onLegacyDelete?: (row: ResourceRow) => void;
 }) {
+  const { t } = useI18n();
   const [copiedID, setCopiedID] = useState("");
   const [testNotice, setTestNotice] = useState<(NotificationChannelTestFeedback & { id: string; pending?: boolean }) | null>(null);
-  const testMutation = useMutation<NotificationChannelTestFeedback, Error, ResourceRow>({
-    mutationFn: async (row) => {
-      const id = resourceRowID(row);
-      if (!id) throw new Error("notification channel id is required");
-      const response = await apiPost<unknown>(`${resource.path}/${encodeURIComponent(id)}/test`);
-      return notificationChannelTestFeedback(response);
-    },
-    onMutate: (row) => {
-      setTestNotice({ id: resourceRowID(row), ok: false, pending: true, message: "テスト送信中です。" });
-    },
-    onSuccess: (feedback, row) => {
-      setTestNotice({ id: resourceRowID(row), ...feedback });
-    },
-    onError: (error, row) => {
-      setTestNotice({ id: resourceRowID(row), ...notificationChannelTestRequestError(error) });
-    },
-  });
   if (rows.length === 0) {
     return <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">データがありません。</div>;
   }
@@ -2115,20 +2232,27 @@ function ResourceTable({
     <>
       <div className="flex flex-wrap justify-start gap-1 xl:justify-end">
         {showIDCopy ? <CopyResourceIDButton id={resourceRowID(row)} copied={copiedID === resourceRowID(row)} onCopy={copyRowID} /> : null}
-        {showEdit ? <EditResourceButton resource={resource} row={row} disabled={!canEdit} /> : null}
-        {resource.path === "/integrations/oauth-accounts" ? <OAuthAccountRelinkButton row={row} disabled={!canEdit} /> : null}
-        {showTest ? (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!resourceRowID(row) || !canTest || testMutation.isPending}
-            title={!canTest ? requiredPermissionText(resource.permissions?.test) : undefined}
-            aria-label={`${resourceRowLabel(row)} へテスト送信`}
-            onClick={() => testMutation.mutate(row)}
+        {showEdit && resourceActionController ? <EditResourceButton resource={resource} row={row} disabled={!canEdit} controller={resourceActionController} /> : null}
+        {resource.path === "/integrations/oauth-accounts" && resourceActionController ? <OAuthAccountRelinkButton row={row} disabled={!canEdit} controller={resourceActionController} /> : null}
+        {showTest && resourceActionController ? (
+          <ResourceActionControl
+            controller={resourceActionController}
+            intent={Object.freeze({ id: "RES-39", row: Object.freeze({ ...row }), publicLabel: resourceRowLabel(row) })}
+            label={`${resourceRowLabel(row)} へテスト送信`}
+            disabled={!resourceRowID(row) || !canTest}
+            buttonProps={{ variant: "outline", size: "sm" }}
+            onResult={(result, intent) => {
+              const id = resourceRowID(intent.row as ResourceRow);
+              if (result.kind === "succeeded") {
+                setTestNotice({ id, ...notificationChannelTestFeedback(result.value) });
+                return;
+              }
+              setTestNotice({ id, ok: false, message: resourceActionResultMessage(result, t, "テスト送信しました。") });
+            }}
           >
-            {testMutation.isPending && testNotice?.id === resourceRowID(row) ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
-            {testMutation.isPending && testNotice?.id === resourceRowID(row) ? "送信中" : "テスト送信"}
-          </Button>
+            <Send className="size-4" />
+            テスト送信
+          </ResourceActionControl>
         ) : null}
         {observabilityController && onObservabilityResult ? observabilityActionButtons(resource, row, currentUser).map((action) => (
           <ObservabilityActionControl
@@ -2140,7 +2264,7 @@ function ResourceTable({
             onResult={onObservabilityResult}
           />
         )) : null}
-        {showDelete ? <DeleteResourceButton row={row} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onDelete={onDelete} /> : null}
+        {showDelete && resourceActionController && onDeleteResult ? <DeleteResourceButton resource={resource} row={row} controller={resourceActionController} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onResult={onDeleteResult} onLegacyDelete={onLegacyDelete} /> : null}
       </div>
       {testNotice?.id === resourceRowID(row) ? (
         <p role={testNotice.pending || testNotice.ok ? "status" : "alert"} className={`mt-2 text-left text-xs ${testNotice.pending ? "text-muted-foreground" : testNotice.ok ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}`}>
@@ -2211,46 +2335,46 @@ function CopyResourceIDButton({ id, copied, onCopy }: { id: string; copied: bool
   );
 }
 
-function OAuthAccountRelinkButton({ row, disabled }: { row: ResourceRow; disabled: boolean }) {
+function OAuthAccountRelinkButton({ row, disabled, controller }: { row: ResourceRow; disabled: boolean; controller: ResourceActionController }) {
+  const { t } = useI18n();
   const [message, setMessage] = useState("");
   const accountID = resourceRowID(row);
   const providerID = rowString(row, ["provider_id"]);
   const accountPurpose = rowString(row, ["account_purpose"]) || "drive_youtube";
-  const mutation = useMutation<unknown, Error, void>({
-    mutationFn: async () => {
-      if (!accountID || !providerID) throw new Error("oauth account provider is required");
-      return apiPost("/integrations/oauth-accounts/start", {
-        provider_id: providerID,
-        oauth_account_id: accountID,
-        account_purpose: accountPurpose,
-        redirect_after: "/admin/integrations/",
-      });
-    },
-    onMutate: () => setMessage(""),
-    onSuccess: (data) => {
-      const authorizationURL = isRecord(data) && typeof data.authorization_url === "string" ? data.authorization_url : "";
-      if (authorizationURL && typeof window !== "undefined") {
-        window.location.assign(authorizationURL);
-        return;
-      }
-      setMessage("OAuth認可URLを取得できませんでした。プロバイダ設定を確認してください。");
-    },
-    onError: (error) => setMessage(oauthAccountRelinkErrorMessage(error)),
+  const intent: ResourceActionIntent = Object.freeze({
+    id: "RES-27",
+    row: Object.freeze({ ...row }),
+    publicLabel: resourceRowLabel(row),
+    payload: Object.freeze({
+      provider_id: providerID,
+      oauth_account_id: accountID,
+      account_purpose: accountPurpose,
+      redirect_after: "/admin/integrations/",
+    }),
   });
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={!accountID || !providerID || disabled || mutation.isPending}
-        title={disabled ? requiredPermissionText("integrations.update") : "同じアカウントIDのままOAuthを再連携"}
-        aria-label={`${resourceRowLabel(row)} を再連携`}
-        onClick={() => mutation.mutate()}
+      <ResourceActionControl
+        controller={controller}
+        intent={intent}
+        label={`${resourceRowLabel(row)} を再連携`}
+        disabled={!accountID || !providerID || disabled}
+        buttonProps={{ variant: "outline", size: "sm" }}
+        onResult={(result) => {
+          setMessage(resourceActionResultMessage(result, t, "OAuth再連携を開始しました。"));
+          if (result.kind !== "succeeded") return;
+          const authorizationURL = isRecord(result.value) && typeof result.value.authorization_url === "string" ? result.value.authorization_url : "";
+          if (authorizationURL && typeof window !== "undefined") {
+            window.location.assign(authorizationURL);
+            return;
+          }
+          setMessage("OAuth認可URLを取得できませんでした。プロバイダ設定を確認してください。");
+        }}
       >
-        {mutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCcw className="size-4" />}
-        {mutation.isPending ? "連携準備中" : "再連携"}
-      </Button>
+        <RefreshCcw className="size-4" />
+        再連携
+      </ResourceActionControl>
       {message ? <span className="max-w-48 text-left text-xs text-destructive">{message}</span> : null}
     </div>
   );
@@ -2263,8 +2387,7 @@ type ObservabilityAction = {
 };
 
 function observabilityActionButtons(resource: ResourceDefinition, row: ResourceRow, currentUser: Parameters<typeof hasPermission>[0]): ObservabilityAction[] {
-  const isSuperAdmin = currentUser?.user.roles?.includes("super_admin") === true;
-  const allowed = (permission: string) => isSuperAdmin || hasPermission(currentUser, permission);
+  const allowed = (permission: string) => hasPermission(currentUser, permission);
   return observabilityActionPlans(resource.path, row).map((plan) => ({
     plan,
     allowed: allowed(plan.permission),
@@ -2281,12 +2404,15 @@ function observabilityActionSuccessMessage(action: { path: string; label: string
   return `${action.label}を実行しました。`;
 }
 
-function EditResourceButton({ resource, row, disabled }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean }) {
+function EditResourceButton({ resource, row, disabled, controller }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean; controller: ResourceActionController }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
+  const [pending, setPending] = useState<PendingResourceSubmission | null>(null);
+  const [dispatching, setDispatching] = useState(false);
   const id = resourceRowID(row);
-  const mutation = useMutation<unknown, Error, Record<string, unknown>>({
+  const legacyMutation = useMutation<unknown, Error, Record<string, unknown>>({
     mutationFn: async (payload) => apiPut(`${resource.path}/${encodeURIComponent(id)}`, payload),
     onSuccess: async () => {
       setMessage("更新しました。");
@@ -2299,9 +2425,54 @@ function EditResourceButton({ resource, row, disabled }: { resource: ResourceDef
       }
     },
   });
-  const submit: SubmitResource = (payload) => {
+  const submit: SubmitResource = (payload, options) => {
     setMessage("");
-    mutation.mutate(payload);
+    const actionID = resourceActionID(resource.path, "update");
+    if (!actionID) {
+      legacyMutation.mutate(payload);
+      options?.onSensitiveDispatched?.();
+      return;
+    }
+    const intents: ResourceActionIntent[] = [];
+    if (options?.secretValue) {
+      intents.push(Object.freeze({ id: "RES-13", payload: Object.freeze({ value: options.secretValue }), publicLabel: "Deepgram API key" }));
+    }
+    intents.push(Object.freeze({ id: actionID, row: Object.freeze({ ...row }), payload: Object.freeze({ ...payload }), publicLabel: resourceRowLabel(row) }));
+    setPending({
+      path: `${resource.path}/${encodeURIComponent(id)}`,
+      invalidatePath: resource.path,
+      successMessage: "更新しました。",
+      intents: Object.freeze(intents),
+      index: 0,
+      onSensitiveDispatched: options?.onSensitiveDispatched,
+    });
+  };
+
+  const handleResult = (submission: PendingResourceSubmission, result: ResourceActionExecutionResult, intent: ResourceActionIntent) => {
+    setDispatching(false);
+    setMessage(resourceActionResultMessage(result, t, "更新しました。"));
+    if (result.kind !== "succeeded") {
+      if (result.kind === "blocked") setPending(null);
+      return;
+    }
+    if (intent.id === "RES-13") {
+      void queryClient.invalidateQueries({ queryKey: ["resource", "/secrets/status"] });
+    }
+    const remainingIntents = submission.intents.slice(submission.index + 1);
+    if (remainingIntents.length > 0) {
+      setPending({
+        path: submission.path,
+        invalidatePath: submission.invalidatePath,
+        successMessage: submission.successMessage,
+        redirectToAuthorizationURL: submission.redirectToAuthorizationURL,
+        intents: Object.freeze(remainingIntents),
+        index: 0,
+      });
+      return;
+    }
+    setPending(null);
+    void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+    setOpen(false);
   };
 
   return (
@@ -2316,8 +2487,22 @@ function EditResourceButton({ resource, row, disabled }: { resource: ResourceDef
           <DialogTitle>{resource.title}を編集</DialogTitle>
           <DialogDescription>{resource.form === "user" ? "ユーザー名、メールアドレス、割り当てロールを更新します。" : "作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。"}</DialogDescription>
         </DialogHeader>
-        <ResourceFormFields resource={resource} disabled={mutation.isPending} submit={submit} initial={row} submitLabel="更新" />
+        <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching} submit={submit} initial={row} submitLabel="更新" />
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+        {pending ? (
+          <ResourceActionConfirmationHost
+            key={`${pending.intents[pending.index].id}:${pending.index}`}
+            controller={controller}
+            intent={pending.intents[pending.index]}
+            onDispatch={() => {
+              pending.onSensitiveDispatched?.();
+              setPending(null);
+              setDispatching(true);
+            }}
+            onResult={(result, intent) => handleResult(pending, result, intent)}
+            onCancel={() => setPending(null)}
+          />
+        ) : null}
         <DialogFooter>
           <DialogClose asChild>
             <Button variant="outline">閉じる</Button>
@@ -2376,7 +2561,7 @@ function resourceWriteErrorMessage(resource: ResourceDefinition, error: Error, a
   return fallback;
 }
 
-function oauthAccountRelinkErrorMessage(error: Error) {
+export function oauthAccountRelinkErrorMessage(error: Error) {
   if (!(error instanceof APIError)) return "再連携を開始できませんでした。通信状態を確認して再試行してください。";
   const messages: Record<string, string> = {
     csrf_failed: "ログイン状態が古くなっています。画面を再読み込みしてから再試行してください。",
@@ -2393,7 +2578,7 @@ function oauthAccountRelinkErrorMessage(error: Error) {
   return messages[error.code || ""] || "再連携を開始できませんでした。OAuthプロバイダ設定とログイン状態を確認してください。";
 }
 
-function notificationChannelTestRequestError(error: Error): NotificationChannelTestFeedback {
+export function notificationChannelTestRequestError(error: Error): NotificationChannelTestFeedback {
   if (!(error instanceof APIError)) {
     return { ok: false, message: "通知テストを送信できませんでした。通信状態を確認してください。" };
   }
@@ -2430,14 +2615,46 @@ function notificationChannelTestRequestError(error: Error): NotificationChannelT
   return { ok: false, message: messages[code] || "通知テストを送信できませんでした。" };
 }
 
-function DeleteResourceButton({ row, disabled, permission, onDelete }: { row: ResourceRow; disabled: boolean; permission?: string; onDelete: (row: ResourceRow) => void }) {
+function DeleteResourceButton({
+  resource,
+  row,
+  controller,
+  disabled,
+  permission,
+  onResult,
+  onLegacyDelete,
+}: {
+  resource: ResourceDefinition;
+  row: ResourceRow;
+  controller: ResourceActionController;
+  disabled: boolean;
+  permission?: string;
+  onResult: (result: ResourceActionExecutionResult, intent: ResourceActionIntent) => void;
+  onLegacyDelete?: (row: ResourceRow) => void;
+}) {
   const label = resourceRowLabel(row);
-  return (
-    <DangerConfirm title={`${label} を削除しますか`} description="削除後は元に戻せません。参照中の設定は削除できない場合があります。" actionLabel="削除" onConfirm={() => onDelete(row)}>
+  const actionID = resourceActionID(resource.path, "delete");
+  if (!actionID) {
+    return onLegacyDelete ? (
+      <DangerConfirm title={`${label} を削除しますか`} description="削除後は元に戻せません。参照中の設定は削除できない場合があります。" actionLabel="削除" onConfirm={() => onLegacyDelete(row)}>
         <Button variant="destructive" size="icon-sm" disabled={disabled} title={disabled && permission ? requiredPermissionText(permission) : undefined} aria-label={`${label} を削除`}>
+          <Trash2 className="size-4" />
+        </Button>
+      </DangerConfirm>
+    ) : null;
+  }
+  const intent: ResourceActionIntent = Object.freeze({ id: actionID, row: Object.freeze({ ...row }), publicLabel: label });
+  return (
+    <ResourceActionControl
+      controller={controller}
+      intent={intent}
+      label={`${label} を削除`}
+      disabled={disabled}
+      buttonProps={{ variant: "destructive", size: "icon-sm" }}
+      onResult={onResult}
+    >
         <Trash2 className="size-4" />
-      </Button>
-    </DangerConfirm>
+    </ResourceActionControl>
   );
 }
 
