@@ -407,8 +407,7 @@ func TestBundle8AV2MigrationIsAdditiveAndBackupFirst(t *testing.T) {
 
 func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	db, ctx := openMariaDBOAuthMigrationTest(t)
-	baseline := readBundle8ACounts(t, db, ctx)
-	assertBundle8ACounts(t, db, ctx, baseline, 0)
+	beforePlan := readBundle8APlannedCounts(t, db, ctx)
 	now := time.Now().UTC()
 	streamID := controlPlatformTestUUID(t)
 	artifactID := controlPlatformTestUUID(t)
@@ -460,24 +459,25 @@ func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	mustExecBundle8A(t, db, ctx, `INSERT INTO services(service_id,service_type,service_name,public_url,version,status,capabilities,metrics,token_id,transport_mode,execution_host_id,ownership_epoch,created_at,updated_at) VALUES(?,'update_agent',?,'https://agent.example.com','v2','healthy','[]','{}',?,'ssh_v1',?,1,?,?)`, agentID, "Bundle 8A agent", tokenID, hostID, now, now)
 	mustExecBundle8A(t, db, ctx, `INSERT INTO system_update_execution_hosts(execution_host_id,transport_mode,agent_service_id,legacy_agent_service_id,ownership_epoch,policy_revision,created_at,updated_at) VALUES(?,'ssh_v1',?,?,1,1,?,?)`, hostID, agentID, agentID, now, now)
 
+	expected := readBundle8APlannedCounts(t, db, ctx)
+	assertBundle8APlannedDelta(t, beforePlan, expected, 1)
 	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
-	assertBundle8ACounts(t, db, ctx, baseline, 1)
+	assertBundle8ACounts(t, db, ctx, expected)
 
 	// Replaying models both an interrupted migration before schema_migrations is
 	// recorded and a normal idempotent operator rehearsal.
 	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
-	assertBundle8ACounts(t, db, ctx, baseline, 1)
+	assertBundle8ACounts(t, db, ctx, expected)
 	mustExecBundle8A(t, db, ctx, `UPDATE stream_visual_settings SET discord_guild_id='999' WHERE stream_id=?`, streamID)
 	var discordPostCount, discordOrphanCount int
 	if err := db.QueryRowContext(ctx, `SELECT post_count,orphan_count FROM v2_migration_bundle8a_counts WHERE inventory_id='DEP-CP-0005'`).Scan(&discordPostCount, &discordOrphanCount); err != nil {
 		t.Fatal(err)
 	}
-	discordBaseline := baseline["DEP-CP-0005"]
-	if discordPostCount != discordBaseline.post || discordOrphanCount != discordBaseline.orphan+1 {
-		t.Fatalf("Discord orphan fixture post=%d orphan=%d, want baseline post=%d orphan=%d", discordPostCount, discordOrphanCount, discordBaseline.post, discordBaseline.orphan+1)
+	if discordPostCount != expected["DEP-CP-0005"]-1 || discordOrphanCount != 1 {
+		t.Fatalf("Discord orphan fixture post=%d orphan=%d, want %d/1", discordPostCount, discordOrphanCount, expected["DEP-CP-0005"]-1)
 	}
 	mustExecBundle8A(t, db, ctx, `UPDATE stream_visual_settings SET discord_guild_id='100000000000000001' WHERE stream_id=?`, streamID)
-	assertBundle8ACounts(t, db, ctx, baseline, 1)
+	assertBundle8ACounts(t, db, ctx, expected)
 
 	// Force a post-state mismatch.  The count view must reject it, then the
 	// backup-backed restore must recover the exact pre-state.
@@ -486,9 +486,8 @@ func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT post_count,orphan_count FROM v2_migration_bundle8a_counts WHERE inventory_id='DEP-CON-0003'`).Scan(&postCount, &orphanCount); err != nil {
 		t.Fatal(err)
 	}
-	archiveBaseline := baseline["DEP-CON-0003"]
-	if postCount != archiveBaseline.post || orphanCount != archiveBaseline.orphan+1 {
-		t.Fatalf("negative count fixture post=%d orphan=%d, want baseline post=%d orphan=%d", postCount, orphanCount, archiveBaseline.post, archiveBaseline.orphan+1)
+	if postCount != expected["DEP-CON-0003"]-1 || orphanCount != 1 {
+		t.Fatalf("negative count fixture post=%d orphan=%d, want %d/1", postCount, orphanCount, expected["DEP-CON-0003"]-1)
 	}
 	restoreBundle8ARehearsal(t, db, ctx, streamID, artifactID)
 	assertBundle8APreState(t, db, ctx, streamID, artifactID)
@@ -496,7 +495,7 @@ func TestMariaDBBundle8AV2MigrationRehearsal(t *testing.T) {
 	// The migration remains executable after restore and returns to a complete,
 	// orphan-free state.
 	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/080_bundle8a_v2_migration.sql")
-	assertBundle8ACounts(t, db, ctx, baseline, 1)
+	assertBundle8ACounts(t, db, ctx, expected)
 }
 
 func mustExecBundle8A(t *testing.T, db *sql.DB, ctx context.Context, query string, args ...any) {
@@ -506,53 +505,91 @@ func mustExecBundle8A(t *testing.T, db *sql.DB, ctx context.Context, query strin
 	}
 }
 
-type bundle8ACount struct {
-	pre    int
-	backup int
-	post   int
-	orphan int
+func readBundle8APlannedCounts(t *testing.T, db *sql.DB, ctx context.Context) map[string]int {
+	t.Helper()
+	queries := map[string]string{
+		"DEP-CON-0001": `SELECT COUNT(*) FROM (
+SELECT id FROM v2_migration_drive_destinations_backup
+UNION SELECT id FROM drive_destinations) AS candidates`,
+		"DEP-CON-0003": `SELECT COUNT(*) FROM (
+SELECT artifact_id FROM v2_migration_archive_artifacts_backup
+UNION SELECT id FROM stream_artifacts WHERE archive_run_id='' OR archive_started_at IS NULL) AS candidates`,
+		"DEP-CON-0005": `SELECT COUNT(*) FROM (
+SELECT stream_id FROM v2_migration_stream_key_refs_backup
+UNION SELECT stream_id FROM stream_youtube_runtimes WHERE TRIM(stream_key_secret_name)<>'') AS candidates`,
+		"DEP-CON-0012": `SELECT COUNT(*) FROM (
+SELECT id FROM v2_migration_oauth_accounts_backup
+UNION SELECT id FROM oauth_accounts) AS candidates`,
+		"DEP-CP-0005": `SELECT COUNT(*) FROM (
+SELECT stream_id FROM v2_migration_discord_targets_backup
+UNION SELECT stream_id FROM stream_settings WHERE discord_target_mode IS NULL) AS candidates`,
+		"DEP-CP-0006": `SELECT COUNT(*) FROM (
+SELECT stream_id FROM v2_migration_discord_targets_backup
+UNION SELECT stream_id FROM stream_settings WHERE discord_target_mode IS NULL) AS candidates`,
+		"DEP-CP-0007": `SELECT COUNT(*) FROM (
+SELECT token_id FROM v2_migration_service_tokens_backup
+UNION SELECT id FROM service_tokens WHERE revoked_at IS NULL) AS candidates`,
+		"DEP-CP-0017": `SELECT COUNT(*) FROM (
+SELECT execution_host_id FROM v2_migration_update_hosts_backup
+UNION SELECT execution_host_id FROM system_update_execution_hosts) AS candidates`,
+		"DEP-CP-0030": `SELECT COUNT(*) FROM (
+SELECT execution_host_id FROM v2_migration_legacy_agent_export
+UNION SELECT execution_host_id FROM system_update_execution_hosts WHERE legacy_agent_service_id IS NOT NULL) AS candidates`,
+	}
+	counts := make(map[string]int, len(queries))
+	for id, query := range queries {
+		var count int
+		if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			t.Fatalf("read %s pre-state migration denominator: %v", id, err)
+		}
+		counts[id] = count
+	}
+	return counts
 }
 
-func readBundle8ACounts(t *testing.T, db *sql.DB, ctx context.Context) map[string]bundle8ACount {
+func assertBundle8APlannedDelta(t *testing.T, before, after map[string]int, wantDelta int) {
+	t.Helper()
+	if len(before) != 9 || len(after) != 9 {
+		t.Fatalf("planned migration denominator=%d/%d, want 9/9", len(before), len(after))
+	}
+	for id, beforeCount := range before {
+		if afterCount, exists := after[id]; !exists || afterCount != beforeCount+wantDelta {
+			t.Fatalf("%s planned migration count=%d, want pre-state %d plus %d", id, afterCount, beforeCount, wantDelta)
+		}
+	}
+}
+
+func assertBundle8ACounts(t *testing.T, db *sql.DB, ctx context.Context, want map[string]int) {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, `SELECT inventory_id,pre_count,backup_count,post_count,orphan_count FROM v2_migration_bundle8a_counts ORDER BY inventory_id`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	counts := make(map[string]bundle8ACount, 9)
+	seen := make(map[string]bool, 9)
 	for rows.Next() {
 		var id string
-		var count bundle8ACount
-		if err := rows.Scan(&id, &count.pre, &count.backup, &count.post, &count.orphan); err != nil {
+		var pre, backup, post, orphan int
+		if err := rows.Scan(&id, &pre, &backup, &post, &orphan); err != nil {
 			t.Fatal(err)
 		}
-		if _, exists := counts[id]; exists {
+		expected, exists := want[id]
+		if !exists {
+			t.Fatalf("migration count row %s was absent from the pre-state plan", id)
+		}
+		if seen[id] {
 			t.Fatalf("duplicate migration count row %s", id)
 		}
-		counts[id] = count
+		seen[id] = true
+		if pre != expected || backup != expected || post != expected || orphan != 0 {
+			t.Fatalf("%s counts=%d/%d/%d orphan=%d, want pre-state plan %d/%d/%d orphan=0", id, pre, backup, post, orphan, expected, expected, expected)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(counts) != 9 {
-		t.Fatalf("migration count row denominator=%d, want 9", len(counts))
-	}
-	return counts
-}
-
-func assertBundle8ACounts(t *testing.T, db *sql.DB, ctx context.Context, baseline map[string]bundle8ACount, added int) {
-	t.Helper()
-	got := readBundle8ACounts(t, db, ctx)
-	for id, count := range got {
-		before, exists := baseline[id]
-		if !exists {
-			t.Fatalf("migration count row %s was absent from pre-state", id)
-		}
-		want := before.pre + added
-		if count.pre != want || count.backup != want || count.post != want || count.orphan != before.orphan || before.pre != before.backup || before.pre != before.post || before.orphan != 0 {
-			t.Fatalf("%s counts=%d/%d/%d orphan=%d, want pre-state %d/%d/%d orphan=%d plus %d represented row", id, count.pre, count.backup, count.post, count.orphan, before.pre, before.backup, before.post, before.orphan, added)
-		}
+	if len(seen) != 9 || len(want) != 9 {
+		t.Fatalf("migration count row denominator=%d/%d, want 9/9", len(seen), len(want))
 	}
 }
 
