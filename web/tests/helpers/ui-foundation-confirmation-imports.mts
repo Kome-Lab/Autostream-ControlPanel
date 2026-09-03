@@ -148,7 +148,7 @@ export function assertConfirmationFoundationBoundaries(
     "utf8",
   )) as { authorityHead?: unknown; consumerCount?: unknown; consumers?: unknown };
   assert.equal(fixture.authorityHead, "482a8375fb53d8fd7344040d4dfbc57360404976");
-  assert.equal(fixture.consumerCount, 6);
+  assert.equal(fixture.consumerCount, 4);
   assert.deepEqual(fixture.consumers, dangerConsumers, "DangerConfirm consumers must match the frozen fixture");
   assert.deepEqual(dangerConsumers, [...dangerConsumers].sort(), "DangerConfirm consumers must be lexical");
 
@@ -158,8 +158,13 @@ export function assertConfirmationFoundationBoundaries(
   );
   assert.deepEqual(
     frameConsumers,
-    [dangerPath, rendererPath].sort(),
-    "ConfirmationDialogFrame has exactly two reviewed owners",
+    [
+      dangerPath,
+      rendererPath,
+      "src/features/streams/stream-control-platform-panel.tsx",
+      "src/features/streams/stream-visual-settings-section.tsx",
+    ].sort(),
+    "ConfirmationDialogFrame has exactly the reviewed owners",
   );
 
   const rendererConsumers = importConsumers(
@@ -169,8 +174,18 @@ export function assertConfirmationFoundationBoundaries(
   );
   assert.deepEqual(
     rendererConsumers,
-    ["src/features/workers/workers-view.tsx"],
-    "HighRiskConfirmation has exactly the reviewed Worker pilot consumer",
+    [
+      "src/features/account/account-action-confirmation.tsx",
+      "src/features/application/updater-action-confirmation.tsx",
+      "src/features/archive/archive-view.tsx",
+      "src/features/nodes/node-foundation-artifact.tsx",
+      "src/features/observability/observability-action-control.tsx",
+      "src/features/resources/resource-action-control.tsx",
+      "src/features/settings/app-settings-action-control.tsx",
+      "src/features/streams/stream-action-control.tsx",
+      "src/features/workers/workers-view.tsx",
+    ],
+    "HighRiskConfirmation has exactly the reviewed migrated consumers",
   );
 
   assertAcyclic(parsed);

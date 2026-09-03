@@ -98,12 +98,26 @@ export function assertPermissionFoundationBoundaries(webRoot: string) {
     consumers,
     [
       "src/components/foundation/confirmation/high-risk-confirmation.ts",
+      "src/features/account/account-action-confirmation.tsx",
+      "src/features/application/updater-action-confirmation.tsx",
+      "src/features/archive/archive-view.tsx",
+      "src/features/nodes/node-action-controller.ts",
+      "src/features/nodes/node-foundation-artifact.tsx",
+      "src/features/observability/observability-action-control.tsx",
+      "src/features/resources/resource-action-control.tsx",
+      "src/features/resources/resource-action-controller.ts",
+      "src/features/resources/resource-action-runtime.ts",
+      "src/features/settings/app-settings-action-policy.ts",
+      "src/features/settings/app-settings-action-runtime.ts",
+      "src/features/streams/stream-action-control.tsx",
+      "src/features/streams/stream-action-controller.ts",
+      "src/features/streams/stream-action-runtime.ts",
       "src/features/workers/workers-action-controller.ts",
       "src/features/workers/workers-configuration-controller.ts",
       "src/features/workers/workers-view.tsx",
       "src/lib/foundation/actions/confirmation-revalidation.ts",
     ],
-    "B-03 has exactly the reviewed B-05 and Worker pilot consumers",
+    "B-03 has exactly the reviewed migrated action consumers",
   );
 
   return {

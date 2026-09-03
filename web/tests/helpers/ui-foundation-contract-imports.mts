@@ -236,9 +236,22 @@ function assertAPIErrorAdapterBoundaries(webRoot: string, parsed: Map<string, ts
         .map(() => normalize(relative(webRoot, path)));
     });
   assert.deepEqual(consumers, [
+    "src/components/auth/auth-card.tsx",
+    "src/features/account/account-action-policy.ts",
+    "src/features/account/account-view.tsx",
+    "src/features/application/updater-action-policy.ts",
+    "src/features/archive/archive-action-policy.ts",
+    "src/features/nodes/node-action-controller.ts",
+    "src/features/observability/action-policy.ts",
+    "src/features/resources/resource-action-controller.ts",
+    "src/features/settings/app-settings-action-policy.ts",
+    "src/features/streams/stream-action-controller.ts",
+    "src/features/streams/stream-control-platform-panel.tsx",
+    "src/features/streams/stream-visual-action-controller.ts",
+    "src/features/streams/stream-visual-settings-section.tsx",
     "src/features/workers/workers-action-controller.ts",
     "src/features/workers/workers-configuration-controller.ts",
-  ], "B-02 adapter has exactly the reviewed Worker pilot consumers outside B-04");
+  ], "B-02 adapter has exactly the reviewed migrated consumers outside B-04");
 }
 
 function assertStatusIndependence(parsed: Map<string, ts.SourceFile>) {

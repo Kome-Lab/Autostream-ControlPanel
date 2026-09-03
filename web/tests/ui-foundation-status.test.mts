@@ -92,13 +92,13 @@ test("source-derived authority exactly owns every mapping value and every mappin
   assert.deepEqual(
     authority.authorities.map((entry) => [entry.repository, entry.head]),
     [
-      ["Autostream-Contracts", "fe7632c8b7bde9793d2eea38d2124bf4267e52b9"],
-      ["Autostream-Observability", "2a3cca58d77340b9fef6d003d2d2ce2ab0d13d7a"],
+      ["Autostream-Contracts", "46567bf35acff1c252293b931add90e1b646056e"],
+      ["Autostream-Observability", "2cbaccd05854a9ff2db9a8f5af6904be6be45494"],
+      ["Autostream-ControlPanel", "b246e65508b552399f918e39b3948cf453cc1e32"],
+      ["Autostream-ControlPanel", "b246e65508b552399f918e39b3948cf453cc1e32"],
       ["Autostream-ControlPanel", "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b"],
-      ["Autostream-ControlPanel", "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b"],
-      ["Autostream-ControlPanel", "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b"],
-      ["Autostream-ControlPanel", "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b"],
-      ["Autostream-ControlPanel", "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b"],
+      ["Autostream-ControlPanel", "b246e65508b552399f918e39b3948cf453cc1e32"],
+      ["Autostream-ControlPanel", "b246e65508b552399f918e39b3948cf453cc1e32"],
     ],
   );
   assert.deepEqual(Object.keys(presenters), fixture.domains);

@@ -707,9 +707,9 @@ test("exact B-06 translations have ja/en parity, no placeholders, and no false e
   assert.equal(Object.values(expected).flat().some((message) => message.includes(marker)), false);
 });
 
-test("AST dependency and type guard rejects broad assertions and preserves zero consumers", () => {
+test("AST dependency and type guard rejects broad assertions and preserves exact reviewed consumers", () => {
   assert.deepEqual(assertSecretFoundationBoundaries(webRoot), {
-    productionConsumerCount: 0,
+    productionConsumerCount: 6,
     reviewedFileCount: 4,
   });
   const ownerPath = join(webRoot, "src", "lib", "foundation", "secrets", "lifecycle-owner.ts");
@@ -721,7 +721,7 @@ test("AST dependency and type guard rejects broad assertions and preserves zero 
   assert.throws(() => assertSecretFoundationBoundaries(webRoot, new Map([[
     "src/features/synthetic/secret-consumer.ts",
     'import { createOneTimeSecretLifecycleOwner } from "@/lib/foundation/secrets/lifecycle-owner";\nvoid createOneTimeSecretLifecycleOwner;\n',
-  ]])), /zero production consumers/);
+  ]])), /reviewed one-time secret consumers/);
   const componentPath = join(webRoot, "src", "components", "foundation", "secrets", "one-time-secret-reveal.ts");
   const componentSource = readFileSync(componentPath, "utf8");
   const rawPropMutant = componentSource.replace(
@@ -759,7 +759,7 @@ test("AST dependency and type guard rejects broad assertions and preserves zero 
     "src/lib/foundation/secrets/lifecycle-owner.ts",
     allowedConstAssertion,
   ]])), {
-    productionConsumerCount: 0,
+    productionConsumerCount: 6,
     reviewedFileCount: 4,
   });
   assertRuntimeTimingPlanTypeBoundary(ownerSource, ownerPath);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   existsSync,
   lstatSync,
@@ -26,9 +27,16 @@ import {
 } from "./browser-request-lifecycle.mts";
 import {
   EXPECTED_UI_FOUNDATION_BROWSER_TESTS,
+  RunnerSignalError,
+  assertExactBrowserTestFileInventory,
   assertExactUIFoundationBrowserExecution,
+  isRequiredBrowserTestFileCompletion,
+  requiredBrowserTestFiles,
   requiredScenarioNames,
+  runnerOutputDirectoryNames,
   withPreservedNextBuildDirectory,
+  withPreservedRunnerOutputDirectories,
+  withRunnerSignalAbort,
 } from "./run-ui-foundation-browser.mts";
 
 const actionPath = "/streams/fixture/start-readiness";
@@ -37,8 +45,8 @@ const browserHarnessPath = join(helperRoot, "browser-harness.mts");
 const uiBrowserTestPath = join(helperRoot, "..", "ui-foundation-browser.test.mts");
 const browserRunnerPath = join(helperRoot, "run-ui-foundation-browser.mts");
 
-test("UI browser runner import is inert and its exact 28-test inventory accepts only the complete fixture", () => {
-  assert.equal(EXPECTED_UI_FOUNDATION_BROWSER_TESTS, 28);
+test("UI browser runner import is inert and its exact 35-test inventory accepts only the complete fixture", () => {
+  assert.equal(EXPECTED_UI_FOUNDATION_BROWSER_TESTS, 35);
   assert.deepEqual([...requiredScenarioNames], [...independentRequiredBrowserScenarioNames]);
   assert.equal(new Set(requiredScenarioNames).size, requiredScenarioNames.length, "runner required scenario names must be unique");
   const fixture = passingBrowserInventoryFixture();
@@ -55,13 +63,13 @@ test("UI browser exact inventory rejects count, result and required-name negativ
       completed: [],
     },
     {
-      name: "tests=27",
-      summary: browserSummary({ tests: 27, passed: 27 }),
-      completed: passing.completed.slice(0, 27),
+      name: "tests=34",
+      summary: browserSummary({ tests: 34, passed: 34 }),
+      completed: passing.completed.slice(0, 34),
     },
     {
-      name: "tests=29",
-      summary: browserSummary({ tests: 29, passed: 29 }),
+      name: "tests=36",
+      summary: browserSummary({ tests: 36, passed: 36 }),
       completed: [...passing.completed, passingScenario("independent extra leaf")],
     },
     {
@@ -71,29 +79,29 @@ test("UI browser exact inventory rejects count, result and required-name negativ
         scenario.name === firstRequiredName ? passingScenario("replacement non-required leaf") : scenario),
     },
     {
-      name: "required duplicated while total remains 28",
+      name: "required duplicated while total remains 35",
       summary: passing.summary,
       completed: passing.completed.map((scenario, index) =>
         index === passing.completed.length - 1 ? passingScenario(firstRequiredName) : scenario),
     },
     {
       name: "failure=1",
-      summary: { ...passing.summary, success: false, counts: { ...passing.summary.counts, passed: 27 } },
+      summary: { ...passing.summary, success: false, counts: { ...passing.summary.counts, passed: 34 } },
       completed: passing.completed.map((scenario, index) => index === 0 ? { ...scenario, passed: false } : scenario),
     },
     {
       name: "skipped=1",
-      summary: browserSummary({ passed: 27, skipped: 1 }),
+      summary: browserSummary({ passed: 34, skipped: 1 }),
       completed: passing.completed.map((scenario, index) => index === 0 ? { ...scenario, passed: false, skipped: true } : scenario),
     },
     {
       name: "todo=1",
-      summary: browserSummary({ passed: 27, todo: 1 }),
+      summary: browserSummary({ passed: 34, todo: 1 }),
       completed: passing.completed.map((scenario, index) => index === 0 ? { ...scenario, passed: false, todo: true } : scenario),
     },
     {
       name: "cancelled=1",
-      summary: browserSummary({ passed: 25, cancelled: 1 }),
+      summary: browserSummary({ passed: 34, cancelled: 1 }),
       completed: passing.completed,
     },
   ];
@@ -104,6 +112,62 @@ test("UI browser exact inventory rejects count, result and required-name negativ
       `${fixture.name} was accepted by the exact browser inventory`,
     );
   }
+});
+
+test("UI browser runner rejects missing, duplicate, renamed, and reordered test-file inventories", () => {
+  assert.deepEqual([...requiredBrowserTestFiles], [
+    "tests/ui-foundation-browser.test.mts",
+    "tests/ui-foundation-confirmation-browser.test.mts",
+    "tests/ui-foundation-secrets-browser.test.mts",
+  ]);
+  assert.doesNotThrow(() => assertExactBrowserTestFileInventory(requiredBrowserTestFiles));
+  const negatives = [
+    requiredBrowserTestFiles.slice(0, -1),
+    [requiredBrowserTestFiles[0], requiredBrowserTestFiles[1], requiredBrowserTestFiles[1]],
+    [requiredBrowserTestFiles[0], requiredBrowserTestFiles[1], "tests/renamed-browser.test.mts"],
+    [requiredBrowserTestFiles[1], requiredBrowserTestFiles[0], requiredBrowserTestFiles[2]],
+  ];
+  for (const candidate of negatives) {
+    assert.throws(() => assertExactBrowserTestFileInventory(candidate), `invalid browser test-file inventory accepted: ${candidate.join(",")}`);
+  }
+});
+
+test("UI browser runner excludes only exact Node test-file completion wrappers", () => {
+  const webRoot = join(helperRoot, "..", "..");
+  for (const file of requiredBrowserTestFiles) {
+    const absoluteFile = join(webRoot, ...file.split("/"));
+    assert.equal(isRequiredBrowserTestFileCompletion({
+      name: file,
+      nesting: 0,
+      file: absoluteFile,
+    }, webRoot), true, file);
+    assert.equal(isRequiredBrowserTestFileCompletion({
+      name: absoluteFile,
+      nesting: 0,
+      file: absoluteFile,
+    }, webRoot), true, `${file} absolute wrapper`);
+  }
+  const realScenario = independentRequiredBrowserScenarioNames[0];
+  assert.equal(isRequiredBrowserTestFileCompletion({
+    name: realScenario,
+    nesting: 0,
+    file: join(webRoot, "tests", "ui-foundation-browser.test.mts"),
+  }, webRoot), false);
+  assert.equal(isRequiredBrowserTestFileCompletion({
+    name: requiredBrowserTestFiles[0],
+    nesting: 1,
+    file: join(webRoot, "tests", "ui-foundation-browser.test.mts"),
+  }, webRoot), false);
+  assert.equal(isRequiredBrowserTestFileCompletion({
+    name: requiredBrowserTestFiles[0],
+    nesting: 0,
+    file: join(webRoot, "tests", "renamed-browser.test.mts"),
+  }, webRoot), false);
+  assert.equal(isRequiredBrowserTestFileCompletion({
+    name: join(webRoot, "tests", "renamed-browser.test.mts"),
+    nesting: 0,
+    file: join(webRoot, "tests", "ui-foundation-browser.test.mts"),
+  }, webRoot), false);
 });
 
 test("Worker restart focus AST oracle accepts production and complete unconditional, switch and if-else paths", () => {
@@ -233,6 +297,64 @@ test("runner .next helper rejects an outside cleanup target without touching unr
   assert.equal(callbackCalls, 0);
   assert.equal(readFileSync(markerPath, "utf8"), "unchanged");
   assert.equal(existsSync(unrelatedNext), true);
+});
+
+test("runner artifact helper preserves every pre-existing output and removes fresh outputs on success and failure", async (t) => {
+  for (const shouldThrow of [false, true]) {
+    const fakeWebRoot = temporaryWebRoot(t);
+    const before = new Map<string, ReturnType<typeof nextFixtureFingerprint>>();
+    for (const name of runnerOutputDirectoryNames) {
+      const outputDirectory = join(fakeWebRoot, name);
+      createOriginalNextFixture(outputDirectory);
+      before.set(name, nextFixtureFingerprint(outputDirectory));
+    }
+    const callbackError = new Error(`artifact callback failure ${shouldThrow}`);
+    const execution = withPreservedRunnerOutputDirectories(fakeWebRoot, async () => {
+      for (const name of runnerOutputDirectoryNames) {
+        const outputDirectory = join(fakeWebRoot, name);
+        assert.equal(existsSync(outputDirectory), false, `pre-existing ${name} was not isolated`);
+        mkdirSync(outputDirectory, { recursive: true });
+        writeFileSync(join(outputDirectory, "runner-only.txt"), "fresh");
+      }
+      if (shouldThrow) throw callbackError;
+      return "completed";
+    });
+    if (shouldThrow) await assert.rejects(execution, (error) => error === callbackError);
+    else assert.equal(await execution, "completed");
+    for (const name of runnerOutputDirectoryNames) {
+      assert.deepEqual(nextFixtureFingerprint(join(fakeWebRoot, name)), before.get(name), `${name} was not byte-preserved`);
+      assert.equal(existsSync(join(fakeWebRoot, name, "runner-only.txt")), false, `${name} retained runner output`);
+    }
+    assert.deepEqual(runnerArtifactBackupDirectories(fakeWebRoot), []);
+  }
+});
+
+test("runner signal abort restores pre-existing artifacts and removes signal listeners", async (t) => {
+  const fakeWebRoot = temporaryWebRoot(t);
+  const tracesDirectory = join(fakeWebRoot, "traces");
+  createOriginalNextFixture(tracesDirectory);
+  const before = nextFixtureFingerprint(tracesDirectory);
+  const signalTarget = new EventEmitter();
+
+  await assert.rejects(
+    withRunnerSignalAbort(
+      (signal) => withPreservedRunnerOutputDirectories(fakeWebRoot, async () => {
+        mkdirSync(tracesDirectory, { recursive: true });
+        writeFileSync(join(tracesDirectory, "runner-only.txt"), "fresh");
+        queueMicrotask(() => signalTarget.emit("SIGTERM"));
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }),
+      signalTarget,
+    ),
+    (error) => error instanceof RunnerSignalError && error.signal === "SIGTERM" && error.exitCode === 143,
+  );
+
+  assert.deepEqual(nextFixtureFingerprint(tracesDirectory), before);
+  assert.equal(signalTarget.listenerCount("SIGINT"), 0);
+  assert.equal(signalTarget.listenerCount("SIGTERM"), 0);
+  assert.deepEqual(runnerArtifactBackupDirectories(fakeWebRoot), []);
 });
 
 test("runner .next source oracle rejects omitted restore and callback-error-only restore mutants", () => {
@@ -694,6 +816,7 @@ test("BrowserHarness close rejects a pending load waiter and removes its profile
 });
 
 const independentRequiredBrowserScenarioNames = Object.freeze([
+  "UI Foundation runtime behavior",
   "query states distinguish loading, empty, unhealthy, error, stale, recovery, and update variants",
   "logout clears protected UI and sends exactly one mutation",
   "session expiry keeps a validated same-origin return URL without a redirect loop",
@@ -702,6 +825,15 @@ const independentRequiredBrowserScenarioNames = Object.freeze([
   "session guard ignores setup completion after unmount",
   "login rejects external return URL variants",
   "Streams start-readiness follows streams.start at render and confirm time",
+  "handler guard structural oracle rejects in-memory regressions",
+  "start only",
+  "update only",
+  "both",
+  "neither",
+  "wildcard",
+  "permission changes before confirm",
+  "backend 403 retains the existing action error mapping",
+  "pending mutation keeps duplicate start-readiness blocked",
   "Worker restart uses fresh canonical action policy and one POST per worker",
   "Workers Configuration uses the server ANY permission and safe remote state",
   "desktop/mobile navigation parity, active route, and permission visibility are runtime-enforced",
@@ -710,21 +842,15 @@ const independentRequiredBrowserScenarioNames = Object.freeze([
   "locale and theme controls preserve route/session and expose translated accessible names",
   "Account appearance persists 12 themes and 3 modes with DB fallback and save rollback",
   "Stream detail presents visual snapshots and cover actions preserve request-count and applied-state boundaries",
+  "Bundle 7 affected surfaces are responsive at every canonical width",
   "status focus remains visible in normal and forced-colors modes",
   "false-positive guards reject invalid observable outcomes",
-] as const);
-
-const independentGenericBrowserScenarioNames = Object.freeze([
-  "fixture generic leaf 01",
-  "fixture generic leaf 02",
-  "fixture generic leaf 03",
-  "fixture generic leaf 04",
-  "fixture generic leaf 05",
-  "fixture generic leaf 06",
-  "fixture generic leaf 07",
-  "fixture generic leaf 08",
-  "fixture generic leaf 09",
-  "fixture generic leaf 10",
+  "high-risk and compatibility confirmations preserve browser focus, literal input, state, and intent boundaries",
+  "conflict renders safe error and hides diagnostic metadata",
+  "failed renders safe error without retry",
+  "revalidation unavailable blocks confirmation and returns focus",
+  "failure-state browser oracle rejects in-memory false-positive variants",
+  "one-time secret browser boundary preserves controlled reveal, focus, cleanup, and leakage invariants",
 ] as const);
 
 function passingScenario(name: string) {
@@ -744,12 +870,12 @@ function browserSummary(overrides: Partial<{
     success: true,
     counts: {
       cancelled: 0,
-      passed: 28,
+      passed: 35,
       skipped: 0,
-      suites: 1,
-      tests: 28,
+      suites: 3,
+      tests: 35,
       todo: 0,
-      topLevel: 1,
+      topLevel: 3,
       ...overrides,
     },
   };
@@ -760,7 +886,6 @@ function passingBrowserInventoryFixture() {
     summary: browserSummary(),
     completed: [
       ...independentRequiredBrowserScenarioNames.map(passingScenario),
-      ...independentGenericBrowserScenarioNames.map(passingScenario),
     ],
   };
 }
@@ -2069,6 +2194,13 @@ function createOriginalNextFixture(nextBuildDirectory: string) {
 function runnerBackupDirectories(fakeWebRoot: string) {
   return readdirSync(fakeWebRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && entry.name.startsWith(".ui-foundation-browser-next-backup-"))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function runnerArtifactBackupDirectories(fakeWebRoot: string) {
+  return readdirSync(fakeWebRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith(".ui-foundation-browser-artifacts-backup-"))
     .map((entry) => entry.name)
     .sort();
 }

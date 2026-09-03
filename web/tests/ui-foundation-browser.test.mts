@@ -7,6 +7,7 @@ import { BrowserHarness, ensureWebServer, type StubResponse } from "./helpers/br
 import {
   assertStreamsStartReadinessHandlerGuard,
   mutateStreamsStartReadinessHandlerGuard,
+  type StreamsStartReadinessGuardSources,
   type StreamsStartReadinessGuardMutation,
 } from "./helpers/streams-start-readiness-handler-guard.mts";
 import { loginPathForLocation } from "../src/lib/auth/post-login-redirect.ts";
@@ -35,8 +36,8 @@ const currentUser = {
   permissions: ["*"],
 };
 const healthyRows = [
-  { id: "worker-one", service_type: "worker", service_name: "Worker One", status: "online", health_status: "healthy" },
-  { id: "encoder-one", service_type: "encoder", service_name: "Encoder One", status: "offline", health_status: "unhealthy" },
+  { id: "worker-one", service_id: "worker-one", service_type: "worker", service_name: "Worker One", status: "online", health_status: "healthy", reported_capabilities: { scene_appearance_v1: true } },
+  { id: "encoder-one", service_id: "encoder-one", service_type: "encoder_recorder", service_name: "Encoder One", status: "offline", health_status: "unhealthy", reported_capabilities: { live_video_cover_v1: true } },
 ];
 const workerPilotRows = [
   { service_id: "worker-one", service_type: "worker", service_name: "Worker One", status: "online", health_status: "healthy" },
@@ -49,12 +50,12 @@ const currentVersion = versionResponse({ latestVersion: "v1.2.4" });
 const availableVersion = versionResponse({ latestVersion: "v1.3.0", updateAvailable: true });
 const startReadinessStream = { id: "stream-permission-fixture", name: "権限検証配信", status: "ready" };
 const startReadinessPath = `/streams/${startReadinessStream.id}/start-readiness`;
-const controlPlatformStream = { id: "stream-control-platform", name: "ビジュアル確認配信", status: "ready" };
+const controlPlatformStream = { id: "stream-control-platform", name: "ビジュアル確認配信", status: "ready", assigned_worker_id: "worker-one", assigned_encoder_id: "encoder-one" };
 const controlPlatformVisualPath = `/streams/${controlPlatformStream.id}/visual-settings`;
 const controlPlatformCoverPath = `/streams/${controlPlatformStream.id}/video-cover-state`;
 const controlPlatformPipeline = ["base_or_worker_scene", "video_cover", "watermark", "video_encode", "tee_live_archive_preview"];
 
-test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
+test("UI Foundation runtime behavior", { timeout: 420_000 }, async (t) => {
   const server = await ensureWebServer(webRoot, requestedBaseUrl);
   const browserPromise = BrowserHarness.launch();
   t.after(async () => {
@@ -104,7 +105,7 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
 	let controlPlatformCoverWriteResponse: StubResponse = { body: controlPlatformCoverState(true, 2, true, 2, "applied") };
 	let controlPlatformCoverMethods: string[] = [];
 	let controlPlatformCoverBodies: unknown[] = [];
-	browser.setRouteResolver(({ method, url, postData }) => {
+  browser.setRouteResolver(({ method, url, postData }) => {
     const pathname = normalizePath(new URL(url).pathname);
     if (pathname === "/auth/me" && method === "GET") return { ...authResponse, requiredResponse: authResponse.requiredResponse ?? false };
     if (pathname === "/setup/status" && method === "GET") return { ...setupResponse, requiredResponse: setupResponse.requiredResponse ?? false };
@@ -517,20 +518,23 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
   });
 
   await t.test("Streams start-readiness follows streams.start at render and confirm time", async (t) => {
-    const readinessSelector = 'button[aria-label="開始準備を再確認"]';
+    const readinessSelector = `button[aria-label=${JSON.stringify(`${startReadinessStream.name} の開始準備を再確認`)}]`;
     const editSelector = `button[aria-label=${JSON.stringify(`${startReadinessStream.name} を編集`)}]`;
     const actionSnapshotExpression = `(() => {
       const visibleButton = (selector) => [...document.querySelectorAll(selector)]
         .find((element) => element instanceof HTMLButtonElement && element.getClientRects().length > 0);
       const readiness = visibleButton(${JSON.stringify(readinessSelector)});
       const edit = visibleButton(${JSON.stringify(editSelector)});
+      const reasonId = readiness?.getAttribute("aria-describedby");
       return {
         readinessPresent: Boolean(readiness),
         readinessAvailable: readiness instanceof HTMLButtonElement && !readiness.disabled,
         editAvailable: edit instanceof HTMLButtonElement && !edit.disabled,
+        readinessAvailabilityKind: readiness?.closest("[data-action-availability]")?.getAttribute("data-action-availability") || "allowed",
+        readinessReason: reasonId ? document.getElementById(reasonId)?.textContent || "" : "",
       };
     })()`;
-    const successNotice = `${startReadinessStream.name}の開始準備の確認を受け付けました。状態が更新されるまでしばらくお待ちください。`;
+    const successNotice = `${startReadinessStream.name}の開始準備確認を受け付けました。最新状態を確認してください。`;
     const successResponse = {
       body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 },
       requiredResponse: true,
@@ -544,9 +548,13 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     ] as const;
 
     await t.test("handler guard structural oracle rejects in-memory regressions", () => {
-      const source = readFileSync(new URL("../src/features/streams/streams-view.tsx", import.meta.url), "utf8");
+      const sources: StreamsStartReadinessGuardSources = {
+        view: readFileSync(new URL("../src/features/streams/streams-view.tsx", import.meta.url), "utf8"),
+        controller: readFileSync(new URL("../src/features/streams/stream-action-controller.ts", import.meta.url), "utf8"),
+        descriptors: readFileSync(new URL("../src/features/streams/stream-action-descriptors.ts", import.meta.url), "utf8"),
+      };
       assert.doesNotThrow(
-        () => assertStreamsStartReadinessHandlerGuard(source),
+        () => assertStreamsStartReadinessHandlerGuard(sources),
         "actual start-readiness submit handler must retain its fresh permission guard",
       );
       const negativeFixtures: {
@@ -554,16 +562,16 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
         mutation: StreamsStartReadinessGuardMutation;
         expectedError: RegExp;
       }[] = [
-        { name: "fresh cache read removed", mutation: "remove-fresh-cache-read", expectedError: /latest auth query cache/ },
-        { name: "streams.start replaced by streams.update", mutation: "use-streams-update-authority", expectedError: /authority must be streams\.start/ },
-        { name: "early return removed", mutation: "remove-early-return", expectedError: /must return before/ },
-        { name: "mutation moved before guard", mutation: "move-mutation-before-guard", expectedError: /must follow the fresh permission guard/ },
-        { name: "RoleGuard remains but handler guard is removed", mutation: "remove-handler-guard", expectedError: /existing permission helper/ },
+        { name: "current permission snapshot removed", mutation: "remove-current-permission-snapshot", expectedError: /current permission snapshot/ },
+        { name: "streams.start replaced by streams.update", mutation: "use-streams-update-authority", expectedError: /descriptor authority must remain streams\.start/ },
+        { name: "pre-submit evaluation removed", mutation: "remove-pre-submit-evaluation", expectedError: /pre-submit evaluator/ },
+        { name: "mutation moved before guard", mutation: "move-mutation-before-guard", expectedError: /mutation must follow every pre-submit guard/ },
+        { name: "alternate unguarded mutation added", mutation: "add-alternate-unguarded-mutation", expectedError: /exactly one guarded mutation path/ },
       ];
       for (const fixture of negativeFixtures) {
-        const mutatedSource = mutateStreamsStartReadinessHandlerGuard(source, fixture.mutation);
+        const mutatedSources = mutateStreamsStartReadinessHandlerGuard(sources, fixture.mutation);
         assert.throws(
-          () => assertStreamsStartReadinessHandlerGuard(mutatedSource),
+          () => assertStreamsStartReadinessHandlerGuard(mutatedSources),
           fixture.expectedError,
           `${fixture.name} must make the structural oracle Red`,
         );
@@ -600,7 +608,7 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
               Boolean,
               `${matrixCase.name}: start-readiness confirmation did not open`,
             );
-            await browser.clickSelector('[data-slot="alert-dialog-action"]');
+            await browser.clickSelector('[data-confirm-action]');
             await browser.waitForRequestCount(startReadinessPath, 1);
             await browser.waitForResponseCount(startReadinessPath, 1);
             await browser.waitFor(
@@ -706,13 +714,13 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
           Boolean,
           "403 fixture confirmation did not open",
         );
-        await browser.clickSelector('[data-slot="alert-dialog-action"]');
+        await browser.clickSelector('[data-confirm-action]');
         await browser.waitForRequestCount(startReadinessPath, 1);
         await browser.waitForResponseCount(startReadinessPath, 1);
         await browser.waitFor(
           "document.body.textContent || ''",
-          (value: string) => value.includes("開始準備の確認を実行する権限がありません") && value.includes("permission_denied"),
-          "backend 403 no longer used the existing stream action error mapping",
+          (value: string) => value.includes("この操作を実行する権限がありません。") && !value.includes("permission_denied"),
+          "backend 403 did not use the safe shared API error mapping",
         );
         await browser.waitFor(
           actionSnapshotExpression,
@@ -746,7 +754,7 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
             Boolean,
             "pending fixture confirmation did not open",
           );
-          await browser.clickSelector('[data-slot="alert-dialog-action"]');
+          await browser.clickSelector('[data-confirm-action]');
           await browser.waitForRequestCount(startReadinessPath, 1);
           await browser.waitFor(
             actionSnapshotExpression,
@@ -1243,7 +1251,7 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
       configurationResponse = { body: workerConfiguration("worker-one", "STATUS-CONFIGURATION-MARKER") };
       authResponse = { body: currentUser };
       healthResponse = { body: [
-        ...healthyRows,
+        ...healthyRows.filter((row) => row.service_type === "worker"),
         { id: "worker-malformed", service_type: "worker", service_name: "Malformed Status Worker", status: "future_connectivity", health_status: { known: true, labelKey: "statusNodeHealthy" } },
       ] };
       await browser.navigate(`${server.baseUrl}/admin/workers/`);
@@ -1669,6 +1677,7 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
 
   await t.test("Stream detail presents visual snapshots and cover actions preserve request-count and applied-state boundaries", async () => {
     const limitedUser = { user: { id: "visual-reader", username: "visual-reader", roles: ["viewer"] }, permissions: ["streams.read"] };
+    healthResponse = { body: healthyRows };
     streamsResponse = { body: [controlPlatformStream] };
     controlPlatformVisualResponse = { body: {
       stream_id: controlPlatformStream.id,
@@ -1740,6 +1749,7 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     await browser.waitFor(`document.body.textContent?.includes(${JSON.stringify(controlPlatformStream.name)}) === true`, Boolean, "control-platform stream did not reload after permission refresh");
     await browser.clickSelector('button[aria-label="詳細"]');
     await browser.waitFor(`document.querySelector('button[aria-label="Video Coverを表示"]:not([disabled])') !== null`, Boolean, "show cover action did not recover after permission refresh");
+    await browser.waitForRequestHandlersIdle({ pathname: controlPlatformCoverPath, method: "GET" });
     await waitForAnimationFrames(browser);
     browser.clearRequestCounts(controlPlatformCoverPath);
 		controlPlatformCoverMethods = [];
@@ -1769,38 +1779,21 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     })()`);
     assert.equal(confirmed, true, "hide confirmation action missing");
     await browser.waitForRequestCount(controlPlatformCoverPath, 2);
-    await browser.waitFor(`document.body.textContent?.includes('DesiredとAppliedが一致していません') === true`, Boolean, "ambiguous hide falsely appeared applied");
+    await browser.waitFor(`document.body.textContent?.includes('DesiredとAppliedは未一致です') === true`, Boolean, "ambiguous hide falsely appeared applied");
     assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 2);
 
-    controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(false, 3, true, 2, "confirming") };
-    await scrollSelectorIntoView(browser, 'button[aria-label="同じ操作キーで状態確認"]');
-		await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
-		browser.clearRequestCounts("/auth/me");
-		const reconciliationPermissionRelease = deferred();
-		authResponse = { body: currentUser, waitUntil: reconciliationPermissionRelease.promise };
-		await browser.evaluate("window.dispatchEvent(new Event('focus')); true");
-		await browser.waitForRequestCount("/auth/me", 1, 20_000);
-		await browser.waitFor(
-			`document.querySelector('button[aria-label="同じ操作キーで状態確認"]:disabled') !== null`,
-			Boolean,
-			"explicit reconciliation remained enabled while permission was refreshing",
-		);
-		await browser.clickSelector('button[aria-label="同じ操作キーで状態確認"]');
-		await waitForAnimationFrames(browser);
-		assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 2, "refreshing permission must send zero reconciliation requests");
-		reconciliationPermissionRelease.resolve();
-		authResponse = { body: currentUser };
-		await browser.waitForResponseCount("/auth/me", 1, 20_000);
-		await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
-		await browser.waitFor(
-			`document.querySelector('button[aria-label="同じ操作キーで状態確認"]:not([disabled])') !== null`,
-			Boolean,
-			"explicit reconciliation remained disabled after the prior mutation settled",
-		);
-    await browser.clickSelector('button[aria-label="同じ操作キーで状態確認"]');
+    controlPlatformCoverResponse = { body: controlPlatformCoverState(false, 3, false, 3, "applied") };
+    await browser.waitFor(
+      `![...document.querySelectorAll('[role="alertdialog"]')].some((element) => element.getClientRects().length > 0)`,
+      Boolean,
+      "hide confirmation overlay did not finish closing before reconciliation",
+    );
+    await scrollSelectorIntoView(browser, 'button[aria-label="Coverの最新状態を確認"]');
+    await browser.waitFor(`document.querySelector('button[aria-label="Coverの最新状態を確認"]:not([disabled])') !== null`, Boolean, "cover reconciliation remained disabled after the prior mutation settled");
+    await browser.clickSelector('button[aria-label="Coverの最新状態を確認"]');
 		await browser.waitForRequestCount(controlPlatformCoverPath, 3);
-		assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 3, "explicit reconciliation must be one deliberate request");
-		assert.deepEqual(controlPlatformCoverBodies[2], controlPlatformCoverBodies[1], "explicit reconciliation must resend the exact original generation/revision payload");
+		assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 2, "reconciliation must refresh state without resending the mutation");
+		assert.equal(controlPlatformCoverMethods.filter((method) => method === "GET").length, 1, "reconciliation must perform one read-only state request");
 
     controlPlatformCoverWriteResponse = { status: 403, body: { code: "permission_denied" } };
 		await browser.waitFor(
@@ -1812,7 +1805,69 @@ test("UI Foundation runtime behavior", { timeout: 330_000 }, async (t) => {
     await browser.clickSelector('button[aria-label="Video Coverを表示"]');
     await browser.waitForRequestCount(controlPlatformCoverPath, 4);
     await waitForAnimationFrames(browser);
-    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 4, "backend 403 must receive one request and no automatic resend");
+    assert.equal(controlPlatformCoverMethods.filter((method) => method === "PUT").length, 3, "backend 403 must receive one request and no automatic resend");
+  });
+
+  await t.test("Bundle 7 affected surfaces are responsive at every canonical width", async () => {
+    const affectedRoutes = [
+      "/admin/",
+      "/admin/streams/",
+      "/admin/monitoring/",
+      "/admin/metrics/",
+      "/admin/encoder/",
+      "/admin/audit-logs/",
+      "/admin/archive/",
+      "/admin/workers/",
+      "/admin/nodes/",
+      "/admin/settings/",
+    ] as const;
+    const viewports = [
+      { width: 390, height: 844 },
+      { width: 430, height: 932 },
+      { width: 768, height: 1024 },
+      { width: 1024, height: 768 },
+      { width: 1440, height: 900 },
+      { width: 1920, height: 1080 },
+    ] as const;
+    authResponse = { body: currentUser };
+    streamsResponse = { body: [controlPlatformStream] };
+    healthResponse = { body: healthyRows };
+    workersResponse = { body: workerPilotRows };
+    nodesResponse = { body: workerPilotRows };
+    await setStoredDisplay(browser, "ja", "light");
+
+    for (const route of affectedRoutes) {
+      await browser.navigate(`${server.baseUrl}${route}`);
+      await waitForShell(browser, "アカウントメニュー");
+      await browser.waitFor(
+        `document.querySelector('main')?.getClientRects().length || 0`,
+        (value: number) => value > 0,
+        `${route}: main content did not render`,
+      );
+      for (const viewport of viewports) {
+        await browser.setViewport(viewport.width, viewport.height);
+        await waitForAnimationFrames(browser);
+        const snapshot = await browser.evaluate<{
+          width: number;
+          mainVisible: boolean;
+          horizontalOverflow: boolean;
+          visibleInteractiveCount: number;
+        }>(`(() => {
+          const main = document.querySelector('main');
+          const visible = (element) => element instanceof HTMLElement && element.getClientRects().length > 0;
+          return {
+            width: window.innerWidth,
+            mainVisible: visible(main),
+            horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+            visibleInteractiveCount: [...document.querySelectorAll('a,button,input,select,textarea')].filter(visible).length,
+          };
+        })()`);
+        assert.equal(snapshot.width, viewport.width, `${route} viewport width`);
+        assert.equal(snapshot.mainVisible, true, `${route} at ${viewport.width}px did not retain visible main content`);
+        assert.equal(snapshot.horizontalOverflow, false, `${route} at ${viewport.width}px overflowed the document horizontally`);
+        assert.ok(snapshot.visibleInteractiveCount > 0, `${route} at ${viewport.width}px exposed no usable controls`);
+      }
+    }
   });
 
   await t.test("status focus remains visible in normal and forced-colors modes", async () => {

@@ -171,21 +171,29 @@ export function assertRemoteStateFoundationBoundaries(webRoot: string) {
   assert.deepEqual(barrels, [], "remote-state foundation must not add an index.ts barrel");
 
   const absoluteProductionPaths = new Set(productionPaths.map((path) => join(webRoot, path)));
-  const consumers = walkFiles(join(webRoot, "src"))
-    .filter(isTypeScriptSource)
-    .filter((path) => !absoluteProductionPaths.has(path))
-    .flatMap((path) => {
-      const sourceFile = parse(path);
-      return sourceFile.statements
-        .filter(ts.isImportDeclaration)
-        .filter((statement) => ts.isStringLiteral(statement.moduleSpecifier))
-        .filter((statement) => isB04ImplementationImport(statement.moduleSpecifier.text))
-        .map(() => normalize(relative(webRoot, path)));
-    });
+  const consumers = [...new Set(
+    walkFiles(join(webRoot, "src"))
+      .filter(isTypeScriptSource)
+      .filter((path) => !absoluteProductionPaths.has(path))
+      .flatMap((path) => {
+        const sourceFile = parse(path);
+        return sourceFile.statements
+          .filter(ts.isImportDeclaration)
+          .filter((statement) => ts.isStringLiteral(statement.moduleSpecifier))
+          .filter((statement) => isB04ImplementationImport(statement.moduleSpecifier.text))
+          .map(() => normalize(relative(webRoot, path)));
+      }),
+  )].sort();
   assert.deepEqual(
     consumers,
-    ["src/features/workers/workers-view.tsx"],
-    "B-04 renderer has exactly the reviewed Worker Configuration consumer",
+    [
+      "src/features/monitoring/operational-remote-state.ts",
+      "src/features/remote-state/remaining-remote-state.ts",
+      "src/features/settings/app-settings-action-runtime.ts",
+      "src/features/settings/settings-view.tsx",
+      "src/features/workers/workers-view.tsx",
+    ],
+    "B-04 has exactly the reviewed migrated consumers",
   );
 
   return Object.freeze({

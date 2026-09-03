@@ -867,9 +867,9 @@ test("B-05 i18n copy is exact, parallel, placeholder-bounded, and token-literal"
 
 test("AST guard fixes legacy consumers, two frame owners, and the exact Worker pilot consumer", () => {
   assert.deepEqual(assertConfirmationFoundationBoundaries(webRoot), {
-    dangerConsumerCount: 6,
-    frameConsumerCount: 2,
-    rendererConsumerCount: 1,
+    dangerConsumerCount: 4,
+    frameConsumerCount: 4,
+    rendererConsumerCount: 9,
     reviewedFileCount: 5,
   });
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([
@@ -877,10 +877,10 @@ test("AST guard fixes legacy consumers, two frame owners, and the exact Worker p
   ])), /DangerConfirm|consumers/);
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([
     ["src/features/synthetic/new-action.ts", 'import { ConfirmationDialogFrame } from "@/components/foundation/confirmation/confirmation-dialog-frame";\nvoid ConfirmationDialogFrame;\n'],
-  ])), /exactly two reviewed owners/);
+  ])), /exactly the reviewed owners/);
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([
     ["src/features/synthetic/new-action.ts", 'import { HighRiskConfirmation } from "@/components/foundation/confirmation/high-risk-confirmation";\nvoid HighRiskConfirmation;\n'],
-  ])), /exactly the reviewed Worker pilot consumer/);
+  ])), /exactly the reviewed migrated consumers/);
   const rendererPath = join(webRoot, "src", "components", "foundation", "confirmation", "high-risk-confirmation.ts");
   const rendererSource = readFileSync(rendererPath, "utf8");
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([

@@ -5,15 +5,15 @@
       "id": "contracts",
       "repository": "Autostream-Contracts",
       "branch": "main",
-      "head": "fe7632c8b7bde9793d2eea38d2124bf4267e52b9",
+      "head": "46567bf35acff1c252293b931add90e1b646056e",
       "path": "pkg/contracts/types.go",
-      "sourceSha256": "895c81da273b5dd43aa06d627ae7c5bb63647c38c344a5b65de774397062f5bd"
+      "sourceSha256": "d157f4b11916cb27d05b0662c57d2c877bbf586ff092d5ceb4858e7783e0ba13"
     },
     {
       "id": "observability",
       "repository": "Autostream-Observability",
       "branch": "main",
-      "head": "2a3cca58d77340b9fef6d003d2d2ce2ab0d13d7a",
+      "head": "2cbaccd05854a9ff2db9a8f5af6904be6be45494",
       "path": "migrations/001_init.sql",
       "sourceSha256": "64df2de7896ce8774e83e6d2ea2d550fd580002f3a03256cbfe5f73cd17a37d7"
     },
@@ -21,7 +21,7 @@
       "id": "control-panel-domain",
       "repository": "Autostream-ControlPanel",
       "branch": "main",
-      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "web/src/types/domain.ts",
       "sourceSha256": "065504bd2d37cfa3d4fcacdd38a07ae4916ced4b0513b9a4c15266610ebf32d2"
     },
@@ -29,9 +29,9 @@
       "id": "control-panel-http",
       "repository": "Autostream-ControlPanel",
       "branch": "main",
-      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "internal/httpapi/server.go",
-      "sourceSha256": "048ef3209e907a0cbf1af03fc9b0e314669fb55e44db1becdacdc998aee2eabd"
+      "sourceSha256": "797fc35fac7eb8f0a74f8de5595d0ba4b2c348ce645c159229f1378bc7916a66"
     },
     {
       "id": "control-panel-policy",
@@ -45,15 +45,15 @@
       "id": "control-panel-stream-store",
       "repository": "Autostream-ControlPanel",
       "branch": "main",
-      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "internal/store/streams.go",
-      "sourceSha256": "a26b25de6f30f26fb025f337e453f0c46e58c3ed2b8c51eb38e7e266dc660a94"
+      "sourceSha256": "8074156ebbcc93e74eb794a2888295068f8162cbeb1125e3b1c2b2f0a132ded3"
     },
     {
       "id": "control-panel-auth-store",
       "repository": "Autostream-ControlPanel",
       "branch": "main",
-      "head": "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b",
+      "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "internal/store/auth.go",
       "sourceSha256": "899ff70ea1e8991501889521029cdc399383e235c544d51f729a3a21e6b81f9f"
     }

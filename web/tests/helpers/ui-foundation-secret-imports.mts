@@ -142,15 +142,22 @@ export function assertSecretFoundationBoundaries(
   assert.deepEqual(barrels, [], "B-06 must not add an index barrel");
 
   const production = productionSources(webRoot, normalizedOverlay);
-  const consumers = [...production]
+  const consumers = [...new Set([...production]
     .filter(([path]) => !path.startsWith("src/lib/foundation/secrets/"))
     .filter(([path]) => path !== componentPath)
     .flatMap(([path, sourceFile]) => sourceFile.statements
       .filter(ts.isImportDeclaration)
       .filter((statement) => ts.isStringLiteral(statement.moduleSpecifier))
       .filter((statement) => isSecretFoundationImport(statement.moduleSpecifier.text))
-      .map(() => path));
-  assert.deepEqual(consumers, [], "B-06 must have zero production consumers outside its new Foundation files");
+      .map(() => path)))].sort();
+  assert.deepEqual(consumers, [
+    "src/features/account/account-one-time-secret.ts",
+    "src/features/account/account-view.tsx",
+    "src/features/archive/archive-share-capability.ts",
+    "src/features/archive/archive-view.tsx",
+    "src/features/nodes/node-foundation-artifact.tsx",
+    "src/features/nodes/node-one-time-secret.ts",
+  ], "B-06 has exactly the reviewed one-time secret consumers");
 
   return Object.freeze({
     productionConsumerCount: consumers.length,
