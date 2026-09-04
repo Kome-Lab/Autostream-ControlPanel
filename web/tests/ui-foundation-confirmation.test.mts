@@ -865,13 +865,16 @@ test("B-05 i18n copy is exact, parallel, placeholder-bounded, and token-literal"
   assert.equal(translate("en", "confirmationTypeTokenInstruction", { token: "DELETE NODE_1" }), "Type \"DELETE NODE_1\" to confirm.");
 });
 
-test("AST guard fixes legacy consumers, two frame owners, and the exact Worker pilot consumer", () => {
+test("AST guard rejects retired confirmation definitions and callers while preserving Foundation owners", () => {
   assert.deepEqual(assertConfirmationFoundationBoundaries(webRoot), {
-    dangerConsumerCount: 4,
-    frameConsumerCount: 4,
+    dangerConsumerCount: 0,
+    frameConsumerCount: 5,
     rendererConsumerCount: 9,
-    reviewedFileCount: 5,
+    reviewedFileCount: 4,
   });
+  assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([
+    ["src/components/admin/danger-confirm.tsx", "export function DangerConfirm() { return null; }"],
+  ])), /definition must remain removed/);
   assert.throws(() => assertConfirmationFoundationBoundaries(webRoot, new Map([
     ["src/features/synthetic/new-action.ts", 'import { DangerConfirm } from "@/components/admin/danger-confirm";\nvoid DangerConfirm;\n'],
   ])), /DangerConfirm|consumers/);

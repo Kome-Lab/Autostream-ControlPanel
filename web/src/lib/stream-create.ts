@@ -1,9 +1,6 @@
 export type StreamCreateValues = {
   name: string;
   discordConfigID: string;
-  discordGuildID: string;
-  discordVoiceChannelID: string;
-  discordTextChannelID: string;
   autoStartFromDiscord: boolean;
   youtubeOutputID: string;
   archiveProfileID: string;
@@ -51,18 +48,10 @@ export function streamAssignmentConflictMessage(code?: string): string | undefin
   return messages[code || ""];
 }
 
-export function streamCreateCompatibilityMessage(code?: string): string | undefined {
-  if (code !== "stream_create_assignment_fields_unsupported") return undefined;
-  return "この画面は古い形式のNode割り当てを送信しました。最新画面へ再読み込みし、配信枠を作成した後に編集画面でNodeを割り当ててください。";
-}
-
 export function buildStreamCreatePayload(values: StreamCreateValues): Record<string, unknown> {
   return compactRecord({
     name: values.name,
     discord_config_id: values.discordConfigID,
-    discord_guild_id: values.discordGuildID,
-    discord_voice_channel_id: values.discordVoiceChannelID,
-    discord_text_channel_id: values.discordTextChannelID,
     auto_start_trigger: values.autoStartFromDiscord ? "discord_voice_join" : "",
     youtube_output_id: values.youtubeOutputID,
     archive_profile_id: values.archiveProfileID,
@@ -81,9 +70,6 @@ export function buildStreamSettingsPayload(values: StreamCreateValues): Record<s
   return {
     name: values.name.trim(),
     discord_config_id: values.discordConfigID,
-    discord_guild_id: values.discordGuildID.trim(),
-    discord_voice_channel_id: values.discordVoiceChannelID.trim(),
-    discord_text_channel_id: values.discordTextChannelID.trim(),
     auto_start_trigger: values.autoStartFromDiscord ? "discord_voice_join" : "",
     youtube_output_id: values.youtubeOutputID,
     archive_profile_id: values.archiveProfileID,

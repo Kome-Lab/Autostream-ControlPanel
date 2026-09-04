@@ -31,9 +31,6 @@ export type Stream = {
   created_at?: string;
   deleted_at?: string;
   discord_config_id?: string;
-  discord_guild_id?: string;
-  discord_voice_channel_id?: string;
-  discord_text_channel_id?: string;
   auto_start_trigger?: string;
   encoder_profile_id?: string;
   caption_profile_id?: string;
@@ -62,7 +59,7 @@ export type WorkerNode = {
   health_status?: string;
   assignment_role?: string;
   current_stream_id?: string;
-  transport_mode?: "ssh_v1" | "pull_v2";
+  transport_mode?: "pull_v2";
   execution_host_id?: string;
   ownership_epoch?: number;
   host?: string;
@@ -336,7 +333,7 @@ export type SystemUpdateAgentStatus = {
   status: string;
   online: boolean;
   version: string;
-  transport_mode?: "ssh_v1" | "pull_v2";
+  transport_mode?: "pull_v2";
   execution_host_id?: string;
   ownership_epoch?: number;
   last_heartbeat_at?: string;
@@ -400,7 +397,7 @@ export type SystemUpdateJob = {
   target_id: string;
   target_type: string;
   host_id?: string;
-  transport_mode?: "ssh_v1" | "pull_v2";
+  transport_mode?: "pull_v2";
   ownership_epoch?: number;
   policy_revision?: number;
   updater_id?: string;
@@ -470,12 +467,11 @@ export type UpdaterSettings = {
   revision: number;
   projection_revision?: number;
   local_executor_policy_revision?: number;
-  transport_mode: "ssh_v1" | "pull_v2";
+  transport_mode: "pull_v2";
   execution_host_id?: string;
   execution_host_ownership?: {
-    transport_mode: "ssh_v1" | "pull_v2";
+    transport_mode: "pull_v2";
     agent_service_id?: string;
-    legacy_agent_service_id?: string;
     ownership_epoch: number;
     policy_revision: number;
   };
@@ -546,7 +542,7 @@ export type PullUpdaterOwnershipDeactivationRequest = {
 export type PullUpdaterOwnershipDeactivationResponse = {
   updater_id: string;
   execution_host_id: string;
-  transport_mode: "ssh_v1";
+  transport_mode: "pull_v2";
   agent_service_id: string;
   ownership_epoch: number;
   agent_ownership_epoch: 0;

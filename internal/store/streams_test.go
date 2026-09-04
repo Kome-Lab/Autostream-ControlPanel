@@ -343,12 +343,13 @@ func TestMemoryArchiveProcessingStreamsStopWaitingAfterArtifactReport(t *testing
 	}
 	processing, err := streams.ListArchiveProcessingStreams(t.Context())
 	if err != nil || len(processing) != 0 {
-		t.Fatalf("never-started legacy stream became archive-processing: streams=%#v err=%v", processing, err)
+		t.Fatalf("never-started stream became archive-processing: streams=%#v err=%v", processing, err)
 	}
 	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "created"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "", time.Now().UTC()); err != nil {
+	startedAt := time.Now().UTC()
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "archive-run-01", startedAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "completed"); err != nil {
@@ -360,7 +361,8 @@ func TestMemoryArchiveProcessingStreamsStopWaitingAfterArtifactReport(t *testing
 		t.Fatalf("processing streams before artifact report = %#v err=%v", processing, err)
 	}
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{{
-		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10,
+		ArchiveRunID: "archive-run-01", ArchiveStartedAt: &startedAt,
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/archive-run-01/final.mp4", SizeBytes: 10,
 	}}); err != nil {
 		t.Fatal(err)
 	}

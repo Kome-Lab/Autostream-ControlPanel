@@ -15,7 +15,6 @@ const reviewedPaths = [
   revalidationPath,
   framePath,
   rendererPath,
-  dangerPath,
 ] as const;
 
 const allowedImports = new Map<string, Readonly<{
@@ -61,13 +60,6 @@ const allowedImports = new Map<string, Readonly<{
       "@/lib/foundation/api-errors/contracts",
       "@/lib/i18n",
     ]),
-  }],
-  [dangerPath, {
-    runtime: new Set([
-      "@/components/admin/i18n-provider",
-      "@/components/foundation/confirmation/confirmation-dialog-frame",
-    ]),
-    types: new Set(["react"]),
   }],
 ]);
 
@@ -143,14 +135,8 @@ export function assertConfirmationFoundationBoundaries(
     "@/components/admin/danger-confirm",
     dangerPath,
   ).map((path) => `web/${path}`);
-  const fixture = JSON.parse(readFileSync(
-    join(webRoot, "tests", "fixtures", "danger-confirm-consumers.json"),
-    "utf8",
-  )) as { authorityHead?: unknown; consumerCount?: unknown; consumers?: unknown };
-  assert.equal(fixture.authorityHead, "482a8375fb53d8fd7344040d4dfbc57360404976");
-  assert.equal(fixture.consumerCount, 4);
-  assert.deepEqual(fixture.consumers, dangerConsumers, "DangerConfirm consumers must match the frozen fixture");
-  assert.deepEqual(dangerConsumers, [...dangerConsumers].sort(), "DangerConfirm consumers must be lexical");
+  assert.equal(existsSync(join(webRoot, dangerPath)) || normalizedOverlay.has(dangerPath), false, "DangerConfirm definition must remain removed");
+  assert.deepEqual(dangerConsumers, [], "DangerConfirm consumers must remain zero");
 
   const frameConsumers = importConsumers(
     production,
@@ -159,8 +145,9 @@ export function assertConfirmationFoundationBoundaries(
   assert.deepEqual(
     frameConsumers,
     [
-      dangerPath,
       rendererPath,
+      "src/features/application/deferred-updater-host-confirmation.tsx",
+      "src/features/nodes/deferred-node-confirmation.tsx",
       "src/features/streams/stream-control-platform-panel.tsx",
       "src/features/streams/stream-visual-settings-section.tsx",
     ].sort(),

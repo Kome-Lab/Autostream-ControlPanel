@@ -1,6 +1,6 @@
 import type { NodeServiceEndpoint, WorkerNode } from "@/types/domain";
 
-export type UpdaterTransportMode = "ssh_v1" | "pull_v2";
+export type UpdaterTransportMode = "pull_v2";
 
 export type NodeRegistrationDraft = {
   nodeType: string;
@@ -35,7 +35,7 @@ export function nodeRegistrationDraftValid(draft: NodeRegistrationDraft) {
   if (!nodeIDPattern.test(draft.nodeID.trim()) || draft.name.trim() === "") {
     return false;
   }
-  if (draft.nodeType === "update_agent" && draft.transportMode === "pull_v2") {
+  if (draft.nodeType === "update_agent") {
     return isExecutionHostID(draft.executionHostID);
   }
   return draft.host.trim() !== "" && isServicePort(draft.port);
@@ -50,7 +50,7 @@ export function buildNodeRegistrationRequest(draft: NodeRegistrationDraft) {
     allow_runtime_secrets: draft.allowRuntimeSecrets,
     allow_remediation: draft.allowRemediation,
   };
-  if (draft.nodeType === "update_agent" && draft.transportMode === "pull_v2") {
+  if (draft.nodeType === "update_agent") {
     return {
       ...common,
       transport_mode: "pull_v2" as const,
@@ -62,9 +62,6 @@ export function buildNodeRegistrationRequest(draft: NodeRegistrationDraft) {
     host: draft.host.trim(),
     port: Number(draft.port.trim()),
     ssl_enabled: draft.sslEnabled,
-    ...(draft.nodeType === "update_agent"
-      ? { transport_mode: "ssh_v1" as const }
-      : {}),
   };
 }
 

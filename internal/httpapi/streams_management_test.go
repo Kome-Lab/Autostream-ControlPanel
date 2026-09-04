@@ -82,16 +82,18 @@ func TestArchiveProcessingStreamsExposeOnlyUnreportedCompletedRecordings(t *test
 	}
 
 	if items := listProcessing(); len(items) != 0 {
-		t.Fatalf("never-started legacy stream was treated as processing = %#v", items)
+		t.Fatalf("never-started stream was treated as processing = %#v", items)
 	}
-	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "", time.Time{}); err != nil {
+	startedAt := time.Now().UTC()
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "archive-run-01", startedAt); err != nil {
 		t.Fatal(err)
 	}
 	if items := listProcessing(); len(items) != 1 || items[0].ID != stream.ID {
 		t.Fatalf("processing streams before artifact report = %#v", items)
 	}
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []store.StreamArtifact{{
-		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10,
+		ArchiveRunID: "archive-run-01", ArchiveStartedAt: &startedAt,
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/archive-run-01/final.mp4", SizeBytes: 10,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +128,7 @@ func TestStreamManagementCreateRejectsRequestedPrimaryNodes(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
 		t.Fatalf("create stream status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
@@ -354,7 +356,7 @@ func TestForceStopRearmsDiscordVoiceStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
-		DiscordConfigID: "discord-config-01", DiscordGuildID: "guild-01", DiscordVoiceID: "voice-01", AutoStartTrigger: "discord_voice_join", YouTubeOutputID: "youtube-output-01",
+		DiscordConfigID: "discord-config-01", AutoStartTrigger: "discord_voice_join", YouTubeOutputID: "youtube-output-01",
 	}); err != nil {
 		t.Fatal(err)
 	}

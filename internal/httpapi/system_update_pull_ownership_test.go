@@ -11,7 +11,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
-func TestSystemUpdateAgentTopologyExposesTransportOwnershipIdentity(t *testing.T) {
+func TestSystemUpdateAgentTopologyExposesPullOwnershipIdentityOnly(t *testing.T) {
 	now := time.Now().UTC()
 	_, updaters, _ := systemUpdateAgentTopology([]store.RegisteredService{
 		{
@@ -31,7 +31,7 @@ func TestSystemUpdateAgentTopologyExposesTransportOwnershipIdentity(t *testing.T
 			Status:      "registered",
 		},
 	}, now)
-	if len(updaters) != 2 {
+	if len(updaters) != 1 {
 		t.Fatalf("updaters = %#v", updaters)
 	}
 	byID := map[string]systemUpdateAgentResponse{}
@@ -44,12 +44,6 @@ func TestSystemUpdateAgentTopologyExposesTransportOwnershipIdentity(t *testing.T
 		pull.OwnershipEpoch == nil ||
 		*pull.OwnershipEpoch != 3 {
 		t.Fatalf("pull updater identity = %#v", pull)
-	}
-	ssh := byID["updater-ssh"]
-	if ssh.TransportMode != store.SystemUpdateTransportSSHV1 ||
-		ssh.ExecutionHostID != "" ||
-		ssh.OwnershipEpoch != nil {
-		t.Fatalf("ssh updater identity = %#v", ssh)
 	}
 	encoded, err := json.Marshal(pull)
 	if err != nil {
@@ -64,12 +58,8 @@ func TestSystemUpdateAgentTopologyExposesTransportOwnershipIdentity(t *testing.T
 			t.Fatalf("pull updater response missing %s: %s", field, encoded)
 		}
 	}
-	encoded, err = json.Marshal(ssh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), `"ownership_epoch"`) {
-		t.Fatalf("ssh updater response unexpectedly includes ownership_epoch: %s", encoded)
+	if _, exists := byID["updater-ssh"]; exists {
+		t.Fatalf("retired updater transport was exposed: %#v", updaters)
 	}
 }
 
@@ -108,7 +98,6 @@ func TestPullSystemUpdateTargetApprovalUsesServiceIdentityAndNoReleaseToken(t *t
 		[]store.RegisteredService{agent, service},
 		now,
 		map[string]store.UpdaterPolicy{agent.ServiceID: policy},
-		false,
 	)
 	if _, exposed := assignments["legacy-slot"]; exposed {
 		t.Fatalf("pull target was keyed by target_id: %#v", assignments)
@@ -118,8 +107,6 @@ func TestPullSystemUpdateTargetApprovalUsesServiceIdentityAndNoReleaseToken(t *t
 		t.Fatalf("pull target assignment missing: %#v", assignments)
 	}
 	if !assignment.PolicyReady ||
-		assignment.ReleaseTokenRequired ||
-		assignment.ReleaseTokenConfigured ||
 		!assignment.Available ||
 		assignment.HostID != "host-a" ||
 		assignment.HostReachability != "reachable" {
@@ -205,7 +192,6 @@ func TestPullSystemUpdateTargetApprovalSynthesizesControlPanelService(t *testing
 		[]store.RegisteredService{agent},
 		now,
 		map[string]store.UpdaterPolicy{agent.ServiceID: policy},
-		false,
 	)
 	assignment, ok := assignments["control-panel"]
 	if !ok {
@@ -224,7 +210,6 @@ func TestPullSystemUpdateTargetApprovalSynthesizesControlPanelService(t *testing
 		[]store.RegisteredService{agent},
 		now,
 		map[string]store.UpdaterPolicy{agent.ServiceID: policy},
-		false,
 	)
 	assignment = assignments["control-panel"]
 	if assignment.PolicyReady ||
@@ -247,7 +232,6 @@ func TestPullObserverDoesNotReserveTargetsOrExecutionHost(t *testing.T) {
 		[]store.RegisteredService{agent, service},
 		now,
 		map[string]store.UpdaterPolicy{agent.ServiceID: policy},
-		false,
 	)
 	if len(assignments) != 0 || len(hosts) != 0 {
 		t.Fatalf("observer reserved update routing: assignments=%#v hosts=%#v", assignments, hosts)
@@ -374,7 +358,6 @@ func TestPullSystemUpdateTargetApprovalFailsClosedOnReportedDrift(t *testing.T) 
 				[]store.RegisteredService{agent, service},
 				now,
 				map[string]store.UpdaterPolicy{agent.ServiceID: policy},
-				false,
 			)
 			if test.name == "empty service id does not fall back to target id" {
 				if len(assignments) != 0 {

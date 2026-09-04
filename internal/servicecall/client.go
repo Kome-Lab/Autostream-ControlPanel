@@ -31,7 +31,6 @@ const (
 )
 
 type Config struct {
-	Token                 string
 	Timeout               time.Duration
 	URLPolicy             netpolicy.ServiceURLPolicy
 	IngestTokenSigningKey string
@@ -40,18 +39,18 @@ type Config struct {
 }
 
 type Client struct {
-	Config Config
-	HTTP   *http.Client
+	Config               Config
+	HTTP                 *http.Client
+	RuntimeTokenResolver func(store.RegisteredService) (string, error)
 }
 
 type StartRequest struct {
 	DiscordConfigID            string `json:"discord_config_id,omitempty"`
-	DiscordGuildID             string `json:"discord_guild_id,omitempty"`
-	DiscordVoiceChannelID      string `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextChannelID       string `json:"discord_text_channel_id,omitempty"`
+	DiscordGuildID             string `json:"-"`
+	DiscordVoiceChannelID      string `json:"-"`
+	DiscordTextChannelID       string `json:"-"`
 	EncoderInputURL            string `json:"encoder_input_url,omitempty"`
 	EncoderRTMPURL             string `json:"encoder_rtmp_url,omitempty"`
-	EncoderStreamKey           string `json:"-"`
 	EncoderStreamKeySecretName string `json:"-"`
 	EncoderProfileID           string `json:"encoder_profile_id,omitempty"`
 	// EncoderVideoWidth/Height/FPS are resolved from EncoderProfileID by the
@@ -408,7 +407,6 @@ type ReadinessIssue struct {
 
 func FromEnv() Client {
 	return Client{Config: Config{
-		Token:                 os.Getenv("SERVICE_CALL_TOKEN"),
 		Timeout:               envDuration("SERVICE_CALL_TIMEOUT_SEC", 5*time.Second),
 		URLPolicy:             netpolicy.ServiceURLPolicyFromEnv(),
 		IngestTokenSigningKey: os.Getenv("AUTOSTREAM_STREAM_INGEST_SIGNING_KEY"),
@@ -418,15 +416,15 @@ func FromEnv() Client {
 }
 
 func (c Client) Enabled() bool {
-	return strings.TrimSpace(c.Config.Token) != "" || strings.TrimSpace(c.Config.NodeTokenKey) != ""
+	return c.RuntimeTokenResolver != nil || strings.TrimSpace(c.Config.NodeTokenKey) != ""
 }
 
 func (c Client) StartReadinessIssues(services []store.RegisteredService, req StartRequest, now time.Time) []ReadinessIssue {
 	var issues []ReadinessIssue
 	if !c.Enabled() {
 		issues = append(issues, ReadinessIssue{
-			Code:    "service_call_token_missing",
-			Message: "SERVICE_CALL_TOKEN is not configured on the Control Panel.",
+			Code:    "node_runtime_token_key_missing",
+			Message: "The node runtime token encryption key is not configured on the Control Panel.",
 		})
 	}
 	if strings.TrimSpace(c.Config.IngestTokenSigningKey) == "" {
@@ -558,9 +556,16 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 		}
 	}
 	discordService := firstService(ordered, "discord_bot")
-	if reportedCapabilityTrue(discordService.ReportedCapabilities, CapabilityDiscordResolvedTargetV2) &&
+	if strings.TrimSpace(discordService.ServiceID) != "" && !reportedCapabilityTrue(discordService.ReportedCapabilities, CapabilityDiscordResolvedTargetV2) {
+		return []DispatchResult{{ServiceID: discordService.ServiceID, ServiceType: "discord_bot", Code: "discord_resolved_target_v2_capability_unavailable", FailurePhase: "pre_dispatch", Error: "Discord Bot does not advertise resolved target v2 support"}}
+	}
+	if strings.TrimSpace(discordService.ServiceID) != "" &&
 		(req.DiscordTargetRevision == 0 || !validDiscordTargetID(req.DiscordGuildID) || !validDiscordTargetID(req.DiscordTextChannelID) || !validDiscordTargetID(req.DiscordVoiceChannelID)) {
 		return []DispatchResult{{ServiceID: discordService.ServiceID, ServiceType: "discord_bot", Code: "discord_target_invalid", FailurePhase: "pre_dispatch", Error: "resolved Discord target snapshot is invalid"}}
+	}
+	if strings.TrimSpace(req.ArchiveProfileID) != "" && (strings.TrimSpace(req.ArchiveRunID) == "" || req.ArchiveStartedAt.IsZero()) {
+		encoder := firstService(ordered, "encoder_recorder")
+		return []DispatchResult{{ServiceID: encoder.ServiceID, ServiceType: "encoder_recorder", Code: "archive_run_authority_unavailable", FailurePhase: "pre_dispatch", Error: "archive run id and start time are required"}}
 	}
 	results := make([]DispatchResult, 0, len(ordered))
 	encoderURL := firstServiceURL(ordered, "encoder_recorder")
@@ -730,18 +735,16 @@ func (c Client) RetryArchiveUpload(ctx context.Context, stream store.Stream, ser
 		if service.ServiceType != "encoder_recorder" {
 			continue
 		}
-		startedAt := stream.CreatedAt
-		if stream.ArchiveStartedAt != nil {
-			startedAt = *stream.ArchiveStartedAt
+		if strings.TrimSpace(stream.ArchiveRunID) == "" || stream.ArchiveStartedAt == nil || stream.ArchiveStartedAt.IsZero() {
+			results = append(results, DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Code: "archive_run_authority_unavailable", FailurePhase: "pre_dispatch", Error: "archive run id and start time are required"})
+			continue
 		}
 		payload := map[string]any{
-			"stream_id":  stream.ID,
-			"name":       stream.Name,
-			"started_at": startedAt,
-			"dry_run":    false,
-		}
-		if reportedCapabilityTrue(service.ReportedCapabilities, "archive_runs") && strings.TrimSpace(stream.ArchiveRunID) != "" {
-			payload["archive_run_id"] = stream.ArchiveRunID
+			"stream_id":      stream.ID,
+			"name":           stream.Name,
+			"archive_run_id": stream.ArchiveRunID,
+			"started_at":     stream.ArchiveStartedAt.UTC(),
+			"dry_run":        false,
 		}
 		if len(archiveConfig) > 0 {
 			payload["archive_config"] = archiveConfig
@@ -807,6 +810,9 @@ func (c Client) NotifyDiscordYouTubeLive(ctx context.Context, stream store.Strea
 func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, byteRange string) ArchiveArtifactDownloadResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
+			if strings.TrimSpace(artifact.ArchiveRunID) == "" {
+				return ArchiveArtifactDownloadResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Code: "archive_run_authority_unavailable", Error: "archive run id is required"}
+			}
 			return c.getArchiveArtifact(ctx, service, archiveArtifactEndpoint(stream.ID, artifact.ArchiveRunID, artifact.Name), artifact.Name, byteRange)
 		}
 	}
@@ -816,6 +822,9 @@ func (c Client) DownloadArchiveArtifact(ctx context.Context, stream store.Stream
 func (c Client) DeleteArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact) DispatchResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
+			if strings.TrimSpace(artifact.ArchiveRunID) == "" {
+				return DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Code: "archive_run_authority_unavailable", FailurePhase: "pre_dispatch", Error: "archive run id is required"}
+			}
 			return c.serviceJSONAction(ctx, service, http.MethodDelete, archiveArtifactEndpoint(stream.ID, artifact.ArchiveRunID, artifact.Name), nil)
 		}
 	}
@@ -825,6 +834,9 @@ func (c Client) DeleteArchiveArtifact(ctx context.Context, stream store.Stream, 
 func (c Client) RenameArchiveArtifact(ctx context.Context, stream store.Stream, services []store.RegisteredService, artifact store.StreamArtifact, name string) DispatchResult {
 	for _, service := range services {
 		if service.ServiceType == "encoder_recorder" {
+			if strings.TrimSpace(artifact.ArchiveRunID) == "" {
+				return DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Code: "archive_run_authority_unavailable", FailurePhase: "pre_dispatch", Error: "archive run id is required"}
+			}
 			return c.serviceJSONAction(ctx, service, http.MethodPut, archiveArtifactEndpoint(stream.ID, artifact.ArchiveRunID, artifact.Name), map[string]string{"name": name})
 		}
 	}
@@ -846,6 +858,13 @@ func (c Client) SendWorkerEvent(ctx context.Context, stream store.Stream, servic
 }
 
 func (c Client) authToken(service store.RegisteredService) (string, error) {
+	if c.RuntimeTokenResolver != nil {
+		token, err := c.RuntimeTokenResolver(service)
+		if err != nil || strings.TrimSpace(token) == "" {
+			return "", errors.New("node runtime token could not be resolved")
+		}
+		return strings.TrimSpace(token), nil
+	}
 	if strings.TrimSpace(service.NodeTokenCiphertext) != "" && strings.TrimSpace(service.NodeTokenNonce) != "" {
 		key := strings.TrimSpace(c.Config.NodeTokenKey)
 		if key == "" {
@@ -855,9 +874,6 @@ func (c Client) authToken(service store.RegisteredService) (string, error) {
 		if err != nil || strings.TrimSpace(token) == "" {
 			return "", errors.New("node runtime token could not be decrypted")
 		}
-		return token, nil
-	}
-	if token := strings.TrimSpace(c.Config.Token); token != "" {
 		return token, nil
 	}
 	return "", errors.New("node runtime token is not configured")
@@ -899,7 +915,7 @@ func (c Client) serviceJSONActionInternal(ctx context.Context, service store.Reg
 	result := DispatchResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
 		result.FailurePhase = "pre_dispatch"
-		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		result.Error = "node runtime token encryption key is not configured"
 		return result
 	}
 	authToken, err := c.authToken(service)
@@ -1018,7 +1034,7 @@ func (c Client) serviceJSONActionInternal(ctx context.Context, service store.Reg
 func (c Client) getArchiveArtifact(ctx context.Context, service store.RegisteredService, endpoint, fallbackName, byteRange string) ArchiveArtifactDownloadResult {
 	result := ArchiveArtifactDownloadResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint, FileName: fallbackName}
 	if !c.Enabled() {
-		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		result.Error = "node runtime token encryption key is not configured"
 		return result
 	}
 	authToken, err := c.authToken(service)
@@ -1105,7 +1121,7 @@ func (r *cancelOnCloseReadCloser) Close() error {
 func (c Client) getPreviewAsset(ctx context.Context, service store.RegisteredService, endpoint, name, byteRange string) PreviewAssetResult {
 	result := PreviewAssetResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
-		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		result.Error = "node runtime token encryption key is not configured"
 		return result
 	}
 	authToken, err := c.authToken(service)
@@ -1242,7 +1258,7 @@ func previewAcceptHeader(name string) string {
 func (c Client) getWorkerEvents(ctx context.Context, service store.RegisteredService, endpoint string) WorkerEventsResult {
 	result := WorkerEventsResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
-		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		result.Error = "node runtime token encryption key is not configured"
 		return result
 	}
 	authToken, err := c.authToken(service)
@@ -1294,7 +1310,7 @@ func (c Client) getWorkerEvents(ctx context.Context, service store.RegisteredSer
 func (c Client) getEncoderPreflight(ctx context.Context, service store.RegisteredService, endpoint string) ServicePreflightResult {
 	result := ServicePreflightResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
-		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		result.Error = "node runtime token encryption key is not configured"
 		return result
 	}
 	authToken, err := c.authToken(service)
@@ -1352,7 +1368,7 @@ func (c Client) getEncoderPreflight(ctx context.Context, service store.Registere
 func (c Client) getAudioStatus(ctx context.Context, service store.RegisteredService, endpoint string) AudioStatusResult {
 	result := AudioStatusResult{ServiceID: service.ServiceID, ServiceType: service.ServiceType, Endpoint: endpoint}
 	if !c.Enabled() {
-		result.Error = "SERVICE_CALL_TOKEN is not configured"
+		result.Error = "node runtime token encryption key is not configured"
 		return result
 	}
 	authToken, err := c.authToken(service)
@@ -1410,9 +1426,6 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 			"encoder_audio_gain_db": req.EncoderAudioGainDB,
 			"archive_profile_id":    req.ArchiveProfileID,
 		}
-		if req.EncoderStreamKey != "" {
-			payload["stream_key"] = req.EncoderStreamKey
-		}
 		if req.EncoderStreamKeySecretName != "" {
 			payload["stream_key_secret_name"] = req.EncoderStreamKeySecretName
 		}
@@ -1425,25 +1438,23 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		if req.VideoCoverStart != nil && reportedCapabilityTrue(service.ReportedCapabilities, CapabilityLiveVideoCoverV1) {
 			payload["video_cover_start"] = req.VideoCoverStart
 		}
-		if reportedCapabilityTrue(service.ReportedCapabilities, "archive_runs") && strings.TrimSpace(req.ArchiveRunID) != "" && !req.ArchiveStartedAt.IsZero() {
+		if strings.TrimSpace(req.ArchiveRunID) != "" && !req.ArchiveStartedAt.IsZero() {
 			payload["archive_run_id"] = req.ArchiveRunID
 			payload["started_at"] = req.ArchiveStartedAt.UTC()
 		}
 		return "/streams/start", payload, true
 	case "discord_bot":
-		payload := map[string]any{"stream_id": stream.ID, "job_generation": req.WorkerJobGeneration, "encoder_audio_url": encoderURL}
-		if reportedCapabilityTrue(service.ReportedCapabilities, CapabilityDiscordResolvedTargetV2) {
-			payload["schema_version"] = 2
-			payload["discord_target"] = DiscordTargetSnapshot{
+		payload := map[string]any{
+			"stream_id":         stream.ID,
+			"job_generation":    req.WorkerJobGeneration,
+			"encoder_audio_url": encoderURL,
+			"schema_version":    2,
+			"discord_target": DiscordTargetSnapshot{
 				Revision: req.DiscordTargetRevision,
 				Resolved: ResolvedDiscordTarget{
 					GuildID: req.DiscordGuildID, TextChannelID: req.DiscordTextChannelID, VoiceChannelID: req.DiscordVoiceChannelID,
 				},
-			}
-		} else {
-			payload["guild_id"] = req.DiscordGuildID
-			payload["voice_channel_id"] = req.DiscordVoiceChannelID
-			payload["text_channel_id"] = req.DiscordTextChannelID
+			},
 		}
 		if token := c.issueIngestToken(stream.ID, service, "discord_audio", now); token != "" {
 			payload["stream_ingest_token"] = token
@@ -1522,10 +1533,7 @@ func stopPayload(stream store.Stream, service store.RegisteredService) (string, 
 }
 
 func archiveArtifactEndpoint(streamID, archiveRunID, name string) string {
-	if strings.TrimSpace(archiveRunID) != "" {
-		return "/streams/" + url.PathEscape(streamID) + "/archive-runs/" + url.PathEscape(archiveRunID) + "/artifacts/" + url.PathEscape(name)
-	}
-	return "/streams/" + url.PathEscape(streamID) + "/artifacts/" + url.PathEscape(name)
+	return "/streams/" + url.PathEscape(streamID) + "/archive-runs/" + url.PathEscape(archiveRunID) + "/artifacts/" + url.PathEscape(name)
 }
 
 func workerEventPayload(stream store.Stream, req WorkerEventRequest) (string, any, bool) {
@@ -1572,11 +1580,6 @@ func workerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
 // dispatch is still required before callers may persist an active contract.
 func WorkerVideoCapabilitiesEnabled(services []store.RegisteredService) bool {
 	return workerVideoCapabilitiesEnabled(services)
-}
-
-func ArchiveRunsEnabled(services []store.RegisteredService) bool {
-	encoder := firstService(services, "encoder_recorder")
-	return strings.TrimSpace(encoder.ServiceID) != "" && reportedCapabilityTrue(encoder.ReportedCapabilities, "archive_runs")
 }
 
 func workerVideoCapabilityMismatch(services []store.RegisteredService) (ReadinessIssue, bool) {

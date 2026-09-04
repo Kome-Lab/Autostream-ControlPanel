@@ -365,6 +365,7 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
   }, [playbackURL]);
 
   const videoOverlayBurnIn = participantFeedBurnIn ?? previewLink?.video_overlay_burn_in === true;
+  const sceneCapabilityUnavailable = participants.length > 0 && !videoOverlayBurnIn;
 
   const copyPreviewLink = async () => {
     if (!displayURL || !navigator.clipboard) return;
@@ -384,9 +385,9 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
       </div>
       <div className="relative aspect-video w-full overflow-hidden rounded-md border bg-black">
         <video ref={videoRef} className="h-full w-full object-contain" controls muted autoPlay playsInline preload="metadata" />
-        {!videoOverlayBurnIn && participants.length > 0 ? <LegacyParticipantOverlay participants={participants} /> : null}
       </div>
       <ParticipantAccessibilityList participants={participants} />
+      {sceneCapabilityUnavailable ? <p className="text-sm text-destructive" role="alert">v2 scene capabilityが未適用のため、参加者表示の準備が完了していません。</p> : null}
       {participantFeedError ? <p className="text-xs text-amber-600 dark:text-amber-400" role="status">VC参加者情報を更新できません。映像の再生は継続します。</p> : null}
       <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center">
         <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void issuePreviewLink()} disabled={issuePending}>
@@ -452,32 +453,6 @@ function ParticipantAccessibilityList({ participants }: { participants: PreviewP
   );
 }
 
-function LegacyParticipantOverlay({ participants }: { participants: PreviewParticipant[] }) {
-  return (
-    <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-2" aria-hidden="true">
-      {participants.map((participant) => {
-        const avatarURL = safeDiscordAvatarURL(participant.avatar_url);
-        return (
-          <div
-            key={participant.user_id}
-            className={`flex items-center gap-2 rounded-full bg-black/75 px-2 py-1 text-xs text-white shadow ${participant.speaking ? "ring-2 ring-green-400" : "ring-1 ring-white/20"}`}
-          >
-            {avatarURL ? (
-              <span className={`size-7 rounded-full bg-cover bg-center ${participant.speaking ? "ring-2 ring-green-400 ring-offset-2 ring-offset-black/75" : ""}`} style={{ backgroundImage: `url("${avatarURL}")` }} />
-            ) : (
-              <span className={`flex size-7 items-center justify-center rounded-full bg-slate-600 font-semibold ${participant.speaking ? "ring-2 ring-green-400 ring-offset-2 ring-offset-black/75" : ""}`}>
-                {(participant.display_name || "?").slice(0, 1).toUpperCase()}
-              </span>
-            )}
-            <span className="max-w-40 truncate">{participant.display_name || participant.user_id}</span>
-            {participant.is_bot ? <span className="rounded bg-indigo-500/80 px-1 text-[10px]">BOT</span> : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function resolvePreviewParticipantsURL(playbackURL: string) {
   if (!playbackURL) return "";
   try {
@@ -487,16 +462,6 @@ function resolvePreviewParticipantsURL(playbackURL: string) {
     parsed.search = "";
     parsed.hash = "";
     return parsed.toString();
-  } catch {
-    return "";
-  }
-}
-
-function safeDiscordAvatarURL(value: string | undefined) {
-  if (!value) return "";
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" && parsed.hostname === "cdn.discordapp.com" ? parsed.toString() : "";
   } catch {
     return "";
   }

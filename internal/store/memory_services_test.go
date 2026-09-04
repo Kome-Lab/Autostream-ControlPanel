@@ -1611,7 +1611,7 @@ func TestEmergencyRevokedNodeConfigurationAnchorRequiresScrubbedPullV2(t *testin
 		{
 			name: "wrong transport",
 			edit: func(service *RegisteredService, _ *ServiceToken) {
-				service.TransportMode = SystemUpdateTransportSSHV1
+				service.TransportMode = "unsupported"
 			},
 		},
 		{

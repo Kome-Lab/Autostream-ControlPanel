@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/tables/data-table";
-import { DangerConfirm } from "@/components/admin/danger-confirm";
+import { DeferredNodeConfirmation as DangerConfirm } from "@/features/nodes/deferred-node-confirmation";
 import { RoleGuard, guardedButtonProps } from "@/components/admin/role-guard";
 import { StatusBadge, statusDescriptor } from "@/components/admin/status-badge";
 import { APIError, apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
@@ -27,7 +27,6 @@ import {
   nodeEndpointState,
   nodeRegistrationDraftValid,
   type NodeEndpointSnapshot,
-  type UpdaterTransportMode,
 } from "@/lib/node-registration";
 import type { NodeRegistrationResponse, WorkerNode } from "@/types/domain";
 import { NODE_FOUNDATION_SOURCE_ENABLED } from "@/features/nodes/node-action-descriptors";
@@ -91,7 +90,6 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   const [host, setHost] = useState("worker-tokyo-01.example.jp");
   const [port, setPort] = useState(String(selectedType.defaultPort));
   const [sslEnabled, setSslEnabled] = useState(true);
-  const [updaterTransportMode, setUpdaterTransportMode] = useState<UpdaterTransportMode>("pull_v2");
   const [executionHostID, setExecutionHostID] = useState("host-tokyo-01");
   const [description, setDescription] = useState("番組配信と録画を担当する東京本社のNode Agent");
   const [allowRuntimeSecrets, setAllowRuntimeSecrets] = useState(false);
@@ -116,7 +114,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
     requiresManagedSecret: createRequiresSecretUpdate,
     canExecuteSystemUpdates,
   });
-  const isPullHostAgent = nodeType === "update_agent" && updaterTransportMode === "pull_v2";
+  const isPullHostAgent = nodeType === "update_agent";
   const registrationDraft = {
     nodeType,
     nodeID,
@@ -127,7 +125,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
     sslEnabled,
     allowRuntimeSecrets: runtimeSecretsRequired || allowRuntimeSecrets,
     allowRemediation,
-    transportMode: updaterTransportMode,
+    transportMode: "pull_v2" as const,
     executionHostID,
   };
   const createFormValid = nodeRegistrationDraftValid(registrationDraft);
@@ -139,7 +137,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
     if (!normalizedHost || !Number.isFinite(normalizedPort) || normalizedPort <= 0) return "";
     return `${scheme}://${normalizedHost}:${normalizedPort}`;
   }, [host, isPullHostAgent, port, sslEnabled]);
-  const configurationIsPullHostAgent = Boolean(configuration?.node && isPullNode(configuration.node));
+  const configurationIsHostAgent = configuration?.node?.service_type === "update_agent";
   const updaterConfigureCommandAvailable = configuration?.node?.service_type === "update_agent" && Boolean(configuration.configure_command?.trim());
   const updaterConfigureTokenRequired = configuration?.node?.service_type === "update_agent" && !updaterConfigureCommandAvailable;
 
@@ -355,9 +353,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
               <DangerConfirm
                 title={`${node.service_name} のRuntime Tokenを再生成しますか`}
                 description={node.service_type === "update_agent"
-                  ? isPullNode(node)
-                    ? "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示された手順をこのHost Agentを稼働させる対象ホストで実行してください。"
-                    : "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示されたコマンドを中央Updaterを稼働させるホストで実行してください。"
+                  ? "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示された手順をこのHost Agentを稼働させる対象ホストで実行してください。"
                   : "既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。"}
                 onConfirm={() => rotateRuntimeToken.mutate(nodeID)}
                 actionLabel="再生成"
@@ -429,29 +425,14 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
           </div>
           {nodeType === "update_agent" ? (
             <div className="grid gap-4 rounded-md border bg-muted/30 p-3">
+              <div className="flex items-center gap-2 text-sm font-medium"><Badge variant="secondary">pull_v2</Badge>Host Pull Agent</div>
               <div className="grid gap-2">
-                <label className="text-sm font-medium">更新方式</label>
-                <Select value={updaterTransportMode} onValueChange={(value) => setUpdaterTransportMode(value as UpdaterTransportMode)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="pull_v2">Host Pull Agent（推奨・SSH不要）</SelectItem>
-                    <SelectItem value="ssh_v1">中央Updater（移行用・SSH）</SelectItem>
-                  </SelectContent>
-                </Select>
+                <label className="text-sm font-medium">Execution Host ID</label>
+                <Input value={executionHostID} onChange={(event) => setExecutionHostID(event.target.value)} />
+                <p className="text-xs text-muted-foreground">
+                  物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。
+                </p>
               </div>
-              {isPullHostAgent ? (
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium">Execution Host ID</label>
-                  <Input value={executionHostID} onChange={(event) => setExecutionHostID(event.target.value)} />
-                  <p className="text-xs text-muted-foreground">
-                    物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。
-                  </p>
-                </div>
-              ) : (
-                <p className="text-xs text-amber-700">旧SSH経路とのBridge期間だけ使用します。移行完了後に廃止予定です。</p>
-              )}
             </div>
           ) : null}
           {!isPullHostAgent ? (
@@ -554,7 +535,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
                   onCopy={copyValue}
                 />
               ) : null}
-              {!configurationIsPullHostAgent && configuration.node_api_url ? (
+              {configuration.node?.service_type !== "update_agent" && configuration.node_api_url ? (
                 <SecretBlock label="Applied Node Agent API URL（後方互換）" value={configuration.node_api_url} copied={copied === "api-url"} onCopy={() => copyValue("api-url", configuration.node_api_url)} />
               ) : null}
               {configuration.configure_token || configuration.token ? (
@@ -575,11 +556,11 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
               ) : null}
               {updaterConfigureCommandAvailable ? (
                 <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-4 text-sm">
-                  <div className="font-medium">{configurationIsPullHostAgent ? "Host Agentの初期設定" : "中央Updaterの自動設定"}</div>
+                  <div className="font-medium">{configurationIsHostAgent ? "Host Agentの初期設定" : "Node Agentの初期設定"}</div>
                   <p className="text-muted-foreground">
-                    {configurationIsPullHostAgent
+                    {configurationIsHostAgent
                       ? "表示された手順を、このHost Agentを稼働させる対象ホストで1回実行すると、Control Panelへの外向き接続を初期設定します。受信API endpointや専用portは作成しません。"
-                      : "表示されたコマンドを、中央Updaterを稼働させるホストで1回実行すると、Panel接続情報を安全に初期設定します。ホスト、更新対象、GitHub Release Tokenは「アプリケーション情報」の中央Updater設定から登録でき、保存後はUpdaterが自動で反映します。ローカル設定ファイルを手作業で編集する必要はありません。"}
+                      : "表示されたコマンドを対象ホストで1回実行すると、Panel接続情報を安全に初期設定します。"}
                     コマンド自体にConfigure Tokenは含まれず、実行時にTTYまたは標準入力から読み取ります。
                     設定処理が失敗または結果不確定の場合は、対象サービスを再起動しないでください。Configurationで新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行してください。
                   </p>
@@ -641,7 +622,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
               Token運用
             </div>
             <div className="text-muted-foreground">
-              Configure Tokenは1回限りの初期設定用、Node Runtime TokenはPanelとNode Agent間の通常通信認証用です。Updaterの管理対象ホスト、サービス、GitHub Release Tokenは「アプリケーション情報」で設定します。
+              Configure Tokenは1回限りの初期設定用、Node Runtime TokenはPanelとNode Agent間の通常通信認証用です。Host Agentの実行対象とpolicyは「アプリケーション情報」で設定します。
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
               <RotateCw className="size-4" />
@@ -858,7 +839,7 @@ function UpdaterTransportStateView({
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary">Updater / Host Agent</Badge>
         <span className="font-medium">
-          {isPull ? "受信ポートなし（Outbound HTTPS）" : "管理経路: SSH（legacy）"}
+          {isPull ? "受信ポートなし（Outbound HTTPS）" : "非対応transport"}
         </span>
       </div>
       <div className="text-muted-foreground">transport_mode: {transportMode}</div>

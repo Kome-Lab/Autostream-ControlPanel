@@ -133,7 +133,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 	}
 	concurrentStageRequest := httptest.NewRequest(
 		http.MethodPost,
-		"/api/node-agent/configure/stage",
+		"/services/host-agent/runtime-identity/stage",
 		bytes.NewReader(stagePayload),
 	)
 	concurrentStageResponse := httptest.NewRecorder()
@@ -162,7 +162,7 @@ func TestHostAgentConfigureBindsStageProjectionThroughActivation(t *testing.T) {
 	}
 	stageRequest := httptest.NewRequest(
 		http.MethodPost,
-		"/api/node-agent/configure/stage",
+		"/services/host-agent/runtime-identity/stage",
 		bytes.NewReader(stagePayload),
 	)
 	stageResponse := httptest.NewRecorder()
@@ -572,7 +572,7 @@ func sendHostAgentConfigureActivation(
 	}
 	request := httptest.NewRequest(
 		http.MethodPost,
-		"/api/node-agent/configure/activate",
+		"/services/host-agent/runtime-identity/activate",
 		bytes.NewReader(body),
 	)
 	response := httptest.NewRecorder()

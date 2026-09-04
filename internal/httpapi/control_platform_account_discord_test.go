@@ -50,23 +50,6 @@ func TestUIPreferenceAPISelfOnlyMatrixRevisionAndFallback(t *testing.T) {
 	}
 }
 
-func TestDiscordTargetPresetHTTPStreamAuditRedactsRawTargets(t *testing.T) {
-	markers := []string{"991234567890123451", "991234567890123452", "991234567890123453"}
-	metadata := streamSettingsAuditMetadata(store.Stream{DiscordGuildID: markers[0], DiscordTextID: markers[1], DiscordVoiceID: markers[2]})
-	encoded, err := json.Marshal(metadata)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, marker := range markers {
-		if bytes.Contains(encoded, []byte(marker)) {
-			t.Fatalf("stream audit leaked raw Discord target: %s", encoded)
-		}
-	}
-	if metadata["discord_guild_configured"] != true || metadata["discord_text_channel_configured"] != true || metadata["discord_voice_channel_configured"] != true {
-		t.Fatalf("configured state was not retained safely: %#v", metadata)
-	}
-}
-
 func TestDiscordTargetPresetHTTPPermissionsCRUDAndAuditRedactsRawIDs(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	permissions := []string{"discord_target_presets.read", "discord_target_presets.create", "discord_target_presets.update", "discord_target_presets.delete"}

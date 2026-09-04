@@ -28,24 +28,16 @@ func TestUpdateHostBootstrapJobKeepsCredentialOpaqueAndUsesOutboundClaim(t *test
 	updaterToken := registerUpdateAgentForPolicyTest(t, auth, "updater-01")
 	policies := store.NewMemoryUpdaterPolicyStore()
 	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	policy, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
-		t.Context(),
-		"updater-01",
-		0,
-		updaterPolicyForHTTPTest(hostKey),
-		stringPointerForBootstrapTest("github_pat_bootstrap_release"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	policy := savePullUpdaterPolicyForHTTPTest(t, policies, "updater-01", updaterPolicyForHTTPTest(hostKey))
+	secrets := updaterReleaseTokenSecretStoreForBootstrapTest(t, "github_pat_bootstrap_release")
 	bootstrapPublicKey := p256PublicKeyForBootstrapTest(t)
 	if _, err := auth.Heartbeat(t.Context(), updaterToken, store.ServiceHeartbeat{
 		ServiceID: "updater-01",
 		Status:    "online",
 		Version:   "v1.8.0",
 		Capabilities: map[string]any{
-			"policy_revision":                      policy.Revision,
-			"policy_desired_revision":              policy.Revision,
+			"policy_revision":                      policy.ProjectionRevision,
+			"policy_desired_revision":              policy.ProjectionRevision,
 			"policy_status":                        "applied",
 			"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(bootstrapPublicKey),
 			"bootstrap_encryption_key_fingerprint": bootstrapFingerprintForTest(bootstrapPublicKey),
@@ -60,6 +52,7 @@ func TestUpdateHostBootstrapJobKeepsCredentialOpaqueAndUsesOutboundClaim(t *test
 		WithAuditStore(auth),
 		WithServiceRegistryStore(auth),
 		WithUpdaterPolicyStore(policies),
+		WithSecretStore(secrets),
 	)
 	cookie, csrf := loginForTest(t, handler, "bootstrap-admin", "correct horse battery")
 	const jobID = "6ba7b810-9dad-4f0e-9a58-4aee7cb5560f"
@@ -240,7 +233,7 @@ func TestUpdateHostBootstrapJobKeepsCredentialOpaqueAndUsesOutboundClaim(t *test
 	if _, err := auth.Heartbeat(t.Context(), updaterToken, store.ServiceHeartbeat{
 		ServiceID: "updater-01", Status: "online", Version: "v1.8.0",
 		Capabilities: map[string]any{
-			"policy_revision": policy.Revision, "policy_desired_revision": policy.Revision, "policy_status": "applied",
+			"policy_revision": policy.ProjectionRevision, "policy_desired_revision": policy.ProjectionRevision, "policy_status": "applied",
 			"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(rotatedPublicKey),
 			"bootstrap_encryption_key_fingerprint": bootstrapFingerprintForTest(rotatedPublicKey),
 		},
@@ -281,21 +274,13 @@ func TestUpdateHostBootstrapClaimRejectsTokenRotatedAfterInitialAuthentication(t
 	oldToken := registerUpdateAgentForPolicyTest(t, auth, "updater-bootstrap-reauth")
 	policies := store.NewMemoryUpdaterPolicyStore()
 	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	policy, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
-		t.Context(),
-		"updater-bootstrap-reauth",
-		0,
-		updaterPolicyForHTTPTest(hostKey),
-		stringPointerForBootstrapTest("github_pat_bootstrap_reauth"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	policy := savePullUpdaterPolicyForHTTPTest(t, policies, "updater-bootstrap-reauth", updaterPolicyForHTTPTest(hostKey))
+	secrets := updaterReleaseTokenSecretStoreForBootstrapTest(t, "github_pat_bootstrap_reauth")
 	bootstrapPublicKey := p256PublicKeyForBootstrapTest(t)
 	fingerprint := bootstrapFingerprintForTest(bootstrapPublicKey)
 	capabilities := map[string]any{
-		"policy_revision":                      policy.Revision,
-		"policy_desired_revision":              policy.Revision,
+		"policy_revision":                      policy.ProjectionRevision,
+		"policy_desired_revision":              policy.ProjectionRevision,
 		"policy_status":                        "applied",
 		"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(bootstrapPublicKey),
 		"bootstrap_encryption_key_fingerprint": fingerprint,
@@ -318,6 +303,7 @@ func TestUpdateHostBootstrapClaimRejectsTokenRotatedAfterInitialAuthentication(t
 		WithAuthStore(auth),
 		WithServiceRegistryStore(services),
 		WithUpdaterPolicyStore(policies),
+		WithSecretStore(secrets),
 		WithUpdateHostBootstrapBroker(broker),
 	)
 	claimPayload, err := json.Marshal(map[string]any{
@@ -546,15 +532,12 @@ func TestUpdateHostBootstrapJobRequiresReleaseTokenBeforeQueueing(t *testing.T) 
 	updaterToken := registerUpdateAgentForPolicyTest(t, auth, "updater-01")
 	policies := store.NewMemoryUpdaterPolicyStore()
 	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	policy, err := policies.SaveUpdaterPolicy(t.Context(), "updater-01", 0, updaterPolicyForHTTPTest(hostKey))
-	if err != nil {
-		t.Fatal(err)
-	}
+	policy := savePullUpdaterPolicyForHTTPTest(t, policies, "updater-01", updaterPolicyForHTTPTest(hostKey))
 	bootstrapPublicKey := p256PublicKeyForBootstrapTest(t)
 	if _, err := auth.Heartbeat(t.Context(), updaterToken, store.ServiceHeartbeat{
 		ServiceID: "updater-01", Status: "online", Version: "v1.8.0",
 		Capabilities: map[string]any{
-			"policy_revision": policy.Revision, "policy_status": "applied",
+			"policy_revision": policy.ProjectionRevision, "policy_status": "applied",
 			"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(bootstrapPublicKey),
 			"bootstrap_encryption_key_fingerprint": bootstrapFingerprintForTest(bootstrapPublicKey),
 		},
@@ -568,6 +551,7 @@ func TestUpdateHostBootstrapJobRequiresReleaseTokenBeforeQueueing(t *testing.T) 
 		WithAuditStore(auth),
 		WithServiceRegistryStore(auth),
 		WithUpdaterPolicyStore(policies),
+		WithSecretStore(store.NewMemorySecretStore()),
 		WithUpdateHostBootstrapBroker(broker),
 	)
 	cookie, csrf := loginForTest(t, handler, "bootstrap-admin", "correct horse battery")
@@ -636,22 +620,14 @@ func TestUpdateHostBootstrapJobRejectsMissingOrStaleRecipientKeyBeforeQueueing(t
 			updaterToken := registerUpdateAgentForPolicyTest(t, auth, "updater-01")
 			policies := store.NewMemoryUpdaterPolicyStore()
 			hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-			policy, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
-				t.Context(),
-				"updater-01",
-				0,
-				updaterPolicyForHTTPTest(hostKey),
-				stringPointerForBootstrapTest("github_pat_bootstrap_release"),
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
+			policy := savePullUpdaterPolicyForHTTPTest(t, policies, "updater-01", updaterPolicyForHTTPTest(hostKey))
+			secrets := updaterReleaseTokenSecretStoreForBootstrapTest(t, "github_pat_bootstrap_release")
 			bootstrapPublicKey := p256PublicKeyForBootstrapTest(t)
 			currentFingerprint := bootstrapFingerprintForTest(bootstrapPublicKey)
 			if _, err := auth.Heartbeat(t.Context(), updaterToken, store.ServiceHeartbeat{
 				ServiceID: "updater-01", Status: "online", Version: "v1.8.0",
 				Capabilities: map[string]any{
-					"policy_revision":                      policy.Revision,
+					"policy_revision":                      policy.ProjectionRevision,
 					"policy_status":                        "applied",
 					"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(bootstrapPublicKey),
 					"bootstrap_encryption_key_fingerprint": currentFingerprint,
@@ -666,6 +642,7 @@ func TestUpdateHostBootstrapJobRejectsMissingOrStaleRecipientKeyBeforeQueueing(t
 				WithAuditStore(auth),
 				WithServiceRegistryStore(auth),
 				WithUpdaterPolicyStore(policies),
+				WithSecretStore(secrets),
 				WithUpdateHostBootstrapBroker(broker),
 			)
 			cookie, csrf := loginForTest(t, handler, "bootstrap-admin", "correct horse battery")
@@ -713,6 +690,7 @@ func TestSystemUpdateAgentResponseExposesOnlyBootstrapPublicIdentity(t *testing.
 	publicKeyFingerprint := bootstrapFingerprintForTest(publicKeyBytes)
 	services := []store.RegisteredService{{
 		ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater 01",
+		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "host-01",
 		Status: "online", LastHeartbeatAt: &now,
 		ReportedCapabilities: map[string]any{
 			"bootstrap_encryption_public_key":      publicKey,
@@ -802,8 +780,13 @@ func TestValidUpdateHostBootstrapJobIDMatchesUpdaterWireContract(t *testing.T) {
 	}
 }
 
-func stringPointerForBootstrapTest(value string) *string {
-	return &value
+func updaterReleaseTokenSecretStoreForBootstrapTest(t *testing.T, value string) *store.MemorySecretStore {
+	t.Helper()
+	secrets := store.NewMemorySecretStore()
+	if _, err := secrets.UpdateSecret(t.Context(), store.UpdaterGitHubReleaseTokenSecretName, value); err != nil {
+		t.Fatal(err)
+	}
+	return secrets
 }
 
 func bootstrapFingerprintForTest(publicKey []byte) string {

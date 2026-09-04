@@ -13,6 +13,12 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
+)
+
+const (
+	updaterIdentityFixtureAgentUID = uint32(1001)
+	updaterIdentityFixtureAgentGID = uint32(1002)
 )
 
 func TestUpdateAgentRegistrationSerializesWithBootstrapIdentityChecks(t *testing.T) {
@@ -54,7 +60,7 @@ func TestUpdateAgentRegistrationSerializesWithBootstrapIdentityChecks(t *testing
 		request := httptest.NewRequest(
 			http.MethodPost,
 			"/services/register",
-			strings.NewReader(`{"service_id":"updater-serialized-register","service_type":"update_agent","service_name":"Updater","public_url":"https://updater.example.com","version":"v1.0.1"}`),
+			strings.NewReader(`{"service_id":"updater-serialized-register","service_type":"update_agent","service_name":"Updater","version":"v1.0.1"}`),
 		)
 		request.Header.Set("Authorization", "Bearer "+updaterToken.RawToken)
 		result := httptest.NewRecorder()
@@ -105,6 +111,24 @@ func TestUpdateAgentRegistrationSerializesWithBootstrapIdentityChecks(t *testing
 	}
 }
 
+func TestOldNodeAgentRuntimeIdentityRoutesAreAbsent(t *testing.T) {
+	server := NewServer(store.NewMemoryStreamStore())
+	for _, path := range []string{
+		"/api/node-agent/configure",
+		"/api/node-agent/configure/stage",
+		"/api/node-agent/configure/activate",
+	} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			result := httptest.NewRecorder()
+			server.ServeHTTP(result, request)
+			if result.Code != http.StatusNotFound {
+				t.Fatalf("removed legacy runtime identity route %s returned status=%d body=%s", path, result.Code, result.Body.String())
+			}
+		})
+	}
+}
+
 func TestUpdaterIdentityMutationsRejectActiveBootstrapAndResumeAfterTerminal(t *testing.T) {
 	t.Run("queued service deletion", func(t *testing.T) {
 		fixture := newUpdaterIdentityMutationFixture(t, false, false)
@@ -142,10 +166,7 @@ func TestUpdaterIdentityMutationsRejectActiveBootstrapAndResumeAfterTerminal(t *
 		}
 
 		fixture.cancelBootstrapJob(t, job)
-		result = fixture.adminRequest(t, http.MethodPost, "/nodes/"+fixture.serviceID+"/rotate-token", "")
-		if result.Code != http.StatusCreated {
-			t.Fatalf("terminal bootstrap runtime token rotation status=%d body=%s", result.Code, result.Body.String())
-		}
+		fixture.rotateRuntimeIdentity(t)
 		rotated, err := fixture.auth.GetService(t.Context(), fixture.serviceID)
 		if err != nil {
 			t.Fatal(err)
@@ -168,7 +189,7 @@ func TestUpdaterIdentityMutationsRejectActiveBootstrapAndResumeAfterTerminal(t *
 		invalidResult := fixture.publicRequest(
 			t,
 			http.MethodPost,
-			"/api/node-agent/configure/activate",
+			"/services/host-agent/runtime-identity/activate",
 			invalid,
 		)
 		if invalidResult.Code != http.StatusUnauthorized ||
@@ -180,7 +201,7 @@ func TestUpdaterIdentityMutationsRejectActiveBootstrapAndResumeAfterTerminal(t *
 			)
 		}
 
-		result := fixture.publicRequest(t, http.MethodPost, "/api/node-agent/configure/activate", body)
+		result := fixture.publicRequest(t, http.MethodPost, "/services/host-agent/runtime-identity/activate", body)
 		assertUpdaterBootstrapMutationConflict(t, result)
 		after, err := fixture.auth.GetService(t.Context(), fixture.serviceID)
 		if err != nil {
@@ -191,7 +212,7 @@ func TestUpdaterIdentityMutationsRejectActiveBootstrapAndResumeAfterTerminal(t *
 		}
 
 		fixture.cancelBootstrapJob(t, job)
-		result = fixture.publicRequest(t, http.MethodPost, "/api/node-agent/configure/activate", body)
+		result = fixture.publicRequest(t, http.MethodPost, "/services/host-agent/runtime-identity/activate", body)
 		if result.Code != http.StatusOK {
 			t.Fatalf("terminal bootstrap configuration activation status=%d body=%s", result.Code, result.Body.String())
 		}
@@ -411,7 +432,7 @@ func TestUpdaterIdentityMutationsRejectActiveSystemUpdate(t *testing.T) {
 		result := fixture.publicRequest(
 			t,
 			http.MethodPost,
-			"/api/node-agent/configure/activate",
+			"/services/host-agent/runtime-identity/activate",
 			fixture.activationRequestBody(t),
 		)
 		assertUpdaterSystemUpdateMutationConflict(t, result)
@@ -469,9 +490,12 @@ func TestUpdaterConfigureStageRejectsEveryActiveBootstrapStateAndResumesAfterTer
 				t.Fatal(err)
 			}
 			job := fixture.createBootstrapJob(t, state)
-			payload, err := json.Marshal(map[string]string{
-				"nodeId":         fixture.serviceID,
-				"configureToken": rawConfigureToken,
+			payload, err := json.Marshal(map[string]any{
+				"nodeId":          fixture.serviceID,
+				"configureToken":  rawConfigureToken,
+				"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
+				"agentUid":        updaterIdentityFixtureAgentUID,
+				"agentGid":        updaterIdentityFixtureAgentGID,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -480,7 +504,7 @@ func TestUpdaterConfigureStageRejectsEveryActiveBootstrapStateAndResumesAfterTer
 			result := fixture.publicRequest(
 				t,
 				http.MethodPost,
-				"/api/node-agent/configure/stage",
+				"/services/host-agent/runtime-identity/stage",
 				string(payload),
 			)
 			assertUpdaterBootstrapMutationConflict(t, result)
@@ -496,7 +520,7 @@ func TestUpdaterConfigureStageRejectsEveryActiveBootstrapStateAndResumesAfterTer
 			result = fixture.publicRequest(
 				t,
 				http.MethodPost,
-				"/api/node-agent/configure/stage",
+				"/services/host-agent/runtime-identity/stage",
 				string(payload),
 			)
 			if result.Code != http.StatusOK {
@@ -553,7 +577,7 @@ func TestUpdaterConfigureTokenRegenerationRetainsPendingTombstoneAndInvalidatesO
 	oldActivation := fixture.publicRequest(
 		t,
 		http.MethodPost,
-		"/api/node-agent/configure/activate",
+		"/services/host-agent/runtime-identity/activate",
 		fixture.activationRequestBody(t),
 	)
 	if oldActivation.Code != http.StatusUnauthorized ||
@@ -574,9 +598,12 @@ func TestExpiredUpdaterConfigurationRemainsPendingForBootstrapAndRegeneration(t 
 	); err != nil {
 		t.Fatal(err)
 	}
-	stagePayload, err := json.Marshal(map[string]string{
-		"nodeId":         fixture.serviceID,
-		"configureToken": configureToken,
+	stagePayload, err := json.Marshal(map[string]any{
+		"nodeId":          fixture.serviceID,
+		"configureToken":  configureToken,
+		"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
+		"agentUid":        updaterIdentityFixtureAgentUID,
+		"agentGid":        updaterIdentityFixtureAgentGID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -584,7 +611,7 @@ func TestExpiredUpdaterConfigurationRemainsPendingForBootstrapAndRegeneration(t 
 	stage := fixture.publicRequest(
 		t,
 		http.MethodPost,
-		"/api/node-agent/configure/stage",
+		"/services/host-agent/runtime-identity/stage",
 		string(stagePayload),
 	)
 	if stage.Code != http.StatusOK {
@@ -644,29 +671,11 @@ func TestBootstrapCreateRequiresSettledUpdaterIdentityAndFreshTokenHeartbeat(t *
 			t.Fatal(err)
 		}
 
-		rotate := fixture.adminRequest(
-			t,
-			http.MethodPost,
-			"/nodes/"+fixture.serviceID+"/rotate-token",
-			"",
-		)
-		if rotate.Code != http.StatusCreated {
-			t.Fatalf("runtime token rotation status=%d body=%s", rotate.Code, rotate.Body.String())
-		}
-		var rotated struct {
-			RuntimeToken string `json:"runtime_token"`
-		}
-		if err := json.NewDecoder(rotate.Body).Decode(&rotated); err != nil {
-			t.Fatal(err)
-		}
-		if rotated.RuntimeToken == "" {
-			t.Fatal("runtime token rotation omitted the one-time runtime token")
-		}
+		rotatedRuntimeToken := fixture.rotateRuntimeIdentity(t)
 		registerPayload, err := json.Marshal(store.ServiceRegistration{
 			ServiceID:   fixture.serviceID,
 			ServiceType: "update_agent",
 			ServiceName: "Updater",
-			PublicURL:   "https://updater.example.com",
 			Version:     "v1.0.1",
 		})
 		if err != nil {
@@ -677,7 +686,7 @@ func TestBootstrapCreateRequiresSettledUpdaterIdentityAndFreshTokenHeartbeat(t *
 			"/services/register",
 			bytes.NewReader(registerPayload),
 		)
-		registerRequest.Header.Set("Authorization", "Bearer "+rotated.RuntimeToken)
+		registerRequest.Header.Set("Authorization", "Bearer "+rotatedRuntimeToken)
 		register := httptest.NewRecorder()
 		fixture.server.ServeHTTP(register, registerRequest)
 		if register.Code != http.StatusAccepted {
@@ -703,7 +712,7 @@ func TestBootstrapCreateRequiresSettledUpdaterIdentityAndFreshTokenHeartbeat(t *
 			)
 		}
 
-		fixture.heartbeatAfterRotation(t, rotated.RuntimeToken)
+		fixture.heartbeatAfterRotation(t, rotatedRuntimeToken)
 		create = fixture.createBootstrapRequest(t, "post-runtime-rotation")
 		if create.Code != http.StatusAccepted {
 			t.Fatalf(
@@ -725,9 +734,12 @@ func TestBootstrapCreateRequiresSettledUpdaterIdentityAndFreshTokenHeartbeat(t *
 		); err != nil {
 			t.Fatal(err)
 		}
-		stageBody, err := json.Marshal(map[string]string{
-			"nodeId":         fixture.serviceID,
-			"configureToken": rawConfigureToken,
+		stageBody, err := json.Marshal(map[string]any{
+			"nodeId":          fixture.serviceID,
+			"configureToken":  rawConfigureToken,
+			"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
+			"agentUid":        updaterIdentityFixtureAgentUID,
+			"agentGid":        updaterIdentityFixtureAgentGID,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -735,25 +747,20 @@ func TestBootstrapCreateRequiresSettledUpdaterIdentityAndFreshTokenHeartbeat(t *
 		stage := fixture.publicRequest(
 			t,
 			http.MethodPost,
-			"/api/node-agent/configure/stage",
+			"/services/host-agent/runtime-identity/stage",
 			string(stageBody),
 		)
 		if stage.Code != http.StatusOK {
 			t.Fatalf("configuration stage status=%d body=%s", stage.Code, stage.Body.String())
 		}
-		var staged struct {
-			ConfigurationID string `json:"configuration_id"`
-			ActivationToken string `json:"activation_token"`
-			Config          struct {
-				RuntimeToken string `json:"runtime_token"`
-			} `json:"config"`
-		}
+		var staged updateradapter.UpdaterStagedConfiguration
 		if err := json.NewDecoder(stage.Body).Decode(&staged); err != nil {
 			t.Fatal(err)
 		}
 		if staged.ConfigurationID == "" ||
 			staged.ActivationToken == "" ||
-			staged.Config.RuntimeToken == "" {
+			staged.Config.RuntimeToken == "" ||
+			staged.LocalExecutorPolicy == nil {
 			t.Fatalf("configuration stage response incomplete: %#v", staged)
 		}
 
@@ -767,19 +774,19 @@ func TestBootstrapCreateRequiresSettledUpdaterIdentityAndFreshTokenHeartbeat(t *
 			)
 		}
 
-		activateBody, err := json.Marshal(map[string]string{
-			"nodeId":          fixture.serviceID,
-			"configurationId": staged.ConfigurationID,
-			"activationToken": staged.ActivationToken,
-			"version":         "v1.0.1",
-		})
+		activateBody, err := json.Marshal(hostAgentConfigureActivationPayload(
+			staged,
+			updaterIdentityFixtureAgentUID,
+			updaterIdentityFixtureAgentGID,
+			*staged.LocalExecutorPolicy,
+		))
 		if err != nil {
 			t.Fatal(err)
 		}
 		activate := fixture.publicRequest(
 			t,
 			http.MethodPost,
-			"/api/node-agent/configure/activate",
+			"/services/host-agent/runtime-identity/activate",
 			string(activateBody),
 		)
 		if activate.Code != http.StatusOK {
@@ -810,26 +817,11 @@ func TestBootstrapCreateRequiresSettledUpdaterIdentityAndFreshTokenHeartbeat(t *
 
 func TestBootstrapCreateRequiresCurrentRuntimeReportedEncryptionIdentity(t *testing.T) {
 	fixture := newBootstrapIdentityReadinessFixture(t)
-	rotate := fixture.adminRequest(
-		t,
-		http.MethodPost,
-		"/nodes/"+fixture.serviceID+"/rotate-token",
-		"",
-	)
-	if rotate.Code != http.StatusCreated {
-		t.Fatalf("runtime token rotation status=%d body=%s", rotate.Code, rotate.Body.String())
-	}
-	var rotated struct {
-		RuntimeToken string `json:"runtime_token"`
-	}
-	if err := json.NewDecoder(rotate.Body).Decode(&rotated); err != nil {
-		t.Fatal(err)
-	}
+	rotatedRuntimeToken := fixture.rotateRuntimeIdentity(t)
 	registerPayload, err := json.Marshal(store.ServiceRegistration{
 		ServiceID:   fixture.serviceID,
 		ServiceType: "update_agent",
 		ServiceName: "Updater",
-		PublicURL:   "https://updater.example.com",
 		Version:     "v1.0.1",
 	})
 	if err != nil {
@@ -840,7 +832,7 @@ func TestBootstrapCreateRequiresCurrentRuntimeReportedEncryptionIdentity(t *test
 		"/services/register",
 		bytes.NewReader(registerPayload),
 	)
-	registerRequest.Header.Set("Authorization", "Bearer "+rotated.RuntimeToken)
+	registerRequest.Header.Set("Authorization", "Bearer "+rotatedRuntimeToken)
 	register := httptest.NewRecorder()
 	fixture.server.ServeHTTP(register, registerRequest)
 	if register.Code != http.StatusAccepted {
@@ -868,7 +860,7 @@ func TestBootstrapCreateRequiresCurrentRuntimeReportedEncryptionIdentity(t *test
 		"/services/heartbeat",
 		bytes.NewReader(heartbeatPayload),
 	)
-	heartbeatRequest.Header.Set("Authorization", "Bearer "+rotated.RuntimeToken)
+	heartbeatRequest.Header.Set("Authorization", "Bearer "+rotatedRuntimeToken)
 	heartbeat := httptest.NewRecorder()
 	fixture.server.ServeHTTP(heartbeat, heartbeatRequest)
 	if heartbeat.Code != http.StatusAccepted {
@@ -927,19 +919,20 @@ func TestBootstrapCreateRejectsCustomManagedHostUser(t *testing.T) {
 	replacement := current
 	replacement.Hosts = append([]store.UpdaterPolicyHost(nil), current.Hosts...)
 	replacement.Hosts[0].User = "custom-deploy-user"
-	saved, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
+	saved, err := policies.SavePullUpdaterPolicy(
 		t.Context(),
+		store.NewMemorySystemUpdateStore(),
 		fixture.serviceID,
 		current.Revision,
+		0,
 		replacement,
-		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.policyRevision = saved.Revision
-	fixture.capabilities["policy_revision"] = saved.Revision
-	fixture.capabilities["policy_desired_revision"] = saved.Revision
+	fixture.capabilities["policy_revision"] = saved.ProjectionRevision
+	fixture.capabilities["policy_desired_revision"] = saved.ProjectionRevision
 	if _, err := fixture.auth.Heartbeat(t.Context(), fixture.runtimeToken, store.ServiceHeartbeat{
 		ServiceID:    fixture.serviceID,
 		Status:       "online",
@@ -962,6 +955,7 @@ func TestBootstrapCreateRejectsCustomManagedHostUser(t *testing.T) {
 
 func TestMixedCaseUpdaterAliasUsesCanonicalIdentityForBootstrapAndGuards(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.com")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(
 		store.User{Username: "mixed-case-admin"},
@@ -987,30 +981,29 @@ func TestMixedCaseUpdaterAliasUsesCanonicalIdentityForBootstrapAndGuards(t *test
 	const canonicalServiceID = "Updater-Mixed-Case"
 	aliasServiceID := strings.ToLower(canonicalServiceID)
 	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
-		ServiceID:   canonicalServiceID,
-		ServiceType: "update_agent",
-		ServiceName: "Mixed Case Updater",
-		PublicURL:   "https://updater.example.com",
-		Version:     "v1.0.0",
+		ServiceID:       canonicalServiceID,
+		ServiceType:     "update_agent",
+		ServiceName:     "Mixed Case Updater",
+		TransportMode:   store.SystemUpdateTransportPullV2,
+		ExecutionHostID: "host-01",
+		Version:         "v1.0.0",
+		Capabilities: map[string]any{
+			"host_agent":   true,
+			"observe_only": true,
+		},
 	})
 
 	policies := store.NewMemoryUpdaterPolicyStore()
 	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	policy, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
-		t.Context(),
-		canonicalServiceID,
-		0,
-		updaterPolicyForHTTPTest(hostKey),
-		stringPointerForBootstrapTest("github_pat_mixed_case"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	policy := savePullUpdaterPolicyForHTTPTest(t, policies, canonicalServiceID, updaterPolicyForHTTPTest(hostKey))
+	secrets := updaterReleaseTokenSecretStoreForBootstrapTest(t, "github_pat_mixed_case")
 	bootstrapPublicKey := p256PublicKeyForBootstrapTest(t)
 	recipientFingerprint := bootstrapFingerprintForTest(bootstrapPublicKey)
 	capabilities := map[string]any{
-		"policy_revision":                      policy.Revision,
-		"policy_desired_revision":              policy.Revision,
+		"host_agent":                           true,
+		"observe_only":                         true,
+		"policy_revision":                      policy.ProjectionRevision,
+		"policy_desired_revision":              policy.ProjectionRevision,
 		"policy_status":                        "applied",
 		"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(bootstrapPublicKey),
 		"bootstrap_encryption_key_fingerprint": recipientFingerprint,
@@ -1032,6 +1025,7 @@ func TestMixedCaseUpdaterAliasUsesCanonicalIdentityForBootstrapAndGuards(t *test
 		WithAuditStore(auth),
 		WithServiceRegistryStore(services),
 		WithUpdaterPolicyStore(policies),
+		WithSecretStore(secrets),
 		WithUpdateHostBootstrapBroker(broker),
 	)
 	cookie, csrf := loginForTest(t, server, "mixed-case-admin", "correct horse battery")
@@ -1121,13 +1115,13 @@ func TestMixedCaseUpdaterAliasUsesCanonicalIdentityForBootstrapAndGuards(t *test
 
 	replacement := updaterPolicyForHTTPTest(hostKey)
 	policyPayload, err := json.Marshal(map[string]any{
-		"expected_revision":          policy.Revision,
-		"api":                        replacement.API,
-		"poll_interval_seconds":      replacement.PollIntervalSeconds,
-		"heartbeat_interval_seconds": replacement.HeartbeatIntervalSeconds,
-		"hosts":                      replacement.Hosts,
-		"targets":                    replacement.Targets,
-		"github_token":               "github_pat_mixed_case_changed",
+		"expected_revision":            policy.Revision,
+		"poll_interval_seconds":        replacement.PollIntervalSeconds,
+		"heartbeat_interval_seconds":   replacement.HeartbeatIntervalSeconds,
+		"local_executor_policy_sha256": replacement.LocalExecutorPolicySHA256,
+		"hosts":                        replacement.Hosts,
+		"targets":                      updaterPolicyTargetRequestsForTest(replacement.Targets),
+		"github_token":                 "github_pat_mixed_case_changed",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1150,16 +1144,19 @@ func TestMixedCaseUpdaterAliasUsesCanonicalIdentityForBootstrapAndGuards(t *test
 	}
 	stageRequest := func(rawToken string) *httptest.ResponseRecorder {
 		t.Helper()
-		payload, err := json.Marshal(map[string]string{
-			"nodeId":         aliasServiceID,
-			"configureToken": rawToken,
+		payload, err := json.Marshal(map[string]any{
+			"nodeId":          aliasServiceID,
+			"configureToken":  rawToken,
+			"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
+			"agentUid":        updaterIdentityFixtureAgentUID,
+			"agentGid":        updaterIdentityFixtureAgentGID,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		request := httptest.NewRequest(
 			http.MethodPost,
-			"/api/node-agent/configure/stage",
+			"/services/host-agent/runtime-identity/stage",
 			bytes.NewReader(payload),
 		)
 		result := httptest.NewRecorder()
@@ -1194,7 +1191,7 @@ func TestMixedCaseUpdaterAliasUsesCanonicalIdentityForBootstrapAndGuards(t *test
 		}
 		request := httptest.NewRequest(
 			http.MethodPost,
-			"/api/node-agent/configure/activate",
+			"/services/host-agent/runtime-identity/activate",
 			bytes.NewReader(payload),
 		)
 		result := httptest.NewRecorder()
@@ -1264,15 +1261,19 @@ func (s caseInsensitiveServiceLookupStore) GetService(
 }
 
 type updaterIdentityMutationFixture struct {
-	auth            *store.MemoryAuthStore
-	server          *Server
-	broker          *UpdateHostBootstrapBroker
-	serviceID       string
-	initialToken    store.ServiceToken
-	cookie          *http.Cookie
-	csrf            string
-	stagedTokenID   string
-	activationToken string
+	auth                      *store.MemoryAuthStore
+	server                    *Server
+	broker                    *UpdateHostBootstrapBroker
+	serviceID                 string
+	executionHostID           string
+	policyRevision            int64
+	initialToken              store.ServiceToken
+	cookie                    *http.Cookie
+	csrf                      string
+	stagedTokenID             string
+	activationConfigurationID string
+	activationToken           string
+	activationPolicy          updateradapter.ConfigurePolicyProjection
 }
 
 func newUpdaterIdentityMutationFixture(
@@ -1291,6 +1292,7 @@ func newUpdaterIdentityMutationFixtureWithServiceStore(
 ) updaterIdentityMutationFixture {
 	t.Helper()
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.com")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(
 		store.User{Username: "bootstrap-admin"},
@@ -1321,11 +1323,12 @@ func newUpdaterIdentityMutationFixtureWithServiceStore(
 	}
 	const serviceID = "updater-identity-guard"
 	if _, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{
-		ServiceID:   serviceID,
-		ServiceType: "update_agent",
-		ServiceName: "Updater",
-		PublicURL:   "https://updater.example.com",
-		Version:     "v1.0.0",
+		ServiceID:       serviceID,
+		ServiceType:     "update_agent",
+		ServiceName:     "Updater",
+		TransportMode:   store.SystemUpdateTransportPullV2,
+		ExecutionHostID: "host-identity-guard",
+		Version:         "v1.0.0",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1342,12 +1345,39 @@ func newUpdaterIdentityMutationFixtureWithServiceStore(
 			t.Fatal(err)
 		}
 	}
+	workerToken, err := auth.CreateServiceToken(
+		t.Context(),
+		"worker",
+		[]string{"service.register", "service.heartbeat"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, workerToken, store.ServiceRegistration{
+		ServiceID: "worker-01", ServiceType: "worker", ServiceName: "Worker 01",
+		Host: "worker-01.example.com", Port: 8084, SSLEnabled: true,
+		PublicURL: "https://worker-01.example.com:8084", Version: "v1.0.0",
+	})
+	policies := store.NewMemoryUpdaterPolicyStore()
+	updates := store.NewMemorySystemUpdateStore()
+	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
+	policyInput := updaterPolicyForHTTPTest(hostKey)
+	policyInput.ExecutionHostID = "host-identity-guard"
+	policyInput.Targets[0].HostID = "host-identity-guard"
+	policy, err := policies.SavePullUpdaterPolicy(
+		t.Context(), updates, serviceID, 0, 0, policyInput,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	fixture := updaterIdentityMutationFixture{
-		auth:         auth,
-		broker:       NewUpdateHostBootstrapBroker(),
-		serviceID:    serviceID,
-		initialToken: token,
+		auth:            auth,
+		broker:          NewUpdateHostBootstrapBroker(),
+		serviceID:       serviceID,
+		executionHostID: policy.ExecutionHostID,
+		policyRevision:  policy.ProjectionRevision,
+		initialToken:    token,
 	}
 	if stageNext {
 		staged := stageUpdaterIdentityConfiguration(t, auth, serviceID, "configure-next")
@@ -1363,8 +1393,40 @@ func newUpdaterIdentityMutationFixtureWithServiceStore(
 		WithAuthStore(auth),
 		WithAuditStore(auth),
 		WithServiceRegistryStore(serviceStore),
+		WithUpdaterPolicyStore(policies),
+		WithSystemUpdateStore(updates),
 		WithUpdateHostBootstrapBroker(fixture.broker),
 	)
+	if stageNext {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		projectionRequest := httptest.NewRequest(
+			http.MethodPost,
+			"/services/host-agent/runtime-identity/activate",
+			nil,
+		)
+		projection, err := fixture.server.hostAgentConfigurePolicyProjection(
+			t.Context(), projectionRequest, service,
+			updaterIdentityFixtureAgentUID, updaterIdentityFixtureAgentGID,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bindingKey, err := nodeRuntimeTokenEncryptionKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.activationConfigurationID = hostAgentConfigureBoundConfigurationID(
+			fixture.stagedTokenID,
+			updaterIdentityFixtureAgentUID,
+			updaterIdentityFixtureAgentGID,
+			projection,
+			bindingKey,
+		)
+		fixture.activationPolicy = projection
+	}
 	fixture.cookie, fixture.csrf = loginForTest(
 		t,
 		fixture.server,
@@ -1460,6 +1522,22 @@ func (f updaterIdentityMutationFixture) createActiveSystemUpdateJob(
 	idempotencySuffix string,
 ) store.SystemUpdateJob {
 	t.Helper()
+	executionHosts, ok := f.server.systemUpdates.(store.SystemUpdateExecutionHostStore)
+	if !ok {
+		t.Fatalf("unexpected system update store %T", f.server.systemUpdates)
+	}
+	ownership, err := executionHosts.GetSystemUpdateExecutionHost(t.Context(), f.executionHostID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownership.OwnershipEpoch == 0 {
+		if _, err := executionHosts.SwitchSystemUpdateExecutionHost(
+			t.Context(), f.executionHostID, 0,
+			store.SystemUpdateTransportPullV2, f.serviceID, f.policyRevision,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 	job, _, err := f.server.systemUpdates.CreateSystemUpdateJob(
 		t.Context(),
 		store.CreateSystemUpdateJobParams{
@@ -1467,6 +1545,7 @@ func (f updaterIdentityMutationFixture) createActiveSystemUpdateJob(
 			TargetServiceType: "worker",
 			DeploymentMode:    "systemd",
 			AgentServiceID:    f.serviceID,
+			ExecutionHostID:   f.executionHostID,
 			CurrentVersion:    "v1.0.0",
 			TargetVersion:     "v1.1.0",
 			Strategy:          store.SystemUpdateStrategyWhenIdle,
@@ -1500,15 +1579,27 @@ func (f updaterIdentityMutationFixture) cancelBootstrapJob(
 func (f updaterIdentityMutationFixture) activationRequestBody(t *testing.T) string {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
-		"nodeId":          f.serviceID,
-		"configurationId": f.stagedTokenID,
-		"activationToken": f.activationToken,
-		"version":         "v1.0.1",
+		"nodeId":                      f.serviceID,
+		"configurationId":             f.activationConfigurationID,
+		"activationToken":             f.activationToken,
+		"version":                     "v1.0.1",
+		"configureProtocolVersion":    updateradapter.HostAgentConfigureProtocolVersion,
+		"agentUid":                    updaterIdentityFixtureAgentUID,
+		"agentGid":                    updaterIdentityFixtureAgentGID,
+		"localExecutorPolicySha256":   f.activationPolicy.SHA256,
+		"sourcePolicyRevision":        f.activationPolicy.SourcePolicyRevision,
+		"projectionRevision":          f.activationPolicy.ProjectionRevision,
+		"localExecutorPolicyRevision": f.activationPolicy.PolicyRevision,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return string(payload)
+}
+
+func (f updaterIdentityMutationFixture) rotateRuntimeIdentity(t *testing.T) string {
+	t.Helper()
+	return rotateUpdaterRuntimeIdentityForTest(t, f.server, f.serviceID, f.adminRequest)
 }
 
 func (f updaterIdentityMutationFixture) adminRequest(
@@ -1571,6 +1662,7 @@ type bootstrapIdentityReadinessFixture struct {
 func newBootstrapIdentityReadinessFixture(t *testing.T) bootstrapIdentityReadinessFixture {
 	t.Helper()
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.com")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(
 		store.User{Username: "bootstrap-readiness-admin"},
@@ -1602,32 +1694,59 @@ func newBootstrapIdentityReadinessFixture(t *testing.T) bootstrapIdentityReadine
 	const serviceID = "updater-bootstrap-readiness"
 	bootstrapPublicKey := p256PublicKeyForBootstrapTest(t)
 	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
-		ServiceID:   serviceID,
-		ServiceType: "update_agent",
-		ServiceName: "Updater",
-		PublicURL:   "https://updater.example.com",
-		Version:     "v1.0.0",
+		ServiceID:       serviceID,
+		ServiceType:     "update_agent",
+		ServiceName:     "Updater",
+		TransportMode:   store.SystemUpdateTransportPullV2,
+		ExecutionHostID: "host-01",
+		Version:         "v1.0.0",
 		Capabilities: map[string]any{
 			"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(bootstrapPublicKey),
 			"bootstrap_encryption_key_fingerprint": bootstrapFingerprintForTest(bootstrapPublicKey),
+			"host_agent":                           true,
+			"observe_only":                         true,
 		},
 	})
 
-	policies := store.NewMemoryUpdaterPolicyStore()
-	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	policy, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
+	workerToken, err := auth.CreateServiceToken(
 		t.Context(),
-		serviceID,
-		0,
-		updaterPolicyForHTTPTest(hostKey),
-		stringPointerForBootstrapTest("github_pat_bootstrap_readiness"),
+		"worker",
+		[]string{"service.register", "service.heartbeat"},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerServiceWithTokenForTest(t, auth, workerToken, store.ServiceRegistration{
+		ServiceID:   "worker-01",
+		ServiceType: "worker",
+		ServiceName: "Worker 01",
+		Host:        "worker-01.example.com",
+		Port:        8084,
+		SSLEnabled:  true,
+		PublicURL:   "https://worker-01.example.com:8084",
+		Version:     "v1.0.0",
+	})
+
+	policies := store.NewMemoryUpdaterPolicyStore()
+	updates := store.NewMemorySystemUpdateStore()
+	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
+	policy, err := policies.SavePullUpdaterPolicy(
+		t.Context(),
+		updates,
+		serviceID,
+		0,
+		0,
+		updaterPolicyForHTTPTest(hostKey),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := updaterReleaseTokenSecretStoreForBootstrapTest(t, "github_pat_bootstrap_readiness")
 	capabilities := map[string]any{
-		"policy_revision":                      policy.Revision,
-		"policy_desired_revision":              policy.Revision,
+		"host_agent":                           true,
+		"observe_only":                         true,
+		"policy_revision":                      policy.ProjectionRevision,
+		"policy_desired_revision":              policy.ProjectionRevision,
 		"policy_status":                        "applied",
 		"bootstrap_encryption_public_key":      base64.RawURLEncoding.EncodeToString(bootstrapPublicKey),
 		"bootstrap_encryption_key_fingerprint": bootstrapFingerprintForTest(bootstrapPublicKey),
@@ -1647,6 +1766,8 @@ func newBootstrapIdentityReadinessFixture(t *testing.T) bootstrapIdentityReadine
 		WithAuditStore(auth),
 		WithServiceRegistryStore(auth),
 		WithUpdaterPolicyStore(policies),
+		WithSystemUpdateStore(updates),
+		WithSecretStore(secrets),
 	)
 	cookie, csrf := loginForTest(
 		t,
@@ -1661,11 +1782,95 @@ func newBootstrapIdentityReadinessFixture(t *testing.T) bootstrapIdentityReadine
 		runtimeToken:          token,
 		cookie:                cookie,
 		csrf:                  csrf,
-		policyRevision:        policy.Revision,
+		policyRevision:        policy.ProjectionRevision,
 		capabilities:          capabilities,
 		recipientFingerprint:  bootstrapFingerprintForTest(bootstrapPublicKey),
 		ephemeralPublicKeyB64: base64.RawURLEncoding.EncodeToString(p256PublicKeyForBootstrapTest(t)),
 	}
+}
+
+func (f bootstrapIdentityReadinessFixture) rotateRuntimeIdentity(t *testing.T) string {
+	t.Helper()
+	return rotateUpdaterRuntimeIdentityForTest(t, f.server, f.serviceID, f.adminRequest)
+}
+
+func rotateUpdaterRuntimeIdentityForTest(
+	t *testing.T,
+	server *Server,
+	serviceID string,
+	adminRequest func(*testing.T, string, string, string) *httptest.ResponseRecorder,
+) string {
+	t.Helper()
+	configure := adminRequest(
+		t,
+		http.MethodPost,
+		"/nodes/"+serviceID+"/configure-token",
+		"",
+	)
+	if configure.Code != http.StatusCreated {
+		t.Fatalf("updater configure-token status=%d", configure.Code)
+	}
+	var configureResponse struct {
+		ConfigureToken string `json:"configure_token"`
+	}
+	if err := json.NewDecoder(configure.Body).Decode(&configureResponse); err != nil {
+		t.Fatal(err)
+	}
+	if configureResponse.ConfigureToken == "" {
+		t.Fatal("updater configure-token response omitted the one-time token")
+	}
+
+	stagePayload, err := json.Marshal(map[string]any{
+		"nodeId":          serviceID,
+		"configureToken":  configureResponse.ConfigureToken,
+		"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
+		"agentUid":        updaterIdentityFixtureAgentUID,
+		"agentGid":        updaterIdentityFixtureAgentGID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageRequest := httptest.NewRequest(
+		http.MethodPost,
+		"https://panel.example.com/services/host-agent/runtime-identity/stage",
+		bytes.NewReader(stagePayload),
+	)
+	stage := httptest.NewRecorder()
+	server.ServeHTTP(stage, stageRequest)
+	if stage.Code != http.StatusOK {
+		t.Fatalf("updater runtime identity stage status=%d body=%s", stage.Code, stage.Body.String())
+	}
+	var staged updateradapter.UpdaterStagedConfiguration
+	if err := json.NewDecoder(stage.Body).Decode(&staged); err != nil {
+		t.Fatal(err)
+	}
+	if staged.Config.RuntimeToken == "" ||
+		staged.ConfigurationID == "" ||
+		staged.ActivationToken == "" ||
+		staged.LocalExecutorPolicy == nil {
+		t.Fatal("updater runtime identity stage response is incomplete")
+	}
+
+	activationPayload, err := json.Marshal(hostAgentConfigureActivationPayload(
+		staged,
+		updaterIdentityFixtureAgentUID,
+		updaterIdentityFixtureAgentGID,
+		*staged.LocalExecutorPolicy,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activationRequest := httptest.NewRequest(
+		http.MethodPost,
+		"https://panel.example.com/services/host-agent/runtime-identity/activate",
+		bytes.NewReader(activationPayload),
+	)
+	activation := httptest.NewRecorder()
+	server.ServeHTTP(activation, activationRequest)
+	if activation.Code != http.StatusOK {
+		t.Fatalf("updater runtime identity activation status=%d body=%s", activation.Code, activation.Body.String())
+	}
+	return staged.Config.RuntimeToken
 }
 
 func (f bootstrapIdentityReadinessFixture) createBootstrapRequest(

@@ -55,6 +55,25 @@ func decodeSingleJSON(r *http.Request, destination any) error {
 	return nil
 }
 
+func decodeOptionalSingleJSON(r *http.Request, destination any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
 func decodeSingleJSONWithRequiredField(r *http.Request, destination any, required string) error {
 	var fields map[string]json.RawMessage
 	if err := decodeSingleJSON(r, &fields); err != nil {

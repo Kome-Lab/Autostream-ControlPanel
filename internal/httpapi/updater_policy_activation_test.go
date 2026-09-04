@@ -118,7 +118,7 @@ func TestActivatePullUpdaterOwnershipUsesAtomicServerOwnedTransition(t *testing.
 		t.Fatal(err)
 	}
 	if settings.ExecutionHostOwnership == nil ||
-		settings.ExecutionHostOwnership.TransportMode != store.SystemUpdateTransportSSHV1 ||
+		settings.ExecutionHostOwnership.TransportMode != store.SystemUpdateTransportPullV2 ||
 		settings.PullActivation == nil ||
 		!settings.PullActivation.Ready {
 		t.Fatalf("observer activation status = %#v", settings)
@@ -221,7 +221,7 @@ func (s *capturePullActivationPolicyStore) ActivatePullUpdaterOwnership(
 	}, nil
 }
 
-func TestDeactivatePullUpdaterOwnershipRestoresSavedLegacyOwnerAtomically(t *testing.T) {
+func TestDeactivatePullUpdaterOwnershipReturnsAgentToObserverModeAtomically(t *testing.T) {
 	auth, _, updates, handler, cookie, csrf, saved := newPullActivationHTTPFixture(t, true)
 	before, err := updates.GetSystemUpdateExecutionHost(t.Context(), "host-a")
 	if err != nil {
@@ -272,8 +272,8 @@ func TestDeactivatePullUpdaterOwnershipRestoresSavedLegacyOwnerAtomically(t *tes
 	}
 	if deactivated.UpdaterID != "host-agent-a" ||
 		deactivated.ExecutionHostID != "host-a" ||
-		deactivated.TransportMode != store.SystemUpdateTransportSSHV1 ||
-		deactivated.AgentServiceID != "central-updater" ||
+		deactivated.TransportMode != store.SystemUpdateTransportPullV2 ||
+		deactivated.AgentServiceID != "host-agent-a" ||
 		deactivated.OwnershipEpoch != activated.OwnershipEpoch+1 ||
 		deactivated.AgentOwnershipEpoch != 0 ||
 		deactivated.SourcePolicyRevision != saved.Revision ||
@@ -290,9 +290,8 @@ func TestDeactivatePullUpdaterOwnershipRestoresSavedLegacyOwnerAtomically(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ownership.TransportMode != store.SystemUpdateTransportSSHV1 ||
-		ownership.AgentServiceID != "central-updater" ||
-		ownership.LegacyAgentServiceID != "central-updater" ||
+	if ownership.TransportMode != store.SystemUpdateTransportPullV2 ||
+		ownership.AgentServiceID != "host-agent-a" ||
 		ownership.OwnershipEpoch != deactivated.OwnershipEpoch ||
 		service.OwnershipEpoch != 0 {
 		t.Fatalf("atomic deactivation state: owner=%#v service=%#v", ownership, service)
@@ -326,69 +325,6 @@ func TestDeactivatePullUpdaterOwnershipRestoresSavedLegacyOwnerAtomically(t *tes
 	if stale.Code != http.StatusConflict ||
 		!strings.Contains(stale.Body.String(), `"code":"system_update_ownership_conflict"`) {
 		t.Fatalf("stale deactivation = %d %s", stale.Code, stale.Body.String())
-	}
-}
-
-func TestDeactivatePullUpdaterOwnershipRejectsLegacyTokenWithoutUpdateScopes(
-	t *testing.T,
-) {
-	_, _, updates, handler, cookie, csrf, saved := newPullActivationHTTPFixtureWithLegacyScopes(
-		t,
-		true,
-		[]string{"service.register", "service.heartbeat"},
-	)
-	before, err := updates.GetSystemUpdateExecutionHost(t.Context(), "host-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	activatedResponse := activatePullOwnershipForTest(
-		t,
-		handler,
-		cookie,
-		csrf,
-		activatePullUpdaterOwnershipRequest{
-			ExpectedExecutionHostID:             "host-a",
-			ExpectedOwnershipEpoch:              before.OwnershipEpoch,
-			ExpectedSourcePolicyRevision:        saved.Revision,
-			ExpectedProjectionRevision:          saved.ProjectionRevision,
-			ExpectedLocalExecutorPolicyRevision: saved.LocalExecutorPolicyRevision,
-			ExpectedLocalExecutorPolicySHA256:   saved.LocalExecutorPolicySHA256,
-		},
-	)
-	if activatedResponse.Code != http.StatusOK {
-		t.Fatalf("activate pull owner = %d %s", activatedResponse.Code, activatedResponse.Body.String())
-	}
-	var activated activatePullUpdaterOwnershipResponse
-	if err := json.NewDecoder(activatedResponse.Body).Decode(&activated); err != nil {
-		t.Fatal(err)
-	}
-
-	response := deactivatePullOwnershipForTest(
-		t,
-		handler,
-		cookie,
-		csrf,
-		deactivatePullUpdaterOwnershipRequest{
-			ExpectedExecutionHostID:             "host-a",
-			ExpectedOwnershipEpoch:              activated.OwnershipEpoch,
-			ExpectedSourcePolicyRevision:        saved.Revision,
-			ExpectedProjectionRevision:          saved.ProjectionRevision,
-			ExpectedLocalExecutorPolicyRevision: saved.LocalExecutorPolicyRevision,
-			ExpectedLocalExecutorPolicySHA256:   saved.LocalExecutorPolicySHA256,
-		},
-	)
-	if response.Code != http.StatusConflict ||
-		!strings.Contains(response.Body.String(), `"code":"update_agent_inactive"`) {
-		t.Fatalf("insufficient legacy token scopes = %d %s", response.Code, response.Body.String())
-	}
-	after, err := updates.GetSystemUpdateExecutionHost(t.Context(), "host-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.TransportMode != store.SystemUpdateTransportPullV2 ||
-		after.AgentServiceID != "host-agent-a" ||
-		after.OwnershipEpoch != activated.OwnershipEpoch {
-		t.Fatalf("rejected deactivation mutated ownership: %#v", after)
 	}
 }
 
@@ -509,33 +445,6 @@ func newPullActivationHTTPFixture(
 	store.UpdaterPolicy,
 ) {
 	t.Helper()
-	return newPullActivationHTTPFixtureWithLegacyScopes(
-		t,
-		ready,
-		[]string{
-			"service.register",
-			"service.heartbeat",
-			"updates.claim",
-			"updates.report",
-			"updates.authorize",
-		},
-	)
-}
-
-func newPullActivationHTTPFixtureWithLegacyScopes(
-	t *testing.T,
-	ready bool,
-	legacyTokenScopes []string,
-) (
-	*store.MemoryAuthStore,
-	*store.MemoryUpdaterPolicyStore,
-	*store.MemorySystemUpdateStore,
-	http.Handler,
-	*http.Cookie,
-	string,
-	store.UpdaterPolicy,
-) {
-	t.Helper()
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(
 		store.User{ID: "activation-admin", Username: "activation-admin"},
@@ -560,73 +469,14 @@ func newPullActivationHTTPFixtureWithLegacyScopes(
 		Version:     "v1.0.0",
 	})
 
-	legacyToken, err := auth.CreateServiceToken(
-		t.Context(),
-		"update_agent",
-		legacyTokenScopes,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	registerServiceWithTokenForTest(t, auth, legacyToken, store.ServiceRegistration{
-		ServiceID:     "central-updater",
-		ServiceType:   "update_agent",
-		ServiceName:   "Central Updater",
-		TransportMode: store.SystemUpdateTransportSSHV1,
-		PublicURL:     "https://updater.example.com:8090",
-		Version:       "v1.0.0",
-	})
 	policies := store.NewMemoryUpdaterPolicyStore()
-	if _, err := policies.SaveUpdaterPolicy(
-		t.Context(),
-		"central-updater",
-		0,
-		store.UpdaterPolicy{
-			API: store.UpdaterPolicyAPI{
-				BindHost: "127.0.0.1",
-				Host:     "127.0.0.1",
-				Port:     8090,
-			},
-			PollIntervalSeconds:      15,
-			HeartbeatIntervalSeconds: 30,
-			Hosts: []store.UpdaterPolicyHost{{
-				HostID:        "host-a",
-				Name:          "Host A",
-				Address:       "host-a.example.com",
-				Port:          55850,
-				User:          "autostream-update-host",
-				Arch:          "amd64",
-				HostPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g",
-			}},
-			Targets: []store.UpdaterPolicyTarget{{
-				TargetID:       "worker-a",
-				ServiceID:      "worker-a",
-				HostID:         "host-a",
-				ServiceType:    "worker",
-				DeploymentMode: "systemd",
-			}},
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
 	updates := store.NewMemorySystemUpdateStore()
-	owner, err := updates.SwitchSystemUpdateExecutionHost(
-		t.Context(),
-		"host-a",
-		0,
-		store.SystemUpdateTransportSSHV1,
-		"central-updater",
-		7,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	saved, err := policies.SavePullUpdaterPolicy(
 		t.Context(),
 		updates,
 		"host-agent-a",
 		0,
-		owner.OwnershipEpoch,
+		0,
 		store.UpdaterPolicy{
 			TransportMode:             store.SystemUpdateTransportPullV2,
 			ExecutionHostID:           "host-a",

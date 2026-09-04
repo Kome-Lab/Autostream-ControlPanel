@@ -641,7 +641,7 @@ func validateSystemdPortCoordinatorState(
 }
 
 func supportedSystemdPortServiceType(serviceType string) bool {
-	_, ok := systemUpdatePortBindVariable(serviceType)
+	_, ok := systemUpdatePortServiceType(serviceType)
 	return ok
 }
 

@@ -143,8 +143,6 @@ function fixtureComponentSource() {
     "use client";
 
     import { useState } from "react";
-    import { DangerConfirm } from "@/components/admin/danger-confirm";
-    import { I18nProvider } from "@/components/admin/i18n-provider";
     import {
       HighRiskConfirmation,
       type ConfirmationDialogState,
@@ -217,19 +215,6 @@ function fixtureComponentSource() {
         : scenario === "invalid" ? invalidDescriptor
         : consequenceDescriptor;
       const t = (key: TranslationKey, values?: TranslationValues) => translate(locale, key, values);
-
-      if (scenario === "legacy") {
-        return (
-          <I18nProvider>
-            <main>
-              <output data-testid="intent-count">{intentCount}</output>
-              <DangerConfirm title="Legacy title" onConfirm={() => setIntentCount((count) => count + 1)}>
-                <button id="legacy-trigger" type="button">Legacy open</button>
-              </DangerConfirm>
-            </main>
-          </I18nProvider>
-        );
-      }
 
       return (
         <main>

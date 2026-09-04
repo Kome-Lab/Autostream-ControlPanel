@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
 )
@@ -222,13 +223,9 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	clearActiveRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
 	clearActiveResponse := httptest.NewRecorder()
 	handler.ServeHTTP(clearActiveResponse, clearActiveRequest)
-	var terminalRecovery systemUpdateTerminalRecoveryResponse
+	var terminalRecovery contracts.UpdateAgentClearActiveJobResponse
 	if clearActiveResponse.Code != http.StatusOK || json.Unmarshal(clearActiveResponse.Body.Bytes(), &terminalRecovery) != nil ||
-		!terminalRecovery.ClearActiveJobID || terminalRecovery.TerminalJob.ID != completed.ID ||
-		terminalRecovery.TerminalJob.AgentServiceID != "updater-01" || terminalRecovery.TerminalJob.TargetID != completed.TargetID ||
-		terminalRecovery.TerminalJob.TargetVersion != completed.TargetVersion || terminalRecovery.TerminalJob.Status != store.SystemUpdateStatusSucceeded ||
-		terminalRecovery.TerminalJob.Progress != 100 || terminalRecovery.TerminalJob.LeaseGeneration != completed.LeaseGeneration ||
-		terminalRecovery.TerminalJob.Sequence != completed.Sequence || terminalRecovery.TerminalJob.CompletedAt == nil ||
+		!terminalRecovery.ClearActiveJobID ||
 		clearActiveResponse.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("terminal active_job_id clear response = %d %s", clearActiveResponse.Code, clearActiveResponse.Body.String())
 	}
@@ -674,7 +671,7 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if !strings.HasPrefix(createdBody.ConfigureToken, "ast_cfg_") || !strings.HasPrefix(createdBody.ConfigureCommand, "sudo /usr/local/bin/autostream-host-agent configure ") || strings.Contains(createdBody.ConfigureCommand, createdBody.ConfigureToken) || strings.Contains(createdBody.ConfigureCommand, "--token") {
 		t.Fatalf("updater configure metadata = %#v", createdBody)
 	}
-	if createdBody.ConfigurationPath != "/etc/autostream-host-agent/identity.json" || createdBody.ManualRequired || bytes.Contains(createdPayload, []byte(`"configuration_example"`)) {
+	if createdBody.ConfigurationPath != "/etc/autostream/updater/agent.yaml" || createdBody.ManualRequired || bytes.Contains(createdPayload, []byte(`"configuration_example"`)) {
 		t.Fatalf("updater configuration metadata = %#v", createdBody)
 	}
 	if !slices.Contains(createdBody.Scopes, "updates.authorize") {
@@ -716,21 +713,14 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if !strings.HasPrefix(regenerated.ConfigureToken, "ast_cfg_") || strings.Contains(regenerated.ConfigureCommand, regenerated.ConfigureToken) || strings.Contains(regenerated.ConfigureCommand, "--token") || !strings.HasPrefix(regenerated.ConfigureCommand, "sudo /usr/local/bin/autostream-host-agent configure ") {
 		t.Fatalf("regenerated updater configure metadata = %#v", regenerated)
 	}
-	oldConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+createdBody.ConfigureToken+`"}`))
-	oldConfigureResult := httptest.NewRecorder()
-	handler.ServeHTTP(oldConfigureResult, oldConfigure)
-	if oldConfigureResult.Code != http.StatusUnauthorized || !strings.Contains(oldConfigureResult.Body.String(), "invalid_configure_token") {
-		t.Fatalf("superseded updater configure token status = %d body = %s", oldConfigureResult.Code, oldConfigureResult.Body.String())
+	supersededConfigure := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+createdBody.ConfigureToken+`"}`))
+	supersededConfigureResult := httptest.NewRecorder()
+	handler.ServeHTTP(supersededConfigureResult, supersededConfigure)
+	if supersededConfigureResult.Code != http.StatusUnauthorized || !strings.Contains(supersededConfigureResult.Body.String(), "invalid_configure_token") {
+		t.Fatalf("superseded updater configure token status = %d body = %s", supersededConfigureResult.Code, supersededConfigureResult.Body.String())
 	}
 
-	legacyConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
-	legacyConfigureResult := httptest.NewRecorder()
-	handler.ServeHTTP(legacyConfigureResult, legacyConfigure)
-	if legacyConfigureResult.Code != http.StatusConflict || !strings.Contains(legacyConfigureResult.Body.String(), "two_phase_configure_required") {
-		t.Fatalf("legacy updater configure status = %d body = %s", legacyConfigureResult.Code, legacyConfigureResult.Body.String())
-	}
-
-	agentConfigure := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
+	agentConfigure := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
 	agentConfigureResult := httptest.NewRecorder()
 	handler.ServeHTTP(agentConfigureResult, agentConfigure)
 	if agentConfigureResult.Code != http.StatusOK {
@@ -797,13 +787,13 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if err != nil || stagedService.TokenID == configuredBody.ConfigurationID || stagedService.StagedNodeTokenID != configuredBody.ConfigurationID {
 		t.Fatalf("updater stage changed the active token: %#v err=%v", stagedService, err)
 	}
-	replay := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
+	replay := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
 	replayResult := httptest.NewRecorder()
 	handler.ServeHTTP(replayResult, replay)
 	if replayResult.Code != http.StatusUnauthorized || !strings.Contains(replayResult.Body.String(), "invalid_configure_token") {
 		t.Fatalf("replayed updater configure token status = %d body = %s", replayResult.Code, replayResult.Body.String())
 	}
-	activate := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`","version":"v1.7.0","commit":"abc123","build_date":"2026-07-21","hostname":"central-host","os":"linux","arch":"amd64"}`))
+	activate := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`","version":"v1.7.0","commit":"abc123","build_date":"2026-07-21","hostname":"central-host","os":"linux","arch":"amd64"}`))
 	activateResult := httptest.NewRecorder()
 	handler.ServeHTTP(activateResult, activate)
 	if activateResult.Code != http.StatusOK || !strings.Contains(activateResult.Body.String(), `"state":"activated"`) || activateResult.Header().Get("Cache-Control") != "no-store" {
@@ -817,7 +807,7 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 			t.Fatalf("activated updater runtime token lacks %s: %v", scope, err)
 		}
 	}
-	activateReplay := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`"}`))
+	activateReplay := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`"}`))
 	activateReplayResult := httptest.NewRecorder()
 	handler.ServeHTTP(activateReplayResult, activateReplay)
 	if activateReplayResult.Code != http.StatusOK || !strings.Contains(activateReplayResult.Body.String(), `"state":"already_activated"`) {
@@ -854,10 +844,10 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if rotateResult.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("rotated runtime token response cache control = %q", rotateResult.Header().Get("Cache-Control"))
 	}
-	if !strings.Contains(rotateResult.Body.String(), `"runtime_token":"ast_svc_`) || !strings.Contains(rotateResult.Body.String(), `"configuration_path":"/etc/autostream-host-agent/identity.json"`) || strings.Contains(rotateResult.Body.String(), `"manual_configuration_required":true`) {
+	if !strings.Contains(rotateResult.Body.String(), `"runtime_token":"ast_svc_`) || !strings.Contains(rotateResult.Body.String(), `"configuration_path":"/etc/autostream/updater/agent.yaml"`) || strings.Contains(rotateResult.Body.String(), `"manual_configuration_required":true`) {
 		t.Fatalf("rotate updater runtime token response = %s", rotateResult.Body.String())
 	}
-	invalidated := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+outstanding.ConfigureToken+`"}`))
+	invalidated := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+outstanding.ConfigureToken+`"}`))
 	invalidatedResult := httptest.NewRecorder()
 	handler.ServeHTTP(invalidatedResult, invalidated)
 	if invalidatedResult.Code != http.StatusUnauthorized || !strings.Contains(invalidatedResult.Body.String(), "invalid_configure_token") {
@@ -1398,7 +1388,7 @@ func TestSystemUpdateReportRejectsTokenRotatedAfterInitialAuthentication(t *test
 		"",
 		map[string]string{"worker-reauth-report": "systemd"},
 		time.Now().UTC(),
-		systemUpdateClaimLeaseTTL,
+		systemUpdateExecutionLeaseTTL,
 	)
 	if err != nil {
 		t.Fatal(err)

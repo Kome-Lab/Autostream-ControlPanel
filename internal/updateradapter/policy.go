@@ -14,10 +14,12 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"path/filepath"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
@@ -124,7 +126,6 @@ type standardSystemdProfile struct {
 	binaryPath       string
 	requiredPaths    []string
 	backupExecutable string
-	bindVariable     string
 }
 
 func standardSystemdProfileFor(serviceType string) (standardSystemdProfile, bool) {
@@ -137,15 +138,13 @@ func standardSystemdProfileFor(serviceType string) (standardSystemdProfile, bool
 			binaryPath:       "bin/control-panel",
 			requiredPaths:    []string{"share/autostream-control-panel"},
 			backupExecutable: "/usr/local/sbin/autostream-backup-control-panel",
-			bindVariable:     "AUTOSTREAM_BIND_ADDR",
 		}, true
 	case "encoder_recorder":
 		return standardSystemdProfile{
-			unit:         "autostream-encoder-recorder.service",
-			releaseRoot:  "/opt/autostream/encoder-recorder/releases",
-			currentLink:  "/opt/autostream/encoder-recorder/current",
-			binaryPath:   "bin/autostream-encoder-recorder",
-			bindVariable: "AUTOSTREAM_BIND_ADDR",
+			unit:        "autostream-encoder-recorder.service",
+			releaseRoot: "/opt/autostream/encoder-recorder/releases",
+			currentLink: "/opt/autostream/encoder-recorder/current",
+			binaryPath:  "bin/autostream-encoder-recorder",
 		}, true
 	case "observability":
 		return standardSystemdProfile{
@@ -154,23 +153,20 @@ func standardSystemdProfileFor(serviceType string) (standardSystemdProfile, bool
 			currentLink:      "/opt/autostream/observability/current",
 			binaryPath:       "bin/autostream-observability",
 			backupExecutable: "/usr/local/sbin/autostream-backup-observability",
-			bindVariable:     "OBSERVABILITY_BIND_ADDR",
 		}, true
 	case "discord_bot":
 		return standardSystemdProfile{
-			unit:         "autostream-discord-bot.service",
-			releaseRoot:  "/opt/autostream/discord-bot/releases",
-			currentLink:  "/opt/autostream/discord-bot/current",
-			binaryPath:   "bin/autostream-discord-bot",
-			bindVariable: "AUTOSTREAM_BIND_ADDR",
+			unit:        "autostream-discord-bot.service",
+			releaseRoot: "/opt/autostream/discord-bot/releases",
+			currentLink: "/opt/autostream/discord-bot/current",
+			binaryPath:  "bin/autostream-discord-bot",
 		}, true
 	case "worker":
 		return standardSystemdProfile{
-			unit:         "autostream-worker.service",
-			releaseRoot:  "/opt/autostream/worker/releases",
-			currentLink:  "/opt/autostream/worker/current",
-			binaryPath:   "bin/autostream-worker",
-			bindVariable: "AUTOSTREAM_BIND_ADDR",
+			unit:        "autostream-worker.service",
+			releaseRoot: "/opt/autostream/worker/releases",
+			currentLink: "/opt/autostream/worker/current",
+			binaryPath:  "bin/autostream-worker",
 		}, true
 	default:
 		return standardSystemdProfile{}, false
@@ -281,11 +277,23 @@ func SystemdConfigurePortSidecarSHA256(serviceType string, port int, configRevis
 	if port < 1024 || port > 65535 || configRevision < 1 {
 		return "", errors.New("systemd configure port sidecar state is incomplete")
 	}
-	profile, ok := standardSystemdProfileFor(serviceType)
+	_, ok := standardSystemdProfileFor(serviceType)
 	if !ok {
 		return "", errors.New("systemd configure service type is unsupported")
 	}
-	body := []byte(fmt.Sprintf("%s=%s\nAUTOSTREAM_CONFIG_REVISION=%d\n", profile.bindVariable, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)), configRevision))
+	address := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port))
+	var body []byte
+	if serviceType == "control_panel" {
+		body = []byte(fmt.Sprintf("AUTOSTREAM_BIND_ADDR=%s\nAUTOSTREAM_CONFIG_REVISION=%d\n", address, configRevision))
+	} else {
+		var err error
+		body, err = contracts.MarshalNodeListenerConfig(contracts.NodeListenerConfig{
+			SchemaVersion: 2, ServiceType: serviceType, BindAddress: address, ConfigRevision: configRevision,
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 	digest := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
@@ -392,7 +400,7 @@ func (target LocalExecutorTarget) validate() error {
 	}
 	if !userPattern.MatchString(target.Systemd.SmokeUser) || !unitPattern.MatchString(target.Systemd.Unit) ||
 		!absoluteNonRootPath(target.Systemd.ReleaseRoot) || !absoluteNonRootPath(target.Systemd.CurrentLink) ||
-		filepath.Clean(target.Systemd.ReleaseRoot) == filepath.Clean(target.Systemd.CurrentLink) ||
+		path.Clean(target.Systemd.ReleaseRoot) == path.Clean(target.Systemd.CurrentLink) ||
 		!safeRelativePath(target.Systemd.BinaryPath) {
 		return errors.New("systemd target profile is invalid")
 	}
@@ -448,13 +456,13 @@ func validServiceType(value string) bool {
 }
 
 func absoluteNonRootPath(value string) bool {
-	return filepath.IsAbs(value) && filepath.Clean(value) != string(filepath.Separator)
+	return path.IsAbs(value) && path.Clean(value) != "/"
 }
 
 func safeRelativePath(value string) bool {
-	if value == "" || filepath.IsAbs(value) || strings.Contains(value, "\\") || strings.ContainsRune(value, '\x00') {
+	if value == "" || path.IsAbs(value) || strings.Contains(value, "\\") || strings.ContainsRune(value, '\x00') {
 		return false
 	}
-	clean := filepath.Clean(value)
-	return clean != "." && clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
+	clean := path.Clean(value)
+	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
 }

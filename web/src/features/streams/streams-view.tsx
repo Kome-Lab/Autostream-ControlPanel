@@ -159,9 +159,9 @@ export function StreamsView() {
     },
     {
       id: "discord",
-      accessorFn: (stream) => compactList([optionLabel(discordLabels, stream.discord_config_id), stream.discord_config_id, stream.discord_guild_id, stream.discord_voice_channel_id, stream.discord_text_channel_id, stream.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"]).join(" "),
+      accessorFn: (stream) => compactList([optionLabel(discordLabels, stream.discord_config_id), stream.discord_config_id, stream.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"]).join(" "),
       header: "自動開始",
-      cell: ({ row }) => <div className="min-w-40 text-sm"><div>{row.original.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div><div className="mt-1 truncate text-muted-foreground">{optionLabel(discordLabels, row.original.discord_config_id) || "Discord未設定"}</div><div className="truncate text-xs text-muted-foreground">VC {row.original.discord_voice_channel_id || "未設定"}</div></div>,
+      cell: ({ row }) => <div className="min-w-40 text-sm"><div>{row.original.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div><div className="mt-1 truncate text-muted-foreground">{optionLabel(discordLabels, row.original.discord_config_id) || "Discord未設定"}</div><div className="truncate text-xs text-muted-foreground">配信先はv2 snapshotで管理</div></div>,
     },
     {
       id: "nodes",

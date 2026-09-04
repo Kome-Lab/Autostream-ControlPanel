@@ -700,13 +700,13 @@ function UpdateAgentStatus({
     <div className="rounded-lg border bg-muted/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-medium">Host Agent / 互換Updater</div>
+          <div className="text-sm font-medium">Host Agent</div>
           <div className="mt-0.5 text-xs text-muted-foreground">pull_v2 Host Agentは各ホストからControl Panelへoutbound接続して更新ジョブを受け取ります。</div>
         </div>
         {updaters.length === 0 ? <Badge variant="secondary">未登録</Badge> : null}
       </div>
       {updaters.length === 0 ? (
-        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Host Agentまたは互換Updaterが登録されていません。更新ジョブは開始できません。</p>
+        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Host Agentが登録されていません。更新ジョブは開始できません。</p>
       ) : (
         <div className="mt-3 grid gap-2 lg:grid-cols-2 [&>*:only-child]:col-span-full">
           {updaters.map((updater) => {
@@ -1095,22 +1095,15 @@ function UpdaterTransportSummary({
 }) {
   const transportMode = state.transportMode || "未報告";
   const isPull = transportMode === "pull_v2";
-  const managementEndpoint = state.applied.url || state.desired.url || state.reported.url;
   return (
     <div className="space-y-1.5 text-xs" aria-label={`${node.service_name || node.service_id || node.id} のUpdater transport状態`}>
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary">Updater / Host Agent</Badge>
-        <span className="font-medium">{isPull ? "受信ポートなし（Outbound HTTPS）" : "SSH（legacy）"}</span>
+        <span className="font-medium">{isPull ? "受信ポートなし（Outbound HTTPS）" : "非対応transport"}</span>
       </div>
       <div className="text-muted-foreground">transport_mode: {transportMode}</div>
-      {isPull ? (
-        <>
-          <div className="break-words text-muted-foreground">実行ホスト: {state.executionHostID || "未割り当て"}</div>
-          <div className="text-muted-foreground">Ownership epoch: {state.ownershipEpoch ?? "未報告"}</div>
-        </>
-      ) : (
-        <div className="break-all text-muted-foreground">管理endpoint: {managementEndpoint || "未報告"}</div>
-      )}
+      <div className="break-words text-muted-foreground">実行ホスト: {isPull ? state.executionHostID || "未割り当て" : "使用不可"}</div>
+      <div className="text-muted-foreground">Ownership epoch: {isPull ? state.ownershipEpoch ?? "未報告" : "使用不可"}</div>
       <div className="text-muted-foreground">通常のNode endpointとは別の更新管理経路</div>
     </div>
   );

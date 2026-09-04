@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { ConfirmationDialogFrame } from "@/components/foundation/confirmation/confirmation-dialog-frame";
 
-type DangerConfirmProps = {
+type DeferredUpdaterHostConfirmationProps = {
   title: string;
   description?: string;
   children: ReactNode;
@@ -13,11 +13,10 @@ type DangerConfirmProps = {
   actionLabel?: string;
 };
 
-/**
- * @deprecated New actions must use HighRiskConfirmation with a Feature-owned
- * controller. Existing direct consumers remain temporarily source-compatible.
- */
-export function DangerConfirm({ title, description, children, onConfirm, actionLabel }: DangerConfirmProps) {
+// UI-FOUNDATION-001B-B09E-UPDATER-UI owns migration of this preserved operator
+// workflow to the independent Updater adapter. Bundle 8B only isolates it from
+// the removed global compatibility wrapper.
+export function DeferredUpdaterHostConfirmation({ title, description, children, onConfirm, actionLabel }: DeferredUpdaterHostConfirmationProps) {
   const { t } = useI18n();
   return (
     <ConfirmationDialogFrame

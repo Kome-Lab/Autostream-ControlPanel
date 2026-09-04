@@ -79,7 +79,6 @@ type DriveDestination struct {
 	FolderIDFingerprint string `json:"folder_id_fingerprint,omitempty"`
 	MaskedFolderID      string `json:"masked_folder_id,omitempty"`
 	SharedDrive         bool   `json:"shared_drive"`
-	BasePath            string `json:"base_path"`
 	CreatedAt           string `json:"created_at"`
 	UpdatedAt           string `json:"updated_at"`
 }
@@ -929,7 +928,7 @@ func (s MariaDBIntegrationStore) DeleteOAuthAccount(ctx context.Context, id stri
 }
 
 func (s MariaDBIntegrationStore) ListDriveDestinations(ctx context.Context) ([]DriveDestination, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, auth_mode, oauth_account_id, folder_id_fingerprint, masked_folder_id, shared_drive, base_path, created_at, updated_at FROM drive_destinations ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, auth_mode, oauth_account_id, folder_id_fingerprint, masked_folder_id, shared_drive, created_at, updated_at FROM drive_destinations ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -958,7 +957,7 @@ func (s MariaDBIntegrationStore) CreateDriveDestination(ctx context.Context, des
 	}
 	fingerprint := security.SecretFingerprint(destination.FolderID)
 	masked := maskIdentifier(destination.FolderID)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO drive_destinations (id, name, auth_mode, oauth_account_id, folder_id_ciphertext, folder_id_nonce, folder_id_fingerprint, masked_folder_id, shared_drive, base_path, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`, destination.ID, destination.Name, destination.AuthMode, destination.OAuthAccountID, ciphertext, nonce, fingerprint, masked, destination.SharedDrive, destination.BasePath, now, now)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO drive_destinations (id, name, auth_mode, oauth_account_id, folder_id_ciphertext, folder_id_nonce, folder_id_fingerprint, masked_folder_id, shared_drive, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`, destination.ID, destination.Name, destination.AuthMode, destination.OAuthAccountID, ciphertext, nonce, fingerprint, masked, destination.SharedDrive, now, now)
 	if err != nil {
 		return DriveDestination{}, err
 	}
@@ -972,7 +971,7 @@ func (s MariaDBIntegrationStore) CreateDriveDestination(ctx context.Context, des
 }
 
 func (s MariaDBIntegrationStore) GetDriveDestination(ctx context.Context, id string) (DriveDestination, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, auth_mode, oauth_account_id, folder_id_fingerprint, masked_folder_id, shared_drive, base_path, created_at, updated_at FROM drive_destinations WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, auth_mode, oauth_account_id, folder_id_fingerprint, masked_folder_id, shared_drive, created_at, updated_at FROM drive_destinations WHERE id = ?`, id)
 	destination, err := scanDriveDestination(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DriveDestination{}, ErrNotFound
@@ -981,12 +980,12 @@ func (s MariaDBIntegrationStore) GetDriveDestination(ctx context.Context, id str
 }
 
 func (s MariaDBIntegrationStore) GetDriveDestinationForDispatch(ctx context.Context, id string) (DriveDestination, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, auth_mode, oauth_account_id, folder_id_ciphertext, folder_id_nonce, folder_id_fingerprint, masked_folder_id, shared_drive, base_path, created_at, updated_at FROM drive_destinations WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, auth_mode, oauth_account_id, folder_id_ciphertext, folder_id_nonce, folder_id_fingerprint, masked_folder_id, shared_drive, created_at, updated_at FROM drive_destinations WHERE id = ?`, id)
 	var destination DriveDestination
 	var oauthAccountID sql.NullString
 	var ciphertext, nonce string
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&destination.ID, &destination.Name, &destination.AuthMode, &oauthAccountID, &ciphertext, &nonce, &destination.FolderIDFingerprint, &destination.MaskedFolderID, &destination.SharedDrive, &destination.BasePath, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+	if err := row.Scan(&destination.ID, &destination.Name, &destination.AuthMode, &oauthAccountID, &ciphertext, &nonce, &destination.FolderIDFingerprint, &destination.MaskedFolderID, &destination.SharedDrive, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return DriveDestination{}, ErrNotFound
 	} else if err != nil {
 		return DriveDestination{}, err
@@ -1017,7 +1016,7 @@ func (s MariaDBIntegrationStore) UpdateDriveDestination(ctx context.Context, des
 		if err != nil {
 			return DriveDestination{}, err
 		}
-		result, err := s.db.ExecContext(ctx, `UPDATE drive_destinations SET name = ?, auth_mode = ?, oauth_account_id = NULLIF(?, ''), folder_id_ciphertext = ?, folder_id_nonce = ?, folder_id_fingerprint = ?, masked_folder_id = ?, shared_drive = ?, base_path = ?, updated_at = ? WHERE id = ?`, destination.Name, destination.AuthMode, destination.OAuthAccountID, ciphertext, nonce, security.SecretFingerprint(destination.FolderID), maskIdentifier(destination.FolderID), destination.SharedDrive, destination.BasePath, now, destination.ID)
+		result, err := s.db.ExecContext(ctx, `UPDATE drive_destinations SET name = ?, auth_mode = ?, oauth_account_id = NULLIF(?, ''), folder_id_ciphertext = ?, folder_id_nonce = ?, folder_id_fingerprint = ?, masked_folder_id = ?, shared_drive = ?, updated_at = ? WHERE id = ?`, destination.Name, destination.AuthMode, destination.OAuthAccountID, ciphertext, nonce, security.SecretFingerprint(destination.FolderID), maskIdentifier(destination.FolderID), destination.SharedDrive, now, destination.ID)
 		if err != nil {
 			return DriveDestination{}, err
 		}
@@ -1025,7 +1024,7 @@ func (s MariaDBIntegrationStore) UpdateDriveDestination(ctx context.Context, des
 			return DriveDestination{}, ErrNotFound
 		}
 	} else {
-		result, err := s.db.ExecContext(ctx, `UPDATE drive_destinations SET name = ?, auth_mode = ?, oauth_account_id = NULLIF(?, ''), shared_drive = ?, base_path = ?, updated_at = ? WHERE id = ?`, destination.Name, destination.AuthMode, destination.OAuthAccountID, destination.SharedDrive, destination.BasePath, now, destination.ID)
+		result, err := s.db.ExecContext(ctx, `UPDATE drive_destinations SET name = ?, auth_mode = ?, oauth_account_id = NULLIF(?, ''), shared_drive = ?, updated_at = ? WHERE id = ?`, destination.Name, destination.AuthMode, destination.OAuthAccountID, destination.SharedDrive, now, destination.ID)
 		if err != nil {
 			return DriveDestination{}, err
 		}
@@ -1106,7 +1105,7 @@ func scanDriveDestination(row scanner) (DriveDestination, error) {
 	var destination DriveDestination
 	var oauthAccountID sql.NullString
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&destination.ID, &destination.Name, &destination.AuthMode, &oauthAccountID, &destination.FolderIDFingerprint, &destination.MaskedFolderID, &destination.SharedDrive, &destination.BasePath, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&destination.ID, &destination.Name, &destination.AuthMode, &oauthAccountID, &destination.FolderIDFingerprint, &destination.MaskedFolderID, &destination.SharedDrive, &createdAt, &updatedAt); err != nil {
 		return DriveDestination{}, err
 	}
 	destination.OAuthAccountID = oauthAccountID.String
@@ -1188,7 +1187,6 @@ func normalizeDriveDestination(destination DriveDestination, creating bool) (Dri
 	destination.AuthMode = strings.TrimSpace(strings.ToLower(destination.AuthMode))
 	destination.OAuthAccountID = strings.TrimSpace(destination.OAuthAccountID)
 	destination.FolderID = strings.TrimSpace(destination.FolderID)
-	destination.BasePath = strings.TrimSpace(destination.BasePath)
 	if !creating && destination.ID == "" {
 		return DriveDestination{}, errors.New("drive destination id is required")
 	}

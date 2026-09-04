@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestMemoryExecutionHostOwnershipUsesSyntheticLegacyDefaultAndCASFencing(t *testing.T) {
+func TestMemoryExecutionHostOwnershipUsesSyntheticPullDefaultAndCASFencing(t *testing.T) {
 	ctx := t.Context()
 	updates := NewMemorySystemUpdateStore()
 
@@ -15,7 +15,7 @@ func TestMemoryExecutionHostOwnershipUsesSyntheticLegacyDefaultAndCASFencing(t *
 		t.Fatal(err)
 	}
 	if missing.ExecutionHostID != "host-a" ||
-		missing.TransportMode != SystemUpdateTransportSSHV1 ||
+		missing.TransportMode != SystemUpdateTransportPullV2 ||
 		missing.AgentServiceID != "" ||
 		missing.OwnershipEpoch != 0 ||
 		missing.PolicyRevision != 0 {
@@ -36,7 +36,6 @@ func TestMemoryExecutionHostOwnershipUsesSyntheticLegacyDefaultAndCASFencing(t *
 	if first.OwnershipEpoch != 1 ||
 		first.TransportMode != SystemUpdateTransportPullV2 ||
 		first.AgentServiceID != "updater-host-a" ||
-		first.LegacyAgentServiceID != "" ||
 		first.PolicyRevision != 7 {
 		t.Fatalf("first ownership = %#v", first)
 	}
@@ -45,8 +44,8 @@ func TestMemoryExecutionHostOwnershipUsesSyntheticLegacyDefaultAndCASFencing(t *
 		ctx,
 		"host-a",
 		0,
-		SystemUpdateTransportSSHV1,
-		"updater-central",
+		SystemUpdateTransportPullV2,
+		"updater-host-b",
 		8,
 	); !errors.Is(err, ErrSystemUpdateExecutionHostStale) {
 		t.Fatalf("stale switch err = %v", err)
@@ -56,17 +55,16 @@ func TestMemoryExecutionHostOwnershipUsesSyntheticLegacyDefaultAndCASFencing(t *
 		ctx,
 		"host-a",
 		1,
-		SystemUpdateTransportSSHV1,
-		"updater-central",
+		SystemUpdateTransportPullV2,
+		"updater-host-b",
 		8,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if second.OwnershipEpoch != 2 ||
-		second.TransportMode != SystemUpdateTransportSSHV1 ||
-		second.AgentServiceID != "updater-central" ||
-		second.LegacyAgentServiceID != "updater-central" ||
+		second.TransportMode != SystemUpdateTransportPullV2 ||
+		second.AgentServiceID != "updater-host-b" ||
 		second.PolicyRevision != 8 {
 		t.Fatalf("second ownership = %#v", second)
 	}
@@ -107,8 +105,8 @@ func TestMemoryExecutionHostOwnershipRejectsEveryNonterminalJobOnHost(t *testing
 		ctx,
 		"host-a",
 		ownership.OwnershipEpoch,
-		SystemUpdateTransportSSHV1,
-		"updater-central",
+		SystemUpdateTransportPullV2,
+		"updater-host-b",
 		2,
 	); !errors.Is(err, ErrSystemUpdateExecutionHostBusy) {
 		t.Fatalf("switch with queued job err = %v", err)
@@ -121,8 +119,8 @@ func TestMemoryExecutionHostOwnershipRejectsEveryNonterminalJobOnHost(t *testing
 		ctx,
 		"host-a",
 		ownership.OwnershipEpoch,
-		SystemUpdateTransportSSHV1,
-		"updater-central",
+		SystemUpdateTransportPullV2,
+		"updater-host-b",
 		2,
 	)
 	if err != nil {

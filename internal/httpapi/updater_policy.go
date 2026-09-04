@@ -17,7 +17,6 @@ import (
 
 type updaterPolicyUpdateRequest struct {
 	ExpectedRevision          int64                        `json:"expected_revision"`
-	API                       store.UpdaterPolicyAPI       `json:"api"`
 	PollIntervalSeconds       int                          `json:"poll_interval_seconds"`
 	HeartbeatIntervalSeconds  int                          `json:"heartbeat_interval_seconds"`
 	Hosts                     []store.UpdaterPolicyHost    `json:"hosts"`
@@ -79,6 +78,16 @@ type deactivatePullUpdaterOwnershipResponse struct {
 	LocalExecutorPolicySHA256   string `json:"local_executor_policy_sha256"`
 }
 
+type updaterPolicyTargetResponse struct {
+	TargetID        string `json:"target_id"`
+	ServiceID       string `json:"service_id"`
+	HostID          string `json:"host_id"`
+	ServiceType     string `json:"service_type"`
+	DeploymentMode  string `json:"deployment_mode"`
+	DatabaseName    string `json:"database_name,omitempty"`
+	LocalListenPort int    `json:"local_listen_port,omitempty"`
+}
+
 type updaterPolicyHostResponse struct {
 	HostID                   string `json:"host_id"`
 	Name                     string `json:"name"`
@@ -92,16 +101,6 @@ type updaterPolicyHostResponse struct {
 	SSHClientKeyFingerprint  string `json:"ssh_client_key_fingerprint,omitempty"`
 }
 
-type updaterPolicyTargetResponse struct {
-	TargetID        string `json:"target_id"`
-	ServiceID       string `json:"service_id"`
-	HostID          string `json:"host_id"`
-	ServiceType     string `json:"service_type"`
-	DeploymentMode  string `json:"deployment_mode"`
-	DatabaseName    string `json:"database_name,omitempty"`
-	LocalListenPort int    `json:"local_listen_port,omitempty"`
-}
-
 type updaterPolicyResponse struct {
 	UpdaterID                   string                               `json:"updater_id"`
 	Revision                    int64                                `json:"revision"`
@@ -110,13 +109,12 @@ type updaterPolicyResponse struct {
 	TransportMode               string                               `json:"transport_mode"`
 	ExecutionHostID             string                               `json:"execution_host_id,omitempty"`
 	LocalExecutorPolicySHA256   string                               `json:"local_executor_policy_sha256,omitempty"`
-	API                         *store.UpdaterPolicyAPI              `json:"api,omitempty"`
 	PollIntervalSeconds         int                                  `json:"poll_interval_seconds"`
 	HeartbeatIntervalSeconds    int                                  `json:"heartbeat_interval_seconds"`
-	Hosts                       []updaterPolicyHostResponse          `json:"hosts,omitempty"`
+	Hosts                       []updaterPolicyHostResponse          `json:"hosts"`
 	Targets                     []updaterPolicyTargetResponse        `json:"targets"`
 	UpdatedAt                   time.Time                            `json:"updated_at"`
-	GitHubTokenConfigured       *bool                                `json:"github_token_configured,omitempty"`
+	GitHubTokenConfigured       bool                                 `json:"github_token_configured"`
 	GitHubTokenFingerprint      string                               `json:"github_token_fingerprint,omitempty"`
 	ExecutionHostOwnership      *store.SystemUpdateExecutionHost     `json:"execution_host_ownership,omitempty"`
 	PullActivation              *updaterPullActivationStatusResponse `json:"pull_activation,omitempty"`
@@ -133,24 +131,6 @@ type updaterPullActivationStatusResponse struct {
 	RecoveryPending            bool       `json:"recovery_pending"`
 	ReportedOwnershipEpoch     int64      `json:"reported_ownership_epoch"`
 	ReportedProjectionRevision int64      `json:"reported_projection_revision"`
-}
-
-type legacyUpdaterPolicyTargetResponse struct {
-	TargetID       string `json:"target_id"`
-	HostID         string `json:"host_id"`
-	ServiceType    string `json:"service_type"`
-	DeploymentMode string `json:"deployment_mode"`
-}
-
-type legacyUpdaterPolicyResponse struct {
-	UpdaterID                string                              `json:"updater_id"`
-	Revision                 int64                               `json:"revision"`
-	API                      store.UpdaterPolicyAPI              `json:"api"`
-	PollIntervalSeconds      int                                 `json:"poll_interval_seconds"`
-	HeartbeatIntervalSeconds int                                 `json:"heartbeat_interval_seconds"`
-	Hosts                    []updaterPolicyHostResponse         `json:"hosts"`
-	Targets                  []legacyUpdaterPolicyTargetResponse `json:"targets"`
-	UpdatedAt                time.Time                           `json:"updated_at"`
 }
 
 func (s *Server) getUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
@@ -173,22 +153,12 @@ func (s *Server) getUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_policy_failed"})
 		return
 	}
-	var tokenStatus *store.SecretStatus
-	if agent.TransportMode != store.SystemUpdateTransportPullV2 {
-		status, statusErr := s.updaterReleaseTokenStatus(r.Context())
-		if statusErr != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_release_token_status_failed"})
-			return
-		}
-		tokenStatus = &status
-	}
 	w.Header().Set("Cache-Control", "no-store")
-	response := makeUpdaterPolicyResponse(
-		policy,
-		tokenStatus,
-		&agent,
-		canViewUpdaterReleaseTokenFingerprint(r.Context()),
-	)
+	response := makeUpdaterPolicyResponse(policy, &agent)
+	if err := s.enrichUpdaterReleaseTokenResponse(r.Context(), &response, canViewUpdaterReleaseTokenFingerprint(r.Context())); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_release_token_status_failed"})
+		return
+	}
 	if err := s.enrichPullUpdaterPolicyResponse(r.Context(), &response, agent, policy); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_activation_status_failed"})
 		return
@@ -214,6 +184,14 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_updater_policy_revision"})
 		return
 	}
+	if _, err := normalizeUpdaterReleaseToken(body.GitHubToken); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_updater_release_token"})
+		return
+	}
+	if body.GitHubToken != nil && !runtimeSecretTransportAllowed(r) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "secure_transport_required"})
+		return
+	}
 	s.systemUpdateOperationMu.Lock()
 	defer s.systemUpdateOperationMu.Unlock()
 
@@ -223,6 +201,10 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updaterID = agent.ServiceID
+	if body.GitHubToken != nil && !security.HasPermission(current.Permissions, "secrets.update") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
+		return
+	}
 	policy, err := normalizedUpdaterPolicyRequest(agent, body)
 	if err != nil {
 		code := "invalid_updater_policy"
@@ -236,20 +218,6 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
 	}
-	if systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportPullV2 {
-		policy, err = s.canonicalizePullUpdaterLocalListenerBindings(r.Context(), policy)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_updater_target_endpoints_failed"})
-			return
-		}
-	}
-	if systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportSSHV1 &&
-		body.GitHubToken != nil &&
-		!security.HasPermission(current.Permissions, "secrets.update") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
-		return
-	}
-
 	bootstrapActive, err := s.updateHostBootstrapJobs.HasActiveJob(updaterID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_updater_host_bootstrap_failed"})
@@ -259,79 +227,64 @@ func (s *Server) updateUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_host_bootstrap_in_progress"})
 		return
 	}
-	var (
-		saved       store.UpdaterPolicy
-		tokenStatus store.SecretStatus
-	)
-	if systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportPullV2 {
-		executionHosts, ok := s.systemUpdates.(store.SystemUpdateExecutionHostStore)
-		if !ok {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "system_update_execution_host_store_unavailable"})
+	policy, err = s.canonicalizePullUpdaterLocalListenerBindings(r.Context(), policy)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_updater_target_endpoints_failed"})
+		return
+	}
+
+	executionHosts, ok := s.systemUpdates.(store.SystemUpdateExecutionHostStore)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "system_update_execution_host_store_unavailable"})
+		return
+	}
+	pendingInitialPolicy := systemUpdateAgentPendingInitialPullPolicy(agent)
+	expectedOwnershipEpoch := agent.OwnershipEpoch
+	if agent.OwnershipEpoch == 0 &&
+		(systemUpdateAgentObserveOnly(agent) || pendingInitialPolicy) {
+		currentOwnership, ownershipErr := executionHosts.GetSystemUpdateExecutionHost(
+			r.Context(),
+			agent.ExecutionHostID,
+		)
+		if ownershipErr != nil {
+			writeUpdaterPolicySaveError(w, ownershipErr)
 			return
 		}
-		pendingInitialPolicy := systemUpdateAgentPendingInitialPullPolicy(agent)
-		expectedOwnershipEpoch := agent.OwnershipEpoch
-		if agent.OwnershipEpoch == 0 &&
-			(systemUpdateAgentObserveOnly(agent) ||
-				pendingInitialPolicy) {
-			currentOwnership, ownershipErr := executionHosts.GetSystemUpdateExecutionHost(
-				r.Context(),
-				agent.ExecutionHostID,
-			)
-			if ownershipErr != nil {
-				writeUpdaterPolicySaveError(w, ownershipErr)
-				return
-			}
-			if pendingInitialPolicy &&
-				currentOwnership.TransportMode != store.SystemUpdateTransportSSHV1 {
-				writeUpdaterPolicySaveError(
-					w,
-					store.ErrSystemUpdateAgentBindingMismatch,
-				)
-				return
-			}
-			expectedOwnershipEpoch = currentOwnership.OwnershipEpoch
-		}
-		saved, err = s.updaterPolicies.SavePullUpdaterPolicy(
-			r.Context(),
-			executionHosts,
-			updaterID,
-			body.ExpectedRevision,
-			expectedOwnershipEpoch,
-			policy,
-		)
-	} else {
-		saved, tokenStatus, err = s.updaterPolicies.SaveUpdaterPolicyAndReleaseToken(
-			r.Context(),
-			updaterID,
-			body.ExpectedRevision,
-			policy,
-			body.GitHubToken,
-		)
+		expectedOwnershipEpoch = currentOwnership.OwnershipEpoch
 	}
+	saved, err := s.updaterPolicies.SavePullUpdaterPolicy(
+		r.Context(),
+		executionHosts,
+		updaterID,
+		body.ExpectedRevision,
+		expectedOwnershipEpoch,
+		policy,
+	)
 	if err != nil {
 		writeUpdaterPolicySaveError(w, err)
 		return
+	}
+	if body.GitHubToken != nil {
+		normalizedToken, _ := normalizeUpdaterReleaseToken(body.GitHubToken)
+		if _, err := s.secrets.UpdateSecret(r.Context(), store.UpdaterGitHubReleaseTokenSecretName, *normalizedToken); err != nil {
+			writeUpdaterPolicySaveError(w, err)
+			return
+		}
 	}
 	s.writeAudit(r, store.AuditEvent{
 		ActorUserID: current.User.ID, ActorUsername: current.User.Username,
 		Action: "system_updates.updater_policy.save", ResourceType: "update_agent", ResourceID: updaterID, Result: "success",
 		Metadata: map[string]any{
 			"revision": saved.Revision, "host_count": len(saved.Hosts), "target_count": len(saved.Targets),
-			"github_token_changed": systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportSSHV1 && body.GitHubToken != nil,
+			"github_token_changed": body.GitHubToken != nil,
 		},
 	})
 	w.Header().Set("Cache-Control", "no-store")
-	var responseTokenStatus *store.SecretStatus
-	if agent.TransportMode != store.SystemUpdateTransportPullV2 {
-		responseTokenStatus = &tokenStatus
+	response := makeUpdaterPolicyResponse(saved, &agent)
+	if err := s.enrichUpdaterReleaseTokenResponse(r.Context(), &response, canViewUpdaterReleaseTokenFingerprint(r.Context())); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_release_token_status_failed"})
+		return
 	}
-	response := makeUpdaterPolicyResponse(
-		saved,
-		responseTokenStatus,
-		&agent,
-		canViewUpdaterReleaseTokenFingerprint(r.Context()),
-	)
 	if err := s.enrichPullUpdaterPolicyResponse(r.Context(), &response, agent, saved); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_activation_status_failed"})
 		return
@@ -536,7 +489,7 @@ func (s *Server) deactivatePullUpdaterOwnership(w http.ResponseWriter, r *http.R
 		Action: "system_updates.pull_ownership.deactivate", ResourceType: "update_agent", ResourceID: agent.ServiceID, Result: "success",
 		Metadata: map[string]any{
 			"execution_host_id":              result.Ownership.ExecutionHostID,
-			"legacy_agent_service_id":        result.Ownership.AgentServiceID,
+			"agent_service_id":               result.Ownership.AgentServiceID,
 			"ownership_epoch":                result.Ownership.OwnershipEpoch,
 			"agent_ownership_epoch":          result.Service.OwnershipEpoch,
 			"source_policy_revision":         result.Policy.Revision,
@@ -581,52 +534,6 @@ func writePullUpdaterDeactivationError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *Server) serviceUpdaterPolicy(w http.ResponseWriter, r *http.Request) {
-	token, ok := s.authenticateService(w, r, "updates.claim")
-	if !ok {
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	var body struct {
-		ServiceID       string `json:"service_id"`
-		CurrentRevision int64  `json:"current_revision"`
-	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
-		return
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || body.CurrentRevision < 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
-		return
-	}
-	agent, err := s.systemUpdateAgentForToken(r.Context(), token, body.ServiceID)
-	if err != nil {
-		writeSystemUpdateAgentError(w, err)
-		return
-	}
-	policy, err := s.updaterPolicies.GetUpdaterPolicy(r.Context(), agent.ServiceID)
-	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_policy_not_configured"})
-		return
-	}
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_policy_failed"})
-		return
-	}
-	if body.CurrentRevision == policy.Revision {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if body.CurrentRevision > policy.Revision {
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_policy_revision_ahead"})
-		return
-	}
-	writeJSON(w, http.StatusOK, makeLegacyUpdaterPolicyResponse(policy))
-}
-
 var (
 	errInvalidUpdaterHostPublicKey   = errors.New("invalid updater host public key")
 	errInvalidUpdaterDatabaseName    = errors.New("invalid updater database name")
@@ -636,18 +543,11 @@ var (
 
 func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterPolicyUpdateRequest) (store.UpdaterPolicy, error) {
 	transportMode := strings.ToLower(strings.TrimSpace(agent.TransportMode))
-	if transportMode == "" {
-		transportMode = store.SystemUpdateTransportSSHV1
-	}
-	if transportMode == store.SystemUpdateTransportPullV2 {
-		if strings.TrimSpace(agent.ExecutionHostID) == "" ||
-			(agent.OwnershipEpoch < 1 &&
-				!systemUpdateAgentObserveOnly(agent) &&
-				!systemUpdateAgentPendingInitialPullPolicy(agent)) ||
-			body.GitHubToken != nil {
-			return store.UpdaterPolicy{}, store.ErrInvalidSettings
-		}
-	} else if transportMode != store.SystemUpdateTransportSSHV1 {
+	if transportMode != store.SystemUpdateTransportPullV2 ||
+		strings.TrimSpace(agent.ExecutionHostID) == "" ||
+		(agent.OwnershipEpoch < 1 &&
+			!systemUpdateAgentObserveOnly(agent) &&
+			!systemUpdateAgentPendingInitialPullPolicy(agent)) {
 		return store.UpdaterPolicy{}, store.ErrInvalidSettings
 	}
 	targets, err := normalizedUpdaterPolicyTargets(transportMode, body.Targets)
@@ -659,7 +559,6 @@ func normalizedUpdaterPolicyRequest(agent store.RegisteredService, body updaterP
 		TransportMode:             transportMode,
 		ExecutionHostID:           strings.TrimSpace(agent.ExecutionHostID),
 		LocalExecutorPolicySHA256: strings.TrimSpace(body.LocalExecutorPolicySHA256),
-		API:                       body.API,
 		PollIntervalSeconds:       body.PollIntervalSeconds, HeartbeatIntervalSeconds: body.HeartbeatIntervalSeconds,
 		Hosts: append([]store.UpdaterPolicyHost(nil), body.Hosts...), Targets: targets,
 	}
@@ -753,47 +652,37 @@ func parseUpdaterED25519PublicKey(raw string) (ssh.PublicKey, error) {
 	return key, nil
 }
 
-func makeUpdaterPolicyResponse(policy store.UpdaterPolicy, tokenStatus *store.SecretStatus, agent *store.RegisteredService, includeTokenFingerprint bool) updaterPolicyResponse {
+func makeUpdaterPolicyResponse(policy store.UpdaterPolicy, agent *store.RegisteredService) updaterPolicyResponse {
 	transportMode := strings.ToLower(strings.TrimSpace(policy.TransportMode))
 	executionHostID := strings.TrimSpace(policy.ExecutionHostID)
 	if agent != nil {
 		transportMode = systemUpdateAgentTransportMode(*agent)
-		if transportMode == store.SystemUpdateTransportPullV2 {
-			executionHostID = strings.TrimSpace(agent.ExecutionHostID)
-		} else {
-			executionHostID = ""
-		}
+		executionHostID = strings.TrimSpace(agent.ExecutionHostID)
 	}
 	clientKeys := map[string]string{}
-	if agent != nil && transportMode != store.SystemUpdateTransportPullV2 {
+	if agent != nil {
 		clientKeys = capabilityStringMap(agent.ReportedCapabilities["ssh_client_public_keys"])
 	}
 	hosts := make([]updaterPolicyHostResponse, 0, len(policy.Hosts))
-	if transportMode != store.SystemUpdateTransportPullV2 {
-		for _, host := range policy.Hosts {
-			responseHost := updaterPolicyHostResponse{
-				HostID: host.HostID, Name: host.Name, Address: host.Address, Port: host.Port, User: host.User, Arch: host.Arch,
-				HostPublicKey: host.HostPublicKey,
-			}
-			if publicKey, err := parseUpdaterED25519PublicKey(host.HostPublicKey); err == nil {
-				responseHost.HostPublicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey)))
-				responseHost.HostPublicKeyFingerprint = ssh.FingerprintSHA256(publicKey)
-			}
-			if clientKey, err := parseUpdaterED25519PublicKey(clientKeys[host.HostID]); err == nil {
-				responseHost.SSHClientPublicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(clientKey)))
-				responseHost.SSHClientKeyFingerprint = ssh.FingerprintSHA256(clientKey)
-			}
-			hosts = append(hosts, responseHost)
+	for _, host := range policy.Hosts {
+		responseHost := updaterPolicyHostResponse{
+			HostID: host.HostID, Name: host.Name, Address: host.Address, Port: host.Port,
+			User: host.User, Arch: host.Arch, HostPublicKey: host.HostPublicKey,
 		}
+		if publicKey, err := parseUpdaterED25519PublicKey(host.HostPublicKey); err == nil {
+			responseHost.HostPublicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey)))
+			responseHost.HostPublicKeyFingerprint = ssh.FingerprintSHA256(publicKey)
+		}
+		if clientKey, err := parseUpdaterED25519PublicKey(clientKeys[host.HostID]); err == nil {
+			responseHost.SSHClientPublicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(clientKey)))
+			responseHost.SSHClientKeyFingerprint = ssh.FingerprintSHA256(clientKey)
+		}
+		hosts = append(hosts, responseHost)
 	}
 	targets := make([]updaterPolicyTargetResponse, 0, len(policy.Targets))
 	for _, target := range policy.Targets {
-		hostID := target.HostID
-		if transportMode == store.SystemUpdateTransportPullV2 {
-			hostID = executionHostID
-		}
 		targets = append(targets, updaterPolicyTargetResponse{
-			TargetID: target.TargetID, ServiceID: target.ServiceID, HostID: hostID,
+			TargetID: target.TargetID, ServiceID: target.ServiceID, HostID: executionHostID,
 			ServiceType: target.ServiceType, DeploymentMode: target.DeploymentMode,
 			DatabaseName: target.DatabaseName, LocalListenPort: target.LocalListenPort,
 		})
@@ -808,17 +697,6 @@ func makeUpdaterPolicyResponse(policy store.UpdaterPolicy, tokenStatus *store.Se
 		LocalExecutorPolicySHA256:   policy.LocalExecutorPolicySHA256,
 		PollIntervalSeconds:         policy.PollIntervalSeconds, HeartbeatIntervalSeconds: policy.HeartbeatIntervalSeconds,
 		Hosts: hosts, Targets: targets, UpdatedAt: policy.UpdatedAt,
-	}
-	if transportMode != store.SystemUpdateTransportPullV2 {
-		api := policy.API
-		response.API = &api
-	}
-	if transportMode != store.SystemUpdateTransportPullV2 && tokenStatus != nil {
-		configured := tokenStatus.Configured
-		response.GitHubTokenConfigured = &configured
-		if includeTokenFingerprint {
-			response.GitHubTokenFingerprint = tokenStatus.Fingerprint
-		}
 	}
 	return response
 }
@@ -869,13 +747,15 @@ func (s *Server) enrichPullUpdaterPolicyResponse(
 	reportedOwnershipEpoch, _ := capabilityInt64(agent.ReportedCapabilities["ownership_epoch"])
 	reportedProjectionRevision, _ := capabilityInt64(agent.ReportedCapabilities["policy_revision"])
 	ready := agent.OwnershipEpoch == 0 &&
-		ownership.TransportMode == store.SystemUpdateTransportSSHV1 &&
+		ownership.TransportMode == store.SystemUpdateTransportPullV2 &&
+		(ownership.AgentServiceID == "" || ownership.AgentServiceID == agent.ServiceID) &&
 		store.PullUpdaterObserverReadyForActivation(agent, policy, servicesByID, time.Now().UTC())
 	blockedReason := ""
 	switch {
 	case agent.OwnershipEpoch > 0:
 		blockedReason = "already_active"
-	case ownership.TransportMode != store.SystemUpdateTransportSSHV1:
+	case ownership.TransportMode != store.SystemUpdateTransportPullV2 ||
+		(ownership.AgentServiceID != "" && ownership.AgentServiceID != agent.ServiceID):
 		blockedReason = "system_update_ownership_conflict"
 	case !ready:
 		blockedReason = "host_agent_not_ready"
@@ -920,39 +800,11 @@ func (s *Server) canonicalizePullUpdaterLocalListenerBindings(
 			continue
 		}
 		if target.LocalListenPort == service.AppliedEndpoint.Port {
-			// Matching advertised/local ports retain the legacy shared-port
-			// contract. Only a genuinely split listener needs a side-table row;
-			// this preserves existing atomic port reconfiguration for that case.
+			// Matching advertised/local ports do not need a side-table override.
 			target.LocalListenPort = 0
 		}
 	}
 	return policy, nil
-}
-
-func makeLegacyUpdaterPolicyResponse(policy store.UpdaterPolicy) legacyUpdaterPolicyResponse {
-	admin := makeUpdaterPolicyResponse(policy, nil, nil, false)
-	api := store.UpdaterPolicyAPI{}
-	if admin.API != nil {
-		api = *admin.API
-	}
-	targets := make([]legacyUpdaterPolicyTargetResponse, 0, len(policy.Targets))
-	for _, target := range policy.Targets {
-		targets = append(targets, legacyUpdaterPolicyTargetResponse{
-			TargetID: target.TargetID, HostID: target.HostID,
-			ServiceType: target.ServiceType, DeploymentMode: target.DeploymentMode,
-		})
-	}
-	return legacyUpdaterPolicyResponse{
-		UpdaterID: admin.UpdaterID, Revision: admin.Revision, API: api,
-		PollIntervalSeconds: admin.PollIntervalSeconds, HeartbeatIntervalSeconds: admin.HeartbeatIntervalSeconds,
-		Hosts: admin.Hosts, Targets: targets, UpdatedAt: admin.UpdatedAt,
-	}
-}
-
-func canViewUpdaterReleaseTokenFingerprint(ctx context.Context) bool {
-	permissions := currentFromContext(ctx).Permissions
-	return security.HasPermission(permissions, "secrets.read_status") ||
-		security.HasPermission(permissions, "secrets.update")
 }
 
 func (s *Server) registeredUpdateAgent(w http.ResponseWriter, r *http.Request, updaterID string) (store.RegisteredService, bool) {
@@ -976,8 +828,51 @@ func (s *Server) registeredUpdateAgent(w http.ResponseWriter, r *http.Request, u
 	return agent, true
 }
 
+func normalizeUpdaterReleaseToken(value *string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	normalized := strings.TrimSpace(*value)
+	if len(normalized) > 4096 {
+		return nil, store.ErrInvalidSettings
+	}
+	for _, char := range []byte(normalized) {
+		if char < 0x21 || char > 0x7e {
+			return nil, store.ErrInvalidSettings
+		}
+	}
+	return &normalized, nil
+}
+
 func (s *Server) updaterReleaseTokenStatus(ctx context.Context) (store.SecretStatus, error) {
-	return s.updaterPolicies.GetUpdaterReleaseTokenStatus(ctx)
+	statuses, err := s.secrets.ListSecretStatus(ctx)
+	if err != nil {
+		return store.SecretStatus{}, err
+	}
+	for _, status := range statuses {
+		if status.Name == store.UpdaterGitHubReleaseTokenSecretName {
+			return status, nil
+		}
+	}
+	return store.SecretStatus{Name: store.UpdaterGitHubReleaseTokenSecretName}, nil
+}
+
+func (s *Server) enrichUpdaterReleaseTokenResponse(ctx context.Context, response *updaterPolicyResponse, includeFingerprint bool) error {
+	status, err := s.updaterReleaseTokenStatus(ctx)
+	if err != nil {
+		return err
+	}
+	response.GitHubTokenConfigured = status.Configured
+	if includeFingerprint {
+		response.GitHubTokenFingerprint = status.Fingerprint
+	}
+	return nil
+}
+
+func canViewUpdaterReleaseTokenFingerprint(ctx context.Context) bool {
+	permissions := currentFromContext(ctx).Permissions
+	return security.HasPermission(permissions, "secrets.read_status") ||
+		security.HasPermission(permissions, "secrets.update")
 }
 
 func writeUpdaterPolicySaveError(w http.ResponseWriter, err error) {

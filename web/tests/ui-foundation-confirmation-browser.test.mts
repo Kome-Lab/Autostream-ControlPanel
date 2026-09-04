@@ -210,21 +210,20 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
     assert.equal(await browser.evaluate("document.activeElement?.id"), "consequence-trigger");
 
     await browser.setMediaFeatures([]);
-    await browser.navigate(`${baseUrl}/?scenario=legacy&locale=ja`);
-    await browser.clickSelector("#legacy-trigger");
-    assert.equal(await browser.evaluate("document.querySelector('[data-slot=alert-dialog-title]')?.textContent"), "Legacy title");
+    await browser.navigate(`${baseUrl}/?scenario=consequence&locale=ja`);
+    await browser.clickSelector("#consequence-trigger");
     assert.match(await browser.evaluate<string>("document.querySelector('[data-slot=alert-dialog-description]')?.textContent || ''"), /本番配信に影響/);
     await browser.pressKey("Escape");
     await browser.waitFor(
       "document.activeElement?.id || ''",
-      (value: string) => value === "legacy-trigger",
-      "legacy focus returns to trigger",
+      (value: string) => value === "consequence-trigger",
+      "Japanese Foundation confirmation returns focus to trigger",
     );
-    assert.equal(await browser.evaluate("document.activeElement?.id"), "legacy-trigger");
+    assert.equal(await browser.evaluate("document.activeElement?.id"), "consequence-trigger");
     assert.equal(await intentCount(browser), 0);
-    await browser.clickSelector("#legacy-trigger");
+    await browser.clickSelector("#consequence-trigger");
     await browser.clickSelector("[data-confirm-action]");
-    await browser.waitFor("Number(document.querySelector('[data-testid=intent-count]')?.textContent)", (value: number) => value === 1, "legacy callback remains caller-owned");
+    await browser.waitFor("Number(document.querySelector('[data-testid=intent-count]')?.textContent)", (value: number) => value === 1, "Foundation callback remains caller-owned");
     assert.equal(await intentCount(browser), 1);
 
     assert.equal(browser.consoleErrorCount, 0);

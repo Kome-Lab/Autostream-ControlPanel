@@ -226,11 +226,11 @@ func TestCreateStreamRejectsLegacyAssignmentFieldsWithoutPartialStateOrValues(t 
 			req.Header.Set("X-CSRF-Token", csrf)
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, req)
-			if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
+			if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
 				t.Fatalf("legacy create status=%d body=%s", res.Code, res.Body.String())
 			}
-			if warning := res.Header().Get("Warning"); warning != `299 AutoStream "stream create assignment fields are unsupported; assign nodes after creation"` {
-				t.Fatalf("legacy create Warning=%q", warning)
+			if warning := res.Header().Get("Warning"); warning != "" {
+				t.Fatalf("removed create fields must not emit compatibility Warning=%q", warning)
 			}
 			for _, sensitive := range testCase.sensitive {
 				if strings.Contains(res.Body.String(), sensitive) {

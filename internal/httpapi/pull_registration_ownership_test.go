@@ -47,20 +47,20 @@ func (s *pullRegistrationOwnershipSpy) SwitchSystemUpdateExecutionHost(
 
 func TestCreatePullNodeRegistrationIsObserveOnlyAndDoesNotClaimOwnership(t *testing.T) {
 	testCases := map[string]bool{
-		"new execution host":      false,
-		"existing SSH-owned host": true,
+		"new execution host":       false,
+		"existing pull-owned host": true,
 	}
-	for name, existingSSHOwner := range testCases {
+	for name, existingPullOwner := range testCases {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 			updates := store.NewMemorySystemUpdateStore()
-			if existingSSHOwner {
+			if existingPullOwner {
 				if _, err := updates.SwitchSystemUpdateExecutionHost(
 					t.Context(),
 					"host-a",
 					0,
-					store.SystemUpdateTransportSSHV1,
-					"legacy-updater",
+					store.SystemUpdateTransportPullV2,
+					"existing-host-agent",
 					7,
 				); err != nil {
 					t.Fatal(err)
@@ -106,8 +106,8 @@ func TestCreateGenericPullServiceTokenIsObserveOnlyAndDoesNotClaimOwnership(t *t
 		t.Context(),
 		"host-generic",
 		0,
-		store.SystemUpdateTransportSSHV1,
-		"legacy-updater",
+		store.SystemUpdateTransportPullV2,
+		"existing-host-agent",
 		3,
 	); err != nil {
 		t.Fatal(err)

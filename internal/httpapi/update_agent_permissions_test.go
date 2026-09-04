@@ -291,7 +291,7 @@ func TestLegacyUpdateAgentCredentialRotationFailsClosed(t *testing.T) {
 	}
 	stage := httptest.NewRequest(
 		http.MethodPost,
-		"/api/node-agent/configure/stage",
+		"/services/host-agent/runtime-identity/stage",
 		strings.NewReader(`{"nodeId":"`+service.ServiceID+`","configureToken":"`+rawConfigureToken+`"}`),
 	)
 	stageResult := httptest.NewRecorder()
@@ -333,7 +333,7 @@ func TestLegacyStagedUpdateAgentActivationFailsClosed(t *testing.T) {
 	)
 	activate := httptest.NewRequest(
 		http.MethodPost,
-		"/api/node-agent/configure/activate",
+		"/services/host-agent/runtime-identity/activate",
 		strings.NewReader(`{"nodeId":"updater-legacy-staged","configurationId":"legacy-configuration","activationToken":"ast_act_legacy"}`),
 	)
 	activateResult := httptest.NewRecorder()

@@ -92,7 +92,7 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 		},
 	)
 	if err != nil {
-		return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
+		return updateradapter.ConfigurePolicyProjection{}, fmt.Errorf("%w: %v", errHostAgentConfigurePolicyUnavailable, err)
 	}
 	return projection, nil
 }

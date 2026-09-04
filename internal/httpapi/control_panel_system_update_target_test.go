@@ -155,16 +155,16 @@ func TestControlPanelSystemUpdateServiceInjectionIsPolicyScoped(t *testing.T) {
 		t.Fatal("exact Control Panel policy accepted unsafe runtime")
 	}
 
-	sshPolicy := exactPolicy
-	sshPolicy.TransportMode = store.SystemUpdateTransportSSHV1
+	unsupportedPolicy := exactPolicy
+	unsupportedPolicy.TransportMode = "retired_transport"
 	if err := addControlPanelSystemUpdateServiceForPolicy(
 		servicesByID,
-		sshPolicy,
+		unsupportedPolicy,
 	); err != nil {
-		t.Fatalf("SSH Control Panel policy read pull runtime: %v", err)
+		t.Fatalf("unsupported Control Panel policy read pull runtime: %v", err)
 	}
 	if len(servicesByID) != 1 {
-		t.Fatalf("SSH Control Panel policy changed services: %#v", servicesByID)
+		t.Fatalf("unsupported Control Panel policy changed services: %#v", servicesByID)
 	}
 }
 
@@ -208,7 +208,7 @@ func TestHostAgentConfigureProjectionSynthesizesControlPanelAndDatabase(t *testi
 	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.com")
 	fixture := newControlPanelPullPolicyHTTPFixture(t)
 
-	request := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure/stage", nil)
+	request := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", nil)
 	projection, err := fixture.server.hostAgentConfigurePolicyProjection(
 		t.Context(),
 		request,
@@ -304,83 +304,6 @@ func TestPullClaimEligibilitySynthesizesControlPanelService(t *testing.T) {
 	}
 	if len(eligible) != 1 || eligible["control-panel"] != "systemd" {
 		t.Fatalf("Control Panel eligible targets = %#v", eligible)
-	}
-}
-
-func TestSSHControlPanelClaimIgnoresPullRuntimeEnvironment(t *testing.T) {
-	t.Setenv("AUTOSTREAM_BIND_ADDR", "0.0.0.0:80")
-	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "0")
-	const (
-		updaterID = "central-updater"
-		hostID    = "host-panel"
-	)
-	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	policies := store.NewMemoryUpdaterPolicyStore()
-	policy, err := policies.SaveUpdaterPolicy(
-		t.Context(),
-		updaterID,
-		0,
-		store.UpdaterPolicy{
-			API: store.UpdaterPolicyAPI{
-				BindHost: "127.0.0.1",
-				Host:     "127.0.0.1",
-				Port:     8090,
-			},
-			PollIntervalSeconds:      15,
-			HeartbeatIntervalSeconds: 30,
-			Hosts: []store.UpdaterPolicyHost{{
-				HostID:        hostID,
-				Name:          "Panel host",
-				Address:       "panel.example.com",
-				Port:          55850,
-				User:          "autostream-update-host",
-				Arch:          "amd64",
-				HostPublicKey: hostKey,
-			}},
-			Targets: []store.UpdaterPolicyTarget{{
-				TargetID:       "control-panel",
-				ServiceID:      "control-panel",
-				HostID:         hostID,
-				ServiceType:    "control_panel",
-				DeploymentMode: "systemd",
-			}},
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities := centralUpdateCapabilitiesForTest(
-		hostID,
-		map[string]string{"control-panel": "systemd"},
-	)
-	capabilities["policy_revision"] = policy.ProjectionRevision
-	capabilities["policy_status"] = "applied"
-	now := time.Now().UTC()
-	agent := store.RegisteredService{
-		ServiceID:            updaterID,
-		ServiceType:          "update_agent",
-		TransportMode:        store.SystemUpdateTransportSSHV1,
-		Status:               "online",
-		LastHeartbeatAt:      &now,
-		Capabilities:         capabilities,
-		ReportedCapabilities: capabilities,
-	}
-	server := NewServer(
-		store.NewMemoryStreamStore(),
-		WithServiceRegistryStore(store.NewMemoryAuthStore()),
-		WithUpdaterPolicyStore(policies),
-	)
-	eligible, err := server.systemUpdateTargetsForAgentHostClaim(
-		t.Context(),
-		agent,
-		hostID,
-		false,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(eligible) != 1 || eligible["control-panel"] != "systemd" {
-		t.Fatalf("SSH Control Panel eligible targets = %#v", eligible)
 	}
 }
 

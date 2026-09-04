@@ -48,19 +48,23 @@ export type VideoCoverState = {
 };
 
 export function buildDiscordTargetPayload(selection: DiscordTargetSelection): Record<string, unknown> {
-  if (selection.mode === "inherit") return { discord_target_mode: "inherit" };
+  if (selection.mode === "inherit") return { discord_target: { mode: "inherit" } };
   if (selection.mode === "preset") {
     return {
-      discord_target_mode: "preset",
-      discord_target_preset_id: selection.presetID?.trim() || "",
-      discord_target_preset_revision: selection.presetRevision || 0,
+      discord_target: {
+        mode: "preset",
+        preset_id: selection.presetID?.trim() || "",
+        preset_revision: selection.presetRevision || 0,
+      },
     };
   }
   return {
-    discord_target_mode: "manual",
-    discord_guild_id: selection.guildID?.trim() || "",
-    discord_text_channel_id: selection.textChannelID?.trim() || "",
-    discord_voice_channel_id: selection.voiceChannelID?.trim() || "",
+    discord_target: {
+      mode: "manual",
+      guild_id: selection.guildID?.trim() || "",
+      text_channel_id: selection.textChannelID?.trim() || "",
+      voice_channel_id: selection.voiceChannelID?.trim() || "",
+    },
   };
 }
 

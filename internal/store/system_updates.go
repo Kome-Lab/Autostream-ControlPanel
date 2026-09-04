@@ -158,10 +158,12 @@ type SystemUpdateStore interface {
 // SystemUpdateV2Store is the durable adapter seam for the independent
 // Updater protocol. V2 report sequences are scoped to one lease generation,
 // so a v2 claim atomically resets the persisted sequence before returning the
-// new lease. Legacy claim/report behavior remains unchanged during migration.
+// new lease. The request's generation and ownership fence are checked inside
+// the same transaction as the claim so a stale updater cannot advance either
+// authority.
 type SystemUpdateV2Store interface {
 	GetSystemUpdateJob(ctx context.Context, id string) (SystemUpdateJob, error)
-	ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (claim SystemUpdateClaim, clearActiveJob bool, err error)
+	ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, expectedLeaseGeneration, expectedFence int64, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (claim SystemUpdateClaim, clearActiveJob bool, err error)
 }
 
 func (s *MariaDBSystemUpdateStore) GetSystemUpdateJob(ctx context.Context, id string) (SystemUpdateJob, error) {
@@ -387,19 +389,20 @@ func (s *MariaDBSystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id
 }
 
 func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
-	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, false)
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, 0, 0, eligibleTargets, now, leaseTTL, false)
 }
 
-func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
-	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, true)
+func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, expectedLeaseGeneration, expectedFence int64, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, expectedLeaseGeneration, expectedFence, eligibleTargets, now, leaseTTL, true)
 }
 
-func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration, resetSequence bool) (SystemUpdateClaim, bool, error) {
+func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, expectedLeaseGeneration, expectedFence int64, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration, v2 bool) (SystemUpdateClaim, bool, error) {
 	agentServiceID = strings.TrimSpace(agentServiceID)
 	executionHostID = normalizeSystemUpdateExecutionHostID(agentServiceID, executionHostID)
 	activeJobID = strings.TrimSpace(activeJobID)
 	targets := normalizedEligibleTargets(eligibleTargets)
-	if agentServiceID == "" || !validSystemUpdateExecutionHostID(executionHostID) || (len(targets) == 0 && activeJobID == "") || leaseTTL <= 0 || len(activeJobID) > 64 || containsControl(activeJobID) {
+	if agentServiceID == "" || !validSystemUpdateExecutionHostID(executionHostID) || (len(targets) == 0 && activeJobID == "") || leaseTTL <= 0 || len(activeJobID) > 64 || containsControl(activeJobID) ||
+		(v2 && (expectedLeaseGeneration < 1 || expectedFence < 1)) {
 		return SystemUpdateClaim{}, false, ErrInvalidSystemUpdate
 	}
 	now = now.UTC()
@@ -413,6 +416,9 @@ func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, age
 		return SystemUpdateClaim{}, false, err
 	}
 	if err := authorizeSystemUpdateExecutionHostAgent(ownership, agentServiceID); err != nil {
+		return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	if v2 && ownership.OwnershipEpoch != expectedFence {
 		return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
 	}
 
@@ -434,11 +440,14 @@ func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, age
 		if job.ExecutionHostID != executionHostID {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateActiveUnavailable
 		}
+		if v2 && job.LeaseGeneration != expectedLeaseGeneration {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateLeaseInvalid
+		}
 		mode, authorized := targets[job.TargetID]
 		if !authorized || mode != job.DeploymentMode {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateActiveUnavailable
 		}
-	} else {
+	} else if !v2 {
 		job, err = findExecutingSystemUpdateForAgentHost(ctx, tx, agentServiceID, executionHostID)
 		if err == nil {
 			mode, eligible := targets[job.TargetID]
@@ -448,6 +457,10 @@ func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, age
 		} else if errors.Is(err, sql.ErrNoRows) {
 			job, err = findClaimableSystemUpdate(ctx, tx, agentServiceID, executionHostID, targets, now, false)
 		}
+	} else if expectedLeaseGeneration != 1 {
+		return SystemUpdateClaim{}, false, ErrSystemUpdateLeaseInvalid
+	} else {
+		job, err = findClaimableSystemUpdate(ctx, tx, agentServiceID, executionHostID, targets, now, false)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		foreign, foreignErr := findClaimableSystemUpdate(ctx, tx, "", "", targets, now, true)
@@ -480,7 +493,7 @@ func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, age
 	}
 	leaseGeneration := job.LeaseGeneration + 1
 	sequence := job.Sequence
-	if resetSequence {
+	if v2 {
 		sequence = 0
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE system_update_jobs SET status = ?, agent_service_id = ?, lease_generation = ?, lease_token_hash = ?, lease_expires_at = ?, claimed_at = ?, sequence = ?, updated_at = ? WHERE id = ?`, status, agentServiceID, leaseGeneration, security.HashToken(leaseToken), leaseExpiresAt, claimedAt, sequence, now, job.ID)
@@ -1030,18 +1043,10 @@ func authorizeSystemUpdateJobOwnership(job SystemUpdateJob, ownership SystemUpda
 
 func authorizeSystemUpdateExecutionHostAgent(ownership SystemUpdateExecutionHost, agentServiceID string) error {
 	agentServiceID = strings.TrimSpace(agentServiceID)
-	switch normalizedSystemUpdateTransportMode(ownership.TransportMode) {
-	case SystemUpdateTransportPullV2:
-		if ownership.OwnershipEpoch < 1 ||
-			ownership.PolicyRevision < 1 ||
-			ownership.AgentServiceID != agentServiceID {
-			return ErrSystemUpdateOwnershipConflict
-		}
-	case SystemUpdateTransportSSHV1:
-		if ownership.OwnershipEpoch > 0 && ownership.AgentServiceID != agentServiceID {
-			return ErrSystemUpdateOwnershipConflict
-		}
-	default:
+	if normalizedSystemUpdateTransportMode(ownership.TransportMode) != SystemUpdateTransportPullV2 ||
+		ownership.OwnershipEpoch < 1 ||
+		ownership.PolicyRevision < 1 ||
+		ownership.AgentServiceID != agentServiceID {
 		return ErrSystemUpdateOwnershipConflict
 	}
 	return nil
@@ -1052,17 +1057,11 @@ func authenticatedSystemUpdateExecutionHost(job SystemUpdateJob, executionHostID
 	if executionHostID != "" {
 		return executionHostID
 	}
-	if normalizedSystemUpdateTransportMode(job.TransportMode) == SystemUpdateTransportSSHV1 {
-		return job.ExecutionHostID
-	}
 	return ""
 }
 
 func normalizedSystemUpdateTransportMode(transportMode string) string {
 	transportMode = strings.ToLower(strings.TrimSpace(transportMode))
-	if transportMode == "" {
-		return SystemUpdateTransportSSHV1
-	}
 	return transportMode
 }
 

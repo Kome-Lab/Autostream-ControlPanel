@@ -6,7 +6,6 @@ require (
 	github.com/example/autostream-contracts v0.0.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/go-webauthn/webauthn v0.17.4
-	github.com/in-toto/attestation v1.2.0
 	github.com/klauspost/compress v1.19.2
 	github.com/sigstore/protobuf-specs v0.5.1
 	github.com/sigstore/sigstore-go v1.3.0
@@ -15,12 +14,11 @@ require (
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.39.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sys v0.47.0
 	google.golang.org/api v0.293.0
 	google.golang.org/protobuf v1.36.12
 )
 
-replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab
+replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260904044030-e96ac056e73e
 
 require (
 	cloud.google.com/go/auth v0.23.0 // indirect
@@ -72,14 +70,15 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.20 // indirect
 	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
+	github.com/in-toto/attestation v1.2.0 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.11.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/sigstore/rekor v1.5.3 // indirect
 	github.com/sigstore/rekor-tiles/v2 v2.3.0 // indirect
 	github.com/sigstore/sigstore v1.10.9 // indirect
@@ -97,6 +96,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto v0.0.0-20260618152121-87f3d3e198d3 // indirect

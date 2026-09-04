@@ -44,7 +44,7 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 	})
 	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
 		ServiceID: secondAgentID, ServiceType: "update_agent", ServiceName: secondAgentID,
-		TransportMode: store.SystemUpdateTransportSSHV1, PublicURL: "https://updater.example.com:8090",
+		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "second-" + hostID, OwnershipEpoch: 1,
 	})
 	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
 		ServiceID: wrongHostAgentID, ServiceType: "update_agent", ServiceName: wrongHostAgentID,
@@ -62,7 +62,7 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if missing.TransportMode != store.SystemUpdateTransportSSHV1 || missing.OwnershipEpoch != 0 {
+	if missing.TransportMode != store.SystemUpdateTransportPullV2 || missing.OwnershipEpoch != 0 {
 		t.Fatalf("missing host = %#v", missing)
 	}
 
@@ -84,7 +84,7 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		ctx,
 		hostID,
 		0,
-		store.SystemUpdateTransportSSHV1,
+		store.SystemUpdateTransportPullV2,
 		secondAgentID,
 		2,
 	); !errors.Is(err, store.ErrSystemUpdateExecutionHostStale) {
@@ -150,7 +150,7 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		ctx,
 		hostID,
 		owned.OwnershipEpoch,
-		store.SystemUpdateTransportSSHV1,
+		store.SystemUpdateTransportPullV2,
 		secondAgentID,
 		2,
 	); !errors.Is(err, store.ErrSystemUpdateExecutionHostBusy) {
@@ -246,7 +246,7 @@ func registerMariaDBExecutionHostFixture(
 	t.Helper()
 	scopes := []string{"service.register", "service.heartbeat"}
 	if registration.ServiceType == "update_agent" {
-		scopes = append(scopes, "updates.claim", "updates.report", "updates.authorize")
+		scopes = append(scopes, "updates.claim", "updates.report", "updates.mutation_grant.issue")
 	}
 	token, err := auth.CreateServiceToken(ctx, registration.ServiceType, scopes)
 	if err != nil {

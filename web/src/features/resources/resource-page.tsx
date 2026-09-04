@@ -3,7 +3,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, LoaderCircle, Pencil, Plus, RefreshCcw, Send, Trash2 } from "lucide-react";
-import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { APIError, apiDelete, apiDeleteJSON, apiGet, apiPost, apiPut } from "@/lib/api/client";
+import { APIError, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import { auditActionLabel } from "@/lib/audit-action";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useResourceData, useServiceHealth } from "@/features/queries";
@@ -248,16 +247,6 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
     }
     setActionMessage("最新の権限または状態を確認できないため、操作を送信しませんでした。");
   };
-  const legacyDeleteMutation = useMutation<unknown, Error, ResourceRow>({
-    mutationFn: async (row) => revisionedDeleteResource(resource.path)
-      ? apiDeleteJSON(deletePathForResource(resource, row), { expected_revision: numberValue(rowString(row, ["revision"]), 0) })
-      : apiDelete(deletePathForResource(resource, row)),
-    onSuccess: async () => {
-      setDeleteMessage("削除しました。");
-      await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
-    },
-    onError: (error) => setDeleteMessage(resourceDeleteErrorMessage(error)),
-  });
   if (!access.read) return <PermissionNotice resource={resource} action="参照" permission={resource.permissions?.read} />;
 
   return (
@@ -297,7 +286,6 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
               columns={columns}
               resource={resource}
               timezone={timezone}
-              deletePending={legacyDeleteMutation.isPending}
               canEdit={access.update}
               canDelete={access.delete}
               canTest={access.test}
@@ -313,10 +301,6 @@ function GenericResourcePanel({ resource, access, currentUser }: { resource: Res
                 if (result.kind === "succeeded") {
                   void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
                 }
-              }}
-              onLegacyDelete={(row) => {
-                setDeleteMessage("");
-                legacyDeleteMutation.mutate(row);
               }}
             />
           )
@@ -576,7 +560,7 @@ function ServiceHealthResourcePanel({ resource, access }: { resource: ResourceDe
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} deletePending={false} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} />}
+        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} />}
       </CardContent>
     </Card>
   );
@@ -2180,7 +2164,6 @@ function ResourceTable({
   columns,
   resource,
   timezone,
-  deletePending,
   canEdit,
   canDelete,
   canTest,
@@ -2189,13 +2172,11 @@ function ResourceTable({
   observabilityController,
   onObservabilityResult,
   onDeleteResult,
-  onLegacyDelete,
 }: {
   rows: ResourceRow[];
   columns: string[];
   resource: ResourceDefinition;
   timezone?: string;
-  deletePending: boolean;
   canEdit: boolean;
   canDelete: boolean;
   canTest: boolean;
@@ -2204,7 +2185,6 @@ function ResourceTable({
   observabilityController?: ObservabilityActionController;
   onObservabilityResult?: (plan: ObservabilityActionPlan, result: ObservabilityActionExecutionResult) => void | Promise<void>;
   onDeleteResult?: (result: ResourceActionExecutionResult, intent: ResourceActionIntent) => void;
-  onLegacyDelete?: (row: ResourceRow) => void;
 }) {
   const { t } = useI18n();
   const [copiedID, setCopiedID] = useState("");
@@ -2264,7 +2244,7 @@ function ResourceTable({
             onResult={onObservabilityResult}
           />
         )) : null}
-        {showDelete && resourceActionController && onDeleteResult ? <DeleteResourceButton resource={resource} row={row} controller={resourceActionController} disabled={deletePending || !resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onResult={onDeleteResult} onLegacyDelete={onLegacyDelete} /> : null}
+        {showDelete && resourceActionController && onDeleteResult ? <DeleteResourceButton resource={resource} row={row} controller={resourceActionController} disabled={!resourceRowID(row) || !canDelete} permission={resource.permissions?.delete} onResult={onDeleteResult} /> : null}
       </div>
       {testNotice?.id === resourceRowID(row) ? (
         <p role={testNotice.pending || testNotice.ok ? "status" : "alert"} className={`mt-2 text-left text-xs ${testNotice.pending ? "text-muted-foreground" : testNotice.ok ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}`}>
@@ -2622,7 +2602,6 @@ function DeleteResourceButton({
   disabled,
   permission,
   onResult,
-  onLegacyDelete,
 }: {
   resource: ResourceDefinition;
   row: ResourceRow;
@@ -2630,19 +2609,10 @@ function DeleteResourceButton({
   disabled: boolean;
   permission?: string;
   onResult: (result: ResourceActionExecutionResult, intent: ResourceActionIntent) => void;
-  onLegacyDelete?: (row: ResourceRow) => void;
 }) {
   const label = resourceRowLabel(row);
   const actionID = resourceActionID(resource.path, "delete");
-  if (!actionID) {
-    return onLegacyDelete ? (
-      <DangerConfirm title={`${label} を削除しますか`} description="削除後は元に戻せません。参照中の設定は削除できない場合があります。" actionLabel="削除" onConfirm={() => onLegacyDelete(row)}>
-        <Button variant="destructive" size="icon-sm" disabled={disabled} title={disabled && permission ? requiredPermissionText(permission) : undefined} aria-label={`${label} を削除`}>
-          <Trash2 className="size-4" />
-        </Button>
-      </DangerConfirm>
-    ) : null;
-  }
+  if (!actionID) return null;
   const intent: ResourceActionIntent = Object.freeze({ id: actionID, row: Object.freeze({ ...row }), publicLabel: label });
   return (
     <ResourceActionControl
@@ -2656,26 +2626,6 @@ function DeleteResourceButton({
         <Trash2 className="size-4" />
     </ResourceActionControl>
   );
-}
-
-function resourceDeleteErrorMessage(error: Error) {
-  if (error instanceof APIError) {
-    const messages: Record<string, string> = {
-      profile_in_use: "削除できません。この設定を参照している配信枠があります。先にStreamsで別の設定へ変更してください。",
-      drive_destination_in_use: "削除できません。この保存先を参照している配信枠またはArchive profileがあります。先にStreamsやArchive Settingsで別の保存先へ変更してください。",
-      oauth_account_in_use: "削除できません。このOAuth accountを参照している保存先、YouTube Output、または配信枠があります。先に参照を外してください。",
-      oauth_provider_in_use: "削除できません。このOAuth providerに接続済みaccountやログイン連携があります。先に関連する連携を削除してください。",
-      cannot_delete_self: "ログイン中の自分自身は削除できません。別の管理者アカウントで操作してください。",
-      cannot_delete_super_admin: "super_adminユーザーはsuper_adminだけが削除できます。",
-      last_super_admin: "最後の有効なsuper_adminは削除できません。先に別のsuper_adminを有効化してください。",
-      permission_escalation: "自分より強い権限を持つユーザーは削除できません。",
-      not_found: "削除対象が見つかりませんでした。画面を更新してください。",
-      csrf_failed: "ログイン状態またはCSRF tokenが古くなっています。ページを再読み込みしてから再実行してください。",
-      forbidden: "削除権限がありません。",
-    };
-    return messages[error.code || ""] || "削除できませんでした。参照中の設定、権限、ログイン状態を確認して再実行してください。";
-  }
-  return "削除できませんでした。参照中の設定、権限、ログイン状態を確認して再実行してください。";
 }
 
 function normalizeRows(data: unknown): Record<string, unknown>[] {
@@ -2826,7 +2776,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path === "/users") return ["username", "email", "status", "roles", "last_login_at"];
   if (resource.path === "/roles") return ["name", "permissions", "updated_at"];
   if (resource.path === "/permissions") return ["name", "group", "description"];
-  if (resource.path === "/streams") return ["name", "status", "auto_start_trigger", "discord_voice_channel_id", "updated_at"];
+  if (resource.path === "/streams") return ["name", "status", "auto_start_trigger", "discord_config_id", "updated_at"];
   if (resource.path === "/stream-logs") return ["stream_name", "level", "message", "created_at", "stream_deleted_at"];
   if (resource.path === "/audit-logs") return ["timestamp", "actor_username", "action", "result", "resource_type"];
   if (resource.path === "/service-health") return ["service_name", "service_type", "status", "health_status", "last_heartbeat_at"];
@@ -3248,16 +3198,6 @@ function resourceRowID(row: ResourceRow) {
 
 function resourceRowLabel(row: ResourceRow) {
   return firstNonEmpty(rowString(row, ["name", "service_name", "username", "oauth_account_display_name", "display_name", "account_label", "provider_type", "id"]), "この項目");
-}
-
-function deletePathForResource(resource: ResourceDefinition, row: ResourceRow) {
-  const id = resourceRowID(row);
-  if (!id) throw new Error("delete id is missing");
-  return `${resource.path}/${encodeURIComponent(id)}`;
-}
-
-function revisionedDeleteResource(path: string) {
-  return path === "/discord/target-presets" || path === "/video-cover-presets";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

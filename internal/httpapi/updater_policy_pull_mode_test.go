@@ -20,7 +20,7 @@ func TestNormalizedUpdaterPolicyRequestUsesServerOwnedPullBinding(t *testing.T) 
 		ServiceID:       "host-agent-a",
 		ServiceType:     "update_agent",
 		TransportMode:   store.SystemUpdateTransportPullV2,
-		ExecutionHostID: "host-a",
+		ExecutionHostID: "host-01",
 		OwnershipEpoch:  1,
 	}
 	policy, err := normalizedUpdaterPolicyRequest(agent, updaterPolicyUpdateRequest{
@@ -124,12 +124,10 @@ func TestNormalizedUpdaterPolicyRequestRejectsUnownedPullAgentOutsideInitialPend
 func TestNewEndpointlessPullNodeInitialPolicyPreservesExecutionHostOwnership(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
 	for _, testCase := range []struct {
-		name               string
-		legacySSHOwnership bool
-		pullOwnerID        string
+		name        string
+		pullOwnerID string
 	}{
 		{name: "unassigned execution host"},
-		{name: "legacy SSH-owned execution host", legacySSHOwnership: true},
 		{name: "same service already owns pull host", pullOwnerID: "host-agent-bootstrap"},
 		{name: "another service owns pull host", pullOwnerID: "other-host-agent"},
 	} {
@@ -144,18 +142,6 @@ func TestNewEndpointlessPullNodeInitialPolicyPreservesExecutionHostOwnership(t *
 			}
 			policies := store.NewMemoryUpdaterPolicyStore()
 			updates := store.NewMemorySystemUpdateStore()
-			if testCase.legacySSHOwnership {
-				if _, err := updates.SwitchSystemUpdateExecutionHost(
-					t.Context(),
-					"host-bootstrap",
-					0,
-					store.SystemUpdateTransportSSHV1,
-					"legacy-updater",
-					7,
-				); err != nil {
-					t.Fatal(err)
-				}
-			}
 			if testCase.pullOwnerID != "" {
 				if _, err := updates.SwitchSystemUpdateExecutionHost(
 					t.Context(),
@@ -307,47 +293,26 @@ func TestNewEndpointlessPullNodeInitialPolicyPreservesExecutionHostOwnership(t *
 	}
 }
 
-func TestNormalizedUpdaterPolicyRequestRejectsPullSSHAndLongLivedReleaseToken(t *testing.T) {
+func TestNormalizedUpdaterPolicyRequestPreservesBootstrapHostsWithoutPersistingReleaseToken(t *testing.T) {
 	t.Parallel()
 
 	agent := store.RegisteredService{
 		ServiceID:       "host-agent-a",
 		ServiceType:     "update_agent",
 		TransportMode:   store.SystemUpdateTransportPullV2,
-		ExecutionHostID: "host-a",
+		ExecutionHostID: "host-01",
 		OwnershipEpoch:  1,
 	}
-	base := updaterPolicyUpdateRequest{
-		PollIntervalSeconds:      15,
-		HeartbeatIntervalSeconds: 30,
-		Targets: []updaterPolicyTargetRequest{{
-			TargetID:       "worker-a",
-			ServiceID:      "worker-a",
-			ServiceType:    "worker",
-			DeploymentMode: "systemd",
-		}},
+	body := validUpdaterPolicyRequest(t)
+	token := "github_pat_bootstrap_only"
+	body.GitHubToken = &token
+	policy, err := normalizedUpdaterPolicyRequest(agent, body)
+	if err != nil {
+		t.Fatalf("normalize pull bootstrap settings: %v", err)
 	}
-	token := "long-lived-token"
-	tests := map[string]func(*updaterPolicyUpdateRequest){
-		"SSH host": func(body *updaterPolicyUpdateRequest) {
-			body.Hosts = validUpdaterPolicyRequest(t).Hosts
-		},
-		"inbound API": func(body *updaterPolicyUpdateRequest) {
-			body.API.Port = 8090
-		},
-		"release token": func(body *updaterPolicyUpdateRequest) {
-			body.GitHubToken = &token
-		},
-	}
-	for name, mutate := range tests {
-		t.Run(name, func(t *testing.T) {
-			candidate := base
-			candidate.Targets = append([]updaterPolicyTargetRequest(nil), base.Targets...)
-			mutate(&candidate)
-			if _, err := normalizedUpdaterPolicyRequest(agent, candidate); err == nil {
-				t.Fatal("unsafe pull settings were accepted")
-			}
-		})
+	if len(policy.Hosts) != 1 || policy.Hosts[0].HostID != body.Hosts[0].HostID ||
+		policy.LocalExecutorPolicySHA256 != body.LocalExecutorPolicySHA256 {
+		t.Fatalf("bootstrap host metadata was not preserved: %#v", policy)
 	}
 }
 
@@ -662,17 +627,8 @@ func TestPullUpdaterPolicySaveNeedsNoSecretPermissionAndAdvancesOwnershipRevisio
 		map[string]any{},
 	)
 	policies := store.NewMemoryUpdaterPolicyStore()
-	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	sharedReleaseToken := "github_pat_ssh_only"
-	if _, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
-		t.Context(),
-		"legacy-updater",
-		0,
-		updaterPolicyForHTTPTest(hostKey),
-		&sharedReleaseToken,
-	); err != nil {
-		t.Fatal(err)
-	}
+	const sharedReleaseToken = "github_pat_bootstrap_only"
+	secrets := updaterReleaseTokenSecretStoreForBootstrapTest(t, sharedReleaseToken)
 	updates := store.NewMemorySystemUpdateStore()
 	if _, err := updates.SwitchSystemUpdateExecutionHost(
 		t.Context(),
@@ -691,6 +647,7 @@ func TestPullUpdaterPolicySaveNeedsNoSecretPermissionAndAdvancesOwnershipRevisio
 		WithServiceRegistryStore(auth),
 		WithUpdaterPolicyStore(policies),
 		WithSystemUpdateStore(updates),
+		WithSecretStore(secrets),
 	)
 	cookie, csrf := loginForTest(t, handler, "pull-policy-admin", "correct horse battery")
 	requestBody := updaterPolicyUpdateRequest{
@@ -732,14 +689,15 @@ func TestPullUpdaterPolicySaveNeedsNoSecretPermissionAndAdvancesOwnershipRevisio
 	if err := json.NewDecoder(created.Body).Decode(&createdBody); err != nil {
 		t.Fatal(err)
 	}
-	for _, forbiddenField := range []string{"api", "hosts", "github_token_configured", "github_token_fingerprint"} {
+	for _, forbiddenField := range []string{"api", "github_token_fingerprint", "github_token"} {
 		if _, exists := createdBody[forbiddenField]; exists {
 			t.Fatalf("pull response exposed %q: %#v", forbiddenField, createdBody)
 		}
 	}
 	if createdBody["transport_mode"] != store.SystemUpdateTransportPullV2 ||
 		createdBody["execution_host_id"] != "host-a" ||
-		createdBody["revision"] != float64(1) {
+		createdBody["revision"] != float64(1) ||
+		createdBody["github_token_configured"] != true {
 		t.Fatalf("pull response identity = %#v", createdBody)
 	}
 	ownership, err := updates.GetSystemUpdateExecutionHost(t.Context(), "host-a")
@@ -749,7 +707,7 @@ func TestPullUpdaterPolicySaveNeedsNoSecretPermissionAndAdvancesOwnershipRevisio
 	if ownership.OwnershipEpoch != 1 || ownership.PolicyRevision != 1 {
 		t.Fatalf("ownership after create = %#v", ownership)
 	}
-	storedToken, err := policies.GetUpdaterReleaseTokenValue(t.Context())
+	storedToken, err := secrets.GetSecretValue(t.Context(), store.UpdaterGitHubReleaseTokenSecretName)
 	if err != nil || storedToken != sharedReleaseToken {
 		t.Fatalf("pull create touched shared release token: %q, %v", storedToken, err)
 	}
@@ -805,125 +763,11 @@ func TestPullUpdaterPolicySaveNeedsNoSecretPermissionAndAdvancesOwnershipRevisio
 	}
 }
 
-func TestPullObserverPolicySavePreservesExistingSSHOwnershipAndActiveJob(t *testing.T) {
-	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(
-		store.User{ID: "observer-policy-admin", Username: "observer-policy-admin"},
-		"correct horse battery",
-		[]string{"system_updates.execute"},
-	); err != nil {
-		t.Fatal(err)
-	}
-	registerPullSystemUpdateAgentForOwnershipTest(
-		t,
-		auth,
-		"host-agent-observer",
-		"host-a",
-		0,
-		map[string]any{"observe_only": true},
-	)
-	policies := store.NewMemoryUpdaterPolicyStore()
-	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
-	sharedReleaseToken := "github_pat_ssh_observer"
-	if _, _, err := policies.SaveUpdaterPolicyAndReleaseToken(
-		t.Context(),
-		"legacy-updater",
-		0,
-		updaterPolicyForHTTPTest(hostKey),
-		&sharedReleaseToken,
-	); err != nil {
-		t.Fatal(err)
-	}
-	updates := store.NewMemorySystemUpdateStore()
-	sshOwnership, err := updates.SwitchSystemUpdateExecutionHost(
-		t.Context(),
-		"host-a",
-		0,
-		store.SystemUpdateTransportSSHV1,
-		"central-updater",
-		7,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, created, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
-		TargetID:          "worker-a",
-		TargetServiceType: "worker",
-		AgentServiceID:    "central-updater",
-		ExecutionHostID:   "host-a",
-		DeploymentMode:    "systemd",
-		CurrentVersion:    "v1.0.0",
-		TargetVersion:     "v1.1.0",
-		Strategy:          store.SystemUpdateStrategyWhenIdle,
-		IdempotencyKey:    "ssh-job-survives-observer-policy",
-		RequestedByUserID: "observer-policy-admin",
-	}); err != nil || !created {
-		t.Fatalf("create SSH-owned job: created=%v err=%v", created, err)
-	}
-	handler := NewServer(
-		store.NewMemoryStreamStore(),
-		WithAuthStore(auth),
-		WithServiceRegistryStore(auth),
-		WithUpdaterPolicyStore(policies),
-		WithSystemUpdateStore(updates),
-	)
-	cookie, csrf := loginForTest(t, handler, "observer-policy-admin", "correct horse battery")
-	body, err := json.Marshal(updaterPolicyUpdateRequest{
-		ExpectedRevision:          0,
-		PollIntervalSeconds:       15,
-		HeartbeatIntervalSeconds:  30,
-		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("c", 64),
-		Targets: []updaterPolicyTargetRequest{{
-			TargetID:        "worker-slot",
-			ServiceID:       "worker-a",
-			ServiceType:     "worker",
-			DeploymentMode:  "systemd",
-			LocalListenPort: json.RawMessage("8084"),
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(
-		http.MethodPut,
-		"/system-updates/updaters/host-agent-observer/settings",
-		bytes.NewReader(body),
-	)
-	request.AddCookie(cookie)
-	request.Header.Set("X-CSRF-Token", csrf)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("observer pull policy save = %d %s", response.Code, response.Body.String())
-	}
-	after, err := updates.GetSystemUpdateExecutionHost(t.Context(), "host-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after != sshOwnership {
-		t.Fatalf("observer policy changed SSH ownership: before=%#v after=%#v", sshOwnership, after)
-	}
-	policy, err := policies.GetUpdaterPolicy(t.Context(), "host-agent-observer")
-	if err != nil || policy.Revision != 1 {
-		t.Fatalf("observer policy = %#v, %v", policy, err)
-	}
-	token, err := policies.GetUpdaterReleaseTokenValue(t.Context())
-	if err != nil || token != sharedReleaseToken {
-		t.Fatalf("observer policy touched release token: %q, %v", token, err)
-	}
-	for _, forbiddenField := range []string{`"api"`, `"hosts"`, `"github_token_`} {
-		if strings.Contains(response.Body.String(), forbiddenField) {
-			t.Fatalf("observer response exposed SSH field %q: %s", forbiddenField, response.Body.String())
-		}
-	}
-}
-
-func TestUpdaterPolicyResponseUsesCurrentPullAgentBindingAndStripsSSHFields(t *testing.T) {
+func TestUpdaterPolicyResponseUsesCurrentPullAgentBindingAndIncludesBootstrapHosts(t *testing.T) {
 	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
 	policy := updaterPolicyForHTTPTest(hostKey)
 	policy.UpdaterID = "host-agent-a"
 	policy.Revision = 3
-	policy.TransportMode = store.SystemUpdateTransportSSHV1
 	policy.Targets[0].ServiceID = "worker-a"
 	agent := store.RegisteredService{
 		ServiceID:       policy.UpdaterID,
@@ -932,8 +776,7 @@ func TestUpdaterPolicyResponseUsesCurrentPullAgentBindingAndStripsSSHFields(t *t
 		ExecutionHostID: "host-a",
 		OwnershipEpoch:  2,
 	}
-	tokenConfigured := store.SecretStatus{Configured: true, Fingerprint: "must-not-leak"}
-	encoded, err := json.Marshal(makeUpdaterPolicyResponse(policy, &tokenConfigured, &agent, true))
+	encoded, err := json.Marshal(makeUpdaterPolicyResponse(policy, &agent))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -945,10 +788,18 @@ func TestUpdaterPolicyResponseUsesCurrentPullAgentBindingAndStripsSSHFields(t *t
 		response["execution_host_id"] != "host-a" {
 		t.Fatalf("response did not use current server-owned binding: %s", encoded)
 	}
-	for _, forbiddenField := range []string{"api", "hosts", "github_token_configured", "github_token_fingerprint"} {
+	for _, forbiddenField := range []string{"api", "github_token", "release_token"} {
 		if _, exists := response[forbiddenField]; exists {
-			t.Fatalf("pull response exposed stale SSH field %q: %s", forbiddenField, encoded)
+			t.Fatalf("pull response exposed retired or secret field %q: %s", forbiddenField, encoded)
 		}
+	}
+	hosts, ok := response["hosts"].([]any)
+	if !ok || len(hosts) != 1 {
+		t.Fatalf("pull response bootstrap hosts = %#v", response["hosts"])
+	}
+	host, ok := hosts[0].(map[string]any)
+	if !ok || host["host_id"] != "host-01" || host["host_public_key_fingerprint"] == "" {
+		t.Fatalf("pull response bootstrap host = %#v", hosts[0])
 	}
 	targets, ok := response["targets"].([]any)
 	if !ok || len(targets) != 1 {
@@ -965,10 +816,10 @@ func validUpdaterPolicyRequest(t *testing.T) updaterPolicyUpdateRequest {
 	hostKey, _ := ed25519AuthorizedKeyForTest(t, "")
 	policy := updaterPolicyForHTTPTest(hostKey)
 	return updaterPolicyUpdateRequest{
-		API:                      policy.API,
-		PollIntervalSeconds:      policy.PollIntervalSeconds,
-		HeartbeatIntervalSeconds: policy.HeartbeatIntervalSeconds,
-		Hosts:                    policy.Hosts,
-		Targets:                  updaterPolicyTargetRequestsForTest(policy.Targets),
+		PollIntervalSeconds:       policy.PollIntervalSeconds,
+		HeartbeatIntervalSeconds:  policy.HeartbeatIntervalSeconds,
+		LocalExecutorPolicySHA256: policy.LocalExecutorPolicySHA256,
+		Hosts:                     policy.Hosts,
+		Targets:                   updaterPolicyTargetRequestsForTest(policy.Targets),
 	}
 }

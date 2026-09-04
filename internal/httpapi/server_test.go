@@ -2009,7 +2009,7 @@ func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
-		DiscordConfigID: discord.ID, DiscordGuildID: "guild", DiscordVoiceID: "voice", EncoderProfileID: encoderProfile.ID,
+		DiscordConfigID: discord.ID, EncoderProfileID: encoderProfile.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2302,7 +2302,7 @@ func TestStartDoesNotReviveStreamCompletedDuringDelayedDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-race", DiscordVoiceID: "voice-race"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID}); err != nil {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
@@ -2409,7 +2409,7 @@ func TestConcurrentStreamStartsClaimOnceBeforeDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := baseStreams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-concurrent-start", DiscordVoiceID: "voice-concurrent-start"}); err != nil {
+	if _, err := baseStreams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID}); err != nil {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
@@ -2772,8 +2772,6 @@ func TestStopStreamCompletesAfterDownstreamCancelsRequestContext(t *testing.T) {
 	}
 	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
 		DiscordConfigID:  "discord-config-auto-stop",
-		DiscordGuildID:   "guild-auto-stop",
-		DiscordVoiceID:   "voice-auto-stop",
 		AutoStartTrigger: autoStartTriggerDiscordVoiceJoin,
 	}); err != nil {
 		t.Fatal(err)
@@ -3254,7 +3252,7 @@ func TestCreateStreamRejectsRequestedPrimaryNodes(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
@@ -3291,7 +3289,7 @@ func TestCreateStreamRejectsPrimaryNodeAssignmentWithoutPermission(t *testing.T)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
@@ -3318,7 +3316,7 @@ func TestCreateStreamRejectsPrimaryNodeFieldBeforeResolvingType(t *testing.T) {
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), `"code":"stream_create_assignment_fields_unsupported"`) {
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
@@ -3390,7 +3388,7 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","discord_guild_id":"guild-create","discord_voice_channel_id":"voice-create","discord_text_channel_id":"text-create","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`","visual_settings":{"expected_revision":0,"discord_target_mode":"manual","discord_guild_id":"1001","discord_voice_channel_id":"1002","discord_text_channel_id":"1003"}}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -3402,10 +3400,18 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.DiscordConfigID != discordOne.ID || created.DiscordGuildID != "guild-create" || created.DiscordVoiceID != "voice-create" || created.DiscordTextID != "text-create" || created.AutoStartTrigger != "discord_voice_join" || created.YouTubeOutputID != youtubeOutput.ID {
+	if created.DiscordConfigID != discordOne.ID || created.AutoStartTrigger != "discord_voice_join" || created.YouTubeOutputID != youtubeOutput.ID {
 		t.Fatalf("create did not persist stream settings: %#v", created)
 	}
-	updateReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/settings", bytes.NewBufferString(`{"discord_config_id":"`+discordTwo.ID+`","discord_guild_id":"guild-stream","discord_voice_channel_id":"voice-stream","discord_text_channel_id":"text-stream","auto_start_trigger":"discord_voice_join","archive_profile_id":"`+archiveProfile.ID+`","encoder_input_url":"srt://input.example.com:9000"}`))
+	visualReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/visual-settings", bytes.NewBufferString(`{"expected_revision":1,"discord_target_mode":"manual","discord_guild_id":"2001","discord_voice_channel_id":"2002","discord_text_channel_id":"2003"}`))
+	visualReq.AddCookie(cookie)
+	visualReq.Header.Set("X-CSRF-Token", csrf)
+	visualRes := httptest.NewRecorder()
+	handler.ServeHTTP(visualRes, visualReq)
+	if visualRes.Code != http.StatusOK {
+		t.Fatalf("update visual settings status = %d body = %s", visualRes.Code, visualRes.Body.String())
+	}
+	updateReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/settings", bytes.NewBufferString(`{"discord_config_id":"`+discordTwo.ID+`","auto_start_trigger":"discord_voice_join","archive_profile_id":"`+archiveProfile.ID+`","encoder_input_url":"srt://input.example.com:9000"}`))
 	updateReq.AddCookie(cookie)
 	updateReq.Header.Set("X-CSRF-Token", csrf)
 	updateRes := httptest.NewRecorder()
@@ -3417,15 +3423,22 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err := json.NewDecoder(updateRes.Body).Decode(&updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.DiscordConfigID != discordTwo.ID || updated.DiscordGuildID != "guild-stream" || updated.DiscordVoiceID != "voice-stream" || updated.DiscordTextID != "text-stream" || updated.AutoStartTrigger != "discord_voice_join" || updated.ArchiveProfileID != archiveProfile.ID || updated.EncoderInputURL == "" || updated.YouTubeOutputID != "" {
+	if updated.DiscordConfigID != discordTwo.ID || updated.AutoStartTrigger != "discord_voice_join" || updated.ArchiveProfileID != archiveProfile.ID || updated.EncoderInputURL == "" || updated.YouTubeOutputID != "" {
 		t.Fatalf("unexpected updated stream settings: %#v", updated)
 	}
 	getReq := httptest.NewRequest(http.MethodGet, "/streams/"+created.ID, nil)
 	getReq.AddCookie(cookie)
 	getRes := httptest.NewRecorder()
 	handler.ServeHTTP(getRes, getReq)
-	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), discordTwo.ID) || !strings.Contains(getRes.Body.String(), "guild-stream") || !strings.Contains(getRes.Body.String(), "discord_voice_join") || !strings.Contains(getRes.Body.String(), archiveProfile.ID) {
+	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), discordTwo.ID) || strings.Contains(getRes.Body.String(), "2001") || !strings.Contains(getRes.Body.String(), "discord_voice_join") || !strings.Contains(getRes.Body.String(), archiveProfile.ID) {
 		t.Fatalf("get stream did not return settings: status=%d body=%s", getRes.Code, getRes.Body.String())
+	}
+	visualGet := httptest.NewRequest(http.MethodGet, "/streams/"+created.ID+"/visual-settings", nil)
+	visualGet.AddCookie(cookie)
+	visualGetRes := httptest.NewRecorder()
+	handler.ServeHTTP(visualGetRes, visualGet)
+	if visualGetRes.Code != http.StatusOK || !strings.Contains(visualGetRes.Body.String(), `"discord_guild_id":"2001"`) {
+		t.Fatalf("get visual settings status=%d body=%s", visualGetRes.Code, visualGetRes.Body.String())
 	}
 }
 
@@ -4144,7 +4157,7 @@ func TestStartStreamUsesSavedDiscordConfigSetting(t *testing.T) {
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "saved discord", "discord_bot-01", "guild-saved", "voice-saved", "text-saved")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override", AutoStartTrigger: "discord_voice_join"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, AutoStartTrigger: "discord_voice_join"}); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
@@ -4182,7 +4195,7 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 	}
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "service start discord", "discord-01", "guild-saved", "voice-saved", "text-saved")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override", AutoStartTrigger: "discord_voice_join"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, AutoStartTrigger: "discord_voice_join"}); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
@@ -4325,7 +4338,7 @@ func TestServiceStopStreamUsesPrimaryDiscordBotAndCanonicalLifecycle(t *testing.
 	}
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "service stop discord", "discord-01", "guild-stop", "voice-stop", "")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stop", DiscordVoiceID: "voice-stop", AutoStartTrigger: autoStartTriggerDiscordVoiceJoin}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, AutoStartTrigger: autoStartTriggerDiscordVoiceJoin}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
@@ -4440,7 +4453,7 @@ func TestServiceStartStreamAllowsConfiguredDiscordBotWithoutPriorAssignment(t *t
 	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-01", ServiceType: "discord_bot", ServiceName: "Discord 01", PublicURL: "https://discord-01.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "configured service start discord", "discord-01", "guild-saved", "voice-saved", "text-saved")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override", AutoStartTrigger: "discord_voice_join"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, AutoStartTrigger: "discord_voice_join"}); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
@@ -4498,7 +4511,7 @@ func TestServiceStartStreamRequiresAutoStartTrigger(t *testing.T) {
 	}
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "service start discord", "discord-01", "guild-saved", "voice-saved", "text-saved")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-stream-override", DiscordVoiceID: "voice-stream-override", DiscordTextID: "text-stream-override"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID}); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
@@ -4552,9 +4565,6 @@ func TestStartStreamRejectsSavedDiscordChannelOverridesWithoutConfig(t *testing.
 	streams := store.NewMemoryStreamStore()
 	stream, err := streams.CreateStream(t.Context(), "saved discord channel stream")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordGuildID: "guild-direct", DiscordVoiceID: "voice-direct", DiscordTextID: "text-direct"}); err != nil {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
@@ -4667,7 +4677,7 @@ func TestStartStreamLegacyStaticRelayResolvesYouTubeOutputSecretForDispatch(t *t
 	if strings.Contains(res.Body.String(), "runtime-secret-stream-key") {
 		t.Fatalf("stream key leaked in response: %s", res.Body.String())
 	}
-	if dispatcher.startRequest.EncoderRTMPURL != "rtmps://youtube.example.com/live2" || dispatcher.startRequest.EncoderStreamKey != "" || dispatcher.startRequest.EncoderStreamKeySecretName != "youtube_stream_key_main" {
+	if dispatcher.startRequest.EncoderRTMPURL != "rtmps://youtube.example.com/live2" || dispatcher.startRequest.EncoderStreamKeySecretName != "youtube_stream_key_main" {
 		t.Fatalf("youtube output was not dispatched as a runtime secret reference: %#v", dispatcher.startRequest)
 	}
 }
@@ -4735,11 +4745,6 @@ func TestStartStreamQueuesDiscordNotificationOnlyAfterSuccessfulDispatch(t *test
 			youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "notification-output", youtubeConfig)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if tt.streamDiscordTextChannel != "" {
-				if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordTextID: tt.streamDiscordTextChannel}); err != nil {
-					t.Fatal(err)
-				}
 			}
 			dispatcher := &notificationFakeDispatcher{fakeServiceDispatcher: fakeServiceDispatcher{failStart: tt.failStart}, result: tt.notificationResult}
 			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
@@ -4885,7 +4890,6 @@ func TestStartStreamPreparesYouTubeLiveAPIDryRunWithoutSecretLeak(t *testing.T) 
 		t.Fatalf("youtube runtime secret/state leaked in response: %s", res.Body.String())
 	}
 	if dispatcher.startRequest.EncoderRTMPURL != "rtmps://youtube.example.com/live2" ||
-		dispatcher.startRequest.EncoderStreamKey != "" ||
 		!strings.HasPrefix(dispatcher.startRequest.EncoderStreamKeySecretName, "youtube_stream_key_runtime_") {
 		t.Fatalf("youtube live api dry-run was not prepared as a runtime secret reference: %#v", dispatcher.startRequest)
 	}
@@ -5060,7 +5064,7 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	if !youtubeLive.prepareRequest.ScheduledStart.Equal(scheduledStart) {
 		t.Fatalf("youtube live api did not receive the stream scheduled start: got=%s want=%s", youtubeLive.prepareRequest.ScheduledStart, scheduledStart)
 	}
-	if dispatcher.startRequest.EncoderRTMPURL != "rtmps://youtube.example.com/live2" || dispatcher.startRequest.EncoderStreamKey != "" || !strings.HasPrefix(dispatcher.startRequest.EncoderStreamKeySecretName, "youtube_stream_key_runtime_") {
+	if dispatcher.startRequest.EncoderRTMPURL != "rtmps://youtube.example.com/live2" || !strings.HasPrefix(dispatcher.startRequest.EncoderStreamKeySecretName, "youtube_stream_key_runtime_") {
 		t.Fatalf("youtube live api output was not dispatched as a runtime secret reference: %#v", dispatcher.startRequest)
 	}
 	stored, err := streams.GetStreamYouTubeRuntime(t.Context(), stream.ID)
@@ -5937,7 +5941,7 @@ func TestStartStreamPreparesRelayStaticYouTubeAndReleasesClaimOnlyAfterCompletio
 	if youtubeLive.relayStaticRequest.Resolution != "1080p" || youtubeLive.relayStaticRequest.FrameRate != "60fps" {
 		t.Fatalf("relay static prepare request did not use the resolved Encoder format: %#v", youtubeLive.relayStaticRequest)
 	}
-	if dispatcher.startCalls != 1 || dispatcher.startRequest.EncoderRTMPURL != "" || dispatcher.startRequest.EncoderStreamKey != "" || dispatcher.startRequest.EncoderStreamKeySecretName != "" {
+	if dispatcher.startCalls != 1 || dispatcher.startRequest.EncoderRTMPURL != "" || dispatcher.startRequest.EncoderStreamKeySecretName != "" {
 		t.Fatalf("relay static dispatch leaked an ingest endpoint or key: calls=%d request=%#v", dispatcher.startCalls, dispatcher.startRequest)
 	}
 	runtimeConfig := dispatcher.startRequest.YouTubeRuntime
@@ -6678,7 +6682,6 @@ func TestResolveRelayStaticRecoveryRepairsInactivePreparedDispatchMarkerOutage(t
 func TestStartStreamRelayStaticObservedFinalizeCommitStillNotifiesDiscord(t *testing.T) {
 	fixture := newRelayStaticStartFixtureForTest(t, nil, nil)
 	if _, err := fixture.streams.UpdateStreamSettings(t.Context(), fixture.stream.ID, store.StreamSettings{
-		DiscordTextID:   "chat-static-relay",
 		YouTubeOutputID: fixture.youtube.ID,
 	}); err != nil {
 		t.Fatal(err)
@@ -7966,7 +7969,7 @@ func TestYouTubeLiveAPIOutputRejectsPlainRTMPFromClient(t *testing.T) {
 	if !errors.Is(err, errYouTubeLiveAPIPrepareFailed) {
 		t.Fatalf("expected plain RTMP to be rejected, got err=%v req=%#v", err, req)
 	}
-	if req.EncoderRTMPURL != "" || req.EncoderStreamKey != "" || req.EncoderStreamKeySecretName != "" {
+	if req.EncoderRTMPURL != "" || req.EncoderStreamKeySecretName != "" {
 		t.Fatalf("plain RTMP client output must not populate dispatch request: %#v", req)
 	}
 }
@@ -8621,7 +8624,6 @@ func TestStartStreamDoesNotPrepareYouTubeLiveAPIWhenArchiveReadinessFails(t *tes
 		AuthMode:       "oauth2",
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-drive-folder-id",
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8701,7 +8703,6 @@ func TestStartStreamResolvesArchiveDriveDestinationForDispatch(t *testing.T) {
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8786,7 +8787,6 @@ func TestStartStreamResolvesOAuthDriveDestinationForDispatchWithoutResponseLeak(
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-oauth-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -9245,7 +9245,6 @@ func TestStreamStartReadinessEndpointReportsOAuthDriveAccountIssueWithoutRawSecr
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-oauth-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -9555,7 +9554,6 @@ func TestRetryUploadDispatchesStreamArchiveConfig(t *testing.T) {
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -9638,7 +9636,6 @@ func TestRetryUploadDispatchesOAuthSharedDriveArchiveConfig(t *testing.T) {
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-oauth-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -10892,9 +10889,6 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 	}
 	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
 		DiscordConfigID:  discordOne.ID,
-		DiscordGuildID:   "guild-stream-override",
-		DiscordVoiceID:   "voice-stream-override",
-		DiscordTextID:    "text-stream-override",
 		AutoStartTrigger: "discord_voice_join",
 	}); err != nil {
 		t.Fatal(err)
@@ -11022,9 +11016,6 @@ func TestServiceRuntimeConfigIncludesConfiguredDiscordStreamsWithoutAssignments(
 	}
 	if _, err := streams.UpdateStreamSettings(t.Context(), streamB.ID, store.StreamSettings{
 		DiscordConfigID:  discordProfile.ID,
-		DiscordGuildID:   "guild-stream-b",
-		DiscordVoiceID:   "voice-stream-b",
-		DiscordTextID:    "text-stream-b",
 		AutoStartTrigger: "discord_voice_join",
 	}); err != nil {
 		t.Fatal(err)
@@ -11096,8 +11087,6 @@ func TestServiceRuntimeConfigExcludesCompletedDiscordSourceAfterRearm(t *testing
 	}
 	settings := store.StreamSettings{
 		DiscordConfigID:  discordProfile.ID,
-		DiscordGuildID:   "guild-rearm",
-		DiscordVoiceID:   "voice-rearm",
 		AutoStartTrigger: autoStartTriggerDiscordVoiceJoin,
 	}
 	if _, err := streams.UpdateStreamSettings(t.Context(), source.ID, settings); err != nil {
@@ -11226,7 +11215,6 @@ func TestServiceRuntimeConfigIncludesEncoderArchiveConfigWithoutRawSecrets(t *te
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -11596,7 +11584,7 @@ func TestAdminServiceRuntimeConfigPreviewIsSecretSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: discordProfile.ID, DiscordGuildID: "guild-preview", DiscordVoiceID: "voice-preview"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: discordProfile.ID}); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
@@ -11674,7 +11662,6 @@ func TestExternalE2EConfigExportsControlPanelConfirmation(t *testing.T) {
 		OAuthAccountID: driveAccount.ID,
 		FolderID:       "0ARealFolderIdShouldNotLeak",
 		SharedDrive:    true,
-		BasePath:       "AutoStream/test",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -12223,7 +12210,6 @@ func TestServiceRuntimeSecretResolveAllowsAssignedArchiveDestinationSecrets(t *t
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -12641,7 +12627,6 @@ func TestServiceRuntimeSecretResolveAllowsAssignedOAuthArchiveSecrets(t *testing
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-shared-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -14004,8 +13989,8 @@ func TestIntegrationRegistryAPIDoesNotReturnRawSecrets(t *testing.T) {
 	accountReq.Header.Set("X-CSRF-Token", csrf)
 	accountRes := httptest.NewRecorder()
 	handler.ServeHTTP(accountRes, accountReq)
-	if accountRes.Code != http.StatusForbidden || !strings.Contains(accountRes.Body.String(), "manual_oauth_account_create_disabled") {
-		t.Fatalf("manual account create should be disabled: %d %s", accountRes.Code, accountRes.Body.String())
+	if accountRes.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("manual account create route should be absent: %d %s", accountRes.Code, accountRes.Body.String())
 	}
 	if strings.Contains(accountRes.Body.String(), "raw-refresh-token") || strings.Contains(accountRes.Body.String(), "refresh_token\":") {
 		t.Fatalf("manual account create rejection leaked token: %s", accountRes.Body.String())
@@ -14024,8 +14009,8 @@ func TestIntegrationRegistryAPIDoesNotReturnRawSecrets(t *testing.T) {
 	updateAccountReq.Header.Set("X-CSRF-Token", csrf)
 	updateAccountRes := httptest.NewRecorder()
 	handler.ServeHTTP(updateAccountRes, updateAccountReq)
-	if updateAccountRes.Code != http.StatusForbidden || !strings.Contains(updateAccountRes.Body.String(), "manual_oauth_account_refresh_token_disabled") {
-		t.Fatalf("manual account refresh token update should be disabled: %d %s", updateAccountRes.Code, updateAccountRes.Body.String())
+	if updateAccountRes.Code != http.StatusBadRequest {
+		t.Fatalf("manual account refresh token field should be rejected: %d %s", updateAccountRes.Code, updateAccountRes.Body.String())
 	}
 	if strings.Contains(updateAccountRes.Body.String(), "raw-refresh-token-2") || strings.Contains(updateAccountRes.Body.String(), `"refresh_token":`) {
 		t.Fatalf("manual account update rejection leaked token context: %s", updateAccountRes.Body.String())
@@ -14050,7 +14035,7 @@ func TestIntegrationRegistryAPIDoesNotReturnRawSecrets(t *testing.T) {
 		t.Fatalf("account label update did not expose display name: %#v", renamedAccount)
 	}
 
-	driveReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"Shared Drive Archive","auth_mode":"oauth2","oauth_account_id":"`+account.ID+`","folder_id":"raw-drive-folder-id","shared_drive":true,"base_path":"AutoStream"}`))
+	driveReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"Shared Drive Archive","auth_mode":"oauth2","oauth_account_id":"`+account.ID+`","folder_id":"raw-drive-folder-id","shared_drive":true}`))
 	driveReq.AddCookie(cookie)
 	driveReq.Header.Set("X-CSRF-Token", csrf)
 	driveRes := httptest.NewRecorder()
@@ -14068,8 +14053,16 @@ func TestIntegrationRegistryAPIDoesNotReturnRawSecrets(t *testing.T) {
 	if !destination.FolderIDConfigured || destination.FolderIDFingerprint == "" || !destination.SharedDrive {
 		t.Fatalf("expected drive destination status: %#v", destination)
 	}
+	legacyBasePathReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"Legacy Base Path","auth_mode":"oauth2","oauth_account_id":"`+account.ID+`","folder_id":"raw-drive-folder-id","base_path":"AutoStream"}`))
+	legacyBasePathReq.AddCookie(cookie)
+	legacyBasePathReq.Header.Set("X-CSRF-Token", csrf)
+	legacyBasePathRes := httptest.NewRecorder()
+	handler.ServeHTTP(legacyBasePathRes, legacyBasePathReq)
+	if legacyBasePathRes.Code != http.StatusBadRequest {
+		t.Fatalf("legacy base_path field should be rejected: %d %s", legacyBasePathRes.Code, legacyBasePathRes.Body.String())
+	}
 
-	serviceAccountDriveReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"Legacy Service Account","auth_mode":"service_account","folder_id":"raw-drive-folder-id","shared_drive":true,"base_path":"AutoStream"}`))
+	serviceAccountDriveReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"Legacy Service Account","auth_mode":"service_account","folder_id":"raw-drive-folder-id","shared_drive":true}`))
 	serviceAccountDriveReq.AddCookie(cookie)
 	serviceAccountDriveReq.Header.Set("X-CSRF-Token", csrf)
 	serviceAccountDriveRes := httptest.NewRecorder()
@@ -14106,7 +14099,7 @@ func TestIntegrationRegistryRejectsInvalidConnectedAccountReferences(t *testing.
 	manualAccountReq.Header.Set("X-CSRF-Token", csrf)
 	manualAccountRes := httptest.NewRecorder()
 	handler.ServeHTTP(manualAccountRes, manualAccountReq)
-	if manualAccountRes.Code != http.StatusForbidden || !strings.Contains(manualAccountRes.Body.String(), "manual_oauth_account_create_disabled") {
+	if manualAccountRes.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("manual account create status = %d body = %s", manualAccountRes.Code, manualAccountRes.Body.String())
 	}
 	if strings.Contains(manualAccountRes.Body.String(), "raw-refresh-token") || strings.Contains(manualAccountRes.Body.String(), `"refresh_token":`) {
@@ -14166,7 +14159,7 @@ func TestIntegrationRegistryRejectsInvalidConnectedAccountReferences(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	driveWithYouTubeReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"bad-drive","auth_mode":"oauth2","oauth_account_id":"`+youtubeAccount.ID+`","folder_id":"raw-drive-folder-id","shared_drive":true,"base_path":"AutoStream"}`))
+	driveWithYouTubeReq := httptest.NewRequest(http.MethodPost, "/archive/destinations", bytes.NewBufferString(`{"name":"bad-drive","auth_mode":"oauth2","oauth_account_id":"`+youtubeAccount.ID+`","folder_id":"raw-drive-folder-id","shared_drive":true}`))
 	driveWithYouTubeReq.AddCookie(cookie)
 	driveWithYouTubeReq.Header.Set("X-CSRF-Token", csrf)
 	driveWithYouTubeRes := httptest.NewRecorder()
@@ -14279,7 +14272,6 @@ func TestOAuthAccountDeleteRejectsDriveYouTubeAndRuntimeReferences(t *testing.T)
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -14389,7 +14381,6 @@ func TestDriveDestinationDeleteRejectsStreamAndArchiveProfileReferences(t *testi
 		OAuthAccountID: account.ID,
 		FolderID:       "raw-drive-folder-id",
 		SharedDrive:    true,
-		BasePath:       "AutoStream",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -17092,7 +17083,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 		t.Fatalf("service health leaked node registration token material: %s", healthRes.Body.String())
 	}
 
-	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
+	configureReq := httptest.NewRequest(http.MethodPost, "/services/runtime-identity/configuration", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
 	configureRes := httptest.NewRecorder()
 	handler.ServeHTTP(configureRes, configureReq)
 	if configureRes.Code != http.StatusOK {
@@ -17126,7 +17117,7 @@ func TestCreateNodeRegistrationTokenPrecreatesNode(t *testing.T) {
 	if configuredNode.Status != "registered" {
 		t.Fatalf("configure should move pending node to registered, got %s", formatSafeHTTPSensitiveDiagnostic(configuredNode))
 	}
-	reuseReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
+	reuseReq := httptest.NewRequest(http.MethodPost, "/services/runtime-identity/configuration", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+body.ConfigureToken+`"}`))
 	reuseRes := httptest.NewRecorder()
 	handler.ServeHTTP(reuseRes, reuseReq)
 	if reuseRes.Code != http.StatusUnauthorized {
@@ -17201,9 +17192,9 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 	if body.Node.Host != "" || body.Node.Port != 0 || body.Node.PublicURL != "" || body.Node.AppliedEndpoint != nil {
 		t.Fatalf("pull agent unexpectedly has an inbound endpoint: %#v", body.Node)
 	}
-	wantConfigureCommand := "sudo /usr/local/bin/autostream-host-agent configure --panel-url 'http://example.com' --node 'host-agent-a' --config '/etc/autostream-host-agent/identity.json'"
+	wantConfigureCommand := "sudo /usr/local/bin/autostream-host-agent configure --panel-url 'http://example.com' --node 'host-agent-a' --config '/etc/autostream/updater/agent.yaml'"
 	if body.ConfigureCommand != wantConfigureCommand ||
-		body.ConfigurationPath != "/etc/autostream-host-agent/identity.json" {
+		body.ConfigurationPath != "/etc/autostream/updater/agent.yaml" {
 		t.Fatalf("pull agent configure metadata = %s", formatSafeHTTPSensitiveDiagnostic(body))
 	}
 	for _, forbidden := range []string{`"host":`, `"port":`, `"public_url":`} {
@@ -17275,7 +17266,7 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 	if err := json.Unmarshal(configurationBody["configuration_path"], &configurationPath); err != nil {
 		t.Fatal(err)
 	}
-	if configurationPath != "/etc/autostream-host-agent/identity.json" {
+	if configurationPath != "/etc/autostream/updater/agent.yaml" {
 		t.Fatalf("pull agent configuration path = %q", configurationPath)
 	}
 
@@ -17297,13 +17288,13 @@ func TestCreateNodeRegistrationTokenSupportsEndpointlessPullAgent(t *testing.T) 
 	}
 	if regenerated.ConfigureToken == "" ||
 		regenerated.ConfigureCommand != wantConfigureCommand ||
-		regenerated.ConfigurationPath != "/etc/autostream-host-agent/identity.json" {
+		regenerated.ConfigurationPath != "/etc/autostream/updater/agent.yaml" {
 		t.Fatalf("regenerated pull configure metadata = %#v", regenerated)
 	}
 
 	stageReq := httptest.NewRequest(
 		http.MethodPost,
-		"/api/node-agent/configure/stage",
+		"/services/host-agent/runtime-identity/stage",
 		strings.NewReader(`{"nodeId":"host-agent-a","configureToken":"`+regenerated.ConfigureToken+`"}`),
 	)
 	stageRes := httptest.NewRecorder()
@@ -17426,7 +17417,7 @@ func TestNodeConfigureCommandUsesPOSIXShellQuoting(t *testing.T) {
 		store.RegisteredService{
 			ServiceID:     "updater'$(touch pwn)`id`",
 			ServiceType:   "update_agent",
-			TransportMode: store.SystemUpdateTransportSSHV1,
+			TransportMode: store.SystemUpdateTransportPullV2,
 		},
 		"ast_cfg_secret'$(touch token)",
 		"/etc/autostream/updater'config.json",
@@ -17495,7 +17486,7 @@ func TestNodeAgentConfigureRejectsMissingEncryptionBeforeConsumingConfigureToken
 	}
 	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+configureToken+`","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
+	req := httptest.NewRequest(http.MethodPost, "/services/runtime-identity/configuration", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+configureToken+`","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "store_node_runtime_token_failed") {
@@ -17590,7 +17581,7 @@ func TestNodeAgentConfigurePersistsRuntimeReportForSupportedNodeTypes(t *testing
 				t.Fatal(err)
 			}
 			payload := `{"nodeId":"` + service.ServiceID + `","configureToken":"` + configureToken + `","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"` + service.ServiceID + `","os":"linux","arch":"amd64"}`
-			req := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(payload))
+			req := httptest.NewRequest(http.MethodPost, "/services/runtime-identity/configuration", bytes.NewBufferString(payload))
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, req)
 			if res.Code != http.StatusOK {
@@ -17635,7 +17626,7 @@ func TestListNodesForRegistrationDoesNotRequireServiceHealthRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+createBody.ConfigureToken+`","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
+	configureReq := httptest.NewRequest(http.MethodPost, "/services/runtime-identity/configuration", bytes.NewBufferString(`{"nodeId":"studio-worker-01","configureToken":"`+createBody.ConfigureToken+`","version":"1.4.1","commit":"abc1234","build_date":"2026-07-09T00:00:00Z","hostname":"studio-worker-01","os":"linux","arch":"amd64"}`))
 	configureRes := httptest.NewRecorder()
 	handler.ServeHTTP(configureRes, configureReq)
 	if configureRes.Code != http.StatusOK {
@@ -17916,7 +17907,7 @@ func TestNodeTokenMutationsRejectInvalidSigningKeyBeforeMutation(t *testing.T) {
 			t.Fatalf("%s with invalid signing key status = %d body = %s", path, res.Code, res.Body.String())
 		}
 	}
-	configureReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"worker-01","configureToken":"`+configureToken+`","version":"1.4.1"}`))
+	configureReq := httptest.NewRequest(http.MethodPost, "/services/runtime-identity/configuration", bytes.NewBufferString(`{"nodeId":"worker-01","configureToken":"`+configureToken+`","version":"1.4.1"}`))
 	configureRes := httptest.NewRecorder()
 	handler.ServeHTTP(configureRes, configureReq)
 	if configureRes.Code != http.StatusServiceUnavailable || !strings.Contains(configureRes.Body.String(), "stream_ingest_signing_key_invalid") {
@@ -18221,7 +18212,7 @@ func TestLegacyDiscordNodeConfigureRequiresStopPermissionAndUpgradesScope(t *tes
 		t.Fatal("Configure Token was not returned once")
 	}
 
-	activateReq := httptest.NewRequest(http.MethodPost, "/api/node-agent/configure", bytes.NewBufferString(`{"nodeId":"discord-legacy","configureToken":"`+configureBody.ConfigureToken+`","version":"1.3.7"}`))
+	activateReq := httptest.NewRequest(http.MethodPost, "/services/runtime-identity/configuration", bytes.NewBufferString(`{"nodeId":"discord-legacy","configureToken":"`+configureBody.ConfigureToken+`","version":"1.3.7"}`))
 	activateRes := httptest.NewRecorder()
 	handler.ServeHTTP(activateRes, activateReq)
 	if activateRes.Code != http.StatusOK {

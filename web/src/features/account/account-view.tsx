@@ -5,7 +5,6 @@ import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, CheckCircle2, KeyRound, Link2, Mail, Palette, Plus, QrCode, RefreshCcw, Save, ShieldCheck, ShieldOff, Trash2, Upload, UserCog, X } from "lucide-react";
-import { DangerConfirm } from "@/components/admin/danger-confirm";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { OneTimeSecretReveal } from "@/components/foundation/secrets/one-time-secret-reveal";
 import { AccountAvatar } from "@/components/ui/account-avatar";
@@ -130,6 +129,10 @@ export function AccountView() {
               setNotice={setNotice}
               onError={showError}
               refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "me"] })}
+              actionController={actionController}
+              authority={authority}
+              refreshAuthority={refreshAuthority}
+              accountResourceID={accountResourceID}
             />
             <EmailPanel
               key={user?.email || ""}
@@ -188,12 +191,20 @@ function AvatarPanel({
   setNotice,
   onError,
   refresh,
+  actionController,
+  authority,
+  refreshAuthority,
+  accountResourceID,
 }: {
   username: string;
   currentAvatarURL?: string;
   setNotice: (notice: AccountNotice) => void;
   onError: (error: unknown, fallback: string) => void;
   refresh: () => void;
+  actionController: AccountActionController;
+  authority: AccountAuthoritySnapshot;
+  refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
+  accountResourceID: string;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -302,9 +313,17 @@ function AvatarPanel({
             </>
           ) : null}
           {!selectedFile && currentAvatarURL ? (
-            <DangerConfirm title="アカウントアイコンを削除" description="画像を削除すると、ユーザー名の先頭文字が表示されます。" onConfirm={() => remove.mutate()} actionLabel="削除">
-              <Button type="button" variant="outline" disabled={remove.isPending}><Trash2 />削除</Button>
-            </DangerConfirm>
+            <AccountActionConfirmation
+              controller={actionController}
+              intent={{ id: "AUTH-10", resourceId: accountResourceID, authorityRevision: authority.revision }}
+              authority={authority}
+              refreshAuthority={refreshAuthority}
+              label="削除"
+              icon={<Trash2 />}
+              variant="outline"
+              disabled={remove.isPending}
+              handler={() => remove.mutateAsync()}
+            />
           ) : null}
         </div>
       </CardContent>

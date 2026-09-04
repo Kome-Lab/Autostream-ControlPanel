@@ -93,7 +93,7 @@ test("source-derived authority exactly owns every mapping value and every mappin
   assert.deepEqual(
     authority.authorities.map((entry) => [entry.repository, entry.head]),
     [
-      ["Autostream-Contracts", "46567bf35acff1c252293b931add90e1b646056e"],
+      ["Autostream-Contracts", "e96ac056e73e00a04f0c22c73122b9f6e18e8b52"],
       ["Autostream-Observability", "2cbaccd05854a9ff2db9a8f5af6904be6be45494"],
       ["Autostream-ControlPanel", "b246e65508b552399f918e39b3948cf453cc1e32"],
       ["Autostream-ControlPanel", "b246e65508b552399f918e39b3948cf453cc1e32"],

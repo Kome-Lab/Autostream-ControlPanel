@@ -20,7 +20,6 @@ DATABASE_URL=mysql://autostream:<PASSWORD>@tcp(127.0.0.1:3306)/autostream_contro
 AUTOSTREAM_PUBLIC_URL=https://control.example.com
 AUTOSTREAM_SESSION_SECRET=<SESSION_SECRET>
 AUTOSTREAM_SECRET_ENCRYPTION_KEY=<BASE64_32_BYTES>
-SERVICE_CALL_TOKEN=<SERVICE_CALL_TOKEN>
 AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS=encoder.example.com,worker.example.com,bot.example.com,observability.example.com
 AUTOSTREAM_REQUIRE_SERVICE_PUBLIC_ALLOWED_HOSTS=true
 TZ=Asia/Tokyo
@@ -49,6 +48,6 @@ npm run build
 
 - raw secret は API response / frontend / log / audit metadata に出しません。
 - secret UI は configured / missing / fingerprint のみを表示します。
-- `SERVICE_CALL_TOKEN` は outbound dispatch 用です。service registration token と混同しません。
+- outbound dispatch は DB に暗号化された assignment-bound Node runtime token だけを使用します。
 - `AUTOSTREAM_PUBLIC_URL` が HTTPS の場合、session cookie は `Secure` を有効にします。
 - Passkey / WebAuthn の ceremony token は `Cache-Control: no-store` で返し、server-side では hash と session data だけを短時間保存します。

@@ -33,7 +33,7 @@ export const accountActionDefinitions: readonly AccountActionDefinition[] = Obje
   definition({ id: "AUTH-07", method: "POST", route: "/auth/email/confirm", risk: "high", confirmation: "consequence", authority: "one-time-token", auditAction: "auth.email.confirm", inputSecret: true }),
   definition({ id: "AUTH-08", method: "POST", route: "/auth/logout", risk: "routine", confirmation: "none", authority: "authenticated", auditAction: "auth.logout" }),
   definition({ id: "AUTH-09", method: "PUT_BINARY", route: "/auth/avatar", risk: "routine", confirmation: "none", authority: "authenticated", auditAction: "auth.avatar.update", inputSecret: true }),
-  definition({ id: "AUTH-10", method: "DELETE", route: "/auth/avatar", risk: "routine", confirmation: "none", authority: "authenticated", auditAction: "auth.avatar.delete" }),
+  definition({ id: "AUTH-10", method: "DELETE", route: "/auth/avatar", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "auth.avatar.delete" }),
   definition({ id: "AUTH-11", method: "POST", route: "/auth/change-password", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "auth.change_password", inputSecret: true }),
   definition({ id: "AUTH-12", method: "PUT", route: "/auth/email", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "auth.email.change_request" }),
   definition({ id: "AUTH-13", method: "POST", route: "/auth/oauth-links/{provider}/start", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "auth.oauth_link.create", redirectCapability: true }),

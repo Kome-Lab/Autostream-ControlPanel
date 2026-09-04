@@ -35,16 +35,19 @@ import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { CurrentUser, Stream } from "@/types/domain";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-export type StreamCreateVisualState = Readonly<{ extension: Record<string, unknown>; ready: boolean }>;
+export type StreamCreateVisualState = Readonly<{
+  extension: Record<string, unknown>;
+  ready: boolean;
+  discordTargetReady: boolean;
+}>;
 
 type Props = {
   stream?: Stream | null;
-  legacyDiscord: Readonly<{ guildID: string; textChannelID: string; voiceChannelID: string }>;
   canUpdate: boolean;
   onCreateState: (state: StreamCreateVisualState) => void;
 };
 
-export function StreamVisualSettingsSection({ stream, legacyDiscord, canUpdate, onCreateState }: Props) {
+export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }: Props) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const editing = Boolean(stream);
@@ -59,7 +62,7 @@ export function StreamVisualSettingsSection({ stream, legacyDiscord, canUpdate, 
   const coverPresets = useResourceData<unknown>("/video-cover-presets");
   const serviceHealth = useServiceHealth(editing);
   useCurrentUser();
-  const [draft, setDraft] = useState(() => defaultStreamVisualDraft(legacyDiscord));
+  const [draft, setDraft] = useState(() => defaultStreamVisualDraft());
   const [dirtySections, setDirtySections] = useState<ReadonlySet<StreamVisualSection>>(() => new Set());
   const [uploadedBackground, setUploadedBackground] = useState(false);
   const [uploadedCover, setUploadedCover] = useState(false);
@@ -82,7 +85,12 @@ export function StreamVisualSettingsSection({ stream, legacyDiscord, canUpdate, 
   const validation = useMemo(() => validateStreamVisualDraft(draft), [draft]);
   const createState = useMemo<StreamCreateVisualState>(() => ({
     extension: buildStreamCreateVisualExtension(draft, dirtySections),
-    ready: dirtySections.size === 0 || validation.ready,
+    ready: validation.ready,
+    discordTargetReady: draft.discordTargetMode === "preset"
+      ? draft.discordTargetPresetID.trim() !== "" && draft.discordTargetPresetRevision > 0
+      : draft.discordTargetMode === "manual"
+        ? [draft.discordGuildID, draft.discordTextChannelID, draft.discordVoiceChannelID].every((value) => value.trim() !== "")
+        : false,
   }), [dirtySections, draft, validation.ready]);
   useEffect(() => { if (!editing) onCreateState(createState); }, [createState, editing, onCreateState]);
 

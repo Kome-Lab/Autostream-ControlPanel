@@ -51,7 +51,7 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 		case payload["overlay_profile_id"] != nil:
 			dispatchOrder = append(dispatchOrder, "worker")
 			payloads["worker"] = payload
-		case payload["guild_id"] != nil:
+		case payload["discord_target"] != nil:
 			dispatchOrder = append(dispatchOrder, "discord_bot")
 			payloads["discord_bot"] = payload
 		}
@@ -69,13 +69,14 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
 	client.Config.IngestTokenTTL = time.Hour
 	services := []store.RegisteredService{
-		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
 	}
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, services, StartRequest{
-		DiscordGuildID: "guild", DiscordVoiceChannelID: "voice", DiscordTextChannelID: "text", EncoderInputURL: "srt://input.example.com:9000",
+		DiscordTargetRevision: 1, DiscordGuildID: "guild", DiscordVoiceChannelID: "voice", DiscordTextChannelID: "text", EncoderInputURL: "srt://input.example.com:9000",
 		EncoderStreamKeySecretName: "youtube_stream_key_main", EncoderProfileID: "enc-prof-01", ArchiveProfileID: "archive-prof-01", OverlayProfileID: "overlay-prof-01", CaptionProfileID: "caption-prof-01",
+		ArchiveRunID: "run-01", ArchiveStartedAt: time.Date(2026, 8, 18, 5, 6, 29, 123456789, time.UTC),
 		ArchiveConfig:  map[string]any{"folder_id": "drive-folder-id", "shared_drive": true},
 		YouTubeRuntime: map[string]any{"mode": "live_api_dry_run", "broadcast_id": "dry-broadcast-01", "dry_run": true},
 	})
@@ -114,8 +115,10 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	if payloads["discord_bot"]["encoder_audio_url"] != server.URL {
 		t.Fatalf("discord bot did not receive encoder audio URL: %#v", payloads["discord_bot"])
 	}
-	if payloads["discord_bot"]["guild_id"] != "guild" || payloads["discord_bot"]["voice_channel_id"] != "voice" || payloads["discord_bot"]["text_channel_id"] != "text" {
-		t.Fatalf("discord bot did not receive stream-specific Discord channel IDs: %#v", payloads["discord_bot"])
+	discordTarget, ok := payloads["discord_bot"]["discord_target"].(map[string]any)
+	resolvedTarget, resolvedOK := discordTarget["resolved"].(map[string]any)
+	if !ok || !resolvedOK || discordTarget["revision"] != float64(1) || resolvedTarget["guild_id"] != "guild" || resolvedTarget["voice_channel_id"] != "voice" || resolvedTarget["text_channel_id"] != "text" {
+		t.Fatalf("discord bot did not receive resolved target v2: %#v", payloads["discord_bot"])
 	}
 	if payloads["discord_bot"]["worker_events_url"] != server.URL {
 		t.Fatalf("discord bot did not receive assigned worker event URL: %#v", payloads["discord_bot"])
@@ -160,10 +163,10 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 		t.Fatalf("encoder start payload must not receive ingest token: %#v", payloads["encoder_recorder"])
 	}
 	if _, ok := payloads["encoder_recorder"]["worker_video_ingest"]; ok {
-		t.Fatalf("legacy start must not opt into Worker video ingest: %#v", payloads["encoder_recorder"])
+		t.Fatalf("audio-only start must not opt into Worker video ingest: %#v", payloads["encoder_recorder"])
 	}
 	if _, ok := payloads["worker"]["video_ingest_url"]; ok {
-		t.Fatalf("legacy start must not dispatch a Worker video route: %#v", payloads["worker"])
+		t.Fatalf("audio-only start must not dispatch a Worker video route: %#v", payloads["worker"])
 	}
 }
 
@@ -192,7 +195,7 @@ func TestStartFailsClosedWithoutWorkerJobGeneration(t *testing.T) {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusAccepted)
 					_, _ = io.WriteString(w, test.workerResult)
-				case payload["guild_id"] != nil:
+				case payload["discord_target"] != nil:
 					requests["discord_bot"]++
 					w.WriteHeader(http.StatusAccepted)
 				default:
@@ -204,8 +207,8 @@ func TestStartFailsClosedWithoutWorkerJobGeneration(t *testing.T) {
 			client := testClient()
 			results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
 				{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
-				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
-			}, StartRequest{DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01"})
+				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
+			}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
 
 			if requests["worker"] != 1 || requests["discord_bot"] != 0 {
 				t.Fatalf("invalid Worker generation dispatch count = %#v, want worker=1 discord_bot=0", requests)
@@ -225,8 +228,8 @@ func TestStartFailsClosedWithoutWorkerJobGeneration(t *testing.T) {
 		defer server.Close()
 
 		results := testClient().Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
-			{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
-		}, StartRequest{DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01"})
+			{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
+		}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
 
 		if requests != 0 {
 			t.Fatalf("Discord Bot received %d requests without a Worker generation, want 0", requests)
@@ -322,7 +325,7 @@ func TestStartRequiresSingleWorkerResponseJSONValue(t *testing.T) {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusAccepted)
 					_, _ = io.WriteString(w, test.workerResult)
-				case payload["guild_id"] != nil:
+				case payload["discord_target"] != nil:
 					requests["discord_bot"]++
 					botGeneration = payload["job_generation"]
 					w.WriteHeader(http.StatusAccepted)
@@ -334,8 +337,8 @@ func TestStartRequiresSingleWorkerResponseJSONValue(t *testing.T) {
 
 			results := testClient().Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
 				{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
-				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
-			}, StartRequest{DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01"})
+				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
+			}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
 
 			if test.wantSuccess {
 				if requests["worker"] != 1 || requests["discord_bot"] != 1 || len(results) != 2 || !results[0].Success || !results[1].Success {
@@ -360,42 +363,34 @@ func TestStartRequiresSingleWorkerResponseJSONValue(t *testing.T) {
 	}
 }
 
-func TestStartDispatchesArchiveRunOnlyToCapableEncoder(t *testing.T) {
+func TestStartDispatchesArchiveRunV2(t *testing.T) {
 	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 123456789, time.UTC)
-	for _, test := range []struct {
-		name    string
-		capable bool
-	}{
-		{name: "capable", capable: true},
-		{name: "legacy", capable: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var payload map[string]any
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatal(err)
-				}
-				w.WriteHeader(http.StatusAccepted)
-			}))
-			defer server.Close()
-			service := store.RegisteredService{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}
-			if test.capable {
-				service.ReportedCapabilities = map[string]any{"archive_runs": true}
-			}
-			results := testClient().Start(t.Context(), store.Stream{ID: "stream-01", Name: "History"}, []store.RegisteredService{service}, StartRequest{
-				ArchiveProfileID: "archive-01", ArchiveRunID: "run-01", ArchiveStartedAt: startedAt,
-			})
-			if len(results) != 1 || !results[0].Success {
-				t.Fatalf("start result = %#v", results)
-			}
-			if test.capable {
-				if payload["archive_run_id"] != "run-01" || payload["started_at"] != startedAt.Format(time.RFC3339Nano) {
-					t.Fatalf("capable Encoder archive payload = %#v", payload)
-				}
-			} else if payload["archive_run_id"] != nil || payload["started_at"] != nil {
-				t.Fatalf("legacy Encoder received unsupported archive fields: %#v", payload)
-			}
-		})
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	service := store.RegisteredService{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}
+	results := testClient().Start(t.Context(), store.Stream{ID: "stream-01", Name: "History"}, []store.RegisteredService{service}, StartRequest{
+		ArchiveProfileID: "archive-01", ArchiveRunID: "run-01", ArchiveStartedAt: startedAt,
+	})
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("start result = %#v", results)
+	}
+	if payload["archive_run_id"] != "run-01" || payload["started_at"] != startedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("Encoder v2 archive payload = %#v", payload)
+	}
+}
+
+func TestStartRejectsMissingArchiveRunAuthority(t *testing.T) {
+	results := testClient().Start(t.Context(), store.Stream{ID: "stream-01", Name: "History"}, []store.RegisteredService{{
+		ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com",
+	}}, StartRequest{ArchiveProfileID: "archive-01"})
+	if len(results) != 1 || results[0].Success || results[0].Code != "archive_run_authority_unavailable" || results[0].FailurePhase != "pre_dispatch" {
+		t.Fatalf("missing archive authority result = %#v", results)
 	}
 }
 
@@ -426,7 +421,7 @@ func TestStartNegotiatesWorkerVideoIngestWithoutLeakingCredential(t *testing.T) 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{"job_generation": 17})
-		case payload["guild_id"] != nil:
+		case payload["discord_target"] != nil:
 			dispatchOrder = append(dispatchOrder, "discord_bot")
 			w.WriteHeader(http.StatusAccepted)
 		default:
@@ -438,11 +433,12 @@ func TestStartNegotiatesWorkerVideoIngestWithoutLeakingCredential(t *testing.T) 
 	client := testClient()
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
 	services := []store.RegisteredService{
-		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
 	}
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, services, StartRequest{
+		DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01",
 		EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60,
 	})
 	if got, want := strings.Join(dispatchOrder, ","), "encoder_recorder,worker,discord_bot"; got != want {
@@ -557,10 +553,10 @@ func TestStartNegotiatedWorkerVideoStopsBeforeBotWhenWorkerRejectsRoute(t *testi
 	client := testClient()
 	client.Config.IngestTokenSigningKey = "test-ingest-signing-key"
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
-		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
-	}, StartRequest{EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60})
+	}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01", EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60})
 	if got, want := strings.Join(paths, ","), "/streams/start,/jobs/start"; got != want {
 		t.Fatalf("Bot was dispatched after Worker rejected its video route: got=%q want=%q", got, want)
 	}
@@ -619,10 +615,10 @@ func TestStartStopsAtFirstFailedDependency(t *testing.T) {
 
 	client := testClient()
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
-		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL},
+		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
-	}, StartRequest{})
+	}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
 	if len(results) != 1 {
 		t.Fatalf("expected only the failed encoder result, got %#v", results)
 	}
@@ -1019,7 +1015,7 @@ func TestDispatchDoesNotFollowRedirectWithServiceToken(t *testing.T) {
 func TestDisabledClientReturnsFailureWithoutRequest(t *testing.T) {
 	client := Client{}
 	results := client.Stop(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com"}})
-	if len(results) != 1 || results[0].Success || !strings.Contains(results[0].Error, "SERVICE_CALL_TOKEN") {
+	if len(results) != 1 || results[0].Success || !strings.Contains(results[0].Error, "node runtime token encryption key") {
 		t.Fatalf("unexpected result: %#v", results)
 	}
 }
@@ -1332,7 +1328,7 @@ func TestStartReadinessIssues(t *testing.T) {
 
 func TestStartReadinessAllowsUnknownAudioForwardCapability(t *testing.T) {
 	now := time.Now().UTC()
-	client := Client{Config: Config{Token: "service-token", IngestTokenSigningKey: "stream-ingest-signing-key"}}
+	client := clientWithStaticTestToken(Config{IngestTokenSigningKey: "stream-ingest-signing-key"}, "service-token")
 	issues := client.StartReadinessIssues([]store.RegisteredService{
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com", Status: "online"},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com", Status: "online"},
@@ -1345,7 +1341,7 @@ func TestStartReadinessAllowsUnknownAudioForwardCapability(t *testing.T) {
 
 func TestStartReadinessBlocksUnavailableCaptionPipelineCapabilities(t *testing.T) {
 	now := time.Now().UTC()
-	client := Client{Config: Config{Token: "service-token", IngestTokenSigningKey: "stream-ingest-signing-key"}}
+	client := clientWithStaticTestToken(Config{IngestTokenSigningKey: "stream-ingest-signing-key"}, "service-token")
 	issues := client.StartReadinessIssues([]store.RegisteredService{
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com", Status: "online"},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com", Status: "online", Capabilities: map[string]any{"deepgram_transcription": false}},
@@ -1398,7 +1394,7 @@ func TestUpdateWorkerCaptionRuntimeSettingsRejectsUnsupportedWorkerBeforeDispatc
 
 func TestStartReadinessBlocksDisabledDiscordAudioCapture(t *testing.T) {
 	now := time.Now().UTC()
-	client := Client{Config: Config{Token: "service-token"}}
+	client := clientWithStaticTestToken(Config{}, "service-token")
 	issues := client.StartReadinessIssues([]store.RegisteredService{
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: "https://encoder.example.com", Status: "online"},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "https://worker.example.com", Status: "online"},
@@ -1410,7 +1406,7 @@ func TestStartReadinessBlocksDisabledDiscordAudioCapture(t *testing.T) {
 }
 
 func TestStartReadinessBlocksPrivateServiceURLByDefault(t *testing.T) {
-	client := Client{Config: Config{Token: "service-token"}}
+	client := clientWithStaticTestToken(Config{}, "service-token")
 	issues := client.StartReadinessIssues([]store.RegisteredService{
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: "http://169.254.169.254", Status: "online"},
 	}, StartRequest{EncoderInputURL: "srt://input.example.com:9000"}, time.Now().UTC())
@@ -1420,12 +1416,17 @@ func TestStartReadinessBlocksPrivateServiceURLByDefault(t *testing.T) {
 }
 
 func testClient() Client {
-	return Client{Config: Config{
-		Token:   "service-token",
+	return clientWithStaticTestToken(Config{
 		Timeout: time.Second,
 		URLPolicy: netpolicy.ServiceURLPolicy{
 			AllowedHosts: map[string]struct{}{"127.0.0.1": {}},
 		},
+	}, "service-token")
+}
+
+func clientWithStaticTestToken(config Config, token string) Client {
+	return Client{Config: config, RuntimeTokenResolver: func(store.RegisteredService) (string, error) {
+		return token, nil
 	}}
 }
 

@@ -71,6 +71,45 @@ type serviceEmailNotificationRequest struct {
 	HTML       string   `json:"html,omitempty"`
 }
 
+func (s *Server) serviceEmailReadiness(w http.ResponseWriter, r *http.Request) {
+	token, ok := s.authenticateService(w, r, "notifications.email.send")
+	if !ok {
+		return
+	}
+	if token.ServiceType != "observability" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_type_not_allowed"})
+		return
+	}
+	service, registered, err := s.registeredServiceForToken(r.Context(), token)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_services_failed"})
+		return
+	}
+	if !registered {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_token_not_registered"})
+		return
+	}
+	settings, _, status, code := s.mailSettingsForRequest(r.Context())
+	if code != "" {
+		s.writeServiceAudit(r, token, "notifications.email.readiness", "service", service.ServiceID, "failure", map[string]any{"reason": code})
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	revision := strings.TrimSpace(settings.UpdatedAt)
+	if revision == "" {
+		s.writeServiceAudit(r, token, "notifications.email.readiness", "service", service.ServiceID, "failure", map[string]any{"reason": "app_settings_failed"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_failed"})
+		return
+	}
+	s.writeServiceAudit(r, token, "notifications.email.readiness", "service", service.ServiceID, "success", map[string]any{"config_owner": "control_panel", "config_key": "global_smtp"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ready":              true,
+		"config_owner":       "control_panel",
+		"config_key":         "global_smtp",
+		"authority_revision": revision,
+	})
+}
+
 func (s *Server) serviceEmailNotification(w http.ResponseWriter, r *http.Request) {
 	token, ok := s.authenticateService(w, r, "notifications.email.send")
 	if !ok {

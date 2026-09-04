@@ -188,7 +188,7 @@ func TestMariaDBCanonicalAssignmentLockOrderConcurrency(t *testing.T) {
 
 	t.Run("archive retry begin vs artifact report", func(t *testing.T) {
 		suffix := mariaDBLockSuffix("rr")
-		stream, encoderID, token, claimed := claimMariaDBArchiveStart(t, ctx, streams, auth, suffix, true)
+		stream, encoderID, token, claimed := claimMariaDBArchiveStart(t, ctx, streams, auth, suffix)
 		if _, transitioned, err := streams.TransitionClaimedStreamStart(ctx, claimed.OwnershipClaim, "completed"); err != nil || !transitioned {
 			t.Fatalf("complete archive claim: transitioned=%v err=%v", transitioned, err)
 		}

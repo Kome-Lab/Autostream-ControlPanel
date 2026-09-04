@@ -37,18 +37,41 @@ const {
 const editorSource = readFileSync(new URL("../src/features/streams/stream-visual-settings-section.tsx", import.meta.url), "utf8");
 const panelSource = readFileSync(new URL("../src/features/streams/stream-control-platform-panel.tsx", import.meta.url), "utf8");
 
-test("default create preserves the legacy stream path and partial visual edits stay partial", () => {
+test("default create sends the complete v2 visual snapshot and edits retain explicit defaults", () => {
   const draft = defaultStreamVisualDraft();
-  assert.deepEqual(buildStreamCreateVisualExtension(draft, new Set()), {});
+  assert.deepEqual(buildStreamCreateVisualExtension(draft, new Set()), {
+    visual_settings: {
+      background_mode: "default",
+      background_asset_id: null,
+      background_variant_id: null,
+      header_title_mode: "default",
+      header_title_value: null,
+      discord_target: { mode: "inherit" },
+      cover_source: "none",
+      cover_preset_id: null,
+      cover_asset_id: null,
+      cover_variant_id: null,
+      cover_start_active: false,
+    },
+  });
   draft.headerTitleMode = "custom";
   draft.headerTitleValue = "Program title";
   const extension = buildStreamCreateVisualExtension(draft, new Set(["title"]));
   assert.deepEqual(extension, {
-    visual_settings: { header_title_mode: "custom", header_title_value: "Program title" },
+    visual_settings: {
+      background_mode: "default",
+      background_asset_id: null,
+      background_variant_id: null,
+      header_title_mode: "custom",
+      header_title_value: "Program title",
+      discord_target: { mode: "inherit" },
+      cover_source: "none",
+      cover_preset_id: null,
+      cover_asset_id: null,
+      cover_variant_id: null,
+      cover_start_active: false,
+    },
   });
-  assert.equal("discord_target_mode" in extension.visual_settings, false);
-  assert.equal("background_mode" in extension.visual_settings, false);
-  assert.equal("cover_source" in extension.visual_settings, false);
 });
 
 test("visual fields emit only selected Discord and Cover modes", () => {
@@ -66,9 +89,11 @@ test("visual fields emit only selected Discord and Cover modes", () => {
   });
   const fields = buildStreamVisualFields(draft, new Set(["discord", "cover"]));
   assert.deepEqual(fields, {
-    discord_target_mode: "preset",
-    discord_target_preset_id: "discord-preset-1",
-    discord_target_preset_revision: 8,
+    discord_target: {
+      mode: "preset",
+      preset_id: "discord-preset-1",
+      preset_revision: 8,
+    },
     cover_source: "preset",
     cover_preset_id: "cover-preset-1",
     cover_start_active: true,

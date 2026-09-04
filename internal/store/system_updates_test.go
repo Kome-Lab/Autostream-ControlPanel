@@ -392,6 +392,16 @@ func TestMemorySystemUpdateIdentityMutationFenceCoversRotationAndSelfUpdateLifec
 
 func TestMemorySystemUpdateMutationAuthorizationBindsExplicitExecutionHost(t *testing.T) {
 	updates := NewMemorySystemUpdateStore()
+	if _, err := updates.SwitchSystemUpdateExecutionHost(
+		t.Context(),
+		"host-01",
+		0,
+		SystemUpdateTransportPullV2,
+		"updater-01",
+		1,
+	); err != nil {
+		t.Fatal(err)
+	}
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: "host-01",
 		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle,
@@ -405,7 +415,7 @@ func TestMemorySystemUpdateMutationAuthorizationBindsExplicitExecutionHost(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusInstalling, Progress: 70}, now.Add(time.Second), time.Minute); err != nil {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusInstalling, Progress: 70}, now.Add(time.Second), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	authorization := SystemUpdateAuthorization{
@@ -582,6 +592,16 @@ func TestMemorySystemUpdateStoreAllowsParallelClaimsAcrossExecutionHosts(t *test
 	eligible := map[string]string{}
 	for hostID, targetID := range targetsByHost {
 		eligible[targetID] = "systemd"
+		if _, err := updates.SwitchSystemUpdateExecutionHost(
+			t.Context(),
+			hostID,
+			0,
+			SystemUpdateTransportPullV2,
+			"updater-01",
+			1,
+		); err != nil {
+			t.Fatal(err)
+		}
 		if _, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 			TargetID: targetID, TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: hostID,
 			DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle,

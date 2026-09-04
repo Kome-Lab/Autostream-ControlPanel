@@ -756,7 +756,7 @@ func TestMariaDBDeactivatePullUpdaterOwnershipLocksAllServicesBeforeTokens(t *te
 	}
 	source := string(sourceBytes)
 	startMarker := "func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership("
-	nextMarker := "func uniqueActiveMariaDBLegacyUpdaterForHostLocked("
+	nextMarker := "func attachUpdaterTargetDatabases("
 	start := strings.Index(source, startMarker)
 	if start < 0 {
 		t.Fatal("DeactivatePullUpdaterOwnership not found")
@@ -812,30 +812,6 @@ func TestMariaDBActivatePullUpdaterOwnershipLocksAllServicesBeforeTokens(t *test
 			discoveryPhase, transactionPhase, policyLockPhase, lockPhase,
 		)
 	}
-	legacyStartMarker := "func uniqueActiveMariaDBLegacyUpdaterForHostLocked("
-	legacyNextMarker := "func (s MariaDBUpdaterPolicyStore) GetUpdaterReleaseTokenStatus("
-	legacyStart := strings.Index(source, legacyStartMarker)
-	if legacyStart < 0 {
-		t.Fatal("uniqueActiveMariaDBLegacyUpdaterForHost not found")
-	}
-	legacyEndOffset := strings.Index(source[legacyStart+len(legacyStartMarker):], legacyNextMarker)
-	if legacyEndOffset < 0 {
-		t.Fatal("function following uniqueActiveMariaDBLegacyUpdaterForHost not found")
-	}
-	legacyHelper := source[legacyStart : legacyStart+len(legacyStartMarker)+legacyEndOffset]
-	for _, forbidden := range []string{
-		"QueryContext(",
-		"FOR UPDATE",
-		"INNER JOIN services",
-		"INNER JOIN service_tokens",
-		"lockMariaDBServicesSorted(",
-		"lockMariaDBServiceTokenMutation(",
-		"selectActiveServiceTokenForUpdate(",
-	} {
-		if strings.Contains(legacyHelper, forbidden) {
-			t.Fatalf("locked legacy updater revalidation acquires a new service/token lock via %q", forbidden)
-		}
-	}
 }
 
 func TestMariaDBDeactivatePullUpdaterOwnershipLocksGlobalPoliciesBeforeServices(t *testing.T) {
@@ -845,7 +821,7 @@ func TestMariaDBDeactivatePullUpdaterOwnershipLocksGlobalPoliciesBeforeServices(
 	}
 	source := string(sourceBytes)
 	startMarker := "func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership("
-	nextMarker := "func uniqueActiveMariaDBLegacyUpdaterForHostLocked("
+	nextMarker := "func attachUpdaterTargetDatabases("
 	start := strings.Index(source, startMarker)
 	if start < 0 {
 		t.Fatal("DeactivatePullUpdaterOwnership not found")

@@ -276,11 +276,7 @@ func systemUpdateV2Capability(operation contracts.UpdaterDesiredOperationType) (
 }
 
 func normalizedHTTPSystemUpdateTransportMode(mode string) string {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		return store.SystemUpdateTransportSSHV1
-	}
-	return mode
+	return strings.ToLower(strings.TrimSpace(mode))
 }
 
 func (s *Server) serviceSystemUpdateReportV2(w http.ResponseWriter, r *http.Request) {

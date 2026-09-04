@@ -301,7 +301,7 @@ func TestStartStreamClaimRejectsAssignmentMutationAfterSnapshot(t *testing.T) {
 			registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker", "discord_bot")
 			profiles := store.NewMemoryProfileStore()
 			config := createDiscordConfigForTest(t, profiles, "claim config", "discord_bot-01", "guild-claim", "voice-claim", "text-claim")
-			if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-claim", DiscordVoiceID: "voice-claim", DiscordTextID: "text-claim"}); err != nil {
+			if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -411,7 +411,7 @@ func TestServiceAutoStartClaimRejectsMutationWithoutMaterializingDiscord(t *test
 	registerServiceWithTokenForTest(t, auth, discordToken, store.ServiceRegistration{ServiceID: "discord-auto-claim", ServiceType: "discord_bot", ServiceName: "Discord Auto Claim", PublicURL: "https://discord-auto-claim.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "auto claim config", "discord-auto-claim", "guild-auto", "voice-auto", "text-auto")
-	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, DiscordGuildID: "guild-auto", DiscordVoiceID: "voice-auto", DiscordTextID: "text-auto", AutoStartTrigger: "discord_voice_join"}); err != nil {
+	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: config.ID, AutoStartTrigger: "discord_voice_join"}); err != nil {
 		t.Fatal(err)
 	}
 	baseDispatcher := &fakeServiceDispatcher{}
@@ -444,10 +444,10 @@ func TestServiceAutoStartClaimRejectsMutationWithoutMaterializingDiscord(t *test
 	}
 }
 
-func TestLegacyArchiveReportWrongStreamDoesNotReleaseAuthority(t *testing.T) {
+func TestV2ArchiveReportWrongStreamDoesNotReleaseAuthority(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()
-	owner, err := streams.CreateStream(t.Context(), "legacy report owner")
+	owner, err := streams.CreateStream(t.Context(), "v2 report owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,34 +455,42 @@ func TestLegacyArchiveReportWrongStreamDoesNotReleaseAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrong, err := streams.CreateStream(t.Context(), "wrong legacy report target")
+	wrong, err := streams.CreateStream(t.Context(), "wrong v2 report target")
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := registerStreamIsolationService(t, auth, "encoder-legacy-wrong-stream", "encoder_recorder", []string{"service.register", "encoder.status.write"})
-	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-legacy-wrong-stream", owner.ID, "bootstrap"); err != nil {
+	token := registerStreamIsolationService(t, auth, "encoder-v2-wrong-stream", "encoder_recorder", []string{"service.register", "encoder.status.write"})
+	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-v2-wrong-stream", owner.ID, "bootstrap"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streams.PrepareStreamArchiveRun(t.Context(), owner.ID, "", time.Time{}); err != nil {
+	startedAt := time.Now().UTC()
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), owner.ID, "archive-run-owner", startedAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := streams.UpdateStreamStatus(t.Context(), owner.ID, "completed"); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
-	reportBody := `{"service_id":"encoder-legacy-wrong-stream","stream_id":"` + wrong.ID + `","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + wrong.ID + `/final.mp4","size_bytes":1}]}`
-	req := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", strings.NewReader(reportBody))
+	reportBody, err := json.Marshal(map[string]any{
+		"service_id": "encoder-v2-wrong-stream", "stream_id": wrong.ID,
+		"archive_run_id": "archive-run-owner", "archive_started_at": startedAt,
+		"artifacts": []map[string]any{{"kind": "archive", "name": "final.mp4", "relative_path": "final/" + wrong.ID + "/archive-run-owner/final.mp4", "size_bytes": 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewReader(reportBody))
 	req.Header.Set("Authorization", "Bearer "+token.RawToken)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusForbidden {
-		t.Fatalf("wrong-stream legacy report status=%d body=%s", res.Code, res.Body.String())
+		t.Fatalf("wrong-stream v2 report status=%d body=%s", res.Code, res.Body.String())
 	}
 	current, err := streams.GetStream(t.Context(), owner.ID)
 	if err != nil || current.ArchiveReportedAt != nil {
 		t.Fatalf("wrong-stream report closed owner authority: stream=%#v err=%v", current, err)
 	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), store.ServiceUnassignmentMutation{ServiceID: "encoder-legacy-wrong-stream"}); !errors.Is(err, store.ErrServiceUnassignProtectedStream) {
+	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), store.ServiceUnassignmentMutation{ServiceID: "encoder-v2-wrong-stream"}); !errors.Is(err, store.ErrServiceUnassignProtectedStream) {
 		t.Fatalf("wrong-stream report released owner: %v", err)
 	}
 	artifacts, err := streams.ListStreamArtifacts(t.Context(), wrong.ID)

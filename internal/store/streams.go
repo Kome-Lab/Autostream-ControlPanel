@@ -25,9 +25,6 @@ type Stream struct {
 	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`
 	ScheduledEndAt            *time.Time `json:"scheduled_end_at,omitempty"`
 	DiscordConfigID           string     `json:"discord_config_id,omitempty"`
-	DiscordGuildID            string     `json:"discord_guild_id,omitempty"`
-	DiscordVoiceID            string     `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextID             string     `json:"discord_text_channel_id,omitempty"`
 	AutoStartTrigger          string     `json:"auto_start_trigger,omitempty"`
 	EncoderProfileID          string     `json:"encoder_profile_id,omitempty"`
 	CaptionProfileID          string     `json:"caption_profile_id,omitempty"`
@@ -55,9 +52,6 @@ type StreamSettings struct {
 	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`
 	ScheduledEndAt            *time.Time `json:"scheduled_end_at,omitempty"`
 	DiscordConfigID           string     `json:"discord_config_id,omitempty"`
-	DiscordGuildID            string     `json:"discord_guild_id,omitempty"`
-	DiscordVoiceID            string     `json:"discord_voice_channel_id,omitempty"`
-	DiscordTextID             string     `json:"discord_text_channel_id,omitempty"`
 	AutoStartTrigger          string     `json:"auto_start_trigger,omitempty"`
 	EncoderProfileID          string     `json:"encoder_profile_id,omitempty"`
 	CaptionProfileID          string     `json:"caption_profile_id,omitempty"`
@@ -288,14 +282,8 @@ func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
       AND s.archive_reported_at IS NULL
       AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')
     )
-    OR (
-      s.archive_reported_at IS NULL
-      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')
-	  AND `+streamLogGuardPendingCondition+`
-    )
   )`),
 		archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage,
-		legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage,
 	)
 	if err != nil {
 		return nil, err
@@ -313,7 +301,7 @@ func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 }
 
 const streamSelectFields = `s.id, s.name, s.status, COALESCE(s.archive_run_id, ''), s.archive_started_at, s.archive_reported_at, s.scheduled_start_at, s.scheduled_end_at,
-  COALESCE(ss.discord_config_id, ''), COALESCE(ss.discord_guild_id, ''), COALESCE(ss.discord_voice_channel_id, ''), COALESCE(ss.discord_text_channel_id, ''), COALESCE(ss.auto_start_trigger, ''),
+  COALESCE(ss.discord_config_id, ''), COALESCE(ss.auto_start_trigger, ''),
   COALESCE(ss.encoder_profile_id, ''), COALESCE(ss.caption_profile_id, ''),
   COALESCE(ss.overlay_profile_id, ''), COALESCE(ss.encoder_audio_gain_db, 0), COALESCE(ss.archive_profile_id, ''), COALESCE(ss.youtube_output_id, ''),
   COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
@@ -339,7 +327,7 @@ type streamRowScanner interface {
 func scanStreamRow(scanner streamRowScanner) (Stream, error) {
 	var stream Stream
 	var archiveStartedAt, archiveReportedAt, scheduledStart, scheduledEnd, deletedAt sql.NullTime
-	if err := scanner.Scan(&stream.ID, &stream.Name, &stream.Status, &stream.ArchiveRunID, &archiveStartedAt, &archiveReportedAt, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.DiscordGuildID, &stream.DiscordVoiceID, &stream.DiscordTextID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt, &deletedAt); err != nil {
+	if err := scanner.Scan(&stream.ID, &stream.Name, &stream.Status, &stream.ArchiveRunID, &archiveStartedAt, &archiveReportedAt, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt, &deletedAt); err != nil {
 		return Stream{}, err
 	}
 	stream.ScheduledStartAt = nullTimePtr(scheduledStart)
@@ -352,11 +340,8 @@ func scanStreamRow(scanner streamRowScanner) (Stream, error) {
 
 func (s MariaDBStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, archiveRunID string, startedAt time.Time) (Stream, error) {
 	archiveRunID = strings.TrimSpace(archiveRunID)
-	if archiveRunID != "" && !validArchiveRunID(archiveRunID) {
+	if !validArchiveRunID(archiveRunID) || startedAt.IsZero() {
 		return Stream{}, ErrInvalidStreamArtifact
-	}
-	if archiveRunID == "" {
-		startedAt = time.Time{}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -367,31 +352,17 @@ func (s MariaDBStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, arc
 	if err != nil {
 		return Stream{}, err
 	}
-	var started any
-	if !startedAt.IsZero() {
-		started = startedAt.UTC()
-	}
+	started := startedAt.UTC()
 	now := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx, `UPDATE streams SET archive_run_id = ?, archive_started_at = ?, archive_reported_at = NULL, updated_at = ? WHERE id = ?`, archiveRunID, started, now, id); err != nil {
 		return Stream{}, err
-	}
-	if err := closeMariaDBStreamLogGuard(ctx, tx, id, legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage, now); err != nil {
-		return Stream{}, err
-	}
-	if archiveRunID == "" && strings.TrimSpace(state.ArchiveProfileID) != "" {
-		if err := insertMariaDBStreamLogGuard(ctx, tx, id, legacyArchiveAssignmentGuardLogMessage, now); err != nil {
-			return Stream{}, err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Stream{}, err
 	}
 	stream := state.Stream
 	stream.ArchiveRunID = archiveRunID
-	stream.ArchiveStartedAt = nil
-	if !startedAt.IsZero() {
-		stream.ArchiveStartedAt = cloneTimePtr(&startedAt)
-	}
+	stream.ArchiveStartedAt = cloneTimePtr(&startedAt)
 	stream.ArchiveReportedAt = nil
 	stream.UpdatedAt = now
 	return stream, nil
@@ -597,21 +568,6 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Stream{}, err
 	}
-	// Once a Control Platform Discord mode exists, the legacy flat IDs are a
-	// server-derived compatibility snapshot. Read it while holding the stream
-	// row lock (the same stream -> visual order used by visual updates) so a
-	// legacy caller or another Panel process cannot overwrite effective IDs.
-	var targetMode, guildID, textChannelID, voiceChannelID sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT discord_target_mode,discord_guild_id,discord_text_channel_id,discord_voice_channel_id FROM stream_visual_settings WHERE stream_id=? FOR UPDATE`, id).Scan(&targetMode, &guildID, &textChannelID, &voiceChannelID)
-	if err == nil {
-		if strings.TrimSpace(targetMode.String) != "" {
-			settings.DiscordGuildID = strings.TrimSpace(guildID.String)
-			settings.DiscordTextID = strings.TrimSpace(textChannelID.String)
-			settings.DiscordVoiceID = strings.TrimSpace(voiceChannelID.String)
-		}
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return Stream{}, err
-	}
 	now := time.Now().UTC()
 	if err := UpsertStreamSettingsTx(ctx, tx, id, settings, now); err != nil {
 		return Stream{}, err
@@ -622,9 +578,8 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	return s.GetStream(ctx, id)
 }
 
-// UpsertStreamSettingsTx persists the legacy flat stream settings within an
-// existing transaction. New visual stream creation uses the same transaction
-// so a draft asset claim cannot commit before its compatibility snapshot.
+// UpsertStreamSettingsTx persists non-visual stream settings within an existing
+// transaction so a draft asset claim and stream creation commit atomically.
 func UpsertStreamSettingsTx(ctx context.Context, tx *sql.Tx, id string, settings StreamSettings, now time.Time) error {
 	if tx == nil || strings.TrimSpace(id) == "" {
 		return ErrNotFound
@@ -633,10 +588,10 @@ func UpsertStreamSettingsTx(ctx context.Context, tx *sql.Tx, id string, settings
 	if _, err := tx.ExecContext(ctx, `UPDATE streams SET name = COALESCE(NULLIF(?, ''), name), scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(settings.Name), nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, discord_guild_id, discord_voice_channel_id, discord_text_channel_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, encoder_audio_gain_db, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), discord_guild_id = VALUES(discord_guild_id), discord_voice_channel_id = VALUES(discord_voice_channel_id), discord_text_channel_id = VALUES(discord_text_channel_id), auto_start_trigger = VALUES(auto_start_trigger), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), encoder_audio_gain_db = VALUES(encoder_audio_gain_db), archive_profile_id = VALUES(archive_profile_id), archive_drive_destination_id = VALUES(archive_drive_destination_id), archive_oauth_account_id = VALUES(archive_oauth_account_id), archive_shared_drive = VALUES(archive_shared_drive), archive_shared_drive_id = VALUES(archive_shared_drive_id), archive_file_name = VALUES(archive_file_name), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
-		id, nullEmpty(settings.DiscordConfigID), nullEmpty(settings.DiscordGuildID), nullEmpty(settings.DiscordVoiceID), nullEmpty(settings.DiscordTextID), strings.TrimSpace(settings.AutoStartTrigger), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), settings.EncoderAudioGainDB, nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.ArchiveDriveDestinationID), nullEmpty(settings.ArchiveOAuthAccountID), settings.ArchiveSharedDrive, nullEmpty(settings.ArchiveSharedDriveID), nullEmpty(settings.ArchiveFileName), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
+	_, err := tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, encoder_audio_gain_db, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), auto_start_trigger = VALUES(auto_start_trigger), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), encoder_audio_gain_db = VALUES(encoder_audio_gain_db), archive_profile_id = VALUES(archive_profile_id), archive_drive_destination_id = VALUES(archive_drive_destination_id), archive_oauth_account_id = VALUES(archive_oauth_account_id), archive_shared_drive = VALUES(archive_shared_drive), archive_shared_drive_id = VALUES(archive_shared_drive_id), archive_file_name = VALUES(archive_file_name), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
+		id, nullEmpty(settings.DiscordConfigID), strings.TrimSpace(settings.AutoStartTrigger), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), settings.EncoderAudioGainDB, nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.ArchiveDriveDestinationID), nullEmpty(settings.ArchiveOAuthAccountID), settings.ArchiveSharedDrive, nullEmpty(settings.ArchiveSharedDriveID), nullEmpty(settings.ArchiveFileName), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
 	return err
 }
 
@@ -1062,16 +1017,12 @@ ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALU
 			return err
 		}
 	}
-	legacyAuthority := state.LegacyArchivePending || state.ArchiveRetryPending || (authority.ArchiveReportedAt != nil && legacyArchiveReportStatus(authority))
-	if streamArtifactReportMatchesArchiveAuthority(authority, normalized, legacyAuthority) {
+	if streamArtifactReportMatchesArchiveAuthority(authority, normalized) {
 		if err := markStreamArchiveRunReported(ctx, tx, id, authority, normalized); err != nil {
 			return err
 		}
 		closedAt := time.Now().UTC()
 		if err := closeMariaDBStreamLogGuard(ctx, tx, id, archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage, closedAt); err != nil {
-			return err
-		}
-		if err := closeMariaDBStreamLogGuard(ctx, tx, id, legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage, closedAt); err != nil {
 			return err
 		}
 	}
@@ -1324,16 +1275,12 @@ ON DUPLICATE KEY UPDATE relative_path = VALUES(relative_path), size_bytes = VALU
 			return err
 		}
 	}
-	legacyAuthority := state.LegacyArchivePending || state.ArchiveRetryPending || (authority.ArchiveReportedAt != nil && legacyArchiveReportStatus(authority))
-	if streamArtifactReportMatchesArchiveAuthority(authority, normalized, legacyAuthority) {
+	if streamArtifactReportMatchesArchiveAuthority(authority, normalized) {
 		if err := markStreamArchiveRunReported(ctx, tx, event.StreamID, authority, normalized); err != nil {
 			return err
 		}
 		closedAt := time.Now().UTC()
 		if err := closeMariaDBStreamLogGuard(ctx, tx, event.StreamID, archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage, closedAt); err != nil {
-			return err
-		}
-		if err := closeMariaDBStreamLogGuard(ctx, tx, event.StreamID, legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage, closedAt); err != nil {
 			return err
 		}
 	}
@@ -1363,53 +1310,24 @@ func markStreamArchiveRunReported(ctx context.Context, reporter streamArchiveRun
 		return nil
 	}
 	now := time.Now().UTC()
-	var err error
-	if strings.TrimSpace(authority.ArchiveRunID) == "" {
-		_, err = reporter.ExecContext(ctx, `UPDATE streams
-SET updated_at = CASE WHEN archive_reported_at IS NULL THEN ? ELSE updated_at END,
-    archive_reported_at = COALESCE(archive_reported_at, ?)
-WHERE id = ? AND COALESCE(archive_run_id, '') = ''`, now, now, streamID)
-	} else {
-		_, err = reporter.ExecContext(ctx, `UPDATE streams
+	_, err := reporter.ExecContext(ctx, `UPDATE streams
 SET updated_at = CASE WHEN archive_reported_at IS NULL THEN ? ELSE updated_at END,
     archive_reported_at = COALESCE(archive_reported_at, ?)
 WHERE id = ? AND archive_started_at = ? AND archive_run_id = ?`, now, now, streamID, artifacts[0].ArchiveStartedAt, artifacts[0].ArchiveRunID)
-	}
 	return err
 }
 
-func streamArtifactReportMatchesArchiveAuthority(stream Stream, artifacts []StreamArtifact, legacyAuthority bool) bool {
+func streamArtifactReportMatchesArchiveAuthority(stream Stream, artifacts []StreamArtifact) bool {
 	if len(artifacts) == 0 {
 		return false
 	}
 	report := artifacts[0]
 	currentRunID := strings.TrimSpace(stream.ArchiveRunID)
 	reportRunID := strings.TrimSpace(report.ArchiveRunID)
-	if currentRunID == "" {
-		if reportRunID != "" || report.ArchiveStartedAt != nil {
-			return false
-		}
-		// New legacy starts carry a durable auxiliary pending marker instead of
-		// fabricating a run timestamp. The second branch closes pre-FIX-003
-		// in-flight legacy starts without weakening non-empty modern run matching.
-		return legacyAuthority || (stream.ArchiveStartedAt != nil && legacyArchiveReportStatus(stream))
-	}
-	return stream.ArchiveStartedAt != nil &&
+	return currentRunID != "" && stream.ArchiveStartedAt != nil &&
 		reportRunID == currentRunID &&
 		report.ArchiveStartedAt != nil &&
 		report.ArchiveStartedAt.UTC().Equal(stream.ArchiveStartedAt.UTC())
-}
-
-func legacyArchiveReportStatus(stream Stream) bool {
-	if strings.TrimSpace(stream.ArchiveProfileID) == "" {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(stream.Status)) {
-	case "starting", "live", "stopping", "completed", "ready", "failed":
-		return true
-	default:
-		return false
-	}
 }
 
 func ValidateStreamArtifactReport(streamID string, artifacts []StreamArtifact) error {
@@ -1442,11 +1360,7 @@ func ValidateStreamArtifactReport(streamID string, artifacts []StreamArtifact) e
 		if artifact.SizeBytes < 0 || len(artifact.RelativePath) > 1024 || !isSafeRelativePath(artifact.RelativePath) {
 			return errors.New("unsafe artifact path")
 		}
-		if artifact.ArchiveRunID == "" {
-			if artifact.ArchiveStartedAt != nil {
-				return errors.New("archive start time requires run id")
-			}
-		} else if !validArchiveRunID(artifact.ArchiveRunID) || artifact.ArchiveStartedAt == nil || artifact.ArchiveStartedAt.IsZero() {
+		if !validArchiveRunID(artifact.ArchiveRunID) || artifact.ArchiveStartedAt == nil || artifact.ArchiveStartedAt.IsZero() {
 			return errors.New("invalid archive run metadata")
 		}
 		if artifact.RelativePath != streamArtifactRelativePath(streamID, artifact.ArchiveRunID, name) {
@@ -1513,9 +1427,6 @@ func isASCIIAlphaNumeric(value byte) bool {
 }
 
 func streamArtifactRelativePath(streamID, archiveRunID, name string) string {
-	if archiveRunID == "" {
-		return path.Join("final", streamID, name)
-	}
 	return path.Join("final", streamID, archiveRunID, name)
 }
 

@@ -51,8 +51,9 @@ func (s *Server) activePullManagedSystemdTarget(
 			ownership.ExecutionHostID != policy.ExecutionHostID {
 			return false, errNodeEndpointOwnershipUnverifiable
 		}
-		if ownership.TransportMode == store.SystemUpdateTransportSSHV1 &&
-			agent.OwnershipEpoch == 0 {
+		if ownership.TransportMode == store.SystemUpdateTransportPullV2 &&
+			agent.OwnershipEpoch == 0 &&
+			(ownership.AgentServiceID == "" || ownership.AgentServiceID == agent.ServiceID) {
 			continue
 		}
 		if policy.ProjectionRevision < 1 ||

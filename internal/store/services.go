@@ -2761,24 +2761,16 @@ func validateServiceRegistration(registration ServiceRegistration) error {
 		return err
 	}
 	if registration.ServiceType == "update_agent" {
-		switch registration.TransportMode {
-		case "pull_v2":
-			if !executionHostIDPattern.MatchString(registration.ExecutionHostID) ||
-				registration.OwnershipEpoch < 0 ||
-				registration.Host != "" ||
-				registration.Port != 0 ||
-				registration.SSLEnabled ||
-				registration.PublicURL != "" {
-				return ErrInvalidServiceRegistration
-			}
-			return nil
-		case "ssh_v1":
-			if registration.ExecutionHostID != "" || registration.OwnershipEpoch != 0 {
-				return ErrInvalidServiceRegistration
-			}
-		default:
+		if registration.TransportMode != SystemUpdateTransportPullV2 ||
+			!executionHostIDPattern.MatchString(registration.ExecutionHostID) ||
+			registration.OwnershipEpoch < 0 ||
+			registration.Host != "" ||
+			registration.Port != 0 ||
+			registration.SSLEnabled ||
+			registration.PublicURL != "" {
 			return ErrInvalidServiceRegistration
 		}
+		return nil
 	} else if registration.TransportMode != "" || registration.ExecutionHostID != "" || registration.OwnershipEpoch != 0 {
 		return ErrInvalidServiceRegistration
 	}
@@ -2832,10 +2824,7 @@ func normalizeServiceRegistration(registration ServiceRegistration) ServiceRegis
 	registration.Hostname = strings.TrimSpace(registration.Hostname)
 	registration.OS = strings.TrimSpace(registration.OS)
 	registration.Arch = strings.TrimSpace(registration.Arch)
-	if registration.ServiceType == "update_agent" && registration.TransportMode == "" {
-		registration.TransportMode = "ssh_v1"
-	}
-	if registration.ServiceType == "update_agent" && registration.TransportMode == "pull_v2" {
+	if registration.ServiceType == "update_agent" {
 		return registration
 	}
 	if registration.Host == "" || registration.Port == 0 {

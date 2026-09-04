@@ -42,7 +42,7 @@ func DefaultSettings(streamID string) Settings {
 func (r *SQLRepository) Get(ctx context.Context, streamID string) (Settings, error) {
 	settings, err := getSettingsWith(ctx, r.db, strings.TrimSpace(streamID), false)
 	if errors.Is(err, sql.ErrNoRows) {
-		return getLegacySettings(ctx, r.db, strings.TrimSpace(streamID))
+		return Settings{}, ErrNotFound
 	}
 	if err != nil {
 		return Settings{}, err
@@ -78,25 +78,6 @@ func scanSettings(row scanner) (Settings, error) {
 	return settings, err
 }
 
-func getLegacySettings(ctx context.Context, q queryer, streamID string) (Settings, error) {
-	settings := DefaultSettings(streamID)
-	var guild, text, voice sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT s.id,ss.discord_guild_id,ss.discord_text_channel_id,ss.discord_voice_channel_id FROM streams s LEFT JOIN stream_settings ss ON ss.stream_id=s.id WHERE s.id=?`, streamID).Scan(&settings.StreamID, &guild, &text, &voice)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Settings{}, ErrNotFound
-	}
-	if err != nil {
-		return Settings{}, err
-	}
-	settings.DiscordGuildID = strings.TrimSpace(guild.String)
-	settings.DiscordTextChannelID = strings.TrimSpace(text.String)
-	settings.DiscordVoiceChannelID = strings.TrimSpace(voice.String)
-	if settings.DiscordGuildID != "" || settings.DiscordTextChannelID != "" || settings.DiscordVoiceChannelID != "" {
-		settings.DiscordTargetMode = "manual"
-	}
-	return settings, nil
-}
-
 func (r *SQLRepository) Update(ctx context.Context, streamID, userID string, update Update) (Settings, error) {
 	streamID, userID = strings.TrimSpace(streamID), strings.TrimSpace(userID)
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -116,7 +97,7 @@ func (r *SQLRepository) Update(ctx context.Context, streamID, userID string, upd
 	}
 	current, err := getSettingsWith(ctx, tx, streamID, true)
 	if errors.Is(err, sql.ErrNoRows) {
-		current, err = getLegacySettings(ctx, tx, streamID)
+		return Settings{}, ErrNotFound
 	}
 	if err != nil {
 		return Settings{}, err
@@ -152,7 +133,7 @@ func (r *SQLRepository) Update(ctx context.Context, streamID, userID string, upd
 	if next.CreatedAt.IsZero() {
 		next.CreatedAt = now
 	}
-	if err := upsertSettings(ctx, tx, next, changes.discord, now); err != nil {
+	if err := upsertSettings(ctx, tx, next); err != nil {
 		return Settings{}, err
 	}
 	// Stream Start owns a database CAS over streams.updated_at. Advance that
@@ -184,18 +165,12 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	}
 	stream := store.Stream{ID: streamID, Name: input.Name, Status: "created", CreatedAt: now, UpdatedAt: now}
 	settingsBase := DefaultSettings(stream.ID)
-	settingsBase.DiscordGuildID = strings.TrimSpace(input.LegacySettings.DiscordGuildID)
-	settingsBase.DiscordTextChannelID = strings.TrimSpace(input.LegacySettings.DiscordTextID)
-	settingsBase.DiscordVoiceChannelID = strings.TrimSpace(input.LegacySettings.DiscordVoiceID)
-	if settingsBase.DiscordGuildID != "" || settingsBase.DiscordTextChannelID != "" || settingsBase.DiscordVoiceChannelID != "" {
-		settingsBase.DiscordTargetMode = "manual"
-	}
 	settings, changes, err := applyUpdate(settingsBase, input.Settings)
 	if err != nil {
 		return store.Stream{}, Settings{}, err
 	}
 	// Creation has no prior persisted snapshot. Any selected media must therefore
-	// be resolved and validated even when it came from the legacy/default base.
+	// be resolved and validated from the canonical visual input.
 	changes.backgroundSelection = settings.BackgroundMode == "image"
 	changes.coverSelection = settings.CoverSource != "none"
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -224,24 +199,25 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	if err = r.resolveAndValidate(ctx, tx, userID, stream.ID, &settings, changes); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
+	if strings.TrimSpace(input.StreamSettings.AutoStartTrigger) == "discord_voice_join" &&
+		(strings.TrimSpace(input.StreamSettings.DiscordConfigID) == "" || strings.TrimSpace(settings.DiscordGuildID) == "" || strings.TrimSpace(settings.DiscordVoiceChannelID) == "") {
+		return store.Stream{}, Settings{}, ErrInvalidSettings
+	}
 	settings.Revision = 1
 	settings.CreatedAt = now
 	settings.UpdatedAt = now
-	if err = upsertSettings(ctx, tx, settings, true, now); err != nil {
+	if err = upsertSettings(ctx, tx, settings); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
-	legacy := input.LegacySettings
-	legacy.Name = stream.Name
-	legacy.DiscordGuildID = settings.DiscordGuildID
-	legacy.DiscordTextID = settings.DiscordTextChannelID
-	legacy.DiscordVoiceID = settings.DiscordVoiceChannelID
-	if err = store.UpsertStreamSettingsTx(ctx, tx, stream.ID, legacy, now); err != nil {
+	streamSettings := input.StreamSettings
+	streamSettings.Name = stream.Name
+	if err = store.UpsertStreamSettingsTx(ctx, tx, stream.ID, streamSettings, now); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
-	applyLegacySettings(&stream, legacy)
+	applyStreamSettings(&stream, streamSettings)
 	return stream, settings, nil
 }
 
@@ -294,7 +270,7 @@ func validateClaimedDraftSelection(ctx context.Context, tx *sql.Tx, userID, sess
 	return nil
 }
 
-func applyLegacySettings(stream *store.Stream, settings store.StreamSettings) {
+func applyStreamSettings(stream *store.Stream, settings store.StreamSettings) {
 	if stream == nil {
 		return
 	}
@@ -302,9 +278,6 @@ func applyLegacySettings(stream *store.Stream, settings store.StreamSettings) {
 	stream.ScheduledStartAt = settings.ScheduledStartAt
 	stream.ScheduledEndAt = settings.ScheduledEndAt
 	stream.DiscordConfigID = strings.TrimSpace(settings.DiscordConfigID)
-	stream.DiscordGuildID = strings.TrimSpace(settings.DiscordGuildID)
-	stream.DiscordVoiceID = strings.TrimSpace(settings.DiscordVoiceID)
-	stream.DiscordTextID = strings.TrimSpace(settings.DiscordTextID)
 	stream.AutoStartTrigger = strings.TrimSpace(settings.AutoStartTrigger)
 	stream.EncoderProfileID = strings.TrimSpace(settings.EncoderProfileID)
 	stream.CaptionProfileID = strings.TrimSpace(settings.CaptionProfileID)
@@ -376,53 +349,47 @@ func applyUpdate(current Settings, update Update) (Settings, updateChanges, erro
 	if next.HeaderTitleMode == "default" {
 		next.HeaderTitleValue = ""
 	}
-	if update.DiscordTargetMode.Set {
-		if !update.DiscordTargetMode.Valid || strings.TrimSpace(update.DiscordTargetMode.Value) == "" {
-			next.DiscordTargetMode = "inherit"
-		} else {
-			next.DiscordTargetMode = strings.TrimSpace(update.DiscordTargetMode.Value)
-		}
-	}
-	discordPresetInput := update.DiscordTargetPresetID.Set || update.DiscordTargetPresetRevision != nil
-	discordManualInput := update.DiscordGuildID.Set || update.DiscordTextChannelID.Set || update.DiscordVoiceChannelID.Set
-	if next.DiscordTargetMode == "preset" {
-		if update.DiscordTargetMode.Set && current.DiscordTargetMode != "preset" {
+	if update.DiscordTarget.Set {
+		target := update.DiscordTarget.Value
+		target.Mode = strings.TrimSpace(target.Mode)
+		target.PresetID = strings.TrimSpace(target.PresetID)
+		target.GuildID = strings.TrimSpace(target.GuildID)
+		target.TextChannelID = strings.TrimSpace(target.TextChannelID)
+		target.VoiceChannelID = strings.TrimSpace(target.VoiceChannelID)
+		next.DiscordTargetMode = target.Mode
+		switch target.Mode {
+		case "inherit":
+			if target.PresetID != "" || target.PresetRevision != 0 || target.GuildID != "" || target.TextChannelID != "" || target.VoiceChannelID != "" {
+				return Settings{}, updateChanges{}, ErrInvalidSettings
+			}
 			next.DiscordTargetPresetID = ""
 			next.DiscordTargetPresetRevision = 0
-		}
-		if update.DiscordTargetPresetID.Set {
-			next.DiscordTargetPresetID = optionalValue(update.DiscordTargetPresetID)
-		}
-		if update.DiscordTargetPresetRevision != nil {
-			next.DiscordTargetPresetRevision = *update.DiscordTargetPresetRevision
-		}
-	}
-	if next.DiscordTargetMode == "manual" {
-		if update.DiscordTargetMode.Set && current.DiscordTargetMode != "manual" {
 			next.DiscordGuildID = ""
 			next.DiscordTextChannelID = ""
 			next.DiscordVoiceChannelID = ""
+		case "preset":
+			if target.PresetID == "" || target.PresetRevision == 0 || target.GuildID != "" || target.TextChannelID != "" || target.VoiceChannelID != "" {
+				return Settings{}, updateChanges{}, ErrInvalidSettings
+			}
+			next.DiscordTargetPresetID = target.PresetID
+			next.DiscordTargetPresetRevision = target.PresetRevision
+			next.DiscordGuildID = ""
+			next.DiscordTextChannelID = ""
+			next.DiscordVoiceChannelID = ""
+		case "manual":
+			if target.PresetID != "" || target.PresetRevision != 0 || !validDiscordID(target.GuildID) || !validDiscordID(target.TextChannelID) || !validDiscordID(target.VoiceChannelID) {
+				return Settings{}, updateChanges{}, ErrInvalidSettings
+			}
+			next.DiscordTargetPresetID = ""
+			next.DiscordTargetPresetRevision = 0
+			next.DiscordGuildID = target.GuildID
+			next.DiscordTextChannelID = target.TextChannelID
+			next.DiscordVoiceChannelID = target.VoiceChannelID
+		default:
+			return Settings{}, updateChanges{}, ErrInvalidSettings
 		}
-		next.DiscordTargetPresetID = ""
-		next.DiscordTargetPresetRevision = 0
-		if update.DiscordGuildID.Set {
-			next.DiscordGuildID = optionalValue(update.DiscordGuildID)
-		}
-		if update.DiscordTextChannelID.Set {
-			next.DiscordTextChannelID = optionalValue(update.DiscordTextChannelID)
-		}
-		if update.DiscordVoiceChannelID.Set {
-			next.DiscordVoiceChannelID = optionalValue(update.DiscordVoiceChannelID)
-		}
+		changes.discord = true
 	}
-	if next.DiscordTargetMode == "inherit" {
-		next.DiscordTargetPresetID = ""
-		next.DiscordTargetPresetRevision = 0
-		next.DiscordGuildID = ""
-		next.DiscordTextChannelID = ""
-		next.DiscordVoiceChannelID = ""
-	}
-	changes.discord = update.DiscordTargetMode.Set || (next.DiscordTargetMode == "preset" && discordPresetInput) || (next.DiscordTargetMode == "manual" && discordManualInput)
 	if update.CoverSource.Set {
 		if !update.CoverSource.Valid || strings.TrimSpace(update.CoverSource.Value) == "" {
 			next.CoverSource = "none"
@@ -603,13 +570,7 @@ func validateVariantPresentation(usage string, sourceWidth, sourceHeight, target
 	return nil
 }
 
-func upsertSettings(ctx context.Context, tx *sql.Tx, settings Settings, discordChanged bool, now time.Time) error {
-	if discordChanged {
-		_, err := tx.ExecContext(ctx, `INSERT INTO stream_settings(stream_id,discord_guild_id,discord_text_channel_id,discord_voice_channel_id,discord_target_mode,discord_target_preset_id,discord_target_preset_revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE discord_guild_id=VALUES(discord_guild_id),discord_text_channel_id=VALUES(discord_text_channel_id),discord_voice_channel_id=VALUES(discord_voice_channel_id),discord_target_mode=VALUES(discord_target_mode),discord_target_preset_id=VALUES(discord_target_preset_id),discord_target_preset_revision=VALUES(discord_target_preset_revision),updated_at=VALUES(updated_at)`, settings.StreamID, nullString(settings.DiscordGuildID), nullString(settings.DiscordTextChannelID), nullString(settings.DiscordVoiceChannelID), nullString(settings.DiscordTargetMode), nullString(settings.DiscordTargetPresetID), nullUint(settings.DiscordTargetPresetRevision), now)
-		if err != nil {
-			return err
-		}
-	}
+func upsertSettings(ctx context.Context, tx *sql.Tx, settings Settings) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO stream_visual_settings(stream_id,background_mode,background_asset_id,background_variant_id,header_title_mode,header_title_value,discord_target_mode,discord_target_preset_id,discord_target_preset_revision,discord_snapshot_revision,discord_guild_id,discord_text_channel_id,discord_voice_channel_id,cover_source,cover_preset_id,cover_preset_revision,cover_asset_id,cover_variant_id,cover_start_active,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE background_mode=VALUES(background_mode),background_asset_id=VALUES(background_asset_id),background_variant_id=VALUES(background_variant_id),header_title_mode=VALUES(header_title_mode),header_title_value=VALUES(header_title_value),discord_target_mode=VALUES(discord_target_mode),discord_target_preset_id=VALUES(discord_target_preset_id),discord_target_preset_revision=VALUES(discord_target_preset_revision),discord_snapshot_revision=VALUES(discord_snapshot_revision),discord_guild_id=VALUES(discord_guild_id),discord_text_channel_id=VALUES(discord_text_channel_id),discord_voice_channel_id=VALUES(discord_voice_channel_id),cover_source=VALUES(cover_source),cover_preset_id=VALUES(cover_preset_id),cover_preset_revision=VALUES(cover_preset_revision),cover_asset_id=VALUES(cover_asset_id),cover_variant_id=VALUES(cover_variant_id),cover_start_active=VALUES(cover_start_active),revision=VALUES(revision),updated_at=VALUES(updated_at)`, settings.StreamID, settings.BackgroundMode, nullString(settings.BackgroundAssetID), nullString(settings.BackgroundVariantID), settings.HeaderTitleMode, nullString(settings.HeaderTitleValue), nullString(settings.DiscordTargetMode), nullString(settings.DiscordTargetPresetID), nullUint(settings.DiscordTargetPresetRevision), settings.DiscordSnapshotRevision, nullString(settings.DiscordGuildID), nullString(settings.DiscordTextChannelID), nullString(settings.DiscordVoiceChannelID), settings.CoverSource, nullString(settings.CoverPresetID), nullUint(settings.CoverPresetRevision), nullString(settings.CoverAssetID), nullString(settings.CoverVariantID), settings.CoverStartActive, settings.Revision, settings.CreatedAt, settings.UpdatedAt)
 	return err
 }

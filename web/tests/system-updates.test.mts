@@ -400,7 +400,12 @@ test("port reconfiguration is fail-closed and keeps the legacy software request 
     requestState: "idle",
   }).reason, "docker_mapping_unavailable");
   assert.equal(systemUpdatePortReconfigureEligibility({ target: { ...baseTarget, deployment_mode: "binary" }, updater, node, requestState: "idle" }).reason, "unsupported_deployment");
-  assert.equal(systemUpdatePortReconfigureEligibility({ target: baseTarget, updater: { ...updater, transport_mode: "ssh_v1" }, node, requestState: "idle" }).reason, "unsupported_transport");
+  assert.equal(systemUpdatePortReconfigureEligibility({
+    target: baseTarget,
+    updater: { ...updater, transport_mode: "ssh_v1" } as unknown as SystemUpdateAgentStatus,
+    node,
+    requestState: "idle",
+  }).reason, "unsupported_transport");
   assert.equal(systemUpdatePortReconfigureEligibility({ target: { ...baseTarget, target_type: "control_panel" }, updater, node, requestState: "idle" }).reason, "unsupported_target");
   assert.equal(systemUpdatePortReconfigureEligibility({ target: { ...baseTarget, busy: true }, updater, node, requestState: "idle" }).reason, "target_busy");
   assert.equal(systemUpdatePortReconfigureEligibility({ target: baseTarget, updater, node, requestState: "pending" }).reason, "request_pending");
@@ -671,8 +676,8 @@ test("pull ownership activation uses only server-fenced settings and readiness f
     transport_mode: "pull_v2",
     execution_host_id: "host-main",
     execution_host_ownership: {
-      transport_mode: "ssh_v1",
-      agent_service_id: "updater-central",
+      transport_mode: "pull_v2",
+      agent_service_id: "",
       ownership_epoch: 12,
       policy_revision: 8,
     },
@@ -760,7 +765,7 @@ test("pull ownership activation uses only server-fenced settings and readiness f
   assert.throws(() => normalizePullUpdaterOwnershipActivationResponse({ ownership_epoch: 13 }), /invalid_pull_ownership_activation_response/);
 });
 
-test("wire normalization preserves pull ownership epoch zero without inventing a legacy epoch", () => {
+test("wire normalization preserves pull ownership epoch zero and rejects legacy ownership", () => {
   const digest = `sha256:${"a".repeat(64)}`;
   const response = normalizeSystemUpdatesResponse({
     updaters: [
@@ -785,11 +790,12 @@ test("wire normalization preserves pull ownership epoch zero without inventing a
     ],
   });
   const pullUpdater = response.updaters[0];
-  const legacyUpdater = response.updaters[1];
+  const unsupportedUpdater = response.updaters[1];
   assert.equal(pullUpdater.ownership_epoch, 0);
   assert.equal("ownership_epoch" in pullUpdater, true);
-  assert.equal(legacyUpdater.ownership_epoch, undefined);
-  assert.equal("ownership_epoch" in legacyUpdater, false);
+  assert.equal(unsupportedUpdater.ownership_epoch, undefined);
+  assert.equal("ownership_epoch" in unsupportedUpdater, false);
+  assert.equal(unsupportedUpdater.transport_mode, undefined);
 
   const settings = normalizeUpdaterSettingsResponse({
     updater_id: "host-agent-main",
@@ -800,8 +806,8 @@ test("wire normalization preserves pull ownership epoch zero without inventing a
     transport_mode: "pull_v2",
     execution_host_id: "host-main",
     execution_host_ownership: {
-      transport_mode: "ssh_v1",
-      agent_service_id: "updater-central",
+      transport_mode: "pull_v2",
+      agent_service_id: "",
       ownership_epoch: 12,
       policy_revision: 8,
     },
@@ -833,7 +839,7 @@ test("wire normalization preserves pull ownership epoch zero without inventing a
   );
 });
 
-test("pull ownership Bridge rollback is visible only for the exact active owner and validates the observer response", () => {
+test("pull ownership release is visible only for the exact active owner and validates the observer response", () => {
   const digest = `sha256:${"a".repeat(64)}`;
   const updater: SystemUpdateAgentStatus = {
     updater_id: "host-agent-main",
@@ -855,7 +861,6 @@ test("pull ownership Bridge rollback is visible only for the exact active owner 
     execution_host_ownership: {
       transport_mode: "pull_v2",
       agent_service_id: updater.updater_id,
-      legacy_agent_service_id: "updater-central",
       ownership_epoch: 13,
       policy_revision: 4,
     },
@@ -897,7 +902,7 @@ test("pull ownership Bridge rollback is visible only for the exact active owner 
     updater,
     settings: {
       ...settings,
-      execution_host_ownership: { ...settings.execution_host_ownership!, legacy_agent_service_id: "" },
+      execution_host_ownership: { ...settings.execution_host_ownership!, agent_service_id: "" },
     },
     jobs: [],
     requestState: "idle",
@@ -927,24 +932,24 @@ test("pull ownership Bridge rollback is visible only for the exact active owner 
     requestState: "ambiguous",
   }).reason, "request_ambiguous");
   const deactivationAttempt = pullUpdaterOwnershipDeactivationRequest(updater, settings);
-  const rolledBackSettings: UpdaterSettings = {
+  const releasedSettings: UpdaterSettings = {
     ...settings,
     execution_host_ownership: {
       ...settings.execution_host_ownership!,
-      transport_mode: "ssh_v1",
-      agent_service_id: "updater-central",
+      transport_mode: "pull_v2",
+      agent_service_id: updater.updater_id,
       ownership_epoch: 14,
     },
   };
   assert.equal(
-    pullOwnershipMutationFenceAdvanced(deactivationAttempt, rolledBackSettings),
+    pullOwnershipMutationFenceAdvanced(deactivationAttempt, releasedSettings),
     true,
   );
   assert.equal(
     pullOwnershipMutationFenceAdvanced(deactivationAttempt, {
-      ...rolledBackSettings,
+      ...releasedSettings,
       execution_host_ownership: {
-        ...rolledBackSettings.execution_host_ownership!,
+        ...releasedSettings.execution_host_ownership!,
         transport_mode: "pull_v2",
         agent_service_id: updater.updater_id,
         ownership_epoch: 15,
@@ -955,7 +960,7 @@ test("pull ownership Bridge rollback is visible only for the exact active owner 
   );
   assert.equal(
     pullOwnershipMutationFenceAdvanced(deactivationAttempt, {
-      ...rolledBackSettings,
+      ...releasedSettings,
       execution_host_id: "host-other",
     }),
     false,
@@ -964,8 +969,8 @@ test("pull ownership Bridge rollback is visible only for the exact active owner 
   assert.deepEqual(normalizePullUpdaterOwnershipDeactivationResponse({
     updater_id: updater.updater_id,
     execution_host_id: "host-main",
-    transport_mode: "ssh_v1",
-    agent_service_id: "updater-central",
+    transport_mode: "pull_v2",
+    agent_service_id: updater.updater_id,
     ownership_epoch: 14,
     agent_ownership_epoch: 0,
     source_policy_revision: 9,
@@ -975,8 +980,8 @@ test("pull ownership Bridge rollback is visible only for the exact active owner 
   }), {
     updater_id: updater.updater_id,
     execution_host_id: "host-main",
-    transport_mode: "ssh_v1",
-    agent_service_id: "updater-central",
+    transport_mode: "pull_v2",
+    agent_service_id: updater.updater_id,
     ownership_epoch: 14,
     agent_ownership_epoch: 0,
     source_policy_revision: 9,
@@ -987,8 +992,8 @@ test("pull ownership Bridge rollback is visible only for the exact active owner 
   assert.throws(() => normalizePullUpdaterOwnershipDeactivationResponse({
     updater_id: updater.updater_id,
     execution_host_id: "host-main",
-    transport_mode: "pull_v2",
-    agent_service_id: "updater-central",
+    transport_mode: "ssh_v1",
+    agent_service_id: updater.updater_id,
     ownership_epoch: 14,
     agent_ownership_epoch: 0,
     source_policy_revision: 9,
@@ -1421,24 +1426,24 @@ test("wire responses are normalized across the public and legacy field names", (
   assert.equal(legacy.jobs[0].last_status, "");
 });
 
-test("central updater policy status and generated SSH client keys are normalized fail closed", () => {
+test("Host Agent policy status is normalized fail closed", () => {
   const response = normalizeSystemUpdatesResponse({
     updaters: [{
-      updater_id: "updater-main",
-      name: "Central Updater",
+      updater_id: "host-agent-main",
+      name: "Host Agent",
       status: "online",
       online: true,
+      transport_mode: "pull_v2",
+      execution_host_id: "host-main",
+      ownership_epoch: 1,
       desired_revision: 4,
       applied_revision: 3,
       policy_status: "pending",
       policy_error_code: "",
-      ssh_client_public_keys: { "host-main": "ssh-ed25519 AAAATEST autostream-updater@central" },
-      ssh_client_key_fingerprints: { "host-main": "SHA256:client-key" },
     }],
   });
   assert.equal(response.updaters[0].desired_revision, 4);
   assert.equal(response.updaters[0].applied_revision, 3);
-  assert.equal(response.updaters[0].ssh_client_public_keys?.["host-main"], "ssh-ed25519 AAAATEST autostream-updater@central");
   assert.deepEqual(systemUpdateUpdaterPolicyState(response.updaters[0]), { label: "反映待ち", tone: "secondary", ready: false });
   assert.deepEqual(systemUpdateUpdaterPolicyState({ ...response.updaters[0], applied_revision: 4, policy_status: "applied" }), { label: "反映済み", tone: "default", ready: true });
   assert.deepEqual(systemUpdateUpdaterPolicyState({ ...response.updaters[0], policy_status: "failed" }), { label: "反映失敗", tone: "destructive", ready: false });
@@ -1447,10 +1452,11 @@ test("central updater policy status and generated SSH client keys are normalized
   assert.match(systemUpdatePolicyErrorMessage("active_job_pending"), /処理完了後に自動で反映/);
 });
 
-test("updater settings response keeps only the panel-managed policy contract", () => {
-  const settings = normalizeUpdaterSettingsResponse({
+test("updater settings response rejects removed central policy fields", () => {
+  assert.throws(() => normalizeUpdaterSettingsResponse({
     updater_id: "updater-main",
     revision: 7,
+    transport_mode: "ssh_v1",
     api: { bind_host: "127.0.0.1", host: "127.0.0.1", port: 8090, ssl_enabled: false },
     poll_interval_seconds: 30,
     heartbeat_interval_seconds: 15,
@@ -1472,15 +1478,7 @@ test("updater settings response keeps only the panel-managed policy contract", (
     updated_at: "2026-07-25T00:00:00Z",
     github_token: "must-not-be-returned",
     known_hosts_file: "/etc/autostream/updater/ssh/known_hosts",
-  });
-
-  assert.equal(settings.api.port, 8090);
-  assert.equal(settings.hosts[0].host_public_key, "ssh-ed25519 AAAAHOST root@main");
-  assert.equal(settings.hosts[0].host_key_fingerprint, "SHA256:host-key");
-  assert.equal(settings.hosts[0].ssh_client_public_key, "ssh-ed25519 AAAACLIENT autostream-updater@central");
-  assert.equal(settings.github_token_configured, true);
-  assert.equal("github_token" in settings, false);
-  assert.equal("known_hosts_file" in settings, false);
+  }), /invalid_updater_settings_transport/);
 });
 
 test("pull_v2 updater settings remain portless and keep server-owned host binding", () => {
@@ -1494,8 +1492,8 @@ test("pull_v2 updater settings remain portless and keep server-owned host bindin
     execution_host_id: "host-main",
     execution_host_ownership: {
       execution_host_id: "host-main",
-      transport_mode: "ssh_v1",
-      agent_service_id: "updater-central",
+      transport_mode: "pull_v2",
+      agent_service_id: "",
       ownership_epoch: 12,
       policy_revision: 3,
     },
@@ -1560,7 +1558,7 @@ test("pull_v2 database owner target validation is narrow and trims the saved dat
     normalizeUpdaterSettingsTargetDatabaseName("pull_v2", controlPanelTarget, "サービス 1"),
     "autostream-kometubu_panel",
   );
-  assert.equal(updaterSettingsTargetRequiresDatabase("ssh_v1", controlPanelTarget), false);
+  assert.equal(updaterSettingsTargetRequiresDatabase("ssh_v1" as unknown as UpdaterSettings["transport_mode"], controlPanelTarget), false);
   assert.equal(
     updaterSettingsTargetRequiresDatabase("pull_v2", { ...controlPanelTarget, deployment_mode: "docker" }),
     false,
@@ -1594,7 +1592,7 @@ test("pull_v2 database owner target validation is narrow and trims the saved dat
     /MariaDBデータベース名を指定できません/,
   );
   assert.throws(
-    () => normalizeUpdaterSettingsTargetDatabaseName("ssh_v1", controlPanelTarget, "サービス 1"),
+    () => normalizeUpdaterSettingsTargetDatabaseName("ssh_v1" as unknown as UpdaterSettings["transport_mode"], controlPanelTarget, "サービス 1"),
     /MariaDBデータベース名を指定できません/,
   );
 });
@@ -1758,9 +1756,14 @@ test("first unused updater settings target skips duplicates and supports the syn
     },
   ], "host-selected"), undefined);
 
-  const sshTarget = firstUnusedUpdaterSettingsTarget("ssh_v1", [baseTarget], [], "host-selected");
-  assert.equal(sshTarget?.service_type, "worker");
-  assert.equal(sshTarget?.local_listen_port, undefined);
+  const rejectedLegacyTarget = firstUnusedUpdaterSettingsTarget(
+    "ssh_v1" as unknown as UpdaterSettings["transport_mode"],
+    [baseTarget],
+    [],
+    "host-selected",
+  );
+  assert.equal(rejectedLegacyTarget?.service_type, "worker");
+  assert.equal(rejectedLegacyTarget?.local_listen_port, undefined);
 });
 
 test("selecting an updater settings target synchronizes both IDs and its derived service type", () => {
@@ -1843,7 +1846,7 @@ test("bootstrap job response is whitelisted and active states fail closed", () =
   }
 });
 
-test("bootstrap eligibility requires the applied saved policy, generated host key, and no active job", () => {
+test("bootstrap eligibility requires the applied policy projection, saved bootstrap host, generated keys, and no active job", () => {
   const savedHost: UpdaterSettingsHost = {
     host_id: "host-main",
     name: "Main",
@@ -1862,27 +1865,19 @@ test("bootstrap eligibility requires the applied saved policy, generated host ke
     status: "online",
     online: true,
     version: "v1.8.0",
-    desired_revision: 7,
-    applied_revision: 7,
+    desired_revision: 4,
+    applied_revision: 4,
     policy_status: "applied",
     bootstrap_encryption_public_key: "BAc-public-key",
     bootstrap_encryption_key_fingerprint: "SHA256:bootstrap-key",
     ssh_client_public_keys: { "host-main": "ssh-ed25519 AAAACLIENT updater" },
     ssh_client_key_fingerprints: { "host-main": "SHA256:client-key" },
   };
-  const savedTargets: UpdaterSettingsTarget[] = [{
-    target_id: "worker-main",
-    host_id: savedHost.host_id,
-    service_type: "worker",
-    deployment_mode: "systemd",
-  }];
   const base = {
     updater,
-    expectedRevision: 7,
+    expectedAppliedRevision: 4,
     savedHost,
     currentHost: { ...savedHost },
-    savedTargets,
-    currentTargets: savedTargets.map((target) => ({ ...target })),
     releaseTokenConfigured: true,
   };
 
@@ -1894,7 +1889,8 @@ test("bootstrap eligibility requires the applied saved policy, generated host ke
     "GitHub Release Tokenを保存してからホストセットアップを開始してください。",
   );
   assert.equal(updaterHostBootstrapEligibility({ ...base, updater: { ...updater, online: false } }).reason, "updater_offline");
-  assert.equal(updaterHostBootstrapEligibility({ ...base, updater: { ...updater, desired_revision: 8 } }).reason, "policy_pending");
+  assert.equal(updaterHostBootstrapEligibility({ ...base, updater: { ...updater, desired_revision: 5 } }).reason, "policy_pending");
+  assert.equal(updaterHostBootstrapEligibility({ ...base, expectedAppliedRevision: 7 }).reason, "policy_pending");
   assert.equal(updaterHostBootstrapEligibility({ ...base, currentHost: { ...savedHost, address: "10.0.0.11" } }).reason, "host_unsaved");
   assert.equal(updaterHostBootstrapEligibility({
     ...base,
@@ -1913,11 +1909,6 @@ test("bootstrap eligibility requires the applied saved policy, generated host ke
   assert.equal(isUpdaterHostBootstrapBulkCandidate(expired), true);
   assert.equal(isUpdaterHostBootstrapBulkCandidate(updaterHostBootstrapEligibility(base)), true);
   assert.equal(updaterHostBootstrapEligibility({ ...base, updater: { ...updater, bootstrap_encryption_public_key: "" } }).reason, "encryption_key_pending");
-  assert.equal(updaterHostBootstrapEligibility({ ...base, savedTargets: [], currentTargets: [] }).reason, "unsupported_profile");
-  const dockerTargets = savedTargets.map((target) => ({ ...target, deployment_mode: "docker" }));
-  assert.equal(updaterHostBootstrapEligibility({ ...base, savedTargets: dockerTargets, currentTargets: dockerTargets }).reason, "unsupported_profile");
-  const customTargets = savedTargets.map((target) => ({ ...target, service_type: "custom" }));
-  assert.equal(updaterHostBootstrapEligibility({ ...base, savedTargets: customTargets, currentTargets: customTargets }).reason, "unsupported_profile");
   assert.equal(
     updaterHostBootstrapEligibility({
       ...base,
@@ -1934,7 +1925,6 @@ test("bootstrap eligibility requires the applied saved policy, generated host ke
     }).reason,
     "unsupported_profile",
   );
-  assert.equal(updaterHostBootstrapEligibility({ ...base, currentTargets: dockerTargets }).reason, "host_unsaved");
 });
 
 test("bootstrap confirmation follows fresh updater client-key rotation instead of stale settings", () => {
@@ -1986,19 +1976,11 @@ test("bootstrap confirmation follows fresh updater client-key rotation instead o
   const missingHost = (JSON.parse(missingContext) as { hosts: Array<Record<string, string>> }).hosts[0];
   assert.equal(missingHost.ssh_client_public_key, "");
   assert.equal(missingHost.ssh_client_key_fingerprint, "");
-  const targets: UpdaterSettingsTarget[] = [{
-    target_id: "worker-main",
-    host_id: savedHost.host_id,
-    service_type: "worker",
-    deployment_mode: "systemd",
-  }];
   assert.equal(updaterHostBootstrapEligibility({
     updater: missing,
-    expectedRevision: 7,
+    expectedAppliedRevision: 7,
     savedHost,
     currentHost: { ...savedHost },
-    savedTargets: targets,
-    currentTargets: targets.map((target) => ({ ...target })),
     releaseTokenConfigured: true,
   }).reason, "client_key_pending");
 });
@@ -2064,7 +2046,7 @@ test("updater policy host IDs exclude colon while retaining safe separators", ()
 });
 
 test("updater settings save preserves, deletes, and replaces the write-only GitHub token explicitly", () => {
-  const path = "/system-updates/updaters/updater-central/settings";
+  const path = "/system-updates/updaters/host-agent-control/settings";
   const current = mockGet(path) as UpdaterSettings;
   const request = {
     api: current.api,
@@ -2083,8 +2065,8 @@ test("updater settings save preserves, deletes, and replaces the write-only GitH
 });
 
 test("bootstrap job mock stores job metadata without retaining the credential envelope", () => {
-  const path = "/system-updates/updaters/updater-central/bootstrap-jobs";
-  const current = mockGet("/system-updates/updaters/updater-central/settings") as UpdaterSettings;
+  const path = "/system-updates/updaters/host-agent-control/bootstrap-jobs";
+  const current = mockGet("/system-updates/updaters/host-agent-control/settings") as UpdaterSettings;
   const request = {
     job_id: `bootstrap-${crypto.randomUUID()}`,
     idempotency_key: `idempotency-${crypto.randomUUID()}`,
@@ -2111,8 +2093,8 @@ test("bootstrap job mock stores job metadata without retaining the credential en
 });
 
 test("bootstrap job mock rejects a missing or stale recipient key without storing a job", () => {
-  const path = "/system-updates/updaters/updater-central/bootstrap-jobs";
-  const current = mockGet("/system-updates/updaters/updater-central/settings") as UpdaterSettings;
+  const path = "/system-updates/updaters/host-agent-control/bootstrap-jobs";
+  const current = mockGet("/system-updates/updaters/host-agent-control/settings") as UpdaterSettings;
   const jobsBefore = (mockGet(path) as { jobs: Array<Record<string, unknown>> }).jobs.length;
   const request = {
     job_id: `bootstrap-recipient-${crypto.randomUUID()}`,
@@ -2209,8 +2191,8 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(applicationSource, /ambiguousPortTargetID=\{unresolvedAmbiguousPortRequest\?\.target_id\}/);
   assert.match(applicationSource, /retry:\s*false/);
   assert.match(settingsSource, /設定を保存/);
-  assert.match(settingsSource, /Updaterが自動で反映/);
-  assert.match(settingsSource, /別の安全な経路.*照合/s);
+  assert.match(settingsSource, /Host Agentのconfigureを再実行/);
+  assert.doesNotMatch(settingsSource, /中央Updater/);
   assert.match(settingsSource, /設定の変更には system_updates\.execute 権限が必要/);
   assert.match(settingsSource, /system_updates\.execute/);
   assert.match(settingsSource, /pullUpdaterOwnershipActivationEligibility/);
@@ -2222,31 +2204,29 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /expected_projection_revision/);
   assert.match(settingsSource, /expected_local_executor_policy_revision/);
   assert.match(settingsSource, /expected_local_executor_policy_sha256/);
-  assert.match(settingsSource, /Bridge期間中はSSH UpdaterとHost Agentの実行権限をCASで切り替えます/);
+  assert.match(settingsSource, /Host Agentの更新実行権限をCASで切り替えます/);
   assert.match(settingsSource, /aria-busy=\{activateOwnership\.isPending\}/);
   assert.match(settingsSource, /pullUpdaterOwnershipDeactivationEligibility/);
   assert.match(settingsSource, /pullUpdaterOwnershipDeactivationRequest/);
   assert.match(settingsSource, /\/pull-ownership\/deactivate/);
-  assert.match(settingsSource, /\{activePullOwner \? \([\s\S]*緊急Bridge rollback/);
-  assert.match(settingsSource, /legacyAgentServiceID: rollbackLegacyAgentServiceID/);
+  assert.doesNotMatch(settingsSource, /緊急Bridge rollback/);
+  assert.doesNotMatch(settingsSource, /legacyAgentServiceID/);
   assert.match(settingsSource, /setAmbiguousDeactivationAttempt\(attempt\)/);
   assert.doesNotMatch(settingsSource, /deactivateOwnership\.mutate\(ambiguousDeactivationAttempt/);
   assert.match(settingsSource, /role=\{ownershipFeedback\?\.tone === "error"[\s\S]*\? "alert" : "status"\}/);
-  assert.match(settingsSource, /secrets\.update/);
+  assert.match(applicationSource, /canManageUpdaterSecrets=\{hasPermission\(currentUser\.data, "secrets\.update"\)\}/);
   assert.match(settingsSource, /GitHub Release Token/);
-  assert.match(settingsSource, /公開中のControl Panel repositoryにもTokenを必須/);
-  assert.match(settingsSource, /private repositoryへ変更した場合、この公開repository用の証明検証では更新できません/);
+  assert.match(settingsSource, /Host Agentのpolicyや応答には含めません/);
   assert.match(settingsSource, /host_public_key/);
-  assert.match(settingsSource, /ssh_client_public_keys/);
-  assert.doesNotMatch(settingsSource, /authorized_keys に登録してください/);
+  assert.match(settingsSource, /DeferredUpdaterHostConfirmation/);
   assert.match(settingsSource, /const \[baseRevision, setBaseRevision\] = useState\(settings\.revision\)/);
   assert.match(settingsSource, /expected_revision: expectedRevision/);
   assert.doesNotMatch(settingsSource, /expected_revision: settings\.revision/);
   assert.match(settingsSource, /updater\.transport_mode !== "pull_v2"/);
-  assert.match(settingsSource, /pullMode \? "Host Agentの動作" : "Updaterの動作"/);
-  assert.match(settingsSource, /SSH、受信API、8090ポートは使用しません/);
-  assert.match(settingsSource, /\{!pullMode \? \(\s*<>[\s\S]*?APIポート[\s\S]*?<\/>\s*\) : null\}/);
-  assert.match(settingsSource, /\{!pullMode \? <section[\s\S]*?SSHポート[\s\S]*?<\/section> : null\}/);
+  assert.match(settingsSource, /<h3[^>]*>Host Agentの動作<\/h3>/);
+  assert.match(settingsSource, /受信APIや管理用ポートは使用しません/);
+  assert.doesNotMatch(settingsSource, /APIポート/);
+  assert.match(settingsSource, /SSHポート/);
   assert.doesNotMatch(settingsSource, /settings\.data\.revision !== 0/);
   assert.match(settingsSource, /service_id: serviceID/);
   assert.doesNotMatch(settingsSource, /service_id: targetID/);
@@ -2273,12 +2253,11 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.doesNotMatch(heartbeatField, /max=\{3600\}/);
   assert.match(settingsSource, /requiredHeartbeatInterval\(form\.heartbeatInterval\)/);
   assert.match(settingsSource, /Heartbeat間隔は5〜60秒の整数で入力してください。現在の値を5〜60秒に変更してから保存してください。/);
-  assert.match(settingsSource, /中央UpdaterのSSH秘密鍵は廃棄され、再追加時は新しい鍵になります/);
-  assert.match(settingsSource, /authorized_keys・sudoers・helper設定を撤去/);
-  assert.match(settingsSource, /\^ssh-ed25519\\s\+/);
   assert.match(settingsSource, /UpdaterHostBootstrapPanel/);
-  assert.match(settingsSource, /key=\{canEdit \? "bootstrap-edit" : "bootstrap-readonly"\}/);
-  assert.match(settingsSource, /releaseTokenConfigured=\{settings\.github_token_configured\}/);
+  assert.match(settingsSource, /savedHosts=\{settings\.hosts\}/);
+  assert.match(settingsSource, /currentHosts=\{form\.hosts\}/);
+  assert.match(settingsSource, /expectedAppliedRevision=\{settings\.projection_revision \?\? settings\.revision\}/);
+  assert.match(settingsSource, /currentTargets=\{form\.targets\}/);
   assert.match(settingsSource, /const \[bootstrapActive, setBootstrapActive\] = useState\(false\)/);
   assert.match(settingsSource, /const \[bootstrapCloseBlocked, setBootstrapCloseBlocked\] = useState\(false\)/);
   assert.match(settingsSource, /if \(!nextOpen && \(bootstrapCloseBlocked \|\| ownershipMutationPending\)\) return/);
@@ -2290,8 +2269,8 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(bootstrapSource, /onCloseBlockedChange\(busy\)/);
   assert.match(bootstrapSource, /未セットアップを一括セットアップ/);
   assert.match(bootstrapSource, /常駐service・listener・helper専用port・helper用env・Node Runtime Tokenは作成しません/);
-  assert.match(bootstrapSource, /v1の自動セットアップは標準systemdサービス[\s\S]*?だけに対応/);
-  assert.match(bootstrapSource, /Docker、非標準ポート、非標準パス、カスタム構成は手動導入/);
+  assert.match(bootstrapSource, /bootstrap対象ホストはpull_v2の実行対象・所有権から独立/);
+  assert.match(bootstrapSource, /検証済みの標準Host Agent profile/);
   assert.match(bootstrapSource, /\/system-updates\/updaters\/.*\/bootstrap-jobs/);
   assert.match(bootstrapSource, /encryptBootstrapCredentials/);
   assert.match(bootstrapSource, /requestUpdaterHostBootstrapWithRecovery/);
@@ -2405,8 +2384,8 @@ test("update API codes are shown as actionable Japanese guidance", () => {
     "Updaterのbootstrap暗号鍵が変わりました。状態を再取得し、Fingerprintを確認してから再試行してください。",
   );
   assert.match(systemUpdateErrorMessage({ status: 403 }), /権限/);
-  assert.match(systemUpdateTargetBlockedReason("updater_not_configured"), /更新エージェント.*設定されていません/);
-  assert.equal(systemUpdateTargetBlockedReason("updater_missing"), "更新エージェント（Host Agent / 互換Updater）が設定されていません。");
+  assert.equal(systemUpdateTargetBlockedReason("updater_not_configured"), "Host Agentが設定されていません。");
+  assert.equal(systemUpdateTargetBlockedReason("updater_missing"), "Host Agentが設定されていません。");
   assert.equal(systemUpdateTargetBlockedReason("target_unreachable"), "更新エージェントから対象ホストへ接続できません。");
   assert.equal(systemUpdateTargetBlockedReason("target_reachability_unknown"), "対象ホストへの接続状態をまだ確認できません。");
   assert.match(systemUpdateTargetBlockedReason("updater_policy_pending"), /設定の反映を待っています/);
@@ -2640,7 +2619,7 @@ test("pull host agent registration is endpointless and ordinary node ports use t
     name: "Worker A",
     host: "worker.example.com",
     port: "18084",
-    transportMode: "ssh_v1" as const,
+    transportMode: "pull_v2" as const,
     executionHostID: "",
   };
   assert.deepEqual(buildNodeRegistrationRequest(worker), {
@@ -2714,14 +2693,13 @@ test("updater configure failure guidance requires a fresh token before restart",
   assert.doesNotMatch(source, /同じコマンドで再開|再生成を求められた場合だけ/);
 });
 
-test("updater configure delegates managed policy to the system update screen", () => {
+test("Host Agent configure delegates managed policy to the system update screen", () => {
   const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /中央Updaterを稼働させるホストで1回実行/);
-  assert.match(source, /「アプリケーション情報」の中央Updater設定から登録/);
-  assert.match(source, /保存後はUpdaterが自動で反映/);
-  assert.match(source, /ローカル設定ファイルを手作業で編集する必要はありません/);
-  assert.doesNotMatch(source, /updater\.json|known_hosts|--init-from|JSON手動設定/);
+  assert.match(source, /このHost Agentを稼働させる対象ホストで1回実行/);
+  assert.match(source, /Host Agentの実行対象とpolicyは「アプリケーション情報」で設定/);
+  assert.match(source, /受信API endpointや専用portは作成しません/);
+  assert.doesNotMatch(source, /中央Updater|updater\.json|known_hosts|--init-from|JSON手動設定/);
 });
 
 test("updater node description identifies its portless per-host responsibility", () => {
@@ -2729,9 +2707,9 @@ test("updater node description identifies its portless per-host responsibility",
 
   assert.match(source, /value: "update_agent"[^{}\r\n]*description: "ホスト単位の更新状態をControl Panelへ外向き接続で報告するHost Agent"/);
   assert.match(source, /受信listenerは作成しません/);
-  assert.match(source, /Host Pull Agent（推奨・SSH不要）/);
+  assert.match(source, /Host Pull Agent/);
   assert.match(source, /if \(isPullHostAgent\) return ""/);
-  assert.match(source, /!configurationIsPullHostAgent && configuration\.node_api_url/);
+  assert.match(source, /configuration\.node\?\.service_type !== "update_agent" && configuration\.node_api_url/);
   assert.match(source, /受信ポートなし（Outbound HTTPS）/);
   assert.match(source, /Host Agentの初期設定/);
   assert.match(source, /このHost Agentを稼働させる対象ホストで1回実行/);

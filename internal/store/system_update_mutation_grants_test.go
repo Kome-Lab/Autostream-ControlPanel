@@ -16,7 +16,7 @@ func TestMemorySystemUpdateMutationGrantIssueConsumeAndReplay(t *testing.T) {
 	updates, job, claim := prepareMutationGrantInstallingJob(t, base, 45*time.Second)
 	binding := validMutationGrantBinding()
 	issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken,
+		ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
 		LeaseGeneration: claim.LeaseGeneration, Binding: binding,
 	}, base.Add(2*time.Second), 10*time.Minute)
 	if err != nil {
@@ -66,7 +66,8 @@ func TestMemorySystemUpdateMutationGrantRejectsReplayAfterGrantOrJobInvalidation
 		updates, job, claim := prepareMutationGrantInstallingJob(t, base, time.Minute)
 		binding := validMutationGrantBinding()
 		issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-			AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Binding: binding,
+			ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+			LeaseGeneration: claim.LeaseGeneration, Binding: binding,
 		}, base.Add(2*time.Second), 5*time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -83,7 +84,8 @@ func TestMemorySystemUpdateMutationGrantRejectsReplayAfterGrantOrJobInvalidation
 		updates, job, claim := prepareMutationGrantInstallingJob(t, base.Add(time.Minute), time.Minute)
 		binding := validMutationGrantBinding()
 		issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-			AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Binding: binding,
+			ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+			LeaseGeneration: claim.LeaseGeneration, Binding: binding,
 		}, base.Add(time.Minute+2*time.Second), time.Minute)
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +94,8 @@ func TestMemorySystemUpdateMutationGrantRejectsReplayAfterGrantOrJobInvalidation
 			t.Fatal(err)
 		}
 		if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{
-			AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
+			AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+			LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
 			Sequence: claim.ReportSequence + 1, Status: SystemUpdateStatusSucceeded, Progress: 100,
 		}, base.Add(time.Minute+4*time.Second), time.Minute); err != nil {
 			t.Fatal(err)
@@ -107,7 +110,8 @@ func TestMemorySystemUpdateMutationGrantRejectsReplayAfterGrantOrJobInvalidation
 		updates, job, claim := prepareMutationGrantInstallingJob(t, caseBase, time.Minute)
 		binding := validMutationGrantBinding()
 		issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-			AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Binding: binding,
+			ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+			LeaseGeneration: claim.LeaseGeneration, Binding: binding,
 		}, caseBase.Add(2*time.Second), time.Minute)
 		if err != nil {
 			t.Fatal(err)
@@ -129,8 +133,9 @@ func TestMemorySystemUpdateMutationGrantRejectsExpiredAndOldLease(t *testing.T) 
 	t.Run("expired", func(t *testing.T) {
 		updates, job, claim := prepareMutationGrantInstallingJob(t, base, time.Minute)
 		issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-			AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
-			Binding: validMutationGrantBinding(),
+			ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+			LeaseGeneration: claim.LeaseGeneration,
+			Binding:         validMutationGrantBinding(),
 		}, base.Add(2*time.Second), 5*time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -143,8 +148,9 @@ func TestMemorySystemUpdateMutationGrantRejectsExpiredAndOldLease(t *testing.T) 
 	t.Run("old lease generation", func(t *testing.T) {
 		updates, job, claim := prepareMutationGrantInstallingJob(t, base, time.Minute)
 		issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-			AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
-			Binding: validMutationGrantBinding(),
+			ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+			LeaseGeneration: claim.LeaseGeneration,
+			Binding:         validMutationGrantBinding(),
 		}, base.Add(2*time.Second), time.Minute)
 		if err != nil {
 			t.Fatal(err)
@@ -163,7 +169,8 @@ func TestMemorySystemUpdateMutationGrantConcurrentConsumeIsExactlyOnce(t *testin
 	updates, job, claim := prepareMutationGrantInstallingJob(t, base, time.Minute)
 	binding := validMutationGrantBinding()
 	issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Binding: binding,
+		ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+		LeaseGeneration: claim.LeaseGeneration, Binding: binding,
 	}, base.Add(2*time.Second), time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -198,8 +205,9 @@ func TestMemorySystemUpdateMutationGrantValidatesOperationPlanAndSession(t *test
 	base := time.Date(2026, 7, 19, 15, 0, 0, 0, time.UTC)
 	updates, job, claim := prepareMutationGrantInstallingJob(t, base, time.Minute)
 	baseParams := IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
-		Binding: validMutationGrantBinding(),
+		ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+		LeaseGeneration: claim.LeaseGeneration,
+		Binding:         validMutationGrantBinding(),
 	}
 	tests := []struct {
 		name   string
@@ -229,7 +237,8 @@ func TestMemorySystemUpdateMutationGrantRequiresExactOperationState(t *testing.T
 	base := time.Date(2026, 7, 19, 16, 0, 0, 0, time.UTC)
 	updates, job, claim := prepareMutationGrantInstallingJob(t, base, time.Minute)
 	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{
-		AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
+		AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+		LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
 		Sequence: claim.ReportSequence + 1, Status: SystemUpdateStatusReconciling, Progress: 80,
 	}, base.Add(2*time.Second), time.Minute); err != nil {
 		t.Fatal(err)
@@ -237,7 +246,8 @@ func TestMemorySystemUpdateMutationGrantRequiresExactOperationState(t *testing.T
 
 	apply := validMutationGrantBinding()
 	params := IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Binding: apply,
+		ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+		LeaseGeneration: claim.LeaseGeneration, Binding: apply,
 	}
 	if _, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, params, base.Add(3*time.Second), time.Minute); !errors.Is(err, ErrSystemUpdateAuthorizationState) {
 		t.Fatalf("apply grant in reconciling state = %v", err)
@@ -259,6 +269,16 @@ func TestMemorySystemUpdateMutationGrantRequiresExactOperationState(t *testing.T
 func prepareMutationGrantInstallingJob(t *testing.T, base time.Time, executionLeaseTTL time.Duration) (*MemorySystemUpdateStore, SystemUpdateJob, SystemUpdateClaim) {
 	t.Helper()
 	updates := NewMemorySystemUpdateStore()
+	if _, err := updates.SwitchSystemUpdateExecutionHost(
+		t.Context(),
+		"host-01",
+		0,
+		SystemUpdateTransportPullV2,
+		"updater-central",
+		1,
+	); err != nil {
+		t.Fatal(err)
+	}
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-central", ExecutionHostID: "host-01",
 		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0",
@@ -272,7 +292,8 @@ func prepareMutationGrantInstallingJob(t *testing.T, base time.Time, executionLe
 		t.Fatal(err)
 	}
 	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{
-		AgentServiceID: "updater-central", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
+		AgentServiceID: "updater-central", ExecutionHostID: "host-01",
+		LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration,
 		Sequence: claim.ReportSequence, Status: SystemUpdateStatusInstalling, Progress: 65,
 	}, base.Add(time.Second), executionLeaseTTL); err != nil {
 		t.Fatal(err)
@@ -282,7 +303,9 @@ func prepareMutationGrantInstallingJob(t *testing.T, base time.Time, executionLe
 
 func validMutationGrantBinding() SystemUpdateMutationGrantBinding {
 	return SystemUpdateMutationGrantBinding{
-		HostID: "host-01", TargetID: "worker-01", TargetVersion: "v1.1.0", DeploymentMode: "systemd",
-		Operation: SystemUpdateMutationOperationApply, PlanSHA256: strings.Repeat("a", 64), SessionID: "session-apply-0001",
+		HostID: "host-01", TransportMode: SystemUpdateTransportPullV2, OwnershipEpoch: 1, PolicyRevision: 1,
+		TargetID: "worker-01", TargetServiceType: "worker", TargetVersion: "v1.1.0", DeploymentMode: "systemd",
+		JobOperation: SystemUpdateOperationSoftwareUpdate, Operation: SystemUpdateMutationOperationApply,
+		PlanSHA256: strings.Repeat("a", 64), SessionID: "session-apply-0001",
 	}
 }

@@ -26,7 +26,7 @@ import {
 const webRoot = fileURLToPath(new URL("..", import.meta.url));
 const requestedBaseUrl = process.env.AUTOSTREAM_BROWSER_BASE_URL || "http://127.0.0.1:3002";
 const localeStorageKey = "autostream.controlPanel.locale";
-const themeStorageKey = "autostream.theme";
+const themeStorageKey = "autostream.ui_preference";
 const csrfStorageKey = "autostream.csrf_token";
 const expectedAuthMeExpiryReturnURL = "/admin/streams/?view=active#preview";
 const loginReturnParameterName = productionLoginReturnParameterName();
@@ -1572,16 +1572,16 @@ test("UI Foundation runtime behavior", { timeout: 420_000 }, async (t) => {
 		await browser.navigate(`${server.baseUrl}/admin/account/`);
 		await browser.waitFor(
 			`document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
-			(value: string) => value === "autostream/dark",
-			"legacy local preference was not retained while its DB CAS migration completed",
+			(value: string) => value === "autostream/system",
+			"DB preference must win over the retained legacy storage value",
 		);
 		await browser.waitFor(
-			`(localStorage.getItem('autostream.ui_preference') || '').includes('"color_mode":"dark"')`,
+			`(localStorage.getItem('autostream.ui_preference') || '').includes('"color_mode":"system"')`,
 			Boolean,
-			"legacy preference migration did not persist the DB-backed bootstrap mirror",
+			"DB-backed bootstrap mirror did not reflect the current preference",
 		);
-		assert.equal(uiPreferenceMethods.filter((method) => method === "PUT").length, 1, "legacy preference migration must send exactly one CAS PUT");
-		assert.deepEqual(uiPreferenceBodies.at(-1), { theme_id: "autostream", color_mode: "dark", expected_revision: 0 });
+		assert.equal(uiPreferenceMethods.filter((method) => method === "PUT").length, 0, "retired storage must not cause a migration write");
+		assert.equal(await browser.evaluate(`localStorage.getItem('autostream.theme')`), "dark", "retained migration data must not be deleted");
 
 		uiPreferenceResponse = { body: { theme_id: "ocean", color_mode: "dark", revision: 4 }, delayMs: 1_200 };
     uiPreferenceWriteResponse = { body: { theme_id: "violet", color_mode: "light", revision: 5 } };
@@ -2569,7 +2569,7 @@ async function expandNavigationSections(browser: BrowserHarness) {
 }
 
 async function setStoredDisplay(browser: BrowserHarness, locale: "ja" | "en", theme: "light" | "dark") {
-  await browser.evaluate(`localStorage.setItem(${JSON.stringify(localeStorageKey)}, ${JSON.stringify(locale)}); localStorage.setItem(${JSON.stringify(themeStorageKey)}, ${JSON.stringify(theme)}); true`);
+  await browser.evaluate(`localStorage.setItem(${JSON.stringify(localeStorageKey)}, ${JSON.stringify(locale)}); localStorage.setItem(${JSON.stringify(themeStorageKey)}, ${JSON.stringify(JSON.stringify({ theme_id: "autostream", color_mode: theme }))}); true`);
 }
 
 async function sheetMotion(browser: BrowserHarness) {

@@ -209,11 +209,13 @@ func TestMemoryPullUpdaterPolicyRepairsOldWriterDatabaseBindingBySave(t *testing
 	updates := NewMemorySystemUpdateStore()
 	input := validPullUpdaterPolicyForOwnership()
 	input.Targets[0] = UpdaterPolicyTarget{
-		TargetID:       "observability-a",
-		ServiceID:      "observability-a",
-		ServiceType:    "observability",
-		DeploymentMode: "systemd",
-		DatabaseName:   "autostream_o11y",
+		TargetID:        "observability-a",
+		ServiceID:       "observability-a",
+		HostID:          "host-a",
+		ServiceType:     "observability",
+		DeploymentMode:  "systemd",
+		DatabaseName:    "autostream_o11y",
+		LocalListenPort: 18082,
 	}
 	created, err := policies.SavePullUpdaterPolicy(
 		t.Context(),

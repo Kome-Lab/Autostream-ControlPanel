@@ -9,7 +9,6 @@ import (
 	"io"
 	"math"
 	"net"
-	"path"
 	"reflect"
 	"regexp"
 	"sort"
@@ -17,21 +16,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/ssh"
 )
 
 const (
-	UpdaterGitHubReleaseTokenSecretName  = "updater_github_release_token"
-	maxUpdaterReleaseTokenBytes          = 4096
 	pullUpdaterActivationHeartbeatMaxAge = 180 * time.Second
 	updaterPolicySnapshotReadMaxAttempts = 3
 )
 
 var (
 	ErrConflict                      = errors.New("conflict")
-	errUpdaterReleaseTokenIntegrity  = errors.New("updater release token integrity check failed")
 	errUpdaterPolicySnapshotChanged  = errors.New("updater policy snapshot changed")
 	updaterPolicyIdentifierPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 	updaterPolicyHostIDPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -47,23 +42,15 @@ type UpdaterPolicy struct {
 	TransportMode               string                `json:"transport_mode"`
 	ExecutionHostID             string                `json:"execution_host_id,omitempty"`
 	LocalExecutorPolicySHA256   string                `json:"local_executor_policy_sha256,omitempty"`
-	API                         UpdaterPolicyAPI      `json:"api"`
 	PollIntervalSeconds         int                   `json:"poll_interval_seconds"`
 	HeartbeatIntervalSeconds    int                   `json:"heartbeat_interval_seconds"`
-	Hosts                       []UpdaterPolicyHost   `json:"hosts"`
+	Hosts                       []UpdaterPolicyHost   `json:"hosts,omitempty"`
 	Targets                     []UpdaterPolicyTarget `json:"targets"`
 	UpdatedAt                   time.Time             `json:"updated_at"`
 }
 
-type UpdaterPolicyAPI struct {
-	BindHost    string `json:"bind_host"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	SSLEnabled  bool   `json:"ssl_enabled"`
-	TLSCertFile string `json:"tls_cert_file,omitempty"`
-	TLSKeyFile  string `json:"tls_key_file,omitempty"`
-}
-
+// UpdaterPolicyHost is bootstrap-only connection metadata consumed by the
+// independent Updater. It does not grant Control Panel a host executor path.
 type UpdaterPolicyHost struct {
 	HostID        string `json:"host_id"`
 	Name          string `json:"name"`
@@ -80,32 +67,23 @@ type UpdaterPolicyTarget struct {
 	HostID         string `json:"host_id"`
 	ServiceType    string `json:"service_type"`
 	DeploymentMode string `json:"deployment_mode"`
-	// DatabaseName is stored in update_agent_target_databases rather than
-	// policy_json so an older strict decoder can still read the declarative
-	// policy after a Control Panel rollback.
+	// DatabaseName is revision-bound in update_agent_target_databases.
 	DatabaseName string `json:"-"`
-	// LocalListenPort is stored in update_agent_target_local_listeners rather
-	// than policy_json so an older strict decoder can still read the
-	// declarative policy after a Control Panel rollback. Zero preserves the
-	// legacy contract that derives the systemd listener from AppliedEndpoint.
+	// LocalListenPort is revision-bound in update_agent_target_local_listeners.
 	LocalListenPort int `json:"-"`
 }
 
 type UpdaterPolicyStore interface {
 	GetUpdaterPolicy(ctx context.Context, serviceID string) (UpdaterPolicy, error)
 	ListUpdaterPolicies(ctx context.Context) ([]UpdaterPolicy, error)
-	SaveUpdaterPolicy(ctx context.Context, serviceID string, expectedRevision int64, input UpdaterPolicy) (UpdaterPolicy, error)
 }
 
 type UpdaterPolicyAdminStore interface {
 	UpdaterPolicyStore
-	SaveUpdaterPolicyAndReleaseToken(ctx context.Context, serviceID string, expectedRevision int64, input UpdaterPolicy, releaseToken *string) (UpdaterPolicy, SecretStatus, error)
 	SavePullUpdaterPolicy(ctx context.Context, executionHosts SystemUpdateExecutionHostStore, serviceID string, expectedRevision, expectedOwnershipEpoch int64, input UpdaterPolicy) (UpdaterPolicy, error)
 	BindPullUpdaterConfigurePolicy(ctx context.Context, params BindPullUpdaterConfigurePolicyParams) (UpdaterPolicy, error)
 	ActivatePullUpdaterOwnership(ctx context.Context, services ServiceRegistryStore, executionHosts SystemUpdateExecutionHostStore, params ActivatePullUpdaterOwnershipParams) (ActivatePullUpdaterOwnershipResult, error)
 	DeactivatePullUpdaterOwnership(ctx context.Context, services ServiceRegistryStore, executionHosts SystemUpdateExecutionHostStore, params DeactivatePullUpdaterOwnershipParams) (DeactivatePullUpdaterOwnershipResult, error)
-	GetUpdaterReleaseTokenStatus(ctx context.Context) (SecretStatus, error)
-	GetUpdaterReleaseTokenValue(ctx context.Context) (string, error)
 }
 
 type BindPullUpdaterConfigurePolicyParams struct {
@@ -183,10 +161,8 @@ type DeactivatePullUpdaterOwnershipResult struct {
 }
 
 type MemoryUpdaterPolicyStore struct {
-	mu                 sync.Mutex
-	policies           map[string]UpdaterPolicy
-	releaseToken       string
-	releaseTokenStatus SecretStatus
+	mu       sync.Mutex
+	policies map[string]UpdaterPolicy
 }
 
 func NewMemoryUpdaterPolicyStore() *MemoryUpdaterPolicyStore {
@@ -226,107 +202,6 @@ func (s *MemoryUpdaterPolicyStore) ListUpdaterPolicies(ctx context.Context) ([]U
 		policies = append(policies, cloneUpdaterPolicy(s.policies[id]))
 	}
 	return policies, nil
-}
-
-func (s *MemoryUpdaterPolicyStore) SaveUpdaterPolicy(ctx context.Context, serviceID string, expectedRevision int64, input UpdaterPolicy) (UpdaterPolicy, error) {
-	if err := ctx.Err(); err != nil {
-		return UpdaterPolicy{}, err
-	}
-	if expectedRevision < 0 || expectedRevision == math.MaxInt64 {
-		return UpdaterPolicy{}, ErrConflict
-	}
-	normalized, err := normalizeUpdaterPolicy(serviceID, input)
-	if err != nil {
-		return UpdaterPolicy{}, err
-	}
-	if normalized.TransportMode == SystemUpdateTransportPullV2 {
-		return UpdaterPolicy{}, ErrInvalidSettings
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, exists := s.policies[normalized.UpdaterID]
-	if (!exists && expectedRevision != 0) || (exists && current.Revision != expectedRevision) {
-		return UpdaterPolicy{}, ErrConflict
-	}
-	now := time.Now().UTC()
-	if exists && !now.After(current.UpdatedAt) {
-		now = current.UpdatedAt.Add(time.Nanosecond)
-	}
-	normalized.Revision = expectedRevision + 1
-	normalized.ProjectionRevision = normalized.Revision
-	normalized.LocalExecutorPolicyRevision = 0
-	normalized.UpdatedAt = now
-	s.policies[normalized.UpdaterID] = cloneUpdaterPolicy(normalized)
-	return cloneUpdaterPolicy(normalized), nil
-}
-
-func (s *MemoryUpdaterPolicyStore) SaveUpdaterPolicyAndReleaseToken(
-	ctx context.Context,
-	serviceID string,
-	expectedRevision int64,
-	input UpdaterPolicy,
-	releaseToken *string,
-) (UpdaterPolicy, SecretStatus, error) {
-	if err := ctx.Err(); err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-	if expectedRevision < 0 || expectedRevision == math.MaxInt64 {
-		return UpdaterPolicy{}, SecretStatus{}, ErrConflict
-	}
-	normalized, err := normalizeUpdaterPolicy(serviceID, input)
-	if err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-	if normalized.TransportMode == SystemUpdateTransportPullV2 {
-		return UpdaterPolicy{}, SecretStatus{}, ErrInvalidSettings
-	}
-	normalizedToken, err := normalizeUpdaterReleaseToken(releaseToken)
-	if err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-	current, exists := s.policies[normalized.UpdaterID]
-	if (!exists && expectedRevision != 0) || (exists && current.Revision != expectedRevision) {
-		return UpdaterPolicy{}, SecretStatus{}, ErrConflict
-	}
-	now := time.Now().UTC()
-	if exists && !now.After(current.UpdatedAt) {
-		now = current.UpdatedAt.Add(time.Nanosecond)
-	}
-	normalized.Revision = expectedRevision + 1
-	normalized.ProjectionRevision = normalized.Revision
-	normalized.LocalExecutorPolicyRevision = 0
-	normalized.UpdatedAt = now
-
-	tokenStatus := s.releaseTokenStatus
-	tokenStatus.Name = UpdaterGitHubReleaseTokenSecretName
-	if normalizedToken != nil {
-		if *normalizedToken == "" {
-			s.releaseToken = ""
-			s.releaseTokenStatus = SecretStatus{}
-			tokenStatus = SecretStatus{
-				Name:      UpdaterGitHubReleaseTokenSecretName,
-				UpdatedAt: now.Format(time.RFC3339),
-			}
-		} else {
-			s.releaseToken = *normalizedToken
-			s.releaseTokenStatus = SecretStatus{
-				Name:        UpdaterGitHubReleaseTokenSecretName,
-				Configured:  true,
-				Fingerprint: security.SecretFingerprint(*normalizedToken),
-				UpdatedAt:   now.Format(time.RFC3339),
-			}
-			tokenStatus = s.releaseTokenStatus
-		}
-	}
-	s.policies[normalized.UpdaterID] = cloneUpdaterPolicy(normalized)
-	return cloneUpdaterPolicy(normalized), tokenStatus, nil
 }
 
 func (s *MemoryUpdaterPolicyStore) SavePullUpdaterPolicy(
@@ -376,12 +251,11 @@ func (s *MemoryUpdaterPolicyStore) SavePullUpdaterPolicy(
 	if ownership.OwnershipEpoch != expectedOwnershipEpoch {
 		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
 	}
-	activePullOwner := ownership.TransportMode == SystemUpdateTransportPullV2
-	switch ownership.TransportMode {
-	case SystemUpdateTransportSSHV1:
-		// A pull agent may observe an SSH-owned host without taking ownership.
-		// Its policy revision is independent until an explicit ownership switch.
-	case SystemUpdateTransportPullV2:
+	if ownership.TransportMode != SystemUpdateTransportPullV2 {
+		return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	activePullOwner := ownership.AgentServiceID != ""
+	if activePullOwner {
 		if ownership.AgentServiceID != normalized.UpdaterID {
 			return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
 		}
@@ -405,8 +279,8 @@ func (s *MemoryUpdaterPolicyStore) SavePullUpdaterPolicy(
 		); found {
 			return UpdaterPolicy{}, ErrSystemUpdateRuntimeTokenRotationBusy
 		}
-	default:
-		return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+	} else if ownership.OwnershipEpoch != 0 || ownership.PolicyRevision != 0 {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
 	}
 
 	now := time.Now().UTC()
@@ -562,7 +436,9 @@ func (s *MemoryUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	if currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
 	}
-	if normalizedSystemUpdateTransportMode(currentOwnership.TransportMode) != SystemUpdateTransportSSHV1 {
+	if currentOwnership.TransportMode != SystemUpdateTransportPullV2 ||
+		(currentOwnership.AgentServiceID != "" &&
+			currentOwnership.AgentServiceID != params.ServiceID) {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
 	for _, job := range updates.jobs {
@@ -572,28 +448,14 @@ func (s *MemoryUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	}
 
 	now := time.Now().UTC()
-	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
-		currentOwnership,
-		SystemUpdateTransportPullV2,
-		params.ServiceID,
-	)
-	if legacyAgentServiceID == "" && !ownershipExists {
-		legacyAgentServiceID = uniqueActiveMemoryLegacyUpdaterForHostLocked(
-			s,
-			registry,
-			params.ExecutionHostID,
-			policy,
-		)
-	}
 	nextOwnership := SystemUpdateExecutionHost{
-		ExecutionHostID:      params.ExecutionHostID,
-		TransportMode:        SystemUpdateTransportPullV2,
-		AgentServiceID:       params.ServiceID,
-		LegacyAgentServiceID: legacyAgentServiceID,
-		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
-		PolicyRevision:       policy.ProjectionRevision,
-		CreatedAt:            currentOwnership.CreatedAt,
-		UpdatedAt:            now,
+		ExecutionHostID: params.ExecutionHostID,
+		TransportMode:   SystemUpdateTransportPullV2,
+		AgentServiceID:  params.ServiceID,
+		OwnershipEpoch:  currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:  policy.ProjectionRevision,
+		CreatedAt:       currentOwnership.CreatedAt,
+		UpdatedAt:       now,
 	}
 	if nextOwnership.CreatedAt.IsZero() {
 		nextOwnership.CreatedAt = now
@@ -671,10 +533,6 @@ func (s *MemoryUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 		currentOwnership.OwnershipEpoch <= 0 {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
-	legacyAgentServiceID := strings.TrimSpace(currentOwnership.LegacyAgentServiceID)
-	if !updaterPolicyIdentifierPattern.MatchString(legacyAgentServiceID) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
 	service, exists := registry.services[params.ServiceID]
 	if !exists ||
 		service.ServiceType != "update_agent" ||
@@ -702,32 +560,6 @@ func (s *MemoryUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 		currentOwnership.PolicyRevision != policy.ProjectionRevision {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
 	}
-	legacyService, exists := registry.services[legacyAgentServiceID]
-	if !exists ||
-		legacyService.ServiceType != "update_agent" ||
-		normalizedSystemUpdateTransportMode(legacyService.TransportMode) != SystemUpdateTransportSSHV1 {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	legacyToken, exists := registry.serviceTokens[legacyService.TokenID]
-	if !exists ||
-		legacyToken.ServiceType != "update_agent" ||
-		legacyToken.RevokedAt != nil ||
-		validateRequiredUpdateAgentScopes(
-			legacyToken.ServiceType,
-			legacyToken.Scopes,
-		) != nil {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	legacyPolicy, exists := s.policies[legacyAgentServiceID]
-	if !exists ||
-		legacyPolicy.TransportMode != SystemUpdateTransportSSHV1 ||
-		!legacyUpdaterPolicyCoversPullPolicy(
-			legacyPolicy,
-			policy,
-			params.ExecutionHostID,
-		) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
 	for _, job := range updates.jobs {
 		if job.ExecutionHostID == params.ExecutionHostID &&
 			!isTerminalSystemUpdateStatus(job.Status) {
@@ -752,14 +584,13 @@ func (s *MemoryUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	}
 
 	nextOwnership := SystemUpdateExecutionHost{
-		ExecutionHostID:      params.ExecutionHostID,
-		TransportMode:        SystemUpdateTransportSSHV1,
-		AgentServiceID:       legacyAgentServiceID,
-		LegacyAgentServiceID: legacyAgentServiceID,
-		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
-		PolicyRevision:       legacyPolicy.ProjectionRevision,
-		CreatedAt:            currentOwnership.CreatedAt,
-		UpdatedAt:            now,
+		ExecutionHostID: params.ExecutionHostID,
+		TransportMode:   SystemUpdateTransportPullV2,
+		AgentServiceID:  params.ServiceID,
+		OwnershipEpoch:  currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:  policy.ProjectionRevision,
+		CreatedAt:       currentOwnership.CreatedAt,
+		UpdatedAt:       now,
 	}
 	service.OwnershipEpoch = 0
 	service.UpdatedAt = now
@@ -772,40 +603,16 @@ func (s *MemoryUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	}, nil
 }
 
-func (s *MemoryUpdaterPolicyStore) GetUpdaterReleaseTokenStatus(ctx context.Context) (SecretStatus, error) {
-	if err := ctx.Err(); err != nil {
-		return SecretStatus{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	status := s.releaseTokenStatus
-	status.Name = UpdaterGitHubReleaseTokenSecretName
-	return status, nil
-}
-
-func (s *MemoryUpdaterPolicyStore) GetUpdaterReleaseTokenValue(ctx context.Context) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.releaseToken == "" {
-		return "", ErrNotFound
-	}
-	return s.releaseToken, nil
-}
-
 type MariaDBUpdaterPolicyStore struct {
-	db          *sql.DB
-	keyMaterial string
+	db *sql.DB
 }
 
 func NewMariaDBUpdaterPolicyStore(db *sql.DB) MariaDBUpdaterPolicyStore {
 	return MariaDBUpdaterPolicyStore{db: db}
 }
 
-func NewMariaDBUpdaterPolicyAdminStore(db *sql.DB, keyMaterial string) MariaDBUpdaterPolicyStore {
-	return MariaDBUpdaterPolicyStore{db: db, keyMaterial: keyMaterial}
+func NewMariaDBUpdaterPolicyAdminStore(db *sql.DB, _ string) MariaDBUpdaterPolicyStore {
+	return MariaDBUpdaterPolicyStore{db: db}
 }
 
 func (s MariaDBUpdaterPolicyStore) GetUpdaterPolicy(ctx context.Context, serviceID string) (UpdaterPolicy, error) {
@@ -943,103 +750,6 @@ ORDER BY service_id`,
 	return policies, nil
 }
 
-func (s MariaDBUpdaterPolicyStore) SaveUpdaterPolicy(ctx context.Context, serviceID string, expectedRevision int64, input UpdaterPolicy) (UpdaterPolicy, error) {
-	normalized, body, err := prepareUpdaterPolicySave(serviceID, expectedRevision, input)
-	if err != nil {
-		return UpdaterPolicy{}, err
-	}
-	if normalized.TransportMode == SystemUpdateTransportPullV2 {
-		return UpdaterPolicy{}, ErrInvalidSettings
-	}
-	if err := saveUpdaterPolicyCAS(ctx, s.db, expectedRevision, normalized, body); err != nil {
-		return UpdaterPolicy{}, err
-	}
-	return normalized, nil
-}
-
-func (s MariaDBUpdaterPolicyStore) SaveUpdaterPolicyAndReleaseToken(
-	ctx context.Context,
-	serviceID string,
-	expectedRevision int64,
-	input UpdaterPolicy,
-	releaseToken *string,
-) (UpdaterPolicy, SecretStatus, error) {
-	normalized, body, err := prepareUpdaterPolicySave(serviceID, expectedRevision, input)
-	if err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-	if normalized.TransportMode == SystemUpdateTransportPullV2 {
-		return UpdaterPolicy{}, SecretStatus{}, ErrInvalidSettings
-	}
-	normalizedToken, err := normalizeUpdaterReleaseToken(releaseToken)
-	if err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-
-	var (
-		tokenCiphertext string
-		tokenNonce      string
-	)
-	if normalizedToken != nil && *normalizedToken != "" {
-		if s.keyMaterial == "" {
-			return UpdaterPolicy{}, SecretStatus{}, ErrSecretKeyRequired
-		}
-		tokenCiphertext, tokenNonce, err = security.EncryptSecret(*normalizedToken, s.keyMaterial)
-		if err != nil {
-			return UpdaterPolicy{}, SecretStatus{}, err
-		}
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-	defer tx.Rollback()
-
-	if err := saveUpdaterPolicyCAS(ctx, tx, expectedRevision, normalized, body); err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-
-	var tokenStatus SecretStatus
-	switch {
-	case normalizedToken == nil:
-		_, tokenStatus, err = readUpdaterReleaseToken(ctx, tx, s.keyMaterial)
-		if errors.Is(err, ErrNotFound) {
-			err = nil
-			tokenStatus = SecretStatus{Name: UpdaterGitHubReleaseTokenSecretName}
-		}
-	case *normalizedToken == "":
-		_, err = tx.ExecContext(ctx, `DELETE FROM secrets WHERE name = ?`, UpdaterGitHubReleaseTokenSecretName)
-		tokenStatus = SecretStatus{
-			Name:      UpdaterGitHubReleaseTokenSecretName,
-			UpdatedAt: normalized.UpdatedAt.Format(time.RFC3339),
-		}
-	default:
-		tokenStatus = SecretStatus{
-			Name:        UpdaterGitHubReleaseTokenSecretName,
-			Configured:  true,
-			Fingerprint: security.SecretFingerprint(*normalizedToken),
-			UpdatedAt:   normalized.UpdatedAt.Format(time.RFC3339),
-		}
-		_, err = tx.ExecContext(
-			ctx,
-			`INSERT INTO secrets (name, ciphertext, nonce, value_hash, updated_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE ciphertext = VALUES(ciphertext), nonce = VALUES(nonce), value_hash = VALUES(value_hash), updated_at = VALUES(updated_at)`,
-			UpdaterGitHubReleaseTokenSecretName,
-			tokenCiphertext,
-			tokenNonce,
-			tokenStatus.Fingerprint,
-			normalized.UpdatedAt,
-		)
-	}
-	if err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return UpdaterPolicy{}, SecretStatus{}, err
-	}
-	return normalized, tokenStatus, nil
-}
-
 func (s MariaDBUpdaterPolicyStore) SavePullUpdaterPolicy(
 	ctx context.Context,
 	executionHosts SystemUpdateExecutionHostStore,
@@ -1083,13 +793,13 @@ func (s MariaDBUpdaterPolicyStore) SavePullUpdaterPolicy(
 	if ownership.OwnershipEpoch != expectedOwnershipEpoch {
 		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
 	}
-	activePullOwner := ownership.TransportMode == SystemUpdateTransportPullV2
-	switch ownership.TransportMode {
-	case SystemUpdateTransportSSHV1:
-		// Observer policy: preserve the SSH ownership row and its revision.
-	case SystemUpdateTransportPullV2:
-		if ownership.ExecutionHostID != normalized.ExecutionHostID ||
-			ownership.AgentServiceID != normalized.UpdaterID {
+	if ownership.TransportMode != SystemUpdateTransportPullV2 ||
+		ownership.ExecutionHostID != normalized.ExecutionHostID {
+		return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+	}
+	activePullOwner := ownership.AgentServiceID != ""
+	if activePullOwner {
+		if ownership.AgentServiceID != normalized.UpdaterID {
 			return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
 		}
 		if ownership.OwnershipEpoch <= 0 {
@@ -1121,8 +831,8 @@ FOR UPDATE`, normalized.ExecutionHostID).Scan(&activeRotationID)
 		if !errors.Is(err, sql.ErrNoRows) {
 			return UpdaterPolicy{}, err
 		}
-	default:
-		return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
+	} else if ownership.OwnershipEpoch != 0 || ownership.PolicyRevision != 0 {
+		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
 	}
 
 	var (
@@ -1333,16 +1043,14 @@ WHERE service_id = ?
 }
 
 type mariaDBPullUpdaterOwnershipLockPlan struct {
-	Ownership                 SystemUpdateExecutionHost
-	OwnershipExists           bool
-	Policies                  []UpdaterPolicy
-	PolicyIDs                 []string
-	PrimaryPolicyServiceIDs   []string
-	LegacyPolicyServiceIDs    []string
-	LegacyCandidateServiceIDs []string
-	ServiceIDs                []string
-	TokenIDs                  []string
-	References                []mariaDBServiceTokenReference
+	Ownership               SystemUpdateExecutionHost
+	OwnershipExists         bool
+	Policies                []UpdaterPolicy
+	PolicyIDs               []string
+	PrimaryPolicyServiceIDs []string
+	ServiceIDs              []string
+	TokenIDs                []string
+	References              []mariaDBServiceTokenReference
 }
 
 type mariaDBUpdaterPolicyLockPhase string
@@ -1575,7 +1283,6 @@ func (s MariaDBUpdaterPolicyStore) discoverMariaDBPullUpdaterOwnershipLockPlan(
 	ctx context.Context,
 	auth MariaDBAuthStore,
 	serviceID, executionHostID string,
-	discoverLegacyCandidates bool,
 ) (mariaDBPullUpdaterOwnershipLockPlan, error) {
 	policies, err := s.ListUpdaterPolicies(ctx)
 	if err != nil {
@@ -1611,12 +1318,10 @@ func (s MariaDBUpdaterPolicyStore) discoverMariaDBPullUpdaterOwnershipLockPlan(
 	seedServiceIDs = append(
 		seedServiceIDs,
 		plan.Ownership.AgentServiceID,
-		plan.Ownership.LegacyAgentServiceID,
 	)
 	for _, candidate := range policies {
 		if candidate.ExecutionHostID == executionHostID ||
-			candidate.UpdaterID == plan.Ownership.AgentServiceID ||
-			candidate.UpdaterID == plan.Ownership.LegacyAgentServiceID {
+			candidate.UpdaterID == plan.Ownership.AgentServiceID {
 			seedServiceIDs = append(
 				seedServiceIDs,
 				mariaDBUpdaterPolicyPersistentServiceIDs(candidate)...,
@@ -1641,35 +1346,6 @@ WHERE active_execution_host_id = ?`, executionHostID).Scan(&activeRuntimeRotatio
 	} else if !errors.Is(runtimeRotationErr, sql.ErrNoRows) {
 		return mariaDBPullUpdaterOwnershipLockPlan{}, runtimeRotationErr
 	}
-	if discoverLegacyCandidates && !plan.OwnershipExists {
-		for _, candidate := range policies {
-			if !legacyUpdaterPolicyCoversPullPolicy(candidate, policy, executionHostID) {
-				continue
-			}
-			plan.LegacyCandidateServiceIDs = append(
-				plan.LegacyCandidateServiceIDs,
-				candidate.UpdaterID,
-			)
-			seedServiceIDs = append(
-				seedServiceIDs,
-				mariaDBUpdaterPolicyPersistentServiceIDs(candidate)...,
-			)
-		}
-		plan.LegacyCandidateServiceIDs = sortedUniqueStrings(plan.LegacyCandidateServiceIDs)
-	} else {
-		legacyServiceID := strings.TrimSpace(plan.Ownership.LegacyAgentServiceID)
-		if legacyServiceID == "" &&
-			normalizedSystemUpdateTransportMode(plan.Ownership.TransportMode) == SystemUpdateTransportSSHV1 {
-			legacyServiceID = strings.TrimSpace(plan.Ownership.AgentServiceID)
-		}
-		if legacyServiceID != "" {
-			legacyPolicy, found := mariaDBUpdaterPolicyByServiceID(policies, legacyServiceID)
-			if found {
-				plan.LegacyPolicyServiceIDs = mariaDBUpdaterPolicyPersistentServiceIDs(legacyPolicy)
-				seedServiceIDs = append(seedServiceIDs, plan.LegacyPolicyServiceIDs...)
-			}
-		}
-	}
 	plan.ServiceIDs, plan.TokenIDs, plan.References, err =
 		discoverMariaDBUpdaterOwnershipReferenceClosure(ctx, auth, policies, seedServiceIDs)
 	if err != nil {
@@ -1687,7 +1363,6 @@ func (plan mariaDBPullUpdaterOwnershipLockPlan) matchesOwnership(
 		normalizedSystemUpdateTransportMode(plan.Ownership.TransportMode) ==
 			normalizedSystemUpdateTransportMode(ownership.TransportMode) &&
 		plan.Ownership.AgentServiceID == ownership.AgentServiceID &&
-		plan.Ownership.LegacyAgentServiceID == ownership.LegacyAgentServiceID &&
 		plan.Ownership.OwnershipEpoch == ownership.OwnershipEpoch &&
 		plan.Ownership.PolicyRevision == ownership.PolicyRevision
 }
@@ -1738,7 +1413,6 @@ func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 		auth,
 		params.ServiceID,
 		params.ExecutionHostID,
-		true,
 	)
 	if errors.Is(err, ErrNotFound) {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
@@ -1782,7 +1456,9 @@ func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	if currentOwnership.OwnershipEpoch != params.ExpectedExecutionHostOwnershipEpoch {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostStale
 	}
-	if normalizedSystemUpdateTransportMode(currentOwnership.TransportMode) != SystemUpdateTransportSSHV1 {
+	if currentOwnership.TransportMode != SystemUpdateTransportPullV2 ||
+		(currentOwnership.AgentServiceID != "" &&
+			currentOwnership.AgentServiceID != params.ServiceID) {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
 
@@ -1894,25 +1570,6 @@ FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
 	if params.ControlPanelTarget != nil && !controlPanelTargetUsed {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
-	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
-		currentOwnership,
-		SystemUpdateTransportPullV2,
-		params.ServiceID,
-	)
-	if legacyAgentServiceID == "" && ownershipMissing {
-		legacyAgentServiceID, err = uniqueActiveMariaDBLegacyUpdaterForHostLocked(
-			params.ExecutionHostID,
-			policy,
-			service.TokenID,
-			lockPlan.LegacyCandidateServiceIDs,
-			lockedPolicies,
-			lockedServices,
-			lockedTokens,
-		)
-		if err != nil {
-			return ActivatePullUpdaterOwnershipResult{}, err
-		}
-	}
 	if !registeredPullObserverReadyForActivation(service, policy, targetServices, time.Now().UTC()) {
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
 	}
@@ -1953,24 +1610,22 @@ FOR UPDATE`,
 
 	now := time.Now().UTC()
 	nextOwnership := SystemUpdateExecutionHost{
-		ExecutionHostID:      params.ExecutionHostID,
-		TransportMode:        SystemUpdateTransportPullV2,
-		AgentServiceID:       params.ServiceID,
-		LegacyAgentServiceID: legacyAgentServiceID,
-		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
-		PolicyRevision:       policy.ProjectionRevision,
-		CreatedAt:            currentOwnership.CreatedAt,
-		UpdatedAt:            now,
+		ExecutionHostID: params.ExecutionHostID,
+		TransportMode:   SystemUpdateTransportPullV2,
+		AgentServiceID:  params.ServiceID,
+		OwnershipEpoch:  currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:  policy.ProjectionRevision,
+		CreatedAt:       currentOwnership.CreatedAt,
+		UpdatedAt:       now,
 	}
 	if ownershipMissing {
 		nextOwnership.CreatedAt = now
 		_, err = tx.ExecContext(ctx, `INSERT INTO system_update_execution_hosts
-(execution_host_id, transport_mode, agent_service_id, legacy_agent_service_id, ownership_epoch, policy_revision, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+(execution_host_id, transport_mode, agent_service_id, ownership_epoch, policy_revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			nextOwnership.ExecutionHostID,
 			nextOwnership.TransportMode,
 			nextOwnership.AgentServiceID,
-			nullString(nextOwnership.LegacyAgentServiceID),
 			nextOwnership.OwnershipEpoch,
 			nextOwnership.PolicyRevision,
 			nextOwnership.CreatedAt,
@@ -1982,18 +1637,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 	} else {
 		var result sql.Result
 		result, err = tx.ExecContext(ctx, `UPDATE system_update_execution_hosts
-SET transport_mode = ?, agent_service_id = ?, legacy_agent_service_id = ?, ownership_epoch = ?, policy_revision = ?, updated_at = ?
+SET transport_mode = ?, agent_service_id = ?, ownership_epoch = ?, policy_revision = ?, updated_at = ?
 WHERE execution_host_id = ?
   AND transport_mode = ?
   AND ownership_epoch = ?`,
 			nextOwnership.TransportMode,
 			nextOwnership.AgentServiceID,
-			nullString(nextOwnership.LegacyAgentServiceID),
 			nextOwnership.OwnershipEpoch,
 			nextOwnership.PolicyRevision,
 			nextOwnership.UpdatedAt,
 			nextOwnership.ExecutionHostID,
-			SystemUpdateTransportSSHV1,
+			SystemUpdateTransportPullV2,
 			params.ExpectedExecutionHostOwnershipEpoch,
 		)
 		if err == nil {
@@ -2115,7 +1769,6 @@ func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 		auth,
 		params.ServiceID,
 		params.ExecutionHostID,
-		false,
 	)
 	if errors.Is(err, ErrNotFound) {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
@@ -2133,10 +1786,6 @@ func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	if discoveredOwnership.TransportMode != SystemUpdateTransportPullV2 ||
 		discoveredOwnership.AgentServiceID != params.ServiceID ||
 		discoveredOwnership.OwnershipEpoch <= 0 {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	discoveredLegacyAgentServiceID := strings.TrimSpace(discoveredOwnership.LegacyAgentServiceID)
-	if !updaterPolicyIdentifierPattern.MatchString(discoveredLegacyAgentServiceID) {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2177,14 +1826,6 @@ func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 		currentOwnership.OwnershipEpoch <= 0 {
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
-	legacyAgentServiceID := strings.TrimSpace(currentOwnership.LegacyAgentServiceID)
-	if !updaterPolicyIdentifierPattern.MatchString(legacyAgentServiceID) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	if legacyAgentServiceID != discoveredLegacyAgentServiceID {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-
 	var activeID string
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
@@ -2272,22 +1913,6 @@ FOR UPDATE`, params.ExecutionHostID, now).Scan(&activeID)
 		return DeactivatePullUpdaterOwnershipResult{}, ErrConflict
 	}
 
-	legacyPolicy, legacyPolicyExists := lockedPolicies[legacyAgentServiceID]
-	if !legacyPolicyExists ||
-		!legacyUpdaterPolicyCoversPullPolicy(
-			legacyPolicy,
-			policy,
-			params.ExecutionHostID,
-		) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	if !equalSortedStrings(
-		lockPlan.LegacyPolicyServiceIDs,
-		mariaDBUpdaterPolicyPersistentServiceIDs(legacyPolicy),
-	) {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-
 	lockedServices, lockedTokens, err := lockMariaDBServiceTokenMutation(
 		ctx,
 		tx,
@@ -2330,56 +1955,33 @@ FOR UPDATE`, params.ExecutionHostID, now).Scan(&activeID)
 		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentNotReady
 	}
 
-	legacyService, exists := lockedServices[legacyAgentServiceID]
-	if !exists {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-	if legacyService.ServiceType != "update_agent" ||
-		normalizedSystemUpdateTransportMode(legacyService.TransportMode) != SystemUpdateTransportSSHV1 {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
-	}
-	legacyToken, exists := lockedTokens[legacyService.TokenID]
-	if !exists || legacyToken.RevokedAt != nil ||
-		legacyToken.ServiceType != "update_agent" ||
-		validateRequiredUpdateAgentScopes(
-			legacyToken.ServiceType,
-			legacyToken.Scopes,
-		) != nil {
-		return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentInactive
-	}
-
 	nextOwnership := SystemUpdateExecutionHost{
-		ExecutionHostID:      params.ExecutionHostID,
-		TransportMode:        SystemUpdateTransportSSHV1,
-		AgentServiceID:       legacyAgentServiceID,
-		LegacyAgentServiceID: legacyAgentServiceID,
-		OwnershipEpoch:       currentOwnership.OwnershipEpoch + 1,
-		PolicyRevision:       legacyPolicy.ProjectionRevision,
-		CreatedAt:            currentOwnership.CreatedAt,
-		UpdatedAt:            now,
+		ExecutionHostID: params.ExecutionHostID,
+		TransportMode:   SystemUpdateTransportPullV2,
+		AgentServiceID:  params.ServiceID,
+		OwnershipEpoch:  currentOwnership.OwnershipEpoch + 1,
+		PolicyRevision:  policy.ProjectionRevision,
+		CreatedAt:       currentOwnership.CreatedAt,
+		UpdatedAt:       now,
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE system_update_execution_hosts
 SET transport_mode = ?,
     agent_service_id = ?,
-    legacy_agent_service_id = ?,
     ownership_epoch = ?,
     policy_revision = ?,
     updated_at = ?
 WHERE execution_host_id = ?
   AND transport_mode = ?
   AND agent_service_id = ?
-  AND legacy_agent_service_id = ?
   AND ownership_epoch = ?`,
 		nextOwnership.TransportMode,
 		nextOwnership.AgentServiceID,
-		nextOwnership.LegacyAgentServiceID,
 		nextOwnership.OwnershipEpoch,
 		nextOwnership.PolicyRevision,
 		nextOwnership.UpdatedAt,
 		nextOwnership.ExecutionHostID,
 		SystemUpdateTransportPullV2,
 		params.ServiceID,
-		legacyAgentServiceID,
 		params.ExpectedExecutionHostOwnershipEpoch,
 	)
 	if err != nil {
@@ -2425,75 +2027,6 @@ WHERE service_id = ?
 		Ownership: nextOwnership,
 		Policy:    policy,
 	}, nil
-}
-
-func uniqueActiveMariaDBLegacyUpdaterForHostLocked(
-	executionHostID string,
-	pullPolicy UpdaterPolicy,
-	requiredTokenID string,
-	expectedCandidateServiceIDs []string,
-	lockedPolicies map[string]UpdaterPolicy,
-	lockedServices map[string]RegisteredService,
-	lockedTokens map[string]ServiceToken,
-) (string, error) {
-	type legacyUpdaterCandidate struct {
-		serviceID string
-	}
-	candidates := make([]legacyUpdaterCandidate, 0, 2)
-	policyServiceIDs := make([]string, 0, len(lockedPolicies))
-	for serviceID := range lockedPolicies {
-		policyServiceIDs = append(policyServiceIDs, serviceID)
-	}
-	for _, serviceID := range sortedUniqueStrings(policyServiceIDs) {
-		policy := lockedPolicies[serviceID]
-		if legacyUpdaterPolicyCoversPullPolicy(policy, pullPolicy, executionHostID) {
-			candidates = append(candidates, legacyUpdaterCandidate{
-				serviceID: strings.TrimSpace(serviceID),
-			})
-		}
-	}
-	candidateServiceIDs := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		candidateServiceIDs = append(candidateServiceIDs, candidate.serviceID)
-	}
-	if !equalSortedStrings(candidateServiceIDs, expectedCandidateServiceIDs) {
-		return "", ErrSystemUpdateAgentBindingMismatch
-	}
-	requiredToken, exists := lockedTokens[strings.TrimSpace(requiredTokenID)]
-	if !exists || requiredToken.RevokedAt != nil || requiredToken.ServiceType != "update_agent" {
-		return "", ErrSystemUpdateAgentInactive
-	}
-	eligible := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		service, serviceExists := lockedServices[candidate.serviceID]
-		if !serviceExists || service.ServiceType != "update_agent" ||
-			normalizedSystemUpdateTransportMode(service.TransportMode) != SystemUpdateTransportSSHV1 {
-			return "", ErrSystemUpdateAgentBindingMismatch
-		}
-		token, tokenExists := lockedTokens[service.TokenID]
-		if !tokenExists || token.RevokedAt != nil || token.ServiceType != "update_agent" ||
-			validateRequiredUpdateAgentScopes(token.ServiceType, token.Scopes) != nil {
-			continue
-		}
-		eligible = append(eligible, candidate.serviceID)
-	}
-	if len(eligible) != 1 {
-		return "", nil
-	}
-	return eligible[0], nil
-}
-
-func (s MariaDBUpdaterPolicyStore) GetUpdaterReleaseTokenStatus(ctx context.Context) (SecretStatus, error) {
-	_, status, err := readUpdaterReleaseToken(ctx, s.db, s.keyMaterial)
-	if errors.Is(err, ErrNotFound) {
-		return SecretStatus{Name: UpdaterGitHubReleaseTokenSecretName}, nil
-	}
-	return status, err
-}
-
-func (s MariaDBUpdaterPolicyStore) GetUpdaterReleaseTokenValue(ctx context.Context) (string, error) {
-	value, _, err := readUpdaterReleaseToken(ctx, s.db, s.keyMaterial)
-	return value, err
 }
 
 type updaterPolicyExecer interface {
@@ -2855,10 +2388,9 @@ func updaterPolicyTargetAllowsExplicitLocalListener(target UpdaterPolicyTarget) 
 }
 
 // PullUpdaterPolicyTargetLocalListenPort resolves the local host listener used
-// by a systemd pull target. An explicit revision-bound listener wins. Zero
-// preserves the legacy AppliedEndpoint fallback; a present but invalid
-// override never silently falls back. The exact synthetic Control Panel target
-// cannot be overridden because its loopback listener is server-owned.
+// by a systemd pull target. Node services require an explicit revision-bound
+// listener. The exact synthetic Control Panel target cannot be overridden
+// because its loopback listener is server-owned.
 func PullUpdaterPolicyTargetLocalListenPort(
 	target UpdaterPolicyTarget,
 	service RegisteredService,
@@ -2870,18 +2402,18 @@ func PullUpdaterPolicyTargetLocalListenPort(
 		if target.LocalListenPort != 0 {
 			return 0, false
 		}
-	} else if target.LocalListenPort != 0 {
+		if service.AppliedEndpoint == nil ||
+			service.AppliedEndpoint.Port < 1024 ||
+			service.AppliedEndpoint.Port > 65535 {
+			return 0, false
+		}
+		return service.AppliedEndpoint.Port, true
+	} else {
 		if target.LocalListenPort < 1024 || target.LocalListenPort > 65535 {
 			return 0, false
 		}
 		return target.LocalListenPort, true
 	}
-	if service.AppliedEndpoint == nil ||
-		service.AppliedEndpoint.Port < 1024 ||
-		service.AppliedEndpoint.Port > 65535 {
-		return 0, false
-	}
-	return service.AppliedEndpoint.Port, true
 }
 
 func normalizeDeactivatePullUpdaterOwnershipParams(
@@ -2903,97 +2435,6 @@ func normalizeDeactivatePullUpdaterOwnershipParams(
 		return DeactivatePullUpdaterOwnershipParams{}, ErrInvalidSettings
 	}
 	return params, nil
-}
-
-func updaterPolicyMapsExecutionHost(policy UpdaterPolicy, executionHostID string) bool {
-	if policy.TransportMode != SystemUpdateTransportSSHV1 {
-		return false
-	}
-	hostFound := false
-	for _, host := range policy.Hosts {
-		if host.HostID == executionHostID {
-			hostFound = true
-			break
-		}
-	}
-	if !hostFound {
-		return false
-	}
-	for _, target := range policy.Targets {
-		if target.HostID == executionHostID {
-			return true
-		}
-	}
-	return false
-}
-
-func legacyUpdaterPolicyCoversPullPolicy(
-	legacyPolicy UpdaterPolicy,
-	pullPolicy UpdaterPolicy,
-	executionHostID string,
-) bool {
-	if !updaterPolicyMapsExecutionHost(legacyPolicy, executionHostID) ||
-		pullPolicy.TransportMode != SystemUpdateTransportPullV2 ||
-		pullPolicy.ExecutionHostID != executionHostID ||
-		len(pullPolicy.Targets) == 0 {
-		return false
-	}
-	for _, pullTarget := range pullPolicy.Targets {
-		covered := false
-		for _, legacyTarget := range legacyPolicy.Targets {
-			if legacyTarget.HostID == executionHostID &&
-				legacyTarget.TargetID == pullTarget.TargetID &&
-				legacyTarget.ServiceID == pullTarget.ServiceID &&
-				legacyTarget.ServiceType == pullTarget.ServiceType &&
-				legacyTarget.DeploymentMode == pullTarget.DeploymentMode {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			return false
-		}
-	}
-	return true
-}
-
-func uniqueActiveMemoryLegacyUpdaterForHostLocked(
-	policies *MemoryUpdaterPolicyStore,
-	registry *MemoryAuthStore,
-	executionHostID string,
-	pullPolicy UpdaterPolicy,
-) string {
-	candidate := ""
-	for serviceID, policy := range policies.policies {
-		if !legacyUpdaterPolicyCoversPullPolicy(
-			policy,
-			pullPolicy,
-			executionHostID,
-		) {
-			continue
-		}
-		service, exists := registry.services[serviceID]
-		if !exists ||
-			service.ServiceType != "update_agent" ||
-			normalizedSystemUpdateTransportMode(service.TransportMode) != SystemUpdateTransportSSHV1 {
-			continue
-		}
-		token, exists := registry.serviceTokens[service.TokenID]
-		if !exists ||
-			token.ServiceType != "update_agent" ||
-			token.RevokedAt != nil ||
-			validateRequiredUpdateAgentScopes(
-				token.ServiceType,
-				token.Scopes,
-			) != nil {
-			continue
-		}
-		if candidate != "" {
-			return ""
-		}
-		candidate = serviceID
-	}
-	return candidate
 }
 
 func unsettledMemorySystemUpdateMutationGrantForHostLocked(
@@ -3361,60 +2802,6 @@ WHERE service_id = ? AND revision = ?`,
 	return nil
 }
 
-func readUpdaterReleaseToken(ctx context.Context, queryer updaterPolicyQueryer, keyMaterial string) (string, SecretStatus, error) {
-	var (
-		ciphertext string
-		nonce      string
-		status     = SecretStatus{Name: UpdaterGitHubReleaseTokenSecretName}
-		updatedAt  time.Time
-	)
-	err := queryer.QueryRowContext(
-		ctx,
-		`SELECT ciphertext, nonce, value_hash, updated_at FROM secrets WHERE name = ?`,
-		UpdaterGitHubReleaseTokenSecretName,
-	).Scan(&ciphertext, &nonce, &status.Fingerprint, &updatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", status, ErrNotFound
-	}
-	if err != nil {
-		return "", SecretStatus{}, err
-	}
-	if keyMaterial == "" {
-		return "", SecretStatus{}, ErrSecretKeyRequired
-	}
-	value, err := security.DecryptSecret(ciphertext, nonce, keyMaterial)
-	if err != nil {
-		return "", SecretStatus{}, err
-	}
-	if !validStoredUpdaterReleaseToken(value) || security.SecretFingerprint(value) != status.Fingerprint {
-		return "", SecretStatus{}, errUpdaterReleaseTokenIntegrity
-	}
-	status.Configured = true
-	status.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
-	return value, status, nil
-}
-
-func normalizeUpdaterReleaseToken(value *string) (*string, error) {
-	if value == nil {
-		return nil, nil
-	}
-	normalized := strings.TrimSpace(*value)
-	if len(normalized) > maxUpdaterReleaseTokenBytes {
-		return nil, ErrInvalidSettings
-	}
-	for _, char := range []byte(normalized) {
-		if char < 0x21 || char > 0x7e {
-			return nil, ErrInvalidSettings
-		}
-	}
-	return &normalized, nil
-}
-
-func validStoredUpdaterReleaseToken(value string) bool {
-	normalized, err := normalizeUpdaterReleaseToken(&value)
-	return err == nil && normalized != nil && *normalized != "" && *normalized == value
-}
-
 func normalizeUpdaterPolicy(serviceID string, input UpdaterPolicy) (UpdaterPolicy, error) {
 	return normalizeUpdaterPolicyWithDatabaseBindings(serviceID, input, true)
 }
@@ -3436,9 +2823,6 @@ func normalizeUpdaterPolicyWithDatabaseBindings(
 	}
 	input.UpdaterID = serviceID
 	input.TransportMode = strings.ToLower(strings.TrimSpace(input.TransportMode))
-	if input.TransportMode == "" {
-		input.TransportMode = SystemUpdateTransportSSHV1
-	}
 	input.ExecutionHostID = strings.TrimSpace(input.ExecutionHostID)
 	input.LocalExecutorPolicySHA256 = strings.ToLower(strings.TrimSpace(input.LocalExecutorPolicySHA256))
 
@@ -3452,51 +2836,27 @@ func normalizeUpdaterPolicyWithDatabaseBindings(
 		input.HeartbeatIntervalSeconds < 5 || input.HeartbeatIntervalSeconds > 60 {
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
-	if input.TransportMode == SystemUpdateTransportPullV2 {
-		return normalizePullUpdaterPolicy(input, requireDatabaseBindings)
-	}
-	if input.TransportMode != SystemUpdateTransportSSHV1 ||
-		input.ExecutionHostID != "" ||
-		input.LocalExecutorPolicySHA256 != "" {
+	if input.TransportMode != SystemUpdateTransportPullV2 {
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
+	return normalizePullUpdaterPolicy(input, requireDatabaseBindings)
+}
 
-	input.API.BindHost = strings.Trim(strings.TrimSpace(input.API.BindHost), "[]")
-	input.API.Host = strings.Trim(strings.TrimSpace(input.API.Host), "[]")
-	input.API.TLSCertFile = strings.TrimSpace(input.API.TLSCertFile)
-	input.API.TLSKeyFile = strings.TrimSpace(input.API.TLSKeyFile)
-	if input.API.BindHost == "" {
-		input.API.BindHost = "127.0.0.1"
-	}
-	if input.API.Host == "" {
-		input.API.Host = "127.0.0.1"
-	}
-	if input.API.Port == 0 {
-		input.API.Port = 8090
-	}
-	if !validUpdaterPolicyHost(input.API.BindHost) || !validUpdaterPolicyHost(input.API.Host) || input.API.Port < 1 || input.API.Port > 65535 {
-		return UpdaterPolicy{}, ErrInvalidSettings
-	}
-	if input.API.SSLEnabled {
-		if !safeUpdaterPolicyAbsolutePath(input.API.TLSCertFile) || !safeUpdaterPolicyAbsolutePath(input.API.TLSKeyFile) {
-			return UpdaterPolicy{}, ErrInvalidSettings
-		}
-	} else {
-		if !updaterPolicyLoopbackHost(input.API.BindHost) || !updaterPolicyLoopbackHost(input.API.Host) {
-			return UpdaterPolicy{}, ErrInvalidSettings
-		}
-		input.API.TLSCertFile = ""
-		input.API.TLSKeyFile = ""
-	}
-
-	if len(input.Hosts) == 0 || len(input.Hosts) > 128 || len(input.Targets) == 0 || len(input.Targets) > 1024 {
+func normalizePullUpdaterPolicy(
+	input UpdaterPolicy,
+	requireDatabaseBindings bool,
+) (UpdaterPolicy, error) {
+	if !executionHostIDPattern.MatchString(input.ExecutionHostID) ||
+		!validSystemUpdateDigest(input.LocalExecutorPolicySHA256) ||
+		len(input.Hosts) > 128 ||
+		len(input.Targets) == 0 ||
+		len(input.Targets) > 1024 {
 		return UpdaterPolicy{}, ErrInvalidSettings
 	}
 
 	hosts := make(map[string]bool, len(input.Hosts))
-	hostReferences := make(map[string]int, len(input.Hosts))
-	for i := range input.Hosts {
-		host := &input.Hosts[i]
+	for index := range input.Hosts {
+		host := &input.Hosts[index]
 		host.HostID = strings.TrimSpace(host.HostID)
 		host.Name = strings.TrimSpace(host.Name)
 		host.Address = strings.Trim(strings.TrimSpace(host.Address), "[]")
@@ -3514,56 +2874,6 @@ func normalizeUpdaterPolicyWithDatabaseBindings(
 		}
 		host.HostPublicKey = canonicalHostPublicKey
 		hosts[host.HostID] = true
-	}
-
-	targets := make(map[string]bool, len(input.Targets))
-	for i := range input.Targets {
-		target := &input.Targets[i]
-		target.TargetID = strings.TrimSpace(target.TargetID)
-		target.ServiceID = strings.TrimSpace(target.ServiceID)
-		if target.ServiceID == "" {
-			target.ServiceID = target.TargetID
-		}
-		target.HostID = strings.TrimSpace(target.HostID)
-		target.ServiceType = strings.TrimSpace(target.ServiceType)
-		target.DeploymentMode = strings.TrimSpace(target.DeploymentMode)
-		if target.DatabaseName != "" || target.LocalListenPort != 0 {
-			return UpdaterPolicy{}, ErrInvalidSettings
-		}
-		if !updaterPolicyIdentifierPattern.MatchString(target.TargetID) || targets[target.TargetID] ||
-			!updaterPolicyIdentifierPattern.MatchString(target.ServiceID) ||
-			!updaterPolicyHostIDPattern.MatchString(target.HostID) || !hosts[target.HostID] ||
-			!validUpdaterPolicyServiceType(target.ServiceType) ||
-			(target.DeploymentMode != "systemd" && target.DeploymentMode != "docker") {
-			return UpdaterPolicy{}, ErrInvalidSettings
-		}
-		targets[target.TargetID] = true
-		hostReferences[target.HostID]++
-	}
-	for hostID := range hosts {
-		if hostReferences[hostID] == 0 {
-			return UpdaterPolicy{}, ErrInvalidSettings
-		}
-	}
-
-	input.Revision = 0
-	input.ProjectionRevision = 0
-	input.LocalExecutorPolicyRevision = 0
-	input.UpdatedAt = time.Time{}
-	return cloneUpdaterPolicy(input), nil
-}
-
-func normalizePullUpdaterPolicy(
-	input UpdaterPolicy,
-	requireDatabaseBindings bool,
-) (UpdaterPolicy, error) {
-	if !executionHostIDPattern.MatchString(input.ExecutionHostID) ||
-		!validSystemUpdateDigest(input.LocalExecutorPolicySHA256) ||
-		input.API != (UpdaterPolicyAPI{}) ||
-		len(input.Hosts) != 0 ||
-		len(input.Targets) == 0 ||
-		len(input.Targets) > 1024 {
-		return UpdaterPolicy{}, ErrInvalidSettings
 	}
 
 	targets := make(map[string]bool, len(input.Targets))
@@ -3606,6 +2916,10 @@ func normalizePullUpdaterPolicy(
 				!updaterPolicyTargetAllowsExplicitLocalListener(*target)) {
 			return UpdaterPolicy{}, ErrInvalidSettings
 		}
+		if requireDatabaseBindings && target.DeploymentMode == "systemd" &&
+			!updaterPolicyControlPanelTarget(*target) && target.LocalListenPort == 0 {
+			return UpdaterPolicy{}, ErrInvalidSettings
+		}
 		switch {
 		case requiresDatabase && requireDatabaseBindings &&
 			!updaterPolicyDatabaseNamePattern.MatchString(target.DatabaseName):
@@ -3621,8 +2935,6 @@ func normalizePullUpdaterPolicy(
 		serviceIDs[target.ServiceID] = true
 	}
 
-	input.API = UpdaterPolicyAPI{}
-	input.Hosts = nil
 	input.Revision = 0
 	input.ProjectionRevision = 0
 	input.LocalExecutorPolicyRevision = 0
@@ -3728,18 +3040,6 @@ func validUpdaterPolicyHost(value string) bool {
 		}
 	}
 	return true
-}
-
-func updaterPolicyLoopbackHost(value string) bool {
-	if strings.EqualFold(value, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(value)
-	return ip != nil && ip.IsLoopback()
-}
-
-func safeUpdaterPolicyAbsolutePath(value string) bool {
-	return path.IsAbs(value) && path.Clean(value) != "/" && !updaterPolicyContainsControl(value) && !strings.ContainsRune(value, '\\')
 }
 
 func updaterPolicyContainsControl(value string) bool {

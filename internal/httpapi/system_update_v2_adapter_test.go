@@ -83,6 +83,8 @@ func newSystemUpdateV2HTTPFixture(t *testing.T) systemUpdateV2HTTPFixture {
 		"updater-v2",
 		"host-v2",
 		"",
+		1,
+		ownership.OwnershipEpoch,
 		map[string]string{"worker-v2": "systemd"},
 		time.Now().UTC(),
 		systemUpdateExecutionLeaseTTL,

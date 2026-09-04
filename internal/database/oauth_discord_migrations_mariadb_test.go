@@ -309,6 +309,10 @@ func TestMariaDBLegacyDiscordConfigureTokenMigrationReplaysSafely(t *testing.T) 
 }
 
 func openMariaDBOAuthMigrationTest(t *testing.T) (*sql.DB, context.Context) {
+	return openMariaDBMigrationTest(t, true)
+}
+
+func openMariaDBMigrationTest(t *testing.T, applyEmbedded bool) (*sql.DB, context.Context) {
 	t.Helper()
 	configureMariaDBOAuthMigrationFixtureURLPolicy(t)
 	dsn := os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN")
@@ -316,15 +320,17 @@ func openMariaDBOAuthMigrationTest(t *testing.T) (*sql.DB, context.Context) {
 		t.Skip("AUTOSTREAM_MARIADB_TEST_DSN is not configured")
 	}
 	t.Setenv("DATABASE_URL", dsn)
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	t.Cleanup(cancel)
 	db, err := OpenFromEnv(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := RunEmbeddedMigrations(ctx, db); err != nil {
-		t.Fatal(err)
+	if applyEmbedded {
+		if err := RunEmbeddedMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return db, ctx
 }

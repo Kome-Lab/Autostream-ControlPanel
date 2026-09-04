@@ -122,127 +122,10 @@ func TestMemoryServiceAssignmentGuardProtectsPendingArchiveAndRetry(t *testing.T
 	}
 }
 
-func TestMemoryServiceAssignmentGuardProtectsLegacyRetryUntilArtifactReport(t *testing.T) {
-	streams := NewMemoryStreamStore()
-	auth := NewMemoryAuthStore()
-	auth.BindStreamAssignmentGuard(streams)
-	service := registerMemoryAssignmentService(t, auth, "encoder-legacy-retry", "encoder_recorder")
-	owner, err := streams.CreateStream(t.Context(), "legacy retry owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.AssignServiceToStreamGuarded(t.Context(), ServiceAssignmentMutation{ServiceID: service.ServiceID, StreamID: owner.ID, AssignmentRole: "primary"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.BeginStreamArchiveRetryGuarded(t.Context(), service.ServiceID, owner.ID); err != nil {
-		t.Fatalf("begin legacy retry: %v", err)
-	}
-	processing, err := streams.ListArchiveProcessingStreams(t.Context())
-	if err != nil || len(processing) != 1 || processing[0].ID != owner.ID {
-		t.Fatalf("legacy retry missing from archive-processing authority: streams=%#v err=%v", processing, err)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), ServiceUnassignmentMutation{ServiceID: service.ServiceID}); !errors.Is(err, ErrServiceUnassignProtectedStream) {
-		t.Fatalf("legacy retry unassign err=%v, want %v", err, ErrServiceUnassignProtectedStream)
-	}
-	staleStartedAt := time.Now().UTC().Add(-time.Hour)
-	if err := streams.UpsertStreamArtifacts(t.Context(), owner.ID, []StreamArtifact{{
-		StreamID: owner.ID, ArchiveRunID: "stale-run", ArchiveStartedAt: &staleStartedAt,
-		Kind: "archive", Name: "final.mp4", RelativePath: streamArtifactRelativePath(owner.ID, "stale-run", "final.mp4"), SizeBytes: 98,
-	}}); err != nil {
-		t.Fatalf("stale legacy retry artifact report: %v", err)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), ServiceUnassignmentMutation{ServiceID: service.ServiceID}); !errors.Is(err, ErrServiceUnassignProtectedStream) {
-		t.Fatalf("stale report cleared legacy retry guard: %v", err)
-	}
-	if err := streams.UpsertStreamArtifacts(t.Context(), owner.ID, []StreamArtifact{{
-		StreamID: owner.ID, Kind: "archive", Name: "final.mp4",
-		RelativePath: streamArtifactRelativePath(owner.ID, "", "final.mp4"), SizeBytes: 99,
-	}}); err != nil {
-		t.Fatalf("legacy retry artifact report: %v", err)
-	}
-	processing, err = streams.ListArchiveProcessingStreams(t.Context())
-	if err != nil || len(processing) != 0 {
-		t.Fatalf("reported legacy retry remained archive-processing: streams=%#v err=%v", processing, err)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), ServiceUnassignmentMutation{ServiceID: service.ServiceID}); err != nil {
-		t.Fatalf("unassign after legacy retry report: %v", err)
-	}
-}
-
-func TestMemoryLegacyArchiveReportClosesCapabilityAwareAuthority(t *testing.T) {
-	streams, auth, owner, service, claimed := memoryArchiveStartClaimFixture(t, false)
-	if !claimed.ArchiveAuthority.Legacy || claimed.ArchiveAuthority.RunID != "" || claimed.ArchiveAuthority.StartedAt != nil {
-		t.Fatalf("legacy claim authority = %#v", claimed.ArchiveAuthority)
-	}
-	owner, transitioned, err := streams.TransitionClaimedStreamStart(t.Context(), claimed.OwnershipClaim, "completed")
-	if err != nil || !transitioned {
-		t.Fatalf("complete legacy claim: stream=%#v transitioned=%v err=%v", owner, transitioned, err)
-	}
-	if owner.ArchiveRunID != "" || owner.ArchiveStartedAt != nil {
-		t.Errorf("legacy start created impossible run authority: %#v", owner)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), ServiceUnassignmentMutation{ServiceID: service.ServiceID}); !errors.Is(err, ErrServiceUnassignProtectedStream) {
-		t.Fatalf("legacy report precondition was not protected: %v", err)
-	}
-	artifact := StreamArtifact{StreamID: owner.ID, Kind: "archive", Name: "final.mp4", RelativePath: streamArtifactRelativePath(owner.ID, "", "final.mp4"), SizeBytes: 101}
-	if err := streams.UpsertStreamArtifacts(t.Context(), owner.ID, []StreamArtifact{artifact}); err != nil {
-		t.Fatal(err)
-	}
-	reported, err := streams.GetStream(t.Context(), owner.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reported.ArchiveReportedAt == nil {
-		t.Errorf("normal legacy report did not close archive authority: %#v", reported)
-	}
-	firstReportedAt := cloneTimePtr(reported.ArchiveReportedAt)
-	if err := streams.UpsertStreamArtifacts(t.Context(), owner.ID, []StreamArtifact{artifact}); err != nil {
-		t.Fatal(err)
-	}
-	duplicate, err := streams.GetStream(t.Context(), owner.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstReportedAt == nil || duplicate.ArchiveReportedAt == nil || !duplicate.ArchiveReportedAt.Equal(*firstReportedAt) {
-		t.Errorf("duplicate legacy report was not idempotent: first=%v duplicate=%v", firstReportedAt, duplicate.ArchiveReportedAt)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), ServiceUnassignmentMutation{ServiceID: service.ServiceID}); err != nil {
-		t.Fatalf("legacy report did not release idle ownership: %v", err)
-	}
-	if err := streams.DeleteStream(t.Context(), owner.ID); err != nil {
-		t.Fatalf("reported legacy stream remained undeletable: %v", err)
-	}
-}
-
-func TestMemoryStartClaimCannotReplacePendingLegacyArchiveAuthority(t *testing.T) {
-	streams, auth, owner, service, claimed := memoryArchiveStartClaimFixture(t, false)
-	ready, transitioned, err := streams.TransitionClaimedStreamStart(t.Context(), claimed.OwnershipClaim, "ready")
-	if err != nil || !transitioned {
-		t.Fatalf("finish legacy claim: stream=%#v transitioned=%v err=%v", ready, transitioned, err)
-	}
-	assignments, err := auth.ListStreamAssignments(t.Context(), owner.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := streams.ClaimStreamStart(t.Context(), StreamStartClaimRequest{
-		StreamID: owner.ID, ExpectedStatus: ready.Status, ExpectedStreamUpdatedAt: ready.UpdatedAt,
-		ExpectedPrimaryAssignments: assignments, ArchiveEnabled: true, ArchiveStartedAt: time.Now().UTC(),
-	}); !errors.Is(err, ErrServiceAssignmentConflict) {
-		t.Fatalf("pending legacy archive replacement claim err=%v", err)
-	}
-	current, err := streams.GetStream(t.Context(), owner.ID)
-	if err != nil || current.Status != "ready" || current.ArchiveRunID != "" || current.ArchiveStartedAt != nil || current.ArchiveReportedAt != nil {
-		t.Fatalf("replacement claim changed pending legacy authority: stream=%#v err=%v", current, err)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), ServiceUnassignmentMutation{ServiceID: service.ServiceID}); !errors.Is(err, ErrServiceUnassignProtectedStream) {
-		t.Fatalf("pending legacy authority lost assignment protection: %v", err)
-	}
-}
-
-func TestMemoryModernArchiveClaimRequiresExactReportAuthority(t *testing.T) {
-	streams, auth, owner, service, claimed := memoryArchiveStartClaimFixture(t, true)
-	if claimed.ArchiveAuthority.Legacy || claimed.ArchiveAuthority.RunID == "" || claimed.ArchiveAuthority.StartedAt == nil {
-		t.Fatalf("modern claim authority = %#v", claimed.ArchiveAuthority)
+func TestMemoryArchiveClaimRequiresExactV2ReportAuthority(t *testing.T) {
+	streams, auth, owner, service, claimed := memoryArchiveStartClaimFixture(t)
+	if claimed.ArchiveAuthority.RunID == "" || claimed.ArchiveAuthority.StartedAt == nil {
+		t.Fatalf("v2 claim authority = %#v", claimed.ArchiveAuthority)
 	}
 	owner, transitioned, err := streams.TransitionClaimedStreamStart(t.Context(), claimed.OwnershipClaim, "completed")
 	if err != nil || !transitioned {
@@ -297,7 +180,7 @@ func TestMemoryModernArchiveClaimRequiresExactReportAuthority(t *testing.T) {
 func TestMemoryStartClaimCompensationRequiresExactImmutableToken(t *testing.T) {
 	for _, mutation := range []string{"stream_identity", "assignment_identity", "archive_authority"} {
 		t.Run(mutation, func(t *testing.T) {
-			streams, auth, owner, _, claimed := memoryArchiveStartClaimFixture(t, true)
+			streams, auth, owner, _, claimed := memoryArchiveStartClaimFixture(t)
 			switch mutation {
 			case "stream_identity":
 				streams.mu.Lock()
@@ -332,7 +215,7 @@ func TestMemoryStartClaimCompensationRequiresExactImmutableToken(t *testing.T) {
 	}
 }
 
-func memoryArchiveStartClaimFixture(t *testing.T, archiveRuns bool) (*MemoryStreamStore, *MemoryAuthStore, Stream, RegisteredService, ClaimedStreamStart) {
+func memoryArchiveStartClaimFixture(t *testing.T) (*MemoryStreamStore, *MemoryAuthStore, Stream, RegisteredService, ClaimedStreamStart) {
 	t.Helper()
 	streams := NewMemoryStreamStore()
 	auth := NewMemoryAuthStore()
@@ -340,11 +223,6 @@ func memoryArchiveStartClaimFixture(t *testing.T, archiveRuns bool) (*MemoryStre
 	encoder := registerMemoryAssignmentService(t, auth, "encoder-archive-claim", "encoder_recorder")
 	registerMemoryAssignmentService(t, auth, "worker-archive-claim", "worker")
 	registerMemoryAssignmentService(t, auth, "discord-archive-claim", "discord_bot")
-	auth.mu.Lock()
-	encoderState := auth.services[encoder.ServiceID]
-	encoderState.ReportedCapabilities = map[string]any{"archive_runs": archiveRuns}
-	auth.services[encoder.ServiceID] = encoderState
-	auth.mu.Unlock()
 	owner, err := streams.CreateStream(t.Context(), "archive claim")
 	if err != nil {
 		t.Fatal(err)
@@ -563,8 +441,10 @@ func TestMemoryStreamDeleteCannotClearRetryGuardThroughArtifactBackfill(t *testi
 	if _, err := auth.AssignServiceToStreamGuarded(t.Context(), ServiceAssignmentMutation{ServiceID: service.ServiceID, StreamID: stream.ID, AssignmentRole: "primary"}); err != nil {
 		t.Fatal(err)
 	}
+	backfillStartedAt := time.Now().UTC().Add(-time.Minute)
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{{
-		Kind: "archive", Name: "final.mp4", RelativePath: streamArtifactRelativePath(stream.ID, "", "final.mp4"), SizeBytes: 1,
+		ArchiveRunID: "backfill-run", ArchiveStartedAt: &backfillStartedAt,
+		Kind: "archive", Name: "final.mp4", RelativePath: streamArtifactRelativePath(stream.ID, "backfill-run", "final.mp4"), SizeBytes: 1,
 	}}); err != nil {
 		t.Fatal(err)
 	}

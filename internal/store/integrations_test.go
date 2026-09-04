@@ -7,18 +7,6 @@ import (
 	"time"
 )
 
-func TestNormalizeDriveDestinationKeepsSelectedFolderAsArchiveRoot(t *testing.T) {
-	destination, err := normalizeDriveDestination(DriveDestination{
-		Name: "Archive", AuthMode: "oauth2", OAuthAccountID: "oauth-01", FolderID: "selected-folder",
-	}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if destination.BasePath != "" {
-		t.Fatalf("drive destination inserted an unexpected base path: %q", destination.BasePath)
-	}
-}
-
 func TestOAuthAccountDisplayNameDoesNotExposeEmailAsPrimaryLabel(t *testing.T) {
 	integrations := NewMemoryIntegrationStore()
 	account, err := integrations.CreateOAuthAccount(t.Context(), OAuthAccount{

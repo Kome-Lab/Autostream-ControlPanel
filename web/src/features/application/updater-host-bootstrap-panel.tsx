@@ -52,6 +52,7 @@ import type {
 type UpdaterHostBootstrapPanelProps = {
   updater: SystemUpdateAgentStatus;
   expectedRevision: number;
+  expectedAppliedRevision: number;
   savedHosts: UpdaterSettingsHost[];
   currentHosts: UpdaterSettingsHost[];
   savedTargets: UpdaterSettingsTarget[];
@@ -71,6 +72,7 @@ type Feedback = {
 export function UpdaterHostBootstrapPanel({
   updater,
   expectedRevision,
+  expectedAppliedRevision,
   savedHosts,
   currentHosts,
   savedTargets,
@@ -116,11 +118,9 @@ export function UpdaterHostBootstrapPanel({
     const bootstrapStatus = activeBootstrapStatus || latestResults.get(host.host_id)?.status;
     return [host.host_id, updaterHostBootstrapEligibility({
       updater,
-      expectedRevision,
+      expectedAppliedRevision,
       savedHost: savedHostsByID.get(host.host_id),
       currentHost: host,
-      savedTargets,
-      currentTargets,
       releaseTokenConfigured,
       bootstrapStatus,
     })] as const;
@@ -128,7 +128,7 @@ export function UpdaterHostBootstrapPanel({
     activeBootstrapStatus,
     currentHosts,
     currentTargets,
-    expectedRevision,
+    expectedAppliedRevision,
     latestResults,
     savedHostsByID,
     savedTargets,
@@ -164,6 +164,7 @@ export function UpdaterHostBootstrapPanel({
       policy_status: updater.policy_status,
     },
     expected_revision: expectedRevision,
+    expected_applied_revision: expectedAppliedRevision,
     saved_hosts: savedHosts.filter((host) => selectedOperationHostIDs.has(host.host_id)),
     current_hosts: currentHosts.filter((host) => selectedOperationHostIDs.has(host.host_id)),
     saved_targets: savedTargets.filter((target) => selectedOperationHostIDs.has(target.host_id)),
@@ -320,6 +321,7 @@ export function UpdaterHostBootstrapPanel({
     actionID: foundationActionID,
     updater,
     expectedRevision,
+    expectedAppliedRevision,
     selectedHostIDs,
     savedHosts,
     currentHosts,
@@ -369,7 +371,11 @@ export function UpdaterHostBootstrapPanel({
     const systemUpdates = normalizeSystemUpdatesResponse(systemUpdatesRaw);
     const refreshedUpdater = systemUpdates.updaters.find((candidate) => candidate.updater_id === updater.updater_id);
     const refreshedSettings = normalizeUpdaterSettingsResponse(updaterSettingsRaw, updater.updater_id);
-    if (!refreshedUpdater || refreshedSettings.revision !== expectedRevision) {
+    if (
+      !refreshedUpdater
+      || refreshedSettings.revision !== expectedRevision
+      || (refreshedSettings.projection_revision ?? refreshedSettings.revision) !== expectedAppliedRevision
+    ) {
       return unavailableBootstrapAuthority(updaterAuthorityFingerprint([foundationActionID, updater.updater_id, "authority-changed"]));
     }
     queryClient.setQueryData(["system-updates"], systemUpdates);
@@ -383,11 +389,9 @@ export function UpdaterHostBootstrapPanel({
     const refreshedReady = selectedHostIDs.length > 0 && selectedHostIDs.every((hostID) => {
       const eligibility = updaterHostBootstrapEligibility({
         updater: refreshedUpdater,
-        expectedRevision,
+        expectedAppliedRevision,
         savedHost: refreshedSavedHostsByID.get(hostID),
         currentHost: currentHosts.find((host) => host.host_id === hostID),
-        savedTargets: refreshedSettings.targets,
-        currentTargets,
         releaseTokenConfigured: refreshedSettings.github_token_configured,
         bootstrapStatus: refreshedActiveStatus || refreshedLatestResults.get(hostID)?.status,
       });
@@ -405,6 +409,7 @@ export function UpdaterHostBootstrapPanel({
       actionID: foundationActionID,
       updater: refreshedUpdater,
       expectedRevision,
+      expectedAppliedRevision,
       selectedHostIDs,
       savedHosts: refreshedSettings.hosts,
       currentHosts,
@@ -466,7 +471,13 @@ export function UpdaterHostBootstrapPanel({
       queryClient.setQueryData(["system-updates"], refreshedSystemUpdates);
       queryClient.setQueryData(["system-updates", "updaters", updater.updater_id, "settings"], refreshedSettings);
       const refreshedUpdater = refreshedSystemUpdates.updaters.find((candidate) => candidate.updater_id === updater.updater_id);
-      if (!refreshedUpdater || refreshedSettings.revision !== expectedRevision || refreshedBootstrapJobs.isError || !refreshedBootstrapJobs.data) {
+      if (
+        !refreshedUpdater
+        || refreshedSettings.revision !== expectedRevision
+        || (refreshedSettings.projection_revision ?? refreshedSettings.revision) !== expectedAppliedRevision
+        || refreshedBootstrapJobs.isError
+        || !refreshedBootstrapJobs.data
+      ) {
         throw new Error("updater_host_bootstrap_status_unavailable");
       }
       const refreshedSavedHostsByID = new Map(refreshedSettings.hosts.map((host) => [host.host_id, host]));
@@ -489,11 +500,9 @@ export function UpdaterHostBootstrapPanel({
         const currentHost = currentHosts.find((host) => host.host_id === hostID);
         const eligibility = updaterHostBootstrapEligibility({
           updater: refreshedUpdater,
-          expectedRevision,
+          expectedAppliedRevision,
           savedHost: refreshedSavedHostsByID.get(hostID),
           currentHost,
-          savedTargets: refreshedSettings.targets,
-          currentTargets,
           releaseTokenConfigured: refreshedSettings.github_token_configured,
           bootstrapStatus: refreshedActiveStatus || refreshedLatestResults.get(hostID)?.status,
         });
@@ -592,9 +601,9 @@ export function UpdaterHostBootstrapPanel({
         <div>
           <div className="flex items-center gap-2 font-medium"><ServerCog className="size-4" />helper自動セットアップ</div>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
-            管理者SSH認証を今回だけ使用し、中央Updaterから制限付きhelperを導入して動作確認します。対象ホストで個別にインストールコマンドを実行する必要はありません。
+            管理者SSH認証を今回だけ使用し、独立Updaterから制限付きhelperを導入して動作確認します。対象ホストで個別にインストールコマンドを実行する必要はありません。
             helperは更新時だけSSH経由で起動し、対象ホストに常駐service・listener・helper専用port・helper用env・Node Runtime Tokenは作成しません。
-            v1の自動セットアップは標準systemdサービス（Control Panel 8080、Encoder 8081、Observability 8082、Discord Bot 8083、Worker 8084）だけに対応し、実際のhealth・version応答まで確認します。Docker、非標準ポート、非標準パス、カスタム構成は手動導入になります。
+            bootstrap対象ホストはpull_v2の実行対象・所有権から独立して保存されます。自動セットアップは検証済みの標準Host Agent profileだけに対応し、実際のhealth・version応答まで確認します。カスタム構成は手動導入になります。
           </p>
         </div>
         {canEdit ? (
@@ -776,6 +785,7 @@ function bootstrapActionAuthoritySnapshot({
   actionID,
   updater,
   expectedRevision,
+  expectedAppliedRevision,
   selectedHostIDs,
   savedHosts,
   currentHosts,
@@ -792,6 +802,7 @@ function bootstrapActionAuthoritySnapshot({
   actionID: "UPD-09" | "UPD-10";
   updater: SystemUpdateAgentStatus;
   expectedRevision: number;
+  expectedAppliedRevision: number;
   selectedHostIDs: string[];
   savedHosts: UpdaterSettingsHost[];
   currentHosts: UpdaterSettingsHost[];
@@ -849,6 +860,7 @@ function bootstrapActionAuthoritySnapshot({
       updater.policy_status,
       updater.bootstrap_encryption_key_fingerprint,
       expectedRevision,
+      expectedAppliedRevision,
       selectionMode,
       releaseTokenConfigured,
       credentialsPresent,

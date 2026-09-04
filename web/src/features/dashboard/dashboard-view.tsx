@@ -188,7 +188,7 @@ export function DashboardView() {
                       </div>
                       <div className="min-w-0 text-xs leading-5">
                         <div className="truncate font-medium text-foreground">{stream.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div>
-                        <div className="truncate text-muted-foreground">VC {stream.discord_voice_channel_id || "未設定"}</div>
+                        <div className="truncate text-muted-foreground">配信先はv2 snapshotで管理</div>
                       </div>
                       <RecordingBadge stream={stream} />
                       <div className="text-xs leading-5 text-muted-foreground">

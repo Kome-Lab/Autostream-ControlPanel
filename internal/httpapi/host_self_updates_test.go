@@ -293,7 +293,7 @@ func TestHostSelfUpdateCreateSerializesAgainstConfigureStage(t *testing.T) {
 		}
 		request := httptest.NewRequest(
 			http.MethodPost,
-			"/api/node-agent/configure/stage",
+			"/services/host-agent/runtime-identity/stage",
 			strings.NewReader(string(body)),
 		)
 		response := httptest.NewRecorder()

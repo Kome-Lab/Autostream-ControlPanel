@@ -5,9 +5,9 @@
       "id": "contracts",
       "repository": "Autostream-Contracts",
       "branch": "main",
-      "head": "46567bf35acff1c252293b931add90e1b646056e",
+      "head": "e96ac056e73e00a04f0c22c73122b9f6e18e8b52",
       "path": "pkg/contracts/types.go",
-      "sourceSha256": "d157f4b11916cb27d05b0662c57d2c877bbf586ff092d5ceb4858e7783e0ba13"
+      "sourceSha256": "ff499e7d7f8435af84744a6d9df827fc14d1b3aa965c3e0a882d61afbcf4cf26"
     },
     {
       "id": "observability",
@@ -15,7 +15,7 @@
       "branch": "main",
       "head": "2cbaccd05854a9ff2db9a8f5af6904be6be45494",
       "path": "migrations/001_init.sql",
-      "sourceSha256": "64df2de7896ce8774e83e6d2ea2d550fd580002f3a03256cbfe5f73cd17a37d7"
+      "sourceSha256": "4e495864938327a8dd5216835d8a384cecba33d95a37d46d9acb10750627e532"
     },
     {
       "id": "control-panel-domain",
@@ -23,7 +23,7 @@
       "branch": "main",
       "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "web/src/types/domain.ts",
-      "sourceSha256": "065504bd2d37cfa3d4fcacdd38a07ae4916ced4b0513b9a4c15266610ebf32d2"
+      "sourceSha256": "385de9ec49f8d14b1800fa866f05a8c82b696590717b6f9eb1591374582a9802"
     },
     {
       "id": "control-panel-http",
@@ -31,7 +31,7 @@
       "branch": "main",
       "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "internal/httpapi/server.go",
-      "sourceSha256": "797fc35fac7eb8f0a74f8de5595d0ba4b2c348ce645c159229f1378bc7916a66"
+      "sourceSha256": "68e886e9cbe4192cc7fad7511d5654dfb35c98084a0c47eb6a556ad8702abfbf"
     },
     {
       "id": "control-panel-policy",
@@ -47,7 +47,7 @@
       "branch": "main",
       "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "internal/store/streams.go",
-      "sourceSha256": "8074156ebbcc93e74eb794a2888295068f8162cbeb1125e3b1c2b2f0a132ded3"
+      "sourceSha256": "1a4ebde472e3dfd05426f4f85e75235eefcda6e6d8c4ce1395eefb0d285b39ab"
     },
     {
       "id": "control-panel-auth-store",
@@ -55,7 +55,7 @@
       "branch": "main",
       "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "internal/store/auth.go",
-      "sourceSha256": "899ff70ea1e8991501889521029cdc399383e235c544d51f729a3a21e6b81f9f"
+      "sourceSha256": "34bc6e53362859c628c429dcdf8ee2d976585de92ea29dc40cd2c85fe6f761f9"
     }
   ],
   "vocabularies": [
@@ -204,8 +204,8 @@
       "authorityId": "control-panel-stream-store",
       "symbol": "ListArchiveProcessingStreams",
       "parser": "sql-status-in",
-      "excerptSha256": "90808304507c099e5ea65eba12058bcda09ee754a2f15fed5c2f15af28f1a4c5",
-      "excerpt": "func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {\n\trows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL\n  AND (\n\t`+streamLogGuardPendingCondition+`\n    OR (\n      COALESCE(TRIM(ss.archive_profile_id), '') <> ''\n      AND s.archive_started_at IS NOT NULL\n      AND s.archive_reported_at IS NULL\n      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')\n    )\n    OR (\n      s.archive_reported_at IS NULL\n      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')\n\t  AND `+streamLogGuardPendingCondition+`\n    )\n  )`),",
+      "excerptSha256": "64a493f27109449fef832043fed3b6fc788318497ba18a674457869753ca73e7",
+      "excerpt": "func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {\n\trows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL\n  AND (\n\t`+streamLogGuardPendingCondition+`\n    OR (\n      COALESCE(TRIM(ss.archive_profile_id), '') <> ''\n      AND s.archive_started_at IS NOT NULL\n      AND s.archive_reported_at IS NULL\n      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')\n    )\n  )`),",
       "domains": [
         { "name": "archive-processing", "include": "all" }
       ],

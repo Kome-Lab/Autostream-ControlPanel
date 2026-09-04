@@ -68,16 +68,13 @@ func TestStreamStartAndReadinessFailClosedBeforeDispatchForMissingSceneCapabilit
 	discord := createDiscordConfigForTest(t, profiles, "visual discord", "discord_bot-visual", "", "", "")
 	if _, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
 		DiscordConfigID: discord.ID,
-		DiscordGuildID:  "1234567890",
-		DiscordVoiceID:  "2345678901",
-		DiscordTextID:   "3456789012",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, serviceType := range []string{"discord_bot", "worker", "encoder_recorder"} {
 		createRegisteredAssignedService(t, auth, serviceType+"-visual", serviceType, stream.ID)
 	}
-	visual := fixedVisualRepository{settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "image", BackgroundAssetID: "asset-bg", BackgroundVariantID: "variant-bg", HeaderTitleMode: "default", CoverSource: "none", Revision: 1}, assets: streamvisual.AssetReadiness{BackgroundExists: true, BackgroundVariantReady: true, BackgroundHashVerified: true, CoverVariantReady: true, MediaAssetIntegrity: true}}
+	visual := fixedVisualRepository{settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "image", BackgroundAssetID: "asset-bg", BackgroundVariantID: "variant-bg", HeaderTitleMode: "default", DiscordTargetMode: "manual", DiscordSnapshotRevision: 1, DiscordGuildID: "1234567890", DiscordTextChannelID: "3456789012", DiscordVoiceChannelID: "2345678901", CoverSource: "none", Revision: 1}, assets: streamvisual.AssetReadiness{BackgroundExists: true, BackgroundVariantReady: true, BackgroundHashVerified: true, CoverVariantReady: true, MediaAssetIntegrity: true}}
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithStreamVisualRepository(visual), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "starter", "correct horse battery")
@@ -189,7 +186,7 @@ func TestStreamStartAndReadinessRequireCoverDispatcherEvenWhenEncoderAdvertisesC
 	}
 	profiles := store.NewMemoryProfileStore()
 	discord := createDiscordConfigForTest(t, profiles, "cover discord", "discord_bot-cover", "", "", "")
-	if _, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: discord.ID, DiscordGuildID: "1234567890", DiscordVoiceID: "2345678901", DiscordTextID: "3456789012"}); err != nil {
+	if _, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{DiscordConfigID: discord.ID}); err != nil {
 		t.Fatal(err)
 	}
 	createRegisteredAssignedService(t, auth, "discord_bot-cover", "discord_bot", stream.ID)
@@ -203,7 +200,7 @@ func TestStreamStartAndReadinessRequireCoverDispatcherEvenWhenEncoderAdvertisesC
 		t.Fatal(err)
 	}
 	visual := fixedVisualRepository{
-		settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "default", HeaderTitleMode: "default", CoverSource: "upload", CoverAssetID: "asset-cover", CoverVariantID: "variant-cover", Revision: 1},
+		settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "default", HeaderTitleMode: "default", DiscordTargetMode: "manual", DiscordSnapshotRevision: 1, DiscordGuildID: "1234567890", DiscordTextChannelID: "3456789012", DiscordVoiceChannelID: "2345678901", CoverSource: "upload", CoverAssetID: "asset-cover", CoverVariantID: "variant-cover", Revision: 1},
 		assets:   streamvisual.AssetReadiness{CoverVariantReady: true, MediaAssetIntegrity: true},
 	}
 	dispatcher := &fakeServiceDispatcher{}

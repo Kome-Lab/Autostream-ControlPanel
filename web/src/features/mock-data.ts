@@ -80,9 +80,6 @@ export const mockStreams: Stream[] = [
     started_at: "2026-07-02T08:55:10+09:00",
     updated_at: baseTime,
     discord_config_id: "discord-main",
-    discord_guild_id: "guild-regional",
-    discord_voice_channel_id: "voice-morning",
-    discord_text_channel_id: "chat-morning",
     auto_start_trigger: "discord_voice_join",
     youtube_output_id: "yt-regional-news",
     archive_profile_id: "archive-shared-drive",
@@ -104,9 +101,6 @@ export const mockStreams: Stream[] = [
     assigned_worker_id: "worker-standby",
     assigned_encoder_id: "encoder-standby",
     discord_config_id: "discord-main",
-    discord_guild_id: "guild-main",
-    discord_voice_channel_id: "voice-council",
-    discord_text_channel_id: "chat-council",
     auto_start_trigger: "discord_voice_join",
     updated_at: "2026-07-02T08:30:00+09:00",
   },
@@ -119,9 +113,6 @@ export const mockStreams: Stream[] = [
     assigned_worker_id: "worker-main",
     assigned_encoder_id: "encoder-main",
     discord_config_id: "discord-main",
-    discord_guild_id: "guild-main",
-    discord_voice_channel_id: "voice-seminar",
-    discord_text_channel_id: "chat-seminar",
     auto_start_trigger: "discord_voice_join",
     updated_at: "2026-07-02T08:45:00+09:00",
   },
@@ -134,9 +125,6 @@ export const mockStreams: Stream[] = [
     assigned_worker_id: "worker-field",
     assigned_encoder_id: "encoder-field",
     discord_config_id: "discord-main",
-    discord_guild_id: "guild-main",
-    discord_voice_channel_id: "voice-fm-special",
-    discord_text_channel_id: "chat-fm-special",
     auto_start_trigger: "discord_voice_join",
     updated_at: "2026-07-02T08:58:00+09:00",
   },
@@ -429,12 +417,12 @@ export const mockAuditLogs: AuditLog[] = [
     id: "audit-006",
     timestamp: "2026-07-02T08:59:45+09:00",
     action: "services.register",
-    actor_username: "updater-central",
+    actor_username: "host-agent-control",
     actor_ip: "192.0.2.31",
     user_agent: "AutoStream Host Agent",
     result: "success",
     resource_type: "service",
-    resource_id: "updater-central",
+    resource_id: "host-agent-control",
   },
 ];
 
@@ -518,18 +506,21 @@ export const mockAppVersion = {
 
 export const mockSystemUpdateUpdaters: SystemUpdateAgentStatus[] = [
   {
-    updater_id: "updater-central",
-    name: "中央Updater",
+    updater_id: "host-agent-control",
+    name: "Control Panel Host Agent",
     status: "online",
     online: true,
-    version: "v1.7.0",
+    version: "v2.0.0",
+    transport_mode: "pull_v2",
+    execution_host_id: "host-control",
+    ownership_epoch: 3,
     last_heartbeat_at: baseTime,
     desired_revision: 1,
     applied_revision: 1,
     policy_status: "applied",
     ssh_client_public_keys: {
-      "host-control": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockControl autostream-updater@central",
-      "host-main": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockMain autostream-updater@central",
+      "host-control": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockControl autostream-updater@host-agent-control",
+      "host-main": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockMain autostream-updater@host-agent-control",
     },
     ssh_client_key_fingerprints: {
       "host-control": "SHA256:mock-control-client-key",
@@ -555,11 +546,30 @@ export const mockSystemUpdateUpdaters: SystemUpdateAgentStatus[] = [
 ];
 
 let mockUpdaterSettings: UpdaterSettings = {
-  updater_id: "updater-central",
+  updater_id: "host-agent-control",
   revision: 1,
-  transport_mode: "ssh_v1",
-  execution_host_id: "",
-  local_executor_policy_sha256: "",
+  projection_revision: 1,
+  local_executor_policy_revision: 1,
+  transport_mode: "pull_v2",
+  execution_host_id: "host-control",
+  execution_host_ownership: {
+    transport_mode: "pull_v2",
+    agent_service_id: "host-agent-control",
+    ownership_epoch: 3,
+    policy_revision: 1,
+  },
+  pull_activation: {
+    ready: true,
+    status: "ready",
+    last_heartbeat_at: baseTime,
+    observe_only: false,
+    update_executor: true,
+    mutation_enabled: true,
+    recovery_pending: false,
+    reported_ownership_epoch: 3,
+    reported_projection_revision: 1,
+  },
+  local_executor_policy_sha256: `sha256:${"a".repeat(64)}`,
   api: { bind_host: "127.0.0.1", host: "127.0.0.1", port: 8090, ssl_enabled: false, tls_cert_file: "", tls_key_file: "" },
   poll_interval_seconds: 15,
   heartbeat_interval_seconds: 30,
@@ -587,7 +597,6 @@ let mockUpdaterSettings: UpdaterSettings = {
   ],
   targets: [
     { target_id: "control-panel", service_id: "control-panel", host_id: "host-control", service_type: "control_panel", deployment_mode: "systemd" },
-    { target_id: "worker-main", service_id: "worker-main", host_id: "host-main", service_type: "worker", deployment_mode: "systemd" },
   ],
   github_token_configured: true,
   github_token_fingerprint: "sha256:mock-token",
@@ -595,19 +604,19 @@ let mockUpdaterSettings: UpdaterSettings = {
 };
 
 export const mockSystemUpdateHosts: SystemUpdateHostStatus[] = [
-  { host_id: "host-control", name: "Control Panelホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
-  { host_id: "host-main", name: "本社メインホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
-  { host_id: "host-city", name: "庁舎スタンバイホスト", updater_id: "updater-central", reachability: "reachable", reachability_checked_at: baseTime },
-  { host_id: "host-field", name: "現場持出ホスト", updater_id: "updater-central", reachability: "unreachable", reachability_checked_at: baseTime, reachability_code: "ssh_timeout" },
+  { host_id: "host-control", name: "Control Panelホスト", updater_id: "host-agent-control", reachability: "reachable", reachability_checked_at: baseTime },
+  { host_id: "host-main", name: "本社メインホスト", updater_id: "host-agent-control", reachability: "reachable", reachability_checked_at: baseTime },
+  { host_id: "host-city", name: "庁舎スタンバイホスト", updater_id: "host-agent-control", reachability: "reachable", reachability_checked_at: baseTime },
+  { host_id: "host-field", name: "現場持出ホスト", updater_id: "host-agent-control", reachability: "unreachable", reachability_checked_at: baseTime, reachability_code: "host_agent_offline" },
   { host_id: "host-observability", name: "監視ホスト", updater_id: "host-agent-observability", reachability: "reachable", reachability_checked_at: baseTime },
 ];
 
 export const mockSystemUpdateTargets: SystemUpdateTarget[] = [
-  { target_id: "control-panel", target_type: "control_panel", name: "Control Panel", host_id: "host-control", current_version: "v1.2.3", latest_version: "v1.2.4", update_available: true, deployment_mode: "docker_compose", updater_id: "updater-central", updater_online: true, eligible: true },
-  { target_id: "worker-main", target_type: "worker", name: "本社メインWorker", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, busy: true, current_stream_id: "stream-cable-morning", eligible: true },
-  { target_id: "worker-standby", target_type: "worker", name: "庁舎スタンバイWorker", host_id: "host-city", current_version: "v1.1.8", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, eligible: true },
-  { target_id: "encoder-main", target_type: "encoder_recorder", name: "本社エンコーダー", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.0", update_available: false, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, current_stream_id: "stream-cable-morning", eligible: false, blocked_reason: "update_not_available" },
-  { target_id: "encoder-field", target_type: "encoder_recorder", name: "現場持出エンコーダー", host_id: "host-field", current_version: "v1.1.4", latest_version: "v1.2.0", update_available: true, deployment_mode: "systemd", updater_id: "updater-central", updater_online: true, current_stream_id: "stream-fm-special", eligible: false, blocked_reason: "target_unreachable" },
+  { target_id: "control-panel", target_type: "control_panel", name: "Control Panel", host_id: "host-control", current_version: "v1.2.3", latest_version: "v1.2.4", update_available: true, deployment_mode: "docker_compose", updater_id: "host-agent-control", updater_online: true, eligible: true },
+  { target_id: "worker-main", target_type: "worker", name: "本社メインWorker", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "host-agent-control", updater_online: true, busy: true, current_stream_id: "stream-cable-morning", eligible: true },
+  { target_id: "worker-standby", target_type: "worker", name: "庁舎スタンバイWorker", host_id: "host-city", current_version: "v1.1.8", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "host-agent-control", updater_online: true, eligible: true },
+  { target_id: "encoder-main", target_type: "encoder_recorder", name: "本社エンコーダー", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.0", update_available: false, deployment_mode: "systemd", updater_id: "host-agent-control", updater_online: true, current_stream_id: "stream-cable-morning", eligible: false, blocked_reason: "update_not_available" },
+  { target_id: "encoder-field", target_type: "encoder_recorder", name: "現場持出エンコーダー", host_id: "host-field", current_version: "v1.1.4", latest_version: "v1.2.0", update_available: true, deployment_mode: "systemd", updater_id: "host-agent-control", updater_online: true, current_stream_id: "stream-fm-special", eligible: false, blocked_reason: "target_unreachable" },
   {
     target_id: "observability-main",
     target_type: "observability",
@@ -1222,9 +1231,6 @@ export function mockPost(path: string, body?: unknown): unknown {
       assigned_worker_id: (request as Partial<Stream> & { worker_service_id?: string }).worker_service_id || request.assigned_worker_id,
       assigned_encoder_id: (request as Partial<Stream> & { encoder_service_id?: string }).encoder_service_id || request.assigned_encoder_id,
       discord_config_id: request.discord_config_id,
-      discord_guild_id: request.discord_guild_id,
-      discord_voice_channel_id: request.discord_voice_channel_id,
-      discord_text_channel_id: request.discord_text_channel_id,
       auto_start_trigger: request.auto_start_trigger,
       encoder_profile_id: request.encoder_profile_id,
       caption_profile_id: request.caption_profile_id,
@@ -1277,7 +1283,7 @@ export function mockPost(path: string, body?: unknown): unknown {
       host: string;
       port: number;
       ssl_enabled: boolean;
-      transport_mode: "ssh_v1" | "pull_v2";
+      transport_mode: "pull_v2";
       execution_host_id: string;
     }>;
     const nodeID = request.node_id || `${request.node_type || "worker"}-new`;
@@ -1287,7 +1293,7 @@ export function mockPost(path: string, body?: unknown): unknown {
     const port = request.port || 8081;
     const sslEnabled = request.ssl_enabled ?? true;
     const scheme = sslEnabled ? "https" : "http";
-    const pullHostAgent = request.node_type === "update_agent" && request.transport_mode === "pull_v2";
+    const pullHostAgent = request.node_type === "update_agent";
     const response: NodeRegistrationResponse = {
       id: "token-demo-node-registration",
       service_type: request.node_type || "worker",
@@ -1411,7 +1417,7 @@ function mockConfigureBinary(serviceType: string) {
 function mockConfigPath(serviceType: string) {
   switch (serviceType) {
     case "update_agent":
-      return "/etc/autostream-host-agent/identity.json";
+      return "/etc/autostream/updater/agent.yaml";
     case "encoder_recorder":
       return "/etc/autostream-encoder-recorder/config.yml";
     case "discord_bot":
@@ -1425,7 +1431,7 @@ function mockConfigPath(serviceType: string) {
 
 function mockUpdaterConfigurationMetadata() {
   return {
-    configuration_path: "/etc/autostream-host-agent/identity.json",
+    configuration_path: "/etc/autostream/updater/agent.yaml",
   };
 }
 
@@ -1467,8 +1473,16 @@ export function mockPut(path: string, body?: unknown): unknown {
     mockUpdaterSettings = {
       updater_id: updaterID,
       revision: nextRevision,
+      projection_revision: nextRevision,
+      local_executor_policy_revision: nextRevision,
       transport_mode: mockUpdaterSettings.transport_mode,
       execution_host_id: mockUpdaterSettings.execution_host_id,
+      execution_host_ownership: mockUpdaterSettings.execution_host_ownership
+        ? { ...mockUpdaterSettings.execution_host_ownership, policy_revision: nextRevision }
+        : undefined,
+      pull_activation: mockUpdaterSettings.pull_activation
+        ? { ...mockUpdaterSettings.pull_activation, reported_projection_revision: nextRevision }
+        : undefined,
       local_executor_policy_sha256: request.local_executor_policy_sha256 ?? mockUpdaterSettings.local_executor_policy_sha256,
       api: request.api ? { ...request.api } : { ...mockUpdaterSettings.api },
       poll_interval_seconds: request.poll_interval_seconds,

@@ -13,16 +13,13 @@ import (
 	"time"
 	"unicode"
 
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/version"
 	"golang.org/x/crypto/ssh"
 )
 
-const systemUpdateClaimLeaseTTL = 2 * time.Minute
 const systemUpdateExecutionLeaseTTL = 45 * time.Minute
-const systemUpdateHostReachabilityTTL = 2 * time.Minute
-const systemUpdateHostClockSkew = 30 * time.Second
-const systemUpdateTerminalRecoveryProofMinimumAgentVersion = "v1.9.11"
 
 type systemUpdateTargetResponse struct {
 	TargetID                string                           `json:"target_id"`
@@ -79,45 +76,31 @@ type systemUpdateAgentResponse struct {
 }
 
 type systemUpdateHostResponse struct {
-	HostID                  string     `json:"host_id"`
-	Name                    string     `json:"name"`
-	UpdaterID               string     `json:"updater_id"`
-	Reachability            string     `json:"reachability"`
-	CheckedAt               *time.Time `json:"reachability_checked_at,omitempty"`
-	Code                    string     `json:"reachability_code,omitempty"`
-	SSHClientPublicKey      string     `json:"ssh_client_public_key,omitempty"`
-	SSHClientKeyFingerprint string     `json:"ssh_client_key_fingerprint,omitempty"`
+	HostID       string     `json:"host_id"`
+	Name         string     `json:"name"`
+	UpdaterID    string     `json:"updater_id"`
+	Reachability string     `json:"reachability"`
+	CheckedAt    *time.Time `json:"reachability_checked_at,omitempty"`
+	Code         string     `json:"reachability_code,omitempty"`
 }
 
 type systemUpdateAgentAssignment struct {
-	AgentID                string
-	AgentVersion           string
-	AgentTransportMode     string
-	DeploymentMode         string
-	CurrentVersion         string
-	Available              bool
-	HostID                 string
-	HostName               string
-	HostReachability       string
-	HostCheckedAt          *time.Time
-	HostCode               string
-	TargetServiceType      string
-	LocalListenPortBound   bool
-	PolicyManaged          bool
-	PolicyReady            bool
-	PolicyBlockedReason    string
-	ReleaseTokenRequired   bool
-	ReleaseTokenConfigured bool
-}
-
-type systemUpdateClaimResponse struct {
-	store.SystemUpdateClaim
-	ReleaseToken string `json:"release_token,omitempty"`
-}
-
-type systemUpdateTerminalRecoveryResponse struct {
-	ClearActiveJobID bool                  `json:"clear_active_job_id"`
-	TerminalJob      store.SystemUpdateJob `json:"terminal_job"`
+	AgentID              string
+	AgentVersion         string
+	AgentTransportMode   string
+	DeploymentMode       string
+	CurrentVersion       string
+	Available            bool
+	HostID               string
+	HostName             string
+	HostReachability     string
+	HostCheckedAt        *time.Time
+	HostCode             string
+	TargetServiceType    string
+	LocalListenPortBound bool
+	PolicyManaged        bool
+	PolicyReady          bool
+	PolicyBlockedReason  string
 }
 
 func (s *Server) listSystemUpdates(w http.ResponseWriter, r *http.Request) {
@@ -585,37 +568,37 @@ func (s *Server) cancelSystemUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request) {
 	v2 := isSystemUpdateV2Request(r)
+	if !v2 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "unsupported_updater_protocol"})
+		return
+	}
 	token, ok := s.authenticateService(w, r, "updates.claim")
 	if !ok {
 		return
 	}
-	var body struct {
-		ServiceID   string  `json:"service_id"`
-		HostID      string  `json:"host_id,omitempty"`
-		ActiveJobID *string `json:"active_job_id,omitempty"`
-	}
-	decoder := json.NewDecoder(r.Body)
+	var body contracts.UpdateAgentClaimRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxSystemUpdateV2PayloadBytes+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil ||
 		!errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	activeJobID := ""
-	if body.ActiveJobID != nil {
-		activeJobID = strings.TrimSpace(*body.ActiveJobID)
-		if activeJobID == "" || len(activeJobID) > 64 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
-			return
-		}
+	if !validSystemUpdateClaimIdentity(body.UpdaterID, 128) ||
+		!validSystemUpdateClaimIdentity(body.HostID, 191) ||
+		body.LeaseGeneration < 1 || body.Fence < 1 ||
+		(body.ActiveJobID != "" && !validSystemUpdateClaimIdentity(body.ActiveJobID, 64)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
 	}
+	activeJobID := body.ActiveJobID
 	s.systemUpdateOperationMu.Lock()
 	defer s.systemUpdateOperationMu.Unlock()
 	token, ok = s.reauthenticateService(w, r, token, "updates.claim")
 	if !ok {
 		return
 	}
-	agent, err := s.systemUpdateAgentForToken(r.Context(), token, body.ServiceID)
+	agent, err := s.systemUpdateAgentForToken(r.Context(), token, body.UpdaterID)
 	if err != nil {
 		writeSystemUpdateAgentError(w, err)
 		return
@@ -625,7 +608,7 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_offline"})
 		return
 	}
-	hostID, err := s.systemUpdateClaimHost(r.Context(), agent, body.HostID)
+	hostID, err := s.systemUpdateClaimHost(r.Context(), agent)
 	if errors.Is(err, store.ErrSystemUpdateOwnershipConflict) {
 		s.writeServiceAudit(r, token, "system_updates.claim", "update_agent", agent.ServiceID, "failure", map[string]any{
 			"reason":             "ownership_conflict",
@@ -639,6 +622,10 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	if body.HostID != hostID || body.Fence != agent.OwnershipEpoch {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_ownership_conflict"})
 		return
 	}
 	var activeJob *store.SystemUpdateJob
@@ -660,28 +647,18 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "inspect_system_update_active_job_failed"})
 			return
 		}
+		if terminalJob.LeaseGeneration != body.LeaseGeneration || terminalJob.OwnershipEpoch != body.Fence || terminalJob.ExecutionHostID != body.HostID {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_lease_invalid"})
+			return
+		}
 		if clearActiveJob {
-			if !v2 && !systemUpdateTerminalRecoveryProofSupported(agent) {
-				writeJSON(w, http.StatusConflict, map[string]string{
-					"code": "system_update_terminal_proof_upgrade_required",
-				})
-				return
-			}
-			if v2 {
-				writeSystemUpdateV2Clear(w)
-			} else {
-				w.Header().Set("Cache-Control", "no-store")
-				writeJSON(w, http.StatusOK, systemUpdateTerminalRecoveryResponse{
-					ClearActiveJobID: true,
-					TerminalJob:      terminalJob,
-				})
-			}
+			writeSystemUpdateV2Clear(w)
 			return
 		}
 		activeJob = &terminalJob
 	}
 	var eligibleTargets map[string]string
-	if activeJob != nil && systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportPullV2 {
+	if activeJob != nil {
 		eligibleTargets, err = s.systemUpdatePullRecoveryEligibleTarget(r.Context(), agent, hostID, *activeJob)
 	} else {
 		eligibleTargets, err = s.systemUpdateTargetsForAgentHostClaim(r.Context(), agent, hostID, activeJobID != "")
@@ -702,42 +679,19 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	releaseToken := ""
-	if systemUpdateAgentRequiresReleaseToken(agent) {
-		_, policyErr := s.updaterPolicies.GetUpdaterPolicy(r.Context(), agent.ServiceID)
-		switch {
-		case policyErr == nil:
-			releaseToken, err = s.updaterPolicies.GetUpdaterReleaseTokenValue(r.Context())
-			if errors.Is(err, store.ErrNotFound) {
-				w.Header().Set("Cache-Control", "no-store")
-				writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_release_token_not_configured"})
-				return
-			}
-			if err != nil {
-				w.Header().Set("Cache-Control", "no-store")
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_release_token_failed"})
-				return
-			}
-		case errors.Is(policyErr, store.ErrNotFound):
-		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_policy_failed"})
-			return
-		}
-	}
-	claimTTL := systemUpdateClaimLeaseTTL
+	claimTTL := systemUpdateExecutionLeaseTTL
 	var claim store.SystemUpdateClaim
 	var clearActiveJob bool
-	if v2 {
-		claimTTL = systemUpdateExecutionLeaseTTL
-		v2Store, available := s.systemUpdates.(store.SystemUpdateV2Store)
-		if !available {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "updater_v2_adapter_unavailable"})
-			return
-		}
-		claim, clearActiveJob, err = v2Store.ClaimSystemUpdateJobV2(r.Context(), agent.ServiceID, hostID, activeJobID, eligibleTargets, now, claimTTL)
-	} else {
-		claim, clearActiveJob, err = s.systemUpdates.ClaimSystemUpdateJob(r.Context(), agent.ServiceID, hostID, activeJobID, eligibleTargets, now, claimTTL)
+	v2Store, available := s.systemUpdates.(store.SystemUpdateV2Store)
+	if !available {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "updater_v2_adapter_unavailable"})
+		return
 	}
+	claim, clearActiveJob, err = v2Store.ClaimSystemUpdateJobV2(
+		r.Context(), agent.ServiceID, hostID, activeJobID,
+		body.LeaseGeneration, body.Fence,
+		eligibleTargets, now, claimTTL,
+	)
 	if err == nil && clearActiveJob {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "claim_system_update_recovery_proof_missing"})
 		return
@@ -757,6 +711,10 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 	}
 	if errors.Is(err, store.ErrSystemUpdateRecoveryProofUnavailable) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_recovery_proof_unavailable"})
+		return
+	}
+	if errors.Is(err, store.ErrSystemUpdateLeaseInvalid) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_lease_invalid"})
 		return
 	}
 	if errors.Is(err, store.ErrSystemUpdateOwnershipConflict) {
@@ -794,168 +752,28 @@ func (s *Server) serviceSystemUpdateClaim(w http.ResponseWriter, r *http.Request
 		"reported_recovery_pending": capabilityBool(agent.ReportedCapabilities["recovery_pending"]),
 		"active_job_present":        activeJobID != "",
 	})
-	if v2 {
-		if err := s.writeSystemUpdateV2Lease(w, r.Context(), claim.Job); err != nil {
-			s.writeServiceAudit(r, token, "system_updates.claim", "system_update", claim.Job.ID, "failure", map[string]any{
-				"reason": "updater_v2_lease_projection_failed",
-			})
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "updater_v2_lease_projection_failed"})
-		}
-		return
+	if err := s.writeSystemUpdateV2Lease(w, r.Context(), claim.Job); err != nil {
+		s.writeServiceAudit(r, token, "system_updates.claim", "system_update", claim.Job.ID, "failure", map[string]any{
+			"reason": "updater_v2_lease_projection_failed",
+		})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "updater_v2_lease_projection_failed"})
 	}
-	writeOneTimeSecretJSON(w, http.StatusOK, systemUpdateClaimResponse{SystemUpdateClaim: claim, ReleaseToken: releaseToken})
 }
 
-func systemUpdateTerminalRecoveryProofSupported(
-	agent store.RegisteredService,
-) bool {
-	current := systemUpdateAgentVersion(agent)
-	if _, ok := parseSemanticVersion(current); !ok {
-		return false
-	}
-	return !versionIsNewer(
-		systemUpdateTerminalRecoveryProofMinimumAgentVersion,
-		current,
-	)
+var systemUpdateClaimIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
+
+func validSystemUpdateClaimIdentity(value string, maxLength int) bool {
+	return value == strings.TrimSpace(value) &&
+		len(value) >= 1 && len(value) <= maxLength &&
+		systemUpdateClaimIdentityPattern.MatchString(value)
 }
 
 func (s *Server) serviceSystemUpdateReport(w http.ResponseWriter, r *http.Request) {
-	if isSystemUpdateV2Request(r) {
-		s.serviceSystemUpdateReportV2(w, r)
+	if !isSystemUpdateV2Request(r) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "unsupported_updater_protocol"})
 		return
 	}
-	token, ok := s.authenticateService(w, r, "updates.report")
-	if !ok {
-		return
-	}
-	var body struct {
-		ServiceID       string                                 `json:"service_id"`
-		LeaseToken      string                                 `json:"lease_token"`
-		LeaseGeneration int64                                  `json:"lease_generation"`
-		Sequence        int64                                  `json:"sequence"`
-		Status          string                                 `json:"status"`
-		Progress        int                                    `json:"progress"`
-		Code            string                                 `json:"code"`
-		Message         string                                 `json:"message"`
-		ArtifactDigest  string                                 `json:"artifact_digest"`
-		PreviousDigest  string                                 `json:"previous_digest"`
-		PortReconfigure *store.SystemUpdatePortReconfiguration `json:"port_reconfigure"`
-	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil ||
-		!errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
-		return
-	}
-	s.systemUpdateOperationMu.Lock()
-	defer s.systemUpdateOperationMu.Unlock()
-	token, ok = s.reauthenticateService(w, r, token, "updates.report")
-	if !ok {
-		return
-	}
-	agent, err := s.systemUpdateAgentForToken(r.Context(), token, body.ServiceID)
-	if err != nil {
-		writeSystemUpdateAgentError(w, err)
-		return
-	}
-	if err := s.validatePullSystemUpdateAgentOwnership(r.Context(), agent); err != nil {
-		if errors.Is(err, store.ErrSystemUpdateOwnershipConflict) {
-			s.writeServiceAudit(r, token, "system_updates.report", "system_update", strings.TrimSpace(r.PathValue("id")), "failure", map[string]any{
-				"reason":            "ownership_conflict",
-				"agent_service_id":  agent.ServiceID,
-				"execution_host_id": strings.TrimSpace(agent.ExecutionHostID),
-				"ownership_epoch":   agent.OwnershipEpoch,
-			})
-			writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_ownership_conflict"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "resolve_system_update_ownership_failed"})
-		return
-	}
-	job, applied, err := s.systemUpdates.ReportSystemUpdateJob(r.Context(), strings.TrimSpace(r.PathValue("id")), store.SystemUpdateReport{
-		AgentServiceID: agent.ServiceID, ExecutionHostID: pullSystemUpdateExecutionHost(agent),
-		LeaseToken: body.LeaseToken, LeaseGeneration: body.LeaseGeneration, Sequence: body.Sequence, Status: body.Status,
-		Progress: body.Progress, Code: body.Code, Message: body.Message, ArtifactDigest: body.ArtifactDigest, PreviousDigest: body.PreviousDigest,
-		PortReconfigure: body.PortReconfigure,
-	}, time.Now().UTC(), systemUpdateExecutionLeaseTTL)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]string{"code": "system_update_job_not_found"})
-		return
-	case errors.Is(err, store.ErrSystemUpdateLeaseInvalid):
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_lease_invalid"})
-		return
-	case errors.Is(err, store.ErrSystemUpdateSequenceStale):
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_sequence_stale"})
-		return
-	case errors.Is(err, store.ErrSystemUpdateTransition):
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_transition_invalid"})
-		return
-	case errors.Is(err, store.ErrSystemUpdateOwnershipConflict):
-		s.writeServiceAudit(r, token, "system_updates.report", "system_update", strings.TrimSpace(r.PathValue("id")), "failure", map[string]any{
-			"reason":            "ownership_conflict",
-			"agent_service_id":  agent.ServiceID,
-			"execution_host_id": strings.TrimSpace(agent.ExecutionHostID),
-			"ownership_epoch":   agent.OwnershipEpoch,
-		})
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_ownership_conflict"})
-		return
-	case errors.Is(err, store.ErrSystemUpdateEndpointStale), errors.Is(err, store.ErrConflict):
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_endpoint_revision_conflict"})
-		return
-	case errors.Is(err, store.ErrServicePortReserved):
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "service_port_reserved"})
-		return
-	case errors.Is(err, store.ErrSystemUpdatePortStoreMismatch),
-		errors.Is(err, store.ErrSystemUpdatePortCoordinatorRequired):
-		writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_port_store_mismatch"})
-		return
-	case errors.Is(err, store.ErrInvalidSystemUpdate):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_system_update_report"})
-		return
-	case err != nil:
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "report_system_update_failed"})
-		return
-	}
-	if applied && systemUpdateStatusTerminal(job.Status) {
-		result := "success"
-		if job.Status != store.SystemUpdateStatusSucceeded {
-			result = "failure"
-		}
-		metadata := map[string]any{
-			"agent_service_id": agent.ServiceID,
-			"target_id":        job.TargetID,
-			"target_version":   job.TargetVersion,
-			"operation":        job.Operation,
-			"status":           job.Status,
-			"code":             job.Code,
-		}
-		if job.Operation == store.SystemUpdateOperationPortReconfigure && job.PortReconfigure != nil {
-			metadata["old_port"] = job.PortReconfigure.OldPort
-			metadata["new_port"] = job.PortReconfigure.NewPort
-			metadata["port_result"] = job.PortReconfigure.Result
-		}
-		s.writeServiceAudit(r, token, "system_updates."+job.Status, "system_update", job.ID, result, metadata)
-	}
-	writeJSON(w, http.StatusOK, job)
-}
-
-func (s *Server) serviceSystemUpdateAuthorize(w http.ResponseWriter, r *http.Request) {
-	token, ok := s.authenticateService(w, r, "updates.authorize")
-	if !ok {
-		return
-	}
-	s.systemUpdateOperationMu.Lock()
-	defer s.systemUpdateOperationMu.Unlock()
-	token, ok = s.reauthenticateService(w, r, token, "updates.authorize")
-	if !ok {
-		return
-	}
-	jobID := strings.TrimSpace(r.PathValue("id"))
-	w.Header().Set("Cache-Control", "no-store")
-	s.writeServiceAudit(r, token, "system_updates.authorize", "system_update", jobID, "failure", map[string]any{"reason": "legacy_endpoint_disabled"})
-	writeJSON(w, http.StatusGone, map[string]string{"code": "legacy_system_update_authorization_disabled"})
+	s.serviceSystemUpdateReportV2(w, r)
 }
 
 func (s *Server) systemUpdateAgentForToken(ctx context.Context, token store.ServiceToken, serviceID string) (store.RegisteredService, error) {
@@ -973,36 +791,19 @@ func (s *Server) systemUpdateAgentForToken(ctx context.Context, token store.Serv
 	return agent, nil
 }
 
-func (s *Server) systemUpdateClaimHost(ctx context.Context, agent store.RegisteredService, requestedHostID string) (string, error) {
+func (s *Server) systemUpdateClaimHost(ctx context.Context, agent store.RegisteredService) (string, error) {
 	transportMode := strings.ToLower(strings.TrimSpace(agent.TransportMode))
-	if transportMode == "" {
-		transportMode = store.SystemUpdateTransportSSHV1
-	}
-	switch transportMode {
-	case store.SystemUpdateTransportPullV2:
-		if err := s.validatePullSystemUpdateAgentOwnership(ctx, agent); err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(agent.ExecutionHostID), nil
-	case store.SystemUpdateTransportSSHV1:
-		hostID := strings.TrimSpace(requestedHostID)
-		if hostID == "" {
-			hostID = agent.ServiceID
-		}
-		if !validSystemUpdateCapabilityIdentifier(hostID) {
-			return "", store.ErrInvalidSystemUpdate
-		}
-		return hostID, nil
-	default:
+	if transportMode != store.SystemUpdateTransportPullV2 {
 		return "", store.ErrInvalidSystemUpdate
 	}
+	if err := s.validatePullSystemUpdateAgentOwnership(ctx, agent); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(agent.ExecutionHostID), nil
 }
 
 func (s *Server) validatePullSystemUpdateAgentOwnership(ctx context.Context, agent store.RegisteredService) error {
 	transportMode := strings.ToLower(strings.TrimSpace(agent.TransportMode))
-	if transportMode == "" || transportMode == store.SystemUpdateTransportSSHV1 {
-		return nil
-	}
 	if transportMode != store.SystemUpdateTransportPullV2 ||
 		!validSystemUpdateCapabilityIdentifier(agent.ExecutionHostID) ||
 		agent.OwnershipEpoch < 1 {
@@ -1032,16 +833,8 @@ func pullSystemUpdateExecutionHost(agent store.RegisteredService) string {
 	return ""
 }
 
-func systemUpdateAgentRequiresReleaseToken(agent store.RegisteredService) bool {
-	return systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportSSHV1
-}
-
 func systemUpdateAgentTransportMode(agent store.RegisteredService) string {
-	transportMode := strings.ToLower(strings.TrimSpace(agent.TransportMode))
-	if transportMode == "" {
-		return store.SystemUpdateTransportSSHV1
-	}
-	return transportMode
+	return strings.ToLower(strings.TrimSpace(agent.TransportMode))
 }
 
 func writeSystemUpdateAgentError(w http.ResponseWriter, err error) {
@@ -1077,25 +870,8 @@ func (s *Server) systemUpdateSnapshot(ctx context.Context) ([]systemUpdateTarget
 	for _, policy := range policyItems {
 		policies[policy.UpdaterID] = policy
 	}
-	releaseTokenConfigured := false
-	releaseTokenRequired := false
-	for _, service := range services {
-		if _, managed := policies[service.ServiceID]; managed &&
-			service.ServiceType == "update_agent" &&
-			systemUpdateAgentRequiresReleaseToken(service) {
-			releaseTokenRequired = true
-			break
-		}
-	}
-	if releaseTokenRequired {
-		releaseTokenStatus, err := s.updaterReleaseTokenStatus(ctx)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		releaseTokenConfigured = releaseTokenStatus.Configured
-	}
 	now := time.Now().UTC()
-	agents, updaters, hosts := systemUpdateAgentTopologyWithPolicies(services, now, policies, releaseTokenConfigured)
+	agents, updaters, hosts := systemUpdateAgentTopologyWithPolicies(services, now, policies)
 	checks := latestVersions(ctx, append(append([]versionUpdateTarget{}, controlPanelVersionUpdateTarget), append(nodeVersionUpdateTargets, dockerVersionUpdateTarget)...))
 	panelBusy, err := s.systemUpdateControlPanelBusy(ctx)
 	if err != nil {
@@ -1433,10 +1209,6 @@ func buildSystemUpdateTarget(targetID, serviceType, name, serviceVersion, curren
 		target.BlockedReason = "updater_policy_target_type_mismatch"
 		return target
 	}
-	if assignment.ReleaseTokenRequired && !assignment.ReleaseTokenConfigured {
-		target.BlockedReason = "updater_release_token_not_configured"
-		return target
-	}
 	if !assignment.Available {
 		target.BlockedReason = "updater_offline"
 		return target
@@ -1491,15 +1263,16 @@ func systemUpdateAgentAssignments(services []store.RegisteredService) map[string
 }
 
 func systemUpdateAgentTopology(services []store.RegisteredService, now time.Time) (map[string]systemUpdateAgentAssignment, []systemUpdateAgentResponse, []systemUpdateHostResponse) {
-	return systemUpdateAgentTopologyWithPolicies(services, now, nil, false)
+	return systemUpdateAgentTopologyWithPolicies(services, now, nil)
 }
 
-func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, now time.Time, policies map[string]store.UpdaterPolicy, releaseTokenConfigured bool) (map[string]systemUpdateAgentAssignment, []systemUpdateAgentResponse, []systemUpdateHostResponse) {
+func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, now time.Time, policies map[string]store.UpdaterPolicy) (map[string]systemUpdateAgentAssignment, []systemUpdateAgentResponse, []systemUpdateHostResponse) {
 	agentServices := make([]store.RegisteredService, 0)
 	servicesByID := make(map[string]store.RegisteredService, len(services))
 	for _, service := range services {
 		servicesByID[service.ServiceID] = service
-		if service.ServiceType == "update_agent" {
+		if service.ServiceType == "update_agent" &&
+			systemUpdateAgentTransportMode(service) == store.SystemUpdateTransportPullV2 {
 			agentServices = append(agentServices, service)
 		}
 	}
@@ -1517,11 +1290,7 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 	hostsByID := map[string]systemUpdateHostResponse{}
 	for _, agent := range agentServices {
 		agentVersion := systemUpdateAgentVersion(agent)
-		reportedHosts := newSystemUpdateReportedHostSnapshot(agent)
 		transportMode := strings.ToLower(strings.TrimSpace(agent.TransportMode))
-		if transportMode == "" {
-			transportMode = store.SystemUpdateTransportSSHV1
-		}
 		updater := systemUpdateAgentResponse{
 			UpdaterID: agent.ServiceID, Name: systemUpdateDisplayName(agent.ServiceName, agent.ServiceID), Status: strings.TrimSpace(agent.Status),
 			TransportMode: transportMode,
@@ -1542,7 +1311,7 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 			for _, host := range policy.Hosts {
 				managedHostIDs[host.HostID] = true
 			}
-			updater.SSHClientPublicKeys, updater.SSHClientKeyFingerprints = systemUpdateSSHClientKeys(reportedHosts, managedHostIDs)
+			updater.SSHClientPublicKeys, updater.SSHClientKeyFingerprints = systemUpdateSSHClientKeys(agent, managedHostIDs)
 		}
 		updaters = append(updaters, updater)
 		targetServicesByID := servicesByID
@@ -1566,7 +1335,6 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 			agent,
 			now,
 			managedPolicy,
-			reportedHosts,
 			targetServicesByID,
 		)
 		for _, targetID := range sortedApprovedSystemUpdateTargetIDs(approved) {
@@ -1589,8 +1357,6 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 				TargetServiceType: approvedTarget.ServiceType, LocalListenPortBound: approvedTarget.LocalListenPortBound,
 				PolicyManaged: approvedTarget.PolicyManaged,
 				PolicyReady:   approvedTarget.PolicyReady, PolicyBlockedReason: approvedTarget.PolicyBlockedReason,
-				ReleaseTokenRequired:   approvedTarget.PolicyManaged && systemUpdateAgentRequiresReleaseToken(agent),
-				ReleaseTokenConfigured: releaseTokenConfigured,
 			}
 		}
 	}
@@ -1606,6 +1372,24 @@ func systemUpdateAgentTopologyWithPolicies(services []store.RegisteredService, n
 		return hosts[i].HostID < hosts[j].HostID
 	})
 	return assignments, updaters, hosts
+}
+
+func systemUpdateSSHClientKeys(agent store.RegisteredService, allowedHostIDs map[string]bool) (map[string]string, map[string]string) {
+	reported := capabilityStringMap(agent.ReportedCapabilities["ssh_client_public_keys"])
+	keys := make(map[string]string, len(allowedHostIDs))
+	fingerprints := make(map[string]string, len(allowedHostIDs))
+	for hostID, raw := range reported {
+		if !allowedHostIDs[hostID] || !validSystemUpdateCapabilityIdentifier(hostID) {
+			continue
+		}
+		key, err := parseUpdaterED25519PublicKey(raw)
+		if err != nil {
+			continue
+		}
+		keys[hostID] = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+		fingerprints[hostID] = ssh.FingerprintSHA256(key)
+	}
+	return keys, fingerprints
 }
 
 func (s *Server) systemUpdateEligibleTargetsForAgent(ctx context.Context, agent store.RegisteredService) (map[string]string, error) {
@@ -1755,20 +1539,12 @@ func (s *Server) systemUpdateTargetsForAgentHostClaim(ctx context.Context, agent
 			return nil, err
 		}
 	}
-	var approved map[string]systemUpdateApprovedTarget
-	if allowBusyRecovery &&
-		managedPolicy != nil &&
-		systemUpdateAgentTransportMode(agent) != store.SystemUpdateTransportPullV2 {
-		approved = reportedSystemUpdateAgentTargetAssignments(agent, time.Now().UTC())
-	} else {
-		approved = approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(
-			agent,
-			time.Now().UTC(),
-			managedPolicy,
-			newSystemUpdateReportedHostSnapshot(agent),
-			byID,
-		)
-	}
+	approved := approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(
+		agent,
+		time.Now().UTC(),
+		managedPolicy,
+		byID,
+	)
 	eligible := map[string]string{}
 	for _, targetID := range sortedApprovedSystemUpdateTargetIDs(approved) {
 		targetApproval := approved[targetID]
@@ -1895,107 +1671,19 @@ func approvedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, n
 }
 
 func approvedSystemUpdateAgentTargetAssignmentsForPolicy(agent store.RegisteredService, now time.Time, policy *store.UpdaterPolicy) map[string]systemUpdateApprovedTarget {
-	return approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(agent, now, policy, newSystemUpdateReportedHostSnapshot(agent), nil)
+	return approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(agent, now, policy, nil)
 }
 
 func approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(
 	agent store.RegisteredService,
 	now time.Time,
 	policy *store.UpdaterPolicy,
-	reportedHosts systemUpdateReportedHostSnapshot,
 	servicesByID map[string]store.RegisteredService,
 ) map[string]systemUpdateApprovedTarget {
-	if policy != nil {
-		if systemUpdateAgentTransportMode(agent) == store.SystemUpdateTransportPullV2 {
-			return approvedPullSystemUpdateAgentTargetAssignments(agent, now, *policy, servicesByID)
-		}
-		return approvedManagedSystemUpdateAgentTargetAssignments(agent, now, *policy, reportedHosts)
-	}
-	return approvedLegacySystemUpdateAgentTargetAssignments(agent, now, reportedHosts)
-}
-
-func approvedLegacySystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time, reportedHostStatus systemUpdateReportedHostSnapshot) map[string]systemUpdateApprovedTarget {
-	configuredManaged := capabilityStringSlice(agent.Capabilities["managed_targets"])
-	configuredModes := capabilityStringMap(agent.Capabilities["deployment_modes"])
-	configuredHosts := capabilityStringMap(agent.Capabilities["target_hosts"])
-	reportedManaged := capabilityStringSlice(agent.ReportedCapabilities["managed_targets"])
-	reportedModes := capabilityStringMap(agent.ReportedCapabilities["deployment_modes"])
-	reportedHosts := capabilityStringMap(agent.ReportedCapabilities["target_hosts"])
-	reportedVersions := capabilityStringMap(agent.ReportedCapabilities["deployed_versions"])
-	if len(configuredHosts) == 0 || len(reportedHosts) == 0 {
+	if policy == nil || systemUpdateAgentTransportMode(agent) != store.SystemUpdateTransportPullV2 {
 		return map[string]systemUpdateApprovedTarget{}
 	}
-	reportedSet := make(map[string]bool, len(reportedManaged))
-	for _, targetID := range reportedManaged {
-		reportedSet[targetID] = true
-	}
-	approved := make(map[string]systemUpdateApprovedTarget)
-	for _, targetID := range configuredManaged {
-		configuredMode := strings.ToLower(strings.TrimSpace(configuredModes[targetID]))
-		reportedMode := strings.ToLower(strings.TrimSpace(reportedModes[targetID]))
-		if !reportedSet[targetID] || configuredMode != reportedMode || (configuredMode != "systemd" && configuredMode != "docker") {
-			continue
-		}
-		configuredHost, configured := configuredHosts[targetID]
-		reportedHost, reported := reportedHosts[targetID]
-		if !configured || !reported || configuredHost != reportedHost || !validSystemUpdateCapabilityIdentifier(configuredHost) {
-			continue
-		}
-		hostID := configuredHost
-		if !validSystemUpdateCapabilityIdentifier(hostID) {
-			continue
-		}
-		approved[targetID] = systemUpdateApprovedTarget{
-			DeploymentMode: configuredMode,
-			CurrentVersion: strings.TrimSpace(reportedVersions[targetID]),
-			Host:           reportedHostStatus.status(hostID, now),
-		}
-	}
-	return approved
-}
-
-func approvedManagedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time, policy store.UpdaterPolicy, reportedHostStatus systemUpdateReportedHostSnapshot) map[string]systemUpdateApprovedTarget {
-	appliedRevision, policyStatus, _ := systemUpdateManagedPolicyReport(agent)
-	policyApplied := appliedRevision == policy.ProjectionRevision && policyStatus == "applied"
-	reportedManaged := capabilityStringSlice(agent.ReportedCapabilities["managed_targets"])
-	reportedModes := capabilityStringMap(agent.ReportedCapabilities["deployment_modes"])
-	reportedHosts := capabilityStringMap(agent.ReportedCapabilities["target_hosts"])
-	reportedVersions := capabilityStringMap(agent.ReportedCapabilities["deployed_versions"])
-	reportedSet := make(map[string]bool, len(reportedManaged))
-	for _, targetID := range reportedManaged {
-		reportedSet[targetID] = true
-	}
-	hosts := make(map[string]store.UpdaterPolicyHost, len(policy.Hosts))
-	for _, host := range policy.Hosts {
-		hosts[host.HostID] = host
-	}
-	approved := make(map[string]systemUpdateApprovedTarget, len(policy.Targets))
-	for _, target := range policy.Targets {
-		hostPolicy, ok := hosts[target.HostID]
-		if !ok {
-			continue
-		}
-		host := reportedHostStatus.status(target.HostID, now)
-		host.Name = hostPolicy.Name
-		entry := systemUpdateApprovedTarget{
-			DeploymentMode: target.DeploymentMode, CurrentVersion: strings.TrimSpace(reportedVersions[target.TargetID]),
-			ServiceType: target.ServiceType, Host: host, PolicyManaged: true,
-		}
-		switch {
-		case policyStatus == "failed":
-			entry.PolicyBlockedReason = "updater_policy_failed"
-		case !policyApplied:
-			entry.PolicyBlockedReason = "updater_policy_pending"
-		case !reportedSet[target.TargetID] ||
-			strings.ToLower(strings.TrimSpace(reportedModes[target.TargetID])) != target.DeploymentMode ||
-			strings.TrimSpace(reportedHosts[target.TargetID]) != target.HostID:
-			entry.PolicyBlockedReason = "updater_policy_mismatch"
-		default:
-			entry.PolicyReady = true
-		}
-		approved[target.TargetID] = entry
-	}
-	return approved
+	return approvedPullSystemUpdateAgentTargetAssignments(agent, now, *policy, servicesByID)
 }
 
 func approvedPullSystemUpdateAgentTargetAssignments(
@@ -2134,94 +1822,6 @@ func approvedPullSystemUpdateAgentTargetAssignments(
 	return approved
 }
 
-func reportedSystemUpdateAgentTargetAssignments(agent store.RegisteredService, now time.Time) map[string]systemUpdateApprovedTarget {
-	reportedManaged := capabilityStringSlice(agent.ReportedCapabilities["managed_targets"])
-	reportedModes := capabilityStringMap(agent.ReportedCapabilities["deployment_modes"])
-	reportedHosts := capabilityStringMap(agent.ReportedCapabilities["target_hosts"])
-	reportedVersions := capabilityStringMap(agent.ReportedCapabilities["deployed_versions"])
-	reportedHostStatus := newSystemUpdateReportedHostSnapshot(agent)
-	approved := make(map[string]systemUpdateApprovedTarget, len(reportedManaged))
-	for _, targetID := range reportedManaged {
-		if !validSystemUpdateCapabilityIdentifier(targetID) {
-			continue
-		}
-		mode := strings.ToLower(strings.TrimSpace(reportedModes[targetID]))
-		if mode != "systemd" && mode != "docker" {
-			continue
-		}
-		hostID := strings.TrimSpace(reportedHosts[targetID])
-		if !validSystemUpdateCapabilityIdentifier(hostID) {
-			continue
-		}
-		approved[targetID] = systemUpdateApprovedTarget{
-			DeploymentMode: mode, CurrentVersion: strings.TrimSpace(reportedVersions[targetID]),
-			Host: reportedHostStatus.status(hostID, now), PolicyManaged: true, PolicyReady: true,
-		}
-	}
-	return approved
-}
-
-type systemUpdateReportedHostSnapshot struct {
-	updaterID                string
-	names                    map[string]string
-	sshClientPublicKeys      map[string]string
-	sshClientKeyFingerprints map[string]string
-	checkedAt                map[string]string
-	statuses                 map[string]string
-	codes                    map[string]string
-}
-
-func newSystemUpdateReportedHostSnapshot(agent store.RegisteredService) systemUpdateReportedHostSnapshot {
-	rawClientKeys := capabilityStringMap(agent.ReportedCapabilities["ssh_client_public_keys"])
-	clientKeys := make(map[string]string, len(rawClientKeys))
-	clientFingerprints := make(map[string]string, len(rawClientKeys))
-	for hostID, raw := range rawClientKeys {
-		if !validSystemUpdateCapabilityIdentifier(hostID) {
-			continue
-		}
-		key, err := parseUpdaterED25519PublicKey(raw)
-		if err != nil {
-			continue
-		}
-		clientKeys[hostID] = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
-		clientFingerprints[hostID] = ssh.FingerprintSHA256(key)
-	}
-	return systemUpdateReportedHostSnapshot{
-		updaterID:                agent.ServiceID,
-		names:                    capabilityStringMap(agent.ReportedCapabilities["host_names"]),
-		sshClientPublicKeys:      clientKeys,
-		sshClientKeyFingerprints: clientFingerprints,
-		checkedAt:                capabilityStringMap(agent.ReportedCapabilities["host_checked_at"]),
-		statuses:                 capabilityStringMap(agent.ReportedCapabilities["host_statuses"]),
-		codes:                    capabilityStringMap(agent.ReportedCapabilities["host_codes"]),
-	}
-}
-
-func (snapshot systemUpdateReportedHostSnapshot) status(hostID string, now time.Time) systemUpdateHostResponse {
-	host := systemUpdateHostResponse{HostID: hostID, Name: hostID, UpdaterID: snapshot.updaterID, Reachability: "unknown"}
-	if name := strings.TrimSpace(snapshot.names[hostID]); validSystemUpdateHostDisplayName(name) {
-		host.Name = name
-	}
-	host.SSHClientPublicKey = snapshot.sshClientPublicKeys[hostID]
-	host.SSHClientKeyFingerprint = snapshot.sshClientKeyFingerprints[hostID]
-	checkedAt, checked := parseSystemUpdateHostCheckedAt(snapshot.checkedAt[hostID], now)
-	if checkedAt != nil {
-		host.CheckedAt = checkedAt
-	}
-	if !checked {
-		return host
-	}
-	status := strings.ToLower(strings.TrimSpace(snapshot.statuses[hostID]))
-	if status != "reachable" && status != "unreachable" {
-		return host
-	}
-	host.Reachability = status
-	if status == "unreachable" {
-		host.Code = allowedSystemUpdateHostCode(snapshot.codes[hostID])
-	}
-	return host
-}
-
 func systemUpdateManagedPolicyReport(agent store.RegisteredService) (int64, string, string) {
 	revision, _ := capabilityInt64(agent.ReportedCapabilities["policy_revision"])
 	status := strings.ToLower(strings.TrimSpace(capabilityString(agent.ReportedCapabilities["policy_status"])))
@@ -2236,19 +1836,6 @@ func systemUpdateManagedPolicyReport(agent store.RegisteredService) (int64, stri
 		errorCode = ""
 	}
 	return revision, status, errorCode
-}
-
-func systemUpdateSSHClientKeys(reported systemUpdateReportedHostSnapshot, allowedHostIDs map[string]bool) (map[string]string, map[string]string) {
-	keys := make(map[string]string, len(allowedHostIDs))
-	fingerprints := make(map[string]string, len(allowedHostIDs))
-	for hostID, key := range reported.sshClientPublicKeys {
-		if !allowedHostIDs[hostID] || !validSystemUpdateCapabilityIdentifier(hostID) {
-			continue
-		}
-		keys[hostID] = key
-		fingerprints[hostID] = reported.sshClientKeyFingerprints[hostID]
-	}
-	return keys, fingerprints
 }
 
 func capabilityInt64(value any) (int64, bool) {
@@ -2287,33 +1874,10 @@ func capabilityString(value any) string {
 
 func validSystemUpdatePolicyErrorCode(value string) bool {
 	switch value {
-	case "", "policy_fetch_failed", "policy_invalid", "ssh_identity_failed", "ssh_connectivity_failed", "policy_snapshot_failed", "coordinator_start_failed", "active_job_pending":
+	case "", "policy_fetch_failed", "policy_invalid", "policy_snapshot_failed", "coordinator_start_failed", "active_job_pending":
 		return true
 	default:
 		return false
-	}
-}
-
-func parseSystemUpdateHostCheckedAt(raw string, now time.Time) (*time.Time, bool) {
-	checkedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw))
-	if err != nil || checkedAt.After(now.Add(systemUpdateHostClockSkew)) {
-		return nil, false
-	}
-	checkedAt = checkedAt.UTC()
-	age := now.Sub(checkedAt)
-	if age < 0 {
-		age = 0
-	}
-	return &checkedAt, age <= systemUpdateHostReachabilityTTL
-}
-
-func allowedSystemUpdateHostCode(raw string) string {
-	code := strings.ToLower(strings.TrimSpace(raw))
-	switch code {
-	case "ssh_timeout", "ssh_connection_refused", "ssh_auth_failed", "ssh_host_key_mismatch", "remote_helper_unavailable", "remote_config_invalid":
-		return code
-	default:
-		return ""
 	}
 }
 

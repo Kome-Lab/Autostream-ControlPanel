@@ -437,7 +437,7 @@ func TestRuntimeTokenRotationHTTPFencesEveryUpdaterIdentityMutation(t *testing.T
 				response = fixture.publicRequest(
 					t,
 					http.MethodPost,
-					"/api/node-agent/configure/stage",
+					"/services/host-agent/runtime-identity/stage",
 					`{"nodeId":"host-agent-a","configureToken":"`+
 						configureToken+`"}`,
 				)
@@ -451,7 +451,7 @@ func TestRuntimeTokenRotationHTTPFencesEveryUpdaterIdentityMutation(t *testing.T
 				response = fixture.publicRequest(
 					t,
 					http.MethodPost,
-					"/api/node-agent/configure/activate",
+					"/services/host-agent/runtime-identity/activate",
 					`{"nodeId":"host-agent-a","configurationId":"`+
 						staged.Token.ID+`","activationToken":"`+
 						staged.ActivationToken+`"}`,
@@ -653,7 +653,7 @@ func TestRuntimeTokenRotationHTTPEmergencyTerminalAllowsManualIdentityRecovery(t
 	staleConfigure := fixture.publicRequest(
 		t,
 		http.MethodPost,
-		"/api/node-agent/configure/stage",
+		"/services/host-agent/runtime-identity/stage",
 		`{"nodeId":"host-agent-a","configureToken":"`+
 			preEmergencyConfigureToken+`"}`,
 	)
@@ -1130,11 +1130,12 @@ func newRuntimeTokenRotationHTTPFixtureWithHeartbeatClock(
 		PollIntervalSeconds:       15,
 		HeartbeatIntervalSeconds:  30,
 		Targets: []store.UpdaterPolicyTarget{{
-			TargetID:       "worker-a",
-			ServiceID:      "worker-a",
-			ServiceType:    "worker",
-			HostID:         "host-a",
-			DeploymentMode: "systemd",
+			TargetID:        "worker-a",
+			ServiceID:       "worker-a",
+			ServiceType:     "worker",
+			HostID:          "host-a",
+			DeploymentMode:  "systemd",
+			LocalListenPort: 18081,
 		}},
 	}
 	savedPolicy, err := policies.SavePullUpdaterPolicy(
@@ -1303,9 +1304,12 @@ func registerRuntimeTokenRotationAgentForTest(
 		t.Context(),
 		token,
 		store.ServiceRegistration{
-			ServiceID:   serviceID,
-			ServiceType: "update_agent",
-			ServiceName: serviceID,
+			ServiceID:       serviceID,
+			ServiceType:     "update_agent",
+			ServiceName:     serviceID,
+			TransportMode:   store.SystemUpdateTransportPullV2,
+			ExecutionHostID: executionHostID,
+			OwnershipEpoch:  ownershipEpoch,
 		},
 	); err != nil {
 		t.Fatal(err)

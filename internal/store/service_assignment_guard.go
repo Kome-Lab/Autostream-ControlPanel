@@ -53,7 +53,6 @@ type StreamStartAssignmentClaim struct {
 type StreamArchiveAuthority struct {
 	RunID     string
 	StartedAt *time.Time
-	Legacy    bool
 }
 
 type StreamStartOwnershipClaim struct {
@@ -102,15 +101,12 @@ var (
 type streamAssignmentProtection struct {
 	Stream
 	ArchiveRetryPending  bool
-	LegacyArchivePending bool
 	HasArchiveReport     bool
 	HasRecordingArtifact bool
 }
 
 const archiveRetryAssignmentGuardLogMessage = "archive retry assignment guard pending"
 const archiveRetryAssignmentGuardClosedLogMessage = "archive retry assignment guard closed"
-const legacyArchiveAssignmentGuardLogMessage = "legacy archive assignment guard pending"
-const legacyArchiveAssignmentGuardClosedLogMessage = "legacy archive assignment guard closed"
 
 // streamLogGuardPendingCondition treats stream_logs as the append-only history
 // enforced by migration 077. A pending marker remains authoritative until a
@@ -140,9 +136,6 @@ func (state streamAssignmentProtection) protected() bool {
 	}
 	if state.ArchiveRetryPending {
 		return true
-	}
-	if state.LegacyArchivePending {
-		return state.ArchiveReportedAt == nil && (status == "completed" || status == "ready")
 	}
 	if strings.TrimSpace(state.ArchiveProfileID) == "" {
 		return false

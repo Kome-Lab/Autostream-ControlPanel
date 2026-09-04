@@ -530,19 +530,14 @@ VALUES (?, ?, ?, ?, 'primary', NULLIF(?, ''), ?)`, assignmentID, request.StreamI
 	archiveRunID := ""
 	var archiveStartedAt any
 	if request.ArchiveEnabled {
-		encoder := actual["encoder_recorder"]
-		if capabilityTrue(encoder.ReportedCapabilities, "archive_runs") {
-			startedAt := request.ArchiveStartedAt.UTC().Truncate(time.Microsecond)
-			if startedAt.IsZero() {
-				startedAt = now
-			}
-			archiveRunID = StreamArchiveRunIDForStart(startedAt)
-			archiveStartedAt = startedAt
-			authority.RunID = archiveRunID
-			authority.StartedAt = cloneTimePtr(&startedAt)
-		} else {
-			authority.Legacy = true
+		startedAt := request.ArchiveStartedAt.UTC().Truncate(time.Microsecond)
+		if startedAt.IsZero() {
+			startedAt = now
 		}
+		archiveRunID = StreamArchiveRunIDForStart(startedAt)
+		archiveStartedAt = startedAt
+		authority.RunID = archiveRunID
+		authority.StartedAt = cloneTimePtr(&startedAt)
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE streams
 SET status = 'starting', archive_run_id = ?, archive_started_at = ?, archive_reported_at = NULL, updated_at = ?
@@ -553,15 +548,6 @@ WHERE id = ? AND status = ? AND updated_at = ? AND deleted_at IS NULL`, archiveR
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 	}
-	if err := closeMariaDBStreamLogGuard(ctx, tx, request.StreamID, legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage, now); err != nil {
-		return ClaimedStreamStart{}, err
-	}
-	if authority.Legacy {
-		if err := insertMariaDBStreamLogGuard(ctx, tx, request.StreamID, legacyArchiveAssignmentGuardLogMessage, now); err != nil {
-			return ClaimedStreamStart{}, err
-		}
-	}
-
 	claimedRows, err := discoverMariaDBAssignmentsForStream(ctx, tx, request.StreamID)
 	if err != nil {
 		return ClaimedStreamStart{}, err
@@ -650,7 +636,7 @@ FROM stream_service_assignments WHERE id = ? FOR UPDATE`, assignment.AssignmentI
 	if !strings.EqualFold(strings.TrimSpace(stream.Status), "starting") {
 		return stream, false, nil
 	}
-	if strings.TrimSpace(claim.StreamIdentity) == "" || streamStartOwnershipIdentity(stream) != claim.StreamIdentity || !stream.UpdatedAt.Equal(claim.StreamUpdatedAt) || !archiveAuthorityMatchesClaim(stream, claim.Archive) || state.LegacyArchivePending != claim.Archive.Legacy {
+	if strings.TrimSpace(claim.StreamIdentity) == "" || streamStartOwnershipIdentity(stream) != claim.StreamIdentity || !stream.UpdatedAt.Equal(claim.StreamUpdatedAt) || !archiveAuthorityMatchesClaim(stream, claim.Archive) {
 		return stream, false, ErrServiceAssignmentConflict
 	}
 	for _, assignment := range claims {
@@ -736,14 +722,12 @@ FOR UPDATE`
 	state := streamAssignmentProtection{Stream: stream}
 	if err := tx.QueryRowContext(ctx, `SELECT
 EXISTS(SELECT 1 FROM service_stream_events WHERE stream_id = s.id AND event_type = 'archive.artifacts.reported'),
-`+archiveRecordingArtifactExistsCondition+`,
-	`+streamLogGuardPendingCondition+`,
+	`+archiveRecordingArtifactExistsCondition+`,
 	`+streamLogGuardPendingCondition+`
 FROM streams s WHERE s.id = ?`,
 		archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage,
-		legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage,
 		streamID,
-	).Scan(&state.HasArchiveReport, &state.HasRecordingArtifact, &state.ArchiveRetryPending, &state.LegacyArchivePending); err != nil {
+	).Scan(&state.HasArchiveReport, &state.HasRecordingArtifact, &state.ArchiveRetryPending); err != nil {
 		return streamAssignmentProtection{}, err
 	}
 	return state, nil
@@ -986,15 +970,13 @@ WHERE s.id = ? AND s.deleted_at IS NULL`
 	state := streamAssignmentProtection{Stream: stream}
 	if err := tx.QueryRowContext(ctx, `SELECT
 EXISTS(SELECT 1 FROM service_stream_events WHERE stream_id = s.id AND event_type = 'archive.artifacts.reported'),
-`+archiveRecordingArtifactExistsCondition+`,
-	`+streamLogGuardPendingCondition+`,
+	`+archiveRecordingArtifactExistsCondition+`,
 	`+streamLogGuardPendingCondition+`
 FROM streams s WHERE s.id = ?`,
 		archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage,
-		legacyArchiveAssignmentGuardLogMessage, legacyArchiveAssignmentGuardClosedLogMessage,
 		streamID,
 	).Scan(
-		&state.HasArchiveReport, &state.HasRecordingArtifact, &state.ArchiveRetryPending, &state.LegacyArchivePending,
+		&state.HasArchiveReport, &state.HasRecordingArtifact, &state.ArchiveRetryPending,
 	); err != nil {
 		return streamAssignmentProtection{}, err
 	}

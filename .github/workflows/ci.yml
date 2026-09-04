@@ -147,6 +147,31 @@ jobs:
           echo "Bundle 4 semantic test witnesses PASS: 5/5, zero denominator=0"
       - name: Verify embedded Updater runtime is absent
         run: bash scripts/ci/verify-no-embedded-updater.sh
+      - name: Test Bundle 8B physical EOL migration against MariaDB
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+        run: |
+          set -euo pipefail
+          mapfile -t discovered < <(
+            go test ./internal/database -list '^TestBundle8BPhysicalEOLMigrationMariaDB$' |
+              LC_ALL=C grep '^Test'
+          )
+          if [[ "${#discovered[@]}" -ne 1 || "${discovered[0]}" != "TestBundle8BPhysicalEOLMigrationMariaDB" ]]; then
+            echo "Bundle 8B MariaDB witness denominator mismatch: ${#discovered[@]}/1" >&2
+            exit 1
+          fi
+          result="${RUNNER_TEMP}/bundle8b-physical-eol-mariadb.json"
+          go test ./internal/database \
+            -run '^TestBundle8BPhysicalEOLMigrationMariaDB$' \
+            -count=1 \
+            -json | tee "${result}"
+          if jq -e 'select(.Action == "skip" and .Test == "TestBundle8BPhysicalEOLMigrationMariaDB")' "${result}" >/dev/null; then
+            echo "Bundle 8B MariaDB witness was skipped" >&2
+            exit 1
+          fi
+          jq -e 'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and .Test == "TestBundle8BPhysicalEOLMigrationMariaDB")' "${result}" >/dev/null
+          jq -e 'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and ((.Test // "") == ""))' "${result}" >/dev/null
       - run: go test ./...
       - name: Test MariaDB persistence
         shell: bash

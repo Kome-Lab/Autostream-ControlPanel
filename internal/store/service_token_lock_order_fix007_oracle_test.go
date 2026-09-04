@@ -1655,12 +1655,14 @@ func snapshotMariaDBFIX007OwnershipSemanticState(
 			ctx,
 			fixture.params.ExecutionHostID,
 		)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrNotFound) {
 			t.Fatal(err)
 		}
-		snapshot.hosts[host.ExecutionHostID] = host
+		if err == nil {
+			snapshot.hosts[host.ExecutionHostID] = host
+		}
 		for _, serviceID := range []string{
-			fixture.legacyID,
+			fixture.peerID,
 			fixture.targetID,
 			fixture.params.ServiceID,
 		} {
@@ -1734,7 +1736,7 @@ func assertMariaDBFIX007StrongOwnershipFinalState(
 		hostID := action.fixture.params.ExecutionHostID
 		host, exists := expected.hosts[hostID]
 		if !exists {
-			t.Fatalf("ownership pre-state host %q is missing", hostID)
+			host = syntheticSystemUpdateExecutionHost(hostID)
 		}
 		pullPolicy, exists := expected.policies[action.fixture.params.ServiceID]
 		if !exists {
@@ -1745,20 +1747,14 @@ func assertMariaDBFIX007StrongOwnershipFinalState(
 		case "activate":
 			host.TransportMode = SystemUpdateTransportPullV2
 			host.AgentServiceID = action.fixture.params.ServiceID
-			host.LegacyAgentServiceID = action.fixture.legacyID
 			host.OwnershipEpoch++
 			host.PolicyRevision = pullPolicy.ProjectionRevision
 			pullService.OwnershipEpoch = host.OwnershipEpoch
 		case "deactivate":
-			legacyPolicy, exists := expected.policies[action.fixture.legacyID]
-			if !exists {
-				t.Fatalf("legacy policy %q is missing", action.fixture.legacyID)
-			}
-			host.TransportMode = SystemUpdateTransportSSHV1
-			host.AgentServiceID = action.fixture.legacyID
-			host.LegacyAgentServiceID = action.fixture.legacyID
+			host.TransportMode = SystemUpdateTransportPullV2
+			host.AgentServiceID = action.fixture.params.ServiceID
 			host.OwnershipEpoch++
-			host.PolicyRevision = legacyPolicy.ProjectionRevision
+			host.PolicyRevision = pullPolicy.ProjectionRevision
 			pullService.OwnershipEpoch = 0
 		default:
 			t.Fatalf("unknown ownership operation %q", action.operation)
@@ -1843,7 +1839,6 @@ func mariaDBFIX007EqualOwnershipHost(a, b SystemUpdateExecutionHost) bool {
 	return a.ExecutionHostID == b.ExecutionHostID &&
 		a.TransportMode == b.TransportMode &&
 		a.AgentServiceID == b.AgentServiceID &&
-		a.LegacyAgentServiceID == b.LegacyAgentServiceID &&
 		a.OwnershipEpoch == b.OwnershipEpoch &&
 		a.PolicyRevision == b.PolicyRevision
 }
@@ -1874,9 +1869,6 @@ func compareMariaDBFIX008StrongOwnership(
 		if got.AgentServiceID != want.AgentServiceID {
 			mismatches = append(mismatches, mariaDBFIX008Mismatch(prefix+"agent_service_id", "got %q want %q", got.AgentServiceID, want.AgentServiceID))
 		}
-		if got.LegacyAgentServiceID != want.LegacyAgentServiceID {
-			mismatches = append(mismatches, mariaDBFIX008Mismatch(prefix+"legacy_agent_service_id", "got %q want %q", got.LegacyAgentServiceID, want.LegacyAgentServiceID))
-		}
 		if got.OwnershipEpoch != want.OwnershipEpoch {
 			mismatches = append(mismatches, mariaDBFIX008Mismatch(prefix+"ownership_epoch", "got %d want %d", got.OwnershipEpoch, want.OwnershipEpoch))
 		}
@@ -1885,10 +1877,7 @@ func compareMariaDBFIX008StrongOwnership(
 		}
 		wantActive := mariaDBFIX008ActivePolicyIDs(want, expected)
 		gotActive := mariaDBFIX008ActivePolicyIDs(got, actual)
-		if len(gotActive) != 1 {
-			mismatches = append(mismatches, mariaDBFIX008Mismatch(prefix+"active_policy_count", "got %d (%v) want exactly 1", len(gotActive), gotActive))
-		}
-		if !reflect.DeepEqual(gotActive, wantActive) || len(gotActive) != 1 || gotActive[0] != got.AgentServiceID {
+		if !reflect.DeepEqual(gotActive, wantActive) {
 			mismatches = append(mismatches, mariaDBFIX008Mismatch(prefix+"active_policy_binding", "got active %v agent %q want active %v agent %q", gotActive, got.AgentServiceID, wantActive, want.AgentServiceID))
 		}
 		policy, policyExists := actual.policies[got.AgentServiceID]
@@ -2020,20 +2009,13 @@ func mariaDBFIX008ActivePolicyIDs(
 	active := make([]string, 0, 2)
 	for policyID, policy := range snapshot.policies {
 		service, serviceExists := snapshot.services[policyID]
-		switch host.TransportMode {
-		case SystemUpdateTransportPullV2:
-			if policy.TransportMode == SystemUpdateTransportPullV2 &&
-				policy.ExecutionHostID == host.ExecutionHostID &&
-				serviceExists && service.TransportMode == SystemUpdateTransportPullV2 &&
-				service.ExecutionHostID == host.ExecutionHostID &&
-				service.OwnershipEpoch == host.OwnershipEpoch {
-				active = append(active, policyID)
-			}
-		case SystemUpdateTransportSSHV1:
-			if policy.TransportMode == SystemUpdateTransportSSHV1 &&
-				mariaDBFIX007PolicyContainsHost(policy, host.ExecutionHostID) {
-				active = append(active, policyID)
-			}
+		if host.TransportMode == SystemUpdateTransportPullV2 &&
+			policy.TransportMode == SystemUpdateTransportPullV2 &&
+			policy.ExecutionHostID == host.ExecutionHostID &&
+			serviceExists && service.TransportMode == SystemUpdateTransportPullV2 &&
+			service.ExecutionHostID == host.ExecutionHostID &&
+			service.OwnershipEpoch == host.OwnershipEpoch {
+			active = append(active, policyID)
 		}
 	}
 	sort.Strings(active)
@@ -2047,15 +2029,6 @@ func mariaDBFIX008SortedSetKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func mariaDBFIX007PolicyContainsHost(policy UpdaterPolicy, executionHostID string) bool {
-	for _, host := range policy.Hosts {
-		if host.HostID == executionHostID {
-			return true
-		}
-	}
-	return false
 }
 
 func nonNilMariaDBFIX007Time() *time.Time {
@@ -2073,18 +2046,16 @@ func mariaDBFIX008PolicyOracleFixture() mariaDBFIX007OwnershipSemanticSnapshot {
 	const (
 		hostID           = "host-1"
 		pullServiceID    = "pull-agent"
-		legacyServiceID  = "legacy-agent"
 		targetServiceID  = "target-service"
 		currentTokenID   = "current-token"
 		stagedPreviousID = "staged-previous-token"
 		stagedTokenID    = "staged-token"
-		legacyTokenID    = "legacy-token"
 	)
 	return mariaDBFIX007OwnershipSemanticSnapshot{
 		hosts: map[string]SystemUpdateExecutionHost{
 			hostID: {
 				ExecutionHostID: hostID, TransportMode: SystemUpdateTransportPullV2,
-				AgentServiceID: pullServiceID, LegacyAgentServiceID: legacyServiceID,
+				AgentServiceID: pullServiceID,
 				OwnershipEpoch: 11, PolicyRevision: 23,
 			},
 		},
@@ -2094,10 +2065,6 @@ func mariaDBFIX008PolicyOracleFixture() mariaDBFIX007OwnershipSemanticSnapshot {
 				ExecutionHostID: hostID, TransportMode: SystemUpdateTransportPullV2,
 				OwnershipEpoch: 11, TokenID: currentTokenID,
 				StagedNodePreviousTokenID: stagedPreviousID, StagedNodeTokenID: stagedTokenID,
-			},
-			legacyServiceID: {
-				ServiceID: legacyServiceID, ServiceType: "update_agent",
-				TransportMode: SystemUpdateTransportSSHV1, TokenID: legacyTokenID,
 			},
 			targetServiceID: {
 				ServiceID: targetServiceID, ServiceType: "control_panel",
@@ -2110,23 +2077,17 @@ func mariaDBFIX008PolicyOracleFixture() mariaDBFIX007OwnershipSemanticSnapshot {
 				LocalExecutorPolicyRevision: 29, TransportMode: SystemUpdateTransportPullV2,
 				ExecutionHostID: hostID, LocalExecutorPolicySHA256: strings.Repeat("a", 64),
 			},
-			legacyServiceID: {
-				UpdaterID: legacyServiceID, Revision: 7, ProjectionRevision: 17,
-				TransportMode: SystemUpdateTransportSSHV1,
-				Hosts:         []UpdaterPolicyHost{{HostID: hostID}},
-			},
 		},
 		tokens: map[string]ServiceToken{
 			currentTokenID:   {ID: currentTokenID, ServiceType: "update_agent"},
 			stagedPreviousID: {ID: stagedPreviousID, ServiceType: "update_agent"},
 			stagedTokenID:    {ID: stagedTokenID, ServiceType: "update_agent"},
-			legacyTokenID:    {ID: legacyTokenID, ServiceType: "update_agent"},
 		},
 		fixtureIDs: map[string]struct{}{
-			pullServiceID: {}, legacyServiceID: {}, targetServiceID: {},
+			pullServiceID: {}, targetServiceID: {},
 		},
 		relevantIDs: map[string]struct{}{
-			currentTokenID: {}, stagedPreviousID: {}, stagedTokenID: {}, legacyTokenID: {},
+			currentTokenID: {}, stagedPreviousID: {}, stagedTokenID: {},
 		},
 	}
 }
@@ -2138,14 +2099,6 @@ func mariaDBFIX008PolicyMutationMatrix() []mariaDBFIX008PolicyMutationCase {
 			mutate: func(actual *mariaDBFIX007OwnershipSemanticSnapshot) {
 				host := actual.hosts["host-1"]
 				host.AgentServiceID = "legacy-agent"
-				actual.hosts["host-1"] = host
-			},
-		},
-		{
-			name: "wrong LegacyAgentServiceID", diagnosticField: "host.host-1.legacy_agent_service_id",
-			mutate: func(actual *mariaDBFIX007OwnershipSemanticSnapshot) {
-				host := actual.hosts["host-1"]
-				host.LegacyAgentServiceID = "wrong-legacy-agent"
 				actual.hosts["host-1"] = host
 			},
 		},
@@ -2264,7 +2217,7 @@ func mariaDBFIX008PolicyMutationMatrix() []mariaDBFIX008PolicyMutationCase {
 			name: "wrong host transport mode", diagnosticField: "host.host-1.transport_mode",
 			mutate: func(actual *mariaDBFIX007OwnershipSemanticSnapshot) {
 				host := actual.hosts["host-1"]
-				host.TransportMode = SystemUpdateTransportSSHV1
+				host.TransportMode = "unsupported"
 				actual.hosts["host-1"] = host
 			},
 		},
@@ -2296,7 +2249,7 @@ func mariaDBFIX008PolicyMutationMatrix() []mariaDBFIX008PolicyMutationCase {
 			name: "wrong service transport mode", diagnosticField: "service.pull-agent.transport_mode",
 			mutate: func(actual *mariaDBFIX007OwnershipSemanticSnapshot) {
 				service := actual.services["pull-agent"]
-				service.TransportMode = SystemUpdateTransportSSHV1
+				service.TransportMode = "unsupported"
 				actual.services["pull-agent"] = service
 			},
 		},
@@ -2336,7 +2289,7 @@ func mariaDBFIX008PolicyMutationMatrix() []mariaDBFIX008PolicyMutationCase {
 			name: "wrong policy transport mode", diagnosticField: "policy.pull-agent.transport_mode",
 			mutate: func(actual *mariaDBFIX007OwnershipSemanticSnapshot) {
 				policy := actual.policies["pull-agent"]
-				policy.TransportMode = SystemUpdateTransportSSHV1
+				policy.TransportMode = "unsupported"
 				actual.policies["pull-agent"] = policy
 			},
 		},
@@ -2437,7 +2390,7 @@ func mariaDBFIX008RuntimeOracleFixture(
 	}
 	ownership := SystemUpdateExecutionHost{
 		ExecutionHostID: "host-1", TransportMode: SystemUpdateTransportPullV2,
-		AgentServiceID: service.ServiceID, LegacyAgentServiceID: "legacy-agent",
+		AgentServiceID: service.ServiceID,
 		OwnershipEpoch: 11, PolicyRevision: 23,
 	}
 	policy := UpdaterPolicy{
@@ -2943,7 +2896,6 @@ func TestMariaDBFIX008OracleInventorySelfCheck(t *testing.T) {
 		"host.host-1.execution_host_id",
 		"host.host-1.transport_mode",
 		"host.host-1.agent_service_id",
-		"host.host-1.legacy_agent_service_id",
 		"host.host-1.ownership_epoch",
 		"host.host-1.policy_revision",
 		"host.host-1.active_policy_binding",

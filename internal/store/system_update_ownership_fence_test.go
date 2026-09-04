@@ -46,22 +46,16 @@ func TestMemorySystemUpdateJobSnapshotsExecutionHostOwnership(t *testing.T) {
 	}
 }
 
-func TestMemorySystemUpdateLegacyHostKeepsSSHV1EpochZero(t *testing.T) {
+func TestMemorySystemUpdateUnownedHostRejectsJob(t *testing.T) {
 	updates := NewMemorySystemUpdateStore()
-	job := createOwnershipFenceJob(t, updates, "worker-legacy", "updater-central", "host-legacy", "legacy")
-	if job.TransportMode != SystemUpdateTransportSSHV1 || job.OwnershipEpoch != 0 || job.PolicyRevision != 0 {
-		t.Fatalf("legacy job ownership snapshot = %#v", job)
-	}
-	if _, _, err := updates.ClaimSystemUpdateJob(
-		t.Context(),
-		"updater-central",
-		"host-legacy",
-		"",
-		map[string]string{"worker-legacy": "systemd"},
-		time.Now().UTC(),
-		time.Minute,
-	); err != nil {
-		t.Fatalf("legacy claim err = %v", err)
+	if _, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
+		TargetID: "worker-unowned", TargetServiceType: "worker",
+		AgentServiceID: "updater-unowned", ExecutionHostID: "host-unowned",
+		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0",
+		Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: "unowned-host",
+		RequestedByUserID: "admin",
+	}); !errors.Is(err, ErrSystemUpdateOwnershipConflict) {
+		t.Fatalf("unowned host create err = %v", err)
 	}
 }
 

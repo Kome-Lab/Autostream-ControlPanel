@@ -420,9 +420,9 @@ func testVideoCoverClient(httpClient *http.Client, rawURL string) Client {
 		host = host[:index]
 	}
 	return Client{Config: Config{
-		Token: "cover-token", Timeout: 0,
+		Timeout:   0,
 		URLPolicy: netpolicy.ServiceURLPolicy{AllowedHosts: map[string]struct{}{host: {}}},
-	}, HTTP: httpClient}
+	}, HTTP: httpClient, RuntimeTokenResolver: func(store.RegisteredService) (string, error) { return "cover-token", nil }}
 }
 
 func testCoverDescriptor() MediaAssetDescriptor {

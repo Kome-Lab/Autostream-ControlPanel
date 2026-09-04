@@ -45,11 +45,13 @@ type SecretStore interface {
 	GetSecretValue(ctx context.Context, name string) (string, error)
 }
 
+const UpdaterGitHubReleaseTokenSecretName = "updater_github_release_token"
+
 var (
 	ErrUnknownSecret      = errors.New("unknown secret")
 	ErrInvalidSettings    = errors.New("invalid security settings")
 	ErrSecretKeyRequired  = errors.New("secret encryption key required")
-	allowedSecretNames    = []string{AppSMTPPasswordSecretName, AppTurnstileSecretName, "deepgram_api_key", "discord_bot_token", "google_drive_folder_id", "observability_token", "youtube_stream_key"}
+	allowedSecretNames    = []string{AppSMTPPasswordSecretName, AppTurnstileSecretName, UpdaterGitHubReleaseTokenSecretName, "deepgram_api_key", "discord_bot_token", "google_drive_folder_id", "observability_token", "youtube_stream_key"}
 	allowedSecretNameSet  = map[string]bool{}
 	defaultSecurityConfig = SecuritySettings{
 		PasswordMinLength:        12,

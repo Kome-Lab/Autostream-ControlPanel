@@ -60,7 +60,7 @@ func visualChangedFields(update streamvisual.Update) []string {
 	if update.HeaderTitleMode.Set || update.HeaderTitleValue.Set {
 		fields = append(fields, "header_title")
 	}
-	if update.DiscordTargetMode.Set || update.DiscordTargetPresetID.Set || update.DiscordTargetPresetRevision != nil || update.DiscordGuildID.Set || update.DiscordTextChannelID.Set || update.DiscordVoiceChannelID.Set {
+	if update.DiscordTarget.Set {
 		fields = append(fields, "discord_target")
 	}
 	if update.CoverSource.Set || update.CoverPresetID.Set || update.CoverAssetID.Set || update.CoverVariantID.Set || update.CoverStartActive != nil {
@@ -155,12 +155,9 @@ func (s *Server) beginVideoCoverGeneration(ctx context.Context, streamID string)
 
 func (s *Server) materializeVisualStartSnapshot(ctx context.Context, streamID string, assignments []store.RegisteredService, generation videocover.State, request *servicecall.StartRequest) error {
 	if request == nil || s.streamVisual == nil {
-		return nil
+		return streamvisual.ErrInvalidSettings
 	}
 	settings, err := s.streamVisual.Get(ctx, streamID)
-	if errors.Is(err, streamvisual.ErrNotFound) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -188,8 +185,6 @@ func (s *Server) materializeVisualStartSnapshot(ctx context.Context, streamID st
 	if customScene && !workerSupportsScene {
 		return streamvisual.ErrInvalidSettings
 	}
-	// Revision zero identifies a legacy stream that has no v2 visual row. Its
-	// default appearance stays on the exact omitted-field compatibility path.
 	if workerSupportsScene && settings.Revision > 0 {
 		appearance := &servicecall.SceneAppearance{
 			Generation: generation.JobGeneration, Revision: settings.Revision,
@@ -228,6 +223,29 @@ func (s *Server) materializeVisualStartSnapshot(ctx context.Context, streamID st
 			}
 		}
 		request.VideoCoverStart = start
+	}
+	return nil
+}
+
+func (s *Server) materializeDiscordStartTarget(ctx context.Context, streamID string, request *servicecall.StartRequest) error {
+	if request == nil || s.streamVisual == nil {
+		return streamvisual.ErrInvalidSettings
+	}
+	settings, err := s.streamVisual.Get(ctx, streamID)
+	if err != nil {
+		return err
+	}
+	if settings.DiscordSnapshotRevision == 0 {
+		return streamvisual.ErrInvalidSettings
+	}
+	request.DiscordTargetRevision = settings.DiscordSnapshotRevision
+	request.DiscordGuildID = ""
+	request.DiscordTextChannelID = ""
+	request.DiscordVoiceChannelID = ""
+	if settings.DiscordTargetMode == "manual" || settings.DiscordTargetMode == "preset" {
+		request.DiscordGuildID = settings.DiscordGuildID
+		request.DiscordTextChannelID = settings.DiscordTextChannelID
+		request.DiscordVoiceChannelID = settings.DiscordVoiceChannelID
 	}
 	return nil
 }

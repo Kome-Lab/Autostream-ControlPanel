@@ -382,7 +382,6 @@ func assertSystemdPortReconfigurationMariaDBSchema(t *testing.T, ctx context.Con
 	for _, expected := range []expectedColumn{
 		{"services", "applied_config_revision", "bigint", "bigint(20)", "NO", "1"},
 		{"services", "applied_config_sha256", "char", "char(71)", "YES", ""},
-		{"system_update_execution_hosts", "legacy_agent_service_id", "varchar", "varchar(128)", "YES", ""},
 		{"update_agent_policies", "projection_revision", "bigint", "bigint(20)", "NO", "1"},
 		{"update_agent_policies", "local_executor_policy_revision", "bigint", "bigint(20)", "NO", "0"},
 		{"system_update_jobs", "operation", "varchar", "varchar(32)", "NO", "software_update"},

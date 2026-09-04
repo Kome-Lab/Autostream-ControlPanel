@@ -1,13 +1,11 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { usePathname } from "next/navigation";
-import { apiGet, apiPut } from "@/lib/api/client";
+import { apiGet } from "@/lib/api/client";
 import {
   applyThemeToRoot,
-  buildUIPreferenceUpdate,
-  legacyThemeMigrationMode,
   readThemeMirror,
   safeUserUIPreference,
   uiPreferenceQueryKey,
@@ -35,15 +33,12 @@ const serverHydrated = () => false;
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
 	const pathname = usePathname();
-	const queryClient = useQueryClient();
   const bootstrapReady = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
   const bootstrap = useMemo(() => bootstrapReady
-    ? { preference: readThemeMirror(window.localStorage), legacyMode: legacyThemeMigrationMode(window.localStorage) }
-    : { preference: safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 }), legacyMode: null as UserColorMode | null },
+    ? readThemeMirror(window.localStorage)
+    : safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 }),
   [bootstrapReady]);
   const [preview, setPreview] = useState<SafeUserUIPreference | null>(null);
-  const [legacyMigrationFailed, setLegacyMigrationFailed] = useState(false);
-	const legacyMigrationAttempted = useRef(false);
   const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   const preferenceQuery = useQuery({
     queryKey: uiPreferenceQueryKey,
@@ -52,20 +47,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 		enabled: bootstrapReady && pathname.startsWith("/admin"),
   });
   const persistedPreference = useMemo(
-    () => preferenceQuery.data ? safeUserUIPreference(preferenceQuery.data) : bootstrap.preference,
-    [bootstrap.preference, preferenceQuery.data],
+    () => preferenceQuery.data ? safeUserUIPreference(preferenceQuery.data) : bootstrap,
+    [bootstrap, preferenceQuery.data],
   );
-	const legacyMigrationEligible = bootstrapReady
-		&& bootstrap.legacyMode !== null
-		&& preferenceQuery.data !== undefined
-		&& preferenceQuery.data.revision === 0
-		&& preferenceQuery.data.theme_id === "autostream"
-		&& preferenceQuery.data.color_mode === "system"
-		&& preferenceQuery.data.fallback !== true;
-	const legacyPreference = legacyMigrationEligible && !legacyMigrationFailed
-		? safeUserUIPreference({ theme_id: "autostream", color_mode: bootstrap.legacyMode ?? "system", revision: 0 })
-		: null;
-  const preference = preview ?? legacyPreference ?? persistedPreference;
+  const preference = preview ?? persistedPreference;
   const dark = preference.color_mode === "dark" || (preference.color_mode === "system" && systemDark);
 
   useEffect(() => {
@@ -75,18 +60,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     return () => media.removeEventListener("change", update);
   }, []);
 
-	useEffect(() => {
-		if (!legacyMigrationEligible || legacyMigrationFailed || legacyMigrationAttempted.current || !legacyPreference) return;
-		legacyMigrationAttempted.current = true;
-		void apiPut<UserUIPreference>("/account/preferences/ui", buildUIPreferenceUpdate(legacyPreference)).then((saved) => {
-			queryClient.setQueryData(uiPreferenceQueryKey, saved);
-		}).catch(() => {
-			// Do not auto-resend an ambiguous or rejected migration. Leaving the
-			// old key intact permits a later explicit page load to try again.
-			setLegacyMigrationFailed(true);
-		});
-	}, [legacyMigrationEligible, legacyMigrationFailed, legacyPreference, queryClient]);
-
   useEffect(() => {
 		if (!bootstrapReady) return;
     applyThemeToRoot(document.documentElement, preference, systemDark);
@@ -95,16 +68,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // On authenticated pages the DB-backed value is authoritative. Keep the
     // local mirror limited to pre-hydration bootstrap and never persist an
-    // unsaved preview. Public auth pages retain the legacy local-only toggle.
+    // unsaved preview.
 		if (!bootstrapReady) return;
     if (pathname.startsWith("/admin")) {
-			if (!preferenceQuery.data || (bootstrap.legacyMode !== null && (legacyMigrationEligible || legacyMigrationFailed))) return;
+			if (!preferenceQuery.data) return;
 			writeThemeMirror(window.localStorage, persistedPreference);
 			return;
 		}
-		if (bootstrap.legacyMode !== null && preview === null) return;
 		writeThemeMirror(window.localStorage, preference);
-	}, [bootstrap.legacyMode, bootstrapReady, legacyMigrationEligible, legacyMigrationFailed, pathname, persistedPreference, preference, preferenceQuery.data, preview]);
+	}, [bootstrapReady, pathname, persistedPreference, preference, preferenceQuery.data]);
 
   const previewPreference = useCallback((next: Partial<UserUIPreference>) => {
     setPreview((current) => safeUserUIPreference({ ...(current ?? persistedPreference), ...next }));

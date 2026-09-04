@@ -38,8 +38,8 @@
       "category": "hard-coded-user-facing-strings",
       "path": "web/src/features/nodes/node-registration-view.tsx",
       "matcher": "japanese-line",
-      "matchCount": 150,
-      "sha256": "50b9137772559c5c9001564e58be3cb9775bae0e9654ab5c9d3908a1e7177942",
+      "matchCount": 145,
+      "sha256": "729e323754923d67ea3a7a7becb52258435c3aa568a0a8d5a3190fd42d91aa1f",
       "disposition": "reviewed-later-owner",
       "ownerTask": "Node A3",
       "ownerMilestone": "V2_RC"
@@ -49,8 +49,8 @@
       "category": "missing-ja-en-keys",
       "path": "web/src/features/nodes/node-registration-view.tsx",
       "matcher": "japanese-line",
-      "matchCount": 150,
-      "sha256": "50b9137772559c5c9001564e58be3cb9775bae0e9654ab5c9d3908a1e7177942",
+      "matchCount": 145,
+      "sha256": "729e323754923d67ea3a7a7becb52258435c3aa568a0a8d5a3190fd42d91aa1f",
       "disposition": "reviewed-later-owner",
       "ownerTask": "Node A3",
       "ownerMilestone": "V2_RC"
@@ -61,7 +61,7 @@
       "path": "web/src/features/nodes/node-registration-view.tsx",
       "matcher": "danger-confirm-line",
       "matchCount": 5,
-      "sha256": "01e75d81c06eaa6c7c3597bbe880db6dc3ed8d4c0393d41ba333cbfbed889800",
+      "sha256": "a22890389d0156450a671bc62163d82cfa4b44c59f66dfe2a1fe891bd687dc0b",
       "disposition": "reviewed-later-owner",
       "ownerTask": "Node A3",
       "ownerMilestone": "V2_RC"

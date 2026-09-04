@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
@@ -154,41 +155,48 @@ func TestPullSystemUpdateActiveRecoveryIgnoresTargetHealthButNewClaimsRemainStri
 		t.Fatalf("active recovery targets = %#v err=%v", eligible, err)
 	}
 
-	request := httptest.NewRequest(
-		http.MethodPost,
-		"/services/update-jobs/claim",
-		strings.NewReader(`{"service_id":"host-agent-a","active_job_id":"`+fixture.job.ID+`"}`),
-	)
-	request.Header.Set("Authorization", "Bearer "+fixture.token.RawToken)
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("unhealthy active recovery claim = %d %s", response.Code, response.Body.String())
-	}
-	var recovered systemUpdateClaimResponse
+	response := postSystemUpdateV2JSON(t, fixture.handler, fixture.token.RawToken, "/services/update-jobs/claim", contracts.UpdateAgentClaimRequest{
+		UpdaterID:       "host-agent-a",
+		HostID:          "host-a",
+		LeaseGeneration: fixture.claim.LeaseGeneration,
+		Fence:           fixture.ownership.OwnershipEpoch,
+		ActiveJobID:     fixture.job.ID,
+	}, http.StatusOK)
+	var recovered contracts.UpdaterLeaseEnvelope
 	if err := json.NewDecoder(response.Body).Decode(&recovered); err != nil {
 		t.Fatal(err)
 	}
-	if recovered.Job.ID != fixture.job.ID ||
-		recovered.Job.Status != store.SystemUpdateStatusReconciling ||
-		!recovered.RecoveryRequired ||
+	recoveredJob, err := fixture.updates.GetSystemUpdateJob(t.Context(), fixture.job.ID)
+	if err != nil || recovered.Command.MutationAuthorization.JobID != fixture.job.ID ||
+		recoveredJob.Status != store.SystemUpdateStatusReconciling ||
 		recovered.LeaseGeneration <= fixture.claim.LeaseGeneration {
-		t.Fatalf("unhealthy active recovery response = %#v", recovered)
+		t.Fatalf("unhealthy active recovery response = %#v job=%#v err=%v", recovered, recoveredJob, err)
 	}
 
-	if _, applied, err := fixture.updates.ReportSystemUpdateJob(
-		t.Context(),
-		fixture.job.ID,
-		store.SystemUpdateReport{
-			AgentServiceID: "host-agent-a", ExecutionHostID: "host-a",
-			LeaseToken: recovered.LeaseToken, LeaseGeneration: recovered.LeaseGeneration,
-			Sequence: recovered.ReportSequence, Status: store.SystemUpdateStatusSucceeded, Progress: 100,
-		},
-		time.Now().UTC(),
-		time.Minute,
-	); err != nil || !applied {
-		t.Fatalf("complete recovered pull job: applied=%v err=%v", applied, err)
-	}
+	authorization := recovered.Command.MutationAuthorization
+	postSystemUpdateV2JSON(t, fixture.handler, fixture.token.RawToken, "/services/update-jobs/"+fixture.job.ID+"/report", contracts.UpdaterResultEnvelope{
+		ProtocolVersion:        2,
+		CommandID:              recovered.Command.CommandID,
+		JobID:                  authorization.JobID,
+		UpdaterID:              authorization.UpdaterID,
+		HostID:                 authorization.HostID,
+		LeaseID:                recovered.LeaseID,
+		LeaseGeneration:        recovered.LeaseGeneration,
+		IdempotencyKey:         recovered.Command.IdempotencyKey,
+		CanonicalPayloadDigest: recovered.Command.CanonicalPayloadDigest,
+		AuthorizationID:        authorization.AuthorizationID,
+		DesiredRevision:        authorization.DesiredRevision,
+		AppliedRevision:        authorization.DesiredRevision,
+		Fence:                  authorization.Fence,
+		Outcome:                contracts.UpdaterOutcomeSucceeded,
+		Status:                 contracts.SystemUpdateSucceeded,
+		AuditCorrelationID:     recovered.Command.AuditCorrelationID,
+		Evidence: []contracts.UpdaterEvidence{{
+			EvidenceCode:     "application_probe_verified",
+			ObservedAt:       time.Now().UTC(),
+			ObservedRevision: authorization.DesiredRevision,
+		}},
+	}, http.StatusOK)
 	queued, created, err := fixture.updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
 		TargetID: "worker-a", TargetServiceType: "worker",
 		AgentServiceID: "host-agent-a", ExecutionHostID: "host-a", DeploymentMode: "systemd",
@@ -199,12 +207,18 @@ func TestPullSystemUpdateActiveRecoveryIgnoresTargetHealthButNewClaimsRemainStri
 	if err != nil || !created {
 		t.Fatalf("create strict new pull job: created=%v err=%v", created, err)
 	}
-	newRequest := httptest.NewRequest(
-		http.MethodPost,
-		"/services/update-jobs/claim",
-		strings.NewReader(`{"service_id":"host-agent-a"}`),
-	)
+	newRequestBody, err := json.Marshal(contracts.UpdateAgentClaimRequest{
+		UpdaterID:       "host-agent-a",
+		HostID:          "host-a",
+		LeaseGeneration: 1,
+		Fence:           fixture.ownership.OwnershipEpoch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRequest := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", strings.NewReader(string(newRequestBody)))
 	newRequest.Header.Set("Authorization", "Bearer "+fixture.token.RawToken)
+	newRequest.Header.Set(systemUpdateContractMajorHeader, "2")
 	newResponse := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(newResponse, newRequest)
 	if newResponse.Code != http.StatusNoContent {
@@ -224,7 +238,7 @@ func TestPullSystemUpdateActiveRecoveryRequiresExactDurableBinding(t *testing.T)
 	}{
 		{name: "foreign agent", mutate: func(job *store.SystemUpdateJob) { job.AgentServiceID = "foreign-agent" }, wantErr: store.ErrSystemUpdateOwnershipConflict},
 		{name: "wrong host", mutate: func(job *store.SystemUpdateJob) { job.ExecutionHostID = "host-b" }, wantErr: store.ErrSystemUpdateOwnershipConflict},
-		{name: "transport drift", mutate: func(job *store.SystemUpdateJob) { job.TransportMode = store.SystemUpdateTransportSSHV1 }, wantErr: store.ErrSystemUpdateOwnershipConflict},
+		{name: "transport drift", mutate: func(job *store.SystemUpdateJob) { job.TransportMode = "retired_transport" }, wantErr: store.ErrSystemUpdateOwnershipConflict},
 		{name: "ownership epoch drift", mutate: func(job *store.SystemUpdateJob) { job.OwnershipEpoch++ }, wantErr: store.ErrSystemUpdateOwnershipConflict},
 		{name: "policy revision drift", mutate: func(job *store.SystemUpdateJob) { job.PolicyRevision++ }, wantErr: store.ErrSystemUpdateOwnershipConflict},
 		{name: "target drift", mutate: func(job *store.SystemUpdateJob) { job.TargetID = "worker-b" }, wantErr: store.ErrSystemUpdateActiveUnavailable},

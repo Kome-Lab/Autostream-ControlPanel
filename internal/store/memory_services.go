@@ -1311,7 +1311,7 @@ func (s *MemoryAuthStore) consistentServiceAssignmentLocked(service RegisteredSe
 }
 
 func memoryStreamAssignmentProtectionLocked(streams *MemoryStreamStore, stream Stream) streamAssignmentProtection {
-	state := streamAssignmentProtection{Stream: stream, ArchiveRetryPending: streams.archiveRetryPending[stream.ID], LegacyArchivePending: streams.legacyArchivePending[stream.ID], HasArchiveReport: streams.artifactReports[stream.ID]}
+	state := streamAssignmentProtection{Stream: stream, ArchiveRetryPending: streams.archiveRetryPending[stream.ID], HasArchiveReport: streams.artifactReports[stream.ID]}
 	for _, artifact := range streams.artifacts[stream.ID] {
 		if isArchiveRecordingArtifact(artifact) {
 			state.HasRecordingArtifact = true

@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	SystemUpdateTransportSSHV1  = "ssh_v1"
 	SystemUpdateTransportPullV2 = "pull_v2"
 )
 
@@ -31,14 +30,13 @@ var (
 )
 
 type SystemUpdateExecutionHost struct {
-	ExecutionHostID      string    `json:"execution_host_id"`
-	TransportMode        string    `json:"transport_mode"`
-	AgentServiceID       string    `json:"agent_service_id,omitempty"`
-	LegacyAgentServiceID string    `json:"legacy_agent_service_id,omitempty"`
-	OwnershipEpoch       int64     `json:"ownership_epoch"`
-	PolicyRevision       int64     `json:"policy_revision"`
-	CreatedAt            time.Time `json:"created_at,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at,omitempty"`
+	ExecutionHostID string    `json:"execution_host_id"`
+	TransportMode   string    `json:"transport_mode"`
+	AgentServiceID  string    `json:"agent_service_id,omitempty"`
+	OwnershipEpoch  int64     `json:"ownership_epoch"`
+	PolicyRevision  int64     `json:"policy_revision"`
+	CreatedAt       time.Time `json:"created_at,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
 
 type SystemUpdateExecutionHostStore interface {
@@ -73,7 +71,7 @@ type servicePortReservationKey struct {
 func syntheticSystemUpdateExecutionHost(executionHostID string) SystemUpdateExecutionHost {
 	return SystemUpdateExecutionHost{
 		ExecutionHostID: executionHostID,
-		TransportMode:   SystemUpdateTransportSSHV1,
+		TransportMode:   SystemUpdateTransportPullV2,
 		OwnershipEpoch:  0,
 		PolicyRevision:  0,
 	}
@@ -88,7 +86,7 @@ func normalizeSystemUpdateExecutionHostSwitch(executionHostID, transportMode, ag
 func validateSystemUpdateExecutionHostSwitch(executionHostID string, expectedEpoch int64, transportMode, agentServiceID string, policyRevision int64) error {
 	if !executionHostIDPattern.MatchString(executionHostID) ||
 		expectedEpoch < 0 ||
-		(transportMode != SystemUpdateTransportSSHV1 && transportMode != SystemUpdateTransportPullV2) ||
+		transportMode != SystemUpdateTransportPullV2 ||
 		!serviceIDPattern.MatchString(agentServiceID) ||
 		policyRevision < 0 {
 		return ErrInvalidSystemUpdateExecutionHost
@@ -147,20 +145,14 @@ func (s *MemorySystemUpdateStore) SwitchSystemUpdateExecutionHost(
 	}
 
 	now := time.Now().UTC()
-	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
-		current,
-		nextTransportMode,
-		nextAgentServiceID,
-	)
 	next := SystemUpdateExecutionHost{
-		ExecutionHostID:      executionHostID,
-		TransportMode:        nextTransportMode,
-		AgentServiceID:       nextAgentServiceID,
-		LegacyAgentServiceID: legacyAgentServiceID,
-		OwnershipEpoch:       current.OwnershipEpoch + 1,
-		PolicyRevision:       policyRevision,
-		CreatedAt:            current.CreatedAt,
-		UpdatedAt:            now,
+		ExecutionHostID: executionHostID,
+		TransportMode:   nextTransportMode,
+		AgentServiceID:  nextAgentServiceID,
+		OwnershipEpoch:  current.OwnershipEpoch + 1,
+		PolicyRevision:  policyRevision,
+		CreatedAt:       current.CreatedAt,
+		UpdatedAt:       now,
 	}
 	if next.CreatedAt.IsZero() {
 		next.CreatedAt = now
@@ -240,17 +232,10 @@ FOR UPDATE`, nextAgentServiceID).Scan(
 	}
 	registeredTransportMode = strings.ToLower(strings.TrimSpace(registeredTransportMode))
 	registeredExecutionHostID = strings.TrimSpace(registeredExecutionHostID)
-	switch nextTransportMode {
-	case SystemUpdateTransportPullV2:
-		if registeredTransportMode != SystemUpdateTransportPullV2 ||
-			registeredExecutionHostID != executionHostID ||
-			registeredOwnershipEpoch != expectedEpoch+1 {
-			return SystemUpdateExecutionHost{}, ErrSystemUpdateAgentBindingMismatch
-		}
-	case SystemUpdateTransportSSHV1:
-		if registeredTransportMode == SystemUpdateTransportPullV2 {
-			return SystemUpdateExecutionHost{}, ErrSystemUpdateAgentBindingMismatch
-		}
+	if registeredTransportMode != SystemUpdateTransportPullV2 ||
+		registeredExecutionHostID != executionHostID ||
+		registeredOwnershipEpoch != expectedEpoch+1 {
+		return SystemUpdateExecutionHost{}, ErrSystemUpdateAgentBindingMismatch
 	}
 
 	var activeJobID string
@@ -281,38 +266,30 @@ FOR UPDATE`, executionHostID).Scan(&activeRotationID)
 	}
 
 	now := time.Now().UTC()
-	legacyAgentServiceID := nextSystemUpdateLegacyAgentServiceID(
-		current,
-		nextTransportMode,
-		nextAgentServiceID,
-	)
 	next := SystemUpdateExecutionHost{
-		ExecutionHostID:      executionHostID,
-		TransportMode:        nextTransportMode,
-		AgentServiceID:       nextAgentServiceID,
-		LegacyAgentServiceID: legacyAgentServiceID,
-		OwnershipEpoch:       current.OwnershipEpoch + 1,
-		PolicyRevision:       policyRevision,
-		CreatedAt:            current.CreatedAt,
-		UpdatedAt:            now,
+		ExecutionHostID: executionHostID,
+		TransportMode:   nextTransportMode,
+		AgentServiceID:  nextAgentServiceID,
+		OwnershipEpoch:  current.OwnershipEpoch + 1,
+		PolicyRevision:  policyRevision,
+		CreatedAt:       current.CreatedAt,
+		UpdatedAt:       now,
 	}
 	if missing {
 		next.CreatedAt = now
 		_, err = tx.ExecContext(ctx, `INSERT INTO system_update_execution_hosts
-(execution_host_id, transport_mode, agent_service_id, legacy_agent_service_id, ownership_epoch, policy_revision, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+(execution_host_id, transport_mode, agent_service_id, ownership_epoch, policy_revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			next.ExecutionHostID, next.TransportMode, next.AgentServiceID,
-			nullString(next.LegacyAgentServiceID), next.OwnershipEpoch,
-			next.PolicyRevision, next.CreatedAt, next.UpdatedAt)
+			next.OwnershipEpoch, next.PolicyRevision, next.CreatedAt, next.UpdatedAt)
 		if isDuplicateKeyError(err) {
 			return SystemUpdateExecutionHost{}, ErrSystemUpdateExecutionHostStale
 		}
 	} else {
 		result, updateErr := tx.ExecContext(ctx, `UPDATE system_update_execution_hosts
-SET transport_mode = ?, agent_service_id = ?, legacy_agent_service_id = ?, ownership_epoch = ?, policy_revision = ?, updated_at = ?
+SET transport_mode = ?, agent_service_id = ?, ownership_epoch = ?, policy_revision = ?, updated_at = ?
 WHERE execution_host_id = ? AND ownership_epoch = ?`,
-			next.TransportMode, next.AgentServiceID, nullString(next.LegacyAgentServiceID),
-			next.OwnershipEpoch, next.PolicyRevision, next.UpdatedAt,
+			next.TransportMode, next.AgentServiceID, next.OwnershipEpoch, next.PolicyRevision, next.UpdatedAt,
 			next.ExecutionHostID, expectedEpoch)
 		err = updateErr
 		if err == nil {
@@ -334,7 +311,7 @@ WHERE execution_host_id = ? AND ownership_epoch = ?`,
 	return next, nil
 }
 
-const systemUpdateExecutionHostSelect = `SELECT execution_host_id, transport_mode, agent_service_id, legacy_agent_service_id, ownership_epoch, policy_revision, created_at, updated_at
+const systemUpdateExecutionHostSelect = `SELECT execution_host_id, transport_mode, agent_service_id, ownership_epoch, policy_revision, created_at, updated_at
 FROM system_update_execution_hosts`
 
 type executionHostScanner interface {
@@ -343,36 +320,16 @@ type executionHostScanner interface {
 
 func scanSystemUpdateExecutionHost(scanner executionHostScanner) (SystemUpdateExecutionHost, error) {
 	var host SystemUpdateExecutionHost
-	var legacyAgentServiceID sql.NullString
 	err := scanner.Scan(
 		&host.ExecutionHostID,
 		&host.TransportMode,
 		&host.AgentServiceID,
-		&legacyAgentServiceID,
 		&host.OwnershipEpoch,
 		&host.PolicyRevision,
 		&host.CreatedAt,
 		&host.UpdatedAt,
 	)
-	host.LegacyAgentServiceID = strings.TrimSpace(legacyAgentServiceID.String)
 	return host, err
-}
-
-func nextSystemUpdateLegacyAgentServiceID(
-	current SystemUpdateExecutionHost,
-	nextTransportMode string,
-	nextAgentServiceID string,
-) string {
-	if nextTransportMode == SystemUpdateTransportSSHV1 {
-		return strings.TrimSpace(nextAgentServiceID)
-	}
-	legacyAgentServiceID := strings.TrimSpace(current.LegacyAgentServiceID)
-	if legacyAgentServiceID == "" &&
-		current.TransportMode == SystemUpdateTransportSSHV1 &&
-		current.AgentServiceID != "" {
-		legacyAgentServiceID = strings.TrimSpace(current.AgentServiceID)
-	}
-	return legacyAgentServiceID
 }
 
 func getSystemUpdateExecutionHostForUpdate(ctx context.Context, tx *sql.Tx, executionHostID string) (SystemUpdateExecutionHost, error) {

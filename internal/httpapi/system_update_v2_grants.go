@@ -264,3 +264,59 @@ func systemUpdateV2GrantConsumeError(err error) (int, string, string) {
 		return http.StatusInternalServerError, "consume_system_update_mutation_grant_failed", "grant_store_failed"
 	}
 }
+
+func systemUpdateMutationGrantBearer(r *http.Request) (string, bool) {
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		return "", false
+	}
+	parts := strings.Fields(values[0])
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || !strings.HasPrefix(parts[1], "ast_mutation_") {
+		return "", false
+	}
+	return parts[1], true
+}
+
+func systemUpdateMutationGrantAuditMetadata(binding store.SystemUpdateMutationGrantBinding) map[string]any {
+	jobOperation := strings.ToLower(strings.TrimSpace(binding.JobOperation))
+	if jobOperation == "" {
+		jobOperation = store.SystemUpdateOperationSoftwareUpdate
+	}
+	metadata := map[string]any{
+		"host_id": strings.TrimSpace(binding.HostID), "target_id": strings.TrimSpace(binding.TargetID),
+		"transport_mode":  strings.ToLower(strings.TrimSpace(binding.TransportMode)),
+		"ownership_epoch": binding.OwnershipEpoch, "policy_revision": binding.PolicyRevision,
+		"service_type":   strings.ToLower(strings.TrimSpace(binding.TargetServiceType)),
+		"target_version": strings.TrimSpace(binding.TargetVersion), "deployment_mode": strings.ToLower(strings.TrimSpace(binding.DeploymentMode)),
+		"job_operation": jobOperation,
+		"operation":     strings.ToLower(strings.TrimSpace(binding.Operation)), "plan_sha256": strings.TrimSpace(binding.PlanSHA256),
+		"session_id": strings.TrimSpace(binding.SessionID),
+	}
+	if port := binding.PortReconfigure; port != nil {
+		metadata["port_reconfigure"] = map[string]any{
+			"network_namespace": strings.ToLower(strings.TrimSpace(port.NetworkNamespace)),
+			"protocol":          strings.ToLower(strings.TrimSpace(string(port.Protocol))),
+			"old_port":          port.OldPort, "new_port": port.NewPort,
+			"expected_endpoint_revision":        port.ExpectedEndpointRevision,
+			"target_endpoint_revision":          port.TargetEndpointRevision,
+			"expected_config_revision":          port.ExpectedConfigRevision,
+			"target_config_revision":            port.TargetConfigRevision,
+			"expected_config_sha256":            strings.TrimSpace(port.ExpectedConfigSHA256),
+			"target_config_sha256":              strings.TrimSpace(port.TargetConfigSHA256),
+			"expected_source_policy_revision":   port.ExpectedSourcePolicyRevision,
+			"expected_updater_policy_revision":  port.ExpectedUpdaterPolicyRevision,
+			"expected_executor_policy_revision": port.ExpectedExecutorPolicyRevision,
+			"expected_executor_policy_sha256":   strings.TrimSpace(port.ExpectedExecutorPolicySHA256),
+			"port_plan_sha256":                  strings.TrimSpace(port.PortPlanSHA256),
+		}
+	}
+	return metadata
+}
+
+func (s *Server) writeSystemUpdateMutationGrantConsumeAudit(r *http.Request, jobID, result string, metadata map[string]any) {
+	s.writeAudit(r, store.AuditEvent{
+		ActorUserID: "service:update_host", ActorUsername: "update_host",
+		Action: "system_updates.mutation_grant.consume", ResourceType: "system_update", ResourceID: jobID,
+		Result: result, Metadata: metadata,
+	})
+}

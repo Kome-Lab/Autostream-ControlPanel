@@ -219,14 +219,14 @@ func (s *MemorySystemUpdateStore) InspectSystemUpdateActiveJob(ctx context.Conte
 }
 
 func (s *MemorySystemUpdateStore) ClaimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
-	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, false)
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, 0, 0, eligibleTargets, now, leaseTTL, false)
 }
 
-func (s *MemorySystemUpdateStore) ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
-	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, eligibleTargets, now, leaseTTL, true)
+func (s *MemorySystemUpdateStore) ClaimSystemUpdateJobV2(ctx context.Context, agentServiceID, executionHostID, activeJobID string, expectedLeaseGeneration, expectedFence int64, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration) (SystemUpdateClaim, bool, error) {
+	return s.claimSystemUpdateJob(ctx, agentServiceID, executionHostID, activeJobID, expectedLeaseGeneration, expectedFence, eligibleTargets, now, leaseTTL, true)
 }
 
-func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration, resetSequence bool) (SystemUpdateClaim, bool, error) {
+func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agentServiceID, executionHostID, activeJobID string, expectedLeaseGeneration, expectedFence int64, eligibleTargets map[string]string, now time.Time, leaseTTL time.Duration, v2 bool) (SystemUpdateClaim, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemUpdateClaim{}, false, err
 	}
@@ -234,7 +234,8 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 	executionHostID = normalizeSystemUpdateExecutionHostID(agentServiceID, executionHostID)
 	activeJobID = strings.TrimSpace(activeJobID)
 	targets := normalizedEligibleTargets(eligibleTargets)
-	if agentServiceID == "" || !validSystemUpdateExecutionHostID(executionHostID) || (len(targets) == 0 && activeJobID == "") || leaseTTL <= 0 || len(activeJobID) > 64 || containsControl(activeJobID) {
+	if agentServiceID == "" || !validSystemUpdateExecutionHostID(executionHostID) || (len(targets) == 0 && activeJobID == "") || leaseTTL <= 0 || len(activeJobID) > 64 || containsControl(activeJobID) ||
+		(v2 && (expectedLeaseGeneration < 1 || expectedFence < 1)) {
 		return SystemUpdateClaim{}, false, ErrInvalidSystemUpdate
 	}
 	now = now.UTC()
@@ -245,6 +246,9 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 		ownership = current
 	}
 	if err := authorizeSystemUpdateExecutionHostAgent(ownership, agentServiceID); err != nil {
+		return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
+	}
+	if v2 && ownership.OwnershipEpoch != expectedFence {
 		return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
 	}
 	var selected *SystemUpdateJob
@@ -263,6 +267,9 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 		if job.ExecutionHostID != executionHostID {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateActiveUnavailable
 		}
+		if v2 && job.LeaseGeneration != expectedLeaseGeneration {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateLeaseInvalid
+		}
 		mode, authorized := targets[job.TargetID]
 		if !authorized || mode != job.DeploymentMode {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateActiveUnavailable
@@ -270,7 +277,7 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 		selected = &job
 	}
 	executing := make([]SystemUpdateJob, 0)
-	if selected == nil {
+	if selected == nil && !v2 {
 		for _, job := range s.jobs {
 			if job.AgentServiceID == agentServiceID && job.ExecutionHostID == executionHostID && isExecutingSystemUpdateStatus(job.Status) {
 				executing = append(executing, job)
@@ -297,6 +304,23 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 				job := queued[0]
 				selected = &job
 			}
+		}
+	}
+	if selected == nil && v2 {
+		if expectedLeaseGeneration != 1 {
+			return SystemUpdateClaim{}, false, ErrSystemUpdateLeaseInvalid
+		}
+		queued := make([]SystemUpdateJob, 0)
+		for _, job := range s.jobs {
+			mode, eligible := targets[job.TargetID]
+			if eligible && mode == job.DeploymentMode && job.Status == SystemUpdateStatusQueued && job.AgentServiceID == agentServiceID && job.ExecutionHostID == executionHostID {
+				queued = append(queued, job)
+			}
+		}
+		sortSystemUpdateJobsOldestFirst(queued)
+		if len(queued) > 0 {
+			job := queued[0]
+			selected = &job
 		}
 	}
 	if selected == nil {
@@ -331,7 +355,7 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 	expiresAt := now.Add(leaseTTL)
 	job.AgentServiceID = agentServiceID
 	job.LeaseGeneration++
-	if resetSequence {
+	if v2 {
 		job.Sequence = 0
 	}
 	job.leaseTokenHash = security.HashToken(leaseToken)

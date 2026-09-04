@@ -367,7 +367,7 @@ func TestDiscordYouTubeLiveNotificationBareRateLimitSchedulesOneDurableRetry(t *
 		t.Fatalf("enqueue rate-limit notification: transitioned=%v err=%v", transitioned, err)
 	}
 
-	client := servicecall.Client{Config: servicecall.Config{Token: "service-token", Timeout: time.Second, URLPolicy: netpolicy.ServiceURLPolicy{AllowedHosts: map[string]struct{}{"127.0.0.1": {}}}}}
+	client := servicecall.Client{Config: servicecall.Config{Timeout: time.Second, URLPolicy: netpolicy.ServiceURLPolicy{AllowedHosts: map[string]struct{}{"127.0.0.1": {}}}}, RuntimeTokenResolver: func(store.RegisteredService) (string, error) { return "service-token", nil }}
 	handler := NewServer(streams, WithServiceRegistryStore(auth), WithServiceDispatcher(client))
 	result, err := handler.DispatchDueDiscordYouTubeLiveNotifications(t.Context(), 25)
 	if err != nil || result["claimed"] != 1 || result["retry_scheduled"] != 1 || botCalls != 1 {

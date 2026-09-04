@@ -135,6 +135,34 @@ func TestServiceEmailNotificationRequiresGlobalSMTPSettings(t *testing.T) {
 	assertServiceEmailSecretsAbsent(t, res.Body.String()+toJSONForTest(t, auth.AuditEvents()))
 }
 
+func TestServiceEmailReadinessProvesConfiguredAuthorityWithoutSending(t *testing.T) {
+	handler, auth, token, mailer := newServiceEmailTestServer(t, true)
+	req := httptest.NewRequest(http.MethodGet, "/services/notifications/email/readiness", nil)
+	req.Header.Set("Authorization", "Bearer "+token.RawToken)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK ||
+		!strings.Contains(res.Body.String(), `"ready":true`) ||
+		!strings.Contains(res.Body.String(), `"config_owner":"control_panel"`) ||
+		!strings.Contains(res.Body.String(), `"config_key":"global_smtp"`) ||
+		!strings.Contains(res.Body.String(), `"authority_revision":`) {
+		t.Fatalf("status = %d body = %s", res.Code, res.Body.String())
+	}
+	if len(mailer.messages) != 0 {
+		t.Fatalf("readiness probe sent email: %#v", mailer.messages)
+	}
+	assertServiceEmailSecretsAbsent(t, res.Body.String()+toJSONForTest(t, auth.AuditEvents()))
+
+	unconfigured, _, unconfiguredToken, _ := newServiceEmailTestServer(t, false)
+	unconfiguredReq := httptest.NewRequest(http.MethodGet, "/services/notifications/email/readiness", nil)
+	unconfiguredReq.Header.Set("Authorization", "Bearer "+unconfiguredToken.RawToken)
+	unconfiguredRes := httptest.NewRecorder()
+	unconfigured.ServeHTTP(unconfiguredRes, unconfiguredReq)
+	if unconfiguredRes.Code != http.StatusConflict || !strings.Contains(unconfiguredRes.Body.String(), `"code":"smtp_not_configured"`) {
+		t.Fatalf("unconfigured status = %d body = %s", unconfiguredRes.Code, unconfiguredRes.Body.String())
+	}
+}
+
 func TestServiceEmailNotificationUsesGlobalSMTPWithoutLeakingMessage(t *testing.T) {
 	handler, auth, token, mailer := newServiceEmailTestServer(t, true)
 	body := `{"recipients":["ops@example.jp","oncall@example.jp"],"subject":"Production alert","text":"private incident details","html":"<!doctype html><p>private HTML incident details</p>"}`

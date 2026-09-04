@@ -45,7 +45,6 @@ export const semanticStatusTokenNames = Object.freeze([
 ] as const);
 
 export const themeMirrorStorageKey = "autostream.ui_preference";
-export const legacyThemeStorageKey = "autostream.theme";
 
 export function safeUserUIPreference(value: Partial<UserUIPreference> | null | undefined): SafeUserUIPreference {
   const theme = userThemeIDs.includes(value?.theme_id as UserThemeID) ? value?.theme_id as UserThemeID : "autostream";
@@ -65,20 +64,10 @@ export function readThemeMirror(storage: Pick<Storage, "getItem">): SafeUserUIPr
     try {
       return safeUserUIPreference(JSON.parse(raw) as UserUIPreference);
     } catch {
-      // A corrupt mirror is non-authoritative and falls through to legacy/default.
+      // A corrupt mirror is non-authoritative and falls through to the default.
     }
   }
-  const legacy = storage.getItem(legacyThemeStorageKey);
-  if (legacy === "light" || legacy === "dark") {
-    return safeUserUIPreference({ theme_id: "autostream", color_mode: legacy, revision: 0 });
-  }
   return safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 });
-}
-
-export function legacyThemeMigrationMode(storage: Pick<Storage, "getItem">): UserColorMode | null {
-  if (storage.getItem(themeMirrorStorageKey) !== null) return null;
-  const legacy = storage.getItem(legacyThemeStorageKey);
-  return legacy === "light" || legacy === "dark" ? legacy : null;
 }
 
 export function writeThemeMirror(storage: Pick<Storage, "setItem">, preference: SafeUserUIPreference) {

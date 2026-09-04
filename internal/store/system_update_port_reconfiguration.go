@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
@@ -411,25 +413,28 @@ func canonicalizeSystemUpdatePortReport(job SystemUpdateJob, report SystemUpdate
 	return report, nil
 }
 
-func systemUpdatePortBindVariable(serviceType string) (string, bool) {
+func systemUpdatePortServiceType(serviceType string) (string, bool) {
 	switch serviceType {
-	case "worker", "encoder_recorder", "discord_bot":
-		return "AUTOSTREAM_BIND_ADDR", true
-	case "observability":
-		return "OBSERVABILITY_BIND_ADDR", true
+	case "worker", "encoder_recorder", "discord_bot", "observability":
+		return serviceType, true
 	default:
 		return "", false
 	}
 }
 
 func systemUpdatePortSidecarSHA256(serviceType string, port int, configRevision int64) (string, error) {
-	bindVariable, ok := systemUpdatePortBindVariable(serviceType)
+	_, ok := systemUpdatePortServiceType(serviceType)
 	if !ok || port < 1024 || port > 65535 || configRevision < 1 {
 		return "", ErrSystemUpdatePortUnsupported
 	}
-	body := fmt.Sprintf("%s=%s\nAUTOSTREAM_CONFIG_REVISION=%d\n",
-		bindVariable, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)), configRevision)
-	digest := sha256.Sum256([]byte(body))
+	body, err := contracts.MarshalNodeListenerConfig(contracts.NodeListenerConfig{
+		SchemaVersion: 2, ServiceType: serviceType,
+		BindAddress: net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)), ConfigRevision: configRevision,
+	})
+	if err != nil {
+		return "", ErrSystemUpdatePortUnsupported
+	}
+	digest := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 

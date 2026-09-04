@@ -481,20 +481,16 @@ export function updaterHostBootstrapConfirmationContext(
 
 export function updaterHostBootstrapEligibility({
   updater,
-  expectedRevision,
+  expectedAppliedRevision,
   savedHost,
   currentHost,
-  savedTargets,
-  currentTargets,
   releaseTokenConfigured,
   bootstrapStatus,
 }: {
   updater: SystemUpdateAgentStatus;
-  expectedRevision: number;
+  expectedAppliedRevision: number;
   savedHost?: UpdaterSettingsHost;
   currentHost?: UpdaterSettingsHost;
-  savedTargets: UpdaterSettingsTarget[];
-  currentTargets: UpdaterSettingsTarget[];
   releaseTokenConfigured: boolean;
   bootstrapStatus?: string;
 }): { ready: boolean; reason: UpdaterHostBootstrapEligibilityReason } {
@@ -502,9 +498,9 @@ export function updaterHostBootstrapEligibility({
   const policyState = systemUpdateUpdaterPolicyState(updater);
   if (
     !policyState.ready
-    || expectedRevision <= 0
-    || updater.desired_revision !== expectedRevision
-    || updater.applied_revision !== expectedRevision
+    || expectedAppliedRevision <= 0
+    || updater.desired_revision !== expectedAppliedRevision
+    || updater.applied_revision !== expectedAppliedRevision
   ) {
     return { ready: false, reason: "policy_pending" };
   }
@@ -512,13 +508,7 @@ export function updaterHostBootstrapEligibility({
   if (!savedHost || !currentHost || !sameUpdaterSettingsHost(savedHost, currentHost)) {
     return { ready: false, reason: "host_unsaved" };
   }
-  if (!sameUpdaterBootstrapTargetsForHost(savedHost.host_id, savedTargets, currentTargets)) {
-    return { ready: false, reason: "host_unsaved" };
-  }
   if (savedHost.user !== "autostream-update-host") {
-    return { ready: false, reason: "unsupported_profile" };
-  }
-  if (!updaterHostBootstrapProfileSupported(savedHost.host_id, savedTargets)) {
     return { ready: false, reason: "unsupported_profile" };
   }
   if (!(savedHost.host_key_fingerprint || savedHost.host_public_key_fingerprint)) {
@@ -548,14 +538,14 @@ export function updaterHostBootstrapEligibilityMessage(
   if (!statusKnown) return "セットアップ状態を確認中です。";
   const messages: Record<UpdaterHostBootstrapEligibilityReason, string> = {
     "": "ホストをセットアップします。",
-    updater_offline: "中央Updaterがオフラインです。",
-    policy_pending: "保存した設定が中央Updaterへ反映されるまでお待ちください。",
+    updater_offline: "独立Updaterがオフラインです。",
+    policy_pending: "保存した設定projectionが独立Updaterへ反映されるまでお待ちください。",
     release_token_pending: "GitHub Release Tokenを保存してからホストセットアップを開始してください。",
     host_unsaved: "このホストの変更を先に保存してください。",
     host_key_pending: "保存済みSSHホスト鍵のFingerprintを確認できるまでお待ちください。",
     client_key_pending: "対象ホスト用のUpdater公開鍵が生成されるまでお待ちください。",
     encryption_key_pending: "Updaterのbootstrap暗号鍵が報告されるまでお待ちください。",
-    unsupported_profile: "v1の自動セットアップは標準systemdサービスだけに対応しています。Docker、非標準ポート・パス、カスタム構成は手動導入してください。",
+    unsupported_profile: "自動bootstrapは検証済みの標準Host Agent profileだけに対応しています。カスタム構成は手動導入してください。",
     bootstrap_active: "このホストのセットアップが進行中です。",
     already_configured: "このホストはセットアップ済みです。必要な場合は再セットアップできます。",
   };
@@ -986,7 +976,8 @@ function pullUpdaterOwnershipActivationContract(
     || updater.ownership_epoch !== 0
     || !executionHostID
     || !ownership
-    || ownership.transport_mode !== "ssh_v1"
+    || ownership.transport_mode !== "pull_v2"
+    || (ownership.agent_service_id && ownership.agent_service_id !== updater.updater_id)
     || !Number.isSafeInteger(ownership.ownership_epoch)
     || ownership.ownership_epoch < 0
     || !Number.isSafeInteger(settings.revision)
@@ -1070,7 +1061,7 @@ export function normalizePullUpdaterOwnershipDeactivationResponse(
   const normalized: PullUpdaterOwnershipDeactivationResponse = {
     updater_id: stringValue(response.updater_id),
     execution_host_id: stringValue(response.execution_host_id),
-    transport_mode: "ssh_v1",
+    transport_mode: "pull_v2",
     agent_service_id: stringValue(response.agent_service_id),
     ownership_epoch: nonNegativeIntegerValue(response.ownership_epoch, -1),
     agent_ownership_epoch: nonNegativeIntegerValue(response.agent_ownership_epoch, -1) as 0,
@@ -1082,7 +1073,7 @@ export function normalizePullUpdaterOwnershipDeactivationResponse(
   if (
     !normalized.updater_id
     || !normalized.execution_host_id
-    || response.transport_mode !== "ssh_v1"
+    || response.transport_mode !== "pull_v2"
     || !normalized.agent_service_id
     || normalized.ownership_epoch < 1
     || normalized.agent_ownership_epoch !== 0
@@ -1102,7 +1093,6 @@ function pullUpdaterOwnershipDeactivationContract(
 ): PullUpdaterOwnershipDeactivationRequest | null {
   const executionHostID = String(settings.execution_host_id || "").trim();
   const ownership = settings.execution_host_ownership;
-  const legacyAgentServiceID = String(ownership?.legacy_agent_service_id || "").trim();
   const digest = String(settings.local_executor_policy_sha256 || "").trim().toLowerCase();
   if (
     updater.transport_mode !== "pull_v2"
@@ -1112,7 +1102,6 @@ function pullUpdaterOwnershipDeactivationContract(
     || !ownership
     || ownership.transport_mode !== "pull_v2"
     || ownership.agent_service_id !== updater.updater_id
-    || !legacyAgentServiceID
     || !Number.isSafeInteger(ownership.ownership_epoch)
     || ownership.ownership_epoch < 1
     || !Number.isSafeInteger(updater.ownership_epoch)
@@ -1234,7 +1223,7 @@ export function emptyUpdaterSettings(updaterID: string): UpdaterSettings {
   return {
     updater_id: updaterID,
     revision: 0,
-    transport_mode: "ssh_v1",
+    transport_mode: "pull_v2",
     execution_host_id: "",
     local_executor_policy_sha256: "",
     api: {
@@ -1257,10 +1246,16 @@ export function emptyUpdaterSettings(updaterID: string): UpdaterSettings {
 
 export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdaterID = ""): UpdaterSettings {
   const settings = recordValue(value);
+  if (settings.transport_mode !== "pull_v2") {
+    throw new Error("invalid_updater_settings_transport");
+  }
   const updaterID = stringValue(settings.updater_id) || fallbackUpdaterID;
   const defaults = emptyUpdaterSettings(updaterID);
   const api = recordValue(settings.api);
   const executionHostOwnership = recordValue(settings.execution_host_ownership);
+  if (Object.keys(executionHostOwnership).length > 0 && executionHostOwnership.transport_mode !== "pull_v2") {
+    throw new Error("invalid_updater_settings_ownership");
+  }
   const pullActivation = recordValue(settings.pull_activation);
   const hosts = Array.isArray(settings.hosts)
     ? settings.hosts.map((value) => {
@@ -1300,13 +1295,12 @@ export function normalizeUpdaterSettingsResponse(value: unknown, fallbackUpdater
     revision: nonNegativeIntegerValue(settings.revision, 0),
     projection_revision: optionalNonNegativeIntegerValue(settings.projection_revision),
     local_executor_policy_revision: optionalNonNegativeIntegerValue(settings.local_executor_policy_revision),
-    transport_mode: settings.transport_mode === "pull_v2" ? "pull_v2" : "ssh_v1",
+    transport_mode: "pull_v2",
     execution_host_id: stringValue(settings.execution_host_id),
     execution_host_ownership: Object.keys(executionHostOwnership).length > 0
       ? {
-          transport_mode: executionHostOwnership.transport_mode === "pull_v2" ? "pull_v2" : "ssh_v1",
+          transport_mode: "pull_v2",
           agent_service_id: stringValue(executionHostOwnership.agent_service_id),
-          legacy_agent_service_id: stringValue(executionHostOwnership.legacy_agent_service_id),
           ownership_epoch: nonNegativeIntegerValue(executionHostOwnership.ownership_epoch, -1),
           policy_revision: nonNegativeIntegerValue(executionHostOwnership.policy_revision, -1),
         }
@@ -1378,9 +1372,9 @@ export function systemUpdateTargetBlockedReason(reason?: string) {
   const code = normalize(reason);
   const messages: Record<string, string> = {
     target_not_configured: "更新対象が更新エージェントに登録されていません。",
-    update_agent_unavailable: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
-    updater_not_configured: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
-    updater_missing: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    update_agent_unavailable: "Host Agentが設定されていません。",
+    updater_not_configured: "Host Agentが設定されていません。",
+    updater_missing: "Host Agentが設定されていません。",
     update_agent_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
     updater_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
     updater_unavailable: "更新エージェントに接続できません。",
@@ -1424,9 +1418,9 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     target_not_found: "更新対象が見つかりません。一覧を再取得してください。",
     system_update_target_not_found: "更新対象が見つかりません。一覧を再取得してください。",
     target_not_configured: "更新対象が更新エージェントに登録されていません。",
-    update_agent_unavailable: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
-    updater_not_configured: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
-    updater_missing: "更新エージェント（Host Agent / 互換Updater）が設定されていません。",
+    update_agent_unavailable: "Host Agentが設定されていません。",
+    updater_not_configured: "Host Agentが設定されていません。",
+    updater_missing: "Host Agentが設定されていません。",
     update_agent_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
     updater_offline: "更新エージェントがオフラインです。接続状態を確認してください。",
     updater_unavailable: "更新エージェントに接続できません。",
@@ -1454,11 +1448,11 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     system_update_port_reconfigure_not_ready: "このサービスは現在ポートを変更できません。EndpointとHost Agentの状態を確認してください。",
     invalid_pull_ownership_activation_request: "更新実行権限の切替条件が現在状態と一致しません。Updater状態を再取得してください。",
     invalid_pull_activation_request: "更新実行権限の切替条件が現在状態と一致しません。Updater状態を再取得してください。",
-    invalid_pull_deactivation_request: "Bridge rollback条件が現在状態と一致しません。Updater状態を再取得してください。",
+    invalid_pull_deactivation_request: "実行権限解除の条件が現在状態と一致しません。Updater状態を再取得してください。",
     pull_ownership_not_ready: "Host Agent、Local Executor、または対象サービスの準備が完了していません。",
     host_agent_not_ready: "Host Agent、Local Executor、または対象サービスの準備が完了していません。最新状態を再取得してください。",
     system_update_agent_inactive: "Host Agentがオンラインになるまで更新実行権限を切り替えられません。",
-    update_agent_inactive: "Host Agentまたは保存済みSSH Updaterのtokenが有効ではありません。登録状態を確認してください。",
+    update_agent_inactive: "Host Agentのtokenが有効ではありません。登録状態を確認してください。",
     system_update_agent_binding_mismatch: "Host Agentの実行ホスト割り当てが変わりました。Updater状態を再取得してください。",
     system_update_execution_host_busy: "対象ホストで更新ジョブまたはrecoveryが進行中です。",
     host_lifecycle_busy: "対象ホストで更新、self-update、token rotation、またはmutation grantが進行中です。",
@@ -1684,8 +1678,8 @@ function normalizeSystemUpdateAgent(value: unknown): SystemUpdateAgentStatus {
     version: stringValue(updater.version),
     last_heartbeat_at: stringValue(updater.last_heartbeat_at),
   };
-  if (updater.transport_mode === "pull_v2" || updater.transport_mode === "ssh_v1") {
-    normalized.transport_mode = updater.transport_mode;
+  if (updater.transport_mode === "pull_v2") {
+    normalized.transport_mode = "pull_v2";
   }
   const executionHostID = stringValue(updater.execution_host_id);
   const ownershipEpoch = optionalNumberValue(updater.ownership_epoch);
@@ -1817,37 +1811,6 @@ function ambiguousSystemUpdateCreateError(error: unknown) {
   return !Number.isInteger(status) || status < 400 || status >= 500;
 }
 
-function sameUpdaterBootstrapTargetsForHost(
-  hostID: string,
-  savedTargets: UpdaterSettingsTarget[],
-  currentTargets: UpdaterSettingsTarget[],
-) {
-  const saved = updaterBootstrapTargetSignatures(hostID, savedTargets);
-  const current = updaterBootstrapTargetSignatures(hostID, currentTargets);
-  return saved.length === current.length && saved.every((value, index) => value === current[index]);
-}
-
-function updaterHostBootstrapProfileSupported(hostID: string, targets: UpdaterSettingsTarget[]) {
-  const selected = targets.filter((target) => target.host_id.trim() === hostID.trim());
-  return selected.length > 0 && selected.every((target) => (
-    target.deployment_mode.trim() === "systemd"
-    && supportedUpdaterServiceTypes.has(target.service_type.trim())
-  ));
-}
-
-function updaterBootstrapTargetSignatures(hostID: string, targets: UpdaterSettingsTarget[]) {
-  return targets
-    .filter((target) => target.host_id.trim() === hostID.trim())
-    .map((target) => [
-      target.target_id.trim(),
-      target.host_id.trim(),
-      target.service_type.trim(),
-      target.deployment_mode.trim(),
-      String(target.local_listen_port ?? ""),
-    ].join("\u0000"))
-    .sort();
-}
-
 function normalizeSystemUpdateHost(value: unknown): SystemUpdateHostStatus {
   const host = recordValue(value);
   const hostID = stringValue(host.host_id);
@@ -1878,7 +1841,7 @@ function normalizeSystemUpdateJob(value: unknown): SystemUpdateJob {
     target_id: stringValue(job.target_id),
     target_type: stringValue(job.target_type || job.target_service_type),
     host_id: stringValue(job.host_id),
-    transport_mode: job.transport_mode === "pull_v2" || job.transport_mode === "ssh_v1" ? job.transport_mode : undefined,
+    transport_mode: job.transport_mode === "pull_v2" ? "pull_v2" : undefined,
     ownership_epoch: optionalNonNegativeIntegerValue(job.ownership_epoch),
     policy_revision: optionalNonNegativeIntegerValue(job.policy_revision),
     updater_id: stringValue(job.updater_id),

@@ -5,7 +5,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, KeyRound, LoaderCircle, Plus, Settings2, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { DangerConfirm } from "@/components/admin/danger-confirm";
 import {
   Dialog,
   DialogContent,
@@ -18,6 +17,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { DeferredUpdaterHostConfirmation } from "@/features/application/deferred-updater-host-confirmation";
 import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-bootstrap-panel";
 import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
 import {
@@ -75,7 +75,6 @@ type UpdaterSettingsPanelProps = {
 };
 
 type UpdaterSettingsFormState = {
-  apiPort: string;
   pollInterval: string;
   heartbeatInterval: string;
   localExecutorPolicySHA256: string;
@@ -85,7 +84,6 @@ type UpdaterSettingsFormState = {
 
 type PullOwnershipDeactivationAttempt = {
   request: PullUpdaterOwnershipDeactivationRequest;
-  legacyAgentServiceID: string;
 };
 
 const serviceTypes = [
@@ -136,9 +134,8 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
   const deactivationTransitionObserved = Boolean(
     ambiguousDeactivationAttempt
     && settingsData?.execution_host_id === ambiguousDeactivationAttempt.request.expected_execution_host_id
-    && observedOwnership?.transport_mode === "ssh_v1"
-    && observedOwnership.agent_service_id === ambiguousDeactivationAttempt.legacyAgentServiceID
-    && observedOwnership.legacy_agent_service_id === ambiguousDeactivationAttempt.legacyAgentServiceID
+    && observedOwnership?.transport_mode === "pull_v2"
+    && observedOwnership.agent_service_id === updater.updater_id
     && observedOwnership.ownership_epoch > ambiguousDeactivationAttempt.request.expected_ownership_epoch
     && Number(updater.ownership_epoch) === 0,
   );
@@ -212,7 +209,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
       if (
         response.updater_id !== updater.updater_id
         || response.execution_host_id !== attempt.request.expected_execution_host_id
-        || response.agent_service_id !== attempt.legacyAgentServiceID
+        || response.agent_service_id !== updater.updater_id
         || response.ownership_epoch <= attempt.request.expected_ownership_epoch
         || response.agent_ownership_epoch !== 0
         || response.source_policy_revision !== attempt.request.expected_source_policy_revision
@@ -230,7 +227,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
       setAmbiguousOwnershipRequest(null);
       setOwnershipFeedback({
         tone: "success",
-        message: `Bridge rollbackでSSH Updaterへ戻しました。Ownership epoch: ${response.ownership_epoch} / Host Agent epoch: ${response.agent_ownership_epoch}`,
+        message: `Host Agentの更新実行権限を解除しました。Ownership epoch: ${response.ownership_epoch} / Agent epoch: ${response.agent_ownership_epoch}`,
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
@@ -242,13 +239,13 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
         setAmbiguousDeactivationAttempt(attempt);
         setOwnershipFeedback({
           tone: "error",
-          message: "Bridge rollback結果を確認できません。安全のため再送せず、Updater状態を再取得してください。",
+          message: "実行権限解除の結果を確認できません。安全のため再送せず、Updater状態を再取得してください。",
         });
         return;
       }
       setOwnershipFeedback({
         tone: "error",
-        message: systemUpdateErrorMessage(error, "Bridge rollbackを実行できませんでした。最新状態とSSH更新経路を確認してください。"),
+        message: systemUpdateErrorMessage(error, "実行権限を解除できませんでした。最新状態を再取得してください。"),
       });
     },
   });
@@ -278,7 +275,6 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
         requestState: deactivationRequestState,
       })
     : { ready: false, reason: "pull_rollback_contract_unavailable" };
-  const rollbackLegacyAgentServiceID = String(observedOwnership?.legacy_agent_service_id || "").trim();
   const activePullOwner = Boolean(
     settingsData
     && updater.transport_mode === "pull_v2"
@@ -286,7 +282,6 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
     && updater.execution_host_id === settingsData.execution_host_id
     && observedOwnership?.transport_mode === "pull_v2"
     && observedOwnership.agent_service_id === updater.updater_id
-    && rollbackLegacyAgentServiceID
     && Number.isSafeInteger(observedOwnership.ownership_epoch)
     && observedOwnership.ownership_epoch > 0
     && Number(updater.ownership_epoch) === observedOwnership.ownership_epoch,
@@ -306,7 +301,6 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
     setOwnershipFeedback(null);
     return deactivateOwnership.mutateAsync({
       request: pullUpdaterOwnershipDeactivationRequest(updater, settingsData),
-      legacyAgentServiceID: rollbackLegacyAgentServiceID,
     });
   };
   const updaterLabel = updater.name || updater.updater_id;
@@ -403,9 +397,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
         <DialogHeader>
           <DialogTitle>{updater.name || updater.updater_id} の設定</DialogTitle>
           <DialogDescription>
-            {updater.transport_mode === "pull_v2"
-              ? "このホストで管理するサービスをControl Panel上で設定します。Host Agentが外向き接続で設定を取得します。"
-              : "中央Updaterが管理するホストとサービスをControl Panel上で設定します。保存後はUpdaterが設定を取得し、自動で反映します。"}
+            このホストで管理するサービスをControl Panel上で設定します。Host Agentが外向き接続で設定を取得します。
           </DialogDescription>
         </DialogHeader>
 
@@ -423,7 +415,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3 id={`${updater.updater_id}-ownership-heading`} className="font-medium">更新実行権限の切替</h3>
-                <p className="mt-1 text-xs text-muted-foreground">Bridge期間中はSSH UpdaterとHost Agentの実行権限をCASで切り替えます。同じホストで同時に更新を実行することはありません。</p>
+                <p className="mt-1 text-xs text-muted-foreground">Host Agentの更新実行権限をCASで切り替えます。observer状態では更新を実行しません。</p>
               </div>
               <Badge variant={Number(updater.ownership_epoch) > 0 ? "default" : "secondary"}>
                 {Number(updater.ownership_epoch) > 0 ? `Host Agent active · epoch ${updater.ownership_epoch}` : "Observer only"}
@@ -434,14 +426,14 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
               <OwnershipStateItem
                 label="現在のOwner"
                 value={settingsData.execution_host_ownership
-                  ? `${settingsData.execution_host_ownership.transport_mode} / ${settingsData.execution_host_ownership.agent_service_id || "legacy"}`
+                  ? `${settingsData.execution_host_ownership.transport_mode} / ${settingsData.execution_host_ownership.agent_service_id || "未割当"}`
                   : "未報告"}
               />
               <OwnershipStateItem label="現在のOwnership epoch" value={settingsData.execution_host_ownership?.ownership_epoch ?? "未報告"} />
               <OwnershipStateItem
-                label={activePullOwner ? "Bridge rollback" : "Observer readiness"}
+                label={activePullOwner ? "実行権限解除" : "Observer readiness"}
                 value={activePullOwner
-                  ? (deactivationEligibility.ready ? `SSHへ復元可能 (${rollbackLegacyAgentServiceID})` : ownershipEligibilityMessage(deactivationEligibility.reason))
+                  ? (deactivationEligibility.ready ? "解除可能" : ownershipEligibilityMessage(deactivationEligibility.reason))
                   : (ownershipEligibility.ready ? "切替可能" : ownershipEligibilityMessage(ownershipEligibility.reason))}
               />
             </div>
@@ -460,7 +452,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                 role={ownershipFeedback?.tone === "error" && !resolvedOwnershipTransitionObserved ? "alert" : "status"}
               >
                 {deactivationTransitionObserved
-                  ? "Bridge rollback結果を最新状態で確認しました。SSH Updaterが更新実行権限を所有し、Host Agentはobserver epoch 0です。"
+                  ? "実行権限解除を最新状態で確認しました。Host Agentはobserver epoch 0です。"
                   : ownershipTransitionObserved
                     ? "切替結果を最新状態で確認しました。Host Agentが更新実行権限を所有しています。"
                     : ownershipFeedback?.message}
@@ -489,7 +481,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                   authority={currentFoundationAuthority(deactivationSnapshot)}
                   refreshAuthority={() => refreshOwnershipAuthority("UPD-07")}
                   handler={requestOwnershipDeactivation}
-                  label="緊急Bridge rollback"
+                  label="実行権限を解除"
                   icon={deactivateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
                   aria-busy={deactivateOwnership.isPending}
                   variant="destructive"
@@ -530,9 +522,9 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
             availableTargets={availableTargets}
             settings={settingsData}
             canEdit={canEdit}
-             canManageSecrets={canManageSecrets}
-             updaterActionController={updaterActionController}
-             ownershipOperationBlocked={ownershipMutationPending || ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous"}
+            canManageSecrets={canManageSecrets}
+            updaterActionController={updaterActionController}
+            ownershipOperationBlocked={ownershipMutationPending || ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous"}
             onBootstrapCloseBlockedChange={setBootstrapCloseBlocked}
           />
         ) : null}
@@ -571,15 +563,12 @@ function UpdaterSettingsForm({
   const [feedback, setFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [copiedHostID, setCopiedHostID] = useState("");
   const [bootstrapActive, setBootstrapActive] = useState(false);
-  const pullMode = settings.transport_mode === "pull_v2";
   const executionHostID = settings.execution_host_id || "";
 
-  const hostOptions = useMemo(() => pullMode
-    ? (executionHostID ? [{ value: executionHostID, label: executionHostID }] : [])
-    : form.hosts.map((host) => ({
-      value: host.host_id,
-      label: host.name || host.host_id || "ID未入力",
-    })), [executionHostID, form.hosts, pullMode]);
+  const hostOptions = useMemo(
+    () => executionHostID ? [{ value: executionHostID, label: executionHostID }] : [],
+    [executionHostID],
+  );
   const nextTargetHostID = (hostOptions[0]?.value || "").trim();
   const canAddRegisteredTarget = Boolean(
     nextTargetHostID
@@ -589,12 +578,15 @@ function UpdaterSettingsForm({
   const saveSettings = useMutation({
     mutationFn: async () => {
       if (bootstrapActive || ownershipOperationBlocked) {
-        throw Object.assign(new Error("updater_host_bootstrap_in_progress"), {
-          code: "updater_host_bootstrap_in_progress",
+        const code = bootstrapActive
+          ? "updater_host_bootstrap_in_progress"
+          : "updater_ownership_transition_in_progress";
+        throw Object.assign(new Error(code), {
+          code,
           status: 409,
         });
       }
-      const payload = buildUpdaterSettingsPayload(baseRevision, form, settings, !pullMode && canManageSecrets ? {
+      const payload = buildUpdaterSettingsPayload(baseRevision, form, settings, canManageSecrets ? {
         githubToken,
         deleteGitHubToken,
       } : undefined);
@@ -609,9 +601,7 @@ function UpdaterSettingsForm({
       setForm(settingsToForm(saved));
       setGithubToken("");
       setDeleteGitHubToken(false);
-      setFeedback({ tone: "success", message: pullMode
-        ? "設定を保存しました。Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。"
-        : "設定を保存しました。Updaterが自動で反映します。反映済みになるまで更新操作は安全のため停止します。" });
+      setFeedback({ tone: "success", message: "設定を保存しました。Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。" });
       queryClient.setQueryData(["system-updates", "updaters", updater.updater_id, "settings"], saved);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
@@ -627,28 +617,17 @@ function UpdaterSettingsForm({
   });
 
   const updateHost = (index: number, patch: Partial<UpdaterSettingsHost>) => {
-    setForm((current) => {
-      const previousHostID = current.hosts[index]?.host_id;
-      const nextHostID = patch.host_id;
-      return {
-        ...current,
-        hosts: current.hosts.map((host, hostIndex) => hostIndex === index ? { ...host, ...patch } : host),
-        targets: nextHostID !== undefined && previousHostID !== nextHostID
-          ? current.targets.map((target) => target.host_id === previousHostID ? { ...target, host_id: nextHostID } : target)
-          : current.targets,
-      };
-    });
+    setForm((current) => ({
+      ...current,
+      hosts: current.hosts.map((host, hostIndex) => hostIndex === index ? { ...host, ...patch } : host),
+    }));
   };
 
   const removeHost = (index: number) => {
-    setForm((current) => {
-      const removedHostID = current.hosts[index]?.host_id;
-      return {
-        ...current,
-        hosts: current.hosts.filter((_, hostIndex) => hostIndex !== index),
-        targets: current.targets.filter((target) => !removedHostID || target.host_id !== removedHostID),
-      };
-    });
+    setForm((current) => ({
+      ...current,
+      hosts: current.hosts.filter((_, hostIndex) => hostIndex !== index),
+    }));
   };
 
   const updateTarget = (index: number, patch: Partial<UpdaterSettingsTarget>) => {
@@ -678,6 +657,7 @@ function UpdaterSettingsForm({
     setCopiedHostID(hostID);
     window.setTimeout(() => setCopiedHostID((current) => current === hostID ? "" : current), 2_000);
   };
+
   const formAuthorityFingerprint = updaterSettingsFormFingerprint(
     baseRevision,
     form,
@@ -747,48 +727,23 @@ function UpdaterSettingsForm({
           </div>
         ) : (
           <div className="rounded-md border border-blue-300 bg-blue-50 p-3 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/35 dark:text-blue-100">
-            {pullMode
-              ? "「設定を保存」を押した後、Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。"
-              : "「設定を保存」を押すと、この内容をUpdaterが自動で取得して反映します。反映に失敗した場合は更新操作を安全のため停止し、旧設定への復帰または自動再試行の状態をここに表示します。"}
+            「設定を保存」を押した後、Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。
           </div>
         )}
 
         <section className="space-y-3" aria-labelledby={`${formID}-runtime-heading`}>
           <div>
-            <h3 id={`${formID}-runtime-heading`} className="font-medium">{pullMode ? "Host Agentの動作" : "Updaterの動作"}</h3>
+            <h3 id={`${formID}-runtime-heading`} className="font-medium">Host Agentの動作</h3>
             <p className="text-xs text-muted-foreground">
-              {pullMode
-                ? "Host AgentからControl Panelへoutbound HTTPSで接続します。SSH、受信API、8090ポートは使用しません。"
-                : "APIは中央ホスト内だけで待ち受けます。通常は初期値のままで使用できます。"}
+              Host AgentからControl Panelへoutbound HTTPSで接続します。受信APIや管理用ポートは使用しません。
             </p>
           </div>
-          {pullMode ? (
-            <div className="flex flex-wrap gap-2 rounded-md border bg-muted/30 p-3 text-xs">
-              <Badge variant="secondary">pull_v2</Badge>
-              <span>実行ホスト: {executionHostID || "未割り当て"}</span>
-              <span>受信ポート: なし</span>
-            </div>
-          ) : null}
+          <div className="flex flex-wrap gap-2 rounded-md border bg-muted/30 p-3 text-xs">
+            <Badge variant="secondary">pull_v2</Badge>
+            <span>実行ホスト: {executionHostID || "未割り当て"}</span>
+            <span>受信ポート: なし</span>
+          </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            {!pullMode ? (
-              <>
-                <Field label="API接続先" htmlFor={`${formID}-api-host`} hint="安全のためループバック固定">
-                  <Input id={`${formID}-api-host`} value="127.0.0.1" readOnly disabled />
-                </Field>
-                <Field label="APIポート" htmlFor={`${formID}-api-port`} hint="初期値 8090">
-                  <Input
-                    id={`${formID}-api-port`}
-                    type="number"
-                    min={1}
-                    max={65535}
-                    inputMode="numeric"
-                    value={form.apiPort}
-                    onChange={(event) => setForm((current) => ({ ...current, apiPort: event.target.value }))}
-                    disabled={!canEdit}
-                  />
-                </Field>
-              </>
-            ) : null}
             <Field label="更新確認間隔（秒）" htmlFor={`${formID}-poll-interval`}>
               <Input
                 id={`${formID}-poll-interval`}
@@ -817,32 +772,30 @@ function UpdaterSettingsForm({
                 disabled={!canEdit}
               />
             </Field>
-            {pullMode ? (
-              <Field
-                label="Local Executor policy SHA-256"
-                htmlFor={`${formID}-executor-policy-sha256`}
-                hint="root所有policyを固定するdigestです。未設定時はobserve結果を信頼せず不明として扱います。"
-              >
-                <Input
-                  id={`${formID}-executor-policy-sha256`}
-                  value={form.localExecutorPolicySHA256}
-                  onChange={(event) => setForm((current) => ({ ...current, localExecutorPolicySHA256: event.target.value }))}
-                  disabled={!canEdit}
-                  placeholder="sha256:..."
-                  spellCheck={false}
-                  className="font-mono text-xs"
-                />
-              </Field>
-            ) : null}
+            <Field
+              label="Local Executor policy SHA-256"
+              htmlFor={`${formID}-executor-policy-sha256`}
+              hint="root所有policyを固定するdigestです。未設定時はobserve結果を信頼せず不明として扱います。"
+            >
+              <Input
+                id={`${formID}-executor-policy-sha256`}
+                value={form.localExecutorPolicySHA256}
+                onChange={(event) => setForm((current) => ({ ...current, localExecutorPolicySHA256: event.target.value }))}
+                disabled={!canEdit}
+                placeholder="sha256:..."
+                spellCheck={false}
+                className="font-mono text-xs"
+              />
+            </Field>
           </div>
         </section>
 
-        {!pullMode ? <section className="space-y-3" aria-labelledby={`${formID}-hosts-heading`}>
+        <section className="space-y-3" aria-labelledby={`${formID}-hosts-heading`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 id={`${formID}-hosts-heading`} className="font-medium">管理対象ホスト</h3>
+              <h3 id={`${formID}-hosts-heading`} className="font-medium">bootstrap対象ホスト</h3>
               <p className="max-w-3xl text-xs leading-5 text-muted-foreground">
-                対象サーバーで確認したssh-ed25519ホスト公開鍵の全文を、管理者など別の安全な経路から受け取って入力してください。保存後に表示されるfingerprintも対象サーバーの値と照合してください。初回接続時の自動信頼は行いません。
+                この一覧は独立UpdaterがHost Agentを初期導入するためだけに使用します。pull_v2の実行対象・所有権とは分離されています。対象サーバーで確認したssh-ed25519ホスト公開鍵の全文を、別の安全な経路で受け取って入力してください。初回接続時の自動信頼は行いません。
               </p>
             </div>
             {canEdit ? (
@@ -850,7 +803,10 @@ function UpdaterSettingsForm({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setForm((current) => ({ ...current, hosts: [...current.hosts, newHost(current.hosts.length)] }))}
+                onClick={() => setForm((current) => ({
+                  ...current,
+                  hosts: [...current.hosts, newHost(current.hosts.length, current.hosts.length === 0 ? executionHostID : "")],
+                }))}
               >
                 <Plus className="size-4" />
                 ホストを追加
@@ -859,7 +815,7 @@ function UpdaterSettingsForm({
           </div>
 
           {form.hosts.length === 0 ? (
-            <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">管理対象ホストはまだありません。「ホストを追加」から登録してください。</div>
+            <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">bootstrap対象ホストはまだありません。「ホストを追加」から登録してください。</div>
           ) : (
             <div className="space-y-4">
               {form.hosts.map((host, index) => {
@@ -870,9 +826,9 @@ function UpdaterSettingsForm({
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-medium">ホスト {index + 1}</div>
                       {canEdit ? (
-                        <DangerConfirm
+                        <DeferredUpdaterHostConfirmation
                           title={`「${host.name || host.host_id || `ホスト ${index + 1}`}」を削除しますか？`}
-                          description="このホストと紐づく更新対象もフォームから削除します。「設定を保存」で反映すると、中央UpdaterのSSH秘密鍵は廃棄され、再追加時は新しい鍵になります。更新中のジョブがないことを確認し、反映後に対象ホストのauthorized_keys・sudoers・helper設定を撤去してください。"
+                          description="このbootstrap用ホスト定義をフォームから削除します。pull_v2の実行対象・所有権は変更しません。「設定を保存」で反映した後、必要に応じて対象ホストのbootstrap用authorized_keysを撤去してください。"
                           actionLabel="ホストを削除"
                           onConfirm={() => removeHost(index)}
                         >
@@ -880,7 +836,7 @@ function UpdaterSettingsForm({
                             <Trash2 className="size-4" />
                             削除
                           </Button>
-                        </DangerConfirm>
+                        </DeferredUpdaterHostConfirmation>
                       ) : null}
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -899,7 +855,7 @@ function UpdaterSettingsForm({
                       <Field
                         label="SSHユーザー"
                         htmlFor={`${formID}-host-${index}-user`}
-                        hint="helper自動セットアップでは autostream-update-host 固定です。一時管理者ユーザーとは別です。"
+                        hint="自動bootstrapでは autostream-update-host 固定です。一時管理者ユーザーとは別です。"
                       >
                         <Input id={`${formID}-host-${index}-user`} value={host.user} onChange={(event) => updateHost(index, { user: event.target.value })} disabled={!canEdit} placeholder="autostream-update-host" />
                       </Field>
@@ -931,10 +887,8 @@ function UpdaterSettingsForm({
                     </Field>
 
                     <div className="space-y-2 rounded-md bg-muted/40 p-3">
-                      <div className="flex items-center gap-2 text-sm font-medium"><KeyRound className="size-4" />対象ホストへ登録するUpdater公開鍵</div>
-                      <p className="text-xs text-muted-foreground">
-                        設定保存後にUpdaterが生成し、helper自動セットアップ時に対象ホストへ登録します。通常は手動で登録する必要はありません。
-                      </p>
+                      <div className="flex items-center gap-2 text-sm font-medium"><KeyRound className="size-4" />対象ホストへ登録する独立Updater公開鍵</div>
+                      <p className="text-xs text-muted-foreground">設定保存後に独立Updaterが生成し、bootstrap時に対象ホストへ登録します。</p>
                       {clientPublicKey ? (
                         <div className="flex items-start gap-2">
                           <Textarea readOnly value={clientPublicKey} rows={2} aria-label={`${host.name || host.host_id} 用Updater SSHクライアント公開鍵`} className="font-mono text-xs" />
@@ -943,7 +897,7 @@ function UpdaterSettingsForm({
                           </Button>
                         </div>
                       ) : (
-                        <div className="text-xs text-amber-700 dark:text-amber-300">まだ生成されていません。設定を保存し、Updaterが反映するまでお待ちください。</div>
+                        <div className="text-xs text-amber-700 dark:text-amber-300">まだ生成されていません。設定を保存し、独立Updaterが反映するまでお待ちください。</div>
                       )}
                       {clientKeyFingerprint ? <div className="break-all text-xs text-muted-foreground">Fingerprint: {clientKeyFingerprint}</div> : null}
                     </div>
@@ -958,6 +912,7 @@ function UpdaterSettingsForm({
               key={canEdit ? "bootstrap-edit" : "bootstrap-readonly"}
               updater={updater}
               expectedRevision={baseRevision}
+              expectedAppliedRevision={settings.projection_revision ?? settings.revision}
               savedHosts={settings.hosts}
               currentHosts={form.hosts}
               savedTargets={settings.targets}
@@ -969,16 +924,14 @@ function UpdaterSettingsForm({
               onCloseBlockedChange={onBootstrapCloseBlockedChange}
             />
           ) : null}
-        </section> : null}
+        </section>
 
         <section className="space-y-3" aria-labelledby={`${formID}-targets-heading`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 id={`${formID}-targets-heading`} className="font-medium">更新するサービス</h3>
               <p className="text-xs text-muted-foreground">
-                {pullMode
-                  ? `実行ホスト ${executionHostID || "未割り当て"} 上で管理するAutoStreamサービスを指定します。ホスト割り当てはControl Panelが管理します。`
-                  : "どのホスト上の、どのAutoStreamサービスを更新するか指定します。"}
+                {`実行ホスト ${executionHostID || "未割り当て"} 上で管理するAutoStreamサービスを指定します。ホスト割り当てはControl Panelが管理します。`}
               </p>
             </div>
             {canEdit ? (
@@ -991,7 +944,7 @@ function UpdaterSettingsForm({
                   ? "先にホストを設定してください。"
                   : !canAddRegisteredTarget ? "追加できる未使用の登録サービスがありません。" : undefined}
                 onClick={() => setForm((current) => {
-                  const hostID = String(pullMode ? executionHostID : current.hosts[0]?.host_id || "").trim();
+                  const hostID = String(executionHostID).trim();
                   const target = firstUnusedUpdaterSettingsTarget(settings.transport_mode, availableTargets, current.targets, hostID);
                   if (!hostID || !target) return current;
                   return { ...current, targets: [...current.targets, target] };
@@ -1028,8 +981,8 @@ function UpdaterSettingsForm({
                         </SelectContent>
                       </Select>
                     </Field>
-                    <Field label={pullMode ? "実行ホスト（サーバー管理）" : "ホスト"} htmlFor={`${formID}-target-${index}-host`}>
-                      <Select value={target.host_id || executionHostID} onValueChange={(value) => updateTarget(index, { host_id: value })} disabled={pullMode || !canEdit || hostOptions.length === 0}>
+                    <Field label="実行ホスト（サーバー管理）" htmlFor={`${formID}-target-${index}-host`}>
+                      <Select value={target.host_id || executionHostID} onValueChange={(value) => updateTarget(index, { host_id: value })} disabled>
                         <SelectTrigger id={`${formID}-target-${index}-host`}><SelectValue placeholder="ホストを選択" /></SelectTrigger>
                         <SelectContent>
                           {hostOptions.map((host) => <SelectItem key={host.value} value={host.value}>{host.label}</SelectItem>)}
@@ -1111,10 +1064,12 @@ function UpdaterSettingsForm({
           )}
         </section>
 
-        {!pullMode ? <section className="space-y-3" aria-labelledby={`${formID}-github-heading`}>
+        <section className="space-y-3" aria-labelledby={`${formID}-github-heading`}>
           <div>
             <h3 id={`${formID}-github-heading`} className="font-medium">GitHub Release Token</h3>
-            <p className="text-xs text-muted-foreground">Managed更新では公開中のControl Panel repositoryにもTokenを必須としています。当該repositoryの Contents (read) と Attestations (read) だけを付与してください。値は保存後に再表示されず、更新jobの実行時だけUpdaterへ渡されます。private repositoryへ変更した場合、この公開repository用の証明検証では更新できません。</p>
+            <p className="text-xs text-muted-foreground">
+              bootstrap artifact取得用TokenはControl Panelの暗号化secretにだけ保存され、値は再表示されません。独立Updaterがbootstrap jobをclaimした時だけ一回限りで渡し、Host Agentのpolicyや応答には含めません。
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <Badge variant={settings.github_token_configured ? "default" : "outline"}>{settings.github_token_configured ? "設定済み" : "未設定"}</Badge>
@@ -1153,11 +1108,7 @@ function UpdaterSettingsForm({
           ) : (
             <p className="text-xs text-muted-foreground">Tokenの登録・変更には system_updates.execute と secrets.update の両方の権限が必要です。</p>
           )}
-        </section> : (
-          <div className="rounded-md border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
-            pull_v2では長期GitHub Release TokenをHost Agentへ配布しません。更新artifactはジョブに限定した短期資格情報またはControl Panel経由で取得します。
-          </div>
-        )}
+        </section>
 
         {feedback ? (
           <div
@@ -1167,11 +1118,6 @@ function UpdaterSettingsForm({
             role={feedback.tone === "error" ? "alert" : "status"}
           >
             {feedback.message}
-          </div>
-        ) : null}
-        {bootstrapActive ? (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100" role="status">
-            ホストの自動セットアップ中はUpdater設定を保存できません。完了後に再試行してください。
           </div>
         ) : null}
       </div>
@@ -1236,7 +1182,6 @@ function ownershipActionAuthoritySnapshot(
       settings?.execution_host_id,
       ownership?.transport_mode,
       ownership?.agent_service_id,
-      ownership?.legacy_agent_service_id,
       ownership?.ownership_epoch,
       ownership?.policy_revision,
       activation?.ready,
@@ -1262,7 +1207,6 @@ function updaterSettingsFormFingerprint(
   return updaterAuthorityFingerprint([
     "UPD-08-form",
     baseRevision,
-    form.apiPort,
     form.pollInterval,
     form.heartbeatInterval,
     form.localExecutorPolicySHA256,
@@ -1328,7 +1272,7 @@ function ownershipEligibilityMessage(reason: string) {
   const messages: Record<string, string> = {
     unsupported_transport: "pull_v2ではありません",
     pull_ownership_contract_unavailable: "切替用revisionまたは現在Ownerが未報告です",
-    pull_rollback_contract_unavailable: "保存済みSSH ownerまたは現在のpull owner fenceが未報告です",
+    pull_rollback_contract_unavailable: "現在のpull owner fenceが未報告です",
     request_pending: "切替要求を送信中です",
     request_ambiguous: "切替結果を確認中です",
     observer_offline: "Host Agentがオフラインです",
@@ -1357,7 +1301,6 @@ function Field({ label, htmlFor, hint, children }: { label: string; htmlFor: str
 
 function settingsToForm(settings: UpdaterSettings): UpdaterSettingsFormState {
   return {
-    apiPort: String(settings.api.port || 8090),
     pollInterval: String(settings.poll_interval_seconds || 15),
     heartbeatInterval: String(settings.heartbeat_interval_seconds || 30),
     localExecutorPolicySHA256: settings.local_executor_policy_sha256 || "",
@@ -1374,61 +1317,34 @@ function buildUpdaterSettingsPayload(
 ): UpdaterSettingsUpdate {
   const pollInterval = requiredInterval(form.pollInterval, "更新確認間隔");
   const heartbeatInterval = requiredHeartbeatInterval(form.heartbeatInterval);
-  const pullMode = settings.transport_mode === "pull_v2";
   const executionHostID = String(settings.execution_host_id || "").trim();
-  if (pullMode && !executionHostID) throw new Error("Host Agentの実行ホスト割り当てがありません。Nodeを再登録してください。");
+  if (!executionHostID) throw new Error("Host Agentの実行ホスト割り当てがありません。Nodeを再登録してください。");
+  if (form.hosts.length > 128) throw new Error("bootstrap対象ホストは128件まで登録できます。");
   if (form.targets.length === 0) throw new Error("更新するサービスを1件以上追加してください。");
   if (form.targets.length > 1024) throw new Error("更新するサービスは1024件まで登録できます。");
 
-  if (pullMode) {
-    const hostIDs = new Set([executionHostID]);
-    const targets = form.targets.map((target, index) => normalizeTargetForSave(
-      { ...target, host_id: executionHostID },
-      index,
-      hostIDs,
-      "pull_v2",
-    ));
-    if (new Set(targets.map((target) => target.target_id)).size !== targets.length) throw new Error("更新対象IDが重複しています。");
-    if (new Set(targets.map((target) => target.service_id)).size !== targets.length) throw new Error("NodeサービスIDが重複しています。");
-    const digest = form.localExecutorPolicySHA256.trim().toLowerCase();
-    if (digest && !/^sha256:[0-9a-f]{64}$/.test(digest)) {
-      throw new Error("Local Executor policy SHA-256は sha256: に続く64桁の16進数で入力してください。");
-    }
-    return {
-      expected_revision: expectedRevision,
-      poll_interval_seconds: pollInterval,
-      heartbeat_interval_seconds: heartbeatInterval,
-      targets,
-      local_executor_policy_sha256: digest,
-    };
-  }
-
-  const apiPort = requiredPort(form.apiPort, "APIポート");
-  if (form.hosts.length === 0) throw new Error("管理対象ホストを1件以上追加してください。");
-  if (form.hosts.length > 128) throw new Error("管理対象ホストは128件まで登録できます。");
   const hosts = form.hosts.map((host, index) => normalizeHostForSave(host, index));
-  const hostIDs = new Set(hosts.map((host) => host.host_id));
-  if (hostIDs.size !== hosts.length) throw new Error("ホストIDが重複しています。");
-  const targets = form.targets.map((target, index) => normalizeTargetForSave(target, index, hostIDs, "ssh_v1"));
-  if (new Set(targets.map((target) => target.target_id)).size !== targets.length) throw new Error("対象IDが重複しています。");
-  const referencedHostIDs = new Set(targets.map((target) => target.host_id));
-  const unusedHost = hosts.find((host) => !referencedHostIDs.has(host.host_id));
-  if (unusedHost) throw new Error(`${unusedHost.name} に更新するサービスを1件以上追加してください。`);
-
+  if (new Set(hosts.map((host) => host.host_id)).size !== hosts.length) throw new Error("ホストIDが重複しています。");
+  const executionHostIDs = new Set([executionHostID]);
+  const targets = form.targets.map((target, index) => normalizeTargetForSave(
+    { ...target, host_id: executionHostID },
+    index,
+    executionHostIDs,
+    "pull_v2",
+  ));
+  if (new Set(targets.map((target) => target.target_id)).size !== targets.length) throw new Error("更新対象IDが重複しています。");
+  if (new Set(targets.map((target) => target.service_id)).size !== targets.length) throw new Error("NodeサービスIDが重複しています。");
+  const digest = form.localExecutorPolicySHA256.trim().toLowerCase();
+  if (digest && !/^sha256:[0-9a-f]{64}$/.test(digest)) {
+    throw new Error("Local Executor policy SHA-256は sha256: に続く64桁の16進数で入力してください。");
+  }
   const payload: UpdaterSettingsUpdate = {
     expected_revision: expectedRevision,
-    api: {
-      bind_host: "127.0.0.1",
-      host: "127.0.0.1",
-      port: apiPort,
-      ssl_enabled: false,
-      tls_cert_file: "",
-      tls_key_file: "",
-    },
     poll_interval_seconds: pollInterval,
     heartbeat_interval_seconds: heartbeatInterval,
     hosts,
     targets,
+    local_executor_policy_sha256: digest,
   };
   if (secretUpdate?.deleteGitHubToken) payload.github_token = "";
   else if (secretUpdate?.githubToken.trim()) payload.github_token = secretUpdate.githubToken.trim();
@@ -1527,9 +1443,9 @@ function requiredHeartbeatInterval(value: unknown) {
   return number;
 }
 
-function newHost(index: number): UpdaterSettingsHost {
+function newHost(index: number, preferredHostID: string): UpdaterSettingsHost {
   return {
-    host_id: `host-${index + 1}`,
+    host_id: preferredHostID || `host-${index + 1}`,
     name: `ホスト ${index + 1}`,
     address: "",
     port: 22,

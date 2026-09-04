@@ -172,43 +172,9 @@ func TestMariaDBServiceAssignmentGuardParityAndConcurrency(t *testing.T) {
 		t.Fatalf("split-brain assignment row was repaired: assignments=%#v err=%v", assignments, err)
 	}
 
-	legacy, err := streams.CreateStream(ctx, "legacy retry "+suffix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyServiceID := "encoder-legacy-retry-" + suffix
-	legacyToken := registerMariaDBAssignmentService(t, ctx, auth, legacyServiceID, "encoder_recorder")
-	if _, err := auth.AssignServiceToStreamGuarded(ctx, store.ServiceAssignmentMutation{ServiceID: legacyServiceID, StreamID: legacy.ID, AssignmentRole: "primary"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.BeginStreamArchiveRetryGuarded(ctx, legacyServiceID, legacy.ID); err != nil {
-		t.Fatalf("begin legacy retry: %v", err)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: legacyServiceID}); !errors.Is(err, store.ErrServiceUnassignProtectedStream) {
-		t.Fatalf("legacy retry unassign err=%v", err)
-	}
-	staleStartedAt := time.Now().UTC().Add(-time.Hour)
-	stalePath := fmt.Sprintf("final/%s/stale-run/final.mp4", legacy.ID)
-	if err := streams.WriteStreamArtifactReport(ctx, legacyToken, store.ServiceStreamEvent{ServiceID: legacyServiceID, StreamID: legacy.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{{
-		ArchiveRunID: "stale-run", ArchiveStartedAt: &staleStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: stalePath, SizeBytes: 20,
-	}}); err != nil {
-		t.Fatalf("stale legacy retry artifact report: %v", err)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: legacyServiceID}); !errors.Is(err, store.ErrServiceUnassignProtectedStream) {
-		t.Fatalf("stale report cleared legacy retry guard: %v", err)
-	}
-	legacyPath := fmt.Sprintf("final/%s/final.mp4", legacy.ID)
-	if err := streams.WriteStreamArtifactReport(ctx, legacyToken, store.ServiceStreamEvent{ServiceID: legacyServiceID, StreamID: legacy.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{{
-		Kind: "archive", Name: "final.mp4", RelativePath: legacyPath, SizeBytes: 21,
-	}}); err != nil {
-		t.Fatalf("legacy retry artifact report: %v", err)
-	}
-	if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: legacyServiceID}); err != nil {
-		t.Fatalf("unassign after legacy retry report: %v", err)
-	}
 }
 
-func TestMariaDBArchiveAuthorityCapabilityParity(t *testing.T) {
+func TestMariaDBArchiveAuthorityRequiresExactV2Report(t *testing.T) {
 	dsn := os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN")
 	if dsn == "" {
 		t.Skip("AUTOSTREAM_MARIADB_TEST_DSN is not configured")
@@ -227,108 +193,60 @@ func TestMariaDBArchiveAuthorityCapabilityParity(t *testing.T) {
 	}
 	streams := store.NewMariaDBStreamStore(db)
 	auth := store.NewMariaDBAuthStore(db)
+	suffix := "v2-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	stream, encoderID, encoderToken, claimed := claimMariaDBArchiveStart(t, ctx, streams, auth, suffix)
+	if claimed.ArchiveAuthority.RunID == "" || claimed.ArchiveAuthority.StartedAt == nil {
+		t.Fatalf("v2 authority=%#v", claimed.ArchiveAuthority)
+	}
+	completed, transitioned, err := streams.TransitionClaimedStreamStart(ctx, claimed.OwnershipClaim, "completed")
+	if err != nil || !transitioned {
+		t.Fatalf("complete claim: stream=%#v transitioned=%v err=%v", completed, transitioned, err)
+	}
+	if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: encoderID}); !errors.Is(err, store.ErrServiceUnassignProtectedStream) {
+		t.Fatalf("pre-report unassign err=%v", err)
+	}
 
-	for _, modern := range []bool{false, true} {
-		name := "legacy"
-		if modern {
-			name = "modern"
-		}
-		t.Run(name, func(t *testing.T) {
-			suffix := name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-			stream, encoderID, encoderToken, claimed := claimMariaDBArchiveStart(t, ctx, streams, auth, suffix, modern)
-			if modern {
-				if claimed.ArchiveAuthority.Legacy || claimed.ArchiveAuthority.RunID == "" || claimed.ArchiveAuthority.StartedAt == nil {
-					t.Fatalf("modern authority=%#v", claimed.ArchiveAuthority)
-				}
-			} else if !claimed.ArchiveAuthority.Legacy || claimed.ArchiveAuthority.RunID != "" || claimed.ArchiveAuthority.StartedAt != nil || claimed.Stream.ArchiveStartedAt != nil {
-				t.Fatalf("legacy authority=%#v stream=%#v", claimed.ArchiveAuthority, claimed.Stream)
-			}
-			completed, transitioned, err := streams.TransitionClaimedStreamStart(ctx, claimed.OwnershipClaim, "completed")
-			if err != nil || !transitioned {
-				t.Fatalf("complete claim: stream=%#v transitioned=%v err=%v", completed, transitioned, err)
-			}
-			if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: encoderID}); !errors.Is(err, store.ErrServiceUnassignProtectedStream) {
-				t.Fatalf("pre-report unassign err=%v", err)
-			}
+	staleStartedAt := claimed.ArchiveAuthority.StartedAt.Add(-time.Minute)
+	staleRunID := "stale-run-" + suffix
+	stalePath := fmt.Sprintf("final/%s/%s/final.mp4", stream.ID, staleRunID)
+	if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{{
+		ArchiveRunID: staleRunID, ArchiveStartedAt: &staleStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: stalePath, SizeBytes: 2,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if current, getErr := streams.GetStream(ctx, stream.ID); getErr != nil || current.ArchiveReportedAt != nil {
+		t.Fatalf("stale v2 report closed authority: stream=%#v err=%v", current, getErr)
+	}
 
-			wrongStream, err := streams.CreateStream(ctx, "wrong archive target "+suffix)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wrongPath := fmt.Sprintf("final/%s/final.mp4", wrongStream.ID)
-			if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: wrongStream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{{
-				Kind: "archive", Name: "final.mp4", RelativePath: wrongPath, SizeBytes: 1,
-			}}); !errors.Is(err, store.ErrForbidden) {
-				t.Fatalf("wrong-stream report err=%v", err)
-			}
-
-			if modern {
-				staleStartedAt := claimed.ArchiveAuthority.StartedAt.Add(-time.Minute)
-				staleRunID := "stale-run-" + suffix
-				stalePath := fmt.Sprintf("final/%s/%s/final.mp4", stream.ID, staleRunID)
-				if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{{
-					ArchiveRunID: staleRunID, ArchiveStartedAt: &staleStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: stalePath, SizeBytes: 2,
-				}}); err != nil {
-					t.Fatal(err)
-				}
-				wrongStartedAt := claimed.ArchiveAuthority.StartedAt.Add(time.Second)
-				currentPath := fmt.Sprintf("final/%s/%s/final.mp4", stream.ID, claimed.ArchiveAuthority.RunID)
-				if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{{
-					ArchiveRunID: claimed.ArchiveAuthority.RunID, ArchiveStartedAt: &wrongStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: currentPath, SizeBytes: 3,
-				}}); err != nil {
-					t.Fatal(err)
-				}
-				if current, getErr := streams.GetStream(ctx, stream.ID); getErr != nil || current.ArchiveReportedAt != nil {
-					t.Fatalf("stale modern report closed authority: stream=%#v err=%v", current, getErr)
-				}
-			}
-
-			artifact := store.StreamArtifact{Kind: "archive", Name: "final.mp4", SizeBytes: 4}
-			if modern {
-				artifact.ArchiveRunID = claimed.ArchiveAuthority.RunID
-				artifact.ArchiveStartedAt = claimed.ArchiveAuthority.StartedAt
-				artifact.RelativePath = fmt.Sprintf("final/%s/%s/final.mp4", stream.ID, claimed.ArchiveAuthority.RunID)
-			} else {
-				artifact.RelativePath = fmt.Sprintf("final/%s/final.mp4", stream.ID)
-			}
-			if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{artifact}); err != nil {
-				t.Fatal(err)
-			}
-			reported, err := streams.GetStream(ctx, stream.ID)
-			if err != nil || reported.ArchiveReportedAt == nil {
-				t.Fatalf("matching report did not close authority: stream=%#v err=%v", reported, err)
-			}
-			firstReportedAt := *reported.ArchiveReportedAt
-			if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{artifact}); err != nil {
-				t.Fatal(err)
-			}
-			duplicate, err := streams.GetStream(ctx, stream.ID)
-			if err != nil || duplicate.ArchiveReportedAt == nil || !duplicate.ArchiveReportedAt.Equal(firstReportedAt) {
-				t.Fatalf("duplicate report was not idempotent: first=%s stream=%#v err=%v", firstReportedAt, duplicate, err)
-			}
-			if !modern {
-				var pendingMarkers, closedMarkers int
-				if err := db.QueryRowContext(ctx, `SELECT
-COUNT(CASE WHEN message = 'legacy archive assignment guard pending' THEN 1 END),
-COUNT(CASE WHEN message = 'legacy archive assignment guard closed' THEN 1 END)
-FROM stream_logs WHERE stream_id = ?`, stream.ID).Scan(&pendingMarkers, &closedMarkers); err != nil {
-					t.Fatal(err)
-				}
-				if pendingMarkers != 1 || closedMarkers != 1 {
-					t.Fatalf("legacy guard did not use one append-only pending/closure pair: pending=%d closed=%d", pendingMarkers, closedMarkers)
-				}
-			}
-			if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: encoderID}); err != nil {
-				t.Fatalf("post-report unassign: %v", err)
-			}
-			if err := streams.DeleteStream(ctx, stream.ID); err != nil {
-				t.Fatalf("post-report delete: %v", err)
-			}
-		})
+	artifact := store.StreamArtifact{
+		ArchiveRunID: claimed.ArchiveAuthority.RunID, ArchiveStartedAt: claimed.ArchiveAuthority.StartedAt,
+		Kind: "archive", Name: "final.mp4",
+		RelativePath: fmt.Sprintf("final/%s/%s/final.mp4", stream.ID, claimed.ArchiveAuthority.RunID), SizeBytes: 4,
+	}
+	if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{artifact}); err != nil {
+		t.Fatal(err)
+	}
+	reported, err := streams.GetStream(ctx, stream.ID)
+	if err != nil || reported.ArchiveReportedAt == nil {
+		t.Fatalf("matching report did not close authority: stream=%#v err=%v", reported, err)
+	}
+	firstReportedAt := *reported.ArchiveReportedAt
+	if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{artifact}); err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := streams.GetStream(ctx, stream.ID)
+	if err != nil || duplicate.ArchiveReportedAt == nil || !duplicate.ArchiveReportedAt.Equal(firstReportedAt) {
+		t.Fatalf("duplicate report was not idempotent: first=%s stream=%#v err=%v", firstReportedAt, duplicate, err)
+	}
+	if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: encoderID}); err != nil {
+		t.Fatalf("post-report unassign: %v", err)
+	}
+	if err := streams.DeleteStream(ctx, stream.ID); err != nil {
+		t.Fatalf("post-report delete: %v", err)
 	}
 }
 
-func claimMariaDBArchiveStart(t *testing.T, ctx context.Context, streams store.MariaDBStreamStore, auth store.MariaDBAuthStore, suffix string, modern bool) (store.Stream, string, store.ServiceToken, store.ClaimedStreamStart) {
+func claimMariaDBArchiveStart(t *testing.T, ctx context.Context, streams store.MariaDBStreamStore, auth store.MariaDBAuthStore, suffix string) (store.Stream, string, store.ServiceToken, store.ClaimedStreamStart) {
 	t.Helper()
 	stream, err := streams.CreateStream(ctx, "archive claim "+suffix)
 	if err != nil {
@@ -339,11 +257,7 @@ func claimMariaDBArchiveStart(t *testing.T, ctx context.Context, streams store.M
 		t.Fatal(err)
 	}
 	encoderID := "encoder-claim-" + suffix
-	capabilities := map[string]any{}
-	if modern {
-		capabilities["archive_runs"] = true
-	}
-	encoderToken := registerMariaDBAssignmentServiceWithCapabilities(t, ctx, auth, encoderID, "encoder_recorder", capabilities)
+	encoderToken := registerMariaDBAssignmentService(t, ctx, auth, encoderID, "encoder_recorder")
 	serviceIDs := []string{encoderID, "worker-claim-" + suffix, "discord-claim-" + suffix}
 	registerMariaDBAssignmentService(t, ctx, auth, serviceIDs[1], "worker")
 	registerMariaDBAssignmentService(t, ctx, auth, serviceIDs[2], "discord_bot")

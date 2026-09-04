@@ -17,7 +17,6 @@ type MemoryStreamStore struct {
 	artifacts                                  map[string][]StreamArtifact
 	artifactReports                            map[string]bool
 	archiveRetryPending                        map[string]bool
-	legacyArchivePending                       map[string]bool
 	artifactShares                             map[string]StreamArtifactShare
 	mediaRuntimes                              map[string]StreamMediaRuntime
 	youtubeRuntimes                            map[string]StreamYouTubeRuntime
@@ -36,7 +35,6 @@ func NewMemoryStreamStore() *MemoryStreamStore {
 		artifacts:                            map[string][]StreamArtifact{},
 		artifactReports:                      map[string]bool{},
 		archiveRetryPending:                  map[string]bool{},
-		legacyArchivePending:                 map[string]bool{},
 		artifactShares:                       map[string]StreamArtifactShare{},
 		mediaRuntimes:                        map[string]StreamMediaRuntime{},
 		youtubeRuntimes:                      map[string]StreamYouTubeRuntime{},
@@ -107,12 +105,6 @@ func (s *MemoryStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 		}
 		if s.archiveRetryPending[stream.ID] {
 			items = append(items, stream)
-			continue
-		}
-		if s.legacyArchivePending[stream.ID] {
-			if stream.ArchiveReportedAt == nil && (status == "stopping" || status == "completed" || status == "ready") {
-				items = append(items, stream)
-			}
 			continue
 		}
 		if strings.TrimSpace(stream.ArchiveProfileID) == "" {
@@ -334,9 +326,6 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	stream.ScheduledStartAt = cloneTimePtr(settings.ScheduledStartAt)
 	stream.ScheduledEndAt = cloneTimePtr(settings.ScheduledEndAt)
 	stream.DiscordConfigID = strings.TrimSpace(settings.DiscordConfigID)
-	stream.DiscordGuildID = strings.TrimSpace(settings.DiscordGuildID)
-	stream.DiscordVoiceID = strings.TrimSpace(settings.DiscordVoiceID)
-	stream.DiscordTextID = strings.TrimSpace(settings.DiscordTextID)
 	stream.AutoStartTrigger = strings.TrimSpace(settings.AutoStartTrigger)
 	stream.EncoderProfileID = strings.TrimSpace(settings.EncoderProfileID)
 	stream.CaptionProfileID = strings.TrimSpace(settings.CaptionProfileID)
@@ -421,11 +410,8 @@ func (s *MemoryStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, arc
 		return Stream{}, err
 	}
 	archiveRunID = strings.TrimSpace(archiveRunID)
-	if archiveRunID != "" && !validArchiveRunID(archiveRunID) {
+	if !validArchiveRunID(archiveRunID) || startedAt.IsZero() {
 		return Stream{}, ErrInvalidStreamArtifact
-	}
-	if archiveRunID == "" {
-		startedAt = time.Time{}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -434,20 +420,12 @@ func (s *MemoryStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, arc
 		return Stream{}, ErrNotFound
 	}
 	stream.ArchiveRunID = archiveRunID
-	stream.ArchiveStartedAt = nil
-	if !startedAt.IsZero() {
-		value := startedAt.UTC()
-		stream.ArchiveStartedAt = &value
-	}
+	value := startedAt.UTC()
+	stream.ArchiveStartedAt = &value
 	stream.ArchiveReportedAt = nil
 	stream.UpdatedAt = time.Now().UTC()
 	s.streams[id] = stream
 	s.artifactReports[id] = false
-	if archiveRunID == "" && strings.TrimSpace(stream.ArchiveProfileID) != "" {
-		s.legacyArchivePending[id] = true
-	} else {
-		delete(s.legacyArchivePending, id)
-	}
 	return stream, nil
 }
 
@@ -569,22 +547,15 @@ func (s *MemoryStreamStore) ClaimStreamStart(ctx context.Context, request Stream
 	stream.ArchiveRunID = ""
 	stream.ArchiveStartedAt = nil
 	stream.ArchiveReportedAt = nil
-	delete(s.legacyArchivePending, stream.ID)
 	if request.ArchiveEnabled {
-		encoder := actual["encoder_recorder"]
-		if capabilityTrue(encoder.ReportedCapabilities, "archive_runs") {
-			startedAt := request.ArchiveStartedAt.UTC()
-			if startedAt.IsZero() {
-				startedAt = now
-			}
-			stream.ArchiveRunID = StreamArchiveRunIDForStart(startedAt)
-			stream.ArchiveStartedAt = cloneTimePtr(&startedAt)
-			authority.RunID = stream.ArchiveRunID
-			authority.StartedAt = cloneTimePtr(stream.ArchiveStartedAt)
-		} else {
-			s.legacyArchivePending[stream.ID] = true
-			authority.Legacy = true
+		startedAt := request.ArchiveStartedAt.UTC()
+		if startedAt.IsZero() {
+			startedAt = now
 		}
+		stream.ArchiveRunID = StreamArchiveRunIDForStart(startedAt)
+		stream.ArchiveStartedAt = cloneTimePtr(&startedAt)
+		authority.RunID = stream.ArchiveRunID
+		authority.StartedAt = cloneTimePtr(stream.ArchiveStartedAt)
 	}
 	s.artifactReports[stream.ID] = false
 	stream.Status = "starting"
@@ -625,7 +596,7 @@ func (s *MemoryStreamStore) TransitionClaimedStreamStart(ctx context.Context, cl
 	if !strings.EqualFold(strings.TrimSpace(stream.Status), "starting") {
 		return stream, false, nil
 	}
-	if strings.TrimSpace(claim.StreamIdentity) == "" || streamStartOwnershipIdentity(stream) != claim.StreamIdentity || !stream.UpdatedAt.Equal(claim.StreamUpdatedAt) || !archiveAuthorityMatchesClaim(stream, claim.Archive) || s.legacyArchivePending[stream.ID] != claim.Archive.Legacy {
+	if strings.TrimSpace(claim.StreamIdentity) == "" || streamStartOwnershipIdentity(stream) != claim.StreamIdentity || !stream.UpdatedAt.Equal(claim.StreamUpdatedAt) || !archiveAuthorityMatchesClaim(stream, claim.Archive) {
 		return stream, false, ErrServiceAssignmentConflict
 	}
 	_, currentClaims, err := memoryClaimedPrimaryAssignments(services, stream.ID)
@@ -689,11 +660,6 @@ func streamStartClaimStatus(status string) bool {
 	default:
 		return false
 	}
-}
-
-func capabilityTrue(capabilities map[string]any, name string) bool {
-	value, ok := capabilities[name].(bool)
-	return ok && value
 }
 
 func archiveAuthorityMatchesClaim(stream Stream, authority StreamArchiveAuthority) bool {
@@ -966,11 +932,9 @@ func (s *MemoryStreamStore) UpsertStreamArtifacts(ctx context.Context, id string
 	s.artifacts[id] = current
 	s.artifactReports[id] = true
 	stream := s.streams[id]
-	legacyAuthority := s.legacyArchivePending[id] || s.archiveRetryPending[id] || (stream.ArchiveReportedAt != nil && legacyArchiveReportStatus(stream))
-	reportMatchesAuthority := streamArtifactReportMatchesArchiveAuthority(stream, normalized, legacyAuthority)
+	reportMatchesAuthority := streamArtifactReportMatchesArchiveAuthority(stream, normalized)
 	if reportMatchesAuthority {
 		delete(s.archiveRetryPending, id)
-		delete(s.legacyArchivePending, id)
 	}
 	if reportMatchesAuthority && stream.ArchiveReportedAt == nil {
 		reportedAt := time.Now().UTC()

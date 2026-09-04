@@ -9,9 +9,6 @@
       var mirror = JSON.parse(raw);
       if (mirror && themes.indexOf(mirror.theme_id) !== -1) theme = mirror.theme_id;
       if (mirror && modes.indexOf(mirror.color_mode) !== -1) mode = mirror.color_mode;
-    } else {
-      var legacy = window.localStorage.getItem("autostream.theme");
-      if (legacy === "light" || legacy === "dark") mode = legacy;
     }
   } catch {
     theme = "autostream";

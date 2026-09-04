@@ -52,9 +52,6 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   const liveEditing = editing && stream?.status === "live";
   const [name, setName] = useState(stream?.name || "");
   const [discordConfigID, setDiscordConfigID] = useState(optionOrNone(stream?.discord_config_id));
-  const [guildID, setGuildID] = useState(stream?.discord_guild_id || "");
-  const [voiceChannelID, setVoiceChannelID] = useState(stream?.discord_voice_channel_id || "");
-  const [textChannelID, setTextChannelID] = useState(stream?.discord_text_channel_id || "");
   const [autoStartFromDiscord, setAutoStartFromDiscord] = useState(editing ? stream?.auto_start_trigger === "discord_voice_join" : true);
   const [youtubeOutputID, setYouTubeOutputID] = useState(optionOrNone(stream?.youtube_output_id));
   const [archiveProfileID, setArchiveProfileID] = useState(optionOrNone(stream?.archive_profile_id));
@@ -67,7 +64,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
   const [scheduledStartAt, setScheduledStartAt] = useState(() => streamScheduleInputValue(stream?.scheduled_start_at));
-  const [createVisualState, setCreateVisualState] = useState<StreamCreateVisualState>({ extension: {}, ready: true });
+  const [createVisualState, setCreateVisualState] = useState<StreamCreateVisualState>({ extension: {}, ready: false, discordTargetReady: false });
   const [message, setMessage] = useState("");
   const effectiveEncoderServiceID = encoderServiceID ?? optionOrNone(stream?.assigned_encoder_id);
   const effectiveWorkerServiceID = workerServiceID ?? optionOrNone(stream?.assigned_worker_id);
@@ -80,9 +77,6 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
       ...(editing ? buildStreamSettingsPayload : buildStreamCreatePayload)({
       name,
       discordConfigID: selectedValue(discordConfigID),
-      discordGuildID: guildID,
-      discordVoiceChannelID: voiceChannelID,
-      discordTextChannelID: textChannelID,
       autoStartFromDiscord,
       youtubeOutputID: selectedValue(youtubeOutputID),
       archiveProfileID: selectedValue(archiveProfileID),
@@ -99,11 +93,9 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
       }),
       ...(!editing ? createVisualState.extension : {}),
     },
-    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, createVisualState.extension, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderAudioGainDB, encoderProfileID, encoderServiceID, guildID, liveEditing, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, textChannelID, voiceChannelID, watermarkEnabled, workerServiceID, youtubeOutputID],
+    [archiveProfileID, autoStartFromDiscord, canAssignEncoder, canAssignWorker, captionProfileID, createVisualState.extension, discordConfigID, editing, effectiveEncoderServiceID, effectiveWorkerServiceID, encoderAudioGainDB, encoderProfileID, encoderServiceID, liveEditing, name, overlayProfileID, scheduledStartAt, stream?.encoder_input_url, stream?.scheduled_end_at, watermarkEnabled, workerServiceID, youtubeOutputID],
   );
-  const hasDiscordTarget = guildID.trim() !== "" || voiceChannelID.trim() !== "" || textChannelID.trim() !== "";
-  const discordReady = !hasDiscordTarget || selectedValue(discordConfigID) !== "";
-  const autoStartReady = !autoStartFromDiscord || (selectedValue(discordConfigID) !== "" && guildID.trim() !== "" && voiceChannelID.trim() !== "");
+  const autoStartReady = editing || !autoStartFromDiscord || (selectedValue(discordConfigID) !== "" && createVisualState.discordTargetReady);
   const watermarkReady = !watermarkEnabled || selectedValue(overlayProfileID) !== "";
   const encoderAudioGainValue = Number(encoderAudioGainDB);
   const encoderAudioGainReady = Number.isFinite(encoderAudioGainValue) && encoderAudioGainValue >= -60 && encoderAudioGainValue <= 24;
@@ -117,7 +109,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   }), [editing, liveEditing, name, payload, stream]);
   const formReady = (editing ? canUpdate : canCreate)
     && (liveEditing || name.trim() !== "")
-    && (liveEditing || (discordReady && autoStartReady && nodeAssignmentReady))
+    && (liveEditing || (autoStartReady && nodeAssignmentReady))
     && (editing || createVisualState.ready)
     && watermarkReady
     && encoderAudioGainReady;
@@ -148,19 +140,17 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
               <label className="mb-3 flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={autoStartFromDiscord} onCheckedChange={(value) => setAutoStartFromDiscord(value === true)} />Discord VCへの参加を検知して自動開始</label>
               <div className="grid gap-3 md:grid-cols-2">
                 <SelectField label="Discord BOT設定" value={discordConfigID} onChange={setDiscordConfigID} options={[{ value: noneValue, label: "未選択" }, ...discordConfigs]} />
-                <TextField label="DiscordサーバーID" value={guildID} onChange={setGuildID} /><TextField label="ボイスチャンネルID" value={voiceChannelID} onChange={setVoiceChannelID} /><TextField label="チャットチャンネルID" value={textChannelID} onChange={setTextChannelID} />
                 {editing && canAssignWorker ? <SelectField label="担当Worker Node" value={effectiveWorkerServiceID} onChange={setWorkerServiceID} options={[{ value: noneValue, label: "未選択" }, ...workerNodes]} /> : null}
                 {editing && canAssignEncoder ? <SelectField label="担当Encoder Node" value={effectiveEncoderServiceID} onChange={setEncoderServiceID} options={[{ value: noneValue, label: "未選択" }, ...encoderNodes]} /> : null}
               </div>
             </FormSection>
             {!editing ? <div className="flex gap-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground"><AlertCircle className="mt-0.5 size-4 shrink-0" />新規作成では既存配信のNode割り当てを変更しません。作成後に配信枠を編集し、開始前に担当Nodeを割り当ててください。</div> : null}
             <FormSection title="出力と録画" description="視聴先と事前登録した録画設定"><div className="grid gap-3 md:grid-cols-2"><SelectField label="YouTube出力" value={youtubeOutputID} onChange={setYouTubeOutputID} options={[{ value: noneValue, label: "未選択" }, ...youtubeOutputs]} /><SelectField label="録画プロファイル" value={archiveProfileID} onChange={setArchiveProfileID} options={[{ value: noneValue, label: "録画しない" }, ...archiveProfiles]} /></div>{archiveProfiles.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">録画する場合は、先に<Link href="/admin/archive/" className="mx-1 underline underline-offset-2">録画・アーカイブ</Link>で録画プロファイルと保存先を作成してください。</p> : null}</FormSection>
-            <StreamVisualSettingsSection stream={stream} legacyDiscord={{ guildID, textChannelID, voiceChannelID }} canUpdate={canUpdate} onCreateState={setCreateVisualState} />
+            <StreamVisualSettingsSection stream={stream} canUpdate={canUpdate} onCreateState={setCreateVisualState} />
           </> : null}
           <FormSection title="Encoderライブ調整" description="音量とウォーターマークは配信中でも停止せず反映されます。"><div className="grid gap-3 md:grid-cols-2">{!liveEditing ? <SelectField label="エンコード設定" value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: "未選択" }, ...encoderProfiles]} /> : null}{!liveEditing ? <SelectField label="字幕設定" value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: "未選択" }, ...captionProfiles]} /> : null}<TextField label="Encoder音量（dB）" type="number" value={encoderAudioGainDB} onChange={setEncoderAudioGainDB} min="-60" max="24" step="0.1" /><label className="flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={watermarkEnabled} onCheckedChange={(value) => setWatermarkEnabled(value === true)} />ウォーターマークを使用</label><SelectField label="ウォーターマーク設定" value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: "未選択" }, ...overlayProfiles]} disabled={!watermarkEnabled} /></div></FormSection>
           {!encoderAudioGainReady ? <Warning>Encoder音量は -60 dB から +24 dB の範囲で指定してください。</Warning> : null}
-          {!liveEditing && hasDiscordTarget && !discordReady ? <Warning>Discordのサーバーやチャンネルを指定する場合は、使用するDiscord BOT設定も選択してください。</Warning> : null}
-          {!liveEditing && autoStartFromDiscord && !autoStartReady ? <Warning>自動開始を使うには、Discord BOT設定、サーバーID、ボイスチャンネルIDが必要です。</Warning> : null}
+          {!liveEditing && autoStartFromDiscord && !autoStartReady ? <Warning>自動開始を使うには、Discord BOT設定とv2 Discord配信先を指定してください。</Warning> : null}
           {watermarkEnabled && !watermarkReady ? <Warning>ウォーターマークを使う場合は、ウォーターマーク設定を選択してください。</Warning> : null}
           {!liveEditing && autoStartFromDiscord && canAssignEncoder && canAssignWorker && !nodeAssignmentReady ? <Warning>自動開始する配信枠には、担当Encoder Nodeと担当Worker Nodeを選択してください。</Warning> : null}
           {!liveEditing && nodeAssignmentPermissionLimited ? <Warning>Nodeを割り当てる権限がありません。管理者に依頼し、サービス稼働画面で割り当てを確認してください。</Warning> : null}

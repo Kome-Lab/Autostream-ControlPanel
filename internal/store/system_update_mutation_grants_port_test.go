@@ -14,15 +14,15 @@ import (
 
 func TestMemorySystemUpdateMutationGrantPortBindingUsesRuntimeHashAndExactJobSnapshot(t *testing.T) {
 	base := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
-	updates, job, leaseToken := preparePortMutationGrantJob(t, base, SystemUpdateStatusInstalling)
+	updates, job, _ := preparePortMutationGrantJob(t, base, SystemUpdateStatusInstalling)
 	binding := validPortMutationGrantBinding(t, job)
 
 	if binding.PlanSHA256 == job.PortReconfigure.PortPlanSHA256 {
 		t.Fatal("runtime executor hash must remain distinct from the stable stored intent hash")
 	}
 	issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
-		LeaseToken: leaseToken, LeaseGeneration: job.LeaseGeneration, Binding: binding,
+		ProtocolVersion: 2, AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
+		LeaseGeneration: job.LeaseGeneration, Binding: binding,
 	}, base.Add(time.Second), time.Minute)
 	if err != nil {
 		t.Fatalf("issue exact port grant: %v", err)
@@ -53,8 +53,8 @@ func TestMemorySystemUpdateMutationGrantPortBindingUsesRuntimeHashAndExactJobSna
 	arbitraryRuntimeHash.PlanSHA256 = strings.Repeat("f", 64)
 	arbitraryRuntimeHash.PortReconfigure.PortPlanSHA256 = arbitraryRuntimeHash.PlanSHA256
 	if _, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
-		LeaseToken: leaseToken, LeaseGeneration: job.LeaseGeneration, Binding: arbitraryRuntimeHash,
+		ProtocolVersion: 2, AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
+		LeaseGeneration: job.LeaseGeneration, Binding: arbitraryRuntimeHash,
 	}, base.Add(3*time.Second), time.Minute); !errors.Is(err, ErrSystemUpdateAuthorizationMismatch) {
 		t.Fatalf("issue with arbitrary runtime hash = %v, want authorization mismatch", err)
 	}
@@ -120,8 +120,8 @@ func TestMemorySystemUpdateMutationGrantPortBindingUsesRuntimeHashAndExactJobSna
 				changed.PortReconfigure.PortPlanSHA256 = runtimeHash
 			}
 			_, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-				AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
-				LeaseToken: leaseToken, LeaseGeneration: job.LeaseGeneration, Binding: changed,
+				ProtocolVersion: 2, AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
+				LeaseGeneration: job.LeaseGeneration, Binding: changed,
 			}, base.Add(3*time.Second), time.Minute)
 			if !errors.Is(err, ErrSystemUpdateAuthorizationMismatch) {
 				t.Fatalf("issue with changed %s = %v, want authorization mismatch", test.name, err)
@@ -142,7 +142,7 @@ func TestMemorySystemUpdateMutationGrantRejectsSoftwarePortUnionMixing(t *testin
 	if _, err := softwareUpdates.IssueSystemUpdateMutationGrant(
 		t.Context(), softwareJob.ID,
 		IssueSystemUpdateMutationGrantParams{
-			AgentServiceID: "updater-central", LeaseToken: softwareClaim.LeaseToken,
+			ProtocolVersion: 2, AgentServiceID: "updater-central", ExecutionHostID: softwareJob.ExecutionHostID,
 			LeaseGeneration: softwareClaim.LeaseGeneration, Binding: softwareBinding,
 		},
 		base.Add(2*time.Second), time.Minute,
@@ -150,7 +150,7 @@ func TestMemorySystemUpdateMutationGrantRejectsSoftwarePortUnionMixing(t *testin
 		t.Fatalf("software job with port binding = %v", err)
 	}
 
-	portUpdates, portJob, leaseToken := preparePortMutationGrantJob(t, base.Add(time.Hour), SystemUpdateStatusInstalling)
+	portUpdates, portJob, _ := preparePortMutationGrantJob(t, base.Add(time.Hour), SystemUpdateStatusInstalling)
 	legacySoftwareBinding := SystemUpdateMutationGrantBinding{
 		HostID: portJob.ExecutionHostID, TransportMode: SystemUpdateTransportPullV2,
 		OwnershipEpoch: portJob.OwnershipEpoch, PolicyRevision: portJob.PolicyRevision,
@@ -162,8 +162,8 @@ func TestMemorySystemUpdateMutationGrantRejectsSoftwarePortUnionMixing(t *testin
 	if _, err := portUpdates.IssueSystemUpdateMutationGrant(
 		t.Context(), portJob.ID,
 		IssueSystemUpdateMutationGrantParams{
-			AgentServiceID: "host-agent-a", ExecutionHostID: portJob.ExecutionHostID,
-			LeaseToken: leaseToken, LeaseGeneration: portJob.LeaseGeneration, Binding: legacySoftwareBinding,
+			ProtocolVersion: 2, AgentServiceID: "host-agent-a", ExecutionHostID: portJob.ExecutionHostID,
+			LeaseGeneration: portJob.LeaseGeneration, Binding: legacySoftwareBinding,
 		},
 		base.Add(time.Hour+time.Second), time.Minute,
 	); !errors.Is(err, ErrSystemUpdateAuthorizationMismatch) {
@@ -173,19 +173,19 @@ func TestMemorySystemUpdateMutationGrantRejectsSoftwarePortUnionMixing(t *testin
 
 func TestMemorySystemUpdateMutationGrantPortOperationMatchesState(t *testing.T) {
 	base := time.Date(2026, 7, 28, 14, 0, 0, 0, time.UTC)
-	updates, job, leaseToken := preparePortMutationGrantJob(t, base, SystemUpdateStatusReconciling)
+	updates, job, _ := preparePortMutationGrantJob(t, base, SystemUpdateStatusReconciling)
 	binding := validPortMutationGrantBinding(t, job)
 	if _, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
-		LeaseToken: leaseToken, LeaseGeneration: job.LeaseGeneration, Binding: binding,
+		ProtocolVersion: 2, AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
+		LeaseGeneration: job.LeaseGeneration, Binding: binding,
 	}, base.Add(time.Second), time.Minute); !errors.Is(err, ErrSystemUpdateAuthorizationState) {
 		t.Fatalf("port apply grant in reconciling state = %v", err)
 	}
 
 	binding.Operation = SystemUpdateMutationOperationPortReconfigureReconcile
 	issued, err := updates.IssueSystemUpdateMutationGrant(t.Context(), job.ID, IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
-		LeaseToken: leaseToken, LeaseGeneration: job.LeaseGeneration, Binding: binding,
+		ProtocolVersion: 2, AgentServiceID: "host-agent-a", ExecutionHostID: job.ExecutionHostID,
+		LeaseGeneration: job.LeaseGeneration, Binding: binding,
 	}, base.Add(time.Second), time.Minute)
 	if err != nil {
 		t.Fatalf("port reconcile grant in reconciling state: %v", err)

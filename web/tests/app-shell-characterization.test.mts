@@ -9,7 +9,7 @@ const sourceRoot = join(webRoot, "src");
 const appRoot = join(sourceRoot, "app");
 const legacyShellPath = join(sourceRoot, "components", "admin", "admin-shell.tsx");
 const navigationModelPath = join(sourceRoot, "lib", "navigation.ts");
-const navigationSource = readFileSync(existsSync(navigationModelPath) ? navigationModelPath : legacyShellPath, "utf8");
+const navigationSource = readFileSync(navigationModelPath, "utf8");
 const shellSource = shellSources().map((path) => readFileSync(path, "utf8")).join("\n");
 
 const expectedNavigation = [
@@ -79,24 +79,25 @@ test("shell controls and stream-create permission remain present", () => {
   assert.match(shellSource, /loginPathForLocation/);
 });
 
-test("AdminShell remains the compatibility re-export of AppShell", () => {
-  const compatibilitySource = readFileSync(legacyShellPath, "utf8");
-  assert.match(compatibilitySource, /export\s+\{\s*AppShell\s+as\s+AdminShell\s*\}\s+from\s+"@\/components\/shell\/app-shell"/);
+test("admin layout uses AppShell directly and the compatibility module is absent", () => {
+  assert.equal(existsSync(legacyShellPath), false);
+  const layout = readFileSync(join(appRoot, "admin", "layout.tsx"), "utf8");
+  assert.match(layout, /import\s+\{\s*AppShell\s*\}\s+from\s+"@\/components\/shell\/app-shell"/);
 });
 
 test("only authenticated admin routes receive the app shell", () => {
   const shellUsers = sourceFiles(appRoot)
-    .filter((path) => /AdminShell/.test(readFileSync(path, "utf8")))
+    .filter((path) => /AppShell/.test(readFileSync(path, "utf8")))
     .map((path) => relative(appRoot, path).replaceAll("\\", "/"));
   assert.deepEqual(shellUsers, ["admin/layout.tsx"]);
 
   for (const publicPage of ["login/page.tsx", "setup/page.tsx", "auth/email/confirm/page.tsx", "archive/share/page.tsx"]) {
-    assert.equal(/AdminShell/.test(readFileSync(join(appRoot, ...publicPage.split("/")), "utf8")), false, publicPage);
+    assert.equal(/AppShell/.test(readFileSync(join(appRoot, ...publicPage.split("/")), "utf8")), false, publicPage);
   }
 });
 
 function shellSources() {
-  const paths = [legacyShellPath];
+  const paths: string[] = [];
   const shellDirectory = join(sourceRoot, "components", "shell");
   if (existsSync(shellDirectory)) paths.push(...sourceFiles(shellDirectory));
   if (existsSync(navigationModelPath)) paths.push(navigationModelPath);

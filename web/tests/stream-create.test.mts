@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildStreamCreatePayload, buildStreamSettingsPayload, streamAssignmentConflictMessage, streamCreateCompatibilityMessage, streamScheduleInputValue, streamScheduleRFC3339, streamServiceAssignmentOption, type StreamCreateValues } from "../src/lib/stream-create.ts";
+import { buildStreamCreatePayload, buildStreamSettingsPayload, streamAssignmentConflictMessage, streamScheduleInputValue, streamScheduleRFC3339, streamServiceAssignmentOption, type StreamCreateValues } from "../src/lib/stream-create.ts";
 
 const baseValues: StreamCreateValues = {
   name: "定例配信",
   discordConfigID: "discord-main",
-  discordGuildID: "guild-main",
-  discordVoiceChannelID: "voice-main",
-  discordTextChannelID: "text-main",
   autoStartFromDiscord: true,
   youtubeOutputID: "youtube-main",
   archiveProfileID: "archive-shared-drive",
@@ -138,9 +135,10 @@ test("assignment conflicts have actionable messages without exposing identifiers
   }
 });
 
-test("legacy create assignment fields have an actionable reload and edit message", () => {
-  const message = streamCreateCompatibilityMessage("stream_create_assignment_fields_unsupported");
-  assert.match(message || "", /最新画面へ再読み込み/);
-  assert.match(message || "", /作成した後に編集画面でNodeを割り当て/);
-  assert.equal(streamCreateCompatibilityMessage("service_assignment_conflict"), undefined);
+test("create and settings payloads never emit flat Discord target fields", () => {
+  for (const payload of [buildStreamCreatePayload(baseValues), buildStreamSettingsPayload(baseValues)]) {
+    for (const key of ["discord_guild_id", "discord_text_channel_id", "discord_voice_channel_id"]) {
+      assert.equal(key in payload, false, key);
+    }
+  }
 });

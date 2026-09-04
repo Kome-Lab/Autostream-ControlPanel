@@ -50,26 +50,19 @@ export function createStreamVisualPreviewOwner(revoke: (url: string) => void) {
   });
 }
 
-export function defaultStreamVisualDraft(legacy?: Readonly<{
-  guildID?: string;
-  textChannelID?: string;
-  voiceChannelID?: string;
-}>): StreamVisualDraft {
-  const guildID = legacy?.guildID?.trim() || "";
-  const textChannelID = legacy?.textChannelID?.trim() || "";
-  const voiceChannelID = legacy?.voiceChannelID?.trim() || "";
+export function defaultStreamVisualDraft(): StreamVisualDraft {
   return {
     backgroundMode: "default",
     backgroundAssetID: "",
     backgroundVariantID: "",
     headerTitleMode: "default",
     headerTitleValue: "",
-    discordTargetMode: guildID || textChannelID || voiceChannelID ? "manual" : "inherit",
+    discordTargetMode: "inherit",
     discordTargetPresetID: "",
     discordTargetPresetRevision: 0,
-    discordGuildID: guildID,
-    discordTextChannelID: textChannelID,
-    discordVoiceChannelID: voiceChannelID,
+    discordGuildID: "",
+    discordTextChannelID: "",
+    discordVoiceChannelID: "",
     coverSource: "none",
     coverPresetID: "",
     coverAssetID: "",
@@ -151,11 +144,10 @@ export function buildStreamVisualFields(
   };
 }
 
-export function buildStreamCreateVisualExtension(draft: StreamVisualDraft, sections: ReadonlySet<StreamVisualSection>) {
-  if (sections.size === 0) return {};
+export function buildStreamCreateVisualExtension(draft: StreamVisualDraft, _sections: ReadonlySet<StreamVisualSection>) {
   return {
     ...(draft.uploadSessionID ? { upload_session_id: draft.uploadSessionID } : {}),
-    visual_settings: buildStreamVisualFields(draft, sections),
+    visual_settings: buildStreamVisualFields(draft),
   };
 }
 

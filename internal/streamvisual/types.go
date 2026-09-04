@@ -83,12 +83,7 @@ type Update struct {
 	BackgroundVariantID         OptionalString `json:"background_variant_id"`
 	HeaderTitleMode             OptionalString `json:"header_title_mode"`
 	HeaderTitleValue            OptionalString `json:"header_title_value"`
-	DiscordTargetMode           OptionalString `json:"discord_target_mode"`
-	DiscordTargetPresetID       OptionalString `json:"discord_target_preset_id"`
-	DiscordTargetPresetRevision *uint64        `json:"discord_target_preset_revision,omitempty"`
-	DiscordGuildID              OptionalString `json:"discord_guild_id"`
-	DiscordTextChannelID        OptionalString `json:"discord_text_channel_id"`
-	DiscordVoiceChannelID       OptionalString `json:"discord_voice_channel_id"`
+	DiscordTarget               OptionalDiscordTarget `json:"discord_target"`
 	CoverSource                 OptionalString `json:"cover_source"`
 	CoverPresetID               OptionalString `json:"cover_preset_id"`
 	CoverAssetID                OptionalString `json:"cover_asset_id"`
@@ -96,11 +91,41 @@ type Update struct {
 	CoverStartActive            *bool          `json:"cover_start_active,omitempty"`
 }
 
+type DiscordTarget struct {
+	Mode           string `json:"mode"`
+	PresetID       string `json:"preset_id,omitempty"`
+	PresetRevision uint64 `json:"preset_revision,omitempty"`
+	GuildID        string `json:"guild_id,omitempty"`
+	TextChannelID  string `json:"text_channel_id,omitempty"`
+	VoiceChannelID string `json:"voice_channel_id,omitempty"`
+}
+
+type OptionalDiscordTarget struct {
+	Set   bool
+	Value DiscordTarget
+}
+
+func (target *OptionalDiscordTarget) UnmarshalJSON(raw []byte) error {
+	target.Set = true
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ErrInvalidSettings
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&target.Value); err != nil {
+		return err
+	}
+	if decoder.More() {
+		return ErrInvalidSettings
+	}
+	return nil
+}
+
 type Create struct {
 	Name            string               `json:"name"`
 	UploadSessionID string               `json:"upload_session_id,omitempty"`
 	Settings        Update               `json:"visual_settings"`
-	LegacySettings  store.StreamSettings `json:"-"`
+	StreamSettings  store.StreamSettings `json:"-"`
 }
 
 type AssetReadiness struct {

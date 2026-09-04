@@ -459,7 +459,7 @@ func (fixture *mariaDBFIX005Cleanup) namespaceResidueCount(ctx context.Context) 
 		{`SELECT COUNT(*) FROM services WHERE service_id LIKE ?`, []any{like}},
 		{`SELECT COUNT(*) FROM streams WHERE name LIKE ?`, []any{like}},
 		{`SELECT COUNT(*) FROM update_agent_policies WHERE service_id LIKE ?`, []any{like}},
-		{`SELECT COUNT(*) FROM system_update_execution_hosts WHERE execution_host_id LIKE ? OR agent_service_id LIKE ? OR legacy_agent_service_id LIKE ?`, []any{like, like, like}},
+		{`SELECT COUNT(*) FROM system_update_execution_hosts WHERE execution_host_id LIKE ? OR agent_service_id LIKE ?`, []any{like, like}},
 		{`SELECT COUNT(*) FROM system_update_runtime_token_rotations WHERE service_id LIKE ? OR execution_host_id LIKE ? OR idempotency_key LIKE ?`, []any{like, like, like}},
 		{`SELECT COUNT(*) FROM system_update_jobs WHERE target_id LIKE ? OR agent_service_id LIKE ? OR execution_host_id LIKE ? OR idempotency_key LIKE ?`, []any{like, like, like, like}},
 		{`SELECT COUNT(*) FROM system_update_host_self_updates WHERE execution_host_id LIKE ? OR agent_service_id LIKE ? OR idempotency_key LIKE ?`, []any{like, like, like}},
@@ -616,7 +616,7 @@ type mariaDBFIX005PullFixture struct {
 	agentToken  ServiceToken
 	targetToken ServiceToken
 	targetID    string
-	legacyID    string
+	peerID      string
 }
 
 func newMariaDBFIX005PullFixture(
@@ -647,7 +647,8 @@ func newMariaDBFIX005PullFixtureWithCleanup(
 	policies := NewMariaDBUpdaterPolicyAdminStore(db, "unused-for-pull")
 	fixturePrefix := cleanup.prefix + strings.TrimSpace(fixtureSuffix)
 	hostID := fixturePrefix + "host"
-	legacyID := fixturePrefix + "a-legacy"
+	peerID := fixturePrefix + "a-observer"
+	peerHostID := fixturePrefix + "peer-host"
 	targetID := fixturePrefix + "m-target"
 	agentID := fixturePrefix + "z-pull"
 
@@ -655,40 +656,18 @@ func newMariaDBFIX005PullFixtureWithCleanup(
 		ServiceID: targetID, ServiceType: "worker", ServiceName: targetID,
 		PublicURL: "https://worker.example.com:18081",
 	}, sharedTargetToken)
-	legacyToken := registerMariaDBFIX005Service(t, ctx, auth, cleanup, ServiceRegistration{
-		ServiceID: legacyID, ServiceType: "update_agent", ServiceName: legacyID,
-		TransportMode: SystemUpdateTransportSSHV1,
-		PublicURL:     "https://updater.example.com:8090",
-	}, nil)
-	if _, err := policies.SaveUpdaterPolicy(ctx, legacyID, 0, UpdaterPolicy{
-		API:                      UpdaterPolicyAPI{BindHost: "127.0.0.1", Host: "127.0.0.1", Port: 8090},
-		PollIntervalSeconds:      15,
-		HeartbeatIntervalSeconds: 30,
-		Hosts: []UpdaterPolicyHost{{
-			HostID: hostID, Name: hostID, Address: "host-a.example.com", Port: 55850,
-			User: "autostream-update-host", Arch: "amd64",
-			HostPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g",
-		}},
-		Targets: []UpdaterPolicyTarget{{
-			TargetID: targetID, ServiceID: targetID, HostID: hostID,
-			ServiceType: "worker", DeploymentMode: "systemd",
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	cleanup.trackPolicyID(legacyID)
 	cleanup.trackHostID(hostID)
-	owner, err := updates.SwitchSystemUpdateExecutionHost(
-		ctx, hostID, 0, SystemUpdateTransportSSHV1, legacyID, 7,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	peerToken := registerMariaDBFIX005Service(t, ctx, auth, cleanup, ServiceRegistration{
+		ServiceID: peerID, ServiceType: "update_agent", ServiceName: peerID,
+		TransportMode:   SystemUpdateTransportPullV2,
+		ExecutionHostID: peerHostID, OwnershipEpoch: 0,
+		Capabilities: map[string]any{"observe_only": true},
+	}, nil)
 	cleanup.trackPolicyID(agentID)
 
 	var existing *ServiceToken
 	if shareAgentToken {
-		existing = &legacyToken
+		existing = &peerToken
 	}
 	agentToken := registerMariaDBFIX005Service(t, ctx, auth, cleanup, ServiceRegistration{
 		ServiceID: agentID, ServiceType: "update_agent", ServiceName: agentID,
@@ -701,7 +680,7 @@ func newMariaDBFIX005PullFixtureWithCleanup(
 		updates,
 		agentID,
 		0,
-		owner.OwnershipEpoch,
+		0,
 		UpdaterPolicy{
 			TransportMode:             SystemUpdateTransportPullV2,
 			ExecutionHostID:           hostID,
@@ -767,11 +746,11 @@ func newMariaDBFIX005PullFixtureWithCleanup(
 	}
 	return mariaDBFIX005PullFixture{
 		cleanup: cleanup, auth: auth, policies: policies, updates: updates,
-		agentToken: agentToken, targetToken: targetToken, targetID: targetID, legacyID: legacyID,
+		agentToken: agentToken, targetToken: targetToken, targetID: targetID, peerID: peerID,
 		params: ActivatePullUpdaterOwnershipParams{
 			ServiceID:                           agentID,
 			ExecutionHostID:                     hostID,
-			ExpectedExecutionHostOwnershipEpoch: owner.OwnershipEpoch,
+			ExpectedExecutionHostOwnershipEpoch: 0,
 			ExpectedSourcePolicyRevision:        policy.Revision,
 			ExpectedProjectionRevision:          policy.ProjectionRevision,
 			ExpectedLocalExecutorPolicyRevision: policy.LocalExecutorPolicyRevision,
@@ -1546,7 +1525,6 @@ func TestMariaDBFIX006PolicyCyclePairs(t *testing.T) {
 						firstFixture.auth,
 						firstFixture.params.ServiceID,
 						firstFixture.params.ExecutionHostID,
-						true,
 					)
 					if err != nil {
 						t.Fatal(err)
@@ -1896,7 +1874,7 @@ func TestMariaDBFIX006UpdaterOwnershipVsTokenMutationPairs(t *testing.T) {
 					mariaDBServiceTokenBeforeTokenLocks,
 				})
 				for _, serviceID := range []string{
-					fixture.legacyID,
+					fixture.peerID,
 					fixture.targetID,
 					fixture.params.ServiceID,
 				} {
@@ -1914,7 +1892,7 @@ func TestMariaDBFIX006UpdaterOwnershipVsTokenMutationPairs(t *testing.T) {
 				assertMariaDBFIX005PhaseSequence(t, mutationPhases, []mariaDBServiceTokenLockPhase{
 					mariaDBServiceTokenBeforeServiceLocks,
 				})
-				assertMariaDBFIX006ServiceRowLockHeld(t, ctx, db, fixture.legacyID)
+				assertMariaDBFIX006ServiceRowLockHeld(t, ctx, db, fixture.peerID)
 				if err := blocker.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 					t.Fatal(err)
 				}

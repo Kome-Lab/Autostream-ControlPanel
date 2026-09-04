@@ -488,9 +488,6 @@ func normalizeSystemUpdateMutationGrantIssue(params IssueSystemUpdateMutationGra
 func normalizeSystemUpdateMutationGrantBinding(binding SystemUpdateMutationGrantBinding) SystemUpdateMutationGrantBinding {
 	binding.HostID = strings.TrimSpace(binding.HostID)
 	binding.TransportMode = strings.ToLower(strings.TrimSpace(binding.TransportMode))
-	if binding.TransportMode == "" {
-		binding.TransportMode = SystemUpdateTransportSSHV1
-	}
 	binding.TargetID = strings.TrimSpace(binding.TargetID)
 	binding.TargetServiceType = strings.ToLower(strings.TrimSpace(binding.TargetServiceType))
 	binding.TargetVersion = strings.TrimSpace(binding.TargetVersion)
@@ -510,16 +507,9 @@ func validateSystemUpdateMutationGrantIssue(params IssueSystemUpdateMutationGran
 	if params.AgentServiceID == "" || len(params.AgentServiceID) > 191 || containsControl(params.AgentServiceID) || params.LeaseGeneration <= 0 {
 		return ErrInvalidSystemUpdate
 	}
-	switch params.ProtocolVersion {
-	case 0, 1:
-		if len(params.LeaseToken) < 32 || len(params.LeaseToken) > 256 || containsControl(params.LeaseToken) {
-			return ErrInvalidSystemUpdate
-		}
-	case 2:
-		if params.LeaseToken != "" || params.Binding.TransportMode != SystemUpdateTransportPullV2 {
-			return ErrInvalidSystemUpdate
-		}
-	default:
+	if params.ProtocolVersion != 2 ||
+		params.LeaseToken != "" ||
+		params.Binding.TransportMode != SystemUpdateTransportPullV2 {
 		return ErrInvalidSystemUpdate
 	}
 	if params.ExecutionHostID != "" && !validSystemUpdateExecutionHostID(params.ExecutionHostID) {
@@ -530,16 +520,12 @@ func validateSystemUpdateMutationGrantIssue(params IssueSystemUpdateMutationGran
 
 func validateSystemUpdateMutationGrantBinding(binding SystemUpdateMutationGrantBinding) error {
 	if !validSystemUpdateExecutionHostID(binding.HostID) || binding.TargetID == "" || len(binding.TargetID) > 191 || containsControl(binding.TargetID) ||
-		(binding.TransportMode != SystemUpdateTransportSSHV1 && binding.TransportMode != SystemUpdateTransportPullV2) ||
-		binding.OwnershipEpoch < 0 || binding.PolicyRevision < 0 ||
+		binding.TransportMode != SystemUpdateTransportPullV2 ||
+		binding.OwnershipEpoch < 1 || binding.PolicyRevision < 1 ||
 		len(binding.TargetServiceType) > 64 || containsControl(binding.TargetServiceType) ||
 		binding.TargetVersion == "" || len(binding.TargetVersion) > 128 || containsControl(binding.TargetVersion) ||
 		!validSystemUpdateDeploymentMode(binding.DeploymentMode) ||
 		!systemUpdateMutationPlanPattern.MatchString(binding.PlanSHA256) || !systemUpdateMutationSessionPattern.MatchString(binding.SessionID) {
-		return ErrInvalidSystemUpdate
-	}
-	if binding.TransportMode == SystemUpdateTransportPullV2 &&
-		(binding.OwnershipEpoch < 1 || binding.PolicyRevision < 1) {
 		return ErrInvalidSystemUpdate
 	}
 	switch binding.JobOperation {
@@ -636,9 +622,6 @@ func sameSystemUpdateMutationGrantBinding(left, right SystemUpdateMutationGrantB
 
 func systemUpdateMutationGrantBindingMatchesJob(binding SystemUpdateMutationGrantBinding, job SystemUpdateJob) bool {
 	jobTransportMode := strings.ToLower(strings.TrimSpace(job.TransportMode))
-	if jobTransportMode == "" {
-		jobTransportMode = SystemUpdateTransportSSHV1
-	}
 	if binding.TransportMode != jobTransportMode {
 		return false
 	}

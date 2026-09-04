@@ -98,7 +98,7 @@ func (s *Server) createUpdateHostBootstrapJob(w http.ResponseWriter, r *http.Req
 		writeUpdateHostBootstrapValidationError(w, err)
 		return
 	}
-	releaseTokenStatus, err := s.updaterPolicies.GetUpdaterReleaseTokenStatus(r.Context())
+	releaseTokenStatus, err := s.updaterReleaseTokenStatus(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_updater_release_token_status_failed"})
 		return
@@ -112,7 +112,11 @@ func (s *Server) createUpdateHostBootstrapJob(w http.ResponseWriter, r *http.Req
 		return
 	}
 	appliedRevision, policyStatus, _ := systemUpdateManagedPolicyReport(agent)
-	if appliedRevision != policy.Revision || policyStatus != "applied" {
+	expectedAppliedRevision := policy.ProjectionRevision
+	if expectedAppliedRevision < 1 {
+		expectedAppliedRevision = policy.Revision
+	}
+	if appliedRevision != expectedAppliedRevision || policyStatus != "applied" {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_policy_not_applied"})
 		return
 	}
@@ -220,7 +224,7 @@ func (s *Server) serviceUpdateHostBootstrapClaim(w http.ResponseWriter, r *http.
 	}
 	defer wipeUpdateHostBootstrapBytes(claim.Envelope)
 
-	releaseToken, err := s.updaterPolicies.GetUpdaterReleaseTokenValue(r.Context())
+	releaseToken, err := s.secrets.GetSecretValue(r.Context(), store.UpdaterGitHubReleaseTokenSecretName)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "updater_release_token_not_configured"})
@@ -390,21 +394,6 @@ func validateUpdateHostBootstrapHosts(policy store.UpdaterPolicy, requested []st
 		selected[hostID] = true
 		hostIDs = append(hostIDs, hostID)
 	}
-	targetCounts := make(map[string]int, len(hostIDs))
-	for _, target := range policy.Targets {
-		if !selected[target.HostID] {
-			continue
-		}
-		targetCounts[target.HostID]++
-		if target.DeploymentMode != "systemd" || !standardUpdateHostBootstrapServiceType(target.ServiceType) {
-			return nil, errUpdateHostBootstrapUnsupportedProfile
-		}
-	}
-	for _, hostID := range hostIDs {
-		if targetCounts[hostID] == 0 {
-			return nil, errUpdateHostBootstrapUnsupportedProfile
-		}
-	}
 	return hostIDs, nil
 }
 
@@ -412,15 +401,6 @@ var (
 	errUpdateHostBootstrapHostSelection      = errors.New("invalid bootstrap host selection")
 	errUpdateHostBootstrapUnsupportedProfile = errors.New("unsupported bootstrap profile")
 )
-
-func standardUpdateHostBootstrapServiceType(serviceType string) bool {
-	switch strings.TrimSpace(serviceType) {
-	case "control_panel", "encoder_recorder", "observability", "discord_bot", "worker":
-		return true
-	default:
-		return false
-	}
-}
 
 func validUpdateHostBootstrapJobID(value string) bool {
 	if value != strings.TrimSpace(value) {

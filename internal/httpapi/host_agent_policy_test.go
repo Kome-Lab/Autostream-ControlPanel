@@ -64,7 +64,6 @@ func TestHostAgentPolicyUsesServerOwnedBindingAndRegisteredServiceEndpoints(t *t
 	policy.TransportMode = store.SystemUpdateTransportPullV2
 	policy.ExecutionHostID = "host-01"
 	policy.LocalExecutorPolicySHA256 = "sha256:" + strings.Repeat("a", 64)
-	policy.API = store.UpdaterPolicyAPI{}
 	policy.Hosts = nil
 	policy.Targets[0].ServiceID = "worker-01"
 	policy.Targets[0].HostID = "host-01"
@@ -314,7 +313,6 @@ func TestHostAgentPolicyAllowsEpochZeroObserverWithoutClaimingSSHOwnership(t *te
 	policy.TransportMode = store.SystemUpdateTransportPullV2
 	policy.ExecutionHostID = "host-observed"
 	policy.LocalExecutorPolicySHA256 = "sha256:" + strings.Repeat("b", 64)
-	policy.API = store.UpdaterPolicyAPI{}
 	policy.Hosts = nil
 	policy.Targets[0].ServiceID = policy.Targets[0].TargetID
 	policy.Targets[0].HostID = "host-observed"

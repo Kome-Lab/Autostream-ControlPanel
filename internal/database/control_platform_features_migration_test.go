@@ -54,9 +54,9 @@ func TestControlPlatformMigrationContract(t *testing.T) {
 			t.Fatalf("permission seed missing: %s", permission)
 		}
 	}
-	for _, legacy := range []string{"discord_guild_id", "discord_text_channel_id", "discord_voice_channel_id"} {
-		if !strings.Contains(normalized, legacy) {
-			t.Fatalf("legacy Discord snapshot column omitted: %s", legacy)
+	for _, snapshot := range []string{"discord_guild_id", "discord_text_channel_id", "discord_voice_channel_id"} {
+		if !strings.Contains(normalized, snapshot) {
+			t.Fatalf("v2 Discord snapshot column omitted: %s", snapshot)
 		}
 	}
 }
@@ -78,10 +78,15 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT DATETIME_PRECISION FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='streams' AND column_name='updated_at'`).Scan(&streamUpdatedAtPrecision); err != nil || streamUpdatedAtPrecision != 6 {
 		t.Fatalf("streams.updated_at precision=%v err=%v", streamUpdatedAtPrecision, err)
 	}
-	// Replaying the exact migration models a crash after DDL but before the
-	// schema_migrations record. It must remain retry-safe.
-	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/079_control_platform_features.sql")
-	replayEmbeddedMariaDBMigration(t, ctx, db, "migrations/079_control_platform_features.sql")
+	for _, removed := range []string{
+		"discord_target_mode", "discord_target_preset_id", "discord_target_preset_revision",
+		"discord_guild_id", "discord_text_channel_id", "discord_voice_channel_id",
+	} {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='stream_settings' AND column_name=?`, removed).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("physical EOL column %s count=%d err=%v", removed, count, err)
+		}
+	}
 
 	userID := controlPlatformTestUUID(t)
 	secondUserID := controlPlatformTestUUID(t)
@@ -133,16 +138,9 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	}
 
 	streamStore := store.NewMariaDBStreamStore(db)
-	legacy, err := streamStore.CreateStream(ctx, "Bundle 4 legacy target")
+	claimTarget, err := streamStore.CreateStream(ctx, "Bundle 4 claim target")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := streamStore.UpdateStreamSettings(ctx, legacy.ID, store.StreamSettings{DiscordGuildID: "1001", DiscordTextID: "1002", DiscordVoiceID: "1003"}); err != nil {
-		t.Fatal(err)
-	}
-	legacySettings, err := streamvisual.NewMariaDBRepository(db, nil).Get(ctx, legacy.ID)
-	if err != nil || legacySettings.DiscordTargetMode != "manual" || legacySettings.DiscordGuildID != "1001" || legacySettings.DiscordTextChannelID != "1002" || legacySettings.DiscordVoiceChannelID != "1003" {
-		t.Fatalf("legacy Discord migration=%#v err=%v", legacySettings, err)
 	}
 
 	storageRoot := t.TempDir()
@@ -210,7 +208,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 		_ = claimTx.Rollback()
 		t.Fatal("upload did not reach its final database transaction")
 	}
-	if _, err = claimTx.ExecContext(ctx, `UPDATE media_upload_sessions SET owner_type='stream',claimed_stream_id=?,updated_at=? WHERE id=?`, legacy.ID, now, lockedSession.ID); err != nil {
+	if _, err = claimTx.ExecContext(ctx, `UPDATE media_upload_sessions SET owner_type='stream',claimed_stream_id=?,updated_at=? WHERE id=?`, claimTarget.ID, now, lockedSession.ID); err != nil {
 		_ = claimTx.Rollback()
 		t.Fatal(err)
 	}
@@ -264,15 +262,17 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	createdStream, createdSettings, err := visuals.CreateStream(ctx, userID, streamvisual.Create{
 		Name:            "Bundle 4 visual stream",
 		UploadSessionID: session.ID,
-		Settings:        streamvisual.Update{ExpectedRevision: 0, BackgroundMode: setVisualString("image"), BackgroundAssetID: setVisualString(background.ID), BackgroundVariantID: setVisualString(backgroundVariant.ID), HeaderTitleMode: setVisualString("custom"), HeaderTitleValue: setVisualString("Program title")},
-		LegacySettings:  store.StreamSettings{ScheduledStartAt: &scheduledStart, AutoStartTrigger: "discord_voice_join", EncoderInputURL: "rtmp://127.0.0.1/live/input", DiscordGuildID: "4001", DiscordTextID: "4002", DiscordVoiceID: "4003"},
+		Settings: streamvisual.Update{ExpectedRevision: 0, BackgroundMode: setVisualString("image"), BackgroundAssetID: setVisualString(background.ID), BackgroundVariantID: setVisualString(backgroundVariant.ID), HeaderTitleMode: setVisualString("custom"), HeaderTitleValue: setVisualString("Program title"), DiscordTarget: setDiscordTarget(streamvisual.DiscordTarget{
+			Mode: "manual", GuildID: "4001", TextChannelID: "4002", VoiceChannelID: "4003",
+		})},
+		StreamSettings: store.StreamSettings{ScheduledStartAt: &scheduledStart, DiscordConfigID: "discord-config-01", AutoStartTrigger: "discord_voice_join", EncoderInputURL: "rtmp://127.0.0.1/live/input"},
 	})
 	if err != nil || createdSettings.Revision != 1 || createdSettings.DiscordTargetMode != "manual" || createdSettings.DiscordGuildID != "4001" || createdSettings.DiscordTextChannelID != "4002" || createdSettings.DiscordVoiceChannelID != "4003" {
 		t.Fatalf("valid create settings=%#v err=%v", createdSettings, err)
 	}
 	persistedStream, err := streamStore.GetStream(ctx, createdStream.ID)
-	if err != nil || persistedStream.ScheduledStartAt == nil || !persistedStream.ScheduledStartAt.Equal(scheduledStart) || persistedStream.AutoStartTrigger != "discord_voice_join" || persistedStream.EncoderInputURL != "rtmp://127.0.0.1/live/input" || persistedStream.DiscordGuildID != "4001" || persistedStream.DiscordTextID != "4002" || persistedStream.DiscordVoiceID != "4003" {
-		t.Fatalf("atomic legacy snapshot=%#v err=%v", persistedStream, err)
+	if err != nil || persistedStream.ScheduledStartAt == nil || !persistedStream.ScheduledStartAt.Equal(scheduledStart) || persistedStream.AutoStartTrigger != "discord_voice_join" || persistedStream.EncoderInputURL != "rtmp://127.0.0.1/live/input" {
+		t.Fatalf("atomic stream and visual settings=%#v err=%v", persistedStream, err)
 	}
 	claimed, err := media.GetAsset(ctx, userID, background.ID)
 	if err != nil || claimed.OwnerType != "stream" || claimed.OwnerID != createdStream.ID {
@@ -303,13 +303,18 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := visuals.Update(ctx, createdStream.ID, userID, streamvisual.Update{ExpectedRevision: createdSettings.Revision, DiscordTargetMode: setVisualString("preset"), DiscordTargetPresetID: setVisualString(discordPreset.ID), DiscordTargetPresetRevision: &discordPreset.Revision})
+	selected, err := visuals.Update(ctx, createdStream.ID, userID, streamvisual.Update{ExpectedRevision: createdSettings.Revision, DiscordTarget: setDiscordTarget(streamvisual.DiscordTarget{
+		Mode: "preset", PresetID: discordPreset.ID, PresetRevision: discordPreset.Revision,
+	})})
 	if err != nil || selected.DiscordGuildID != "2001" || selected.DiscordTextChannelID != "2002" || selected.DiscordVoiceChannelID != "2003" {
 		t.Fatalf("preset snapshot=%#v err=%v", selected, err)
 	}
-	legacyOverwrite, err := streamStore.UpdateStreamSettings(ctx, createdStream.ID, store.StreamSettings{Name: createdStream.Name, DiscordGuildID: "9001", DiscordTextID: "9002", DiscordVoiceID: "9003"})
-	if err != nil || legacyOverwrite.DiscordGuildID != "2001" || legacyOverwrite.DiscordTextID != "2002" || legacyOverwrite.DiscordVoiceID != "2003" {
-		t.Fatalf("legacy client overwrote server Discord snapshot=%#v err=%v", legacyOverwrite, err)
+	if _, err := streamStore.UpdateStreamSettings(ctx, createdStream.ID, store.StreamSettings{Name: createdStream.Name}); err != nil {
+		t.Fatal(err)
+	}
+	selectedAfterStreamUpdate, err := visuals.Get(ctx, createdStream.ID)
+	if err != nil || selectedAfterStreamUpdate.DiscordGuildID != "2001" || selectedAfterStreamUpdate.DiscordTextChannelID != "2002" || selectedAfterStreamUpdate.DiscordVoiceChannelID != "2003" {
+		t.Fatalf("non-visual stream update changed Discord snapshot=%#v err=%v", selectedAfterStreamUpdate, err)
 	}
 	streamAfterVisualUpdate, err := streamStore.GetStream(ctx, createdStream.ID)
 	if err != nil || !streamAfterVisualUpdate.UpdatedAt.After(streamBeforeVisualUpdate.UpdatedAt) {
@@ -361,7 +366,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = media.ClaimDraftTx(ctx, expiredClaimTx, userID, expiredPresetSession.ID, legacy.ID, now); err != nil {
+	if err = media.ClaimDraftTx(ctx, expiredClaimTx, userID, expiredPresetSession.ID, claimTarget.ID, now); err != nil {
 		_ = expiredClaimTx.Rollback()
 		t.Fatal(err)
 	}
@@ -381,7 +386,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = covers.EnsureGeneration(ctx, legacy.ID, 99, runtimeVariant.ID, false); err != nil {
+	if _, err = covers.EnsureGeneration(ctx, claimTarget.ID, 99, runtimeVariant.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = media.SoftDeleteAsset(ctx, userID, runtimeAsset.ID, now); err != nil {
@@ -394,7 +399,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_assets WHERE id=?`, extraneousAsset.ID).Scan(&extraneousAssetRows); err != nil || extraneousAssetRows != 0 {
 		t.Fatalf("expired unreferenced draft remained: count=%d err=%v", extraneousAssetRows, err)
 	}
-	runtimeInternal, err := media.OpenInternalVariant(ctx, legacy.ID, runtimeVariant.ID)
+	runtimeInternal, err := media.OpenInternalVariant(ctx, claimTarget.ID, runtimeVariant.ID)
 	if err != nil || runtimeInternal.Asset.ID != runtimeAsset.ID || runtimeInternal.Variant.ID != runtimeVariant.ID {
 		t.Fatalf("runtime-referenced asset was not retrievable: asset=%s variant=%s err=%v", runtimeInternal.Asset.ID, runtimeInternal.Variant.ID, err)
 	}
@@ -498,6 +503,10 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 
 func setVisualString(value string) streamvisual.OptionalString {
 	return streamvisual.OptionalString{Set: true, Valid: true, Value: value}
+}
+
+func setDiscordTarget(value streamvisual.DiscordTarget) streamvisual.OptionalDiscordTarget {
+	return streamvisual.OptionalDiscordTarget{Set: true, Value: value}
 }
 
 type phaseBarrierReader struct {
