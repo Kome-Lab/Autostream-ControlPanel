@@ -4,8 +4,6 @@ import test from "node:test";
 import {
   applyThemeToRoot,
   buildUIPreferenceUpdate,
-  legacyThemeMigrationMode,
-  legacyThemeStorageKey,
   readThemeMirror,
   safeUserUIPreference,
   semanticStatusTokenNames,
@@ -55,14 +53,12 @@ test("12 themes x 3 modes validate and apply without redefining semantic status 
   assert.equal(combinations, 36);
 });
 
-test("theme bootstrap uses a non-secret mirror, migrates legacy mode, and safely renders unknown DB values", () => {
-  const values = new Map<string, string>([[legacyThemeStorageKey, "dark"]]);
+test("theme bootstrap uses only the non-secret v2 mirror and safely renders unknown DB values", () => {
+  const values = new Map<string, string>([["autostream.theme", "dark"]]);
   const storage = { getItem: (key: string) => values.get(key) ?? null } as Pick<Storage, "getItem">;
-  assert.deepEqual(readThemeMirror(storage), safeUserUIPreference({ theme_id: "autostream", color_mode: "dark", revision: 0 }));
-	assert.equal(legacyThemeMigrationMode(storage), "dark");
+  assert.deepEqual(readThemeMirror(storage), safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 }));
   values.set(themeMirrorStorageKey, JSON.stringify({ theme_id: "ocean", color_mode: "light" }));
   assert.equal(readThemeMirror(storage).theme_id, "ocean");
-	assert.equal(legacyThemeMigrationMode(storage), null, "new bootstrap mirror must suppress legacy DB migration");
   const unknown = safeUserUIPreference({ theme_id: "future-theme", color_mode: "infrared", revision: 19 });
   assert.equal(unknown.theme_id, "autostream");
   assert.equal(unknown.color_mode, "system");
@@ -89,11 +85,11 @@ test("Discord preset form and stream selection emit only the active mode", () =>
   for (const invalid of ["", "-1", "1.2", "a12", "1".repeat(33)]) assert.equal(validDiscordOpaqueID(invalid), false);
 
   const inherit = buildDiscordTargetPayload({ mode: "inherit", guildID: "ignored", presetID: "ignored" });
-  assert.deepEqual(inherit, { discord_target_mode: "inherit" });
+  assert.deepEqual(inherit, { discord_target: { mode: "inherit" } });
   const preset = buildDiscordTargetPayload({ mode: "preset", presetID: "preset-1", presetRevision: 8, guildID: "ignored" });
-  assert.deepEqual(preset, { discord_target_mode: "preset", discord_target_preset_id: "preset-1", discord_target_preset_revision: 8 });
+  assert.deepEqual(preset, { discord_target: { mode: "preset", preset_id: "preset-1", preset_revision: 8 } });
   const manual = buildDiscordTargetPayload({ mode: "manual", guildID: "11", textChannelID: "22", voiceChannelID: "33", presetID: "ignored", presetRevision: 9 });
-  assert.deepEqual(manual, { discord_target_mode: "manual", discord_guild_id: "11", discord_text_channel_id: "22", discord_voice_channel_id: "33" });
+  assert.deepEqual(manual, { discord_target: { mode: "manual", guild_id: "11", text_channel_id: "22", voice_channel_id: "33" } });
 });
 
 test("visual update preserves omit versus explicit clear and presentation does not rewrite stream name", () => {

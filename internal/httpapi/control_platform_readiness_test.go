@@ -122,7 +122,7 @@ func TestStreamVisualSettingsHTTPSerializesWithStreamStartLifecycleFence(t *test
 		t.Fatal(err)
 	}
 	repository := &lifecycleBlockingVisualRepository{
-		fixedVisualRepository: fixedVisualRepository{settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "default", HeaderTitleMode: "default", CoverSource: "none", Revision: 2}},
+		fixedVisualRepository: fixedVisualRepository{settings: streamvisual.Settings{StreamID: stream.ID, BackgroundMode: "default", HeaderTitleMode: "default", DiscordTargetMode: "inherit", DiscordSnapshotRevision: 1, CoverSource: "none", Revision: 2}},
 		entered:               make(chan struct{}),
 		release:               make(chan struct{}),
 	}

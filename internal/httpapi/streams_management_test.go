@@ -212,8 +212,14 @@ func TestDeleteStreamRetainsArchiveCatalogAndReleasesAssignments(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder", "worker")
+	archiveStartedAt := time.Date(2026, 8, 25, 1, 2, 3, 0, time.UTC)
+	archiving, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-delete", archiveStartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []store.StreamArtifact{{
-		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 123,
+		ArchiveRunID: archiving.ArchiveRunID, ArchiveStartedAt: archiving.ArchiveStartedAt,
+		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-delete/final.mp4", SizeBytes: 123,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +290,14 @@ func TestDeletedStreamLeavesArchivePickerAfterLastRecordingArtifactIsDeleted(t *
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
+	archiveStartedAt := time.Date(2026, 8, 26, 1, 2, 3, 0, time.UTC)
+	archiving, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-sidecars", archiveStartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []store.StreamArtifact{
-		{Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10},
-		{Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/metadata.json", SizeBytes: 1},
+		{ArchiveRunID: archiving.ArchiveRunID, ArchiveStartedAt: archiving.ArchiveStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-sidecars/final.mp4", SizeBytes: 10},
+		{ArchiveRunID: archiving.ArchiveRunID, ArchiveStartedAt: archiving.ArchiveStartedAt, Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/run-sidecars/metadata.json", SizeBytes: 1},
 	}); err != nil {
 		t.Fatal(err)
 	}

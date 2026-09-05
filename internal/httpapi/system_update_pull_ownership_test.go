@@ -344,9 +344,9 @@ func TestPullSystemUpdateTargetApprovalFailsClosedOnReportedDrift(t *testing.T) 
 			},
 		},
 		{
-			name: "applied endpoint missing",
-			mutate: func(_ *store.RegisteredService, service *store.RegisteredService, _ *store.UpdaterPolicy) {
-				service.AppliedEndpoint = nil
+			name: "local listener missing",
+			mutate: func(_ *store.RegisteredService, _ *store.RegisteredService, policy *store.UpdaterPolicy) {
+				policy.Targets[0].LocalListenPort = 0
 			},
 		},
 	}
@@ -455,18 +455,19 @@ func pullSystemUpdateTargetApprovalFixture(now time.Time) (store.RegisteredServi
 		LocalExecutorPolicySHA256:   digest,
 		Targets: []store.UpdaterPolicyTarget{
 			{
-				TargetID:       "legacy-slot",
-				ServiceID:      service.ServiceID,
-				HostID:         "host-a",
-				ServiceType:    service.ServiceType,
-				DeploymentMode: "systemd",
+				TargetID:        "legacy-slot",
+				ServiceID:       service.ServiceID,
+				HostID:          "host-a",
+				ServiceType:     service.ServiceType,
+				DeploymentMode:  "systemd",
+				LocalListenPort: 18081,
 			},
 		},
 	}
 	return agent, service, policy
 }
 
-func TestPullSystemUpdateClaimIgnoresRequestHostAndUsesRegisteredExecutionHost(t *testing.T) {
+func TestPullSystemUpdateClaimRejectsRequestHostMismatch(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	capabilities := centralUpdateCapabilitiesForTest("host-a", map[string]string{
 		"worker-a": "systemd",
@@ -519,12 +520,14 @@ func TestPullSystemUpdateClaimIgnoresRequestHostAndUsesRegisteredExecutionHost(t
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/services/update-jobs/claim",
-		strings.NewReader(`{"service_id":"updater-host-a","host_id":"host-b"}`),
+		strings.NewReader(`{"updater_id":"updater-host-a","host_id":"host-b","lease_generation":1,"fence":1}`),
 	)
 	request.Header.Set("Authorization", "Bearer "+token.RawToken)
+	request.Header.Set(systemUpdateContractMajorHeader, "2")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusConflict ||
+		!strings.Contains(response.Body.String(), `"code":"system_update_ownership_conflict"`) {
 		t.Fatalf("pull claim with forged host = %d %s", response.Code, response.Body.String())
 	}
 	active, err := updates.GetActiveSystemUpdateJob(t.Context(), job.TargetID)
@@ -570,9 +573,10 @@ func TestPullSystemUpdateClaimRejectsRegisteredOwnershipEpochDrift(t *testing.T)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/services/update-jobs/claim",
-		strings.NewReader(`{"service_id":"updater-host-a"}`),
+		strings.NewReader(`{"updater_id":"updater-host-a","host_id":"host-a","lease_generation":1,"fence":1}`),
 	)
 	request.Header.Set("Authorization", "Bearer "+token.RawToken)
+	request.Header.Set(systemUpdateContractMajorHeader, "2")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusConflict ||
@@ -581,7 +585,7 @@ func TestPullSystemUpdateClaimRejectsRegisteredOwnershipEpochDrift(t *testing.T)
 	}
 }
 
-func TestPullSystemUpdateReportRejectsJobOnDifferentExecutionHost(t *testing.T) {
+func TestPullSystemUpdateReportRejectsLegacyPayload(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	capabilities := centralUpdateCapabilitiesForTest("host-a", map[string]string{"worker-b": "systemd"})
 	token := registerPullSystemUpdateAgentForOwnershipTest(t, auth, "updater-host-a", "host-a", 1, capabilities)
@@ -640,9 +644,9 @@ func TestPullSystemUpdateReportRejectsJobOnDifferentExecutionHost(t *testing.T) 
 	request.Header.Set("Authorization", "Bearer "+token.RawToken)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict ||
-		!strings.Contains(response.Body.String(), `"code":"system_update_ownership_conflict"`) {
-		t.Fatalf("cross-host pull report = %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), `"code":"unsupported_updater_protocol"`) {
+		t.Fatalf("legacy pull report = %d %s", response.Code, response.Body.String())
 	}
 }
 

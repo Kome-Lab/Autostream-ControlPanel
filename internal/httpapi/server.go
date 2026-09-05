@@ -18739,7 +18739,8 @@ func adminAuditEventNotificationAllowed(event store.AuditEvent) bool {
 	actorUsername := strings.ToLower(strings.TrimSpace(event.ActorUsername))
 	if strings.HasPrefix(actorUserID, "service:") || strings.HasPrefix(actorUsername, "service:") {
 		switch action {
-		case "system_updates.succeeded", "system_updates.rolled_back", "system_updates.failed":
+		case "system_updates.succeeded", "system_updates.rolled_back", "system_updates.failed",
+			"system_updates.bootstrap.succeeded", "system_updates.bootstrap.failed":
 			return true
 		default:
 			return false

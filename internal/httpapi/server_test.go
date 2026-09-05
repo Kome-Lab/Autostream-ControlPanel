@@ -26,6 +26,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/streamvisual"
 	"github.com/example/autostream-control-panel/internal/version"
 	ytlive "github.com/example/autostream-control-panel/internal/youtube"
 )
@@ -1864,7 +1865,7 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	createBody := bytes.NewBufferString(`{"name":"morning stream","discord_config_id":"` + config.ID + `","discord_guild_id":"guild-life","discord_voice_channel_id":"voice-life"}`)
+	createBody := bytes.NewBufferString(`{"name":"morning stream","discord_config_id":"` + config.ID + `","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","text_channel_id":"1002","voice_channel_id":"1003"}}}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/streams", createBody)
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
@@ -1948,7 +1949,12 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 		t.Fatalf("successful retry audit was duplicated in stream logs: %s", logsRes.Body.String())
 	}
 
-	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: created.ID, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + created.ID + "/final.mp4", SizeBytes: 123}); err != nil {
+	archiveStartedAt := time.Date(2026, 8, 23, 1, 2, 3, 0, time.UTC)
+	archiving, err := streams.PrepareStreamArchiveRun(t.Context(), created.ID, "run-lifecycle", archiveStartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: created.ID, ArchiveRunID: archiving.ArchiveRunID, ArchiveStartedAt: archiving.ArchiveStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + created.ID + "/run-lifecycle/final.mp4", SizeBytes: 123}); err != nil {
 		t.Fatal(err)
 	}
 	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: created.ID, Kind: "archive", Name: "bad", RelativePath: "../secret", SizeBytes: 1}); err == nil {
@@ -1958,7 +1964,7 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	artifactsReq.AddCookie(cookie)
 	artifactsRes := httptest.NewRecorder()
 	handler.ServeHTTP(artifactsRes, artifactsReq)
-	if artifactsRes.Code != http.StatusOK || !strings.Contains(artifactsRes.Body.String(), "final/"+created.ID+"/final.mp4") || strings.Contains(artifactsRes.Body.String(), "secret") {
+	if artifactsRes.Code != http.StatusOK || !strings.Contains(artifactsRes.Body.String(), "final/"+created.ID+"/run-lifecycle/final.mp4") || strings.Contains(artifactsRes.Body.String(), "secret") {
 		t.Fatalf("artifacts status = %d body = %s", artifactsRes.Code, artifactsRes.Body.String())
 	}
 }
@@ -2029,7 +2035,7 @@ func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
 		}
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
 	req.AddCookie(cookie)
@@ -2291,13 +2297,6 @@ func TestStartDoesNotReviveStreamCompletedDuringDelayedDispatch(t *testing.T) {
 		releaseStart: make(chan struct{}),
 		stopEntered:  make(chan struct{}, 2),
 	}
-	startHandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
-	// A second Server models another Control Panel process. Its local stream
-	// lock is intentionally independent, so this test proves that the durable
-	// CAS transitions, not just the in-process lock, protect the final state.
-	stopHandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
-	cookie, csrf := loginForTest(t, startHandler, "operator", "correct horse battery")
-
 	stream, err := streams.CreateStream(t.Context(), "delayed start")
 	if err != nil {
 		t.Fatal(err)
@@ -2306,6 +2305,13 @@ func TestStartDoesNotReviveStreamCompletedDuringDelayedDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
+	visualOption := withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003")
+	startHandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), visualOption, WithServiceDispatcher(dispatcher))
+	// A second Server models another Control Panel process. Its local stream
+	// lock is intentionally independent, so this test proves that the durable
+	// CAS transitions, not just the in-process lock, protect the final state.
+	stopHandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), visualOption, WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, startHandler, "operator", "correct horse battery")
 
 	startDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -2401,10 +2407,6 @@ func TestConcurrentStreamStartsClaimOnceBeforeDispatch(t *testing.T) {
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "concurrent start discord", "discord_bot-01", "", "", "")
 	dispatcher := &synchronizedServiceDispatcher{}
-	first := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
-	second := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
-	cookie, csrf := loginForTest(t, first, "operator", "correct horse battery")
-
 	stream, err := baseStreams.CreateStream(t.Context(), "concurrent start")
 	if err != nil {
 		t.Fatal(err)
@@ -2413,6 +2415,10 @@ func TestConcurrentStreamStartsClaimOnceBeforeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
+	visualOption := withManualDiscordTargetForTest(t, baseStreams, stream.ID, "1001", "1002", "1003")
+	first := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), visualOption, WithServiceDispatcher(dispatcher))
+	second := NewServer(transitionGate, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), visualOption, WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, first, "operator", "correct horse battery")
 
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	for _, handler := range []http.Handler{first, second} {
@@ -2868,10 +2874,15 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
-	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 123}); err != nil {
+	archiveStartedAt := time.Date(2026, 8, 23, 1, 2, 3, 0, time.UTC)
+	archiving, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-admin", archiveStartedAt)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/metadata.json", SizeBytes: 12}); err != nil {
+	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, ArchiveRunID: archiving.ArchiveRunID, ArchiveStartedAt: archiving.ArchiveStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-admin/final.mp4", SizeBytes: 123}); err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, ArchiveRunID: archiving.ArchiveRunID, ArchiveStartedAt: archiving.ArchiveStartedAt, Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/run-admin/metadata.json", SizeBytes: 12}); err != nil {
 		t.Fatal(err)
 	}
 	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
@@ -2961,7 +2972,7 @@ func TestStreamArchiveArtifactAdminRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !artifactListContains(renamedArtifacts, "renamed.mp4", "final/"+stream.ID+"/renamed.mp4") || artifactListContains(renamedArtifacts, "final.mp4", "") {
+	if !artifactListContains(renamedArtifacts, "renamed.mp4", "final/"+stream.ID+"/run-admin/renamed.mp4") || artifactListContains(renamedArtifacts, "final.mp4", "") {
 		t.Fatalf("rename did not update artifact metadata safely: %#v", renamedArtifacts)
 	}
 
@@ -2996,7 +3007,12 @@ func TestArchiveArtifactSharePublicPlaybackWithoutLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerAssignedServices(t, auth, stream.ID, "encoder_recorder")
-	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 123}); err != nil {
+	shareStartedAt := time.Date(2026, 8, 24, 1, 2, 3, 0, time.UTC)
+	sharing, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-share", shareStartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.AddArtifact(t.Context(), store.StreamArtifact{StreamID: stream.ID, ArchiveRunID: sharing.ArchiveRunID, ArchiveStartedAt: sharing.ArchiveStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-share/final.mp4", SizeBytes: 123}); err != nil {
 		t.Fatal(err)
 	}
 	artifacts, err := streams.ListStreamArtifacts(t.Context(), stream.ID)
@@ -3119,7 +3135,7 @@ func TestCreateStreamPersistsSchedule(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"scheduled stream","scheduled_start_at":"2026-07-10T01:00:00Z","scheduled_end_at":"2026-07-10T02:00:00Z"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"scheduled stream","scheduled_start_at":"2026-07-10T01:00:00Z","scheduled_end_at":"2026-07-10T02:00:00Z","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -3163,7 +3179,7 @@ func TestStreamScheduledStartIsOptionalClearableAndHonored(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"immediate stream"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"immediate stream","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -3388,7 +3404,7 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`","visual_settings":{"expected_revision":0,"discord_target_mode":"manual","discord_guild_id":"1001","discord_voice_channel_id":"1002","discord_text_channel_id":"1003"}}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","voice_channel_id":"1002","text_channel_id":"1003"}}}`))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -3403,7 +3419,7 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if created.DiscordConfigID != discordOne.ID || created.AutoStartTrigger != "discord_voice_join" || created.YouTubeOutputID != youtubeOutput.ID {
 		t.Fatalf("create did not persist stream settings: %#v", created)
 	}
-	visualReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/visual-settings", bytes.NewBufferString(`{"expected_revision":1,"discord_target_mode":"manual","discord_guild_id":"2001","discord_voice_channel_id":"2002","discord_text_channel_id":"2003"}`))
+	visualReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/visual-settings", bytes.NewBufferString(`{"expected_revision":1,"discord_target":{"mode":"manual","guild_id":"2001","voice_channel_id":"2002","text_channel_id":"2003"}}`))
 	visualReq.AddCookie(cookie)
 	visualReq.Header.Set("X-CSRF-Token", csrf)
 	visualRes := httptest.NewRecorder()
@@ -3528,13 +3544,13 @@ func TestCreateStreamRejectsInvalidAutoStartSettings(t *testing.T) {
 	}{
 		{
 			name: "unknown trigger",
-			body: `{"name":"bad trigger","auto_start_trigger":"vc_join"}`,
+			body: `{"name":"bad trigger","auto_start_trigger":"vc_join","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`,
 			code: "auto_start_trigger_invalid",
 		},
 		{
 			name: "missing discord voice target",
-			body: `{"name":"missing discord","discord_config_id":"` + discordProfile.ID + `","discord_guild_id":"guild-01","auto_start_trigger":"discord_voice_join"}`,
-			code: "auto_start_discord_required",
+			body: `{"name":"missing discord","discord_config_id":"` + discordProfile.ID + `","auto_start_trigger":"discord_voice_join","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`,
+			code: "invalid_visual_settings",
 		},
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(tc.body))
@@ -3581,7 +3597,7 @@ func TestCreateStreamMaterializesDirectArchiveSettings(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"direct archive stream","archive_oauth_account_id":"`+account.ID+`","archive_folder_id":"raw-drive-folder-id","archive_shared_drive":true,"archive_shared_drive_id":"shared-drive-01","archive_retention_days":45}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"direct archive stream","archive_oauth_account_id":"`+account.ID+`","archive_folder_id":"raw-drive-folder-id","archive_shared_drive":true,"archive_shared_drive_id":"shared-drive-01","archive_retention_days":45,"visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -3817,7 +3833,7 @@ func TestCreateStreamMaterializesLocalRetentionArchiveProfileWithoutDrive(t *tes
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"local retained stream","archive_retention_days":7}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"local retained stream","archive_retention_days":7,"visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -3869,7 +3885,7 @@ func TestStreamSettingsRejectUnknownDiscordConfig(t *testing.T) {
 	overrideOnlyCreateReq.Header.Set("X-CSRF-Token", csrf)
 	overrideOnlyCreateRes := httptest.NewRecorder()
 	handler.ServeHTTP(overrideOnlyCreateRes, overrideOnlyCreateReq)
-	if overrideOnlyCreateRes.Code != http.StatusBadRequest || !strings.Contains(overrideOnlyCreateRes.Body.String(), "discord_config_required") {
+	if overrideOnlyCreateRes.Code != http.StatusBadRequest || !strings.Contains(overrideOnlyCreateRes.Body.String(), "bad_request") {
 		t.Fatalf("override-only create status=%d body=%s", overrideOnlyCreateRes.Code, overrideOnlyCreateRes.Body.String())
 	}
 	updateReq := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"discord_config_id":"missing-discord-config"}`))
@@ -3885,7 +3901,7 @@ func TestStreamSettingsRejectUnknownDiscordConfig(t *testing.T) {
 	overrideOnlyReq.Header.Set("X-CSRF-Token", csrf)
 	overrideOnlyRes := httptest.NewRecorder()
 	handler.ServeHTTP(overrideOnlyRes, overrideOnlyReq)
-	if overrideOnlyRes.Code != http.StatusBadRequest || !strings.Contains(overrideOnlyRes.Body.String(), "discord_config_required") {
+	if overrideOnlyRes.Code != http.StatusBadRequest || !strings.Contains(overrideOnlyRes.Body.String(), "bad_request") {
 		t.Fatalf("override-only update status=%d body=%s", overrideOnlyRes.Code, overrideOnlyRes.Body.String())
 	}
 }
@@ -3951,10 +3967,10 @@ func TestStreamStartStopDispatchesAssignedServices(t *testing.T) {
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "dispatch discord", "discord_bot-01", "guild-01", "voice-01", "")
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-01","discord_voice_channel_id":"voice-01","encoder_input_url":"srt://input.example.com:9000"}`))
+	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","encoder_input_url":"srt://input.example.com:9000"}`))
 	startReq.AddCookie(cookie)
 	startReq.Header.Set("X-CSRF-Token", csrf)
 	startRes := httptest.NewRecorder()
@@ -4046,10 +4062,10 @@ func TestStartStreamCompensatesPartialDispatchFailure(t *testing.T) {
 				fakeServiceDispatcher: fakeServiceDispatcher{startResultsOverride: tt.results},
 				cancelRequest:         cancelRequest,
 			}
-			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-01","discord_voice_channel_id":"voice-01","encoder_input_url":"srt://input.example.com:9000"}`)).WithContext(requestContext)
+			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","encoder_input_url":"srt://input.example.com:9000"}`)).WithContext(requestContext)
 			req.AddCookie(cookie)
 			req.Header.Set("X-CSRF-Token", csrf)
 			res := httptest.NewRecorder()
@@ -4090,10 +4106,10 @@ func TestStartStreamResolvesDiscordConfigForDispatch(t *testing.T) {
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "main discord", "discord_bot-01", "guild-from-config", "voice-from-config", "text-from-config")
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"manual-guild","discord_voice_channel_id":"manual-voice","discord_text_channel_id":"manual-text"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -4101,7 +4117,7 @@ func TestStartStreamResolvesDiscordConfigForDispatch(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("start status = %d body = %s", res.Code, res.Body.String())
 	}
-	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "manual-guild" || dispatcher.startRequest.DiscordVoiceChannelID != "manual-voice" || dispatcher.startRequest.DiscordTextChannelID != "manual-text" {
+	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "1001" || dispatcher.startRequest.DiscordVoiceChannelID != "1003" || dispatcher.startRequest.DiscordTextChannelID != "1002" {
 		t.Fatalf("discord config was not resolved into start request: %#v", dispatcher.startRequest)
 	}
 }
@@ -4121,10 +4137,10 @@ func TestStartStreamMaterializesConfiguredDiscordBotAssignment(t *testing.T) {
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "configured discord", "discord_bot-01", "guild-01", "voice-01", "text-01")
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-01","discord_voice_channel_id":"voice-01"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -4161,7 +4177,7 @@ func TestStartStreamUsesSavedDiscordConfigSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
 	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
@@ -4172,7 +4188,7 @@ func TestStartStreamUsesSavedDiscordConfigSetting(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("start status = %d body = %s", res.Code, res.Body.String())
 	}
-	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "guild-stream-override" || dispatcher.startRequest.DiscordVoiceChannelID != "voice-stream-override" || dispatcher.startRequest.DiscordTextChannelID != "text-stream-override" {
+	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "1001" || dispatcher.startRequest.DiscordVoiceChannelID != "1003" || dispatcher.startRequest.DiscordTextChannelID != "1002" {
 		t.Fatalf("saved discord config was not applied: %#v", dispatcher.startRequest)
 	}
 }
@@ -4199,9 +4215,9 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 
-	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"attacker-config","discord_guild_id":"attacker-guild","discord_voice_channel_id":"attacker-voice"}`))
+	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
 	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -4211,10 +4227,10 @@ func TestServiceStartStreamUsesSavedSettingsForPrimaryDiscordBot(t *testing.T) {
 	if dispatcher.startCalls != 1 {
 		t.Fatalf("expected one start dispatch, got %d", dispatcher.startCalls)
 	}
-	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "guild-stream-override" || dispatcher.startRequest.DiscordVoiceChannelID != "voice-stream-override" {
-		t.Fatalf("service start must use saved settings and ignore request overrides: %#v", dispatcher.startRequest)
+	if dispatcher.startRequest.DiscordConfigID != config.ID || dispatcher.startRequest.DiscordGuildID != "1001" || dispatcher.startRequest.DiscordVoiceChannelID != "1003" {
+		t.Fatalf("service start must use saved settings: %#v", dispatcher.startRequest)
 	}
-	if dispatcher.startRequest.DiscordTextChannelID != "text-stream-override" {
+	if dispatcher.startRequest.DiscordTextChannelID != "1002" {
 		t.Fatalf("service start should use saved stream text channel: %#v", dispatcher.startRequest)
 	}
 	events := auth.AuditEvents()
@@ -4345,7 +4361,7 @@ func TestServiceStopStreamUsesPrimaryDiscordBotAndCanonicalLifecycle(t *testing.
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 
 	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/stop", nil)
 	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
@@ -4457,7 +4473,7 @@ func TestServiceStartStreamAllowsConfiguredDiscordBotWithoutPriorAssignment(t *t
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 
 	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
 	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
@@ -4609,10 +4625,10 @@ func TestStartStreamRejectsDiscordConfigForDifferentPrimaryBot(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -4656,17 +4672,19 @@ func TestStartStreamLegacyStaticRelayResolvesYouTubeOutputSecretForDispatch(t *t
 	profiles := store.NewMemoryProfileStore()
 	discord := createDiscordConfigForTest(t, profiles, "youtube discord", "discord_bot-01", "guild-youtube", "voice-youtube", "")
 	youtube, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, "main-output", map[string]any{
+		"mode":                   "stream_key",
 		"rtmp_url":               "rtmps://youtube.example.com/live2",
 		"stream_key_secret_name": "youtube_stream_key_main",
+		"watch_url":              "https://youtu.be/bundle8b-stream-key",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -4688,8 +4706,7 @@ func TestStartStreamQueuesDiscordNotificationOnlyAfterSuccessfulDispatch(t *test
 		watchURL                  string
 		failStart                 bool
 		notificationResult        servicecall.DispatchResult
-		requestDiscordTextChannel string
-		streamDiscordTextChannel  string
+		snapshotTextChannel       string
 		wantDispatchTextChannel   string
 		wantHTTPStatus            int
 		wantStreamStatus          string
@@ -4699,11 +4716,11 @@ func TestStartStreamQueuesDiscordNotificationOnlyAfterSuccessfulDispatch(t *test
 		wantNotificationState     string
 		wantNotificationLastError string
 	}{
-		{name: "notification sent", watchURL: "https://youtu.be/video_01", requestDiscordTextChannel: "chat-youtube", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_01", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
-		{name: "profile text channel fallback sends notification", watchURL: "https://youtu.be/video_profile_fallback", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_profile_fallback", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
-		{name: "saved stream text channel override keeps priority", watchURL: "https://youtu.be/video_stream_override", streamDiscordTextChannel: "chat-stream-override", wantDispatchTextChannel: "chat-stream-override", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_stream_override", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
-		{name: "ambiguous notification failure keeps live stream and fences recovery", watchURL: "https://www.youtube.com/watch?v=video_02", notificationResult: servicecall.DispatchResult{StatusCode: http.StatusBadGateway, Code: "discord_api_unavailable", Error: "service returned status 502"}, requestDiscordTextChannel: "chat-youtube", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_02", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDeliveryUnknown, wantNotificationLastError: "discord_api_unavailable"},
-		{name: "dispatch failure suppresses notification", watchURL: "https://www.youtube.com/watch?v=video_03", failStart: true, requestDiscordTextChannel: "chat-youtube", wantDispatchTextChannel: "chat-youtube", wantHTTPStatus: http.StatusBadGateway, wantStreamStatus: "failed", wantNotifyCalls: 0, wantResponseCode: "service_dispatch_failed"},
+		{name: "notification sent", watchURL: "https://youtu.be/video_01", snapshotTextChannel: "2002", wantDispatchTextChannel: "2002", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_01", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
+		{name: "profile text channel fallback sends notification", watchURL: "https://youtu.be/video_profile_fallback", wantDispatchTextChannel: "3002", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_profile_fallback", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
+		{name: "saved stream text channel override keeps priority", watchURL: "https://youtu.be/video_stream_override", snapshotTextChannel: "9002", wantDispatchTextChannel: "9002", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_stream_override", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDelivered},
+		{name: "ambiguous notification failure keeps live stream and fences recovery", watchURL: "https://www.youtube.com/watch?v=video_02", notificationResult: servicecall.DispatchResult{StatusCode: http.StatusBadGateway, Code: "discord_api_unavailable", Error: "service returned status 502"}, snapshotTextChannel: "2002", wantDispatchTextChannel: "2002", wantHTTPStatus: http.StatusOK, wantStreamStatus: "live", wantNotifyCalls: 1, wantNotifiedURL: "https://www.youtube.com/watch?v=video_02", wantNotificationState: store.DiscordYouTubeLiveNotificationStateDeliveryUnknown, wantNotificationLastError: "discord_api_unavailable"},
+		{name: "dispatch failure suppresses notification", watchURL: "https://www.youtube.com/watch?v=video_03", failStart: true, snapshotTextChannel: "2002", wantDispatchTextChannel: "2002", wantHTTPStatus: http.StatusBadGateway, wantStreamStatus: "failed", wantNotifyCalls: 0, wantResponseCode: "service_dispatch_failed"},
 		{name: "profile text channel fallback requires watch URL", wantHTTPStatus: http.StatusConflict, wantStreamStatus: "created", wantNotifyCalls: 0, wantResponseCode: "youtube_output_invalid_config"},
 	}
 
@@ -4727,9 +4744,9 @@ func TestStartStreamQueuesDiscordNotificationOnlyAfterSuccessfulDispatch(t *test
 			discord, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "notification discord", map[string]any{
 				"service_id":           "discord_bot-01",
 				"bot_token_configured": true,
-				"guild_id":             "guild-youtube",
-				"voice_channel_id":     "voice-youtube",
-				"text_channel_id":      "chat-youtube",
+				"guild_id":             "3001",
+				"voice_channel_id":     "3003",
+				"text_channel_id":      "3002",
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -4747,10 +4764,14 @@ func TestStartStreamQueuesDiscordNotificationOnlyAfterSuccessfulDispatch(t *test
 				t.Fatal(err)
 			}
 			dispatcher := &notificationFakeDispatcher{fakeServiceDispatcher: fakeServiceDispatcher{failStart: tt.failStart}, result: tt.notificationResult}
-			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+			options := []ServerOption{WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher)}
+			if tt.snapshotTextChannel != "" {
+				options = append(options, withManualDiscordTargetForTest(t, streams, stream.ID, "2001", tt.snapshotTextChannel, "2003"))
+			}
+			handler := NewServer(streams, options...)
 			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-			body := fmt.Sprintf(`{"discord_config_id":%q,"discord_guild_id":"guild-youtube","discord_voice_channel_id":"voice-youtube","discord_text_channel_id":%q,"youtube_output_id":%q}`, discord.ID, tt.requestDiscordTextChannel, youtube.ID)
+			body := fmt.Sprintf(`{"discord_config_id":%q,"youtube_output_id":%q}`, discord.ID, youtube.ID)
 			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(body))
 			req.AddCookie(cookie)
 			req.Header.Set("X-CSRF-Token", csrf)
@@ -4834,10 +4855,10 @@ func TestStartStreamRejectsYouTubeOutputWithoutProfileRTMPURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -4875,10 +4896,10 @@ func TestStartStreamPreparesYouTubeLiveAPIDryRunWithoutSecretLeak(t *testing.T) 
 	}
 	secrets := store.NewMemorySecretStore()
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -4948,10 +4969,10 @@ func TestStartStreamAuditsYouTubeRuntimeSaveFailure(t *testing.T) {
 		MemoryStreamStore: streams,
 		err:               errors.New("write tcp: connection reset by peer"),
 	}
-	handler := NewServer(failingStore, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	handler := NewServer(failingStore, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -5032,10 +5053,10 @@ func TestStartStreamPreparesAndCompletesYouTubeLiveAPIWithOAuthAccount(t *testin
 	}
 	dispatcher := &fakeServiceDispatcher{}
 	youtubeLive := &transitioningYouTubeLiveClient{fakeYouTubeLiveClient: &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-01", LiveStreamID: "live-stream-01"}}}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -5226,12 +5247,12 @@ func TestStartStreamLegacyStaticRelayRejectsNonStreamKeyYouTubeOutputBeforePrepa
 			}
 			dispatcher := &fakeServiceDispatcher{}
 			youtubeLive := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-static", LiveStreamID: "live-stream-static"}}
-			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-			body := `{"discord_config_id":"` + discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static"}`
+			body := `{"discord_config_id":"` + discord.ID + `"}`
 			if outputID != "" {
-				body = `{"discord_config_id":"` + discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"` + outputID + `"}`
+				body = `{"discord_config_id":"` + discord.ID + `","youtube_output_id":"` + outputID + `"}`
 			}
 			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(body))
 			req.AddCookie(cookie)
@@ -5913,11 +5934,12 @@ func TestStartStreamPreparesRelayStaticYouTubeAndReleasesClaimOnlyAfterCompletio
 		WithSecretStore(store.NewMemorySecretStore()),
 		WithIntegrationStore(integrations),
 		WithYouTubeLiveClient(&relayStaticCompletingYouTubeLiveClient{fakeYouTubeLiveClient: youtubeLive}),
+		withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"),
 		WithServiceDispatcher(dispatcher),
 	)
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
+	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","encoder_rtmp_url":"rtmps://attacker.example.com/live2"}`))
 	startReq.AddCookie(cookie)
 	startReq.Header.Set("X-CSRF-Token", csrf)
 	startRes := httptest.NewRecorder()
@@ -6079,6 +6101,7 @@ func newRelayStaticStartFixtureForTest(t *testing.T, dispatcher *fakeServiceDisp
 		WithProfileStore(profiles),
 		WithIntegrationStore(integrations),
 		WithYouTubeLiveClient(&relayStaticCompletingYouTubeLiveClient{fakeYouTubeLiveClient: youtubeLive}),
+		withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"),
 		WithServiceDispatcher(dispatcher),
 	)
 	cookie, csrf := loginForTest(t, server, "operator", "correct horse battery")
@@ -6241,7 +6264,7 @@ func (s *relayStaticEncoderStopReceiptRecordingStreamStore) MarkPreparedStreamYo
 
 func (f relayStaticStartFixtureForTest) start(t *testing.T) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+f.stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+f.discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+f.youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+f.stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+f.discord.ID+`","youtube_output_id":"`+f.youtube.ID+`"}`))
 	req.AddCookie(f.cookie)
 	req.Header.Set("X-CSRF-Token", f.csrf)
 	res := httptest.NewRecorder()
@@ -6490,7 +6513,7 @@ func TestStartStreamRelayStaticRejectsDynamicOutputOverrideBeforePrepareOrDispat
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+fixture.discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+alternate.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+fixture.stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+fixture.discord.ID+`","youtube_output_id":"`+alternate.ID+`"}`))
 	req.AddCookie(fixture.cookie)
 	req.Header.Set("X-CSRF-Token", fixture.csrf)
 	response := httptest.NewRecorder()
@@ -7087,10 +7110,11 @@ func TestStartStreamRejectsRelayStaticBindingMismatchBeforeClaimReservePrepareOr
 		WithProfileStore(profiles),
 		WithIntegrationStore(integrations),
 		WithYouTubeLiveClient(youtubeLive),
+		withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"),
 		WithServiceDispatcher(dispatcher),
 	)
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	request := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"`+youtube.ID+`"}`))
+	request := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	request.AddCookie(cookie)
 	request.Header.Set("X-CSRF-Token", csrf)
 	response := httptest.NewRecorder()
@@ -7129,7 +7153,7 @@ func TestStartStreamStaticRelayEncoderRejectsNonStaticOrMissingYouTubeOutputBefo
 				}
 			},
 			body: func(fixture relayStaticStartFixtureForTest) string {
-				return `{"discord_config_id":"` + fixture.discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"` + fixture.youtube.ID + `"}`
+				return `{"discord_config_id":"` + fixture.discord.ID + `","youtube_output_id":"` + fixture.youtube.ID + `"}`
 			},
 		},
 		{
@@ -7143,7 +7167,7 @@ func TestStartStreamStaticRelayEncoderRejectsNonStaticOrMissingYouTubeOutputBefo
 				}
 			},
 			body: func(fixture relayStaticStartFixtureForTest) string {
-				return `{"discord_config_id":"` + fixture.discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static","youtube_output_id":"` + fixture.youtube.ID + `"}`
+				return `{"discord_config_id":"` + fixture.discord.ID + `","youtube_output_id":"` + fixture.youtube.ID + `"}`
 			},
 		},
 		{
@@ -7155,7 +7179,7 @@ func TestStartStreamStaticRelayEncoderRejectsNonStaticOrMissingYouTubeOutputBefo
 				}
 			},
 			body: func(fixture relayStaticStartFixtureForTest) string {
-				return `{"discord_config_id":"` + fixture.discord.ID + `","discord_guild_id":"guild-static","discord_voice_channel_id":"voice-static"}`
+				return `{"discord_config_id":"` + fixture.discord.ID + `"}`
 			},
 		},
 	} {
@@ -8021,10 +8045,10 @@ func TestStopStreamHonorsYouTubeCompleteOnStopFalseAndManualRetryForcesComplete(
 	}
 	dispatcher := &fakeServiceDispatcher{}
 	youtubeLive := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-manual", LiveStreamID: "live-stream-manual"}}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	startReq.AddCookie(cookie)
 	startReq.Header.Set("X-CSRF-Token", csrf)
 	startRes := httptest.NewRecorder()
@@ -8121,10 +8145,10 @@ func TestStopStreamKeepsYouTubeRuntimeWhenLiveAPICompleteFails(t *testing.T) {
 		prepared:    ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-retry", LiveStreamID: "live-stream-retry"},
 		completeErr: errors.New("youtube transition failed"),
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	startReq.AddCookie(cookie)
 	startReq.Header.Set("X-CSRF-Token", csrf)
 	startRes := httptest.NewRecorder()
@@ -8372,10 +8396,10 @@ func TestStartStreamCompletesYouTubeLiveAPIWhenDispatchFails(t *testing.T) {
 	}
 	dispatcher := &fakeServiceDispatcher{failStart: true}
 	youtubeLive := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-cleanup", LiveStreamID: "live-stream-cleanup"}}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8452,10 +8476,10 @@ func TestStartStreamKeepsYouTubeRuntimeWhenDispatchFailureCleanupFails(t *testin
 		prepared:    ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-retained", LiveStreamID: "live-stream-retained"},
 		completeErr: errors.New("youtube transition failed"),
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8508,10 +8532,10 @@ func TestStartStreamRejectsYouTubeLiveAPIWithoutOAuthAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-youtube","discord_voice_channel_id":"voice-youtube","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8566,7 +8590,7 @@ func TestStartStreamDoesNotPrepareYouTubeLiveAPIWhenAssignmentsAreMissing(t *tes
 		t.Fatal(err)
 	}
 	youtubeLive := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-must-not-exist"}}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
 	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"youtube_output_id":"`+youtube.ID+`"}`))
@@ -8647,7 +8671,7 @@ func TestStartStreamDoesNotPrepareYouTubeLiveAPIWhenArchiveReadinessFails(t *tes
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithYouTubeLiveClient(youtubeLive))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8716,10 +8740,10 @@ func TestStartStreamResolvesArchiveDriveDestinationForDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8798,10 +8822,10 @@ func TestStartStreamResolvesOAuthDriveDestinationForDispatchWithoutResponseLeak(
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8886,9 +8910,9 @@ func TestStreamStartChecksReadinessBeforeDispatch(t *testing.T) {
 		Code:        "service_public_url_invalid",
 		Message:     "service public_url must be absolute",
 	}}}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -8986,9 +9010,9 @@ func TestStreamStartReadinessEndpointReportsServerReadinessIssues(t *testing.T) 
 		Code:        "service_public_url_invalid",
 		Message:     "service public_url must be absolute",
 	}}}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","encoder_input_url":"srt://source.example.com:9000"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","encoder_input_url":"srt://source.example.com:9000"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -9041,9 +9065,9 @@ func TestStreamStartReadinessRejectsUnsupportedNegotiatedWorkerVideoProfile(t *t
 			t.Fatal(err)
 		}
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(&fakeServiceDispatcher{}))
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(&fakeServiceDispatcher{}))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	body := fmt.Sprintf(`{"discord_config_id":%q,"discord_guild_id":"guild","discord_voice_channel_id":"voice","encoder_profile_id":%q}`, discord.ID, encoderProfile.ID)
+	body := fmt.Sprintf(`{"discord_config_id":%q,"encoder_profile_id":%q}`, discord.ID, encoderProfile.ID)
 	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", strings.NewReader(body))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
@@ -9077,9 +9101,9 @@ func TestStreamStartReadinessEndpointReportsMissingYouTubeStreamKeyWithoutReadin
 	}
 	secrets := &trackingSecretStore{}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -9130,9 +9154,9 @@ func TestStreamStartReadinessEndpointReportsYouTubeLiveAPIAccountIssueWithoutPre
 	}
 	youtubeLive := &fakeYouTubeLiveClient{prepared: ytlive.PreparedOutput{RTMPURL: "rtmps://youtube.example.com/live2", StreamKey: "runtime-youtube-live-api-key", BroadcastID: "broadcast-01"}}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(store.NewMemoryIntegrationStore()), WithYouTubeLiveClient(youtubeLive), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(store.NewMemoryIntegrationStore()), WithYouTubeLiveClient(youtubeLive), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","youtube_output_id":"`+youtube.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","youtube_output_id":"`+youtube.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -9181,9 +9205,9 @@ func TestStreamStartReadinessEndpointReportsMissingDriveDestination(t *testing.T
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(store.NewMemoryIntegrationStore()), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(store.NewMemoryIntegrationStore()), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -9258,9 +9282,9 @@ func TestStreamStartReadinessEndpointReportsOAuthDriveAccountIssueWithoutRawSecr
 		t.Fatal(err)
 	}
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","archive_profile_id":"`+archiveProfile.ID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", bytes.NewBufferString(`{"discord_config_id":"`+discord.ID+`","archive_profile_id":"`+archiveProfile.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -9429,9 +9453,9 @@ func TestStreamDispatchFailureMarksFailed(t *testing.T) {
 	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "dispatch failure discord", "discord_bot-01", "guild-dispatch", "voice-dispatch", "")
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(&fakeServiceDispatcher{failStart: true}))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(&fakeServiceDispatcher{failStart: true}))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -9462,9 +9486,9 @@ func TestStreamDispatchFailureDoesNotLeakSecretError(t *testing.T) {
 	dispatcher := &fakeServiceDispatcher{failStart: true, dispatchFailureError: `Post "https://encoder.example.com/jobs/start?token=secret-token": Authorization Bearer secret-token`}
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "secret failure discord", "discord_bot-01", "guild-dispatch", "voice-dispatch", "")
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -10777,7 +10801,7 @@ func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 	dispatcher := &fakeServiceDispatcher{}
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "standby discord", "discord-01", "guild-standby", "voice-standby", "")
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
 	assignServiceForTest(t, handler, cookie, csrf, "discord-01", stream.ID)
@@ -10823,7 +10847,7 @@ func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 		t.Fatalf("service health did not expose assignment roles: %#v", roles)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -10893,7 +10917,7 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "100000000000000001", "100000000000000002", "100000000000000003"), WithAuditStore(auth))
 
 	limitedReq := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=discord-01", nil)
 	limitedReq.Header.Set("Authorization", "Bearer "+limitedToken.RawToken)
@@ -10945,10 +10969,10 @@ func TestServiceRuntimeConfigIsScopedToAuthenticatedService(t *testing.T) {
 	if resolved.StreamID != stream.ID || resolved.DiscordConfigID != discordOne.ID || resolved.AssignmentRole != "primary" {
 		t.Fatalf("unexpected stream discord config identity: %#v", resolved)
 	}
-	if resolved.GuildID != "guild-stream-override" || resolved.VoiceChannelID != "voice-stream-override" {
+	if resolved.GuildID != "100000000000000001" || resolved.VoiceChannelID != "100000000000000003" {
 		t.Fatalf("stream overrides were not applied: %#v", resolved)
 	}
-	if resolved.TextChannelID != "text-stream-override" {
+	if resolved.TextChannelID != "100000000000000002" {
 		t.Fatalf("stream text channel override was not applied: %#v", resolved)
 	}
 	if resolved.AutoStartTrigger != "discord_voice_join" {
@@ -11020,7 +11044,23 @@ func TestServiceRuntimeConfigIncludesConfiguredDiscordStreamsWithoutAssignments(
 	}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithAuditStore(auth))
+	visuals := streamvisual.NewMemoryRepository(streams)
+	for _, target := range []struct {
+		streamID, guildID, textChannelID, voiceChannelID string
+	}{
+		{streamA.ID, "100000000000000001", "100000000000000002", "100000000000000003"},
+		{streamB.ID, "200000000000000001", "200000000000000002", "200000000000000003"},
+	} {
+		if _, err := visuals.Update(t.Context(), target.streamID, "test", streamvisual.Update{
+			ExpectedRevision: 1,
+			DiscordTarget: streamvisual.OptionalDiscordTarget{Set: true, Value: streamvisual.DiscordTarget{
+				Mode: "manual", GuildID: target.guildID, TextChannelID: target.textChannelID, VoiceChannelID: target.voiceChannelID,
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithStreamVisualRepository(visuals), WithAuditStore(auth))
 
 	req := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=discord-01", nil)
 	req.Header.Set("Authorization", "Bearer "+token.RawToken)
@@ -11046,10 +11086,10 @@ func TestServiceRuntimeConfigIncludesConfiguredDiscordStreamsWithoutAssignments(
 			t.Fatalf("configured discord stream should be presented as primary runtime target: %#v", item)
 		}
 	}
-	if byStream[streamA.ID].GuildID != "guild-default" || byStream[streamA.ID].VoiceChannelID != "voice-default" || byStream[streamA.ID].TextChannelID != "text-default" {
-		t.Fatalf("profile defaults were not applied for unassigned stream: %#v", byStream[streamA.ID])
+	if byStream[streamA.ID].GuildID != "100000000000000001" || byStream[streamA.ID].VoiceChannelID != "100000000000000003" || byStream[streamA.ID].TextChannelID != "100000000000000002" {
+		t.Fatalf("stream visual target was not applied for unassigned stream: %#v", byStream[streamA.ID])
 	}
-	if byStream[streamB.ID].GuildID != "guild-stream-b" || byStream[streamB.ID].VoiceChannelID != "voice-stream-b" || byStream[streamB.ID].TextChannelID != "text-stream-b" {
+	if byStream[streamB.ID].GuildID != "200000000000000001" || byStream[streamB.ID].VoiceChannelID != "200000000000000003" || byStream[streamB.ID].TextChannelID != "200000000000000002" {
 		t.Fatalf("stream overrides were not applied for unassigned stream: %#v", byStream[streamB.ID])
 	}
 	if strings.Contains(res.Body.String(), "caption.example.com") {
@@ -18657,6 +18697,11 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	archiveStartedAt := time.Date(2026, 8, 18, 5, 6, 29, 0, time.UTC)
+	archiving, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-main", archiveStartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
@@ -18672,7 +18717,7 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 
 	token := createServiceTokenForTest(t, handler, cookie, csrf, "encoder_recorder", []string{"service.register", "encoder.status.write"})
 	registerServiceForTest(t, handler, token.RawToken, "encoder-01", "encoder_recorder")
-	reportBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/final.mp4","size_bytes":123}]}`
+	reportBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"` + archiving.ArchiveRunID + `","archive_started_at":"` + archiveStartedAt.Format(time.RFC3339Nano) + `","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/run-main/final.mp4","size_bytes":123}]}`
 	unassignedReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(reportBody))
 	unassignedReq.Header.Set("Authorization", "Bearer "+token.RawToken)
 	unassignedRes := httptest.NewRecorder()
@@ -18699,7 +18744,7 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 		t.Fatalf("assign encoder status = %d body = %s", assignRes.Code, assignRes.Body.String())
 	}
 
-	unsafeReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(`{"service_id":"encoder-01","stream_id":"`+stream.ID+`","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"../secret","size_bytes":123}]}`))
+	unsafeReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(`{"service_id":"encoder-01","stream_id":"`+stream.ID+`","archive_run_id":"run-main","archive_started_at":"2026-08-18T05:06:29Z","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"../secret","size_bytes":123}]}`))
 	unsafeReq.Header.Set("Authorization", "Bearer "+token.RawToken)
 	unsafeRes := httptest.NewRecorder()
 	handler.ServeHTTP(unsafeRes, unsafeReq)
@@ -18717,10 +18762,10 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 	}
 	for _, unsafePath := range []string{
 		`C:\var\lib\autostream\archives\final\` + stream.ID + `\final.mp4`,
-		"final/another-stream/final.mp4",
-		"final/" + stream.ID + "/metadata.json",
+		"final/another-stream/run-main/final.mp4",
+		"final/" + stream.ID + "/run-main/metadata.json",
 	} {
-		body := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"` + strings.ReplaceAll(unsafePath, `\`, `\\`) + `","size_bytes":123}]}`
+		body := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"run-main","archive_started_at":"2026-08-18T05:06:29Z","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"` + strings.ReplaceAll(unsafePath, `\`, `\\`) + `","size_bytes":123}]}`
 		req := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(body))
 		req.Header.Set("Authorization", "Bearer "+token.RawToken)
 		res := httptest.NewRecorder()
@@ -18729,7 +18774,7 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 			t.Fatalf("mismatched artifact path should be rejected: path=%q status=%d body=%s", unsafePath, res.Code, res.Body.String())
 		}
 	}
-	serverOwnedBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","artifacts":[{"id":"client-controlled","kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/final.mp4","size_bytes":123,"created_at":"2099-01-01T00:00:00Z"}]}`
+	serverOwnedBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"run-main","archive_started_at":"2026-08-18T05:06:29Z","artifacts":[{"id":"client-controlled","kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/run-main/final.mp4","size_bytes":123,"created_at":"2099-01-01T00:00:00Z"}]}`
 	serverOwnedReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(serverOwnedBody))
 	serverOwnedReq.Header.Set("Authorization", "Bearer "+token.RawToken)
 	serverOwnedRes := httptest.NewRecorder()
@@ -18739,7 +18784,7 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 	}
 
 	for _, size := range []int{123, 456} {
-		body := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/final.mp4","size_bytes":` + strconv.Itoa(size) + `}]}`
+		body := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"run-main","archive_started_at":"2026-08-18T05:06:29Z","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/run-main/final.mp4","size_bytes":` + strconv.Itoa(size) + `}]}`
 		req := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(body))
 		req.Header.Set("Authorization", "Bearer "+token.RawToken)
 		res := httptest.NewRecorder()
@@ -18752,10 +18797,14 @@ func TestEncoderArtifactReportRequiresScopeAssignmentAndSafePaths(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(artifacts) != 1 || artifacts[0].SizeBytes != 456 || artifacts[0].RelativePath != "final/"+stream.ID+"/final.mp4" {
+	if len(artifacts) != 1 || artifacts[0].SizeBytes != 456 || artifacts[0].RelativePath != "final/"+stream.ID+"/run-main/final.mp4" {
 		t.Fatalf("artifact report was not upserted safely: %#v", artifacts)
 	}
-	runBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"run-01","archive_started_at":"2026-08-18T05:06:29Z","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/run-01/final.mp4","size_bytes":789}]}`
+	nextStartedAt := time.Date(2026, 8, 18, 5, 7, 29, 0, time.UTC)
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-01", nextStartedAt); err != nil {
+		t.Fatal(err)
+	}
+	runBody := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"run-01","archive_started_at":"2026-08-18T05:07:29Z","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/run-01/final.mp4","size_bytes":789}]}`
 	runReq := httptest.NewRequest(http.MethodPost, "/services/stream-artifacts", bytes.NewBufferString(runBody))
 	runReq.Header.Set("Authorization", "Bearer "+token.RawToken)
 	runRes := httptest.NewRecorder()
@@ -18817,6 +18866,10 @@ func TestEncoderArtifactReportClassifiesStoreFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	archiveStartedAt := time.Date(2026, 8, 18, 6, 6, 29, 0, time.UTC)
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-failure", archiveStartedAt); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{ServiceID: "encoder-01", ServiceType: "encoder_recorder", ServiceName: "Encoder", PublicURL: "https://encoder.example.com"}); err != nil {
 		t.Fatal(err)
 	}
@@ -18826,7 +18879,7 @@ func TestEncoderArtifactReportClassifiesStoreFailures(t *testing.T) {
 	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-01", stream.ID, "test-user"); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/final.mp4","size_bytes":123}]}`
+	body := `{"service_id":"encoder-01","stream_id":"` + stream.ID + `","archive_run_id":"run-failure","archive_started_at":"2026-08-18T06:06:29Z","artifacts":[{"kind":"archive","name":"final.mp4","relative_path":"final/` + stream.ID + `/run-failure/final.mp4","size_bytes":123}]}`
 	for _, test := range []struct {
 		name       string
 		err        error
@@ -21170,6 +21223,26 @@ func createDiscordConfigForTest(t *testing.T, profiles *store.MemoryProfileStore
 		t.Fatal(err)
 	}
 	return profile
+}
+
+func withManualDiscordTargetForTest(t *testing.T, streams store.StreamStore, streamID, guildID, textChannelID, voiceChannelID string) ServerOption {
+	t.Helper()
+	repository := streamvisual.NewMemoryRepository(streams)
+	if _, err := repository.Update(t.Context(), streamID, "test", streamvisual.Update{
+		ExpectedRevision: 1,
+		DiscordTarget: streamvisual.OptionalDiscordTarget{
+			Set: true,
+			Value: streamvisual.DiscordTarget{
+				Mode:           "manual",
+				GuildID:        guildID,
+				TextChannelID:  textChannelID,
+				VoiceChannelID: voiceChannelID,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return WithStreamVisualRepository(repository)
 }
 
 func stringValue(value any) string {

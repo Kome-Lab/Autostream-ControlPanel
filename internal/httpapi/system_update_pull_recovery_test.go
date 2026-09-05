@@ -53,7 +53,7 @@ func newPullRecoveryHTTPFixture(t *testing.T) pullRecoveryHTTPFixture {
 			PollIntervalSeconds:       15,
 			HeartbeatIntervalSeconds:  30,
 			Targets: []store.UpdaterPolicyTarget{{
-				TargetID: "worker-a", ServiceID: "worker-a", ServiceType: "worker", DeploymentMode: "systemd",
+				TargetID: "worker-a", ServiceID: "worker-a", ServiceType: "worker", DeploymentMode: "systemd", LocalListenPort: 18081,
 			}},
 		},
 	)

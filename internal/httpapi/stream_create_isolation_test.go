@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -457,7 +458,7 @@ func TestCreateStreamRepeatedAndConcurrentRequestsPreserveAssignments(t *testing
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			body := `{"name":"concurrent-` + string(rune('a'+index)) + `"}`
+			body := `{"name":"concurrent-` + string(rune('a'+index)) + `","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`
 			req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(body))
 			req.AddCookie(cookie)
 			req.Header.Set("X-CSRF-Token", csrf)
@@ -568,7 +569,23 @@ func registerStreamIsolationService(t *testing.T, auth *store.MemoryAuthStore, s
 
 func createStreamForIsolation(t *testing.T, handler http.Handler, cookie *http.Cookie, csrf, payload string) store.Stream {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(payload))
+	var body map[string]any
+	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["visual_settings"]; !ok {
+		body["visual_settings"] = map[string]any{
+			"expected_revision": 0,
+			"discord_target": map[string]any{
+				"mode": "inherit",
+			},
+		}
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewReader(encoded))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()

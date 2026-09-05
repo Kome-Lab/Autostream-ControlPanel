@@ -19,6 +19,7 @@ import (
 	contracts "github.com/example/autostream-contracts/pkg/contracts"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
@@ -59,21 +60,53 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	if _, err := auth.Heartbeat(t.Context(), workerToken, store.ServiceHeartbeat{ServiceID: "worker-01", Status: "online", Version: "v1.0.0"}); err != nil {
 		t.Fatal(err)
 	}
-	agentToken, err := auth.CreateServiceToken(t.Context(), "update_agent", []string{"service.register", "service.heartbeat", "updates.claim", "updates.report"})
+	updates := store.NewMemorySystemUpdateStore()
+	policies := store.NewMemoryUpdaterPolicyStore()
+	policy, err := policies.SavePullUpdaterPolicy(t.Context(), updates, "updater-01", 0, 0, store.UpdaterPolicy{
+		TransportMode:             store.SystemUpdateTransportPullV2,
+		ExecutionHostID:           "host-01",
+		LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64),
+		PollIntervalSeconds:       15,
+		HeartbeatIntervalSeconds:  30,
+		Targets: []store.UpdaterPolicyTarget{{
+			TargetID: "worker-01", ServiceID: "worker-01", HostID: "host-01",
+			ServiceType: "worker", DeploymentMode: "systemd", LocalListenPort: 18081,
+		}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-01", "updater-01")
 	capabilities := centralUpdateCapabilitiesForTest("host-01", map[string]string{"worker-01": "systemd"})
-	if _, err := auth.PrecreateService(t.Context(), agentToken, store.ServiceRegistration{ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater 01", PublicURL: "https://updater.example.com", Version: "v1.0.0", Capabilities: capabilities}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), agentToken, store.ServiceRegistration{ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater 01", PublicURL: "https://updater.example.com", Version: "v1.0.0", Capabilities: capabilities}); err != nil {
-		t.Fatal(err)
-	}
+	capabilities["host_agent"] = true
+	capabilities["observe_only"] = false
+	capabilities["update_executor"] = true
+	capabilities["mutation_enabled"] = true
+	capabilities["transport_mode"] = store.SystemUpdateTransportPullV2
+	capabilities["agent_protocol_version"] = "2"
+	capabilities["execution_host_id"] = "host-01"
+	capabilities["ownership_epoch"] = int64(1)
+	capabilities["policy_revision"] = policy.ProjectionRevision
+	capabilities["policy_status"] = "applied"
+	capabilities["target_availability"] = map[string]any{"worker-01": "available"}
+	capabilities["target_availability_codes"] = map[string]any{"worker-01": "executor_verified"}
+	capabilities["reported_ports"] = map[string]any{"worker-01": int64(18081)}
+	capabilities["port_drift"] = map[string]any{"worker-01": false}
+	capabilities["reported_service_types"] = map[string]any{"worker-01": "worker"}
+	capabilities["reported_deployment_modes"] = map[string]any{"worker-01": "systemd"}
+	capabilities["reported_executor_policy_revisions"] = map[string]any{"worker-01": policy.LocalExecutorPolicyRevision}
+	capabilities["reported_executor_policy_sha256"] = map[string]any{"worker-01": policy.LocalExecutorPolicySHA256}
+	capabilities["reported_config_revisions"] = map[string]any{"worker-01": int64(1)}
+	agentToken := registerSystemUpdateAgentForTest(t, auth, "updater-01", capabilities)
 	if _, err := auth.Heartbeat(t.Context(), agentToken, store.ServiceHeartbeat{ServiceID: "updater-01", Status: "online", Version: "v1.9.11", Capabilities: capabilities}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithSystemUpdateStore(store.NewMemorySystemUpdateStore()))
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithUpdaterPolicyStore(policies),
+		WithSystemUpdateStore(updates),
+	)
 	cookie, csrf := loginForTest(t, handler, "update-admin", "correct horse battery")
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/system-updates", nil)
@@ -138,60 +171,32 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claimRequest := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", strings.NewReader(`{"service_id":"updater-01","host_id":"host-01"}`))
-	claimRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
-	claimResponse := httptest.NewRecorder()
-	handler.ServeHTTP(claimResponse, claimRequest)
-	if claimResponse.Code != http.StatusOK {
-		t.Fatalf("claim response = %d %s", claimResponse.Code, claimResponse.Body.String())
-	}
-	var claim store.SystemUpdateClaim
+	claimResponse := postSystemUpdateV2JSON(t, handler, agentToken.RawToken, "/services/update-jobs/claim", contracts.UpdateAgentClaimRequest{
+		UpdaterID: "updater-01", HostID: "host-01", LeaseGeneration: 1, Fence: 1,
+	}, http.StatusOK)
+	var claim contracts.UpdaterLeaseEnvelope
 	if err := json.NewDecoder(claimResponse.Body).Decode(&claim); err != nil {
 		t.Fatal(err)
 	}
-	if claim.Job.ID != job.ID || claim.LeaseToken == "" || claim.LeaseExpiresAt.IsZero() {
+	if claim.Command.MutationAuthorization.JobID != job.ID || claim.LeaseID == "" || claim.LeaseExpiresAt.IsZero() {
 		t.Fatalf("claim = %#v", claim)
 	}
-
-	if claim.ReportSequence != 1 || claim.LeaseGeneration != 1 || claim.RecoveryRequired {
+	if claim.LeaseGeneration != 1 || claim.Command.MutationAuthorization.Fence != 1 {
 		t.Fatalf("claim recovery contract = %#v", claim)
 	}
-	softwareWithPortResultBody, err := json.Marshal(map[string]any{
-		"service_id": "updater-01", "lease_token": claim.LeaseToken,
-		"lease_generation": claim.LeaseGeneration, "sequence": claim.ReportSequence,
-		"status": "succeeded", "progress": 100,
-		"port_reconfigure": map[string]any{"result": "applied"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	authorization := claim.Command.MutationAuthorization
+	result := contracts.UpdaterResultEnvelope{
+		ProtocolVersion: 2, CommandID: claim.Command.CommandID, JobID: authorization.JobID,
+		UpdaterID: authorization.UpdaterID, HostID: authorization.HostID,
+		LeaseID: claim.LeaseID, LeaseGeneration: claim.LeaseGeneration,
+		IdempotencyKey: claim.Command.IdempotencyKey, CanonicalPayloadDigest: claim.Command.CanonicalPayloadDigest,
+		AuthorizationID: authorization.AuthorizationID, DesiredRevision: authorization.DesiredRevision,
+		AppliedRevision: authorization.DesiredRevision, Fence: authorization.Fence,
+		Outcome: contracts.UpdaterOutcomeSucceeded, Status: contracts.SystemUpdateSucceeded,
+		AutomaticResendAllowed: false, AuditCorrelationID: claim.Command.AuditCorrelationID,
+		Evidence: []contracts.UpdaterEvidence{{EvidenceCode: "application_probe_verified", ObservedAt: time.Now().UTC(), ObservedRevision: authorization.DesiredRevision}},
 	}
-	softwareWithPortResultRequest := httptest.NewRequest(
-		http.MethodPost,
-		"/services/update-jobs/"+job.ID+"/report",
-		bytes.NewReader(softwareWithPortResultBody),
-	)
-	softwareWithPortResultRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
-	softwareWithPortResultResponse := httptest.NewRecorder()
-	handler.ServeHTTP(softwareWithPortResultResponse, softwareWithPortResultRequest)
-	if softwareWithPortResultResponse.Code != http.StatusBadRequest ||
-		!strings.Contains(softwareWithPortResultResponse.Body.String(), `"code":"invalid_system_update_report"`) {
-		t.Fatalf(
-			"software report with port result = %d %s",
-			softwareWithPortResultResponse.Code,
-			softwareWithPortResultResponse.Body.String(),
-		)
-	}
-	reportBody, err := json.Marshal(map[string]any{"service_id": "updater-01", "lease_token": claim.LeaseToken, "lease_generation": claim.LeaseGeneration, "sequence": claim.ReportSequence, "status": "succeeded", "progress": 100, "message": "update complete"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reportRequest := httptest.NewRequest(http.MethodPost, "/services/update-jobs/"+job.ID+"/report", bytes.NewReader(reportBody))
-	reportRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
-	reportResponse := httptest.NewRecorder()
-	handler.ServeHTTP(reportResponse, reportRequest)
-	if reportResponse.Code != http.StatusOK || strings.Contains(reportResponse.Body.String(), `"job":`) {
-		t.Fatalf("report response = %d %s", reportResponse.Code, reportResponse.Body.String())
-	}
+	reportResponse := postSystemUpdateV2JSON(t, handler, agentToken.RawToken, "/services/update-jobs/"+job.ID+"/report", result, http.StatusOK)
 	var completed store.SystemUpdateJob
 	if err := json.NewDecoder(reportResponse.Body).Decode(&completed); err != nil {
 		t.Fatal(err)
@@ -199,10 +204,7 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	if completed.Status != store.SystemUpdateStatusSucceeded || completed.CompletedAt == nil {
 		t.Fatalf("completed job = %#v", completed)
 	}
-	retryReportRequest := httptest.NewRequest(http.MethodPost, "/services/update-jobs/"+job.ID+"/report", bytes.NewReader(reportBody))
-	retryReportRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
-	retryReportResponse := httptest.NewRecorder()
-	handler.ServeHTTP(retryReportResponse, retryReportRequest)
+	retryReportResponse := postSystemUpdateV2JSON(t, handler, agentToken.RawToken, "/services/update-jobs/"+job.ID+"/report", result, http.StatusOK)
 	var replayedCompleted store.SystemUpdateJob
 	if retryReportResponse.Code != http.StatusOK || json.Unmarshal(retryReportResponse.Body.Bytes(), &replayedCompleted) != nil || replayedCompleted.ID != completed.ID || !replayedCompleted.UpdatedAt.Equal(completed.UpdatedAt) {
 		t.Fatalf("terminal HTTP response-loss replay = %d %s", retryReportResponse.Code, retryReportResponse.Body.String())
@@ -219,10 +221,10 @@ func TestSystemUpdateAdminAndAgentLifecycle(t *testing.T) {
 	if err := json.NewDecoder(secondCreateResponse.Body).Decode(&cancelJob); err != nil {
 		t.Fatal(err)
 	}
-	clearActiveRequest := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", strings.NewReader(`{"service_id":"updater-01","active_job_id":"`+job.ID+`"}`))
-	clearActiveRequest.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
-	clearActiveResponse := httptest.NewRecorder()
-	handler.ServeHTTP(clearActiveResponse, clearActiveRequest)
+	clearActiveResponse := postSystemUpdateV2JSON(t, handler, agentToken.RawToken, "/services/update-jobs/claim", contracts.UpdateAgentClaimRequest{
+		UpdaterID: "updater-01", HostID: "host-01", LeaseGeneration: completed.LeaseGeneration,
+		Fence: completed.OwnershipEpoch, ActiveJobID: job.ID,
+	}, http.StatusOK)
 	var terminalRecovery contracts.UpdateAgentClearActiveJobResponse
 	if clearActiveResponse.Code != http.StatusOK || json.Unmarshal(clearActiveResponse.Body.Bytes(), &terminalRecovery) != nil ||
 		!terminalRecovery.ClearActiveJobID ||
@@ -276,6 +278,7 @@ func TestSystemUpdateClaimFailsClosedWithoutExactTerminalRecoveryProof(t *testin
 	})
 	token := registerSystemUpdateAgentForTest(t, auth, "updater-proof", capabilities)
 	updates := store.NewMemorySystemUpdateStore()
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-proof", "updater-proof")
 	queued, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
 		TargetID: "worker-proof-queued", TargetServiceType: "worker", AgentServiceID: "updater-proof", ExecutionHostID: "host-proof",
 		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle,
@@ -284,8 +287,9 @@ func TestSystemUpdateClaimFailsClosedWithoutExactTerminalRecoveryProof(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-foreign", "updater-other")
 	foreign, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
-		TargetID: "worker-proof-foreign", TargetServiceType: "worker", AgentServiceID: "updater-other", ExecutionHostID: "host-proof",
+		TargetID: "worker-proof-foreign", TargetServiceType: "worker", AgentServiceID: "updater-other", ExecutionHostID: "host-foreign",
 		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle,
 		IdempotencyKey: "terminal-proof-foreign", RequestedByUserID: "admin-proof",
 	})
@@ -309,16 +313,19 @@ func TestSystemUpdateClaimFailsClosedWithoutExactTerminalRecoveryProof(t *testin
 		{name: "wrong agent", activeID: foreign.ID, wantCode: "system_update_ownership_conflict"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body, err := json.Marshal(map[string]string{
-				"service_id":    "updater-proof",
-				"host_id":       "host-proof",
-				"active_job_id": test.activeID,
+			body, err := json.Marshal(contracts.UpdateAgentClaimRequest{
+				UpdaterID:       "updater-proof",
+				HostID:          "host-proof",
+				LeaseGeneration: 1,
+				Fence:           1,
+				ActiveJobID:     test.activeID,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			request := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", bytes.NewReader(body))
 			request.Header.Set("Authorization", "Bearer "+token.RawToken)
+			request.Header.Set(systemUpdateContractMajorHeader, "2")
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
 			var payload map[string]any
@@ -619,7 +626,10 @@ func TestUpdateAgentAssignmentEndpointIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Version: "v1.0.0"})
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+		ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater",
+		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "host-assignment", Version: "v1.0.0",
+	})
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 	req := httptest.NewRequest(http.MethodPost, "/services/updater-01/assign", bytes.NewBufferString(`{"stream_id":"`+stream.ID+`"}`))
@@ -638,14 +648,49 @@ func TestUpdateAgentAssignmentEndpointIsRejected(t *testing.T) {
 
 func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	t.Setenv("AUTOSTREAM_SECRET_ENCRYPTION_KEY", "test-secret-encryption-key-32-bytes")
+	t.Setenv("AUTOSTREAM_BIND_ADDR", "0.0.0.0:80")
+	t.Setenv("AUTOSTREAM_CONFIG_REVISION", "0")
+	t.Setenv("AUTOSTREAM_PUBLIC_URL", "https://panel.example.com")
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "admin", Roles: []string{"super_admin"}}, "correct horse battery", []string{"api_tokens.create", "api_tokens.revoke", "service_health.read", "system_updates.execute", "secrets.update"}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	workerToken, err := auth.CreateServiceToken(
+		t.Context(),
+		"worker",
+		[]string{"service.register", "service.heartbeat"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := registerServiceWithTokenForTest(
+		t,
+		auth,
+		workerToken,
+		store.ServiceRegistration{
+			ServiceID:   "worker-onboarding",
+			ServiceType: "worker",
+			ServiceName: "Worker Onboarding",
+			Host:        "worker.example.com",
+			Port:        443,
+			SSLEnabled:  true,
+			PublicURL:   "https://worker.example.com",
+			Version:     "v1.0.0",
+		},
+	)
+	updates := store.NewMemorySystemUpdateStore()
+	policies := store.NewMemoryUpdaterPolicyStore()
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithServiceRegistryStore(auth),
+		WithUpdaterPolicyStore(policies),
+		WithSystemUpdateStore(updates),
+	)
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
-	create := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", strings.NewReader(`{"node_type":"update_agent","node_id":"updater-01","name":"Updater 01","host":"updater.example.com","port":8090,"ssl_enabled":true}`))
+	create := httptest.NewRequest(http.MethodPost, "/nodes/registration-tokens", strings.NewReader(`{"node_type":"update_agent","node_id":"updater-01","name":"Updater 01","transport_mode":"pull_v2","execution_host_id":"host-01"}`))
 	create.AddCookie(cookie)
 	create.Header.Set("X-CSRF-Token", csrf)
 	created := httptest.NewRecorder()
@@ -680,6 +725,14 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if !strings.HasPrefix(createdBody.RuntimeToken, "ast_svc_") {
 		t.Fatalf("updater registration omitted initial runtime token: %#v", createdBody)
 	}
+	registeredService, err := auth.GetService(t.Context(), "updater-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registeredService.TokenID == "" {
+		t.Fatal("updater registration omitted the active token ID")
+	}
+	initialTokenID := registeredService.TokenID
 
 	configuration := httptest.NewRequest(http.MethodGet, "/nodes/updater-01/configuration", nil)
 	configuration.AddCookie(cookie)
@@ -713,14 +766,58 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if !strings.HasPrefix(regenerated.ConfigureToken, "ast_cfg_") || strings.Contains(regenerated.ConfigureCommand, regenerated.ConfigureToken) || strings.Contains(regenerated.ConfigureCommand, "--token") || !strings.HasPrefix(regenerated.ConfigureCommand, "sudo /usr/local/bin/autostream-host-agent configure ") {
 		t.Fatalf("regenerated updater configure metadata = %#v", regenerated)
 	}
-	supersededConfigure := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+createdBody.ConfigureToken+`"}`))
+	placeholderDigest := "sha256:" + strings.Repeat("a", 64)
+	savedPolicy, err := policies.SavePullUpdaterPolicy(
+		t.Context(),
+		updates,
+		"updater-01",
+		0,
+		0,
+		store.UpdaterPolicy{
+			TransportMode:             store.SystemUpdateTransportPullV2,
+			ExecutionHostID:           "host-01",
+			LocalExecutorPolicySHA256: placeholderDigest,
+			PollIntervalSeconds:       15,
+			HeartbeatIntervalSeconds:  30,
+			Targets: []store.UpdaterPolicyTarget{{
+				TargetID:        worker.ServiceID,
+				ServiceID:       worker.ServiceID,
+				HostID:          "host-01",
+				ServiceType:     worker.ServiceType,
+				DeploymentMode:  updateradapter.ModeSystemd,
+				LocalListenPort: 18081,
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newStageRequest := func(configureToken string) *http.Request {
+		t.Helper()
+		payload, err := json.Marshal(map[string]any{
+			"nodeId":          "updater-01",
+			"configureToken":  configureToken,
+			"protocolVersion": updateradapter.HostAgentConfigureProtocolVersion,
+			"agentUid":        uint32(1001),
+			"agentGid":        uint32(1002),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return httptest.NewRequest(
+			http.MethodPost,
+			"/services/host-agent/runtime-identity/stage",
+			bytes.NewReader(payload),
+		)
+	}
+	supersededConfigure := newStageRequest(createdBody.ConfigureToken)
 	supersededConfigureResult := httptest.NewRecorder()
 	handler.ServeHTTP(supersededConfigureResult, supersededConfigure)
 	if supersededConfigureResult.Code != http.StatusUnauthorized || !strings.Contains(supersededConfigureResult.Body.String(), "invalid_configure_token") {
 		t.Fatalf("superseded updater configure token status = %d body = %s", supersededConfigureResult.Code, supersededConfigureResult.Body.String())
 	}
 
-	agentConfigure := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
+	agentConfigure := newStageRequest(regenerated.ConfigureToken)
 	agentConfigureResult := httptest.NewRecorder()
 	handler.ServeHTTP(agentConfigureResult, agentConfigure)
 	if agentConfigureResult.Code != http.StatusOK {
@@ -741,81 +838,196 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 			t.Fatalf("%s keys = %#v; want %#v", label, got, expected)
 		}
 	}
+	stageResponse := agentConfigureResult.Body.Bytes()
 	var configuredEnvelope map[string]json.RawMessage
-	if err := json.Unmarshal(agentConfigureResult.Body.Bytes(), &configuredEnvelope); err != nil {
+	if err := json.Unmarshal(stageResponse, &configuredEnvelope); err != nil {
 		t.Fatal(err)
 	}
-	assertExactKeys("updater configure response", configuredEnvelope, "activation_expires_at", "activation_token", "config", "configuration_id")
-	var configuredBody struct {
-		ConfigurationID string                     `json:"configuration_id"`
-		ActivationToken string                     `json:"activation_token"`
-		Config          map[string]json.RawMessage `json:"config"`
-	}
-	if err := json.Unmarshal(agentConfigureResult.Body.Bytes(), &configuredBody); err != nil {
+	assertExactKeys(
+		"updater configure response",
+		configuredEnvelope,
+		"activation_expires_at",
+		"activation_token",
+		"config",
+		"configuration_id",
+		"configure_protocol_version",
+		"local_executor_policy",
+	)
+	var configuredFields map[string]json.RawMessage
+	if err := json.Unmarshal(configuredEnvelope["config"], &configuredFields); err != nil {
 		t.Fatal(err)
 	}
-	assertExactKeys("updater configure", configuredBody.Config, "panel_url", "node_id", "runtime_token", "service_name", "service_type", "api")
-	var configuredAPI map[string]json.RawMessage
-	if err := json.Unmarshal(configuredBody.Config["api"], &configuredAPI); err != nil {
+	assertExactKeys(
+		"updater configure",
+		configuredFields,
+		"api",
+		"node_id",
+		"panel_url",
+		"runtime_token",
+		"service_name",
+		"service_type",
+		"transport_mode",
+	)
+	var staged updateradapter.UpdaterStagedConfiguration
+	if err := json.Unmarshal(stageResponse, &staged); err != nil {
 		t.Fatal(err)
 	}
-	assertExactKeys("updater configure API", configuredAPI, "host", "port", "ssl_enabled")
-	var configuredRuntimeToken string
-	if err := json.Unmarshal(configuredBody.Config["runtime_token"], &configuredRuntimeToken); err != nil {
+	if staged.ConfigureProtocol != updateradapter.HostAgentConfigureProtocolVersion ||
+		staged.Config.TransportMode != store.SystemUpdateTransportPullV2 ||
+		staged.Config.API != (updateradapter.UpdaterConfigureAPIAssertion{}) ||
+		staged.LocalExecutorPolicy == nil {
+		t.Fatal("updater stage did not return the canonical pull-v2 configure protocol")
+	}
+	if staged.Config.PanelURL != "https://panel.example.com" ||
+		staged.Config.NodeID != "updater-01" ||
+		staged.Config.ServiceName != "Updater 01" ||
+		staged.Config.ServiceType != "update_agent" ||
+		!strings.HasPrefix(staged.Config.RuntimeToken, "ast_svc_") ||
+		!strings.HasPrefix(staged.ActivationToken, "ast_act_") ||
+		staged.ActivationExpiresAt.IsZero() {
+		t.Fatal("updater stage omitted required v2 identity or activation metadata")
+	}
+	if staged.LocalExecutorPolicy.SHA256 == "" ||
+		staged.LocalExecutorPolicy.SourcePolicyRevision != savedPolicy.Revision ||
+		staged.LocalExecutorPolicy.ProjectionRevision != savedPolicy.ProjectionRevision ||
+		staged.LocalExecutorPolicy.PolicyRevision != savedPolicy.LocalExecutorPolicyRevision {
+		t.Fatal("updater stage returned an unbound Local Executor policy projection")
+	}
+	var stagedPolicy updateradapter.LocalExecutorPolicy
+	if err := json.Unmarshal(staged.LocalExecutorPolicy.Policy, &stagedPolicy); err != nil {
 		t.Fatal(err)
 	}
-	if configuredBody.ConfigurationID == "" || !strings.HasPrefix(configuredBody.ActivationToken, "ast_act_") {
-		t.Fatalf("updater stage omitted activation credentials: %#v", configuredBody)
+	if stagedPolicy.AgentUID != 1001 ||
+		stagedPolicy.AgentGID != 1002 ||
+		stagedPolicy.HostID != "host-01" ||
+		stagedPolicy.SourcePolicyRevision != savedPolicy.Revision ||
+		stagedPolicy.ProjectionRevision != savedPolicy.ProjectionRevision ||
+		stagedPolicy.PolicyRevision != savedPolicy.LocalExecutorPolicyRevision ||
+		len(stagedPolicy.Targets) != 1 {
+		t.Fatal("updater stage returned an unexpected Local Executor policy identity or revision")
 	}
-	for _, want := range []string{`"panel_url":`, `"node_id":"updater-01"`, `"runtime_token":"ast_svc_`, `"service_name":"Updater 01"`, `"service_type":"update_agent"`, `"host":"updater.example.com"`, `"port":8090`, `"ssl_enabled":true`} {
-		if !strings.Contains(agentConfigureResult.Body.String(), want) {
-			t.Fatalf("updater configure response missing %s: %s", want, agentConfigureResult.Body.String())
-		}
+	stagedTarget := stagedPolicy.Targets[0]
+	if stagedTarget.ServiceID != worker.ServiceID ||
+		stagedTarget.ServiceType != worker.ServiceType ||
+		stagedTarget.DeploymentMode != updateradapter.ModeSystemd ||
+		stagedTarget.LocalListen != (updateradapter.LocalExecutorEndpoint{
+			Host: "127.0.0.1",
+			Port: 18081,
+		}) {
+		t.Fatal("updater stage returned an unexpected Local Executor target")
 	}
-	for _, forbidden := range []string{regenerated.ConfigureToken, `"config_yml"`, `"configuration_yaml"`, `"github_token"`, `"hosts"`, `"targets"`, `"identity_file"`} {
-		if strings.Contains(agentConfigureResult.Body.String(), forbidden) {
-			t.Fatalf("updater configure response leaked local-only field %q: %s", forbidden, agentConfigureResult.Body.String())
+	for _, forbidden := range []struct {
+		label string
+		value string
+	}{
+		{label: "initial raw configure token", value: createdBody.ConfigureToken},
+		{label: "regenerated raw configure token", value: regenerated.ConfigureToken},
+		{label: "legacy config_yml", value: `"config_yml"`},
+		{label: "legacy configuration_yaml", value: `"configuration_yaml"`},
+		{label: "GitHub token", value: `"github_token"`},
+		{label: "legacy host inventory", value: `"hosts"`},
+		{label: "legacy identity file", value: `"identity_file"`},
+		{label: "private SSH key", value: `"ssh_private_key"`},
+		{label: "private key", value: `"private_key"`},
+		{label: "plaintext bootstrap token", value: `"bootstrap_token"`},
+		{label: "plaintext bootstrap credential", value: `"bootstrap_credential"`},
+	} {
+		if strings.Contains(string(stageResponse), forbidden.value) {
+			t.Fatalf("updater configure response exposed %s", forbidden.label)
 		}
 	}
 	if _, err := auth.AuthenticateServiceToken(t.Context(), createdBody.RuntimeToken, "service.heartbeat"); err != nil {
 		t.Fatalf("initial updater runtime token stopped before activation: %v", err)
 	}
-	if _, err := auth.AuthenticateServiceToken(t.Context(), configuredRuntimeToken, "updates.claim"); !errors.Is(err, store.ErrUnauthorized) {
+	if _, err := auth.AuthenticateServiceToken(t.Context(), staged.Config.RuntimeToken, "updates.claim"); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("staged updater runtime token was active before activation: %v", err)
 	}
-	stagedService, err := auth.GetService(t.Context(), "updater-01")
-	if err != nil || stagedService.TokenID == configuredBody.ConfigurationID || stagedService.StagedNodeTokenID != configuredBody.ConfigurationID {
-		t.Fatalf("updater stage changed the active token: %#v err=%v", stagedService, err)
+	registeredService, err = auth.GetService(t.Context(), "updater-01")
+	if err != nil {
+		t.Fatal(err)
 	}
-	replay := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+regenerated.ConfigureToken+`"}`))
+	if staged.ConfigurationID == "" ||
+		!strings.HasPrefix(staged.ConfigurationID, "hac1-") ||
+		staged.ConfigurationID == registeredService.StagedNodeTokenID ||
+		registeredService.StagedNodeTokenID == "" ||
+		registeredService.TokenID != initialTokenID {
+		t.Fatal("updater stage did not preserve the active token and bound external configuration ID")
+	}
+	replay := newStageRequest(regenerated.ConfigureToken)
 	replayResult := httptest.NewRecorder()
 	handler.ServeHTTP(replayResult, replay)
 	if replayResult.Code != http.StatusUnauthorized || !strings.Contains(replayResult.Body.String(), "invalid_configure_token") {
 		t.Fatalf("replayed updater configure token status = %d body = %s", replayResult.Code, replayResult.Body.String())
 	}
-	activate := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`","version":"v1.7.0","commit":"abc123","build_date":"2026-07-21","hostname":"central-host","os":"linux","arch":"amd64"}`))
-	activateResult := httptest.NewRecorder()
-	handler.ServeHTTP(activateResult, activate)
-	if activateResult.Code != http.StatusOK || !strings.Contains(activateResult.Body.String(), `"state":"activated"`) || activateResult.Header().Get("Cache-Control") != "no-store" {
+	activation := hostAgentConfigureActivationPayload(
+		staged,
+		uint32(1001),
+		uint32(1002),
+		*staged.LocalExecutorPolicy,
+	)
+	activateResult := sendHostAgentConfigureActivation(t, handler, activation)
+	if activateResult.Code != http.StatusOK {
 		t.Fatalf("updater activation status = %d body = %s", activateResult.Code, activateResult.Body.String())
+	}
+	if activateResult.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("updater activation cache control = %q", activateResult.Header().Get("Cache-Control"))
+	}
+	var activationResult updateradapter.UpdaterActivationResult
+	if err := json.NewDecoder(activateResult.Body).Decode(&activationResult); err != nil {
+		t.Fatal(err)
+	}
+	if activationResult.State != "activated" ||
+		activationResult.ConfigurationID != staged.ConfigurationID ||
+		activationResult.ConfigureProtocol != updateradapter.HostAgentConfigureProtocolVersion ||
+		activationResult.LocalExecutorPolicySHA256 != staged.LocalExecutorPolicy.SHA256 ||
+		activationResult.SourcePolicyRevision != savedPolicy.Revision ||
+		activationResult.ProjectionRevision != savedPolicy.ProjectionRevision ||
+		activationResult.LocalExecutorPolicyRevision != savedPolicy.LocalExecutorPolicyRevision {
+		t.Fatal("updater activation result did not match the staged v2 policy binding")
 	}
 	if _, err := auth.AuthenticateServiceToken(t.Context(), createdBody.RuntimeToken, "service.heartbeat"); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("initial updater runtime token survived activation: %v", err)
 	}
 	for _, scope := range []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"} {
-		if _, err := auth.AuthenticateServiceToken(t.Context(), configuredRuntimeToken, scope); err != nil {
+		if _, err := auth.AuthenticateServiceToken(t.Context(), staged.Config.RuntimeToken, scope); err != nil {
 			t.Fatalf("activated updater runtime token lacks %s: %v", scope, err)
 		}
 	}
-	activateReplay := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/activate", strings.NewReader(`{"nodeId":"updater-01","configurationId":"`+configuredBody.ConfigurationID+`","activationToken":"`+configuredBody.ActivationToken+`"}`))
-	activateReplayResult := httptest.NewRecorder()
-	handler.ServeHTTP(activateReplayResult, activateReplay)
-	if activateReplayResult.Code != http.StatusOK || !strings.Contains(activateReplayResult.Body.String(), `"state":"already_activated"`) {
+	activateReplayResult := sendHostAgentConfigureActivation(t, handler, activation)
+	if activateReplayResult.Code != http.StatusOK {
 		t.Fatalf("idempotent updater activation status = %d body = %s", activateReplayResult.Code, activateReplayResult.Body.String())
 	}
+	var activationReplay updateradapter.UpdaterActivationResult
+	if err := json.NewDecoder(activateReplayResult.Body).Decode(&activationReplay); err != nil {
+		t.Fatal(err)
+	}
+	if activationReplay.State != "already_activated" ||
+		activationReplay.ConfigurationID != staged.ConfigurationID ||
+		activationReplay.ConfigureProtocol != updateradapter.HostAgentConfigureProtocolVersion ||
+		activationReplay.LocalExecutorPolicySHA256 != staged.LocalExecutorPolicy.SHA256 ||
+		activationReplay.SourcePolicyRevision != savedPolicy.Revision ||
+		activationReplay.ProjectionRevision != savedPolicy.ProjectionRevision ||
+		activationReplay.LocalExecutorPolicyRevision != savedPolicy.LocalExecutorPolicyRevision {
+		t.Fatal("idempotent updater activation did not preserve the staged v2 policy binding")
+	}
 	audits, err := auth.ListAudit(t.Context(), store.AuditFilter{Actions: []string{"nodes.configure"}, Limit: 10})
-	if err != nil || len(audits) != 1 || audits[0].ResourceID != "updater-01" || strings.Contains(fmt.Sprint(audits[0].Metadata), configuredRuntimeToken) || strings.Contains(fmt.Sprint(audits[0].Metadata), regenerated.ConfigureToken) || strings.Contains(fmt.Sprint(audits[0].Metadata), configuredBody.ActivationToken) {
-		t.Fatalf("updater configure audit = %#v, %v", audits, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 1 || audits[0].ResourceID != "updater-01" {
+		t.Fatalf("updater configure audit count=%d", len(audits))
+	}
+	auditMetadata := fmt.Sprint(audits[0].Metadata)
+	for _, secret := range []string{
+		createdBody.ConfigureToken,
+		regenerated.ConfigureToken,
+		createdBody.RuntimeToken,
+		staged.Config.RuntimeToken,
+		staged.ActivationToken,
+	} {
+		if strings.Contains(auditMetadata, secret) {
+			t.Fatal("updater configure audit exposed a configure, runtime, or activation secret")
+		}
 	}
 
 	outstandingRequest := httptest.NewRequest(http.MethodPost, "/nodes/updater-01/configure-token", nil)
@@ -824,7 +1036,10 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	outstandingResult := httptest.NewRecorder()
 	handler.ServeHTTP(outstandingResult, outstandingRequest)
 	if outstandingResult.Code != http.StatusCreated {
-		t.Fatalf("create outstanding configure token status = %d body = %s", outstandingResult.Code, outstandingResult.Body.String())
+		t.Fatalf("create outstanding configure token status = %d", outstandingResult.Code)
+	}
+	if outstandingResult.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("outstanding configure token cache control = %q", outstandingResult.Header().Get("Cache-Control"))
 	}
 	var outstanding struct {
 		ConfigureToken string `json:"configure_token"`
@@ -832,26 +1047,118 @@ func TestUpdateAgentOnboardingUsesOneTimeConfigureCommand(t *testing.T) {
 	if err := json.NewDecoder(outstandingResult.Body).Decode(&outstanding); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.HasPrefix(outstanding.ConfigureToken, "ast_cfg_") {
+		t.Fatal("outstanding configure token has an unexpected format")
+	}
+	configuredRuntimeToken := staged.Config.RuntimeToken
+	beforeRejectedRotate, err := auth.GetService(t.Context(), "updater-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokensBeforeRejectedRotate, err := auth.ListServiceTokens(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeRejectedRotate.ConfigureTokenHash == "" ||
+		beforeRejectedRotate.ConfigureTokenExpiresAt == nil ||
+		beforeRejectedRotate.ConfigureTokenUsedAt != nil {
+		t.Fatal("outstanding configure credential is not pending before direct rotation")
+	}
+	if beforeRejectedRotate.StagedNodeTokenID != "" {
+		t.Fatal("updater has a staged runtime token before direct rotation")
+	}
+	if beforeRejectedRotate.TokenID != registeredService.StagedNodeTokenID {
+		t.Fatal("activated runtime token is not current before direct rotation")
+	}
 
 	rotate := httptest.NewRequest(http.MethodPost, "/nodes/updater-01/rotate-token", nil)
 	rotate.AddCookie(cookie)
 	rotate.Header.Set("X-CSRF-Token", csrf)
 	rotateResult := httptest.NewRecorder()
 	handler.ServeHTTP(rotateResult, rotate)
-	if rotateResult.Code != http.StatusCreated {
-		t.Fatalf("rotate updater runtime token status = %d body = %s", rotateResult.Code, rotateResult.Body.String())
+	if rotateResult.Code != http.StatusConflict {
+		t.Fatalf("direct updater runtime token rotation status = %d; want 409", rotateResult.Code)
 	}
-	if rotateResult.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("rotated runtime token response cache control = %q", rotateResult.Header().Get("Cache-Control"))
+	rotateResponse := rotateResult.Body.Bytes()
+	for _, forbidden := range []struct {
+		label string
+		value string
+	}{
+		{label: "outstanding configure token", value: outstanding.ConfigureToken},
+		{label: "initial configure token", value: createdBody.ConfigureToken},
+		{label: "regenerated configure token", value: regenerated.ConfigureToken},
+		{label: "initial runtime token", value: createdBody.RuntimeToken},
+		{label: "configured runtime token", value: configuredRuntimeToken},
+		{label: "activation token", value: staged.ActivationToken},
+		{label: "runtime token field", value: `"runtime_token"`},
+		{label: "runtime token prefix", value: "ast_svc_"},
+		{label: "configuration path field", value: `"configuration_path"`},
+		{label: "manual configuration field", value: `"manual_configuration_required"`},
+		{label: "token ID field", value: `"token_id"`},
+	} {
+		if bytes.Contains(rotateResponse, []byte(forbidden.value)) {
+			t.Fatalf("rejected direct rotation exposed %s", forbidden.label)
+		}
 	}
-	if !strings.Contains(rotateResult.Body.String(), `"runtime_token":"ast_svc_`) || !strings.Contains(rotateResult.Body.String(), `"configuration_path":"/etc/autostream/updater/agent.yaml"`) || strings.Contains(rotateResult.Body.String(), `"manual_configuration_required":true`) {
-		t.Fatalf("rotate updater runtime token response = %s", rotateResult.Body.String())
+	var rotateFields map[string]json.RawMessage
+	if err := json.Unmarshal(rotateResponse, &rotateFields); err != nil {
+		t.Fatal("rejected direct rotation did not return a JSON object")
 	}
-	invalidated := httptest.NewRequest(http.MethodPost, "/services/host-agent/runtime-identity/stage", strings.NewReader(`{"nodeId":"updater-01","configureToken":"`+outstanding.ConfigureToken+`"}`))
-	invalidatedResult := httptest.NewRecorder()
-	handler.ServeHTTP(invalidatedResult, invalidated)
-	if invalidatedResult.Code != http.StatusUnauthorized || !strings.Contains(invalidatedResult.Body.String(), "invalid_configure_token") {
-		t.Fatalf("runtime rotation did not invalidate configure token: status=%d body=%s", invalidatedResult.Code, invalidatedResult.Body.String())
+	assertExactKeys("rejected direct rotation", rotateFields, "code")
+	var rotateCode string
+	if err := json.Unmarshal(rotateFields["code"], &rotateCode); err != nil {
+		t.Fatal("rejected direct rotation code is not a string")
+	}
+	if rotateCode != "staged_runtime_token_rotation_required" {
+		t.Fatal("rejected direct rotation did not require staged runtime token rotation")
+	}
+
+	afterRejectedRotate, err := auth.GetService(t.Context(), "updater-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokensAfterRejectedRotate, err := auth.ListServiceTokens(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameOptionalTime := func(left, right *time.Time) bool {
+		if left == nil || right == nil {
+			return left == nil && right == nil
+		}
+		return left.Equal(*right)
+	}
+	for _, field := range []struct {
+		name      string
+		unchanged bool
+	}{
+		{"TokenID", beforeRejectedRotate.TokenID == afterRejectedRotate.TokenID},
+		{"NodeTokenCiphertext", beforeRejectedRotate.NodeTokenCiphertext == afterRejectedRotate.NodeTokenCiphertext},
+		{"NodeTokenNonce", beforeRejectedRotate.NodeTokenNonce == afterRejectedRotate.NodeTokenNonce},
+		{"NodeTokenRotatedAt", sameOptionalTime(beforeRejectedRotate.NodeTokenRotatedAt, afterRejectedRotate.NodeTokenRotatedAt)},
+		{"ConfigureTokenHash", beforeRejectedRotate.ConfigureTokenHash == afterRejectedRotate.ConfigureTokenHash},
+		{"ConfigureTokenExpiresAt", sameOptionalTime(beforeRejectedRotate.ConfigureTokenExpiresAt, afterRejectedRotate.ConfigureTokenExpiresAt)},
+		{"ConfigureTokenUsedAt", sameOptionalTime(beforeRejectedRotate.ConfigureTokenUsedAt, afterRejectedRotate.ConfigureTokenUsedAt)},
+		{"StagedNodePreviousTokenID", beforeRejectedRotate.StagedNodePreviousTokenID == afterRejectedRotate.StagedNodePreviousTokenID},
+		{"StagedNodeTokenID", beforeRejectedRotate.StagedNodeTokenID == afterRejectedRotate.StagedNodeTokenID},
+		{"StagedNodeTokenHash", beforeRejectedRotate.StagedNodeTokenHash == afterRejectedRotate.StagedNodeTokenHash},
+		{"StagedNodeTokenScopes", slices.Equal(beforeRejectedRotate.StagedNodeTokenScopes, afterRejectedRotate.StagedNodeTokenScopes)},
+		{"StagedNodeTokenCiphertext", beforeRejectedRotate.StagedNodeTokenCiphertext == afterRejectedRotate.StagedNodeTokenCiphertext},
+		{"StagedNodeTokenNonce", beforeRejectedRotate.StagedNodeTokenNonce == afterRejectedRotate.StagedNodeTokenNonce},
+		{"StagedNodeActivationTokenHash", beforeRejectedRotate.StagedNodeActivationTokenHash == afterRejectedRotate.StagedNodeActivationTokenHash},
+		{"StagedNodeTokenAt", sameOptionalTime(beforeRejectedRotate.StagedNodeTokenAt, afterRejectedRotate.StagedNodeTokenAt)},
+		{"service-token inventory count", len(tokensBeforeRejectedRotate) == len(tokensAfterRejectedRotate)},
+	} {
+		if !field.unchanged {
+			t.Fatalf("rejected direct rotation changed %s", field.name)
+		}
+	}
+	for _, scope := range []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"} {
+		if _, err := auth.AuthenticateServiceToken(t.Context(), configuredRuntimeToken, scope); err != nil {
+			t.Fatalf("configured updater runtime token lacks %s after rejected direct rotation", scope)
+		}
+	}
+	if _, err := auth.AuthenticateServiceToken(t.Context(), createdBody.RuntimeToken, "service.heartbeat"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatal("initial updater runtime token is not unauthorized after rejected direct rotation")
 	}
 }
 
@@ -865,10 +1172,14 @@ func TestServiceDeletionIsFencedByActiveTargetOrUpdaterJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registerServiceWithTokenForTest(t, auth, updaterToken, store.ServiceRegistration{ServiceID: "updater-delete", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com"})
+	registerServiceWithTokenForTest(t, auth, updaterToken, store.ServiceRegistration{
+		ServiceID: "updater-delete", ServiceType: "update_agent", ServiceName: "Updater",
+		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "host-delete", OwnershipEpoch: 1,
+	})
 	updates := store.NewMemorySystemUpdateStore()
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-delete", "updater-delete")
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
-		TargetID: "worker-delete", TargetServiceType: "worker", AgentServiceID: "updater-delete", DeploymentMode: "systemd",
+		TargetID: "worker-delete", TargetServiceType: "worker", AgentServiceID: "updater-delete", ExecutionHostID: "host-delete", DeploymentMode: "systemd",
 		CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle, IdempotencyKey: "delete-fence", RequestedByUserID: "admin",
 	})
 	if err != nil {
@@ -894,11 +1205,11 @@ func TestServiceDeletionIsFencedByActiveTargetOrUpdaterJob(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC()
-	claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-delete", "", "", map[string]string{"worker-delete": "systemd"}, now, time.Minute)
+	claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-delete", "host-delete", "", map[string]string{"worker-delete": "systemd"}, now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, store.SystemUpdateReport{AgentServiceID: "updater-delete", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: store.SystemUpdateStatusSucceeded, Progress: 100}, now.Add(time.Second), time.Minute); err != nil {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, store.SystemUpdateReport{AgentServiceID: "updater-delete", ExecutionHostID: "host-delete", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: store.SystemUpdateStatusSucceeded, Progress: 100}, now.Add(time.Second), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	for _, serviceID := range []string{"worker-delete", "updater-delete"} {
@@ -944,7 +1255,7 @@ func TestTerminalUpdaterServiceAuditReachesNotificationPipelineOnly(t *testing.T
 	}
 }
 
-func TestSystemUpdateMutationAuthorizationEndpointFencesEveryFieldAndAudits(t *testing.T) {
+func TestSystemUpdateMutationAuthorizationEndpointIsAbsentForEveryLegacyPayload(t *testing.T) {
 	type fixture struct {
 		handler http.Handler
 		auth    *store.MemoryAuthStore
@@ -959,24 +1270,28 @@ func TestSystemUpdateMutationAuthorizationEndpointFencesEveryFieldAndAudits(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "updater-authorize", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Version: "v1.0.0"})
+		registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{
+			ServiceID: "updater-authorize", ServiceType: "update_agent", ServiceName: "Updater",
+			TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "host-authorize", OwnershipEpoch: 1, Version: "v1.0.0",
+		})
 		updates := store.NewMemorySystemUpdateStore()
+		bindSystemUpdateExecutionHostForTest(t, updates, "host-authorize", "updater-authorize")
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
-			TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-authorize", DeploymentMode: "systemd",
+			TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-authorize", ExecutionHostID: "host-authorize", DeploymentMode: "systemd",
 			CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle, IdempotencyKey: "authorize-endpoint", RequestedByUserID: "user-01",
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-authorize", "", "", map[string]string{"worker-01": "systemd"}, base, time.Minute)
+		claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-authorize", "host-authorize", "", map[string]string{"worker-01": "systemd"}, base, time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, store.SystemUpdateReport{AgentServiceID: "updater-authorize", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: store.SystemUpdateStatusInstalling, Progress: 70}, base.Add(time.Second), leaseTTL); err != nil {
+		if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, store.SystemUpdateReport{AgentServiceID: "updater-authorize", ExecutionHostID: "host-authorize", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: store.SystemUpdateStatusInstalling, Progress: 70}, base.Add(time.Second), leaseTTL); err != nil {
 			t.Fatal(err)
 		}
 		if terminal {
-			if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, store.SystemUpdateReport{AgentServiceID: "updater-authorize", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: store.SystemUpdateStatusSucceeded, Progress: 100}, base.Add(2*time.Second), leaseTTL); err != nil {
+			if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, store.SystemUpdateReport{AgentServiceID: "updater-authorize", ExecutionHostID: "host-authorize", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: store.SystemUpdateStatusSucceeded, Progress: 100}, base.Add(2*time.Second), leaseTTL); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -993,11 +1308,11 @@ func TestSystemUpdateMutationAuthorizationEndpointFencesEveryFieldAndAudits(t *t
 		wantCode   string
 		wantReason string
 	}{
-		{name: "previously valid request", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, wantStatus: http.StatusGone, wantCode: "legacy_system_update_authorization_disabled", wantReason: "legacy_endpoint_disabled"},
-		{name: "wrong lease is still disabled", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, mutate: func(body map[string]any) { body["lease_token"] = "wrong" }, wantStatus: http.StatusGone, wantCode: "legacy_system_update_authorization_disabled", wantReason: "legacy_endpoint_disabled"},
-		{name: "expired lease is still disabled", base: time.Now().UTC().Add(-3 * time.Minute), leaseTTL: time.Minute, wantStatus: http.StatusGone, wantCode: "legacy_system_update_authorization_disabled", wantReason: "legacy_endpoint_disabled"},
-		{name: "target mismatch is still disabled", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, mutate: func(body map[string]any) { body["target_id"] = "worker-02" }, wantStatus: http.StatusGone, wantCode: "legacy_system_update_authorization_disabled", wantReason: "legacy_endpoint_disabled"},
-		{name: "terminal request is still disabled", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, terminal: true, wantStatus: http.StatusGone, wantCode: "legacy_system_update_authorization_disabled", wantReason: "legacy_endpoint_disabled"},
+		{name: "previously valid request", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, wantStatus: http.StatusNotFound},
+		{name: "wrong lease is still absent", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, mutate: func(body map[string]any) { body["lease_token"] = "wrong" }, wantStatus: http.StatusNotFound},
+		{name: "expired lease is still absent", base: time.Now().UTC().Add(-3 * time.Minute), leaseTTL: time.Minute, wantStatus: http.StatusNotFound},
+		{name: "target mismatch is still absent", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, mutate: func(body map[string]any) { body["target_id"] = "worker-02" }, wantStatus: http.StatusNotFound},
+		{name: "terminal request is still absent", base: time.Now().UTC(), leaseTTL: 15 * time.Minute, terminal: true, wantStatus: http.StatusNotFound},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1017,26 +1332,14 @@ func TestSystemUpdateMutationAuthorizationEndpointFencesEveryFieldAndAudits(t *t
 			if res.Code != test.wantStatus || (test.wantCode != "" && !strings.Contains(res.Body.String(), `"code":"`+test.wantCode+`"`)) {
 				t.Fatalf("authorize status = %d body = %s", res.Code, res.Body.String())
 			}
-			events := fixture.auth.AuditEvents()
-			if len(events) == 0 {
-				t.Fatal("authorization attempt was not audited")
-			}
-			event := events[len(events)-1]
-			wantResult := "success"
-			if test.wantStatus != http.StatusNoContent {
-				wantResult = "failure"
-			}
-			if event.Action != "system_updates.authorize" || event.Result != wantResult || (test.wantReason != "" && event.Metadata["reason"] != test.wantReason) {
-				t.Fatalf("authorization audit = %#v", event)
-			}
-			if strings.Contains(fmt.Sprintf("%#v", event), fixture.claim.LeaseToken) {
-				t.Fatal("lease token leaked into authorization audit")
+			if events := fixture.auth.AuditEvents(); len(events) != 0 {
+				t.Fatalf("absent route emitted audit events: %#v", events)
 			}
 		})
 	}
 }
 
-func TestSystemUpdateMutationAuthorizationRequiresDedicatedScope(t *testing.T) {
+func TestSystemUpdateMutationAuthorizationRouteIsAbsentBeforeScopeEvaluation(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	token, err := auth.CreateServiceToken(t.Context(), "update_agent", []string{"service.register", "updates.report"})
 	if err != nil {
@@ -1047,8 +1350,8 @@ func TestSystemUpdateMutationAuthorizationRequiresDedicatedScope(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token.RawToken)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "missing_service_scope") {
-		t.Fatalf("missing authorize scope status = %d body = %s", res.Code, res.Body.String())
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("absent authorize route status = %d body = %s", res.Code, res.Body.String())
 	}
 }
 
@@ -1180,23 +1483,24 @@ func TestStreamStartAndReadinessRejectClaimedServiceUpdate(t *testing.T) {
 	}
 	registerAssignedServices(t, auth, stream.ID, requiredStartServiceTypes...)
 	updates := store.NewMemorySystemUpdateStore()
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-01", "updater-01")
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0",
-		AgentServiceID: "updater-01",
-		Strategy:       store.SystemUpdateStrategyMaintenance, IdempotencyKey: "guard-stream-start", RequestedByUserID: "admin-01",
+		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
+		Strategy: store.SystemUpdateStrategyMaintenance, IdempotencyKey: "guard-stream-start", RequestedByUserID: "admin-01",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", map[string]string{"worker-01": "systemd"}, time.Now().UTC(), time.Minute); err != nil {
+	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", map[string]string{"worker-01": "systemd"}, time.Now().UTC(), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "update guard discord", "discord_bot-01", "guild-ready", "voice-ready", "")
 	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher), WithSystemUpdateStore(updates))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher), WithSystemUpdateStore(updates))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	body := `{"discord_config_id":"` + config.ID + `","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","encoder_input_url":"srt://source.example.com:9000"}`
+	body := `{"discord_config_id":"` + config.ID + `","encoder_input_url":"srt://source.example.com:9000"}`
 
 	readinessRequest := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start-readiness", strings.NewReader(body))
 	readinessRequest.AddCookie(cookie)
@@ -1267,6 +1571,7 @@ func TestSystemUpdateClaimRejectsTokenRotatedAfterInitialAuthentication(t *testi
 		authenticated:        make(chan struct{}),
 	}
 	updates := store.NewMemorySystemUpdateStore()
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-reauth-claim", "updater-reauth-claim")
 	server := NewServer(
 		store.NewMemoryStreamStore(),
 		WithAuthStore(auth),
@@ -1283,12 +1588,21 @@ func TestSystemUpdateClaimRejectsTokenRotatedAfterInitialAuthentication(t *testi
 	}()
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
+		payload, err := json.Marshal(contracts.UpdateAgentClaimRequest{
+			UpdaterID: "updater-reauth-claim", HostID: "host-reauth-claim",
+			LeaseGeneration: 1, Fence: 1,
+		})
+		if err != nil {
+			done <- httptest.NewRecorder()
+			return
+		}
 		request := httptest.NewRequest(
 			http.MethodPost,
 			"/services/update-jobs/claim",
-			strings.NewReader(`{"service_id":"updater-reauth-claim","host_id":"host-reauth-claim"}`),
+			bytes.NewReader(payload),
 		)
 		request.Header.Set("Authorization", "Bearer "+oldToken.RawToken)
+		request.Header.Set(systemUpdateContractMajorHeader, "2")
 		result := httptest.NewRecorder()
 		server.ServeHTTP(result, request)
 		done <- result
@@ -1363,6 +1677,7 @@ func TestSystemUpdateReportRejectsTokenRotatedAfterInitialAuthentication(t *test
 		capabilities,
 	)
 	updates := store.NewMemorySystemUpdateStore()
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-reauth-report", "updater-reauth-report")
 	job, _, err := updates.CreateSystemUpdateJob(
 		t.Context(),
 		store.CreateSystemUpdateJobParams{
@@ -1381,7 +1696,7 @@ func TestSystemUpdateReportRejectsTokenRotatedAfterInitialAuthentication(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, _, err := updates.ClaimSystemUpdateJob(
+	_, _, err = updates.ClaimSystemUpdateJob(
 		t.Context(),
 		"updater-reauth-report",
 		"host-reauth-report",
@@ -1403,17 +1718,7 @@ func TestSystemUpdateReportRejectsTokenRotatedAfterInitialAuthentication(t *test
 		WithServiceRegistryStore(services),
 		WithSystemUpdateStore(updates),
 	)
-	reportBody, err := json.Marshal(map[string]any{
-		"service_id":       "updater-reauth-report",
-		"lease_token":      claim.LeaseToken,
-		"lease_generation": claim.LeaseGeneration,
-		"sequence":         claim.ReportSequence,
-		"status":           store.SystemUpdateStatusSucceeded,
-		"progress":         100,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	reportBody := []byte(`{}`)
 
 	server.systemUpdateOperationMu.Lock()
 	locked := true
@@ -1430,6 +1735,7 @@ func TestSystemUpdateReportRejectsTokenRotatedAfterInitialAuthentication(t *test
 			bytes.NewReader(reportBody),
 		)
 		request.Header.Set("Authorization", "Bearer "+oldToken.RawToken)
+		request.Header.Set(systemUpdateContractMajorHeader, "2")
 		result := httptest.NewRecorder()
 		server.ServeHTTP(result, request)
 		done <- result
@@ -1492,6 +1798,7 @@ func TestStreamStartWinsClaimRaceAndKeepsQueuedUpdateUnclaimed(t *testing.T) {
 	capabilities := centralUpdateCapabilitiesForTest("host-race", map[string]string{"worker-01": "systemd"})
 	agentToken := registerSystemUpdateAgentForTest(t, auth, "updater-race", capabilities)
 	updates := store.NewMemorySystemUpdateStore()
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-race", "updater-race")
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-race", ExecutionHostID: "host-race", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0",
 		Strategy: store.SystemUpdateStrategyWhenIdle, IdempotencyKey: "race-start-claim", RequestedByUserID: "admin-01",
@@ -1502,9 +1809,9 @@ func TestStreamStartWinsClaimRaceAndKeepsQueuedUpdateUnclaimed(t *testing.T) {
 	profiles := store.NewMemoryProfileStore()
 	config := createDiscordConfigForTest(t, profiles, "race discord", "discord_bot-01", "", "", "")
 	dispatcher := &updateStartRaceDispatcher{readinessEntered: make(chan struct{}), releaseReadiness: make(chan struct{})}
-	server := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher), WithSystemUpdateStore(updates))
+	server := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher), WithSystemUpdateStore(updates))
 	cookie, csrf := loginForTest(t, server, "operator", "correct horse battery")
-	body := `{"discord_config_id":"` + config.ID + `","discord_guild_id":"guild-test","discord_voice_channel_id":"voice-test","encoder_input_url":"srt://source.example.com:9000"}`
+	body := `{"discord_config_id":"` + config.ID + `","encoder_input_url":"srt://source.example.com:9000"}`
 
 	startDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -1526,8 +1833,9 @@ func TestStreamStartWinsClaimRaceAndKeepsQueuedUpdateUnclaimed(t *testing.T) {
 	}
 	claimDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		req := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", strings.NewReader(`{"service_id":"updater-race","host_id":"host-race"}`))
+		req := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", strings.NewReader(`{"updater_id":"updater-race","host_id":"host-race","lease_generation":1,"fence":1}`))
 		req.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
+		req.Header.Set(systemUpdateContractMajorHeader, "2")
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, req)
 		claimDone <- response
@@ -1567,6 +1875,7 @@ func TestControlPanelUpdateClaimWaitsWhileAnyStreamIsActive(t *testing.T) {
 	capabilities := centralUpdateCapabilitiesForTest("host-panel", map[string]string{"control-panel": "systemd"})
 	agentToken := registerSystemUpdateAgentForTest(t, auth, "updater-panel", capabilities)
 	updates := store.NewMemorySystemUpdateStore()
+	bindSystemUpdateExecutionHostForTest(t, updates, "host-panel", "updater-panel")
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), store.CreateSystemUpdateJobParams{
 		TargetID: "control-panel", TargetServiceType: "control_panel", AgentServiceID: "updater-panel", ExecutionHostID: "host-panel", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0",
 		Strategy: store.SystemUpdateStrategyWhenIdle, IdempotencyKey: "panel-live", RequestedByUserID: "admin-01",
@@ -1575,8 +1884,9 @@ func TestControlPanelUpdateClaimWaitsWhileAnyStreamIsActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithSystemUpdateStore(updates))
-	req := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", strings.NewReader(`{"service_id":"updater-panel","host_id":"host-panel"}`))
+	req := httptest.NewRequest(http.MethodPost, "/services/update-jobs/claim", strings.NewReader(`{"updater_id":"updater-panel","host_id":"host-panel","lease_generation":1,"fence":1}`))
 	req.Header.Set("Authorization", "Bearer "+agentToken.RawToken)
+	req.Header.Set(systemUpdateContractMajorHeader, "2")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, req)
 	if response.Code != http.StatusNoContent {
@@ -1594,17 +1904,49 @@ func registerSystemUpdateAgentForTest(t *testing.T, auth *store.MemoryAuthStore,
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration := store.ServiceRegistration{ServiceID: serviceID, ServiceType: "update_agent", ServiceName: serviceID, PublicURL: "https://" + serviceID + ".example.com", Version: "v1.0.0", Capabilities: capabilities}
+	hostID := ""
+	if statuses, ok := capabilities["host_statuses"].(map[string]any); ok {
+		for candidate := range statuses {
+			hostID = candidate
+			break
+		}
+	}
+	registration := validPullV2UpdateAgentRegistrationForTest(serviceID, serviceID, hostID, 1)
+	registration.Version = "v1.0.0"
+	registration.Capabilities = capabilities
 	if _, err := auth.PrecreateService(t.Context(), token, registration); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, registration); err != nil {
+	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{
+		ServiceID: serviceID, ServiceType: "update_agent", ServiceName: serviceID,
+		Version: "v1.0.0", Capabilities: capabilities,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.Heartbeat(t.Context(), token, store.ServiceHeartbeat{ServiceID: serviceID, Status: "online", Version: "v1.0.0", Capabilities: capabilities}); err != nil {
 		t.Fatal(err)
 	}
 	return token
+}
+
+func validPullV2UpdateAgentRegistrationForTest(serviceID, serviceName, executionHostID string, ownershipEpoch int64) store.ServiceRegistration {
+	return store.ServiceRegistration{
+		ServiceID:       serviceID,
+		ServiceType:     "update_agent",
+		ServiceName:     serviceName,
+		TransportMode:   store.SystemUpdateTransportPullV2,
+		ExecutionHostID: executionHostID,
+		OwnershipEpoch:  ownershipEpoch,
+	}
+}
+
+func bindSystemUpdateExecutionHostForTest(t *testing.T, updates *store.MemorySystemUpdateStore, hostID, agentServiceID string) {
+	t.Helper()
+	if _, err := updates.SwitchSystemUpdateExecutionHost(
+		t.Context(), hostID, 0, store.SystemUpdateTransportPullV2, agentServiceID, 1,
+	); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func centralUpdateCapabilitiesForTest(hostID string, targetModes map[string]string) map[string]any {
@@ -1642,52 +1984,212 @@ func TestSystemUpdateAgentAvailabilityUsesHeartbeatDeadline(t *testing.T) {
 }
 
 func TestUpdateAgentCapabilitiesAreTOFUPinnedAndIntersected(t *testing.T) {
-	auth := store.NewMemoryAuthStore()
-	token, err := auth.CreateServiceToken(t.Context(), "update_agent", []string{"service.register", "service.heartbeat", "updates.claim"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{ServiceID: "updater-pinned", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Version: "v1.0.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	approved := centralUpdateCapabilitiesForTest("host-pinned", map[string]string{"worker-01": "systemd"})
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "updater-pinned", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Version: "v1.0.0", Capabilities: approved}); err != nil {
-		t.Fatal(err)
-	}
-	expanded := centralUpdateCapabilitiesForTest("host-pinned", map[string]string{"worker-01": "systemd", "worker-02": "docker"})
-	service, err := auth.Heartbeat(t.Context(), token, store.ServiceHeartbeat{ServiceID: "updater-pinned", Status: "online", Version: "v1.0.0", Capabilities: expanded})
-	if err != nil {
-		t.Fatal(err)
-	}
-	modes, _ := approvedSystemUpdateAgentTargets(service)
-	if len(modes) != 1 || modes["worker-01"] != "systemd" || modes["worker-02"] != "" {
-		t.Fatalf("heartbeat expanded pinned targets: configured=%#v reported=%#v approved=%#v", service.Capabilities, service.ReportedCapabilities, modes)
-	}
-	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{ServiceID: "updater-pinned", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Version: "v1.0.1", Capabilities: map[string]any{"managed_targets": []any{"worker-02"}, "deployment_modes": map[string]any{"worker-02": "docker"}}}); err != nil {
-		t.Fatal(err)
-	}
-	service, err = auth.GetService(t.Context(), "updater-pinned")
-	if err != nil {
-		t.Fatal(err)
-	}
-	modes, _ = approvedSystemUpdateAgentTargets(service)
-	if len(modes) != 0 || len(capabilityStringSlice(service.Capabilities["managed_targets"])) != 1 || capabilityStringSlice(service.Capabilities["managed_targets"])[0] != "worker-01" {
-		t.Fatalf("re-register changed pinned targets: configured=%#v reported=%#v approved=%#v", service.Capabilities, service.ReportedCapabilities, modes)
-	}
+	t.Run("registry_capabilities_remain_pinned", func(t *testing.T) {
+		auth := store.NewMemoryAuthStore()
+		token, err := auth.CreateServiceToken(t.Context(), "update_agent", []string{
+			"service.register", "service.heartbeat", "service.config.read",
+			"updates.claim", "updates.report", "updates.authorize",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registration := func(capabilities map[string]any) store.ServiceRegistration {
+			return store.ServiceRegistration{
+				ServiceID: "updater-pinned", ServiceType: "update_agent", ServiceName: "Updater",
+				TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "host-pinned",
+				Version: "v1.0.0", Capabilities: capabilities,
+			}
+		}
+		encodeCapabilities := func(value map[string]any) []byte {
+			t.Helper()
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal("capability snapshot encoding failed")
+			}
+			return encoded
+		}
 
-	workerToken, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.PrecreateService(t.Context(), workerToken, store.ServiceRegistration{ServiceID: "worker-legacy", ServiceType: "worker", ServiceName: "Worker", PublicURL: "https://worker.example.com", Version: "v1.0.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.RegisterService(t.Context(), workerToken, store.ServiceRegistration{ServiceID: "worker-legacy", ServiceType: "worker", ServiceName: "Worker", PublicURL: "https://worker.example.com", Version: "v1.0.0", Capabilities: map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	legacyCapabilities := map[string]any{"feature": "heartbeat-updated"}
-	worker, err := auth.Heartbeat(t.Context(), workerToken, store.ServiceHeartbeat{ServiceID: "worker-legacy", Status: "online", Capabilities: legacyCapabilities})
-	if err != nil || worker.Capabilities["feature"] != "heartbeat-updated" {
-		t.Fatalf("non-updater heartbeat capability behavior changed: service=%#v err=%v", worker, err)
-	}
+		// These legacy advertisement fields remain data, not target authority.
+		pinned := map[string]any{
+			"managed_targets":  []any{"worker-01"},
+			"deployment_modes": map[string]any{"worker-01": "systemd"},
+		}
+		expanded := map[string]any{
+			"managed_targets":  []any{"worker-01", "worker-02"},
+			"deployment_modes": map[string]any{"worker-01": "systemd", "worker-02": "docker"},
+		}
+		replacement := map[string]any{
+			"managed_targets":  []any{"worker-02"},
+			"deployment_modes": map[string]any{"worker-02": "docker"},
+		}
+		// Freeze expectations before any store call; never derive them from post-state.
+		wantPinned := encodeCapabilities(pinned)
+		wantExpanded := encodeCapabilities(expanded)
+		wantReplacement := encodeCapabilities(replacement)
+		assertPersisted := func(phase string, wantReported []byte) {
+			t.Helper()
+			service, err := auth.GetService(t.Context(), "updater-pinned")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if service.ServiceType != "update_agent" ||
+				service.TransportMode != store.SystemUpdateTransportPullV2 ||
+				service.ExecutionHostID != "host-pinned" || service.TokenID != token.ID {
+				t.Fatalf("%s changed registered updater identity", phase)
+			}
+			if !bytes.Equal(encodeCapabilities(service.Capabilities), wantPinned) {
+				t.Fatalf("%s changed pinned capabilities", phase)
+			}
+			if !bytes.Equal(encodeCapabilities(service.ReportedCapabilities), wantReported) {
+				t.Fatalf("%s did not preserve the exact reported capabilities", phase)
+			}
+			modes, versions := approvedSystemUpdateAgentTargets(service)
+			if len(modes) != 0 || len(versions) != 0 {
+				t.Fatalf("%s authorized targets without policy: modes=%d versions=%d", phase, len(modes), len(versions))
+			}
+		}
+		if _, err := auth.PrecreateService(t.Context(), token, registration(map[string]any{})); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := auth.RegisterService(t.Context(), token, registration(pinned)); err != nil {
+			t.Fatal(err)
+		}
+		assertPersisted("first registration", wantPinned)
+		if _, err := auth.Heartbeat(t.Context(), token, store.ServiceHeartbeat{
+			ServiceID: "updater-pinned", Status: "online", Version: "v1.0.0", Capabilities: expanded,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		assertPersisted("heartbeat", wantExpanded)
+		reregistration := registration(replacement)
+		reregistration.Version = "v1.0.1"
+		if _, err := auth.RegisterService(t.Context(), token, reregistration); err != nil {
+			t.Fatal(err)
+		}
+		assertPersisted("re-registration", wantReplacement)
+	})
+
+	t.Run("pull_v2_approval_requires_policy_and_current_evidence", func(t *testing.T) {
+		for _, name := range []string{
+			"valid_policy",
+			"missing_policy",
+			"extra_reported_target",
+			"missing_reported_evidence",
+		} {
+			t.Run(name, func(t *testing.T) {
+				now := time.Now().UTC()
+				// Reuse the current fixture, including the local-listener correction.
+				agent, service, policy := pullSystemUpdateTargetApprovalFixture(now)
+				if agent.ServiceID != "updater-pull" || service.ServiceID != "worker-a" ||
+					len(policy.Targets) != 1 || policy.Targets[0].ServiceID != "worker-a" {
+					t.Fatal("canonical pull target fixture identity differs from this test")
+				}
+				servicesByID := map[string]store.RegisteredService{"worker-a": service}
+				assertOnePolicyTarget := func(got map[string]systemUpdateApprovedTarget, ready bool, code, reachability string) {
+					t.Helper()
+					target, exists := got["worker-a"]
+					if len(got) != 1 || !exists {
+						t.Fatalf("policy target set differs: count=%d expected_target_present=%t", len(got), exists)
+					}
+					if !target.PolicyManaged || target.PolicyReady != ready || target.PolicyBlockedReason != code ||
+						target.DeploymentMode != "systemd" || target.ServiceType != "worker" ||
+						target.Host.HostID != "host-a" || target.Host.Reachability != reachability {
+						t.Fatalf("policy target state differs: managed=%t ready=%t code=%q reachability=%q",
+							target.PolicyManaged, target.PolicyReady, target.PolicyBlockedReason, target.Host.Reachability)
+					}
+				}
+				// Every negative starts from a demonstrated non-empty, ready baseline.
+				assertOnePolicyTarget(approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(
+					agent, now, &policy, servicesByID,
+				), true, "", "reachable")
+
+				switch name {
+				case "valid_policy":
+					// The baseline above is the positive case.
+				case "missing_policy":
+					got := approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(agent, now, nil, servicesByID)
+					modes, versions := approvedSystemUpdateAgentTargets(agent)
+					if len(got) != 0 || len(modes) != 0 || len(versions) != 0 {
+						t.Fatalf("policy-free approval was not empty: targets=%d modes=%d versions=%d",
+							len(got), len(modes), len(versions))
+					}
+				case "extra_reported_target":
+					// Add a second registered-service snapshot and make every report for it look valid.
+					// Only the authoritative policy intentionally excludes worker-b.
+					extraService := service
+					extraService.ServiceID = "worker-b"
+					servicesByID["worker-b"] = extraService
+					for _, key := range []string{
+						"target_availability", "target_availability_codes", "reported_ports", "port_drift",
+						"reported_service_types", "reported_deployment_modes",
+						"reported_executor_policy_revisions", "reported_executor_policy_sha256",
+						"reported_config_revisions", "reported_config_sha256",
+					} {
+						values, ok := agent.ReportedCapabilities[key].(map[string]any)
+						if !ok {
+							t.Fatalf("canonical report map missing: %s", key)
+						}
+						value, exists := values["worker-a"]
+						if !exists {
+							t.Fatalf("canonical report value missing: %s", key)
+						}
+						values["worker-b"] = value
+					}
+					agent.Capabilities = map[string]any{
+						"managed_targets":  []any{"worker-a", "worker-b"},
+						"deployment_modes": map[string]any{"worker-a": "systemd", "worker-b": "systemd"},
+					}
+					agent.ReportedCapabilities["managed_targets"] = []any{"worker-a", "worker-b"}
+					agent.ReportedCapabilities["deployment_modes"] = map[string]any{"worker-a": "systemd", "worker-b": "systemd"}
+					assertOnePolicyTarget(approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(
+						agent, now, &policy, servicesByID,
+					), true, "", "reachable")
+				case "missing_reported_evidence":
+					availability, ok := agent.ReportedCapabilities["target_availability"].(map[string]any)
+					if !ok {
+						t.Fatal("canonical availability report map missing")
+					}
+					delete(availability, "worker-a")
+					// A configured but unverified target remains visible and blocked.
+					// Do not replace this with an empty-map assertion or force Available=false.
+					assertOnePolicyTarget(approvedSystemUpdateAgentTargetAssignmentsForPolicyWithHosts(
+						agent, now, &policy, servicesByID,
+					), false, "updater_policy_mismatch", "unknown")
+				default:
+					t.Fatalf("unhandled approval case: %s", name)
+				}
+			})
+		}
+	})
+
+	t.Run("non_updater_heartbeat_remains_mutable", func(t *testing.T) {
+		auth := store.NewMemoryAuthStore()
+		workerToken, err := auth.CreateServiceToken(t.Context(), "worker", []string{"service.register", "service.heartbeat"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registration := store.ServiceRegistration{
+			ServiceID: "worker-legacy", ServiceType: "worker", ServiceName: "Worker",
+			PublicURL: "https://worker.example.com", Version: "v1.0.0", Capabilities: map[string]any{},
+		}
+		if _, err := auth.PrecreateService(t.Context(), workerToken, registration); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := auth.RegisterService(t.Context(), workerToken, registration); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := auth.Heartbeat(t.Context(), workerToken, store.ServiceHeartbeat{
+			ServiceID: "worker-legacy", Status: "online", Capabilities: map[string]any{"feature": "heartbeat-updated"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		worker, err := auth.GetService(t.Context(), "worker-legacy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if worker.Capabilities["feature"] != "heartbeat-updated" ||
+			worker.ReportedCapabilities["feature"] != "heartbeat-updated" {
+			t.Fatal("non-updater heartbeat capability behavior changed")
+		}
+	})
 }

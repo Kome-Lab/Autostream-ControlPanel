@@ -236,7 +236,7 @@ func TestNewEndpointlessPullNodeInitialPolicyPreservesExecutionHostOwnership(t *
 			policyResponse := httptest.NewRecorder()
 			handler.ServeHTTP(policyResponse, policyRequest)
 			wantStatus := http.StatusOK
-			if testCase.pullOwnerID != "" {
+			if testCase.pullOwnerID != "" && testCase.pullOwnerID != "host-agent-bootstrap" {
 				wantStatus = http.StatusConflict
 			}
 			if policyResponse.Code != wantStatus {
@@ -255,14 +255,25 @@ func TestNewEndpointlessPullNodeInitialPolicyPreservesExecutionHostOwnership(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			if ownershipAfter != ownershipBefore {
+			if testCase.pullOwnerID != "host-agent-bootstrap" && ownershipAfter != ownershipBefore {
 				t.Fatalf(
 					"initial policy save changed execution-host ownership: before=%#v after=%#v",
 					ownershipBefore,
 					ownershipAfter,
 				)
 			}
-			if testCase.pullOwnerID != "" {
+			if testCase.pullOwnerID == "host-agent-bootstrap" &&
+				(ownershipAfter.ExecutionHostID != ownershipBefore.ExecutionHostID ||
+					ownershipAfter.TransportMode != ownershipBefore.TransportMode ||
+					ownershipAfter.AgentServiceID != ownershipBefore.AgentServiceID ||
+					ownershipAfter.OwnershipEpoch != ownershipBefore.OwnershipEpoch) {
+				t.Fatalf(
+					"initial policy save replaced existing execution-host owner: before=%#v after=%#v",
+					ownershipBefore,
+					ownershipAfter,
+				)
+			}
+			if testCase.pullOwnerID != "" && testCase.pullOwnerID != "host-agent-bootstrap" {
 				if !strings.Contains(
 					policyResponse.Body.String(),
 					`"code":"system_update_ownership_conflict"`,

@@ -45,6 +45,7 @@ func (r *MemoryRepository) Get(ctx context.Context, streamID string) (Settings, 
 	settings := DefaultSettings(streamID)
 	settings.DiscordTargetMode = "inherit"
 	settings.Revision = 1
+	settings.DiscordSnapshotRevision = 1
 	settings.CreatedAt = now
 	settings.UpdatedAt = now
 	r.settings[streamID] = settings

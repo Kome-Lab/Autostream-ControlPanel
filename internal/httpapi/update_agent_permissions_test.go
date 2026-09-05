@@ -39,7 +39,7 @@ func TestUpdateAgentTokenMutationsRejectMissingSystemUpdatePermission(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{ServiceID: "updater-limited", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com"})
+	service, err := auth.PrecreateService(t.Context(), token, validPullV2UpdateAgentRegistrationForTest("updater-limited", "Updater", "host-updater-limited", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestUpdateAgentCredentialMutationsRejectMissingSecretPermission(t *testing.
 	register := httptest.NewRequest(
 		http.MethodPost,
 		"/nodes/registration-tokens",
-		strings.NewReader(`{"node_type":"update_agent","node_id":"updater-created","name":"Updater","host":"updater.example.com","port":8090,"ssl_enabled":true}`),
+		strings.NewReader(`{"node_type":"update_agent","node_id":"updater-created","name":"Updater","transport_mode":"pull_v2","execution_host_id":"host-updater-created"}`),
 	)
 	register.AddCookie(cookie)
 	register.Header.Set("X-CSRF-Token", csrf)
@@ -100,7 +100,7 @@ func TestUpdateAgentCredentialMutationsRejectMissingSecretPermission(t *testing.
 	createAPI := httptest.NewRequest(
 		http.MethodPost,
 		"/api-tokens",
-		strings.NewReader(`{"service_type":"update_agent","scopes":["service.register","service.heartbeat","updates.claim","updates.report","updates.authorize"],"service_id":"updater-api","service_name":"Updater API","public_url":"https://updater-api.example.com"}`),
+		strings.NewReader(`{"service_type":"update_agent","service_id":"updater-api","service_name":"Updater API","transport_mode":"pull_v2","execution_host_id":"host-updater-api","scopes":["service.register","service.heartbeat","updates.claim","updates.report","updates.authorize"]}`),
 	)
 	createAPI.AddCookie(cookie)
 	createAPI.Header.Set("X-CSRF-Token", csrf)
@@ -117,10 +117,7 @@ func TestUpdateAgentCredentialMutationsRejectMissingSecretPermission(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := auth.PrecreateService(t.Context(), token, store.ServiceRegistration{
-		ServiceID: "updater-limited", ServiceType: "update_agent", ServiceName: "Updater",
-		PublicURL: "https://updater.example.com",
-	})
+	service, err := auth.PrecreateService(t.Context(), token, validPullV2UpdateAgentRegistrationForTest("updater-limited", "Updater", "host-updater-limited", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,11 +174,12 @@ func TestGenericUpdateAgentTokenCreationRequiresClaimScopes(t *testing.T) {
 	request := func(serviceID string, scopes []string) *httptest.ResponseRecorder {
 		t.Helper()
 		payload, err := json.Marshal(map[string]any{
-			"service_type": "update_agent",
-			"service_id":   serviceID,
-			"service_name": "Updater",
-			"public_url":   "https://updater.example.com",
-			"scopes":       scopes,
+			"service_type":      "update_agent",
+			"service_id":        serviceID,
+			"service_name":      "Updater",
+			"transport_mode":    store.SystemUpdateTransportPullV2,
+			"execution_host_id": "host-" + serviceID,
+			"scopes":            scopes,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -255,10 +253,7 @@ func TestLegacyUpdateAgentCredentialRotationFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := auth.PrecreateService(t.Context(), legacyToken, store.ServiceRegistration{
-		ServiceID: "updater-legacy", ServiceType: "update_agent", ServiceName: "Legacy Updater",
-		PublicURL: "https://updater-legacy.example.com",
-	})
+	service, err := auth.PrecreateService(t.Context(), legacyToken, validPullV2UpdateAgentRegistrationForTest("updater-legacy", "Legacy Updater", "host-updater-legacy", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +267,39 @@ func TestLegacyUpdateAgentCredentialRotationFailsClosed(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth))
+	updates := store.NewMemorySystemUpdateStore()
+	policies := store.NewMemoryUpdaterPolicyStore()
+	if _, err := policies.SavePullUpdaterPolicy(
+		t.Context(),
+		updates,
+		service.ServiceID,
+		0,
+		0,
+		store.UpdaterPolicy{
+			TransportMode:             store.SystemUpdateTransportPullV2,
+			ExecutionHostID:           "host-updater-legacy",
+			LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64),
+			PollIntervalSeconds:       15,
+			HeartbeatIntervalSeconds:  30,
+			Targets: []store.UpdaterPolicyTarget{{
+				TargetID:       "control-panel",
+				ServiceID:      "control-panel",
+				HostID:         "host-updater-legacy",
+				ServiceType:    "control_panel",
+				DeploymentMode: "systemd",
+				DatabaseName:   "autostream_panel",
+			}},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(
+		store.NewMemoryStreamStore(),
+		WithAuthStore(auth),
+		WithAuditStore(auth),
+		WithUpdaterPolicyStore(policies),
+		WithSystemUpdateStore(updates),
+	)
 	cookie, csrf := loginForTest(t, handler, "admin", "correct horse battery")
 
 	for _, path := range []string{
@@ -291,8 +318,8 @@ func TestLegacyUpdateAgentCredentialRotationFailsClosed(t *testing.T) {
 	}
 	stage := httptest.NewRequest(
 		http.MethodPost,
-		"/services/host-agent/runtime-identity/stage",
-		strings.NewReader(`{"nodeId":"`+service.ServiceID+`","configureToken":"`+rawConfigureToken+`"}`),
+		"https://panel.example.com/services/host-agent/runtime-identity/stage",
+		strings.NewReader(`{"nodeId":"`+service.ServiceID+`","configureToken":"`+rawConfigureToken+`","protocolVersion":1,"agentUid":1001,"agentGid":1002}`),
 	)
 	stageResult := httptest.NewRecorder()
 	handler.ServeHTTP(stageResult, stage)

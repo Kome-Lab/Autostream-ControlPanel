@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 	"github.com/example/autostream-control-panel/internal/store"
-	"github.com/example/autostream-control-panel/internal/updateradapter"
 )
 
 type portCoordinatorCaptureStore struct {
-	store.SystemUpdateStore
+	*store.MemorySystemUpdateStore
 	services     store.ServiceRegistryStore
 	policies     store.UpdaterPolicyStore
 	params       store.CreateSystemdPortReconfigurationJobParams
@@ -27,6 +27,16 @@ type portCoordinatorCaptureStore struct {
 	reportJob    store.SystemUpdateJob
 	reportErr    error
 	reportCalls  int
+}
+
+func (s *portCoordinatorCaptureStore) GetSystemUpdateJob(ctx context.Context, id string) (store.SystemUpdateJob, error) {
+	if err := ctx.Err(); err != nil {
+		return store.SystemUpdateJob{}, err
+	}
+	if s.reportJob.ID == id {
+		return s.reportJob, nil
+	}
+	return s.MemorySystemUpdateStore.GetSystemUpdateJob(ctx, id)
 }
 
 func (s *portCoordinatorCaptureStore) CreateDockerPortReconfigurationJob(
@@ -622,29 +632,35 @@ func TestSystemUpdateDockerPortMappingSnapshotIsAllowlistedAndFailClosed(t *test
 }
 
 func TestSystemUpdateReportAcceptsNestedPortResultAndMapsCompletionDrift(t *testing.T) {
-	handler, token, updates := newPortReportHTTPFixture(t)
-	payload, err := json.Marshal(updateradapter.JobReport{
-		ServiceID:       "host-agent-a",
-		LeaseToken:      "lease-token",
-		LeaseGeneration: 2,
-		Sequence:        3,
-		Status:          "succeeded",
-		Progress:        100,
-		PortReconfigure: &updateradapter.PortReconfigurationJobReport{
-			Result: string(store.SystemUpdatePortReconfigurationApplied),
-		},
-	})
+	handler, token, updates, lease := newPortReportHTTPFixture(t)
+	authorization := lease.Command.MutationAuthorization
+	result := contracts.UpdaterResultEnvelope{
+		ProtocolVersion:        2,
+		CommandID:              lease.Command.CommandID,
+		JobID:                  authorization.JobID,
+		UpdaterID:              authorization.UpdaterID,
+		HostID:                 authorization.HostID,
+		LeaseID:                lease.LeaseID,
+		LeaseGeneration:        lease.LeaseGeneration,
+		IdempotencyKey:         lease.Command.IdempotencyKey,
+		CanonicalPayloadDigest: lease.Command.CanonicalPayloadDigest,
+		AuthorizationID:        authorization.AuthorizationID,
+		DesiredRevision:        authorization.DesiredRevision,
+		AppliedRevision:        authorization.DesiredRevision,
+		Fence:                  authorization.Fence,
+		Outcome:                contracts.UpdaterOutcomeSucceeded,
+		Status:                 contracts.SystemUpdateSucceeded,
+		AutomaticResendAllowed: false,
+		AuditCorrelationID:     lease.Command.AuditCorrelationID,
+		Evidence: []contracts.UpdaterEvidence{{
+			EvidenceCode: "application_probe_verified", ObservedAt: time.Now().UTC(), ObservedRevision: authorization.DesiredRevision,
+		}},
+	}
+	payload, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := string(payload)
-	request := httptest.NewRequest(http.MethodPost, "/services/update-jobs/port-job-1/report", strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer "+token.RawToken)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("report response = %d %s", response.Code, response.Body.String())
-	}
+	postSystemUpdateV2JSON(t, handler, token.RawToken, "/services/update-jobs/port-job-1/report", result, http.StatusOK)
 	if updates.reportCalls != 1 ||
 		updates.report.PortReconfigure == nil ||
 		updates.report.PortReconfigure.Result != store.SystemUpdatePortReconfigurationApplied {
@@ -652,55 +668,25 @@ func TestSystemUpdateReportAcceptsNestedPortResultAndMapsCompletionDrift(t *test
 	}
 
 	updates.reportErr = store.ErrSystemUpdateEndpointStale
-	driftRequest := httptest.NewRequest(http.MethodPost, "/services/update-jobs/port-job-1/report", strings.NewReader(body))
-	driftRequest.Header.Set("Authorization", "Bearer "+token.RawToken)
-	driftResponse := httptest.NewRecorder()
-	handler.ServeHTTP(driftResponse, driftRequest)
+	driftResponse := postSystemUpdateV2JSON(t, handler, token.RawToken, "/services/update-jobs/port-job-1/report", result, http.StatusConflict)
 	if driftResponse.Code != http.StatusConflict ||
 		!strings.Contains(driftResponse.Body.String(), `"code":"system_update_endpoint_revision_conflict"`) {
 		t.Fatalf("completion drift = %d %s", driftResponse.Code, driftResponse.Body.String())
 	}
 
-	invalidRequest := httptest.NewRequest(
-		http.MethodPost,
-		"/services/update-jobs/port-job-1/report",
-		strings.NewReader(`{
-			"service_id":"host-agent-a",
-			"lease_token":"lease-token",
-			"lease_generation":2,
-			"sequence":3,
-			"status":"succeeded",
-			"progress":100,
-			"port_reconfigure":{"result":"applied","attacker_selected":18081}
-		}`),
-	)
-	invalidRequest.Header.Set("Authorization", "Bearer "+token.RawToken)
-	invalidResponse := httptest.NewRecorder()
-	handler.ServeHTTP(invalidResponse, invalidRequest)
-	if invalidResponse.Code != http.StatusBadRequest ||
-		!strings.Contains(invalidResponse.Body.String(), `"code":"bad_request"`) {
-		t.Fatalf("nested plan field response = %d %s", invalidResponse.Code, invalidResponse.Body.String())
-	}
-
-	internalStateRequest := httptest.NewRequest(
-		http.MethodPost,
-		"/services/update-jobs/port-job-1/report",
-		strings.NewReader(`{
-			"service_id":"host-agent-a",
-			"lease_token":"lease-token",
-			"lease_generation":2,
-			"sequence":3,
-			"status":"succeeded",
-			"progress":100,
-			"port_reconfigure":{"result":"applied","state_known":true,"applied_port":18081}
-		}`),
-	)
-	internalStateRequest.Header.Set("Authorization", "Bearer "+token.RawToken)
-	internalStateResponse := httptest.NewRecorder()
-	handler.ServeHTTP(internalStateResponse, internalStateRequest)
-	if internalStateResponse.Code != http.StatusBadRequest ||
-		!strings.Contains(internalStateResponse.Body.String(), `"code":"bad_request"`) {
-		t.Fatalf("internal executor state response = %d %s", internalStateResponse.Code, internalStateResponse.Body.String())
+	for name, forbidden := range map[string]map[string]any{
+		"nested plan field":       {"result": "applied", "attacker_selected": 18081},
+		"internal executor state": {"result": "applied", "state_known": true, "applied_port": 18081},
+	} {
+		var invalid map[string]any
+		if err := json.Unmarshal(payload, &invalid); err != nil {
+			t.Fatal(err)
+		}
+		invalid["port_reconfigure"] = forbidden
+		invalidResponse := postSystemUpdateV2JSON(t, handler, token.RawToken, "/services/update-jobs/port-job-1/report", invalid, http.StatusBadRequest)
+		if !strings.Contains(invalidResponse.Body.String(), `"code":"invalid_updater_v2_report"`) {
+			t.Fatalf("%s response = %d %s", name, invalidResponse.Code, invalidResponse.Body.String())
+		}
 	}
 }
 
@@ -719,8 +705,8 @@ func newPortCoordinatorHTTPFixture(
 	}
 	policies := store.NewMemoryUpdaterPolicyStore()
 	updates := &portCoordinatorCaptureStore{
-		SystemUpdateStore: store.NewMemorySystemUpdateStore(),
-		createErr:         createErr,
+		MemorySystemUpdateStore: store.NewMemorySystemUpdateStore(),
+		createErr:               createErr,
 	}
 	handler := NewServer(
 		store.NewMemoryStreamStore(),
@@ -752,7 +738,7 @@ func postSystemUpdateForTest(
 
 func newPortReportHTTPFixture(
 	t *testing.T,
-) (*Server, store.ServiceToken, *portCoordinatorCaptureStore) {
+) (*Server, store.ServiceToken, *portCoordinatorCaptureStore, contracts.UpdaterLeaseEnvelope) {
 	t.Helper()
 	auth := store.NewMemoryAuthStore()
 	token, err := auth.CreateServiceToken(
@@ -763,27 +749,63 @@ func newPortReportHTTPFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration := store.ServiceRegistration{
-		ServiceID:   "host-agent-a",
-		ServiceType: "update_agent",
-		ServiceName: "Host Agent A",
-		PublicURL:   "https://updater.example.com",
-		Version:     "v1.0.0",
+	updates := &portCoordinatorCaptureStore{MemorySystemUpdateStore: store.NewMemorySystemUpdateStore()}
+	ownership, err := updates.SwitchSystemUpdateExecutionHost(t.Context(), "host-a", 0, store.SystemUpdateTransportPullV2, "host-agent-a", 4)
+	if err != nil {
+		t.Fatal(err)
 	}
+	registration := validPullV2UpdateAgentRegistrationForTest("host-agent-a", "Host Agent A", "host-a", ownership.OwnershipEpoch)
+	registration.Version = "v1.0.0"
 	if _, err := auth.PrecreateService(t.Context(), token, registration); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterService(t.Context(), token, registration); err != nil {
+	if _, err := auth.RegisterService(t.Context(), token, store.ServiceRegistration{
+		ServiceID: "host-agent-a", ServiceType: "update_agent", ServiceName: "Host Agent A", Version: "v1.0.0",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	updates := &portCoordinatorCaptureStore{SystemUpdateStore: store.NewMemorySystemUpdateStore()}
+	now := time.Now().UTC()
+	leaseExpiresAt := now.Add(5 * time.Minute)
+	job := store.SystemUpdateJob{
+		ID: "port-job-1", TargetID: "worker-a", TargetServiceType: "worker",
+		Operation: store.SystemUpdateOperationPortReconfigure,
+		PortReconfigure: &store.SystemUpdatePortReconfiguration{
+			NetworkNamespace: "host", Protocol: store.SystemUpdatePortProtocolTCP,
+			OldPort: 8081, NewPort: 18081,
+			ExpectedEndpointRevision: 4, TargetEndpointRevision: 5,
+			ExpectedConfigRevision: 7, TargetConfigRevision: 8,
+			ExpectedConfigSHA256:           "sha256:" + strings.Repeat("a", 64),
+			TargetConfigSHA256:             "sha256:" + strings.Repeat("b", 64),
+			ExpectedSourcePolicyRevision:   11,
+			ExpectedUpdaterPolicyRevision:  13,
+			ExpectedExecutorPolicyRevision: 17,
+			ExpectedExecutorPolicySHA256:   "sha256:" + strings.Repeat("c", 64),
+		},
+		DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.0.0",
+		Strategy: store.SystemUpdateStrategyMaintenance, Status: store.SystemUpdateStatusInstalling,
+		IdempotencyKey: "port-report", RequestedByUserID: "admin",
+		AgentServiceID: "host-agent-a", ExecutionHostID: "host-a",
+		TransportMode: store.SystemUpdateTransportPullV2, OwnershipEpoch: ownership.OwnershipEpoch, PolicyRevision: ownership.PolicyRevision,
+		LeaseGeneration: 2, LeaseExpiresAt: &leaseExpiresAt, Sequence: 2, Progress: 70,
+		CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+	}
+	intentSHA256, err := store.ComputeSystemUpdatePortIntentSHA256(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.PortReconfigure.PortPlanSHA256 = intentSHA256
+	updates.reportJob = job
 	handler := NewServer(
 		store.NewMemoryStreamStore(),
 		WithAuthStore(auth),
 		WithServiceRegistryStore(auth),
 		WithSystemUpdateStore(updates),
 	)
-	return handler, token, updates
+	lease, err := handler.systemUpdateV2Lease(t.Context(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler, token, updates, lease
 }
 
 var _ store.SystemUpdatePortReconfigurationStore = (*portCoordinatorCaptureStore)(nil)

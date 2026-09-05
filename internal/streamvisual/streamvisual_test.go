@@ -33,10 +33,14 @@ func TestUpdateDistinguishesOmitFromExplicitClear(t *testing.T) {
 	}
 }
 
-func TestPresetModeIgnoresClientEffectiveDiscordIDsAndManualRequiresAllThree(t *testing.T) {
+func TestPresetModeRejectsClientEffectiveDiscordIDsAndManualRequiresAllThree(t *testing.T) {
 	current := DefaultSettings("stream-1")
 	presetRevision := uint64(7)
-	presetUpdate := Update{DiscordTargetMode: OptionalString{Set: true, Valid: true, Value: "preset"}, DiscordTargetPresetID: OptionalString{Set: true, Valid: true, Value: "preset-1"}, DiscordTargetPresetRevision: &presetRevision, DiscordGuildID: OptionalString{Set: true, Valid: true, Value: "999"}, DiscordTextChannelID: OptionalString{Set: true, Valid: true, Value: "998"}, DiscordVoiceChannelID: OptionalString{Set: true, Valid: true, Value: "997"}}
+	forgedPreset := Update{DiscordTarget: OptionalDiscordTarget{Set: true, Value: DiscordTarget{Mode: "preset", PresetID: "preset-1", PresetRevision: presetRevision, GuildID: "999", TextChannelID: "998", VoiceChannelID: "997"}}}
+	if _, _, err := applyUpdate(current, forgedPreset); !errors.Is(err, ErrInvalidSettings) {
+		t.Fatalf("client effective IDs error=%v", err)
+	}
+	presetUpdate := Update{DiscordTarget: OptionalDiscordTarget{Set: true, Value: DiscordTarget{Mode: "preset", PresetID: "preset-1", PresetRevision: presetRevision}}}
 	next, changes, err := applyUpdate(current, presetUpdate)
 	if err != nil || !changes.discord {
 		t.Fatalf("apply preset changed=%t err=%v", changes.discord, err)
@@ -54,9 +58,8 @@ func TestPresetModeIgnoresClientEffectiveDiscordIDsAndManualRequiresAllThree(t *
 	if err = ValidateSettings(manual); !errors.Is(err, ErrInvalidSettings) {
 		t.Fatalf("incomplete manual error=%v", err)
 	}
-	manualSwitch, _, err := applyUpdate(next, Update{DiscordTargetMode: OptionalString{Set: true, Valid: true, Value: "manual"}})
-	if err != nil || ValidateSettings(manualSwitch) == nil {
-		t.Fatalf("preset-to-manual switch reused snapshot IDs without active manual payload: %#v err=%v", manualSwitch, err)
+	if _, _, err = applyUpdate(next, Update{DiscordTarget: OptionalDiscordTarget{Set: true, Value: DiscordTarget{Mode: "manual"}}}); !errors.Is(err, ErrInvalidSettings) {
+		t.Fatalf("preset-to-manual switch reused snapshot IDs without active manual payload: err=%v", err)
 	}
 }
 
@@ -75,11 +78,8 @@ func TestInactiveModeFieldsCannotMutateOrRefreshSnapshots(t *testing.T) {
 	current.CoverVariantID = "cover-variant-1"
 
 	next, changes, err := applyUpdate(current, Update{
-		DiscordGuildID:        OptionalString{Set: true, Valid: true, Value: "999"},
-		DiscordTextChannelID:  OptionalString{Set: true, Valid: true, Value: "998"},
-		DiscordVoiceChannelID: OptionalString{Set: true, Valid: true, Value: "997"},
-		CoverAssetID:          OptionalString{Set: true, Valid: true, Value: "attacker-asset"},
-		CoverVariantID:        OptionalString{Set: true, Valid: true, Value: "attacker-variant"},
+		CoverAssetID:   OptionalString{Set: true, Valid: true, Value: "attacker-asset"},
+		CoverVariantID: OptionalString{Set: true, Valid: true, Value: "attacker-variant"},
 	})
 	if err != nil {
 		t.Fatal(err)

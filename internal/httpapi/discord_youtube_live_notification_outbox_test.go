@@ -249,11 +249,12 @@ func TestPrivateYouTubeLiveAPIStartQueuesWatchURLUntilProviderIsLive(t *testing.
 		WithSecretStore(store.NewMemorySecretStore()),
 		WithIntegrationStore(integrations),
 		WithYouTubeLiveClient(youtubeClient),
+		withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"),
 		WithServiceDispatcher(dispatcher),
 	)
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	body := fmt.Sprintf(`{"discord_config_id":%q,"discord_guild_id":"guild-private","discord_voice_channel_id":"voice-private","discord_text_channel_id":"text-private","youtube_output_id":%q}`, discord.ID, youtube.ID)
+	body := fmt.Sprintf(`{"discord_config_id":%q,"youtube_output_id":%q}`, discord.ID, youtube.ID)
 	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(body))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
@@ -275,7 +276,7 @@ func TestPrivateYouTubeLiveAPIStartQueuesWatchURLUntilProviderIsLive(t *testing.
 	}
 	if queued.State != store.DiscordYouTubeLiveNotificationStateAwaitingYouTubeLive ||
 		queued.WatchURL != "https://www.youtube.com/watch?v=private-broadcast" ||
-		queued.DiscordTextChannelID != "text-private" ||
+		queued.DiscordTextChannelID != "1002" ||
 		queued.YouTubeMode != "live_api" ||
 		queued.YouTubeOAuthAccountID != account.ID ||
 		queued.YouTubeBroadcastID != "private-broadcast" {

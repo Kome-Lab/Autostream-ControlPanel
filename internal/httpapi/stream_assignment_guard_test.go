@@ -254,10 +254,10 @@ func TestStartStreamMapsProtectedDiscordMaterializationToConflict(t *testing.T) 
 			_, mutationErr = streams.UpdateStreamStatus(t.Context(), owner.ID, "live")
 		},
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, target.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+target.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-01","discord_voice_channel_id":"voice-01"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+target.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -322,7 +322,7 @@ func TestStartStreamClaimRejectsAssignmentMutationAfterSnapshot(t *testing.T) {
 					}
 				},
 			}
-			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 			cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
 			req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
@@ -372,10 +372,10 @@ func TestStartStreamClaimDoesNotLeaveConfiguredDiscordAssignmentOnConflict(t *te
 			_, mutationErr = auth.UnassignServiceFromStreamGuarded(t.Context(), store.ServiceUnassignmentMutation{ServiceID: "worker-01"})
 		},
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`","discord_guild_id":"guild-claim","discord_voice_channel_id":"voice-claim"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", bytes.NewBufferString(`{"discord_config_id":"`+config.ID+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -422,7 +422,7 @@ func TestServiceAutoStartClaimRejectsMutationWithoutMaterializingDiscord(t *test
 			_, mutationErr = auth.UnassignServiceFromStreamGuarded(t.Context(), store.ServiceUnassignmentMutation{ServiceID: "encoder_recorder-01"})
 		},
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
 
 	req := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
 	req.Header.Set("Authorization", "Bearer "+discordToken.RawToken)
