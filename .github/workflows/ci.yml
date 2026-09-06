@@ -75,7 +75,15 @@ jobs:
 
   go:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 75
+    env:
+      # Fixed signed application sources; workflow revisions are recorded separately.
+      ST_PORT_UPDATER_SHA: bb2fae807f634c2c4e6a9746612100cccab4639b
+      ST_PORT_CONTRACTS_SHA: 612ceb539ee74180beae682c4290aba54c49c389
+      ST_PORT_WORKER_SHA: ba226489b037d5d29e47b72ab054484a57dea3ac
+      GOMAXPROCS: "2"
+    outputs:
+      st_port_source_set: ${{ steps.st_port_sources.outputs.source_set }}
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
@@ -188,7 +196,8 @@ jobs:
             exit 1
           fi
           printf 'Discovered MariaDB integration test: %s\n' "${mariadb_tests[@]}"
-          result="${RUNNER_TEMP}/mariadb-store-tests.json"
+          mkdir -p "${RUNNER_TEMP}/st-port-store-evidence"
+          result="${RUNNER_TEMP}/st-port-store-evidence/mariadb-store-tests.json"
           go test ./internal/store \
             -run '^TestMariaDB' \
             -count=1 \
@@ -275,6 +284,133 @@ jobs:
               autostream_control_panel \
               autostream-kometubu_panel
       - run: go build ./...
+
+      - name: Check out pinned ST-PORT Updater acceptance source
+        if: always() && !cancelled()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Updater
+          ref: ${{ env.ST_PORT_UPDATER_SHA }}
+          path: st-port-updater
+          persist-credentials: false
+      - name: Check out pinned Worker runtime fixture source
+        if: always() && !cancelled()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Worker
+          ref: ${{ env.ST_PORT_WORKER_SHA }}
+          path: st-port-worker
+          persist-credentials: false
+      - name: Require the ST-PORT source set and entrypoints
+        id: st_port_sources
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git -C st-port-updater rev-parse HEAD)" = "${ST_PORT_UPDATER_SHA}"
+          test "$(git -C st-port-worker rev-parse HEAD)" = "${ST_PORT_WORKER_SHA}"
+          test -f internal/httpapi/st_port_full_chain_process_linux_test.go
+          test -f scripts/ci/required-st-port-store-tests.txt
+          test -f st-port-updater/scripts/ci/run-st-port-full-chain.sh
+          test -f st-port-updater/scripts/ci/required-st-port-full-chain-tests.txt
+          test -f st-port-updater/scripts/ci/required-st-port-docker-full-chain-tests.txt
+          test -f st-port-updater/scripts/ci/verify-go-test-evidence.py
+          for directory in . st-port-updater; do
+            (
+              cd "${directory}"
+              dependency="$(go list -m -f '{{.Replace.Version}}' github.com/example/autostream-contracts)"
+              [[ "${dependency}" == *-"${ST_PORT_CONTRACTS_SHA:0:12}" ]]
+            )
+          done
+          source_set="$(jq -cn \
+            --arg control_panel_sha "${GITHUB_SHA}" \
+            --arg updater_sha "${ST_PORT_UPDATER_SHA}" \
+            --arg contracts_sha "${ST_PORT_CONTRACTS_SHA}" \
+            --arg worker_sha "${ST_PORT_WORKER_SHA}" \
+            '{control_panel_sha:$control_panel_sha,updater_sha:$updater_sha,contracts_sha:$contracts_sha,worker_sha:$worker_sha}')"
+          printf 'source_set=%s\n' "${source_set}" >> "${GITHUB_OUTPUT}"
+      - name: Require ST-PORT Store parity, collision, and commit crash evidence
+        id: st_port_store
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          bash st-port-updater/scripts/ci/verify-go-test-evidence.sh --exact-subtests \
+            "${RUNNER_TEMP}/st-port-store-evidence" \
+            "${GITHUB_WORKSPACE}/internal/store" \
+            scripts/ci/required-st-port-store-tests.txt
+      - name: Run ST-PORT through real CP, MariaDB, Agent, and root
+        id: st_port_full_chain
+        if: always() && !cancelled() && steps.st_port_sources.outcome == 'success'
+        timeout-minutes: 40
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+          AUTOSTREAM_ST_PORT_EXPECTED_SOURCE_SET: ${{ steps.st_port_sources.outputs.source_set }}
+          AUTOSTREAM_ST_PORT_WORKER_VERSION: v2.0.0
+          AUTOSTREAM_ST_PORT_CONTROL_PANEL_SHA: ${{ github.sha }}
+          AUTOSTREAM_ST_PORT_UPDATER_SHA: ${{ env.ST_PORT_UPDATER_SHA }}
+          AUTOSTREAM_ST_PORT_CONTRACTS_SHA: ${{ env.ST_PORT_CONTRACTS_SHA }}
+          AUTOSTREAM_ST_PORT_WORKER_SHA: ${{ env.ST_PORT_WORKER_SHA }}
+        run: |
+          set -euo pipefail
+          binaries="${RUNNER_TEMP}/st-port-binaries"
+          mkdir -p "${binaries}"
+          go test -p 1 -c -o "${binaries}/control-panel.test" ./internal/httpapi
+          (
+            cd st-port-worker
+            build_date="$(git show -s --format=%cI "${ST_PORT_WORKER_SHA}")"
+            go build -p 1 -trimpath \
+              -ldflags "-X github.com/example/autostream-worker/internal/version.Version=${AUTOSTREAM_ST_PORT_WORKER_VERSION} -X github.com/example/autostream-worker/internal/version.Commit=${ST_PORT_WORKER_SHA} -X github.com/example/autostream-worker/internal/version.BuildDate=${build_date}" \
+              -o "${binaries}/worker" ./cmd/worker
+          )
+          (
+            cd st-port-updater
+            bash scripts/ci/run-st-port-full-chain.sh \
+              "${binaries}/control-panel.test" "${binaries}/worker" \
+              "${RUNNER_TEMP}/st-port-full-chain-evidence"
+          )
+      - name: Require complete ST-PORT full-chain test IDs
+        id: st_port_full_chain_evidence
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          bash st-port-updater/scripts/ci/verify-go-test-evidence.sh --exact-subtests \
+            "${RUNNER_TEMP}/st-port-full-chain-evidence/go" \
+            "${GITHUB_WORKSPACE}/st-port-updater/internal/hostruntime" \
+            st-port-updater/scripts/ci/required-st-port-full-chain-tests.txt \
+            st-port-updater/scripts/ci/required-st-port-docker-full-chain-tests.txt
+      - name: Upload ST-PORT Store evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: st-port-store-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/st-port-store-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload ST-PORT full-chain evidence and actual GET projections
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: st-port-full-chain-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/st-port-full-chain-evidence/go/
+            ${{ runner.temp }}/st-port-full-chain-evidence/artifacts/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Require every ST-PORT lane
+        if: always()
+        env:
+          SOURCES_RESULT: ${{ steps.st_port_sources.outcome }}
+          STORE_RESULT: ${{ steps.st_port_store.outcome }}
+          FULL_CHAIN_RESULT: ${{ steps.st_port_full_chain.outcome }}
+          FULL_CHAIN_EVIDENCE_RESULT: ${{ steps.st_port_full_chain_evidence.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCES_RESULT}" == success ]]
+          [[ "${STORE_RESULT}" == success ]]
+          [[ "${FULL_CHAIN_RESULT}" == success ]]
+          [[ "${FULL_CHAIN_EVIDENCE_RESULT}" == success ]]
 
   release-rehearsal:
     name: Control Panel only release rehearsal
@@ -512,6 +648,8 @@ jobs:
   web:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    needs: go
+    if: always() && !cancelled()
     defaults:
       run:
         working-directory: web
@@ -540,6 +678,20 @@ jobs:
       - run: npm run test:stream-regressions
       - run: npm run lint
       - run: npm run build
+      - name: Download actual ST-PORT GET evidence from the same source set
+        if: always() && !cancelled()
+        uses: actions/download-artifact@96dc968c16b1e91bb81db51b7a8786906658a842 # v8.0.0
+        with:
+          name: st-port-full-chain-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/st-port-full-chain-evidence
+      - name: Test actual ST-PORT GET results in the browser
+        if: always() && !cancelled()
+        timeout-minutes: 8
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+          AUTOSTREAM_ST_PORT_GET_ARTIFACT: ${{ runner.temp }}/st-port-full-chain-evidence/artifacts/st-port-full-chain-web.json
+          AUTOSTREAM_ST_PORT_EXPECTED_SOURCE_SET: ${{ needs.go.outputs.st_port_source_set }}
+        run: npm run test:st-port-get-browser
 
   overall:
     name: overall
