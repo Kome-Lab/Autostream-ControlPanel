@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,7 +84,10 @@ func newMemoryPullActivationFixture(
 	policies := NewMemoryUpdaterPolicyStore()
 	registry := NewMemoryAuthStore()
 	updates := NewMemorySystemUpdateStore()
-	policy, err := policies.SavePullUpdaterPolicy(ctx, updates, "host-agent-a", 0, 0, validPullUpdaterPolicyForOwnership())
+	const localListenPort = 18081
+	input := validPullUpdaterPolicyForOwnership()
+	input.Targets[0].LocalListenPort = localListenPort
+	policy, err := policies.SavePullUpdaterPolicy(ctx, updates, "host-agent-a", 0, 0, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +96,9 @@ func newMemoryPullActivationFixture(
 	target := RegisteredService{
 		ServiceID: "worker-a", ServiceType: "worker", ServiceName: "worker-a",
 		Status: "online", EndpointRevision: 3, AppliedConfigRevision: 3,
-		AppliedEndpoint: &ServiceEndpoint{Host: "127.0.0.1", Port: 18081, PublicURL: "http://127.0.0.1:18081"},
-		CreatedAt:       now, UpdatedAt: now,
+		AppliedConfigSHA256: "sha256:" + strings.Repeat("c", 64),
+		AppliedEndpoint:     &ServiceEndpoint{Host: "127.0.0.1", Port: localListenPort, PublicURL: "http://127.0.0.1:18081"},
+		CreatedAt:           now, UpdatedAt: now,
 	}
 	token := ServiceToken{ID: "token-host-agent-a", ServiceType: "update_agent", CreatedAt: now}
 	agent := RegisteredService{
@@ -108,14 +113,14 @@ func newMemoryPullActivationFixture(
 			"policy_revision": policy.ProjectionRevision, "policy_status": "applied",
 			"target_availability":                map[string]string{"worker-a": "available"},
 			"target_availability_codes":          map[string]string{"worker-a": "executor_verified"},
-			"reported_ports":                     map[string]int64{"worker-a": 18081},
+			"reported_ports":                     map[string]int64{"worker-a": localListenPort},
 			"port_drift":                         map[string]bool{"worker-a": false},
 			"reported_service_types":             map[string]string{"worker-a": "worker"},
 			"reported_deployment_modes":          map[string]string{"worker-a": "systemd"},
 			"reported_executor_policy_revisions": map[string]int64{"worker-a": policy.LocalExecutorPolicyRevision},
 			"reported_executor_policy_sha256":    map[string]string{"worker-a": policy.LocalExecutorPolicySHA256},
 			"reported_config_revisions":          map[string]int64{"worker-a": target.AppliedConfigRevision},
-			"reported_config_sha256":             map[string]string{},
+			"reported_config_sha256":             map[string]string{"worker-a": target.AppliedConfigSHA256},
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}

@@ -74,7 +74,7 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
 	}
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, services, StartRequest{
-		DiscordTargetRevision: 1, DiscordGuildID: "guild", DiscordVoiceChannelID: "voice", DiscordTextChannelID: "text", EncoderInputURL: "srt://input.example.com:9000",
+		DiscordTargetRevision: 1, DiscordGuildID: "1001", DiscordVoiceChannelID: "1003", DiscordTextChannelID: "1002", EncoderInputURL: "srt://input.example.com:9000",
 		EncoderStreamKeySecretName: "youtube_stream_key_main", EncoderProfileID: "enc-prof-01", ArchiveProfileID: "archive-prof-01", OverlayProfileID: "overlay-prof-01", CaptionProfileID: "caption-prof-01",
 		ArchiveRunID: "run-01", ArchiveStartedAt: time.Date(2026, 8, 18, 5, 6, 29, 123456789, time.UTC),
 		ArchiveConfig:  map[string]any{"folder_id": "drive-folder-id", "shared_drive": true},
@@ -117,7 +117,7 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	}
 	discordTarget, ok := payloads["discord_bot"]["discord_target"].(map[string]any)
 	resolvedTarget, resolvedOK := discordTarget["resolved"].(map[string]any)
-	if !ok || !resolvedOK || discordTarget["revision"] != float64(1) || resolvedTarget["guild_id"] != "guild" || resolvedTarget["voice_channel_id"] != "voice" || resolvedTarget["text_channel_id"] != "text" {
+	if !ok || !resolvedOK || discordTarget["revision"] != float64(1) || resolvedTarget["guild_id"] != "1001" || resolvedTarget["voice_channel_id"] != "1003" || resolvedTarget["text_channel_id"] != "1002" {
 		t.Fatalf("discord bot did not receive resolved target v2: %#v", payloads["discord_bot"])
 	}
 	if payloads["discord_bot"]["worker_events_url"] != server.URL {
@@ -208,7 +208,7 @@ func TestStartFailsClosedWithoutWorkerJobGeneration(t *testing.T) {
 			results := client.Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
 				{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
 				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
-			}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
+			}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "1001", DiscordVoiceChannelID: "1003", DiscordTextChannelID: "1002"})
 
 			if requests["worker"] != 1 || requests["discord_bot"] != 0 {
 				t.Fatalf("invalid Worker generation dispatch count = %#v, want worker=1 discord_bot=0", requests)
@@ -229,7 +229,7 @@ func TestStartFailsClosedWithoutWorkerJobGeneration(t *testing.T) {
 
 		results := testClient().Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
 			{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
-		}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
+		}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "1001", DiscordVoiceChannelID: "1003", DiscordTextChannelID: "1002"})
 
 		if requests != 0 {
 			t.Fatalf("Discord Bot received %d requests without a Worker generation, want 0", requests)
@@ -338,7 +338,7 @@ func TestStartRequiresSingleWorkerResponseJSONValue(t *testing.T) {
 			results := testClient().Start(t.Context(), store.Stream{ID: "stream-01"}, []store.RegisteredService{
 				{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
 				{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
-			}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
+			}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "1001", DiscordVoiceChannelID: "1003", DiscordTextChannelID: "1002"})
 
 			if test.wantSuccess {
 				if requests["worker"] != 1 || requests["discord_bot"] != 1 || len(results) != 2 || !results[0].Success || !results[1].Success {
@@ -438,7 +438,7 @@ func TestStartNegotiatesWorkerVideoIngestWithoutLeakingCredential(t *testing.T) 
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
 	}
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, services, StartRequest{
-		DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01",
+		DiscordTargetRevision: 1, DiscordGuildID: "1001", DiscordVoiceChannelID: "1003", DiscordTextChannelID: "1002",
 		EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60,
 	})
 	if got, want := strings.Join(dispatchOrder, ","), "encoder_recorder,worker,discord_bot"; got != want {
@@ -556,7 +556,7 @@ func TestStartNegotiatedWorkerVideoStopsBeforeBotWhenWorkerRejectsRoute(t *testi
 		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL, ReportedCapabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL, ReportedCapabilities: map[string]any{"worker_frame_ingest_mjpeg_srt": true}},
-	}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01", EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60})
+	}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "1001", DiscordVoiceChannelID: "1003", DiscordTextChannelID: "1002", EncoderProfileID: "enc-prof-01", EncoderVideoWidth: 1920, EncoderVideoHeight: 1080, EncoderVideoFPS: 60})
 	if got, want := strings.Join(paths, ","), "/streams/start,/jobs/start"; got != want {
 		t.Fatalf("Bot was dispatched after Worker rejected its video route: got=%q want=%q", got, want)
 	}
@@ -618,7 +618,7 @@ func TestStartStopsAtFirstFailedDependency(t *testing.T) {
 		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: server.URL, ReportedCapabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
-	}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "guild-01", DiscordVoiceChannelID: "voice-01", DiscordTextChannelID: "text-01"})
+	}, StartRequest{DiscordTargetRevision: 1, DiscordGuildID: "1001", DiscordVoiceChannelID: "1003", DiscordTextChannelID: "1002"})
 	if len(results) != 1 {
 		t.Fatalf("expected only the failed encoder result, got %#v", results)
 	}
@@ -664,8 +664,16 @@ func TestStartUsesEncryptedNodeRuntimeTokenBeforeGlobalFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := testClient()
-	client.Config.NodeTokenKey = "secret-key"
+	client := Client{Config: Config{
+		Timeout:      time.Second,
+		NodeTokenKey: "secret-key",
+		URLPolicy: netpolicy.ServiceURLPolicy{
+			AllowedHosts: map[string]struct{}{"127.0.0.1": {}},
+		},
+	}}
+	if client.RuntimeTokenResolver != nil {
+		t.Fatal("encrypted-node-token fixture must use the real resolver")
+	}
 	results := client.Start(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, []store.RegisteredService{{
 		ServiceID:           "enc-01",
 		ServiceType:         "encoder_recorder",
@@ -677,7 +685,7 @@ func TestStartUsesEncryptedNodeRuntimeTokenBeforeGlobalFallback(t *testing.T) {
 		t.Fatalf("dispatch failed: %#v", results)
 	}
 	if auth != "Bearer node-runtime-token" {
-		t.Fatalf("unexpected auth: %q", auth)
+		t.Fatal("dispatch authorization did not use the node credential")
 	}
 }
 
@@ -705,14 +713,15 @@ func TestRetryArchiveUploadDispatchesOnlyToEncoder(t *testing.T) {
 			t.Fatal(err)
 		}
 		archiveConfig, _ := payload["archive_config"].(map[string]any)
-		if payload["stream_id"] != "stream-01" || payload["name"] != "Morning" || archiveConfig["folder_id_secret_name"] != "drive_destination:dest-01:folder_id" {
+		if payload["stream_id"] != "stream-01" || payload["name"] != "Morning" || payload["archive_run_id"] != "run-01" || payload["started_at"] != "2026-08-18T05:06:29Z" || archiveConfig["folder_id_secret_name"] != "drive_destination:dest-01:folder_id" {
 			t.Fatalf("unexpected payload: %#v", payload)
 		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
 	client := testClient()
-	results := client.RetryArchiveUpload(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, []store.RegisteredService{
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 0, time.UTC)
+	results := client.RetryArchiveUpload(t.Context(), store.Stream{ID: "stream-01", Name: "Morning", ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt}, []store.RegisteredService{
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: server.URL},
 	}, map[string]any{"folder_id_secret_name": "drive_destination:dest-01:folder_id", "shared_drive": true})
@@ -729,7 +738,8 @@ func TestRetryArchiveUploadCapturesSafePackageFailureClassification(t *testing.T
 	}))
 	defer server.Close()
 	client := testClient()
-	results := client.RetryArchiveUpload(t.Context(), store.Stream{ID: "stream-01", Name: "Morning"}, []store.RegisteredService{
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 0, time.UTC)
+	results := client.RetryArchiveUpload(t.Context(), store.Stream{ID: "stream-01", Name: "Morning", ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt}, []store.RegisteredService{
 		{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL},
 	}, nil)
 	if len(results) != 1 || results[0].Success {
@@ -1183,7 +1193,7 @@ func TestPreviewAssetDoesNotForwardInvalidOrMultiRange(t *testing.T) {
 
 func TestDownloadArchiveArtifactForwardsRangeAndKeepsStreamingBodyAlive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/streams/stream-01/artifacts/final.mp4" {
+		if r.URL.Path != "/streams/stream-01/archive-runs/run-01/artifacts/final.mp4" {
 			t.Fatalf("unexpected archive path: %s", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer service-token" {
@@ -1204,14 +1214,15 @@ func TestDownloadArchiveArtifactForwardsRangeAndKeepsStreamingBodyAlive(t *testi
 	}))
 	defer server.Close()
 
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 0, time.UTC)
 	client := testClient()
 	client.Config.Timeout = 10 * time.Millisecond
 	client.HTTP = server.Client()
 	result := client.DownloadArchiveArtifact(
 		t.Context(),
-		store.Stream{ID: "stream-01"},
+		store.Stream{ID: "stream-01", ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt},
 		[]store.RegisteredService{{ServiceID: "enc-01", ServiceType: "encoder_recorder", PublicURL: server.URL}},
-		store.StreamArtifact{ID: "artifact-01", StreamID: "stream-01", Kind: "archive", Name: "final.mp4"},
+		store.StreamArtifact{ID: "artifact-01", StreamID: "stream-01", ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt, Kind: "archive", Name: "final.mp4"},
 		"bytes=0-3",
 	)
 	if !result.Success || result.StatusCode != http.StatusPartialContent || result.ContentRange != "bytes 0-3/8" || result.AcceptRanges != "bytes" || result.Body == nil {
@@ -1319,7 +1330,7 @@ func TestStartReadinessIssues(t *testing.T) {
 		{ServiceID: "worker-01", ServiceType: "worker", PublicURL: "ftp://worker.example.com", Status: "online"},
 		{ServiceID: "discord-01", ServiceType: "discord_bot", PublicURL: "https://discord.example.com", Status: "online", LastHeartbeatAt: &stale, Capabilities: map[string]any{"audio_stream_forward": false}},
 	}, StartRequest{}, now)
-	for _, want := range []string{"service_call_token_missing", "stream_ingest_signing_key_missing", "service_public_url_invalid", "service_heartbeat_stale", "discord_audio_forward_unavailable"} {
+	for _, want := range []string{"node_runtime_token_key_missing", "node_runtime_token_missing", "stream_ingest_signing_key_missing", "service_public_url_invalid", "service_heartbeat_stale", "discord_audio_forward_unavailable"} {
 		if !hasIssueCode(issues, want) {
 			t.Fatalf("missing readiness issue %s in %#v", want, issues)
 		}

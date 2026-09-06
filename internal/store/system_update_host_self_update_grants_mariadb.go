@@ -453,7 +453,7 @@ func validateMariaDBSystemUpdateHostSelfUpdateGrantStateTx(
 		ownership.AgentServiceID != agentID ||
 		ownership.TransportMode != SystemUpdateTransportPullV2 ||
 		ownership.OwnershipEpoch != update.ExpectedOwnershipEpoch ||
-		ownership.PolicyRevision != update.ExpectedSourcePolicyRevision {
+		ownership.PolicyRevision != update.ExpectedProjectionRevision {
 		return ErrSystemUpdateOwnershipConflict
 	}
 	if err := lockMariaDBHostSelfUpdateOtherLanes(ctx, tx, hostID); err != nil {

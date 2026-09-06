@@ -289,6 +289,7 @@ func (s *MemoryAuthStore) RegisterService(ctx context.Context, token ServiceToke
 		svc.DesiredEndpoint = copyServiceEndpoint(existing.DesiredEndpoint)
 		svc.AppliedEndpoint = copyServiceEndpoint(existing.AppliedEndpoint)
 		svc.EndpointRevision = existing.EndpointRevision
+		svc.AppliedEndpointRevision = existing.AppliedEndpointRevision
 		svc.EndpointStatus = existing.EndpointStatus
 		svc.ReportedEndpoint = serviceEndpoint(registration.Host, registration.Port, registration.SSLEnabled, registration.PublicURL)
 	}

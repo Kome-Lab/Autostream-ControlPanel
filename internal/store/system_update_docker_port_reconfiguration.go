@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/example/autostream-contracts/pkg/contracts"
 	"math"
 	"sort"
 	"strings"
@@ -16,6 +17,12 @@ import (
 const systemUpdateDockerPortCapabilityVersion = "v1"
 
 type CreateDockerPortReconfigurationJobParams struct {
+	PortContractVersion      int
+	Mode                     contracts.SystemUpdatePortMode
+	ExpectedSnapshotID       string
+	ExpectedDesiredRevision  int64
+	ExpectedFence            int64
+	BuildPolicySnapshot      SystemUpdatePortPolicySnapshotBuilder
 	TargetID                 string
 	NewAdvertisedPort        int
 	NewPublishedPort         int
@@ -429,6 +436,9 @@ func (s *MemorySystemUpdateStore) CreateDockerPortReconfigurationJob(
 	policies UpdaterPolicyStore,
 	params CreateDockerPortReconfigurationJobParams,
 ) (SystemUpdateJob, bool, error) {
+	if params.PortContractVersion == 2 {
+		return s.createSystemUpdatePortV2(ctx, services, policies, systemUpdatePortV2DockerParams(params))
+	}
 	params = normalizeCreateDockerPortReconfigurationJobParams(params)
 	if err := validateCreateDockerPortReconfigurationJobParams(params); err != nil {
 		return SystemUpdateJob{}, false, err
@@ -517,6 +527,9 @@ func (s *MemorySystemUpdateStore) CreateDockerPortReconfigurationJob(
 		return SystemUpdateJob{}, false, err
 	}
 	for _, existing := range s.jobs {
+		if isSystemUpdatePortV2(existing) && existing.ExecutionHostID == ownership.ExecutionHostID && systemUpdateJobHoldsHost(existing) {
+			return SystemUpdateJob{}, false, ErrSystemUpdateExecutionHostBusy
+		}
 		if existing.TargetID == target.ServiceID &&
 			!isTerminalSystemUpdateStatus(existing.Status) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateTargetActive
@@ -576,6 +589,9 @@ func (s *MariaDBSystemUpdateStore) CreateDockerPortReconfigurationJob(
 	policies UpdaterPolicyStore,
 	params CreateDockerPortReconfigurationJobParams,
 ) (SystemUpdateJob, bool, error) {
+	if params.PortContractVersion == 2 {
+		return s.createSystemUpdatePortV2(ctx, services, policies, systemUpdatePortV2DockerParams(params))
+	}
 	params = normalizeCreateDockerPortReconfigurationJobParams(params)
 	if err := validateCreateDockerPortReconfigurationJobParams(params); err != nil {
 		return SystemUpdateJob{}, false, err
@@ -719,6 +735,9 @@ FOR UPDATE`, ownership.ExecutionHostID).Scan(&activeRotationID)
 		return SystemUpdateJob{}, false, err
 	}
 	var activeID string
+	if err := rejectMariaDBSystemUpdatePortHold(ctx, tx, ownership.ExecutionHostID); err != nil {
+		return SystemUpdateJob{}, false, err
+	}
 	err = tx.QueryRowContext(ctx, `SELECT id FROM system_update_jobs
 WHERE active_target_id = ? LIMIT 1 FOR UPDATE`, target.ServiceID).Scan(&activeID)
 	if err == nil {

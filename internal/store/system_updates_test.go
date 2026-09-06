@@ -9,16 +9,19 @@ import (
 )
 
 func TestMemorySystemUpdateStoreLifecycleAndIdempotency(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	params := CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", DeploymentMode: "systemd",
-		AgentServiceID: "updater-01",
+		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
 		CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle,
 		IdempotencyKey: "request-01", RequestedByUserID: "user-01", RequestedByUsername: "operator",
 	}
 	job, created, err := updates.CreateSystemUpdateJob(t.Context(), params)
-	if err != nil || !created || job.Status != SystemUpdateStatusQueued || job.ExecutionHostID != params.AgentServiceID {
+	if err != nil || !created || job.Status != SystemUpdateStatusQueued || job.ExecutionHostID != params.ExecutionHostID {
 		t.Fatalf("create job = %#v, created=%v, err=%v", job, created, err)
+	}
+	if job.TransportMode != SystemUpdateTransportPullV2 || job.OwnershipEpoch != 1 || job.PolicyRevision != 7 {
+		t.Fatal("job did not retain the explicit ownership snapshot")
 	}
 	replayed, created, err := updates.CreateSystemUpdateJob(t.Context(), params)
 	if err != nil || created || replayed.ID != job.ID {
@@ -30,7 +33,7 @@ func TestMemorySystemUpdateStoreLifecycleAndIdempotency(t *testing.T) {
 	resolvedDrift.CurrentVersion = "v1.0.1"
 	resolvedDrift.TargetVersion = "v1.2.0"
 	resolvedReplay, created, err := updates.CreateSystemUpdateJob(t.Context(), resolvedDrift)
-	if err != nil || created || resolvedReplay.ID != job.ID || resolvedReplay.AgentServiceID != "updater-01" || resolvedReplay.ExecutionHostID != "updater-01" || resolvedReplay.TargetVersion != "v1.1.0" {
+	if err != nil || created || resolvedReplay.ID != job.ID || resolvedReplay.AgentServiceID != "updater-01" || resolvedReplay.ExecutionHostID != "host-01" || resolvedReplay.TargetVersion != "v1.1.0" {
 		t.Fatalf("resolved-state idempotent replay = %#v, created=%v, err=%v", resolvedReplay, created, err)
 	}
 	conflicting := params
@@ -79,10 +82,10 @@ func TestMemorySystemUpdateStoreRejectsUnknownCurrentVersion(t *testing.T) {
 }
 
 func TestMemorySystemUpdateStoreClaimReportLeaseTransitionAndRedaction(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", DeploymentMode: "systemd",
-		AgentServiceID: "updater-01",
+		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
 		CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyMaintenance,
 		IdempotencyKey: "request-claim", RequestedByUserID: "user-01",
 	})
@@ -90,18 +93,18 @@ func TestMemorySystemUpdateStoreClaimReportLeaseTransitionAndRedaction(t *testin
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	claim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", map[string]string{"worker-01": "systemd"}, now, 2*time.Minute)
+	claim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", map[string]string{"worker-01": "systemd"}, now, 2*time.Minute)
 	if err != nil || clearActive || claim.Job.ID != job.ID || claim.Job.Status != SystemUpdateStatusClaimed || claim.LeaseToken == "" || claim.LeaseGeneration != 1 || claim.ReportSequence != 1 || claim.RecoveryRequired || !claim.LeaseExpiresAt.Equal(now.Add(2*time.Minute)) {
 		t.Fatalf("claim = %#v, err=%v", claim, err)
 	}
 	if strings.Contains(claim.Job.Message, claim.LeaseToken) {
 		t.Fatal("lease token leaked into job")
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: "wrong", LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusDownloading, Progress: 5}, now.Add(time.Second), 15*time.Minute); !errors.Is(err, ErrSystemUpdateLeaseInvalid) {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: "wrong", LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusDownloading, Progress: 5}, now.Add(time.Second), 15*time.Minute); !errors.Is(err, ErrSystemUpdateLeaseInvalid) {
 		t.Fatalf("wrong lease err = %v", err)
 	}
 	reported, applied, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{
-		AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1,
+		AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1,
 		Status: SystemUpdateStatusHealthChecking, Progress: 90,
 		Message: "Bearer raw-secret ast_svc_another-secret token=third-secret health ok",
 	}, now.Add(time.Second), 15*time.Minute)
@@ -111,16 +114,16 @@ func TestMemorySystemUpdateStoreClaimReportLeaseTransitionAndRedaction(t *testin
 	if strings.Contains(reported.Message, "raw-secret") || strings.Contains(reported.Message, "ast_svc_") || strings.Contains(reported.Message, "third-secret") {
 		t.Fatalf("report message was not redacted: %q", reported.Message)
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusSucceeded, Progress: 100, ArtifactDigest: "not-a-digest"}, now.Add(2*time.Second), 15*time.Minute); !errors.Is(err, ErrInvalidSystemUpdate) {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusSucceeded, Progress: 100, ArtifactDigest: "not-a-digest"}, now.Add(2*time.Second), 15*time.Minute); !errors.Is(err, ErrInvalidSystemUpdate) {
 		t.Fatalf("non-canonical digest err = %v", err)
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusSucceeded, Progress: 100, Code: "Bad Code!"}, now.Add(2*time.Second), 15*time.Minute); !errors.Is(err, ErrInvalidSystemUpdate) {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusSucceeded, Progress: 100, Code: "Bad Code!"}, now.Add(2*time.Second), 15*time.Minute); !errors.Is(err, ErrInvalidSystemUpdate) {
 		t.Fatalf("invalid report code err = %v", err)
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusInstalling, Progress: 91}, now.Add(2*time.Second), 15*time.Minute); !errors.Is(err, ErrSystemUpdateTransition) {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusInstalling, Progress: 91}, now.Add(2*time.Second), 15*time.Minute); !errors.Is(err, ErrSystemUpdateTransition) {
 		t.Fatalf("backward transition err = %v", err)
 	}
-	terminalReport := SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusSucceeded, Progress: 100}
+	terminalReport := SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusSucceeded, Progress: 100}
 	completed, applied, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, terminalReport, now.Add(2*time.Second), 15*time.Minute)
 	if err != nil || !applied || completed.Status != SystemUpdateStatusSucceeded || completed.LeaseExpiresAt != nil || completed.CompletedAt == nil {
 		t.Fatalf("complete report = %#v, applied=%v, err=%v", completed, applied, err)
@@ -145,10 +148,10 @@ func TestMemorySystemUpdateStoreClaimReportLeaseTransitionAndRedaction(t *testin
 }
 
 func TestMemorySystemUpdateStoreReconcileProgressMovesOnlyToTerminal(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-reconcile", TargetServiceType: "worker", DeploymentMode: "systemd",
-		AgentServiceID: "updater-01",
+		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
 		CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyMaintenance,
 		IdempotencyKey: "request-reconcile-progress", RequestedByUserID: "user-01",
 	})
@@ -157,14 +160,14 @@ func TestMemorySystemUpdateStoreReconcileProgressMovesOnlyToTerminal(t *testing.
 	}
 	now := time.Now().UTC()
 	claim, _, err := updates.ClaimSystemUpdateJob(
-		t.Context(), "updater-01", "", "", map[string]string{"worker-reconcile": "systemd"},
+		t.Context(), "updater-01", "host-01", "", map[string]string{"worker-reconcile": "systemd"},
 		now, 2*time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := SystemUpdateReport{
-		AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken,
+		AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken,
 		LeaseGeneration: claim.LeaseGeneration,
 	}
 	installing := base
@@ -208,15 +211,15 @@ func TestMemorySystemUpdateStoreReconcileProgressMovesOnlyToTerminal(t *testing.
 
 func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testing.T) {
 	newClaim := func(key string, now time.Time) (*MemorySystemUpdateStore, SystemUpdateJob, SystemUpdateClaim) {
-		updates := NewMemorySystemUpdateStore()
+		updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
-			TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-01", DeploymentMode: "systemd",
+			TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: "host-01", DeploymentMode: "systemd",
 			CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: key, RequestedByUserID: "user-01",
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", map[string]string{"worker-01": "systemd"}, now, 2*time.Minute)
+		claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", map[string]string{"worker-01": "systemd"}, now, 2*time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,11 +227,11 @@ func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testi
 	}
 	now := time.Now().UTC()
 	updates, job, claim := newClaim("authorize-exact", now)
-	authorization := SystemUpdateAuthorization{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, TargetID: "worker-01", TargetVersion: "v1.1.0", DeploymentMode: "systemd"}
+	authorization := SystemUpdateAuthorization{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, TargetID: "worker-01", TargetVersion: "v1.1.0", DeploymentMode: "systemd"}
 	if err := updates.AuthorizeSystemUpdateMutation(t.Context(), job.ID, authorization, now.Add(time.Second)); !errors.Is(err, ErrSystemUpdateAuthorizationState) {
 		t.Fatalf("claimed mutation authorization err = %v", err)
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusInstalling, Progress: 70}, now.Add(time.Second), 15*time.Minute); err != nil {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusInstalling, Progress: 70}, now.Add(time.Second), 15*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := updates.AuthorizeSystemUpdateMutation(t.Context(), job.ID, authorization, now.Add(2*time.Second)); err != nil {
@@ -247,7 +250,11 @@ func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testi
 		t.Run(name, func(t *testing.T) {
 			candidate := authorization
 			mutate(&candidate)
-			if err := updates.AuthorizeSystemUpdateMutation(t.Context(), job.ID, candidate, now.Add(2*time.Second)); !errors.Is(err, ErrSystemUpdateLeaseInvalid) {
+			wantErr := ErrSystemUpdateLeaseInvalid
+			if name == "wrong agent" {
+				wantErr = ErrSystemUpdateOwnershipConflict
+			}
+			if err := updates.AuthorizeSystemUpdateMutation(t.Context(), job.ID, candidate, now.Add(2*time.Second)); !errors.Is(err, wantErr) {
 				t.Fatalf("authorization err = %v", err)
 			}
 		})
@@ -266,13 +273,13 @@ func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testi
 			}
 		})
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusReconciling, Progress: 80}, now.Add(3*time.Second), 15*time.Minute); err != nil {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 2, Status: SystemUpdateStatusReconciling, Progress: 80}, now.Add(3*time.Second), 15*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := updates.AuthorizeSystemUpdateMutation(t.Context(), job.ID, authorization, now.Add(4*time.Second)); err != nil {
 		t.Fatalf("reconciling mutation authorization: %v", err)
 	}
-	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 3, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(5*time.Second), 15*time.Minute); err != nil {
+	if _, _, err := updates.ReportSystemUpdateJob(t.Context(), job.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 3, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(5*time.Second), 15*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := updates.AuthorizeSystemUpdateMutation(t.Context(), job.ID, authorization, now.Add(6*time.Second)); !errors.Is(err, ErrSystemUpdateAuthorizationState) {
@@ -285,10 +292,10 @@ func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testi
 	}
 
 	expiringUpdates, expiringJob, expiringClaim := newClaim("authorize-expired", now)
-	if _, _, err := expiringUpdates.ReportSystemUpdateJob(t.Context(), expiringJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: expiringClaim.LeaseToken, LeaseGeneration: expiringClaim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusInstalling, Progress: 70}, now.Add(time.Second), time.Minute); err != nil {
+	if _, _, err := expiringUpdates.ReportSystemUpdateJob(t.Context(), expiringJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: expiringClaim.LeaseToken, LeaseGeneration: expiringClaim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusInstalling, Progress: 70}, now.Add(time.Second), time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	expired := SystemUpdateAuthorization{AgentServiceID: "updater-01", LeaseToken: expiringClaim.LeaseToken, LeaseGeneration: expiringClaim.LeaseGeneration, TargetID: "worker-01", TargetVersion: "v1.1.0", DeploymentMode: "systemd"}
+	expired := SystemUpdateAuthorization{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: expiringClaim.LeaseToken, LeaseGeneration: expiringClaim.LeaseGeneration, TargetID: "worker-01", TargetVersion: "v1.1.0", DeploymentMode: "systemd"}
 	if err := expiringUpdates.AuthorizeSystemUpdateMutation(t.Context(), expiringJob.ID, expired, now.Add(2*time.Minute)); !errors.Is(err, ErrSystemUpdateLeaseInvalid) {
 		t.Fatalf("expired mutation authorization err = %v", err)
 	}
@@ -470,40 +477,40 @@ func TestServiceRegistrationRejectsShellUnsafeServiceID(t *testing.T) {
 }
 
 func TestMemorySystemUpdateStoreDoesNotClaimIneligibleOrUnexpiredWork(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01", "host-02": "updater-02"})
 	_, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0",
-		AgentServiceID: "updater-01",
-		Strategy:       SystemUpdateStrategyWhenIdle, IdempotencyKey: "request-wait", RequestedByUserID: "user-01",
+		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
+		Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: "request-wait", RequestedByUserID: "user-01",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", map[string]string{"other": "systemd"}, now, time.Minute); !errors.Is(err, ErrNotFound) {
+	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", map[string]string{"other": "systemd"}, now, time.Minute); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ineligible claim err = %v", err)
 	}
-	claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", map[string]string{"worker-01": "systemd"}, now, time.Minute)
+	claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", map[string]string{"worker-01": "systemd"}, now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-02", "", "", map[string]string{"worker-01": "systemd"}, now.Add(30*time.Second), time.Minute); !errors.Is(err, ErrNotFound) {
+	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-02", "host-02", "", map[string]string{"worker-01": "systemd"}, now.Add(30*time.Second), time.Minute); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unexpired second claim err = %v", err)
 	}
-	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-02", "", "", map[string]string{"worker-01": "systemd"}, now.Add(2*time.Minute), time.Minute); !errors.Is(err, ErrSystemUpdateTakeoverForbidden) {
+	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-02", "host-02", "", map[string]string{"worker-01": "systemd"}, now.Add(2*time.Minute), time.Minute); !errors.Is(err, ErrSystemUpdateTakeoverForbidden) {
 		t.Fatalf("cross-agent reclaim err = %v", err)
 	}
-	reclaimed, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", map[string]string{"worker-01": "systemd"}, now.Add(2*time.Minute), time.Minute)
+	reclaimed, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", map[string]string{"worker-01": "systemd"}, now.Add(2*time.Minute), time.Minute)
 	if err != nil || reclaimed.Job.ID != claim.Job.ID || reclaimed.LeaseToken == claim.LeaseToken || !reclaimed.RecoveryRequired || reclaimed.LastStatus != SystemUpdateStatusClaimed || reclaimed.Job.Status != SystemUpdateStatusReconciling || reclaimed.LeaseGeneration != 2 || reclaimed.ReportSequence != 1 {
 		t.Fatalf("expired reclaim = %#v, err=%v", reclaimed, err)
 	}
 }
 
 func TestMemorySystemUpdateStoreSerializesAgentExecutionAndReclaimsBeforeQueued(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	create := func(targetID, serviceType, key string) SystemUpdateJob {
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
-			TargetID: targetID, TargetServiceType: serviceType, DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", AgentServiceID: "updater-01",
+			TargetID: targetID, TargetServiceType: serviceType, DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", AgentServiceID: "updater-01", ExecutionHostID: "host-01",
 			Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: key, RequestedByUserID: "user-01",
 		})
 		if err != nil {
@@ -515,7 +522,7 @@ func TestMemorySystemUpdateStoreSerializesAgentExecutionAndReclaimsBeforeQueued(
 	second := create("encoder-01", "encoder_recorder", "serialized-02")
 	eligible := map[string]string{"worker-01": "systemd", "encoder-01": "systemd"}
 	now := time.Now().UTC()
-	claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now, 2*time.Minute)
+	claim, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", eligible, now, 2*time.Minute)
 	if err != nil || (claim.Job.ID != first.ID && claim.Job.ID != second.ID) {
 		t.Fatalf("first serialized claim = %#v err=%v", claim, err)
 	}
@@ -524,31 +531,31 @@ func TestMemorySystemUpdateStoreSerializesAgentExecutionAndReclaimsBeforeQueued(
 	if claim.Job.ID == second.ID {
 		activeJob, queuedJob = second, first
 	}
-	_, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusDownloading, Progress: 10}, now.Add(time.Minute), 45*time.Minute)
+	_, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: claim.LeaseToken, LeaseGeneration: claim.LeaseGeneration, Sequence: 1, Status: SystemUpdateStatusDownloading, Progress: 10}, now.Add(time.Minute), 45*time.Minute)
 	if err != nil || !applied {
 		t.Fatalf("extend execution lease: applied=%v err=%v", applied, err)
 	}
-	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now.Add(3*time.Minute), 2*time.Minute); !errors.Is(err, ErrNotFound) {
+	if _, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", eligible, now.Add(3*time.Minute), 2*time.Minute); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("queued job replaced nonexpired active journal: %v", err)
 	}
-	reclaimed, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now.Add(47*time.Minute), 2*time.Minute)
+	reclaimed, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", eligible, now.Add(47*time.Minute), 2*time.Minute)
 	if err != nil || reclaimed.Job.ID != activeJob.ID || !reclaimed.RecoveryRequired || reclaimed.Job.Status != SystemUpdateStatusReconciling || reclaimed.ReportSequence != 2 {
 		t.Fatalf("expired active was not reclaimed before queued: %#v err=%v", reclaimed, err)
 	}
-	if _, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: reclaimed.LeaseToken, LeaseGeneration: reclaimed.LeaseGeneration, Sequence: reclaimed.ReportSequence, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(48*time.Minute), 45*time.Minute); err != nil || !applied {
+	if _, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: reclaimed.LeaseToken, LeaseGeneration: reclaimed.LeaseGeneration, Sequence: reclaimed.ReportSequence, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(48*time.Minute), 45*time.Minute); err != nil || !applied {
 		t.Fatalf("finish reconciled job: applied=%v err=%v", applied, err)
 	}
-	next, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now.Add(49*time.Minute), 2*time.Minute)
+	next, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", eligible, now.Add(49*time.Minute), 2*time.Minute)
 	if err != nil || next.Job.ID != queuedJob.ID {
 		t.Fatalf("queued job was not released after terminal report: %#v err=%v", next, err)
 	}
 }
 
 func TestMemorySystemUpdateStoreParallelClaimsYieldOneExecutingJob(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	for index, target := range []string{"worker-01", "encoder-01"} {
 		if _, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
-			TargetID: target, TargetServiceType: target, DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", AgentServiceID: "updater-01",
+			TargetID: target, TargetServiceType: target, DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", AgentServiceID: "updater-01", ExecutionHostID: "host-01",
 			Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: "parallel-0" + string(rune('1'+index)), RequestedByUserID: "user-01",
 		}); err != nil {
 			t.Fatal(err)
@@ -563,7 +570,7 @@ func TestMemorySystemUpdateStoreParallelClaimsYieldOneExecutingJob(t *testing.T)
 		go func() {
 			defer wait.Done()
 			<-start
-			_, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, time.Now().UTC(), 2*time.Minute)
+			_, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", eligible, time.Now().UTC(), 2*time.Minute)
 			errorsOut <- err
 		}()
 	}
@@ -641,7 +648,7 @@ func TestMemorySystemUpdateStoreAllowsParallelClaimsAcrossExecutionHosts(t *test
 }
 
 func TestMemorySystemUpdateStoreRecoversPerHostWithoutBlockingOtherHosts(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-a": "updater-01", "host-b": "updater-01"})
 	create := func(targetID, hostID string) SystemUpdateJob {
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 			TargetID: targetID, TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: hostID,
@@ -676,9 +683,9 @@ func TestMemorySystemUpdateStoreRecoversPerHostWithoutBlockingOtherHosts(t *test
 }
 
 func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *testing.T) {
-	updates := NewMemorySystemUpdateStore()
+	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01", "host-02": "updater-02"})
 	create := func(targetID, key string) SystemUpdateJob {
-		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{TargetID: targetID, TargetServiceType: "worker", AgentServiceID: "updater-01", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: key, RequestedByUserID: "user-01"})
+		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{TargetID: targetID, TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: "host-01", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: key, RequestedByUserID: "user-01"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -688,7 +695,7 @@ func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *te
 	second := create("worker-02", "active-local-02")
 	eligible := map[string]string{"worker-01": "systemd", "worker-02": "systemd"}
 	now := time.Now().UTC()
-	initial, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now, 2*time.Minute)
+	initial, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", eligible, now, 2*time.Minute)
 	if err != nil || (initial.Job.ID != first.ID && initial.Job.ID != second.ID) {
 		t.Fatalf("initial active claim = %#v err=%v", initial, err)
 	}
@@ -697,14 +704,14 @@ func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *te
 	if initial.Job.ID == second.ID {
 		activeJob, queuedJob = second, first
 	}
-	recovered, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", activeJob.ID, eligible, now.Add(time.Minute), 2*time.Minute)
+	recovered, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", activeJob.ID, eligible, now.Add(time.Minute), 2*time.Minute)
 	if err != nil || clearActive || recovered.Job.ID != activeJob.ID || recovered.Job.Status != SystemUpdateStatusReconciling || recovered.LeaseGeneration != initial.LeaseGeneration+1 || !recovered.RecoveryRequired {
 		t.Fatalf("active_job_id did not fence/recover same job: %#v clear=%v err=%v", recovered, clearActive, err)
 	}
 	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || clear || inspected.ID != activeJob.ID {
 		t.Fatalf("executing active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
-	if _, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", LeaseToken: recovered.LeaseToken, LeaseGeneration: recovered.LeaseGeneration, Sequence: recovered.ReportSequence, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(2*time.Minute), 45*time.Minute); err != nil || !applied {
+	if _, applied, err := updates.ReportSystemUpdateJob(t.Context(), activeJob.ID, SystemUpdateReport{AgentServiceID: "updater-01", ExecutionHostID: "host-01", LeaseToken: recovered.LeaseToken, LeaseGeneration: recovered.LeaseGeneration, Sequence: recovered.ReportSequence, Status: SystemUpdateStatusSucceeded, Progress: 100}, now.Add(2*time.Minute), 45*time.Minute); err != nil || !applied {
 		t.Fatalf("finish active recovery: applied=%v err=%v", applied, err)
 	}
 	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", activeJob.ID); err != nil || !clear ||
@@ -717,11 +724,11 @@ func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *te
 	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-02", activeJob.ID); !errors.Is(err, ErrSystemUpdateOwnershipConflict) || clear || inspected.ID != "" {
 		t.Fatalf("wrong-agent active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
-	clearedClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", activeJob.ID, eligible, now.Add(3*time.Minute), 2*time.Minute)
+	clearedClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", activeJob.ID, eligible, now.Add(3*time.Minute), 2*time.Minute)
 	if !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive || clearedClaim.Job.ID != "" {
 		t.Fatalf("terminal active_job_id bypassed strict inspection: %#v clear=%v err=%v", clearedClaim, clearActive, err)
 	}
-	if wrongAgentClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-02", "", activeJob.ID, eligible, now.Add(3*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateOwnershipConflict) || clearActive || wrongAgentClaim.Job.ID != "" {
+	if wrongAgentClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-02", "host-02", activeJob.ID, eligible, now.Add(3*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateOwnershipConflict) || clearActive || wrongAgentClaim.Job.ID != "" {
 		t.Fatalf("wrong-agent active_job_id claim = %#v clear=%v err=%v", wrongAgentClaim, clearActive, err)
 	}
 	queued, err := updates.GetActiveSystemUpdateJob(t.Context(), queuedJob.TargetID)
@@ -731,16 +738,16 @@ func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *te
 	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", queuedJob.ID); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clear || inspected.ID != "" {
 		t.Fatalf("nonterminal active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
-	if queuedClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", queuedJob.ID, eligible, now.Add(4*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive || queuedClaim.Job.ID != "" {
+	if queuedClaim, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", queuedJob.ID, eligible, now.Add(4*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive || queuedClaim.Job.ID != "" {
 		t.Fatalf("nonterminal active_job_id claim = %#v clear=%v err=%v", queuedClaim, clearActive, err)
 	}
-	if _, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "missing-job", nil, now.Add(4*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive {
+	if _, clearActive, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "missing-job", nil, now.Add(4*time.Minute), 2*time.Minute); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clearActive {
 		t.Fatalf("missing active_job_id claim clear = %v err=%v", clearActive, err)
 	}
 	if inspected, clear, err := updates.InspectSystemUpdateActiveJob(t.Context(), "updater-01", "missing-job"); !errors.Is(err, ErrSystemUpdateRecoveryProofUnavailable) || clear || inspected.ID != "" {
 		t.Fatalf("missing active_job_id inspection = %#v clear=%v err=%v", inspected, clear, err)
 	}
-	next, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "", "", eligible, now.Add(5*time.Minute), 2*time.Minute)
+	next, _, err := updates.ClaimSystemUpdateJob(t.Context(), "updater-01", "host-01", "", eligible, now.Add(5*time.Minute), 2*time.Minute)
 	if err != nil || next.Job.ID != queuedJob.ID {
 		t.Fatalf("normal poll after durable clear did not claim queued job: %#v err=%v", next, err)
 	}

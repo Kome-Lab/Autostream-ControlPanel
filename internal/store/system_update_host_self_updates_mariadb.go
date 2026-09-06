@@ -646,7 +646,7 @@ func lockMariaDBHostSelfUpdateOtherLanes(
 		ctx,
 		`SELECT id FROM system_update_jobs
 WHERE execution_host_id = ?
-AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at LIMIT 1 FOR UPDATE`,
 		hostID,
 	).Scan(&id)

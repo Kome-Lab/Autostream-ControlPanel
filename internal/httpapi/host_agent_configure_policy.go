@@ -67,12 +67,16 @@ func (s *Server) hostAgentConfigurePolicyProjection(
 		if target.DeploymentMode == updateradapter.ModeSystemd && !localListenPortAvailable {
 			return updateradapter.ConfigurePolicyProjection{}, errHostAgentConfigurePolicyUnavailable
 		}
+		appliedEndpointRevision := service.EndpointRevision
+		if service.AppliedEndpointRevision > 0 {
+			appliedEndpointRevision = service.AppliedEndpointRevision
+		}
 		targets = append(targets, updateradapter.HostAgentConfigurePolicyTarget{
 			ServiceID:             target.ServiceID,
 			ServiceType:           target.ServiceType,
 			DeploymentMode:        target.DeploymentMode,
 			DatabaseName:          target.DatabaseName,
-			EndpointRevision:      service.EndpointRevision,
+			EndpointRevision:      appliedEndpointRevision,
 			AppliedConfigRevision: service.AppliedConfigRevision,
 			AppliedConfigSHA256:   service.AppliedConfigSHA256,
 			AppliedEndpointPort:   service.AppliedEndpoint.Port,

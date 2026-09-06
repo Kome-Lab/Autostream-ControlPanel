@@ -270,7 +270,7 @@ func (s *MemoryUpdaterPolicyStore) SavePullUpdaterPolicy(
 			return UpdaterPolicy{}, ErrConflict
 		}
 		for _, job := range updates.jobs {
-			if job.ExecutionHostID == normalized.ExecutionHostID && !isTerminalSystemUpdateStatus(job.Status) {
+			if job.ExecutionHostID == normalized.ExecutionHostID && systemUpdateJobHoldsHost(job) {
 				return UpdaterPolicy{}, ErrSystemUpdateExecutionHostBusy
 			}
 		}
@@ -288,8 +288,15 @@ func (s *MemoryUpdaterPolicyStore) SavePullUpdaterPolicy(
 		now = currentPolicy.UpdatedAt.Add(time.Nanosecond)
 	}
 	normalized.Revision = expectedRevision + 1
-	normalized.ProjectionRevision = normalized.Revision
-	normalized.LocalExecutorPolicyRevision = normalized.Revision
+	normalized.ProjectionRevision = 1
+	normalized.LocalExecutorPolicyRevision = 1
+	if exists {
+		if currentPolicy.ProjectionRevision >= math.MaxInt64 || currentPolicy.LocalExecutorPolicyRevision >= math.MaxInt64 {
+			return UpdaterPolicy{}, ErrConflict
+		}
+		normalized.ProjectionRevision = currentPolicy.ProjectionRevision + 1
+		normalized.LocalExecutorPolicyRevision = currentPolicy.LocalExecutorPolicyRevision + 1
+	}
 	normalized.UpdatedAt = now
 
 	s.policies[normalized.UpdaterID] = cloneUpdaterPolicy(normalized)
@@ -442,7 +449,7 @@ func (s *MemoryUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 		return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateAgentBindingMismatch
 	}
 	for _, job := range updates.jobs {
-		if job.ExecutionHostID == params.ExecutionHostID && !isTerminalSystemUpdateStatus(job.Status) {
+		if job.ExecutionHostID == params.ExecutionHostID && systemUpdateJobHoldsHost(job) {
 			return ActivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
 		}
 	}
@@ -562,7 +569,7 @@ func (s *MemoryUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	}
 	for _, job := range updates.jobs {
 		if job.ExecutionHostID == params.ExecutionHostID &&
-			!isTerminalSystemUpdateStatus(job.Status) {
+			systemUpdateJobHoldsHost(job) {
 			return DeactivatePullUpdaterOwnershipResult{}, ErrSystemUpdateExecutionHostBusy
 		}
 	}
@@ -793,6 +800,7 @@ func (s MariaDBUpdaterPolicyStore) SavePullUpdaterPolicy(
 	if ownership.OwnershipEpoch != expectedOwnershipEpoch {
 		return UpdaterPolicy{}, ErrSystemUpdateExecutionHostStale
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "save_pull_updater_policy", mariaDBUpdaterPolicyHostLockHeld)
 	if ownership.TransportMode != SystemUpdateTransportPullV2 ||
 		ownership.ExecutionHostID != normalized.ExecutionHostID {
 		return UpdaterPolicy{}, ErrSystemUpdateAgentBindingMismatch
@@ -809,7 +817,7 @@ func (s MariaDBUpdaterPolicyStore) SavePullUpdaterPolicy(
 		err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, normalized.ExecutionHostID).Scan(&activeJobID)
@@ -881,6 +889,15 @@ FOR UPDATE`,
 		}
 		if activePullOwner && ownership.PolicyRevision != currentPolicy.ProjectionRevision {
 			return UpdaterPolicy{}, ErrConflict
+		}
+		if currentPolicy.ProjectionRevision >= math.MaxInt64 || currentPolicy.LocalExecutorPolicyRevision >= math.MaxInt64 {
+			return UpdaterPolicy{}, ErrConflict
+		}
+		normalized.ProjectionRevision = currentPolicy.ProjectionRevision + 1
+		normalized.LocalExecutorPolicyRevision = currentPolicy.LocalExecutorPolicyRevision + 1
+		body, err = json.Marshal(normalized)
+		if err != nil {
+			return UpdaterPolicy{}, err
 		}
 	} else if activePullOwner && ownership.PolicyRevision != 0 {
 		return UpdaterPolicy{}, ErrConflict
@@ -1466,7 +1483,7 @@ func (s MariaDBUpdaterPolicyStore) ActivatePullUpdaterOwnership(
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
@@ -1830,7 +1847,7 @@ func (s MariaDBUpdaterPolicyStore) DeactivatePullUpdaterOwnership(
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, params.ExecutionHostID).Scan(&activeID)

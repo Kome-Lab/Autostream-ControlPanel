@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/example/autostream-contracts/pkg/contracts"
 	"regexp"
 	"strings"
 	"time"
@@ -92,8 +93,8 @@ func (s *MemorySystemUpdateStore) IssueSystemUpdateMutationGrant(ctx context.Con
 	now = now.UTC()
 	ttl = boundedSystemUpdateMutationGrantTTL(ttl)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockPortPolicyOrder()
+	defer unlock()
 	job, ok := s.jobs[jobID]
 	if !ok {
 		return IssuedSystemUpdateMutationGrant{}, ErrNotFound
@@ -107,6 +108,18 @@ func (s *MemorySystemUpdateStore) IssueSystemUpdateMutationGrant(ctx context.Con
 	}
 	if err := authorizeSystemUpdateMutationGrantIssue(job, params, now); err != nil {
 		return IssuedSystemUpdateMutationGrant{}, err
+	}
+	if isSystemUpdatePortV2(job) {
+		registry := s.portJobRegistries[job.ID]
+		if registry == nil {
+			return IssuedSystemUpdateMutationGrant{}, ErrSystemUpdatePortStoreMismatch
+		}
+		registry.mu.Lock()
+		err := validateMemorySystemUpdatePortV2StateLocked(s, registry, job)
+		registry.mu.Unlock()
+		if err != nil {
+			return IssuedSystemUpdateMutationGrant{}, err
+		}
 	}
 	rawToken, err := newSystemUpdateMutationGrantToken()
 	if err != nil {
@@ -142,8 +155,8 @@ func (s *MemorySystemUpdateStore) ConsumeSystemUpdateMutationGrant(ctx context.C
 		return SystemUpdateMutationGrant{}, false, ErrInvalidSystemUpdate
 	}
 	now = now.UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockPortPolicyOrder()
+	defer unlock()
 	grant, ok := s.mutationGrants[security.HashToken(grantToken)]
 	if !ok || grant.JobID != jobID || grant.LeaseGeneration != leaseGeneration || !sameSystemUpdateMutationGrantBinding(grant.Binding, binding) {
 		return SystemUpdateMutationGrant{}, false, ErrSystemUpdateMutationGrantConflict
@@ -164,7 +177,24 @@ func (s *MemorySystemUpdateStore) ConsumeSystemUpdateMutationGrant(ctx context.C
 		return SystemUpdateMutationGrant{}, false, ErrSystemUpdateMutationGrantConflict
 	}
 	if grant.ConsumedAt != nil {
+		if isSystemUpdatePortV2(job) {
+			registry := s.portJobRegistries[job.ID]
+			if registry == nil {
+				return SystemUpdateMutationGrant{}, false, ErrSystemUpdatePortStoreMismatch
+			}
+			registry.mu.Lock()
+			err := validateMemorySystemUpdatePortV2StateLocked(s, registry, job)
+			registry.mu.Unlock()
+			if err != nil {
+				return SystemUpdateMutationGrant{}, false, err
+			}
+		}
 		return publicSystemUpdateMutationGrant(grant), true, nil
+	}
+	if isSystemUpdatePortV2(job) {
+		if err := consumeMemorySystemUpdatePortV2Locked(s, job, binding.Operation, now); err != nil {
+			return SystemUpdateMutationGrant{}, false, err
+		}
 	}
 	consumedAt := now
 	grant.ConsumedAt = &consumedAt
@@ -209,6 +239,11 @@ func (s *MariaDBSystemUpdateStore) IssueSystemUpdateMutationGrant(ctx context.Co
 	if err := authorizeSystemUpdateMutationGrantIssue(job, params, now); err != nil {
 		return IssuedSystemUpdateMutationGrant{}, err
 	}
+	if isSystemUpdatePortV2(job) {
+		if _, _, err := lockMariaDBPortV2State(ctx, tx, job); err != nil {
+			return IssuedSystemUpdateMutationGrant{}, err
+		}
+	}
 	expiresAt := now.Add(ttl)
 	if job.LeaseExpiresAt != nil && job.LeaseExpiresAt.Before(expiresAt) {
 		expiresAt = job.LeaseExpiresAt.UTC()
@@ -234,7 +269,11 @@ func (s *MariaDBSystemUpdateStore) IssueSystemUpdateMutationGrant(ctx context.Co
 			grant.Binding.JobOperation, grant.Binding.Operation, grant.Binding.PlanSHA256, grant.Binding.SessionID,
 		}
 		args = append(args, systemUpdateMutationGrantPortSQLValues(grant.Binding.PortReconfigure)...)
-		args = append(args, grant.ExpiresAt, grant.CreatedAt)
+		var portVersion any
+		if isSystemUpdatePortV2(job) {
+			portVersion = 2
+		}
+		args = append(args, grant.ExpiresAt, grant.CreatedAt, portVersion)
 		_, err = tx.ExecContext(ctx, `INSERT INTO system_update_mutation_grants
   (id, job_id, token_hash, agent_service_id, lease_generation,
    host_id, transport_mode, ownership_epoch, policy_revision,
@@ -252,12 +291,12 @@ func (s *MariaDBSystemUpdateStore) IssueSystemUpdateMutationGrant(ctx context.Co
     docker_approved_compose_config_sha256, docker_approved_compose_revision,
     docker_expected_version_env_sha256, docker_expected_container_id,
     docker_expected_image_id, docker_expected_repository_digest,
-    expires_at, consumed_at, created_at)
+    expires_at, consumed_at, created_at, port_contract_version)
 VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, NULL, ?)`,
+        ?, NULL, ?, ?)`,
 			args...)
 		if err == nil {
 			if err := tx.Commit(); err != nil {
@@ -296,6 +335,13 @@ func (s *MariaDBSystemUpdateStore) ConsumeSystemUpdateMutationGrant(ctx context.
 	if err != nil {
 		return SystemUpdateMutationGrant{}, false, err
 	}
+	job, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ? FOR UPDATE`, jobID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SystemUpdateMutationGrant{}, false, ErrSystemUpdateMutationGrantConflict
+		}
+		return SystemUpdateMutationGrant{}, false, err
+	}
 	grant, err := scanSystemUpdateMutationGrant(tx.QueryRowContext(ctx, systemUpdateMutationGrantSelect+` WHERE token_hash = ? FOR UPDATE`, security.HashToken(grantToken)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SystemUpdateMutationGrant{}, false, ErrSystemUpdateMutationGrantConflict
@@ -309,21 +355,27 @@ func (s *MariaDBSystemUpdateStore) ConsumeSystemUpdateMutationGrant(ctx context.
 	if !grant.ExpiresAt.After(now) {
 		return SystemUpdateMutationGrant{}, false, ErrSystemUpdateMutationGrantConflict
 	}
-	job, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ? FOR UPDATE`, jobID))
-	if err != nil || !systemUpdateMutationGrantMatchesCurrentJob(grant, job, now) {
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return SystemUpdateMutationGrant{}, false, err
-		}
+	if !systemUpdateMutationGrantMatchesCurrentJob(grant, job, now) {
 		return SystemUpdateMutationGrant{}, false, ErrSystemUpdateMutationGrantConflict
 	}
 	if authorizeSystemUpdateJobOwnership(job, ownership, grant.AgentServiceID, job.ExecutionHostID) != nil {
 		return SystemUpdateMutationGrant{}, false, ErrSystemUpdateMutationGrantConflict
 	}
 	if grant.ConsumedAt != nil {
+		if isSystemUpdatePortV2(job) {
+			if _, _, err := lockMariaDBPortV2State(ctx, tx, job); err != nil {
+				return SystemUpdateMutationGrant{}, false, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return SystemUpdateMutationGrant{}, false, err
 		}
 		return publicSystemUpdateMutationGrant(grant), true, nil
+	}
+	if isSystemUpdatePortV2(job) {
+		if err := consumeMariaDBSystemUpdatePortV2(ctx, tx, job, binding.Operation, now); err != nil {
+			return SystemUpdateMutationGrant{}, false, err
+		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE system_update_mutation_grants SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL`, now, grant.ID)
 	if err != nil {
@@ -357,12 +409,14 @@ const systemUpdateMutationGrantSelect = `SELECT
   docker_approved_compose_config_sha256, docker_approved_compose_revision,
   docker_expected_version_env_sha256, docker_expected_container_id,
   docker_expected_image_id, docker_expected_repository_digest,
-  expires_at, consumed_at, created_at
+  expires_at, consumed_at, created_at,
+  (SELECT plan_json FROM system_update_port_transactions p WHERE p.job_id=system_update_mutation_grants.job_id)
 FROM system_update_mutation_grants`
 
 func scanSystemUpdateMutationGrant(row systemUpdateScanner) (SystemUpdateMutationGrant, error) {
 	var grant SystemUpdateMutationGrant
 	var consumedAt sql.NullTime
+	var portPlanJSON sql.NullString
 	var (
 		targetServiceType                                                sql.NullString
 		jobOperation, networkNamespace, protocol                         sql.NullString
@@ -397,7 +451,7 @@ func scanSystemUpdateMutationGrant(row systemUpdateScanner) (SystemUpdateMutatio
 		&dockerApprovedComposeSHA256, &dockerApprovedComposeRevision,
 		&dockerExpectedVersionEnvSHA256, &dockerExpectedContainerID,
 		&dockerExpectedImageID, &dockerExpectedRepositoryDigest,
-		&grant.ExpiresAt, &consumedAt, &grant.CreatedAt)
+		&grant.ExpiresAt, &consumedAt, &grant.CreatedAt, &portPlanJSON)
 	if err != nil {
 		return SystemUpdateMutationGrant{}, err
 	}
@@ -442,11 +496,18 @@ func scanSystemUpdateMutationGrant(row systemUpdateScanner) (SystemUpdateMutatio
 	if consumedAt.Valid {
 		grant.ConsumedAt = &consumedAt.Time
 	}
+	if portPlanJSON.Valid {
+		var plan SystemUpdatePortReconfiguration
+		if json.Unmarshal([]byte(portPlanJSON.String), &plan) != nil || plan.PortContractVersion != 2 {
+			return SystemUpdateMutationGrant{}, ErrSystemUpdatePortPolicySnapshotUnavailable
+		}
+		grant.Binding.PortReconfigure = &plan
+	}
 	return grant, nil
 }
 
 func systemUpdateMutationGrantPortSQLValues(port *SystemUpdatePortReconfiguration) []any {
-	if port == nil {
+	if port == nil || port.PortContractVersion == 2 {
 		return make([]any, 28)
 	}
 	values := []any{
@@ -544,7 +605,7 @@ func validateSystemUpdateMutationGrantBinding(binding SystemUpdateMutationGrantB
 				binding.PortReconfigure,
 				binding.DeploymentMode,
 			) != nil ||
-			binding.PortReconfigure.PortPlanSHA256 != binding.PlanSHA256 {
+			(binding.PortReconfigure.PortContractVersion != 2 && binding.PortReconfigure.PortPlanSHA256 != binding.PlanSHA256) {
 			return ErrInvalidSystemUpdate
 		}
 	default:
@@ -554,6 +615,13 @@ func validateSystemUpdateMutationGrantBinding(binding SystemUpdateMutationGrantB
 }
 
 func authorizeSystemUpdateMutationGrantIssue(job SystemUpdateJob, params IssueSystemUpdateMutationGrantParams, now time.Time) error {
+	if isSystemUpdatePortV2(job) {
+		if job.portTransaction == nil || job.PortResult != nil || systemUpdatePortV2NoOp(job) ||
+			params.Binding.Operation == SystemUpdateMutationOperationPortReconfigure && (job.portTransaction.Phase != "created" || job.RecoveryRequired) ||
+			params.Binding.Operation == SystemUpdateMutationOperationPortReconfigureReconcile && job.portTransaction.Phase != "consumed" && job.portTransaction.Phase != "rollback_latched" {
+			return ErrSystemUpdateAuthorizationState
+		}
+	}
 	if params.ProtocolVersion == 2 {
 		if job.Status != SystemUpdateStatusInstalling && job.Status != SystemUpdateStatusReconciling {
 			return ErrSystemUpdateAuthorizationState
@@ -617,7 +685,7 @@ func sameSystemUpdateMutationGrantBinding(left, right SystemUpdateMutationGrantB
 	if leftPort == nil || rightPort == nil {
 		return leftPort == rightPort
 	}
-	return *leftPort == *rightPort
+	return sameSystemUpdatePortReconfigurationIntent(leftPort, rightPort)
 }
 
 func systemUpdateMutationGrantBindingMatchesJob(binding SystemUpdateMutationGrantBinding, job SystemUpdateJob) bool {
@@ -648,6 +716,9 @@ func systemUpdateMutationGrantBindingMatchesJob(binding SystemUpdateMutationGran
 			return false
 		}
 		runtimeSHA256, err := computeSystemUpdatePortRuntimePlanSHA256(job, binding.SessionID)
+		if isSystemUpdatePortV2(job) {
+			return err == nil && binding.PlanSHA256 == runtimeSHA256 && binding.PortReconfigure.PortPlanSHA256 == job.PortReconfigure.PortPlanSHA256
+		}
 		return err == nil &&
 			binding.PlanSHA256 == runtimeSHA256 &&
 			binding.PortReconfigure.PortPlanSHA256 == runtimeSHA256
@@ -694,6 +765,9 @@ func sameSystemUpdateMutationGrantPortSnapshot(
 }
 
 func computeSystemUpdatePortRuntimePlanSHA256(job SystemUpdateJob, sessionID string) (string, error) {
+	if isSystemUpdatePortV2(job) {
+		return contracts.ComputeSystemUpdatePortRuntimePlanSHA256(systemUpdatePortContractsPlan(job.PortReconfigure), job.ID, job.ExecutionHostID, job.TargetID, job.TargetServiceType, job.OwnershipEpoch, uint64(job.LeaseGeneration), sessionID)
+	}
 	if job.Operation != SystemUpdateOperationPortReconfigure ||
 		job.PortReconfigure == nil ||
 		job.LeaseGeneration <= 0 ||

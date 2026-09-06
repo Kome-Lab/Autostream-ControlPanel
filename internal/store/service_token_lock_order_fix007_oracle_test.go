@@ -2151,7 +2151,7 @@ func mariaDBFIX008PolicyMutationMatrix() []mariaDBFIX008PolicyMutationCase {
 			},
 		},
 		{
-			name: "multiple active policies", diagnosticField: "host.host-1.active_policy_count",
+			name: "multiple active policies", diagnosticField: "host.host-1.active_policy_binding",
 			mutate: func(actual *mariaDBFIX007OwnershipSemanticSnapshot) {
 				actual.services["second-pull-agent"] = RegisteredService{
 					ServiceID: "second-pull-agent", ServiceType: "update_agent",
@@ -2222,7 +2222,7 @@ func mariaDBFIX008PolicyMutationMatrix() []mariaDBFIX008PolicyMutationCase {
 			},
 		},
 		{
-			name: "wrong active policy binding", diagnosticField: "host.host-1.active_policy_binding",
+			name: "active owner policy missing", diagnosticField: "host.host-1.policy_revision_closure",
 			mutate: func(actual *mariaDBFIX007OwnershipSemanticSnapshot) {
 				host := actual.hosts["host-1"]
 				host.AgentServiceID = "legacy-agent"
@@ -2907,7 +2907,7 @@ func TestMariaDBFIX008OracleInventorySelfCheck(t *testing.T) {
 		"service.pull-agent.current_token_id",
 		"service.pull-agent.staged_previous_token_id",
 		"service.pull-agent.staged_token_id",
-		"host.host-1.active_policy_count",
+		"host.host-1.policy_revision_closure",
 		"policy.pull-agent.updater_id",
 		"policy.pull-agent.revision",
 		"policy.pull-agent.projection_revision",

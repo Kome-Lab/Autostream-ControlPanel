@@ -53,37 +53,41 @@ var (
 )
 
 type SystemUpdateJob struct {
-	ID                  string                           `json:"id"`
-	TargetID            string                           `json:"target_id"`
-	TargetServiceType   string                           `json:"target_type"`
-	Operation           string                           `json:"operation"`
-	PortReconfigure     *SystemUpdatePortReconfiguration `json:"port_reconfigure,omitempty"`
-	DeploymentMode      string                           `json:"deployment_mode"`
-	CurrentVersion      string                           `json:"current_version"`
-	TargetVersion       string                           `json:"target_version"`
-	Strategy            string                           `json:"strategy"`
-	Status              string                           `json:"status"`
-	IdempotencyKey      string                           `json:"idempotency_key"`
-	RequestedByUserID   string                           `json:"-"`
-	RequestedByUsername string                           `json:"requested_by,omitempty"`
-	AgentServiceID      string                           `json:"updater_id,omitempty"`
-	ExecutionHostID     string                           `json:"host_id"`
-	TransportMode       string                           `json:"transport_mode"`
-	OwnershipEpoch      int64                            `json:"ownership_epoch"`
-	PolicyRevision      int64                            `json:"policy_revision"`
-	LeaseGeneration     int64                            `json:"lease_generation"`
-	LeaseExpiresAt      *time.Time                       `json:"lease_expires_at,omitempty"`
-	Sequence            int64                            `json:"sequence"`
-	Progress            int                              `json:"progress"`
-	Code                string                           `json:"code,omitempty"`
-	Message             string                           `json:"message,omitempty"`
-	ArtifactDigest      string                           `json:"artifact_digest,omitempty"`
-	PreviousDigest      string                           `json:"previous_digest,omitempty"`
-	CreatedAt           time.Time                        `json:"created_at"`
-	UpdatedAt           time.Time                        `json:"updated_at"`
-	ClaimedAt           *time.Time                       `json:"claimed_at,omitempty"`
-	CompletedAt         *time.Time                       `json:"completed_at,omitempty"`
-	CancelledAt         *time.Time                       `json:"canceled_at,omitempty"`
+	ID                      string                           `json:"id"`
+	TargetID                string                           `json:"target_id"`
+	TargetServiceType       string                           `json:"target_type"`
+	Operation               string                           `json:"operation"`
+	PortReconfigure         *SystemUpdatePortReconfiguration `json:"port_reconfigure,omitempty"`
+	PortResult              *SystemUpdatePortResultV2        `json:"port_result,omitempty"`
+	RecoveryRequired        bool                             `json:"recovery_required,omitempty"`
+	LastRecoveryObservation *SystemUpdatePortResultV2        `json:"last_recovery_observation,omitempty"`
+	portTransaction         *systemUpdatePortTransaction
+	DeploymentMode          string     `json:"deployment_mode"`
+	CurrentVersion          string     `json:"current_version"`
+	TargetVersion           string     `json:"target_version"`
+	Strategy                string     `json:"strategy"`
+	Status                  string     `json:"status"`
+	IdempotencyKey          string     `json:"idempotency_key"`
+	RequestedByUserID       string     `json:"-"`
+	RequestedByUsername     string     `json:"requested_by,omitempty"`
+	AgentServiceID          string     `json:"updater_id,omitempty"`
+	ExecutionHostID         string     `json:"host_id"`
+	TransportMode           string     `json:"transport_mode"`
+	OwnershipEpoch          int64      `json:"ownership_epoch"`
+	PolicyRevision          int64      `json:"policy_revision"`
+	LeaseGeneration         int64      `json:"lease_generation"`
+	LeaseExpiresAt          *time.Time `json:"lease_expires_at,omitempty"`
+	Sequence                int64      `json:"sequence"`
+	Progress                int        `json:"progress"`
+	Code                    string     `json:"code,omitempty"`
+	Message                 string     `json:"message,omitempty"`
+	ArtifactDigest          string     `json:"artifact_digest,omitempty"`
+	PreviousDigest          string     `json:"previous_digest,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+	ClaimedAt               *time.Time `json:"claimed_at,omitempty"`
+	CompletedAt             *time.Time `json:"completed_at,omitempty"`
+	CancelledAt             *time.Time `json:"canceled_at,omitempty"`
 
 	leaseTokenHash string
 }
@@ -115,6 +119,7 @@ type SystemUpdateClaim struct {
 }
 
 type SystemUpdateReport struct {
+	PortResult      *SystemUpdatePortResultV2
 	ProtocolVersion int
 	AgentServiceID  string
 	ExecutionHostID string
@@ -224,7 +229,7 @@ func (s *MariaDBSystemUpdateStore) InspectSystemUpdateActiveJob(ctx context.Cont
 	if job.AgentServiceID != agentServiceID {
 		return SystemUpdateJob{}, false, ErrSystemUpdateOwnershipConflict
 	}
-	if isExecutingSystemUpdateStatus(job.Status) {
+	if isExecutingSystemUpdateStatus(job.Status) || systemUpdatePortV2Recoverable(job) {
 		return job, false, nil
 	}
 	if !isTerminalSystemUpdateStatus(job.Status) {
@@ -299,6 +304,17 @@ func (s *MariaDBSystemUpdateStore) CreateSystemUpdateJob(ctx context.Context, pa
 	if !errors.Is(err, sql.ErrNoRows) {
 		return SystemUpdateJob{}, false, err
 	}
+	var portHold string
+	err = tx.QueryRowContext(ctx, `SELECT j.id FROM system_update_jobs j
+JOIN system_update_port_transactions p ON p.job_id=j.id
+WHERE j.execution_host_id=? AND (j.status NOT IN ('succeeded','rolled_back','failed','canceled') OR p.recovery_required=1)
+ORDER BY j.id LIMIT 1 FOR UPDATE`, params.ExecutionHostID).Scan(&portHold)
+	if err == nil {
+		return SystemUpdateJob{}, false, ErrSystemUpdateExecutionHostBusy
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return SystemUpdateJob{}, false, err
+	}
 	var activeRotationID string
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_runtime_token_rotations
@@ -352,11 +368,21 @@ func (s *MariaDBSystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id
 	if id == "" || strings.TrimSpace(actorUserID) == "" {
 		return SystemUpdateJob{}, ErrInvalidSystemUpdate
 	}
+	hostID, err := s.systemUpdateJobExecutionHost(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SystemUpdateJob{}, ErrNotFound
+	}
+	if err != nil {
+		return SystemUpdateJob{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateJob{}, err
 	}
 	defer tx.Rollback()
+	if _, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, hostID); err != nil {
+		return SystemUpdateJob{}, err
+	}
 	job, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE id = ? FOR UPDATE`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SystemUpdateJob{}, ErrNotFound
@@ -385,6 +411,10 @@ func (s *MariaDBSystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id
 	job.CancelledAt = &now
 	job.CompletedAt = &now
 	job.UpdatedAt = now
+	if isSystemUpdatePortV2(job) {
+		job.portTransaction.Phase = "canceled"
+		projectSystemUpdatePortTransaction(&job)
+	}
 	return job, nil
 }
 
@@ -434,7 +464,7 @@ func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, age
 		if job.AgentServiceID != agentServiceID {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
 		}
-		if !isExecutingSystemUpdateStatus(job.Status) {
+		if !isExecutingSystemUpdateStatus(job.Status) && !(v2 && systemUpdatePortV2Recoverable(job)) {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateRecoveryProofUnavailable
 		}
 		if job.ExecutionHostID != executionHostID {
@@ -477,6 +507,11 @@ func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, age
 	}
 	if err := authorizeSystemUpdateJobOwnership(job, ownership, agentServiceID, executionHostID); err != nil {
 		return SystemUpdateClaim{}, false, err
+	}
+	if isSystemUpdatePortV2(job) {
+		if _, _, err := lockMariaDBPortV2State(ctx, tx, job); err != nil {
+			return SystemUpdateClaim{}, false, err
+		}
 	}
 	leaseToken, err := newSystemUpdateLeaseToken()
 	if err != nil {
@@ -560,6 +595,9 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 		if !systemUpdateReportLeaseMatches(job, report, now, false) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateLeaseInvalid
 		}
+		if isSystemUpdatePortV2(job) && job.PortResult != nil && report.Sequence >= job.Sequence && report.Sequence <= job.Sequence+1 && systemUpdatePortV2AcceptedReplay(job, report) {
+			return job, false, nil
+		}
 		if report.Sequence != job.Sequence || !sameSystemUpdateReport(job, report) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateSequenceStale
 		}
@@ -586,7 +624,7 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 		job.UpdatedAt = now
 		return job, false, nil
 	}
-	if !allowedSystemUpdateTransition(job.Status, report.Status) || report.Progress < job.Progress {
+	if !allowedSystemUpdateJobTransition(job, report.Status) || report.Progress < job.Progress {
 		return SystemUpdateJob{}, false, ErrSystemUpdateTransition
 	}
 	terminal := isTerminalSystemUpdateStatus(report.Status)
@@ -595,7 +633,11 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 	if terminal {
 		leaseExpires = nil
 		completedAt = now
-		if job.Operation == SystemUpdateOperationPortReconfigure {
+		if isSystemUpdatePortV2(job) {
+			if err := finishMariaDBSystemUpdatePortV2(ctx, tx, &job, report, now); err != nil {
+				return SystemUpdateJob{}, false, err
+			}
+		} else if job.Operation == SystemUpdateOperationPortReconfigure {
 			if err := applyMariaDBSystemdPortTerminalState(
 				ctx, tx, job, report.PortReconfigure.Result, now,
 			); err != nil {
@@ -614,9 +656,11 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeSystemUpdatePortCommit(ctx, job, report.Status, SystemUpdatePortBeforeCommit)
 	if err := tx.Commit(); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeSystemUpdatePortCommit(ctx, job, report.Status, SystemUpdatePortAfterCommit)
 	job.Status = report.Status
 	job.Sequence = report.Sequence
 	job.Progress = report.Progress
@@ -626,7 +670,7 @@ func (s *MariaDBSystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id
 	job.PreviousDigest = report.PreviousDigest
 	job.UpdatedAt = now
 	if terminal {
-		if job.Operation == SystemUpdateOperationPortReconfigure {
+		if job.Operation == SystemUpdateOperationPortReconfigure && !isSystemUpdatePortV2(job) {
 			job.PortReconfigure.Result = report.PortReconfigure.Result
 		}
 		job.LeaseExpiresAt = nil
@@ -782,7 +826,7 @@ execution_host_id, transport_mode, ownership_epoch, policy_revision,
 lease_generation, COALESCE(lease_token_hash, ''), lease_expires_at, sequence, progress,
 COALESCE(code, ''), COALESCE(message, ''), COALESCE(artifact_digest, ''),
 COALESCE(previous_digest, ''), created_at, updated_at, claimed_at, completed_at,
-cancelled_at FROM system_update_jobs`
+cancelled_at, port_contract_version, ` + systemUpdatePortTransactionProjection + ` FROM system_update_jobs`
 
 type systemUpdateScanner interface {
 	Scan(dest ...any) error
@@ -790,6 +834,8 @@ type systemUpdateScanner interface {
 
 func scanSystemUpdateJob(row systemUpdateScanner) (SystemUpdateJob, error) {
 	var job SystemUpdateJob
+	var portTransactionJSON sql.NullString
+	var portContractVersion sql.NullInt64
 	var leaseExpiresAt, claimedAt, completedAt, cancelledAt sql.NullTime
 	var (
 		networkNamespace, protocol, expectedConfigSHA256, targetConfigSHA256 sql.NullString
@@ -828,7 +874,7 @@ func scanSystemUpdateJob(row systemUpdateScanner) (SystemUpdateJob, error) {
 		&job.PolicyRevision, &job.LeaseGeneration, &job.leaseTokenHash,
 		&leaseExpiresAt, &job.Sequence, &job.Progress, &job.Code, &job.Message,
 		&job.ArtifactDigest, &job.PreviousDigest, &job.CreatedAt, &job.UpdatedAt,
-		&claimedAt, &completedAt, &cancelledAt,
+		&claimedAt, &completedAt, &cancelledAt, &portContractVersion, &portTransactionJSON,
 	)
 	if err != nil {
 		return SystemUpdateJob{}, err
@@ -885,6 +931,13 @@ func scanSystemUpdateJob(row systemUpdateScanner) (SystemUpdateJob, error) {
 	if cancelledAt.Valid {
 		job.CancelledAt = &cancelledAt.Time
 	}
+	if portContractVersion.Valid && (portContractVersion.Int64 != 2 || job.Operation != SystemUpdateOperationPortReconfigure || !portTransactionJSON.Valid) ||
+		!portContractVersion.Valid && portTransactionJSON.Valid {
+		return SystemUpdateJob{}, ErrSystemUpdatePortPolicySnapshotUnavailable
+	}
+	if err := decodeSystemUpdatePortTransaction(&job, portTransactionJSON.String); err != nil {
+		return SystemUpdateJob{}, err
+	}
 	return job, nil
 }
 
@@ -903,7 +956,7 @@ func (s *MariaDBSystemUpdateStore) getSystemUpdateByIdempotency(ctx context.Cont
 }
 
 func (s *MariaDBSystemUpdateStore) getActiveSystemUpdateForTarget(ctx context.Context, targetID string) (SystemUpdateJob, error) {
-	job, err := scanSystemUpdateJob(s.db.QueryRowContext(ctx, systemUpdateSelect+` WHERE active_target_id = ?`, targetID))
+	job, err := scanSystemUpdateJob(s.db.QueryRowContext(ctx, systemUpdateSelect+` WHERE target_id = ? AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions p WHERE p.job_id=system_update_jobs.id AND p.recovery_required=1)) ORDER BY created_at LIMIT 1`, targetID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SystemUpdateJob{}, ErrNotFound
 	}
@@ -1027,7 +1080,7 @@ func authorizeSystemUpdateJobOwnership(job SystemUpdateJob, ownership SystemUpda
 		job.ExecutionHostID != executionHostID ||
 		transportMode != ownership.TransportMode ||
 		job.OwnershipEpoch != ownership.OwnershipEpoch ||
-		job.PolicyRevision != ownership.PolicyRevision {
+		(!isSystemUpdatePortV2(job) && job.PolicyRevision != ownership.PolicyRevision || isSystemUpdatePortV2(job) && !systemUpdatePortV2OwnershipMatches(job, ownership)) {
 		return ErrSystemUpdateOwnershipConflict
 	}
 	if ownership.OwnershipEpoch > 0 &&
@@ -1222,6 +1275,9 @@ func sameSystemUpdateRequest(job SystemUpdateJob, params CreateSystemUpdateJobPa
 }
 
 func sameSystemUpdateReport(job SystemUpdateJob, report SystemUpdateReport) bool {
+	if isSystemUpdatePortV2(job) {
+		return job.Status == report.Status && job.Progress == report.Progress && job.Code == report.Code && job.Message == report.Message && job.ArtifactDigest == report.ArtifactDigest && job.PreviousDigest == report.PreviousDigest && sameSystemUpdatePortV2Report(job, report)
+	}
 	return job.Status == report.Status && job.Progress == report.Progress && job.Code == report.Code && job.Message == report.Message && job.ArtifactDigest == report.ArtifactDigest && job.PreviousDigest == report.PreviousDigest &&
 		sameSystemUpdatePortReconfigurationResult(job.PortReconfigure, report.PortReconfigure)
 }

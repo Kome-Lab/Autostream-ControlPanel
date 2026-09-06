@@ -306,7 +306,7 @@ FOR UPDATE`, params.ExecutionHostID,
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, params.ExecutionHostID).Scan(&activeJobID)
@@ -528,7 +528,7 @@ func (s *MariaDBSystemUpdateStore) ClaimSystemUpdateRuntimeTokenRotationStagedCr
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
@@ -874,7 +874,7 @@ func (s *MariaDBSystemUpdateStore) MarkSystemUpdateRuntimeTokenRotationLocalStag
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
@@ -1061,7 +1061,7 @@ func (s *MariaDBSystemUpdateStore) ProveSystemUpdateRuntimeTokenRotationHeartbea
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)
@@ -1554,7 +1554,7 @@ func (s *MariaDBSystemUpdateStore) AcknowledgeSystemUpdateRuntimeTokenRotationCa
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, rotation.ExecutionHostID).Scan(&activeJobID)

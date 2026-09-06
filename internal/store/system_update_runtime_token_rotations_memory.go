@@ -100,7 +100,7 @@ func (s *MemorySystemUpdateStore) StageSystemUpdateRuntimeTokenRotation(
 		return StageSystemUpdateRuntimeTokenRotationResult{}, ErrSystemUpdateRuntimeTokenRotationBusy
 	}
 	for _, job := range s.jobs {
-		if job.ExecutionHostID == params.ExecutionHostID && !isTerminalSystemUpdateStatus(job.Status) {
+		if job.ExecutionHostID == params.ExecutionHostID && systemUpdateJobHoldsHost(job) {
 			return StageSystemUpdateRuntimeTokenRotationResult{}, ErrSystemUpdateExecutionHostBusy
 		}
 	}
@@ -252,7 +252,7 @@ func (s *MemorySystemUpdateStore) ClaimSystemUpdateRuntimeTokenRotationStagedCre
 	}
 	for _, job := range s.jobs {
 		if job.ExecutionHostID == rotation.ExecutionHostID &&
-			!isTerminalSystemUpdateStatus(job.Status) {
+			systemUpdateJobHoldsHost(job) {
 			return ClaimSystemUpdateRuntimeTokenRotationStagedCredentialResult{},
 				ErrSystemUpdateExecutionHostBusy
 		}
@@ -398,7 +398,7 @@ func (s *MemorySystemUpdateStore) MarkSystemUpdateRuntimeTokenRotationLocalStage
 	}
 	for _, job := range s.jobs {
 		if job.ExecutionHostID == rotation.ExecutionHostID &&
-			!isTerminalSystemUpdateStatus(job.Status) {
+			systemUpdateJobHoldsHost(job) {
 			return SystemUpdateRuntimeTokenRotation{}, false, ErrSystemUpdateExecutionHostBusy
 		}
 	}
@@ -513,7 +513,7 @@ func (s *MemorySystemUpdateStore) ProveSystemUpdateRuntimeTokenRotationHeartbeat
 	}
 	for _, job := range s.jobs {
 		if job.ExecutionHostID == rotation.ExecutionHostID &&
-			!isTerminalSystemUpdateStatus(job.Status) {
+			systemUpdateJobHoldsHost(job) {
 			return SystemUpdateRuntimeTokenRotation{}, false,
 				ErrSystemUpdateExecutionHostBusy
 		}
@@ -815,7 +815,7 @@ func (s *MemorySystemUpdateStore) AcknowledgeSystemUpdateRuntimeTokenRotationCan
 	}
 	for _, job := range s.jobs {
 		if job.ExecutionHostID == rotation.ExecutionHostID &&
-			!isTerminalSystemUpdateStatus(job.Status) {
+			systemUpdateJobHoldsHost(job) {
 			return SystemUpdateRuntimeTokenRotation{}, false,
 				ErrSystemUpdateExecutionHostBusy
 		}

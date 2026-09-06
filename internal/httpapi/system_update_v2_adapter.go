@@ -180,6 +180,16 @@ func (s *Server) systemUpdateV2Intent(ctx context.Context, job store.SystemUpdat
 			},
 		}
 	case store.SystemUpdateOperationPortReconfigure:
+		if job.PortReconfigure != nil && job.PortReconfigure.PortContractVersion == 2 {
+			plan := systemUpdateV2PortPlan(job.PortReconfigure)
+			if contracts.ValidateSystemUpdatePortPlan(*plan) != nil {
+				return contracts.UpdaterTargetIdentity{}, 0, contracts.UpdaterDesiredOperation{}, errors.New("updater v2 port intent is incomplete")
+			}
+			target.ExpectedConfigRevision = plan.Before.ConfigRevision
+			desiredRevision = plan.Target.ConfigRevision
+			desired = contracts.UpdaterDesiredOperation{Operation: contracts.UpdaterDesiredPortReconfigure, PortReconfigure: plan}
+			break
+		}
 		if job.PortReconfigure == nil || job.PortReconfigure.ExpectedConfigRevision < 1 || job.PortReconfigure.TargetConfigRevision < 1 {
 			return contracts.UpdaterTargetIdentity{}, 0, contracts.UpdaterDesiredOperation{}, errors.New("updater v2 port intent is incomplete")
 		}
@@ -208,6 +218,14 @@ func (s *Server) systemUpdateV2TargetService(ctx context.Context, targetID strin
 func systemUpdateV2PortPlan(plan *store.SystemUpdatePortReconfiguration) *contracts.SystemUpdatePortReconfiguration {
 	if plan == nil {
 		return nil
+	}
+	if plan.PortContractVersion == 2 {
+		payload, err := json.Marshal(plan)
+		var projected contracts.SystemUpdatePortReconfiguration
+		if err != nil || json.Unmarshal(payload, &projected) != nil {
+			return nil
+		}
+		return &projected
 	}
 	mapped := &contracts.SystemUpdatePortReconfiguration{
 		NetworkNamespace:               plan.NetworkNamespace,
@@ -378,7 +396,7 @@ func mapSystemUpdateV2Report(job store.SystemUpdateJob, lease contracts.UpdaterL
 		return store.SystemUpdateReport{}, errors.New("decode updater v2 result")
 	}
 	sequence := job.Sequence + 1
-	if systemUpdateStatusTerminal(job.Status) {
+	if systemUpdateStatusTerminal(job.Status) && !(job.RecoveryRequired && job.PortResult == nil) {
 		sequence = job.Sequence
 	}
 	progress := 100
@@ -408,6 +426,17 @@ func mapSystemUpdateV2Report(job store.SystemUpdateJob, lease contracts.UpdaterL
 		Message:         message,
 		ArtifactDigest:  artifact,
 		PreviousDigest:  previous,
+	}
+	if job.Operation == store.SystemUpdateOperationPortReconfigure && job.PortReconfigure != nil && job.PortReconfigure.PortContractVersion == 2 {
+		if result.PortReconfigure != nil {
+			payload, err := json.Marshal(result.PortReconfigure)
+			var typed store.SystemUpdatePortResultV2
+			if err != nil || json.Unmarshal(payload, &typed) != nil {
+				return store.SystemUpdateReport{}, errors.New("map updater v2 typed port result")
+			}
+			report.PortResult = &typed
+		}
+		return report, nil
 	}
 	if job.Operation == store.SystemUpdateOperationPortReconfigure && result.Outcome != contracts.UpdaterOutcomeAmbiguous {
 		portResult := store.SystemUpdatePortReconfigurationApplied
@@ -495,6 +524,9 @@ func writeSystemUpdateV2OwnershipError(w http.ResponseWriter, err error) {
 }
 
 func writeSystemUpdateV2ReportError(w http.ResponseWriter, err error) {
+	if writeSystemUpdatePortV2Error(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "system_update_job_not_found"})

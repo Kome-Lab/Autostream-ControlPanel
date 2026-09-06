@@ -196,7 +196,9 @@ func systemUpdateV2StoreGrantBinding(job store.SystemUpdateJob, binding contract
 			return store.SystemUpdateMutationGrantBinding{}, err
 		}
 		port = cloneSystemUpdateV2StorePortPlan(job.PortReconfigure)
-		port.PortPlanSHA256 = planSHA256
+		if port.PortContractVersion != 2 {
+			port.PortPlanSHA256 = planSHA256
+		}
 	}
 	if len(planSHA256) != 64 {
 		return store.SystemUpdateMutationGrantBinding{}, systemUpdateV2BindingError("plan digest")

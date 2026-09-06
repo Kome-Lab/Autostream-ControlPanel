@@ -57,6 +57,7 @@ type RegisteredService struct {
 	AppliedEndpoint               *ServiceEndpoint `json:"applied_endpoint,omitempty"`
 	ReportedEndpoint              *ServiceEndpoint `json:"reported_endpoint,omitempty"`
 	EndpointRevision              int64            `json:"endpoint_revision,omitempty"`
+	AppliedEndpointRevision       int64            `json:"applied_endpoint_revision,omitempty"`
 	EndpointStatus                string           `json:"endpoint_status,omitempty"`
 	AppliedConfigRevision         int64            `json:"applied_config_revision,omitempty"`
 	AppliedConfigSHA256           string           `json:"applied_config_sha256,omitempty"`
@@ -195,7 +196,7 @@ COALESCE(host, ''), COALESCE(port, 0), COALESCE(ssl_enabled, 0), public_url,
 COALESCE(transport_mode, ''), COALESCE(execution_host_id, ''), COALESCE(ownership_epoch, 0),
 COALESCE(desired_host, host, ''), COALESCE(desired_port, port, 0), COALESCE(desired_ssl_enabled, ssl_enabled, 0), COALESCE(desired_public_url, public_url, ''),
 COALESCE(reported_api_host, ''), COALESCE(reported_api_port, 0), COALESCE(reported_api_ssl_enabled, 0), COALESCE(reported_api_public_url, ''),
-COALESCE(endpoint_revision, 1), COALESCE(endpoint_status, 'applied'),
+COALESCE(endpoint_revision, 1), COALESCE(applied_endpoint_revision, 0), COALESCE(endpoint_status, 'applied'),
 COALESCE(applied_config_revision, 1), COALESCE(applied_config_sha256, ''),
 version, COALESCE(reported_version, ''), COALESCE(reported_commit, ''), COALESCE(reported_build_date, ''),
 status, last_heartbeat_at, last_reported_at, current_stream_id, capabilities, COALESCE(reported_capabilities, capabilities), metrics, token_id,
@@ -210,7 +211,7 @@ COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.ssl_enabled, 0), s.public_
 COALESCE(s.transport_mode, ''), COALESCE(s.execution_host_id, ''), COALESCE(s.ownership_epoch, 0),
 COALESCE(s.desired_host, s.host, ''), COALESCE(s.desired_port, s.port, 0), COALESCE(s.desired_ssl_enabled, s.ssl_enabled, 0), COALESCE(s.desired_public_url, s.public_url, ''),
 COALESCE(s.reported_api_host, ''), COALESCE(s.reported_api_port, 0), COALESCE(s.reported_api_ssl_enabled, 0), COALESCE(s.reported_api_public_url, ''),
-COALESCE(s.endpoint_revision, 1), COALESCE(s.endpoint_status, 'applied'),
+COALESCE(s.endpoint_revision, 1), COALESCE(s.applied_endpoint_revision, 0), COALESCE(s.endpoint_status, 'applied'),
 COALESCE(s.applied_config_revision, 1), COALESCE(s.applied_config_sha256, ''),
 s.version, COALESCE(s.reported_version, ''), COALESCE(s.reported_commit, ''), COALESCE(s.reported_build_date, ''),
 s.status, s.last_heartbeat_at, s.last_reported_at, s.current_stream_id, s.capabilities, COALESCE(s.reported_capabilities, s.capabilities), s.metrics, s.token_id,
@@ -2511,7 +2512,7 @@ func scanService(row serviceScanner) (RegisteredService, error) {
 		&service.TransportMode, &service.ExecutionHostID, &service.OwnershipEpoch,
 		&desiredEndpoint.Host, &desiredEndpoint.Port, &desiredEndpoint.SSLEnabled, &desiredEndpoint.PublicURL,
 		&reportedEndpoint.Host, &reportedEndpoint.Port, &reportedEndpoint.SSLEnabled, &reportedEndpoint.PublicURL,
-		&service.EndpointRevision, &service.EndpointStatus,
+		&service.EndpointRevision, &service.AppliedEndpointRevision, &service.EndpointStatus,
 		&service.AppliedConfigRevision, &service.AppliedConfigSHA256,
 		&service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate,
 		&service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID,
@@ -2599,7 +2600,7 @@ func scanServiceWithExtraRole(row serviceScanner) (RegisteredService, error) {
 		&service.TransportMode, &service.ExecutionHostID, &service.OwnershipEpoch,
 		&desiredEndpoint.Host, &desiredEndpoint.Port, &desiredEndpoint.SSLEnabled, &desiredEndpoint.PublicURL,
 		&reportedEndpoint.Host, &reportedEndpoint.Port, &reportedEndpoint.SSLEnabled, &reportedEndpoint.PublicURL,
-		&service.EndpointRevision, &service.EndpointStatus,
+		&service.EndpointRevision, &service.AppliedEndpointRevision, &service.EndpointStatus,
 		&service.AppliedConfigRevision, &service.AppliedConfigSHA256,
 		&service.Version, &service.ReportedVersion, &service.ReportedCommit, &service.ReportedBuildDate,
 		&service.Status, &lastHeartbeat, &lastReported, &currentStream, &capabilities, &reportedCapabilities, &metrics, &service.TokenID,

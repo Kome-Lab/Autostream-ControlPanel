@@ -57,7 +57,7 @@ func TestUpdateAgentCannotBeAssignedToStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{ServiceID: "updater-01", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com"}); err != nil {
+	if _, err := auth.PrecreateService(ctx, token, bundle8bPullAgentRegistration("updater-01")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AssignServiceToStream(ctx, "updater-01", "stream-01", "admin"); !errors.Is(err, ErrInvalidServiceAssignment) {
@@ -418,31 +418,31 @@ func TestRotateServiceNodeTokenPreservesSharedLegacyToken(t *testing.T) {
 func TestRotateServiceNodeTokenInvalidatesOutstandingConfigureToken(t *testing.T) {
 	ctx := context.Background()
 	auth := NewMemoryAuthStore()
-	oldToken, err := auth.CreateServiceToken(ctx, "update_agent", []string{"service.register", "service.heartbeat", "updates.claim", "updates.report", "updates.authorize"})
+	oldToken, err := auth.CreateServiceToken(ctx, "worker", []string{"service.register", "service.heartbeat"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "updater-rotate", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Capabilities: map[string]any{}}); err != nil {
+	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "worker-rotate", ServiceType: "worker", ServiceName: "Worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.Heartbeat(ctx, oldToken, ServiceHeartbeat{
-		ServiceID: "updater-rotate", Status: "online", Capabilities: map[string]any{"generation": "old"},
+		ServiceID: "worker-rotate", Status: "online", Capabilities: map[string]any{"generation": "old"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	configureToken := "outstanding-configure-token"
-	if _, err := auth.SetServiceConfigureToken(ctx, "updater-rotate", security.HashToken(configureToken), time.Now().UTC().Add(time.Hour)); err != nil {
+	if _, err := auth.SetServiceConfigureToken(ctx, "worker-rotate", security.HashToken(configureToken), time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := auth.RotateServiceNodeToken(ctx, "updater-rotate", oldToken.ID, func(string) (string, string, error) {
+	if _, _, err := auth.RotateServiceNodeToken(ctx, "worker-rotate", oldToken.ID, func(string) (string, string, error) {
 		return "new-ciphertext", "new-nonce", nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.ConsumeServiceConfigureToken(ctx, "updater-rotate", configureToken, time.Now().UTC()); !errors.Is(err, ErrUnauthorized) {
+	if _, err := auth.ConsumeServiceConfigureToken(ctx, "worker-rotate", configureToken, time.Now().UTC()); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("outstanding configure token survived runtime rotation: %v", err)
 	}
-	service, err := auth.GetService(ctx, "updater-rotate")
+	service, err := auth.GetService(ctx, "worker-rotate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,12 +464,7 @@ func TestRevokeServiceTokenClearsRuntimeReadinessAndRejectsPreviouslyAuthenticat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{
-		ServiceID:   "updater-revoke",
-		ServiceType: "update_agent",
-		ServiceName: "Updater",
-		PublicURL:   "https://updater.example.com",
-	}); err != nil {
+	if _, err := auth.PrecreateService(ctx, token, bundle8bPullAgentRegistration("updater-revoke")); err != nil {
 		t.Fatal(err)
 	}
 	authenticated, err := auth.AuthenticateServiceToken(
@@ -815,7 +810,7 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "updater-staged", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Capabilities: map[string]any{}}); err != nil {
+	if _, err := auth.PrecreateService(ctx, oldToken, bundle8bPullAgentRegistration("updater-staged")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.Heartbeat(ctx, oldToken, ServiceHeartbeat{
@@ -1145,13 +1140,7 @@ func createMemoryFIX010UpdateAgentService(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(t.Context(), token, ServiceRegistration{
-		ServiceID:    serviceID,
-		ServiceType:  "update_agent",
-		ServiceName:  serviceID,
-		PublicURL:    "https://" + serviceID + ".example.com",
-		Capabilities: map[string]any{},
-	}); err != nil {
+	if _, err := auth.PrecreateService(t.Context(), token, bundle8bPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	return token
@@ -1372,12 +1361,7 @@ func TestConsumedUpdateAgentConfigureTokenIsNotActivationReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	const serviceID = "updater-consumed-configure-token"
-	if _, err := auth.PrecreateService(ctx, token, ServiceRegistration{
-		ServiceID:   serviceID,
-		ServiceType: "update_agent",
-		ServiceName: "Updater",
-		PublicURL:   "https://updater.example.com",
-	}); err != nil {
+	if _, err := auth.PrecreateService(ctx, token, bundle8bPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 3, 10, 0, 0, time.UTC)
@@ -1413,10 +1397,7 @@ func TestUpdateAgentConfigurationRejectsLegacyScopesBeforeStageOrActivation(t *t
 		t.Fatal(err)
 	}
 	const serviceID = "updater-legacy-scope"
-	if _, err := auth.PrecreateService(ctx, legacyToken, ServiceRegistration{
-		ServiceID: serviceID, ServiceType: "update_agent", ServiceName: "Legacy Updater",
-		PublicURL: "https://legacy-updater.example.com",
-	}); err != nil {
+	if _, err := auth.PrecreateService(ctx, legacyToken, bundle8bPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 3, 20, 0, 0, time.UTC)
@@ -1509,7 +1490,7 @@ func TestUpdateAgentConfigurationRejectsExpiredActivationWithoutChangingActiveTo
 		t.Fatal(err)
 	}
 	const serviceID = "updater-expired-stage"
-	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: serviceID, ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Capabilities: map[string]any{}}); err != nil {
+	if _, err := auth.PrecreateService(ctx, oldToken, bundle8bPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 3, 30, 0, 0, time.UTC)
@@ -1541,7 +1522,7 @@ func TestRegeneratingConfigureTokenRetainsPendingTombstoneAndInvalidatesOldStage
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{ServiceID: "updater-restage", ServiceType: "update_agent", ServiceName: "Updater", PublicURL: "https://updater.example.com", Capabilities: map[string]any{}}); err != nil {
+	if _, err := auth.PrecreateService(ctx, oldToken, bundle8bPullAgentRegistration("updater-restage")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 4, 0, 0, 0, time.UTC)

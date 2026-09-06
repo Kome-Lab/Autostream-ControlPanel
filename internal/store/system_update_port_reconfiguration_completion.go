@@ -150,6 +150,15 @@ func rollbackMariaDBQueuedSystemdPortJob(
 	job SystemUpdateJob,
 	now time.Time,
 ) error {
+	if isSystemUpdatePortV2(job) {
+		if err := cancelMariaDBSystemUpdatePortV2(ctx, tx, job, now); err != nil {
+			return err
+		}
+		after := job
+		after.portTransaction = cloneSystemUpdatePortTransaction(job.portTransaction)
+		after.portTransaction.Phase = "canceled"
+		return saveMariaDBSystemUpdatePortTransaction(ctx, tx, job, after, now)
+	}
 	target, current, pending, err := lockMariaDBSystemdPortPendingState(ctx, tx, job)
 	if err != nil {
 		return err
@@ -369,6 +378,11 @@ FOR UPDATE`,
 func systemUpdatePortReservationTransition(
 	job SystemUpdateJob,
 ) (oldPort, newPort int, changes bool, err error) {
+	if isSystemUpdatePortV2(job) {
+		oldPort = job.PortReconfigure.Before.LocalListenPort
+		newPort = job.PortReconfigure.Target.LocalListenPort
+		return oldPort, newPort, oldPort != newPort, nil
+	}
 	if job.PortReconfigure == nil {
 		return 0, 0, false, ErrInvalidSystemUpdate
 	}

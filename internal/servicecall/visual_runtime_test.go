@@ -15,9 +15,8 @@ func TestDiscordResolvedTargetV2PayloadRequiresExactReportedCapability(t *testin
 	for _, test := range []struct {
 		name         string
 		capabilities map[string]any
-		wantV2       bool
 	}{
-		{name: "actual true", capabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}, wantV2: true},
+		{name: "actual true", capabilities: map[string]any{CapabilityDiscordResolvedTargetV2: true}},
 		{name: "absent", capabilities: map[string]any{}},
 		{name: "false", capabilities: map[string]any{CapabilityDiscordResolvedTargetV2: false}},
 		{name: "wrong type", capabilities: map[string]any{CapabilityDiscordResolvedTargetV2: "true"}},
@@ -35,18 +34,12 @@ func TestDiscordResolvedTargetV2PayloadRequiresExactReportedCapability(t *testin
 			_, hasGuild := payload["guild_id"]
 			_, hasVoice := payload["voice_channel_id"]
 			_, hasText := payload["text_channel_id"]
-			if test.wantV2 {
-				if !hasVersion || !hasTarget || hasGuild || hasVoice || hasText {
-					t.Fatalf("v2 payload mixed protocol fields: %#v", payload)
-				}
-				target := payload["discord_target"].(DiscordTargetSnapshot)
-				if target.Revision != 9 || target.Resolved.GuildID != "1001" || target.Resolved.TextChannelID != "1002" || target.Resolved.VoiceChannelID != "1003" {
-					t.Fatalf("resolved target mismatch: %#v", target)
-				}
-				return
+			if !hasVersion || !hasTarget || hasGuild || hasVoice || hasText {
+				t.Fatalf("v2 payload mixed protocol fields: %#v", payload)
 			}
-			if hasVersion || hasTarget || !hasGuild || !hasVoice || !hasText {
-				t.Fatalf("legacy payload mixed protocol fields: %#v", payload)
+			target := payload["discord_target"].(DiscordTargetSnapshot)
+			if target.Revision != 9 || target.Resolved.GuildID != "1001" || target.Resolved.TextChannelID != "1002" || target.Resolved.VoiceChannelID != "1003" {
+				t.Fatalf("resolved target mismatch: %#v", target)
 			}
 		})
 	}

@@ -15,6 +15,9 @@ func (s *MemorySystemUpdateStore) CreateSystemdPortReconfigurationJob(
 	policies UpdaterPolicyStore,
 	params CreateSystemdPortReconfigurationJobParams,
 ) (SystemUpdateJob, bool, error) {
+	if params.PortContractVersion == 2 {
+		return s.createSystemUpdatePortV2(ctx, services, policies, params)
+	}
 	params = normalizeCreateSystemdPortReconfigurationJobParams(params)
 	if err := validateCreateSystemdPortReconfigurationJobParams(params); err != nil {
 		return SystemUpdateJob{}, false, err
@@ -80,6 +83,9 @@ func (s *MemorySystemUpdateStore) CreateSystemdPortReconfigurationJob(
 		return SystemUpdateJob{}, false, err
 	}
 	for _, existing := range s.jobs {
+		if isSystemUpdatePortV2(existing) && existing.ExecutionHostID == ownership.ExecutionHostID && systemUpdateJobHoldsHost(existing) {
+			return SystemUpdateJob{}, false, ErrSystemUpdateExecutionHostBusy
+		}
 		if existing.TargetID == target.ServiceID && !isTerminalSystemUpdateStatus(existing.Status) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateTargetActive
 		}
@@ -191,6 +197,9 @@ func (s *MariaDBSystemUpdateStore) CreateSystemdPortReconfigurationJob(
 	policies UpdaterPolicyStore,
 	params CreateSystemdPortReconfigurationJobParams,
 ) (SystemUpdateJob, bool, error) {
+	if params.PortContractVersion == 2 {
+		return s.createSystemUpdatePortV2(ctx, services, policies, params)
+	}
 	params = normalizeCreateSystemdPortReconfigurationJobParams(params)
 	if err := validateCreateSystemdPortReconfigurationJobParams(params); err != nil {
 		return SystemUpdateJob{}, false, err
@@ -309,6 +318,9 @@ FOR UPDATE`, ownership.ExecutionHostID).Scan(&activeRotationID)
 		return SystemUpdateJob{}, false, err
 	}
 	var activeID string
+	if err := rejectMariaDBSystemUpdatePortHold(ctx, tx, ownership.ExecutionHostID); err != nil {
+		return SystemUpdateJob{}, false, err
+	}
 	err = tx.QueryRowContext(ctx, `SELECT id FROM system_update_jobs
 WHERE active_target_id = ? LIMIT 1 FOR UPDATE`, target.ServiceID).Scan(&activeID)
 	if err == nil {
@@ -505,42 +517,39 @@ func validateMariaDBPortReservationsForUpdate(
 	hostID, serviceID string,
 	oldPort, newPort int,
 ) error {
-	current, err := scanServicePortReservation(tx.QueryRowContext(
-		ctx, servicePortReservationSelect+`
-WHERE execution_host_id = ? AND network_namespace = ? AND protocol = ? AND port = ?
-FOR UPDATE`,
-		hostID, systemUpdatePortNetworkNamespace, systemUpdatePortProtocol, oldPort,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrSystemUpdateEndpointStale
+	ports := []int{oldPort}
+	if newPort != oldPort {
+		ports = append(ports, newPort)
 	}
-	if err != nil {
-		return err
-	}
-	if current.ServiceID != serviceID || current.ServiceRole != systemUpdatePortCurrentRole {
-		return ErrSystemUpdateEndpointStale
+	sort.Ints(ports)
+	for _, port := range ports {
+		reservation, err := scanServicePortReservation(tx.QueryRowContext(ctx, servicePortReservationSelect+`
+WHERE execution_host_id = ? AND network_namespace = ? AND protocol = ? AND port = ? FOR UPDATE`, hostID, systemUpdatePortNetworkNamespace, systemUpdatePortProtocol, port))
+		if port == oldPort {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrSystemUpdateEndpointStale
+			}
+			if err != nil {
+				return err
+			}
+			if reservation.ServiceID != serviceID || reservation.ServiceRole != systemUpdatePortCurrentRole {
+				return ErrSystemUpdateEndpointStale
+			}
+		} else {
+			if err == nil {
+				return ErrServicePortReserved
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
 	}
 	var pendingPort int
-	err = tx.QueryRowContext(ctx, `SELECT port FROM service_port_reservations
+	err := tx.QueryRowContext(ctx, `SELECT port FROM service_port_reservations
 WHERE execution_host_id = ? AND service_id = ? AND service_role = ?
 LIMIT 1 FOR UPDATE`, hostID, serviceID, systemUpdatePortPendingRole).Scan(&pendingPort)
 	if err == nil {
 		return ErrSystemUpdateTargetActive
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if oldPort == newPort {
-		return nil
-	}
-	_, err = scanServicePortReservation(tx.QueryRowContext(
-		ctx, servicePortReservationSelect+`
-WHERE execution_host_id = ? AND network_namespace = ? AND protocol = ? AND port = ?
-FOR UPDATE`,
-		hostID, systemUpdatePortNetworkNamespace, systemUpdatePortProtocol, newPort,
-	))
-	if err == nil {
-		return ErrServicePortReserved
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err

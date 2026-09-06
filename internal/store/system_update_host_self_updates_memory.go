@@ -216,7 +216,7 @@ func createMemorySystemUpdateHostSelfUpdateLocked(
 	}
 	for _, job := range s.jobs {
 		if job.ExecutionHostID == params.ExecutionHostID &&
-			!isTerminalSystemUpdateStatus(job.Status) {
+			systemUpdateJobHoldsHost(job) {
 			return SystemUpdateHostSelfUpdate{}, false,
 				ErrSystemUpdateExecutionHostBusy
 		}
@@ -323,7 +323,7 @@ func validateSystemUpdateHostSelfUpdateReady(
 		policy.UpdaterID != ownership.AgentServiceID ||
 		policy.TransportMode != SystemUpdateTransportPullV2 ||
 		policy.ExecutionHostID != ownership.ExecutionHostID ||
-		policy.Revision != ownership.PolicyRevision ||
+		policy.ProjectionRevision != ownership.PolicyRevision ||
 		policy.Revision < 1 || policy.ProjectionRevision < 1 ||
 		policy.LocalExecutorPolicyRevision < 1 ||
 		!systemUpdateHostSelfUpdatePolicyDigestPattern.MatchString(
@@ -868,7 +868,7 @@ func validateMemorySystemUpdateHostSelfUpdateGrantStateLocked(
 		ownership.AgentServiceID != agentID ||
 		ownership.TransportMode != SystemUpdateTransportPullV2 ||
 		ownership.OwnershipEpoch != update.ExpectedOwnershipEpoch ||
-		ownership.PolicyRevision != update.ExpectedSourcePolicyRevision {
+		ownership.PolicyRevision != update.ExpectedProjectionRevision {
 		return ErrSystemUpdateOwnershipConflict
 	}
 	policy, ok := policyStore.policies[agentID]
@@ -896,7 +896,7 @@ func validateMemorySystemUpdateHostSelfUpdateGrantStateLocked(
 	}
 	for _, job := range s.jobs {
 		if job.ExecutionHostID == hostID &&
-			!isTerminalSystemUpdateStatus(job.Status) {
+			systemUpdateJobHoldsHost(job) {
 			return ErrSystemUpdateExecutionHostBusy
 		}
 	}

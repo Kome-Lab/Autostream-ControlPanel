@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,14 @@ import (
 const systemUpdateExecutionLeaseTTL = 45 * time.Minute
 
 type systemUpdateTargetResponse struct {
+	PortContractVersion     int                              `json:"port_contract_version,omitempty"`
+	PortPolicySnapshotID    string                           `json:"port_policy_snapshot_id,omitempty"`
+	LocalListenPort         int                              `json:"local_listen_port,omitempty"`
+	EndpointRevision        int64                            `json:"endpoint_revision,omitempty"`
+	AppliedEndpointRevision int64                            `json:"applied_endpoint_revision,omitempty"`
+	AppliedConfigRevision   int64                            `json:"applied_config_revision,omitempty"`
+	OwnershipEpoch          int64                            `json:"ownership_epoch,omitempty"`
+	PortModes               []string                         `json:"port_modes,omitempty"`
 	TargetID                string                           `json:"target_id"`
 	ServiceType             string                           `json:"target_type"`
 	Name                    string                           `json:"name"`
@@ -109,6 +118,7 @@ func (s *Server) listSystemUpdates(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_system_update_targets_failed"})
 		return
 	}
+	s.decorateSystemUpdatePortSnapshots(r, targets)
 	jobs, err := s.systemUpdates.ListSystemUpdateJobs(r.Context(), parseLimit(r, 100))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_system_update_jobs_failed"})
@@ -121,7 +131,14 @@ func (s *Server) listSystemUpdates(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeSystemUpdateCreateRequest(r)
 	if err != nil {
+		if errors.Is(err, store.ErrSystemUpdatePortContractRequired) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "system_update_port_contract_required"})
+			return
+		}
 		code := "bad_request"
+		if errors.Is(err, errInvalidSystemUpdatePortMode) {
+			code = "invalid_system_update_port_mode"
+		}
 		if errors.Is(err, store.ErrInvalidSystemUpdate) {
 			code = "invalid_system_update_request"
 		}
@@ -134,10 +151,18 @@ func (s *Server) createSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.systemUpdates.GetSystemUpdateJobByIdempotency(r.Context(), current.User.ID, body.IdempotencyKey)
 	if err == nil {
 		if !sameSystemUpdateCreateRequest(existing, body) {
-			writeJSON(w, http.StatusConflict, map[string]string{"code": "idempotency_key_conflict"})
+			code := "idempotency_key_conflict"
+			if body.Operation == store.SystemUpdateOperationPortReconfigure {
+				code = "system_update_port_idempotency_conflict"
+			}
+			writeJSON(w, http.StatusConflict, map[string]string{"code": code})
 			return
 		}
-		writeJSON(w, http.StatusAccepted, existing)
+		status := http.StatusAccepted
+		if body.Operation == store.SystemUpdateOperationPortReconfigure {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, existing)
 		return
 	}
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -217,6 +242,12 @@ func (s *Server) createSystemUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 type systemUpdateCreateRequest struct {
+	PortContractVersion      int
+	Mode                     string
+	NewLocalListenPort       int
+	ExpectedSnapshotID       string
+	DesiredRevision          int64
+	Fence                    int64
 	Operation                string
 	TargetID                 string
 	Strategy                 string
@@ -230,6 +261,19 @@ type systemUpdateCreateRequest struct {
 }
 
 func decodeSystemUpdateCreateRequest(r *http.Request) (systemUpdateCreateRequest, error) {
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxSystemUpdateV2PayloadBytes+1))
+	if err != nil || len(payload) == 0 || len(payload) > maxSystemUpdateV2PayloadBytes {
+		return systemUpdateCreateRequest{}, store.ErrInvalidSystemUpdate
+	}
+	var operation struct {
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(payload, &operation) != nil {
+		return systemUpdateCreateRequest{}, store.ErrInvalidSystemUpdate
+	}
+	if strings.ToLower(strings.TrimSpace(operation.Operation)) == store.SystemUpdateOperationPortReconfigure {
+		return decodeSystemUpdatePortV2CreateRequest(payload)
+	}
 	var raw struct {
 		Operation                json.RawMessage `json:"operation"`
 		TargetID                 string          `json:"target_id"`
@@ -241,7 +285,7 @@ func decodeSystemUpdateCreateRequest(r *http.Request) (systemUpdateCreateRequest
 		ExpectedEndpointRevision json.RawMessage `json:"expected_endpoint_revision"`
 		IdempotencyKey           string          `json:"idempotency_key"`
 	}
-	decoder := json.NewDecoder(r.Body)
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&raw); err != nil {
 		return systemUpdateCreateRequest{}, err
@@ -333,6 +377,9 @@ func sameSystemUpdateCreateRequest(job store.SystemUpdateJob, request systemUpda
 		return false
 	}
 	if operation == store.SystemUpdateOperationPortReconfigure {
+		if request.PortContractVersion == 2 {
+			return sameSystemUpdatePortV2CreateRequest(job, request)
+		}
 		if job.PortReconfigure == nil ||
 			job.PortReconfigure.ExpectedEndpointRevision != request.ExpectedEndpointRevision {
 			return false
@@ -371,6 +418,9 @@ func (s *Server) createDockerPortReconfiguration(
 		s.services,
 		s.updaterPolicies,
 		store.CreateDockerPortReconfigurationJobParams{
+			PortContractVersion: body.PortContractVersion, Mode: contracts.SystemUpdatePortMode(body.Mode),
+			ExpectedSnapshotID: body.ExpectedSnapshotID, ExpectedDesiredRevision: body.DesiredRevision, ExpectedFence: body.Fence,
+			BuildPolicySnapshot:      s.systemUpdatePortSnapshotBuilder(panelBaseURL(r)),
 			TargetID:                 body.TargetID,
 			NewAdvertisedPort:        body.NewAdvertisedPort,
 			NewPublishedPort:         body.NewPublishedPort,
@@ -398,12 +448,7 @@ func (s *Server) createDockerPortReconfiguration(
 			"idempotent_replay":   false,
 		}
 		if job.PortReconfigure != nil {
-			metadata["old_advertised_port"] = job.PortReconfigure.OldPort
-			metadata["target_endpoint_revision"] = job.PortReconfigure.TargetEndpointRevision
-			if job.PortReconfigure.Docker != nil {
-				metadata["old_published_port"] = job.PortReconfigure.Docker.OldPublishedPort
-				metadata["old_container_port"] = job.PortReconfigure.Docker.OldContainerPort
-			}
+			addSystemUpdatePortAuditFields(metadata, job.PortReconfigure)
 		}
 		s.writeAudit(r, store.AuditEvent{
 			ActorUserID: current.User.ID, ActorUsername: current.User.Username,
@@ -411,10 +456,17 @@ func (s *Server) createDockerPortReconfiguration(
 			ResourceID: job.ID, Result: "success", Metadata: metadata,
 		})
 	}
-	writeJSON(w, http.StatusAccepted, job)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, job)
 }
 
 func writeSystemUpdatePortCreateError(w http.ResponseWriter, err error) bool {
+	if writeSystemUpdatePortV2Error(w, err) {
+		return true
+	}
 	switch {
 	case err == nil:
 		return false
@@ -466,6 +518,10 @@ func (s *Server) createSystemdPortReconfiguration(
 		s.services,
 		s.updaterPolicies,
 		store.CreateSystemdPortReconfigurationJobParams{
+			PortContractVersion: body.PortContractVersion, Mode: contracts.SystemUpdatePortMode(body.Mode), NewLocalListenPort: body.NewLocalListenPort,
+			NewAdvertisedPort: body.NewAdvertisedPort, ExpectedSnapshotID: body.ExpectedSnapshotID,
+			ExpectedDesiredRevision: body.DesiredRevision, ExpectedFence: body.Fence,
+			BuildPolicySnapshot:      s.systemUpdatePortSnapshotBuilder(panelBaseURL(r)),
 			TargetID:                 body.TargetID,
 			NewPort:                  body.NewPort,
 			ExpectedEndpointRevision: body.ExpectedEndpointRevision,
@@ -475,6 +531,9 @@ func (s *Server) createSystemdPortReconfiguration(
 			ControlPanelTarget:       controlPanelTarget,
 		},
 	)
+	if writeSystemUpdatePortV2Error(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrInvalidSystemUpdate):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_system_update_request"})
@@ -513,17 +572,16 @@ func (s *Server) createSystemdPortReconfiguration(
 	}
 	if created {
 		metadata := map[string]any{
-			"target_id":         job.TargetID,
-			"service_type":      job.TargetServiceType,
-			"deployment_mode":   job.DeploymentMode,
-			"operation":         job.Operation,
-			"new_port":          body.NewPort,
-			"endpoint_revision": body.ExpectedEndpointRevision,
-			"idempotent_replay": false,
+			"target_id":             job.TargetID,
+			"service_type":          job.TargetServiceType,
+			"deployment_mode":       job.DeploymentMode,
+			"operation":             job.Operation,
+			"new_local_listen_port": body.NewLocalListenPort,
+			"endpoint_revision":     body.ExpectedEndpointRevision,
+			"idempotent_replay":     false,
 		}
 		if job.PortReconfigure != nil {
-			metadata["old_port"] = job.PortReconfigure.OldPort
-			metadata["target_endpoint_revision"] = job.PortReconfigure.TargetEndpointRevision
+			addSystemUpdatePortAuditFields(metadata, job.PortReconfigure)
 		}
 		s.writeAudit(r, store.AuditEvent{
 			ActorUserID: current.User.ID, ActorUsername: current.User.Username,
@@ -531,7 +589,11 @@ func (s *Server) createSystemdPortReconfiguration(
 			Metadata: metadata,
 		})
 	}
-	writeJSON(w, http.StatusAccepted, job)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, job)
 }
 
 func containsControlText(value string) bool {
@@ -980,9 +1042,7 @@ func systemUpdatePortReconfigureBlockedReason(
 	if assignment.TargetServiceType != "" && assignment.TargetServiceType != service.ServiceType {
 		return "updater_policy_target_type_mismatch"
 	}
-	if assignment.DeploymentMode == "systemd" && assignment.LocalListenPortBound {
-		// The split local listener must not be rewritten together with the
-		// advertised endpoint by the legacy port-change transaction.
+	if assignment.DeploymentMode == "systemd" && !assignment.LocalListenPortBound {
 		return "system_update_port_reconfigure_not_ready"
 	}
 	if !assignment.Available {
@@ -994,7 +1054,7 @@ func systemUpdatePortReconfigureBlockedReason(
 	if assignment.HostReachability != "reachable" {
 		return "target_reachability_unknown"
 	}
-	minAdvertisedPort := 1024
+	minAdvertisedPort := 1
 	if assignment.DeploymentMode == "docker" {
 		minAdvertisedPort = 1
 		if target.PortMapping == nil ||
@@ -1430,11 +1490,12 @@ func (s *Server) systemUpdatePullRecoveryEligibleTarget(
 	if err != nil {
 		return nil, err
 	}
+	portV2 := job.Operation == store.SystemUpdateOperationPortReconfigure && job.PortReconfigure != nil && job.PortReconfigure.PortContractVersion == 2
 	if ownership.ExecutionHostID != hostID ||
 		ownership.TransportMode != store.SystemUpdateTransportPullV2 ||
 		ownership.AgentServiceID != agent.ServiceID ||
 		ownership.OwnershipEpoch != job.OwnershipEpoch ||
-		ownership.PolicyRevision != job.PolicyRevision {
+		(!portV2 && ownership.PolicyRevision != job.PolicyRevision) {
 		return nil, store.ErrSystemUpdateOwnershipConflict
 	}
 
@@ -1448,7 +1509,7 @@ func (s *Server) systemUpdatePullRecoveryEligibleTarget(
 	if policy.UpdaterID != agent.ServiceID ||
 		policy.TransportMode != store.SystemUpdateTransportPullV2 ||
 		strings.TrimSpace(policy.ExecutionHostID) != hostID ||
-		policy.ProjectionRevision != job.PolicyRevision ||
+		(!portV2 && policy.ProjectionRevision != job.PolicyRevision) ||
 		policy.LocalExecutorPolicyRevision < 1 ||
 		!validUpdateManifestDigest(policy.LocalExecutorPolicySHA256) ||
 		!store.PullUpdaterPolicyDatabaseBindingsReady(policy) {
@@ -1468,6 +1529,12 @@ func (s *Server) systemUpdatePullRecoveryEligibleTarget(
 			return nil, store.ErrSystemUpdateActiveUnavailable
 		}
 	case store.SystemUpdateOperationPortReconfigure:
+		if portV2 {
+			if !systemUpdatePortRecoveryPolicyMatches(job, ownership, policy) {
+				return nil, store.ErrSystemUpdateActiveUnavailable
+			}
+			break
+		}
 		if job.PortReconfigure == nil ||
 			job.PortReconfigure.ExpectedSourcePolicyRevision != policy.Revision ||
 			job.PortReconfigure.ExpectedUpdaterPolicyRevision != policy.ProjectionRevision ||

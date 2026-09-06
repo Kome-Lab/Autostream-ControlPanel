@@ -60,21 +60,8 @@ func (s *portCoordinatorCaptureStore) CreateDockerPortReconfigurationJob(
 		ID: "docker-port-job-1", TargetID: params.TargetID,
 		TargetServiceType: "worker",
 		Operation:         store.SystemUpdateOperationPortReconfigure,
-		PortReconfigure: &store.SystemUpdatePortReconfiguration{
-			NetworkNamespace:         "host",
-			Protocol:                 store.SystemUpdatePortProtocolTCP,
-			OldPort:                  8081,
-			NewPort:                  params.NewAdvertisedPort,
-			ExpectedEndpointRevision: params.ExpectedEndpointRevision,
-			TargetEndpointRevision:   params.ExpectedEndpointRevision + 1,
-			Docker: &store.SystemUpdateDockerPortReconfiguration{
-				PublishedHostIP:  "127.0.0.1",
-				OldPublishedPort: 18081, NewPublishedPort: params.NewPublishedPort,
-				OldContainerPort: 8080, NewContainerPort: params.NewContainerPort,
-				OldHealthPort: 18081, NewHealthPort: params.NewPublishedPort,
-			},
-		},
-		DeploymentMode: "docker", CurrentVersion: "v1.0.0",
+		PortReconfigure:   portV2HTTPPlan(string(params.Mode), params.ExpectedEndpointRevision, params.NewPublishedPort, params.NewAdvertisedPort, params.NewContainerPort),
+		DeploymentMode:    "docker", CurrentVersion: "v1.0.0",
 		TargetVersion: "v1.0.0", Strategy: store.SystemUpdateStrategyMaintenance,
 		Status: store.SystemUpdateStatusQueued, IdempotencyKey: params.IdempotencyKey,
 		RequestedByUserID:   params.RequestedByUserID,
@@ -122,18 +109,11 @@ func (s *portCoordinatorCaptureStore) CreateSystemdPortReconfigurationJob(
 	}
 	now := time.Now().UTC()
 	job := store.SystemUpdateJob{
-		ID:                "port-job-1",
-		TargetID:          params.TargetID,
-		TargetServiceType: "worker",
-		Operation:         store.SystemUpdateOperationPortReconfigure,
-		PortReconfigure: &store.SystemUpdatePortReconfiguration{
-			NetworkNamespace:         "host",
-			Protocol:                 store.SystemUpdatePortProtocolTCP,
-			OldPort:                  8081,
-			NewPort:                  params.NewPort,
-			ExpectedEndpointRevision: params.ExpectedEndpointRevision,
-			TargetEndpointRevision:   params.ExpectedEndpointRevision + 1,
-		},
+		ID:                  "port-job-1",
+		TargetID:            params.TargetID,
+		TargetServiceType:   "worker",
+		Operation:           store.SystemUpdateOperationPortReconfigure,
+		PortReconfigure:     portV2HTTPPlan(string(params.Mode), params.ExpectedEndpointRevision, params.NewLocalListenPort, params.NewAdvertisedPort, 0),
 		DeploymentMode:      "systemd",
 		CurrentVersion:      "v1.0.0",
 		TargetVersion:       "v1.0.0",
@@ -170,6 +150,13 @@ func (s *portCoordinatorCaptureStore) ReportSystemUpdateJob(
 		return store.SystemUpdateJob{}, false, s.reportErr
 	}
 	job := s.reportJob
+	if report.PortResult != nil && job.ID != "" {
+		job.Status = report.Status
+		if contracts.IsAcceptedSystemUpdatePortResult(*report.PortResult) {
+			result := *report.PortResult
+			job.PortResult = &result
+		}
+	}
 	if job.ID == "" {
 		job = store.SystemUpdateJob{
 			ID: "port-job-1", TargetID: "worker-a", TargetServiceType: "worker",
@@ -233,10 +220,15 @@ func TestCreateSystemUpdateStrictlySeparatesSoftwareAndPortRequests(t *testing.T
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			handler, cookie, csrf, _ := newPortCoordinatorHTTPFixture(t, nil)
-			response := postSystemUpdateForTest(t, handler, cookie, csrf, tt.body)
+			body := tt.body
+			if strings.Contains(body, `"operation":"port_reconfigure"`) {
+				body = portV2CreateBody(body)
+			}
+			response := postSystemUpdateForTest(t, handler, cookie, csrf, body)
 			if response.Code != http.StatusBadRequest ||
 				(!strings.Contains(response.Body.String(), `"code":"bad_request"`) &&
-					!strings.Contains(response.Body.String(), `"code":"invalid_system_update_request"`)) {
+					!strings.Contains(response.Body.String(), `"code":"invalid_system_update_request"`) &&
+					!strings.Contains(response.Body.String(), `"code":"invalid_system_update_port_mode"`)) {
 				t.Fatalf("response = %d %s", response.Code, response.Body.String())
 			}
 		})
@@ -246,9 +238,9 @@ func TestCreateSystemUpdateStrictlySeparatesSoftwareAndPortRequests(t *testing.T
 func TestCreateDockerPortReconfigurationUsesIndependentFieldsAndExactIdempotency(t *testing.T) {
 	t.Setenv("AUTOSTREAM_BIND_ADDR", "127.0.0.1:18080")
 	handler, cookie, csrf, updates := newPortCoordinatorHTTPFixture(t, nil)
-	body := `{"operation":"port_reconfigure","target_id":"worker-a","new_advertised_port":443,"new_published_port":18084,"new_container_port":18080,"expected_endpoint_revision":7,"idempotency_key":"docker-port-request-1"}`
+	body := portV2CreateBody(`{"operation":"port_reconfigure","target_id":"worker-a","new_advertised_port":443,"new_published_port":18084,"new_container_port":18080,"expected_endpoint_revision":7,"idempotency_key":"docker-port-request-1"}`)
 	response := postSystemUpdateForTest(t, handler, cookie, csrf, body)
-	if response.Code != http.StatusAccepted {
+	if response.Code != http.StatusCreated {
 		t.Fatalf("create response=%d %s", response.Code, response.Body.String())
 	}
 	if updates.createCalls != 1 ||
@@ -272,22 +264,22 @@ func TestCreateDockerPortReconfigurationUsesIndependentFieldsAndExactIdempotency
 	}
 	if created.DeploymentMode != "docker" ||
 		created.PortReconfigure == nil ||
-		created.PortReconfigure.NewPort != 443 ||
-		created.PortReconfigure.Docker == nil ||
-		created.PortReconfigure.Docker.NewPublishedPort != 18084 ||
-		created.PortReconfigure.Docker.NewContainerPort != 18080 {
+		created.PortReconfigure.Target.AdvertisedPort != 443 ||
+		created.PortReconfigure.Target.Docker == nil ||
+		created.PortReconfigure.Target.Docker.PublishedPort != 18084 ||
+		created.PortReconfigure.Target.Docker.ContainerPort != 18080 {
 		t.Fatalf("created Docker job=%#v", created)
 	}
 	replay := postSystemUpdateForTest(t, handler, cookie, csrf, body)
-	if replay.Code != http.StatusAccepted || updates.createCalls != 1 {
+	if replay.Code != http.StatusOK || updates.createCalls != 1 {
 		t.Fatalf("replay=%d %s calls=%d", replay.Code, replay.Body.String(), updates.createCalls)
 	}
 	conflict := postSystemUpdateForTest(
 		t, handler, cookie, csrf,
-		`{"operation":"port_reconfigure","target_id":"worker-a","new_advertised_port":443,"new_published_port":18085,"new_container_port":18080,"expected_endpoint_revision":7,"idempotency_key":"docker-port-request-1"}`,
+		portV2CreateBody(`{"operation":"port_reconfigure","target_id":"worker-a","new_advertised_port":443,"new_published_port":18085,"new_container_port":18080,"expected_endpoint_revision":7,"idempotency_key":"docker-port-request-1"}`),
 	)
 	if conflict.Code != http.StatusConflict ||
-		!strings.Contains(conflict.Body.String(), `"code":"idempotency_key_conflict"`) ||
+		!strings.Contains(conflict.Body.String(), `"code":"system_update_port_idempotency_conflict"`) ||
 		updates.createCalls != 1 {
 		t.Fatalf("mapping conflict=%d %s calls=%d", conflict.Code, conflict.Body.String(), updates.createCalls)
 	}
@@ -296,16 +288,16 @@ func TestCreateDockerPortReconfigurationUsesIndependentFieldsAndExactIdempotency
 func TestCreateSystemdPortReconfigurationUsesCoordinatorAndExactIdempotency(t *testing.T) {
 	t.Setenv("AUTOSTREAM_BIND_ADDR", "127.0.0.1:18080")
 	handler, cookie, csrf, updates := newPortCoordinatorHTTPFixture(t, nil)
-	body := `{"operation":"port_reconfigure","target_id":"worker-a","new_port":18081,"expected_endpoint_revision":7,"idempotency_key":"port-request-1"}`
+	body := portV2CreateBody(`{"operation":"port_reconfigure","target_id":"worker-a","new_local_listen_port":18081,"expected_endpoint_revision":7,"idempotency_key":"port-request-1"}`)
 	response := postSystemUpdateForTest(t, handler, cookie, csrf, body)
-	if response.Code != http.StatusAccepted {
+	if response.Code != http.StatusCreated {
 		t.Fatalf("create response = %d %s", response.Code, response.Body.String())
 	}
 	if updates.createCalls != 1 ||
 		updates.services == nil ||
 		updates.policies == nil ||
 		updates.params.TargetID != "worker-a" ||
-		updates.params.NewPort != 18081 ||
+		updates.params.NewLocalListenPort != 18081 ||
 		updates.params.ExpectedEndpointRevision != 7 ||
 		updates.params.IdempotencyKey != "port-request-1" ||
 		updates.params.RequestedByUserID != "port-admin" ||
@@ -323,13 +315,13 @@ func TestCreateSystemdPortReconfigurationUsesCoordinatorAndExactIdempotency(t *t
 	}
 	if created.Operation != store.SystemUpdateOperationPortReconfigure ||
 		created.PortReconfigure == nil ||
-		created.PortReconfigure.NewPort != 18081 ||
-		created.PortReconfigure.ExpectedEndpointRevision != 7 {
+		created.PortReconfigure.Target.LocalListenPort != 18081 ||
+		created.PortReconfigure.Before.EndpointRevision != 7 {
 		t.Fatalf("created job = %#v", created)
 	}
 
 	replay := postSystemUpdateForTest(t, handler, cookie, csrf, body)
-	if replay.Code != http.StatusAccepted || updates.createCalls != 1 {
+	if replay.Code != http.StatusOK || updates.createCalls != 1 {
 		t.Fatalf("idempotent replay = %d %s calls=%d", replay.Code, replay.Body.String(), updates.createCalls)
 	}
 	var replayed store.SystemUpdateJob
@@ -345,10 +337,10 @@ func TestCreateSystemdPortReconfigurationUsesCoordinatorAndExactIdempotency(t *t
 		handler,
 		cookie,
 		csrf,
-		`{"operation":"port_reconfigure","target_id":"worker-a","new_port":18082,"expected_endpoint_revision":7,"idempotency_key":"port-request-1"}`,
+		portV2CreateBody(`{"operation":"port_reconfigure","target_id":"worker-a","new_local_listen_port":18082,"expected_endpoint_revision":7,"idempotency_key":"port-request-1"}`),
 	)
 	if portConflict.Code != http.StatusConflict ||
-		!strings.Contains(portConflict.Body.String(), `"code":"idempotency_key_conflict"`) ||
+		!strings.Contains(portConflict.Body.String(), `"code":"system_update_port_idempotency_conflict"`) ||
 		updates.createCalls != 1 {
 		t.Fatalf("new-port conflict = %d %s calls=%d", portConflict.Code, portConflict.Body.String(), updates.createCalls)
 	}
@@ -357,10 +349,10 @@ func TestCreateSystemdPortReconfigurationUsesCoordinatorAndExactIdempotency(t *t
 		handler,
 		cookie,
 		csrf,
-		`{"operation":"port_reconfigure","target_id":"worker-a","new_port":18081,"expected_endpoint_revision":8,"idempotency_key":"port-request-1"}`,
+		portV2CreateBody(`{"operation":"port_reconfigure","target_id":"worker-a","new_local_listen_port":18081,"expected_endpoint_revision":8,"idempotency_key":"port-request-1"}`),
 	)
 	if revisionConflict.Code != http.StatusConflict ||
-		!strings.Contains(revisionConflict.Body.String(), `"code":"idempotency_key_conflict"`) ||
+		!strings.Contains(revisionConflict.Body.String(), `"code":"system_update_port_idempotency_conflict"`) ||
 		updates.createCalls != 1 {
 		t.Fatalf("endpoint-revision conflict = %d %s calls=%d", revisionConflict.Code, revisionConflict.Body.String(), updates.createCalls)
 	}
@@ -402,7 +394,7 @@ func TestCreateSystemdPortReconfigurationMapsCoordinatorErrors(t *testing.T) {
 				handler,
 				cookie,
 				csrf,
-				`{"operation":"port_reconfigure","target_id":"worker-a","new_port":18081,"expected_endpoint_revision":7,"idempotency_key":"port-request-1"}`,
+				portV2CreateBody(`{"operation":"port_reconfigure","target_id":"worker-a","new_local_listen_port":18081,"expected_endpoint_revision":7,"idempotency_key":"port-request-1"}`),
 			)
 			if response.Code != tt.status || !strings.Contains(response.Body.String(), `"code":"`+tt.code+`"`) {
 				t.Fatalf("response = %d %s", response.Code, response.Body.String())
@@ -434,14 +426,15 @@ func TestSystemUpdateTargetPortEligibilityIsIndependentOfSoftwareRelease(t *test
 		},
 	}
 	assignment := systemUpdateAgentAssignment{
-		AgentID:            "host-agent-a",
-		AgentTransportMode: store.SystemUpdateTransportPullV2,
-		DeploymentMode:     "systemd",
-		Available:          true,
-		HostReachability:   "reachable",
-		TargetServiceType:  "worker",
-		PolicyManaged:      true,
-		PolicyReady:        true,
+		AgentID:              "host-agent-a",
+		AgentTransportMode:   store.SystemUpdateTransportPullV2,
+		DeploymentMode:       "systemd",
+		Available:            true,
+		HostReachability:     "reachable",
+		TargetServiceType:    "worker",
+		PolicyManaged:        true,
+		LocalListenPortBound: true,
+		PolicyReady:          true,
 	}
 	decorateSystemUpdateTargetOperations(&target, &service, assignment)
 	if len(target.EligibleOperations) != 1 ||

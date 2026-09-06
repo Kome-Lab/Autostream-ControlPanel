@@ -45,23 +45,29 @@ const (
 // revision and digest can participate in SQL fencing; HTTP must expose this
 // nested shape and must omit it for software-update jobs.
 type SystemUpdatePortReconfiguration struct {
-	NetworkNamespace               string                                 `json:"network_namespace,omitempty"`
-	Protocol                       SystemUpdatePortProtocol               `json:"protocol,omitempty"`
-	OldPort                        int                                    `json:"old_port,omitempty"`
-	NewPort                        int                                    `json:"new_port,omitempty"`
-	ExpectedEndpointRevision       int64                                  `json:"expected_endpoint_revision,omitempty"`
-	TargetEndpointRevision         int64                                  `json:"target_endpoint_revision,omitempty"`
-	ExpectedConfigRevision         int64                                  `json:"expected_config_revision,omitempty"`
-	TargetConfigRevision           int64                                  `json:"target_config_revision,omitempty"`
-	ExpectedConfigSHA256           string                                 `json:"expected_config_sha256,omitempty"`
-	TargetConfigSHA256             string                                 `json:"target_config_sha256,omitempty"`
-	ExpectedSourcePolicyRevision   int64                                  `json:"expected_source_policy_revision,omitempty"`
-	ExpectedUpdaterPolicyRevision  int64                                  `json:"expected_updater_policy_revision,omitempty"`
-	ExpectedExecutorPolicyRevision int64                                  `json:"expected_executor_policy_revision,omitempty"`
-	ExpectedExecutorPolicySHA256   string                                 `json:"expected_executor_policy_sha256,omitempty"`
-	PortPlanSHA256                 string                                 `json:"port_plan_sha256,omitempty"`
-	Docker                         *SystemUpdateDockerPortReconfiguration `json:"docker,omitempty"`
-	Result                         SystemUpdatePortReconfigurationResult  `json:"result,omitempty"`
+	PortContractVersion            int                                       `json:"port_contract_version,omitempty"`
+	Mode                           contracts.SystemUpdatePortMode            `json:"mode,omitempty"`
+	Before                         *contracts.SystemUpdatePortSnapshotRef    `json:"before,omitempty"`
+	Target                         *contracts.SystemUpdatePortSnapshotRef    `json:"target,omitempty"`
+	Rollback                       *contracts.SystemUpdatePortSnapshotRef    `json:"rollback,omitempty"`
+	DockerBaseline                 *contracts.SystemUpdatePortDockerBaseline `json:"docker_baseline,omitempty"`
+	NetworkNamespace               string                                    `json:"network_namespace,omitempty"`
+	Protocol                       SystemUpdatePortProtocol                  `json:"protocol,omitempty"`
+	OldPort                        int                                       `json:"old_port,omitempty"`
+	NewPort                        int                                       `json:"new_port,omitempty"`
+	ExpectedEndpointRevision       int64                                     `json:"expected_endpoint_revision,omitempty"`
+	TargetEndpointRevision         int64                                     `json:"target_endpoint_revision,omitempty"`
+	ExpectedConfigRevision         int64                                     `json:"expected_config_revision,omitempty"`
+	TargetConfigRevision           int64                                     `json:"target_config_revision,omitempty"`
+	ExpectedConfigSHA256           string                                    `json:"expected_config_sha256,omitempty"`
+	TargetConfigSHA256             string                                    `json:"target_config_sha256,omitempty"`
+	ExpectedSourcePolicyRevision   int64                                     `json:"expected_source_policy_revision,omitempty"`
+	ExpectedUpdaterPolicyRevision  int64                                     `json:"expected_updater_policy_revision,omitempty"`
+	ExpectedExecutorPolicyRevision int64                                     `json:"expected_executor_policy_revision,omitempty"`
+	ExpectedExecutorPolicySHA256   string                                    `json:"expected_executor_policy_sha256,omitempty"`
+	PortPlanSHA256                 string                                    `json:"port_plan_sha256,omitempty"`
+	Docker                         *SystemUpdateDockerPortReconfiguration    `json:"docker,omitempty"`
+	Result                         SystemUpdatePortReconfigurationResult     `json:"result,omitempty"`
 }
 
 // SystemUpdateDockerPortReconfiguration contains the Docker-only rollback
@@ -88,6 +94,11 @@ type SystemUpdateDockerPortReconfiguration struct {
 // client-selected fields. The store/server derives every other immutable plan
 // field from current service, endpoint, policy and local-executor state.
 type CreateSystemUpdatePortReconfigurationParams struct {
+	PortContractVersion      int
+	Mode                     contracts.SystemUpdatePortMode
+	NewLocalListenPort       int
+	NewAdvertisedPort        int
+	ExpectedSnapshotID       string
 	NewPort                  int
 	ExpectedEndpointRevision int64
 }
@@ -97,6 +108,15 @@ type CreateSystemUpdatePortReconfigurationParams struct {
 // execution-host ownership and all digests are server-derived inside one
 // transaction.
 type CreateSystemdPortReconfigurationJobParams struct {
+	PortContractVersion      int
+	Mode                     contracts.SystemUpdatePortMode
+	NewLocalListenPort       int
+	NewAdvertisedPort        int
+	ExpectedSnapshotID       string
+	BuildPolicySnapshot      SystemUpdatePortPolicySnapshotBuilder
+	ExpectedDesiredRevision  int64
+	ExpectedFence            int64
+	newContainerPort         int
 	TargetID                 string
 	NewPort                  int
 	ExpectedEndpointRevision int64
@@ -144,6 +164,9 @@ func normalizeCreateSystemdPortReconfigurationJobParams(params CreateSystemdPort
 }
 
 func validateCreateSystemdPortReconfigurationJobParams(params CreateSystemdPortReconfigurationJobParams) error {
+	if params.PortContractVersion == 2 {
+		return validateCreateSystemUpdatePortV2Params(params)
+	}
 	if !serviceIDPattern.MatchString(params.TargetID) ||
 		params.NewPort < 1024 || params.NewPort > 65535 ||
 		params.ExpectedEndpointRevision < 1 ||
@@ -187,6 +210,11 @@ func cloneSystemUpdatePortReconfiguration(input *SystemUpdatePortReconfiguration
 		return nil
 	}
 	value := *input
+	if input.PortContractVersion == 2 {
+		body, _ := json.Marshal(input)
+		_ = json.Unmarshal(body, &value)
+		return &value
+	}
 	if input.Docker != nil {
 		docker := *input.Docker
 		value.Docker = &docker
@@ -202,6 +230,9 @@ func validateSystemUpdatePortReconfigurationPlanForDeployment(
 	plan *SystemUpdatePortReconfiguration,
 	deploymentMode string,
 ) error {
+	if plan != nil && plan.PortContractVersion == 2 {
+		return contracts.ValidateSystemUpdatePortPlan(systemUpdatePortContractsPlan(plan))
+	}
 	if plan == nil ||
 		plan.NetworkNamespace != systemUpdatePortNetworkNamespace ||
 		plan.Protocol != SystemUpdatePortProtocolTCP ||
@@ -324,6 +355,11 @@ func sameSystemUpdatePortReconfigurationIntent(left, right *SystemUpdatePortReco
 	if left == nil || right == nil {
 		return left == right
 	}
+	if left.PortContractVersion == 2 || right.PortContractVersion == 2 {
+		l, _ := json.Marshal(left)
+		r, _ := json.Marshal(right)
+		return string(l) == string(r)
+	}
 	leftCopy := *left
 	rightCopy := *right
 	leftCopy.Result = ""
@@ -380,6 +416,12 @@ func systemUpdatePortResultFromPersistedJob(status, code string) SystemUpdatePor
 }
 
 func canonicalizeSystemUpdatePortReport(job SystemUpdateJob, report SystemUpdateReport) (SystemUpdateReport, error) {
+	if isSystemUpdatePortV2(job) {
+		return canonicalizeSystemUpdatePortV2Report(job, report)
+	}
+	if report.PortResult != nil {
+		return SystemUpdateReport{}, ErrSystemUpdatePortResultMismatch
+	}
 	if job.Operation != SystemUpdateOperationPortReconfigure {
 		if report.PortReconfigure != nil {
 			return SystemUpdateReport{}, ErrInvalidSystemUpdate
@@ -466,6 +508,9 @@ func sameServiceEndpoint(left, right *ServiceEndpoint) bool {
 // all timestamps. A Host Agent must derive a separate runtime plan hash after
 // claim for mutation-grant and Local Executor binding.
 func ComputeSystemUpdatePortIntentSHA256(job SystemUpdateJob) (string, error) {
+	if isSystemUpdatePortV2(job) {
+		return contracts.ComputeSystemUpdatePortPlanSHA256(systemUpdatePortContractsPlan(job.PortReconfigure))
+	}
 	if job.Operation != SystemUpdateOperationPortReconfigure ||
 		job.PortReconfigure == nil {
 		return "", ErrInvalidSystemUpdate

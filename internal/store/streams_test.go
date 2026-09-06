@@ -39,10 +39,15 @@ func TestMemoryStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 0, time.UTC)
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-01", startedAt); err != nil {
+		t.Fatal(err)
+	}
 	artifact := StreamArtifact{
+		ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt,
 		Kind:         "archive",
 		Name:         "final.mp4",
-		RelativePath: "final/" + stream.ID + "/final.mp4",
+		RelativePath: "final/" + stream.ID + "/run-01/final.mp4",
 		SizeBytes:    123,
 	}
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{artifact}); err != nil {
@@ -185,8 +190,12 @@ func TestMemoryDeleteStreamRetainsArchiveAndHidesOperationalStream(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 0, time.UTC)
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-01", startedAt); err != nil {
+		t.Fatal(err)
+	}
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{{
-		Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 1,
+		ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-01/final.mp4", SizeBytes: 1,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -290,9 +299,13 @@ func TestMemoryArchiveStreamsHideDeletedStreamAfterLastRecordingArtifactIsDelete
 	if err != nil {
 		t.Fatal(err)
 	}
+	startedAt := time.Date(2026, 8, 18, 5, 6, 29, 0, time.UTC)
+	if _, err := streams.PrepareStreamArchiveRun(t.Context(), stream.ID, "run-01", startedAt); err != nil {
+		t.Fatal(err)
+	}
 	if err := streams.UpsertStreamArtifacts(t.Context(), stream.ID, []StreamArtifact{
-		{Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/final.mp4", SizeBytes: 10},
-		{Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/metadata.json", SizeBytes: 1},
+		{ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt, Kind: "archive", Name: "final.mp4", RelativePath: "final/" + stream.ID + "/run-01/final.mp4", SizeBytes: 10},
+		{ArchiveRunID: "run-01", ArchiveStartedAt: &startedAt, Kind: "metadata", Name: "metadata.json", RelativePath: "final/" + stream.ID + "/run-01/metadata.json", SizeBytes: 1},
 	}); err != nil {
 		t.Fatal(err)
 	}

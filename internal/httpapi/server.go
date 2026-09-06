@@ -6196,7 +6196,7 @@ func (s *Server) nodeAgentReport(w http.ResponseWriter, r *http.Request) {
 	if body.Status == "" {
 		body.Status = "online"
 	}
-	service, err := s.persistServiceHeartbeat(r.Context(), token, serviceBearerToken(r), body)
+	service, err := s.persistServiceHeartbeat(r.Context(), token, serviceBearerToken(r), body, panelBaseURL(r))
 	if errors.Is(err, store.ErrUnauthorized) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_service_token"})
 		return
@@ -8394,7 +8394,7 @@ func (s *Server) serviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	service, err := s.persistServiceHeartbeat(r.Context(), token, serviceBearerToken(r), body)
+	service, err := s.persistServiceHeartbeat(r.Context(), token, serviceBearerToken(r), body, panelBaseURL(r))
 	if errors.Is(err, store.ErrUnauthorized) {
 		s.writeServiceAudit(r, token, "services.heartbeat", "service", body.ServiceID, "failure", map[string]any{"reason": "invalid_service_token", "current_stream_id": body.CurrentStreamID})
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_service_token"})
@@ -8458,6 +8458,7 @@ func (s *Server) persistServiceHeartbeat(
 	token store.ServiceToken,
 	rawToken string,
 	heartbeat store.ServiceHeartbeat,
+	panelOrigins ...string,
 ) (store.RegisteredService, error) {
 	if token.ServiceType != "update_agent" {
 		return s.services.Heartbeat(ctx, token, heartbeat)
@@ -8468,7 +8469,19 @@ func (s *Server) persistServiceHeartbeat(
 	if err != nil {
 		return store.RegisteredService{}, err
 	}
-	return s.services.Heartbeat(ctx, reauthenticated, heartbeat)
+	service, err := s.services.Heartbeat(ctx, reauthenticated, heartbeat)
+	if err != nil {
+		return service, err
+	}
+	panelURL := panelBaseURL(nil)
+	if len(panelOrigins) == 1 {
+		panelURL = panelOrigins[0]
+	}
+	// Baseline confirmation is a separate, bounded metadata CAS. A missing or
+	// mismatched baseline keeps ST-PORT unavailable without changing heartbeat
+	// or stream reconciliation semantics.
+	_ = s.confirmSystemUpdatePortBaseline(ctx, service, panelURL)
+	return service, nil
 }
 
 func serviceBearerToken(r *http.Request) string {

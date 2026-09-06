@@ -62,6 +62,8 @@ type HostAgentConfigurePolicySource struct {
 }
 
 type HostAgentConfigurePolicyTarget struct {
+	DockerSnapshot        *contracts.SystemUpdatePortDockerSnapshot
+	DockerRoot            *contracts.UpdaterPortDockerRootBaseline
 	ServiceID             string
 	ServiceType           string
 	DeploymentMode        string
@@ -101,6 +103,27 @@ type LocalExecutorTarget struct {
 	ConfigSHA256     string                `json:"config_sha256,omitempty"`
 	LocalListen      LocalExecutorEndpoint `json:"local_listen_endpoint"`
 	Systemd          *SystemdTarget        `json:"systemd,omitempty"`
+	Docker           *DockerTarget         `json:"docker,omitempty"`
+}
+
+// The field order matches the installed independent Executor's DockerTarget.
+// Values are reconstructed from the fixed profile and bounded digest metadata.
+type DockerTarget struct {
+	DockerPath              string   `json:"docker_path"`
+	ComposeProject          string   `json:"compose_project"`
+	ProjectDir              string   `json:"project_dir"`
+	ComposeFiles            []string `json:"compose_files"`
+	Service                 string   `json:"service"`
+	ImageRepo               string   `json:"image_repo"`
+	ImageVariable           string   `json:"image_variable"`
+	BaseEnvFile             string   `json:"base_env_file,omitempty"`
+	VersionEnvFile          string   `json:"version_env_file"`
+	PortEnvFile             string   `json:"port_env_file,omitempty"`
+	ComposeConfigSHA256     string   `json:"compose_config_sha256"`
+	PortComposePolicySHA256 string   `json:"port_compose_policy_sha256,omitempty"`
+	PortComposeRevision     int64    `json:"port_compose_revision,omitempty"`
+	CurrentVersion          string   `json:"current_version,omitempty"`
+	Channel                 string   `json:"channel,omitempty"`
 }
 
 type LocalExecutorEndpoint struct {
@@ -176,6 +199,16 @@ func standardSystemdProfileFor(serviceType string) (standardSystemdProfile, bool
 // BuildHostAgentConfigurePolicy expands only server-owned identities and
 // revisions through the fixed independent-Updater profile table.
 func BuildHostAgentConfigurePolicy(source HostAgentConfigurePolicySource) (ConfigurePolicyProjection, error) {
+	return buildHostAgentConfigurePolicy(source, false)
+}
+
+// BuildSystemUpdatePortPolicy is used only to reproduce an already-bound
+// baseline; it does not enable automatic Docker configuration or accept paths.
+func BuildSystemUpdatePortPolicy(source HostAgentConfigurePolicySource) (ConfigurePolicyProjection, error) {
+	return buildHostAgentConfigurePolicy(source, true)
+}
+
+func buildHostAgentConfigurePolicy(source HostAgentConfigurePolicySource, portBaseline bool) (ConfigurePolicyProjection, error) {
 	source.PanelURL = strings.TrimSpace(source.PanelURL)
 	source.ExecutionHostID = strings.TrimSpace(source.ExecutionHostID)
 	if err := validatePanelURL(source.PanelURL); err != nil {
@@ -203,7 +236,13 @@ func BuildHostAgentConfigurePolicy(source HostAgentConfigurePolicySource) (Confi
 		Targets:              make([]LocalExecutorTarget, 0, len(targets)),
 	}
 	for index, sourceTarget := range targets {
-		target, err := buildHostAgentConfigureSystemdTarget(sourceTarget)
+		var target LocalExecutorTarget
+		var err error
+		if portBaseline && sourceTarget.DeploymentMode == "docker" {
+			target, err = buildSystemUpdatePortDockerTarget(sourceTarget)
+		} else {
+			target, err = buildHostAgentConfigureSystemdTarget(sourceTarget)
+		}
 		if err != nil {
 			return ConfigurePolicyProjection{}, fmt.Errorf("Host Agent configure targets[%d]: %w", index, err)
 		}
@@ -378,6 +417,9 @@ func (policy LocalExecutorPolicy) validate() error {
 }
 
 func (target LocalExecutorTarget) validate() error {
+	if target.DeploymentMode == "docker" {
+		return validateSystemUpdatePortDockerTarget(target)
+	}
 	if target.ServiceID != strings.TrimSpace(target.ServiceID) || !identifierPattern.MatchString(target.ServiceID) ||
 		target.ServiceType != strings.TrimSpace(target.ServiceType) || !validServiceType(target.ServiceType) ||
 		target.DeploymentMode != ModeSystemd || target.ConfigRevision < 1 || target.EndpointRevision < 0 ||
@@ -415,6 +457,48 @@ func (target LocalExecutorTarget) validate() error {
 		}
 	} else if !databaseNamePattern.MatchString(target.DatabaseName) {
 		return errors.New("database_name is required for this systemd service")
+	}
+	return nil
+}
+
+func buildSystemUpdatePortDockerTarget(source HostAgentConfigurePolicyTarget) (LocalExecutorTarget, error) {
+	if source.DockerSnapshot == nil || source.DockerRoot == nil || source.DatabaseName != "" ||
+		!identifierPattern.MatchString(source.ServiceID) || source.EndpointRevision < 1 || source.AppliedConfigRevision < 1 ||
+		!digestPattern.MatchString(source.AppliedConfigSHA256) || source.LocalListenPort != source.DockerSnapshot.PublishedPort {
+		return LocalExecutorTarget{}, errors.New("Docker port baseline is incomplete")
+	}
+	service := strings.ReplaceAll(source.ServiceType, "_", "-")
+	if source.ServiceType == "control_panel" || !validServiceType(source.ServiceType) {
+		return LocalExecutorTarget{}, errors.New("Docker port profile is unsupported")
+	}
+	target := LocalExecutorTarget{ServiceID: source.ServiceID, ServiceType: source.ServiceType, DeploymentMode: "docker",
+		EndpointRevision: source.EndpointRevision, ConfigRevision: source.AppliedConfigRevision, ConfigSHA256: source.AppliedConfigSHA256,
+		LocalListen: LocalExecutorEndpoint{Host: "127.0.0.1", Port: source.LocalListenPort},
+		Docker: &DockerTarget{DockerPath: "/usr/bin/docker", ComposeProject: "autostream", ProjectDir: "/opt/autostream",
+			ComposeFiles: []string{"/opt/autostream/compose.yml"}, Service: service, ImageRepo: "ghcr.io/kome-lab/autostream-docker/" + service,
+			ImageVariable: "AUTOSTREAM_DOCKER_VERSION", BaseEnvFile: "/opt/autostream/.env",
+			VersionEnvFile: "/opt/autostream/local-executor/docker/" + service + ".env", PortEnvFile: "/opt/autostream/local-executor/docker/ports/" + service + ".env",
+			ComposeConfigSHA256: source.DockerRoot.ComposeConfigSHA256, PortComposePolicySHA256: strings.TrimPrefix(source.DockerSnapshot.ComposePolicySHA256, "sha256:"),
+			PortComposeRevision: source.DockerSnapshot.ComposeRevision, CurrentVersion: source.DockerRoot.CurrentVersion, Channel: "docker"},
+	}
+	return target, validateSystemUpdatePortDockerTarget(target)
+}
+
+func validateSystemUpdatePortDockerTarget(target LocalExecutorTarget) error {
+	d := target.Docker
+	service := strings.ReplaceAll(target.ServiceType, "_", "-")
+	if d == nil || target.Systemd != nil || target.DatabaseName != "" || target.ServiceType == "control_panel" || !validServiceType(target.ServiceType) ||
+		!identifierPattern.MatchString(target.ServiceID) || target.ServiceID != strings.TrimSpace(target.ServiceID) ||
+		target.EndpointRevision < 1 || target.ConfigRevision < 1 || !digestPattern.MatchString(target.ConfigSHA256) ||
+		target.LocalListen.Host != "127.0.0.1" || target.LocalListen.Port < 1024 || target.LocalListen.Port > 65535 ||
+		d.DockerPath != "/usr/bin/docker" || d.ComposeProject != "autostream" || d.ProjectDir != "/opt/autostream" ||
+		len(d.ComposeFiles) != 1 || d.ComposeFiles[0] != "/opt/autostream/compose.yml" || d.Service != service ||
+		d.ImageRepo != "ghcr.io/kome-lab/autostream-docker/"+service || d.ImageVariable != "AUTOSTREAM_DOCKER_VERSION" ||
+		d.BaseEnvFile != "/opt/autostream/.env" || d.VersionEnvFile != "/opt/autostream/local-executor/docker/"+service+".env" ||
+		d.PortEnvFile != "/opt/autostream/local-executor/docker/ports/"+service+".env" || d.Channel != "docker" ||
+		!digestPattern.MatchString("sha256:"+d.ComposeConfigSHA256) || !digestPattern.MatchString("sha256:"+d.PortComposePolicySHA256) || d.PortComposeRevision < 1 ||
+		strings.ContainsAny(d.CurrentVersion, "\r\n\x00") {
+		return errors.New("Docker target does not match the fixed port profile")
 	}
 	return nil
 }

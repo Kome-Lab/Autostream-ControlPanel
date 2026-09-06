@@ -64,15 +64,17 @@ type hostAgentRuntimeTokenRotationDirective struct {
 }
 
 type hostAgentPolicyTarget struct {
-	ServiceID             string                 `json:"service_id"`
-	ServiceType           string                 `json:"service_type"`
-	DeploymentMode        string                 `json:"deployment_mode"`
-	AppliedConfigRevision int64                  `json:"applied_config_revision"`
-	AppliedConfigSHA256   string                 `json:"applied_config_sha256,omitempty"`
-	DesiredEndpoint       *store.ServiceEndpoint `json:"desired_endpoint,omitempty"`
-	AppliedEndpoint       *store.ServiceEndpoint `json:"applied_endpoint,omitempty"`
-	LocalListenEndpoint   *store.ServiceEndpoint `json:"local_listen_endpoint,omitempty"`
-	LocalHealthEndpoint   *store.ServiceEndpoint `json:"local_health_endpoint,omitempty"`
+	EndpointRevision        int64                  `json:"endpoint_revision,omitempty"`
+	AppliedEndpointRevision int64                  `json:"applied_endpoint_revision,omitempty"`
+	ServiceID               string                 `json:"service_id"`
+	ServiceType             string                 `json:"service_type"`
+	DeploymentMode          string                 `json:"deployment_mode"`
+	AppliedConfigRevision   int64                  `json:"applied_config_revision"`
+	AppliedConfigSHA256     string                 `json:"applied_config_sha256,omitempty"`
+	DesiredEndpoint         *store.ServiceEndpoint `json:"desired_endpoint,omitempty"`
+	AppliedEndpoint         *store.ServiceEndpoint `json:"applied_endpoint,omitempty"`
+	LocalListenEndpoint     *store.ServiceEndpoint `json:"local_listen_endpoint,omitempty"`
+	LocalHealthEndpoint     *store.ServiceEndpoint `json:"local_health_endpoint,omitempty"`
 }
 
 func (s *Server) serviceHostAgentPolicy(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +152,8 @@ func (s *Server) serviceHostAgentPolicy(w http.ResponseWriter, r *http.Request) 
 			AppliedConfigRevision: 1,
 		}
 		if service, exists := servicesByID[target.ServiceID]; exists && service.ServiceType == target.ServiceType {
+			item.EndpointRevision = service.EndpointRevision
+			item.AppliedEndpointRevision = service.AppliedEndpointRevision
 			item.DesiredEndpoint = copyHostAgentEndpoint(service.DesiredEndpoint)
 			item.AppliedEndpoint = copyHostAgentEndpoint(service.AppliedEndpoint)
 			if service.AppliedConfigRevision > 0 {
@@ -162,6 +166,12 @@ func (s *Server) serviceHostAgentPolicy(w http.ResponseWriter, r *http.Request) 
 				}
 				item.LocalHealthEndpoint = copyHostAgentEndpoint(item.LocalListenEndpoint)
 			}
+		}
+		if err := s.projectSystemUpdatePortPolicyTarget(r.Context(), agent, policy, &item); err != nil {
+			if !writeSystemUpdatePortV2Error(w, err) {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_host_agent_policy_failed"})
+			}
+			return
 		}
 		targets = append(targets, item)
 	}

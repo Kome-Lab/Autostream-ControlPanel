@@ -136,7 +136,7 @@ func (s *MemorySystemUpdateStore) SwitchSystemUpdateExecutionHost(
 		return SystemUpdateExecutionHost{}, ErrSystemUpdateExecutionHostStale
 	}
 	for _, job := range s.jobs {
-		if job.ExecutionHostID == executionHostID && !isTerminalSystemUpdateStatus(job.Status) {
+		if job.ExecutionHostID == executionHostID && systemUpdateJobHoldsHost(job) {
 			return SystemUpdateExecutionHost{}, ErrSystemUpdateExecutionHostBusy
 		}
 	}
@@ -242,7 +242,7 @@ FOR UPDATE`, nextAgentServiceID).Scan(
 	err = tx.QueryRowContext(ctx, `SELECT id
 FROM system_update_jobs
 WHERE execution_host_id = ?
-  AND status NOT IN ('succeeded','rolled_back','failed','canceled')
+  AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions port_hold WHERE port_hold.job_id = system_update_jobs.id AND port_hold.recovery_required = 1))
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE`, executionHostID).Scan(&activeJobID)
@@ -340,6 +340,9 @@ func getSystemUpdateExecutionHostForUpdate(ctx context.Context, tx *sql.Tx, exec
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return syntheticSystemUpdateExecutionHost(executionHostID), nil
+	}
+	if err == nil {
+		observeMariaDBUpdaterPolicyLockPhase(ctx, "system_update_execution_host", mariaDBUpdaterPolicyHostLockHeld)
 	}
 	return host, err
 }

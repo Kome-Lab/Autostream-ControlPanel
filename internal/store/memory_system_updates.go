@@ -17,6 +17,7 @@ type MemorySystemUpdateStore struct {
 	executionHosts        map[string]SystemUpdateExecutionHost
 	portReservations      map[servicePortReservationKey]ServicePortReservation
 	portJobRegistries     map[string]*MemoryAuthStore
+	portPolicyStore       *MemoryUpdaterPolicyStore
 	runtimeTokenRotations map[string]SystemUpdateRuntimeTokenRotation
 	hostSelfUpdates       map[string]SystemUpdateHostSelfUpdate
 	hostSelfUpdateGrants  map[string]SystemUpdateHostSelfUpdateGrant
@@ -90,7 +91,7 @@ func (s *MemorySystemUpdateStore) GetActiveSystemUpdateJob(ctx context.Context, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, job := range s.jobs {
-		if job.TargetID == targetID && !isTerminalSystemUpdateStatus(job.Status) {
+		if job.TargetID == targetID && systemUpdateJobHoldsHost(job) {
 			return publicMemorySystemUpdateJob(job), nil
 		}
 	}
@@ -122,7 +123,10 @@ func (s *MemorySystemUpdateStore) CreateSystemUpdateJob(ctx context.Context, par
 		return SystemUpdateJob{}, false, ErrSystemUpdateRuntimeTokenRotationBusy
 	}
 	for _, existing := range s.jobs {
-		if existing.TargetID == params.TargetID && !isTerminalSystemUpdateStatus(existing.Status) {
+		if isSystemUpdatePortV2(existing) && existing.ExecutionHostID == params.ExecutionHostID && systemUpdateJobHoldsHost(existing) {
+			return SystemUpdateJob{}, false, ErrSystemUpdateExecutionHostBusy
+		}
+		if existing.TargetID == params.TargetID && systemUpdateJobHoldsHost(existing) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateTargetActive
 		}
 	}
@@ -158,8 +162,8 @@ func (s *MemorySystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id,
 	if id == "" || strings.TrimSpace(actorUserID) == "" {
 		return SystemUpdateJob{}, ErrInvalidSystemUpdate
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockPortPolicyOrder()
+	defer unlock()
 	job, ok := s.jobs[id]
 	if !ok {
 		return SystemUpdateJob{}, ErrNotFound
@@ -175,7 +179,13 @@ func (s *MemorySystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id,
 		}
 		portRegistry.mu.Lock()
 		defer portRegistry.mu.Unlock()
-		if err := rollbackMemoryQueuedSystemdPortJobLocked(s, portRegistry, job, time.Now().UTC()); err != nil {
+		var err error
+		if isSystemUpdatePortV2(job) {
+			err = cancelMemorySystemUpdatePortV2Locked(s, portRegistry, job, time.Now().UTC())
+		} else {
+			err = rollbackMemoryQueuedSystemdPortJobLocked(s, portRegistry, job, time.Now().UTC())
+		}
+		if err != nil {
 			return SystemUpdateJob{}, err
 		}
 	}
@@ -186,8 +196,15 @@ func (s *MemorySystemUpdateStore) CancelSystemUpdateJob(ctx context.Context, id,
 	job.CancelledAt = &now
 	job.CompletedAt = &now
 	job.UpdatedAt = now
+	if isSystemUpdatePortV2(job) {
+		job.portTransaction = cloneSystemUpdatePortTransaction(job.portTransaction)
+		job.portTransaction.Phase = "canceled"
+		projectSystemUpdatePortTransaction(&job)
+	}
 	s.jobs[id] = job
-	delete(s.portJobRegistries, id)
+	if !isSystemUpdatePortV2(job) {
+		delete(s.portJobRegistries, id)
+	}
 	return publicMemorySystemUpdateJob(job), nil
 }
 
@@ -209,10 +226,10 @@ func (s *MemorySystemUpdateStore) InspectSystemUpdateActiveJob(ctx context.Conte
 	if job.AgentServiceID != agentServiceID {
 		return SystemUpdateJob{}, false, ErrSystemUpdateOwnershipConflict
 	}
-	if isExecutingSystemUpdateStatus(job.Status) {
+	if isExecutingSystemUpdateStatus(job.Status) || systemUpdatePortV2Recoverable(job) {
 		return publicMemorySystemUpdateJob(job), false, nil
 	}
-	if !isTerminalSystemUpdateStatus(job.Status) {
+	if systemUpdateJobHoldsHost(job) {
 		return SystemUpdateJob{}, false, ErrSystemUpdateRecoveryProofUnavailable
 	}
 	return publicMemorySystemUpdateJob(job), true, nil
@@ -239,8 +256,8 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 		return SystemUpdateClaim{}, false, ErrInvalidSystemUpdate
 	}
 	now = now.UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockPortPolicyOrder()
+	defer unlock()
 	ownership := syntheticSystemUpdateExecutionHost(executionHostID)
 	if current, ok := s.executionHosts[executionHostID]; ok {
 		ownership = current
@@ -261,7 +278,7 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 		if job.AgentServiceID != agentServiceID {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateOwnershipConflict
 		}
-		if !isExecutingSystemUpdateStatus(job.Status) {
+		if !isExecutingSystemUpdateStatus(job.Status) && !(v2 && systemUpdatePortV2Recoverable(job)) {
 			return SystemUpdateClaim{}, false, ErrSystemUpdateRecoveryProofUnavailable
 		}
 		if job.ExecutionHostID != executionHostID {
@@ -339,6 +356,18 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 	if err := authorizeSystemUpdateJobOwnership(*selected, ownership, agentServiceID, executionHostID); err != nil {
 		return SystemUpdateClaim{}, false, err
 	}
+	if isSystemUpdatePortV2(*selected) {
+		registry := s.portJobRegistries[selected.ID]
+		if registry == nil {
+			return SystemUpdateClaim{}, false, ErrSystemUpdatePortStoreMismatch
+		}
+		registry.mu.Lock()
+		err := validateMemorySystemUpdatePortV2StateLocked(s, registry, *selected)
+		registry.mu.Unlock()
+		if err != nil {
+			return SystemUpdateClaim{}, false, err
+		}
+	}
 	leaseToken, err := newSystemUpdateLeaseToken()
 	if err != nil {
 		return SystemUpdateClaim{}, false, err
@@ -401,8 +430,8 @@ func (s *MemorySystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id 
 		return SystemUpdateJob{}, false, ErrInvalidSystemUpdate
 	}
 	now = now.UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockPortPolicyOrder()
+	defer unlock()
 	job, ok := s.jobs[id]
 	if !ok {
 		return SystemUpdateJob{}, false, ErrNotFound
@@ -431,6 +460,9 @@ func (s *MemorySystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id 
 		if !systemUpdateReportLeaseMatches(job, report, now, false) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateLeaseInvalid
 		}
+		if isSystemUpdatePortV2(job) && job.PortResult != nil && report.Sequence >= job.Sequence && report.Sequence <= job.Sequence+1 && systemUpdatePortV2AcceptedReplay(job, report) {
+			return publicMemorySystemUpdateJob(job), false, nil
+		}
 		if report.Sequence != job.Sequence || !sameSystemUpdateReport(job, report) {
 			return SystemUpdateJob{}, false, ErrSystemUpdateSequenceStale
 		}
@@ -452,7 +484,7 @@ func (s *MemorySystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id 
 		s.jobs[id] = job
 		return publicMemorySystemUpdateJob(job), false, nil
 	}
-	if !allowedSystemUpdateTransition(job.Status, report.Status) || report.Progress < job.Progress {
+	if !allowedSystemUpdateJobTransition(job, report.Status) || report.Progress < job.Progress {
 		return SystemUpdateJob{}, false, ErrSystemUpdateTransition
 	}
 	job.Status = report.Status
@@ -464,7 +496,11 @@ func (s *MemorySystemUpdateStore) ReportSystemUpdateJob(ctx context.Context, id 
 	job.PreviousDigest = report.PreviousDigest
 	job.UpdatedAt = now
 	if isTerminalSystemUpdateStatus(job.Status) {
-		if job.Operation == SystemUpdateOperationPortReconfigure {
+		if isSystemUpdatePortV2(job) {
+			if err := finishMemorySystemUpdatePortV2Locked(s, s.portJobRegistries[id], &job, report, now); err != nil {
+				return SystemUpdateJob{}, false, err
+			}
+		} else if job.Operation == SystemUpdateOperationPortReconfigure {
 			registry := s.portJobRegistries[id]
 			if err := applyMemorySystemdPortTerminalStateLocked(
 				s, registry, job, report.PortReconfigure.Result, now,
@@ -521,7 +557,7 @@ func (s *MemorySystemUpdateStore) HasActiveSystemUpdateReference(ctx context.Con
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, job := range s.jobs {
-		if !isTerminalSystemUpdateStatus(job.Status) && (job.TargetID == serviceID || job.AgentServiceID == serviceID) {
+		if systemUpdateJobHoldsHost(job) && (job.TargetID == serviceID || job.AgentServiceID == serviceID) {
 			return true, nil
 		}
 	}
@@ -626,6 +662,8 @@ func (s *MemorySystemUpdateStore) IsSystemUpdateEmergencyIdentityRecovery(
 func publicMemorySystemUpdateJob(job SystemUpdateJob) SystemUpdateJob {
 	job.leaseTokenHash = ""
 	job.PortReconfigure = cloneSystemUpdatePortReconfiguration(job.PortReconfigure)
+	job.portTransaction = cloneSystemUpdatePortTransaction(job.portTransaction)
+	projectSystemUpdatePortTransaction(&job)
 	return job
 }
 

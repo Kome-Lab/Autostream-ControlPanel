@@ -157,9 +157,10 @@ func TestMemorySystemUpdatePullReportAndGrantRequireAuthenticatedHost(t *testing
 		SessionID:      "cross-host-grant-session",
 	}
 	if _, err := updates.IssueSystemUpdateMutationGrant(ctx, job.ID, IssueSystemUpdateMutationGrantParams{
+		ProtocolVersion: 2,
 		AgentServiceID:  "updater-shared",
 		ExecutionHostID: "host-a",
-		LeaseToken:      claim.LeaseToken,
+		LeaseToken:      "",
 		LeaseGeneration: claim.LeaseGeneration,
 		Binding:         binding,
 	}, base.Add(2*time.Second), time.Minute); !errors.Is(err, ErrSystemUpdateOwnershipConflict) {
@@ -277,9 +278,10 @@ func TestMemorySystemUpdateOwnershipDriftRejectsReportAuthorizeAndGrantReplay(t 
 		PolicyRevision: ownership.PolicyRevision,
 	}
 	issued, err := updates.IssueSystemUpdateMutationGrant(ctx, job.ID, IssueSystemUpdateMutationGrantParams{
+		ProtocolVersion: 2,
 		AgentServiceID:  "updater-host-a",
 		ExecutionHostID: "host-a",
-		LeaseToken:      claim.LeaseToken,
+		LeaseToken:      "",
 		LeaseGeneration: claim.LeaseGeneration,
 		Binding:         binding,
 	}, base.Add(2*time.Second), time.Minute)
@@ -318,9 +320,10 @@ func TestMemorySystemUpdateOwnershipDriftRejectsReportAuthorizeAndGrantReplay(t 
 		t.Fatalf("stale authorization err = %v", err)
 	}
 	if _, err := updates.IssueSystemUpdateMutationGrant(ctx, job.ID, IssueSystemUpdateMutationGrantParams{
+		ProtocolVersion: 2,
 		AgentServiceID:  "updater-host-a",
 		ExecutionHostID: "host-a",
-		LeaseToken:      claim.LeaseToken,
+		LeaseToken:      "",
 		LeaseGeneration: claim.LeaseGeneration,
 		Binding:         binding,
 	}, base.Add(4*time.Second), time.Minute); !errors.Is(err, ErrSystemUpdateOwnershipConflict) {

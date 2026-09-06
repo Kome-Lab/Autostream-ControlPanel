@@ -79,7 +79,7 @@ func TestMemorySystemUpdateStoreActivePullRecoveryRequiresExactTargetAndOwnershi
 		},
 		{
 			name: "wrong host", agentServiceID: "host-agent-a", executionHostID: "host-b",
-			eligibleTargets: map[string]string{"worker-a": "systemd"}, wantErr: ErrSystemUpdateActiveUnavailable,
+			eligibleTargets: map[string]string{"worker-a": "systemd"}, wantErr: ErrSystemUpdateOwnershipConflict,
 		},
 		{
 			name: "missing target", agentServiceID: "host-agent-a", executionHostID: "host-a",
