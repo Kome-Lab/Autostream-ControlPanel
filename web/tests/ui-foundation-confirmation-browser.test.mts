@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { BrowserHarness } from "./helpers/browser-harness.mts";
-import { withConfirmationBrowserFixture } from "./helpers/ui-foundation-confirmation-browser-harness.mts";
+import { nativeConfirmationClick, waitForConfirmationClosed, waitForConfirmationIntent, withConfirmationBrowserFixture } from "./helpers/ui-foundation-confirmation-browser-harness.mts";
 
 test("high-risk and compatibility confirmations preserve browser focus, literal input, state, and intent boundaries", async (t) => {
   await withConfirmationBrowserFixture(async ({ baseUrl, browser }) => {
@@ -10,7 +10,7 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
     browser.clearConsoleErrors();
 
     await browser.navigate(`${baseUrl}/?scenario=consequence&locale=en`);
-    await browser.clickSelector("#consequence-trigger");
+    await nativeConfirmationClick(browser, "#consequence-trigger");
     await browser.waitFor("document.querySelectorAll('[role=alertdialog]').length", (value: number) => value === 1, "consequence dialog open");
     assert.equal(await browser.evaluate("document.activeElement?.getAttribute('data-slot')"), "alert-dialog-cancel");
     assert.equal(await browser.evaluate("document.querySelector('[role=alertdialog]')?.getAttribute('aria-labelledby') !== null"), true);
@@ -25,8 +25,9 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
     );
     assert.equal(await browser.evaluate("document.activeElement?.id"), "consequence-trigger");
     assert.equal(await intentCount(browser), 0, "close never confirms");
-    await browser.clickSelector("#consequence-trigger");
-    await browser.clickSelector("[data-slot=alert-dialog-cancel]");
+    await nativeConfirmationClick(browser, "#consequence-trigger");
+    await nativeConfirmationClick(browser, "[data-slot=alert-dialog-cancel]");
+    await waitForConfirmationClosed(browser, "consequence-trigger");
     await browser.waitFor(
       "document.activeElement?.id || ''",
       (value: string) => value === "consequence-trigger",
@@ -35,7 +36,7 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
     assert.equal(await intentCount(browser), 0, "cancel never confirms");
 
     await browser.navigate(`${baseUrl}/?scenario=typed&locale=en`);
-    await browser.clickSelector("#typed-trigger");
+    await nativeConfirmationClick(browser, "#typed-trigger");
     await browser.waitFor("document.querySelector('[data-confirmation-token-input]') !== null", Boolean, "typed input visible");
     assert.equal(await browser.evaluate("document.activeElement?.hasAttribute('data-confirmation-token-input')"), true);
     await browser.fillSelector("[data-confirmation-token-input]", "worker alpha");
@@ -66,14 +67,7 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
     })()`);
     assert.deepEqual(paste, { allowed: true, defaultPrevented: false });
     await browser.waitFor("!document.querySelector('[data-confirm-action]')?.hasAttribute('disabled')", Boolean, "exact pasted token enables confirm");
-    await browser.evaluate(`(() => {
-      const button = document.querySelector('[data-confirm-action]');
-      if (!(button instanceof HTMLButtonElement)) return false;
-      button.click();
-      button.click();
-      button.focus();
-      return true;
-    })()`);
+    await nativeConfirmationClick(browser, "[data-confirm-action]");
     await browser.pressKey("Enter");
     await browser.pressKey("Enter");
     await browser.waitFor("Number(document.querySelector('[data-testid=intent-count]')?.textContent)", (value: number) => value === 1, "duplicate intent latch");
@@ -84,7 +78,7 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
     assert.equal(await browser.evaluate("document.querySelectorAll('[role=alertdialog]').length"), 1, "submitting cannot be abandoned by Escape");
 
     await browser.navigate(`${baseUrl}/?scenario=revalidating&locale=ja`);
-    await browser.clickSelector("#revalidating-trigger");
+    await nativeConfirmationClick(browser, "#revalidating-trigger");
     assert.equal(await browser.evaluate("document.querySelector('[data-slot=alert-dialog-title]')?.textContent"), "再起動");
     assert.equal(await browser.evaluate("document.querySelector('[role=alertdialog]')?.getAttribute('aria-busy')"), "true");
     assert.equal(await browser.evaluate("document.querySelector('[data-confirm-action]')?.hasAttribute('disabled')"), true);
@@ -92,12 +86,12 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
     assert.match(await browser.evaluate<string>("document.querySelector('[role=status]')?.textContent || ''"), /最新の権限と状態/);
 
     await browser.navigate(`${baseUrl}/?scenario=stale&locale=en`);
-    await browser.clickSelector("#stale-trigger");
+    await nativeConfirmationClick(browser, "#stale-trigger");
     assert.match(await browser.evaluate<string>("document.querySelector('[role=alert]')?.textContent || ''"), /action was not sent/);
     assert.equal(await intentCount(browser), 0);
 
     await browser.navigate(`${baseUrl}/?scenario=unknown&locale=en`);
-    await browser.clickSelector("#unknown-trigger");
+    await nativeConfirmationClick(browser, "#unknown-trigger");
     assert.match(await browser.evaluate<string>("document.querySelector('[role=alert]')?.textContent || ''"), /Do not resend/);
     assert.equal(await browser.evaluate("document.querySelector('[data-confirm-action]') === null"), true);
     assert.equal(await intentCount(browser), 0);
@@ -174,12 +168,13 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
 
     await browser.navigate(`${baseUrl}/?scenario=invalid&locale=en`);
     assert.equal(await browser.evaluate("document.querySelector('#invalid-trigger')?.hasAttribute('disabled')"), true);
-    await browser.evaluate("document.querySelector('#invalid-trigger')?.click()");
+    await nativeConfirmationClick(browser, "#invalid-trigger", true);
     assert.equal(await browser.evaluate("document.querySelectorAll('[role=alertdialog]').length"), 0);
 
     await browser.navigate(`${baseUrl}/?scenario=controller-close&locale=en`);
-    await browser.clickSelector("#controller-close-trigger");
-    await browser.clickSelector("[data-confirm-action]");
+    await nativeConfirmationClick(browser, "#controller-close-trigger");
+    await nativeConfirmationClick(browser, "[data-confirm-action]");
+    await waitForConfirmationClosed(browser, "controller-close-trigger");
     await browser.waitFor(
       "document.activeElement?.id || ''",
       (value: string) => value === "controller-close-trigger",
@@ -192,7 +187,7 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
       { name: "forced-colors", value: "active" },
     ]);
     await browser.navigate(`${baseUrl}/?scenario=consequence&locale=en`);
-    await browser.clickSelector("#consequence-trigger");
+    await nativeConfirmationClick(browser, "#consequence-trigger");
     assert.equal(await browser.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), true);
     assert.equal(await browser.evaluate("matchMedia('(forced-colors: active)').matches"), true);
     assert.equal(await browser.evaluate("document.activeElement?.getAttribute('data-slot')"), "alert-dialog-cancel");
@@ -211,7 +206,7 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
 
     await browser.setMediaFeatures([]);
     await browser.navigate(`${baseUrl}/?scenario=consequence&locale=ja`);
-    await browser.clickSelector("#consequence-trigger");
+    await nativeConfirmationClick(browser, "#consequence-trigger");
     assert.match(await browser.evaluate<string>("document.querySelector('[data-slot=alert-dialog-description]')?.textContent || ''"), /本番配信に影響/);
     await browser.pressKey("Escape");
     await browser.waitFor(
@@ -219,12 +214,21 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
       (value: string) => value === "consequence-trigger",
       "Japanese Foundation confirmation returns focus to trigger",
     );
+    await waitForConfirmationClosed(browser, "consequence-trigger");
     assert.equal(await browser.evaluate("document.activeElement?.id"), "consequence-trigger");
     assert.equal(await intentCount(browser), 0);
-    await browser.clickSelector("#consequence-trigger");
-    await browser.clickSelector("[data-confirm-action]");
-    await browser.waitFor("Number(document.querySelector('[data-testid=intent-count]')?.textContent)", (value: number) => value === 1, "Foundation callback remains caller-owned");
-    assert.equal(await intentCount(browser), 1);
+    await nativeConfirmationClick(browser, "#consequence-trigger");
+    const ready = await nativeConfirmationClick(browser, "[data-confirm-action]");
+    assert.equal(ready.ready && ready.stable, true);
+    assert.equal(ready.openDialogCount, 1);
+    assert.equal(ready.disabled || ready.inert || ready.latched, false);
+    const observed = await waitForConfirmationIntent(browser, "Foundation callback remains caller-owned after one native click");
+    assert.equal(observed.intentCount, 1);
+    assert.equal(observed.duplicateIntentCount, 0);
+    assert.equal(observed.confirmPointerdown, 1);
+    assert.equal(observed.confirmPointerup, 1);
+    assert.equal(observed.confirmClick, 1);
+    assert.equal(observed.confirmTrustedClick, 1);
 
     assert.equal(browser.consoleErrorCount, 0);
   });
@@ -304,7 +308,7 @@ async function exerciseFailureState(
   await browser.navigate(`${baseUrl}/?scenario=${exercise.scenario}&locale=en`);
   await browser.waitForRequestHandlersIdle();
   browser.clearRequestCounts();
-  await browser.clickSelector(`#${exercise.triggerId}`);
+  await nativeConfirmationClick(browser, `#${exercise.triggerId}`);
   await browser.waitFor(
     "document.querySelectorAll('[role=alertdialog]').length",
     (value: number) => value === 1,
@@ -326,13 +330,13 @@ async function exerciseFailureState(
   const escapeDialogCount = await browser.evaluate<number>("document.querySelectorAll('[role=alertdialog]').length");
   const escapeFocusId = await browser.evaluate<string>("document.activeElement?.id || ''");
 
-  await browser.clickSelector(`#${exercise.triggerId}`);
+  await nativeConfirmationClick(browser, `#${exercise.triggerId}`);
   await browser.waitFor(
     "document.querySelectorAll('[role=alertdialog]').length",
     (value: number) => value === 1,
     `${exercise.scenario} dialog reopens for cancel`,
   );
-  await browser.clickSelector("[data-slot=alert-dialog-cancel]");
+  await nativeConfirmationClick(browser, "[data-slot=alert-dialog-cancel]");
   await browser.waitFor(
     "document.querySelectorAll('[role=alertdialog]').length",
     (value: number) => value === 0,

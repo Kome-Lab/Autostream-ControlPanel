@@ -53,6 +53,7 @@ import {
   systemUpdatePortReconfigureEligibility,
   systemUpdatePortReconfigureRequest,
   systemUpdatePortReconfigureResultLabel,
+  systemUpdatePortJobResultLabel,
   systemUpdatePortRequestMatchesJob,
   systemUpdateRequest,
   systemUpdateSoftwareOperationEligibility,
@@ -73,6 +74,8 @@ import type {
   SystemUpdateAgentStatus,
   SystemUpdateHostStatus,
   SystemUpdateTarget,
+  SystemUpdatePortSnapshotRef,
+  SystemUpdatePortReconfiguration,
   UpdaterSettings,
   UpdaterSettingsHost,
   UpdaterSettingsTarget,
@@ -94,6 +97,37 @@ import {
   nodeServiceEndpointURL,
 } from "../src/lib/node-registration.ts";
 
+const portBefore: SystemUpdatePortSnapshotRef = {
+  snapshot_id: `ps1:${"a".repeat(64)}`, snapshot_sha256: `sha256:${"a".repeat(64)}`,
+  source_policy_revision: 11, projection_revision: 17, executor_policy_revision: 23,
+  executor_policy_sha256: `sha256:${"b".repeat(64)}`,
+  endpoint_revision: 7, applied_endpoint_revision: 7,
+  config_revision: 11, config_sha256: `sha256:${"c".repeat(64)}`,
+  local_listen_port: 8084, advertised_port: 8084, advertised_endpoint_sha256: `sha256:${"d".repeat(64)}`,
+};
+const portIdentity = { expectedSnapshotID: portBefore.snapshot_id, appliedConfigRevision: portBefore.config_revision, fence: 5 };
+const portWireIdentity = { protocol_version: 2, port_contract_version: 2, expected_snapshot_id: portBefore.snapshot_id,
+  desired_revision: portBefore.config_revision + 1, fence: 5, required_capability: "host.port" };
+function portPlan(before: SystemUpdatePortSnapshotRef = portBefore, localPort = 18084, advertisedPort = before.advertised_port): SystemUpdatePortReconfiguration {
+  const changed = localPort !== before.local_listen_port;
+  const advertisedChanged = advertisedPort !== before.advertised_port;
+  const target = changed ? { ...before, snapshot_id: `ps1:${"e".repeat(64)}`, snapshot_sha256: `sha256:${"e".repeat(64)}`,
+    source_policy_revision: before.source_policy_revision + 1, projection_revision: before.projection_revision + 1,
+    executor_policy_revision: before.executor_policy_revision + 1, executor_policy_sha256: `sha256:${"f".repeat(64)}`,
+    config_revision: before.config_revision + 1, config_sha256: `sha256:${"1".repeat(64)}`,
+    endpoint_revision: before.endpoint_revision + Number(advertisedChanged), applied_endpoint_revision: before.applied_endpoint_revision + Number(advertisedChanged),
+    local_listen_port: localPort, advertised_port: advertisedPort,
+    advertised_endpoint_sha256: advertisedChanged ? `sha256:${"2".repeat(64)}` : before.advertised_endpoint_sha256 } : before;
+  const rollback = changed ? { ...before, snapshot_id: `ps1:${"3".repeat(64)}`, snapshot_sha256: `sha256:${"3".repeat(64)}`,
+    source_policy_revision: before.source_policy_revision + 2, projection_revision: before.projection_revision + 2,
+    executor_policy_revision: before.executor_policy_revision + 2, executor_policy_sha256: `sha256:${"4".repeat(64)}`,
+    config_revision: before.config_revision + 2, config_sha256: `sha256:${"5".repeat(64)}`,
+    endpoint_revision: before.endpoint_revision + Number(advertisedChanged) * 2,
+    applied_endpoint_revision: before.applied_endpoint_revision + Number(advertisedChanged) * 2 } : before;
+  return { port_contract_version: 2, mode: advertisedChanged ? "local_and_advertised" : "local_only",
+    network_namespace: "host", protocol: "tcp", before, target, rollback, port_plan_sha256: "6".repeat(64) };
+}
+
 const baseTarget: SystemUpdateTarget = {
   target_id: "worker-main",
   target_type: "worker",
@@ -107,6 +141,10 @@ const baseTarget: SystemUpdateTarget = {
   updater_online: true,
   eligible: true,
   eligible_operations: ["software_update", "port_reconfigure"],
+  port_contract_version: 2, port_policy_snapshot_id: portBefore.snapshot_id,
+  local_listen_port: portBefore.local_listen_port, endpoint_revision: portBefore.endpoint_revision,
+  applied_endpoint_revision: portBefore.applied_endpoint_revision, applied_config_revision: portBefore.config_revision,
+  ownership_epoch: portIdentity.fence, port_modes: ["local_only", "local_and_advertised"],
 };
 
 function toBase64URL(bytes: Uint8Array) {
@@ -327,18 +365,20 @@ test("port reconfiguration is fail-closed and keeps the legacy software request 
     deploymentMode: "systemd",
     currentPort: 8084,
     endpointRevision: 7,
+    currentLocalListenPort: 8084, snapshotID: portBefore.snapshot_id, appliedConfigRevision: 11, fence: 5,
     dockerMapping: undefined,
   });
   assert.deepEqual(systemUpdatePortReconfigureRequest({
     targetID: baseTarget.target_id,
-    currentPort: ready.currentPort,
-    newPort: 18084,
+    currentLocalListenPort: ready.currentLocalListenPort!,
+    newLocalListenPort: 18084,
+    currentAdvertisedPort: ready.currentPort!, mode: "local_only", ...portIdentity,
     expectedEndpointRevision: ready.endpointRevision,
     idempotencyKey: "port-worker-main-7",
   }), {
     operation: "port_reconfigure",
     target_id: "worker-main",
-    new_port: 18084,
+    ...portWireIdentity, mode: "local_only", new_local_listen_port: 18084,
     expected_endpoint_revision: 7,
     idempotency_key: "port-worker-main-7",
   });
@@ -354,7 +394,7 @@ test("port reconfiguration is fail-closed and keeps the legacy software request 
     state: "applied" as const,
     reported_at: "2026-07-28T00:00:00Z",
   };
-  const dockerTarget = { ...baseTarget, deployment_mode: "docker", port_mapping: dockerMapping };
+  const dockerTarget = { ...baseTarget, deployment_mode: "docker", port_mapping: dockerMapping, local_listen_port: dockerMapping.published_port };
   const dockerReady = systemUpdatePortReconfigureEligibility({ target: dockerTarget, updater, node, requestState: "idle" });
   assert.deepEqual(dockerReady, {
     ready: true,
@@ -362,12 +402,14 @@ test("port reconfiguration is fail-closed and keeps the legacy software request 
     deploymentMode: "docker",
     currentPort: 8084,
     endpointRevision: 7,
+    currentLocalListenPort: 18084, snapshotID: portBefore.snapshot_id, appliedConfigRevision: 11, fence: 5,
     dockerMapping,
   });
   assert.deepEqual(systemUpdateDockerPortReconfigureRequest({
     targetID: "worker-main",
     currentMapping: dockerMapping,
     newAdvertisedPort: 443,
+    mode: "local_and_advertised", ...portIdentity,
     newPublishedPort: 28084,
     newContainerPort: 18080,
     expectedEndpointRevision: 7,
@@ -376,6 +418,7 @@ test("port reconfiguration is fail-closed and keeps the legacy software request 
     operation: "port_reconfigure",
     target_id: "worker-main",
     new_advertised_port: 443,
+    ...portWireIdentity, mode: "local_and_advertised",
     new_published_port: 28084,
     new_container_port: 18080,
     expected_endpoint_revision: 7,
@@ -436,29 +479,35 @@ test("port reconfiguration is fail-closed and keeps the legacy software request 
     latestJob: { id: "job-recovery", target_id: "worker-main", target_type: "worker", status: "failed", recovery_required: true, created_at: "", updated_at: "" },
     requestState: "idle",
   }).reason, "recovery_required");
-  assert.throws(() => systemUpdatePortReconfigureRequest({
+  assert.equal(systemUpdatePortReconfigureRequest({
     targetID: "worker-main",
-    currentPort: 8084,
-    newPort: 8084,
+    currentLocalListenPort: 8084, currentAdvertisedPort: 443,
+    newLocalListenPort: 8084, mode: "local_only", ...portIdentity,
     expectedEndpointRevision: 7,
     idempotencyKey: "same-port",
-  }), /port_unchanged/);
+  }).desired_revision, portBefore.config_revision);
+  assert.throws(() => systemUpdatePortReconfigureRequest({
+    targetID: "worker-main", currentLocalListenPort: 8084, newLocalListenPort: 8084,
+    currentAdvertisedPort: 443, newAdvertisedPort: 8443, mode: "local_and_advertised", ...portIdentity,
+    expectedEndpointRevision: 7, idempotencyKey: "advertised-only",
+  }), /system_update_advertised_only_unsupported/);
   assert.throws(() => systemUpdatePortReconfigureRequest({
     targetID: "worker-main",
-    currentPort: 8084,
-    newPort: 1023,
+    currentLocalListenPort: 8084, currentAdvertisedPort: 443,
+    newLocalListenPort: 1023, mode: "local_only", ...portIdentity,
     expectedEndpointRevision: 7,
     idempotencyKey: "privileged-port",
   }), /invalid_service_port/);
-  assert.throws(() => systemUpdateDockerPortReconfigureRequest({
+  assert.equal(systemUpdateDockerPortReconfigureRequest({
     targetID: "worker-main",
     currentMapping: dockerMapping,
     newAdvertisedPort: 8084,
+    mode: "local_and_advertised", ...portIdentity,
     newPublishedPort: 18084,
     newContainerPort: 8080,
     expectedEndpointRevision: 7,
     idempotencyKey: "unchanged-docker",
-  }), /port_unchanged/);
+  }).desired_revision, portBefore.config_revision);
   assert.throws(() => systemUpdateDockerPortReconfigureRequest({
     targetID: "worker-main",
     currentMapping: dockerMapping,
@@ -467,6 +516,7 @@ test("port reconfiguration is fail-closed and keeps the legacy software request 
     newContainerPort: 8080,
     expectedEndpointRevision: 7,
     idempotencyKey: "privileged-published",
+    mode: "local_and_advertised", ...portIdentity,
   }), /invalid_published_port/);
 });
 
@@ -546,8 +596,8 @@ test("port request identity is single-flight and stale endpoint revisions requir
 test("port reconfiguration response loss never resends POST and remains visibly ambiguous", async () => {
   const request = systemUpdatePortReconfigureRequest({
     targetID: "worker-main",
-    currentPort: 8084,
-    newPort: 18084,
+    currentLocalListenPort: 8084, currentAdvertisedPort: 8084,
+    newLocalListenPort: 18084, mode: "local_only", ...portIdentity,
     expectedEndpointRevision: 7,
     idempotencyKey: "port-response-loss",
   });
@@ -558,7 +608,7 @@ test("port reconfiguration response loss never resends POST and remains visibly 
     target_id: request.target_id,
     target_type: "worker",
     operation: "port_reconfigure" as const,
-    port_reconfigure: { old_port: 8084, new_port: 18084, expected_endpoint_revision: 7, result: "applied" as const },
+    port_reconfigure: portPlan(), ownership_epoch: portIdentity.fence,
     status: "succeeded",
     created_at: "2026-07-28T00:00:00Z",
     updated_at: "2026-07-28T00:00:01Z",
@@ -585,9 +635,10 @@ test("port reconfiguration response loss never resends POST and remains visibly 
     SystemUpdateRequestAmbiguousError,
   );
   assert.equal(postCalls, 2);
-  assert.equal(systemUpdatePortReconfigureResultLabel("applied"), "新しいポートを適用済み");
-  assert.equal(systemUpdatePortReconfigureResultLabel("rolled_back"), "以前のポートへロールバック済み");
-  assert.equal(systemUpdatePortReconfigureResultLabel("rollback_failed"), "ロールバック失敗");
+  assert.equal(systemUpdatePortReconfigureResultLabel("applied"), "適用済み");
+  assert.equal(systemUpdatePortReconfigureResultLabel("rolled_back"), "復旧済み");
+  assert.equal(systemUpdatePortReconfigureResultLabel("unchanged"), "変更不要");
+  assert.equal(systemUpdatePortReconfigureResultLabel("rollback_failed"), "復旧未完了／要再照合");
 });
 
 test("Docker port recovery matches the entire mapping identity", async () => {
@@ -609,6 +660,7 @@ test("Docker port recovery matches the entire mapping identity", async () => {
     newContainerPort: 18080,
     expectedEndpointRevision: 7,
     idempotencyKey: "docker-response-loss",
+    mode: "local_and_advertised", ...portIdentity, appliedConfigRevision: 4,
   });
   const committed = {
     id: "job-docker-response-loss",
@@ -617,26 +669,14 @@ test("Docker port recovery matches the entire mapping identity", async () => {
     target_type: "worker",
     deployment_mode: "docker",
     operation: "port_reconfigure" as const,
-    port_reconfigure: {
-      old_port: 8084,
-      new_port: 443,
-      expected_endpoint_revision: 7,
-      docker: {
-        published_host_ip: "127.0.0.1",
-        old_published_port: 18084,
-        new_published_port: 28084,
-        old_container_port: 8080,
-        new_container_port: 18080,
-        old_health_port: 18084,
-        new_health_port: 28084,
-        approved_compose_config_sha256: "a".repeat(64),
-        approved_compose_revision: 4,
-        expected_version_env_sha256: `sha256:${"b".repeat(64)}`,
-        expected_container_id: "c".repeat(64),
-        expected_image_id: `sha256:${"d".repeat(64)}`,
-        expected_repository_digest: `sha256:${"e".repeat(64)}`,
-      },
-    },
+    ownership_epoch: portIdentity.fence,
+    port_reconfigure: (() => {
+      const plan = portPlan({ ...portBefore, config_revision: 4, local_listen_port: 18084 }, 28084, 443);
+      plan.target!.docker = { published_host_ip: "127.0.0.1", published_port: 28084, container_port: 18080, health_port: 28084,
+        compose_policy_sha256: `sha256:${"7".repeat(64)}`, compose_revision: 5, version_env_sha256: `sha256:${"8".repeat(64)}`,
+        image_id: `sha256:${"9".repeat(64)}`, repository_digest: `sha256:${"a".repeat(64)}` };
+      return plan;
+    })(),
     status: "queued",
     created_at: "2026-07-28T00:00:00Z",
     updated_at: "2026-07-28T00:00:00Z",
@@ -654,6 +694,76 @@ test("Docker port recovery matches the entire mapping identity", async () => {
   );
   assert.equal(recovered.id, committed.id);
   assert.equal(calls, 1);
+});
+
+test("ST-PORT accepted results survive JSON normalization without inferring success or losing recovery evidence", () => {
+  const observedAt = "2026-09-05T17:00:00.123Z";
+  const observation = { policy_disk_verified: true, policy_memory_verified: true, agent_projection_verified: true, listener_verified: true, observed_at: observedAt };
+  for (const result of ["applied", "unchanged", "rolled_back"] as const) {
+    const plan = portPlan(portBefore, result === "unchanged" ? portBefore.local_listen_port : 18084);
+    const expected = result === "applied" ? plan.target! : result === "unchanged" ? plan.before! : plan.rollback!;
+    const accepted = { result, observed_snapshot_id: expected.snapshot_id, observed_snapshot_sha256: expected.snapshot_sha256,
+      observed_config_revision: expected.config_revision, observed_config_sha256: expected.config_sha256,
+      observed_executor_policy_revision: expected.executor_policy_revision, observed_executor_policy_sha256: expected.executor_policy_sha256, observation };
+    const wire = { id: `job-${result}`, target_id: "worker-main", target_type: "worker", operation: "port_reconfigure",
+      status: result === "rolled_back" ? "rolled_back" : "succeeded", port_reconfigure: plan, port_result: accepted,
+      created_at: observedAt, updated_at: observedAt };
+    const job = systemUpdateJobFromResponse(JSON.parse(JSON.stringify(wire)));
+    assert.deepEqual(JSON.parse(JSON.stringify(job.port_result)), accepted);
+    assert.equal(job.port_result?.observation.observed_at, observedAt);
+    assert.equal(job.port_reconfigure?.result, undefined);
+    assert.equal(systemUpdatePortJobResultLabel(job), systemUpdatePortReconfigureResultLabel(result));
+    assert.equal(systemUpdateJobFromResponse({ ...wire, port_result: undefined }).port_result, undefined);
+    assert.equal(systemUpdateJobFromResponse({ ...wire, port_result: { ...accepted, observation: { ...observation, policy_memory_verified: false } } }).port_result, undefined);
+    assert.equal(systemUpdateJobFromResponse({ ...wire, port_result: { ...accepted, observed_config_revision: expected.config_revision + 1 } }).port_result, undefined);
+    assert.equal(systemUpdateJobFromResponse({ ...wire, status: "failed" }).port_result, undefined);
+    if (result === "unchanged") {
+      assert.equal(systemUpdateJobFromResponse({ ...wire, port_reconfigure: { ...plan, target: { ...plan.target!, local_listen_port: 18085 } } }).port_result, undefined);
+      assert.equal(systemUpdateJobFromResponse({ ...wire, port_result: { ...accepted, result: "applied" } }).port_result, undefined);
+    }
+  }
+  const failure = { result: "rollback_failed", observation: { ...observation, listener_verified: false } };
+  const held = systemUpdateJobFromResponse({ id: "held", target_id: "worker-main", target_type: "worker", operation: "port_reconfigure",
+    status: "failed", port_reconfigure: portPlan(), port_result: failure, last_recovery_observation: failure, recovery_required: true,
+    created_at: observedAt, updated_at: observedAt });
+  assert.equal(held.port_result, undefined);
+  assert.deepEqual(held.last_recovery_observation, failure);
+  assert.equal(systemUpdatePortJobResultLabel(held), "復旧未完了／要再照合");
+});
+
+test("ST-PORT mixed local and advertised inputs keep public HTTPS separate and reject partial Docker requests", () => {
+  const local = systemUpdatePortReconfigureRequest({ targetID: "worker-main", currentLocalListenPort: 18081, newLocalListenPort: 18084,
+    currentAdvertisedPort: 443, mode: "local_only", ...portIdentity, expectedEndpointRevision: 7, idempotencyKey: "local" });
+  assert.equal(local.mode, "local_only");
+  assert.equal("new_advertised_port" in local, false);
+  assert.equal("new_port" in local, false);
+  const combined = systemUpdatePortReconfigureRequest({ targetID: "worker-main", currentLocalListenPort: 18081, newLocalListenPort: 18084,
+    currentAdvertisedPort: 443, newAdvertisedPort: 8443, mode: "local_and_advertised", ...portIdentity, expectedEndpointRevision: 7, idempotencyKey: "combined" });
+  assert.equal(combined.new_advertised_port, 8443);
+  assert.equal(combined.desired_revision, portBefore.config_revision + 1);
+  assert.throws(() => systemUpdatePortReconfigureRequest({ targetID: "worker-main", currentLocalListenPort: 18081, newLocalListenPort: 18084,
+    currentAdvertisedPort: 443, newAdvertisedPort: 8443, mode: "local_only", ...portIdentity, expectedEndpointRevision: 7, idempotencyKey: "mixed" }), /invalid_system_update_port_mode/);
+  const mapping = { mode: "docker" as const, advertised_port: 443, published_host_ip: "127.0.0.1", published_port: 18081,
+    container_port: 8080, health_port: 18081, config_revision: 11, state: "applied" as const };
+  assert.throws(() => systemUpdateDockerPortReconfigureRequest({ targetID: "worker-main", currentMapping: mapping, mode: "local_and_advertised",
+    newAdvertisedPort: 8443, newPublishedPort: 18081, newContainerPort: 8080, ...portIdentity, expectedEndpointRevision: 7, idempotencyKey: "advertised-docker" }), /system_update_advertised_only_unsupported/);
+  assert.throws(() => systemUpdateDockerPortReconfigureRequest({ targetID: "worker-main", currentMapping: mapping, mode: "local_only",
+    newPublishedPort: 18084, newContainerPort: undefined as unknown as number, ...portIdentity, expectedEndpointRevision: 7, idempotencyKey: "partial" }), /invalid_container_port/);
+});
+
+test("ST-PORT demo request produces the same explicit mode and snapshot shape", () => {
+  const state = normalizeSystemUpdatesResponse(mockGet("/system-updates"));
+  const target = state.targets.find((value) => value.target_id === "observability-main")!;
+  const request = systemUpdateDockerPortReconfigureRequest({ targetID: target.target_id, currentMapping: target.port_mapping!, mode: "local_only",
+    newPublishedPort: 28090, newContainerPort: 8080, expectedSnapshotID: target.port_policy_snapshot_id!,
+    appliedConfigRevision: target.applied_config_revision!, fence: target.ownership_epoch!, expectedEndpointRevision: target.endpoint_revision!, idempotencyKey: "demo-port-v2" });
+  const job = systemUpdateJobFromResponse(mockPost("/system-updates", request));
+  assert.equal(systemUpdatePortRequestMatchesJob(request, job), true);
+  assert.equal(job.port_reconfigure?.target?.local_listen_port, 28090);
+  assert.equal(job.port_reconfigure?.target?.advertised_port, 443);
+  assert.equal(job.port_reconfigure?.old_port, undefined);
+  assert.equal(job.port_result, undefined);
+  assert.equal(systemUpdatePortJobResultLabel(job), "確認中");
 });
 
 test("pull ownership activation uses only server-fenced settings and readiness fields", () => {

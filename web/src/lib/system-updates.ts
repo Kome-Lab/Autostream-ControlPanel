@@ -9,6 +9,10 @@ import type {
   SystemUpdatePortReconfigureCreateRequest,
   SystemUpdatePortReconfiguration,
   SystemUpdatePortReconfigurationResult,
+  SystemUpdatePortMode,
+  SystemUpdatePortSnapshotRef,
+  SystemUpdatePortResultV2,
+  SystemUpdatePortObservation,
   SystemUpdateHostStatus,
   SystemUpdateJob,
   SystemUpdateOperation,
@@ -639,6 +643,10 @@ export type SystemUpdatePortReconfigureEligibility = {
   reason: string;
   deploymentMode?: "systemd" | "docker";
   currentPort?: number;
+  currentLocalListenPort?: number;
+  snapshotID?: string;
+  appliedConfigRevision?: number;
+  fence?: number;
   endpointRevision?: number;
   dockerMapping?: SystemUpdatePortMapping;
 };
@@ -671,7 +679,7 @@ export function systemUpdatePortReconfigureEligibility({
   const endpointRevision = Number(node.endpoint_revision);
   if (
     !Number.isSafeInteger(currentPort)
-    || currentPort < (deploymentMode === "docker" ? 1 : 1024)
+    || currentPort < 1
     || currentPort > 65535
     || !Number.isSafeInteger(endpointRevision)
     || endpointRevision < 1
@@ -682,7 +690,21 @@ export function systemUpdatePortReconfigureEligibility({
     deploymentMode,
     currentPort,
     endpointRevision,
+    currentLocalListenPort: target.local_listen_port,
+    snapshotID: target.port_policy_snapshot_id,
+    appliedConfigRevision: target.applied_config_revision,
+    fence: target.ownership_epoch,
   } as const;
+  if (target.port_contract_version !== 2
+    || !/^ps1:[a-f0-9]{64}$/.test(target.port_policy_snapshot_id || "")
+    || !validPort(Number(target.local_listen_port), 1024)
+    || !Number.isSafeInteger(target.applied_config_revision) || Number(target.applied_config_revision) < 1
+    || !Number.isSafeInteger(target.applied_endpoint_revision) || Number(target.applied_endpoint_revision) < 1
+    || !Number.isSafeInteger(target.ownership_epoch) || Number(target.ownership_epoch) < 1
+    || target.endpoint_revision !== endpointRevision
+    || !target.port_modes?.includes("local_only") || !target.port_modes.includes("local_and_advertised")) {
+    return { ...base, ready: false, reason: "port_contract_unavailable" };
+  }
   const dockerMapping = deploymentMode === "docker" ? target.port_mapping : undefined;
   if (deploymentMode === "docker" && !validAppliedDockerPortMapping(dockerMapping, currentPort)) {
     return {
@@ -741,28 +763,43 @@ function validPort(value: number, minimum: number) {
 
 export function systemUpdatePortReconfigureRequest({
   targetID,
-  currentPort,
-  newPort,
+  currentLocalListenPort,
+  newLocalListenPort,
+  currentAdvertisedPort,
+  newAdvertisedPort,
+  mode,
+  expectedSnapshotID,
+  appliedConfigRevision,
+  fence,
   expectedEndpointRevision,
   idempotencyKey,
 }: {
   targetID: string;
-  currentPort: number;
-  newPort: number;
+  currentLocalListenPort: number;
+  newLocalListenPort: number;
+  currentAdvertisedPort: number;
+  newAdvertisedPort?: number;
+  mode: SystemUpdatePortMode;
+  expectedSnapshotID: string;
+  appliedConfigRevision: number;
+  fence: number;
   expectedEndpointRevision: number;
   idempotencyKey: string;
 }): SystemUpdatePortReconfigureCreateRequest {
   const normalizedTargetID = String(targetID || "").trim();
   const normalizedKey = String(idempotencyKey || "").trim();
   if (!normalizedTargetID || !normalizedKey) throw new Error("invalid_port_reconfigure_request");
-  if (!Number.isSafeInteger(newPort) || newPort < 1024 || newPort > 65535) throw new Error("invalid_service_port");
-  if (!Number.isSafeInteger(currentPort) || currentPort < 1024 || currentPort > 65535) throw new Error("invalid_current_service_port");
-  if (newPort === currentPort) throw new Error("port_unchanged");
+  if (!validPort(newLocalListenPort, 1024)) throw new Error("invalid_service_port");
+  if (!validPort(currentLocalListenPort, 1024)) throw new Error("invalid_current_service_port");
   if (!Number.isSafeInteger(expectedEndpointRevision) || expectedEndpointRevision < 1) throw new Error("invalid_endpoint_revision");
+  const advertised = systemUpdatePortAdvertisedInput(mode, currentAdvertisedPort, newAdvertisedPort, newLocalListenPort !== currentLocalListenPort);
+  const identity = systemUpdatePortCreateIdentity(expectedSnapshotID, appliedConfigRevision, fence, newLocalListenPort !== currentLocalListenPort);
   return {
+    ...identity,
+    ...advertised,
     operation: "port_reconfigure",
     target_id: normalizedTargetID,
-    new_port: newPort,
+    new_local_listen_port: newLocalListenPort,
     expected_endpoint_revision: expectedEndpointRevision,
     idempotency_key: normalizedKey,
   };
@@ -774,14 +811,22 @@ export function systemUpdateDockerPortReconfigureRequest({
   newAdvertisedPort,
   newPublishedPort,
   newContainerPort,
+  mode,
+  expectedSnapshotID,
+  appliedConfigRevision,
+  fence,
   expectedEndpointRevision,
   idempotencyKey,
 }: {
   targetID: string;
   currentMapping: SystemUpdatePortMapping;
-  newAdvertisedPort: number;
+  newAdvertisedPort?: number;
   newPublishedPort: number;
   newContainerPort: number;
+  mode: SystemUpdatePortMode;
+  expectedSnapshotID: string;
+  appliedConfigRevision: number;
+  fence: number;
   expectedEndpointRevision: number;
   idempotencyKey: string;
 }): SystemUpdateDockerPortReconfigureCreateRequest {
@@ -791,28 +836,40 @@ export function systemUpdateDockerPortReconfigureRequest({
   if (!validAppliedDockerPortMapping(currentMapping, Number(currentMapping.advertised_port))) {
     throw new Error("docker_mapping_unavailable");
   }
-  if (!validPort(newAdvertisedPort, 1)) throw new Error("invalid_advertised_port");
   if (!validPort(newPublishedPort, 1024)) throw new Error("invalid_published_port");
   if (!validPort(newContainerPort, 1024)) throw new Error("invalid_container_port");
-  if (
-    newAdvertisedPort === Number(currentMapping.advertised_port)
-    && newPublishedPort === Number(currentMapping.published_port)
-    && newContainerPort === Number(currentMapping.container_port)
-  ) {
-    throw new Error("port_unchanged");
-  }
+  const localChanged = newPublishedPort !== Number(currentMapping.published_port) || newContainerPort !== Number(currentMapping.container_port);
+  const advertised = systemUpdatePortAdvertisedInput(mode, Number(currentMapping.advertised_port), newAdvertisedPort, localChanged);
+  const identity = systemUpdatePortCreateIdentity(expectedSnapshotID, appliedConfigRevision, fence, localChanged);
   if (!Number.isSafeInteger(expectedEndpointRevision) || expectedEndpointRevision < 1) {
     throw new Error("invalid_endpoint_revision");
   }
   return {
+    ...identity,
+    ...advertised,
     operation: "port_reconfigure",
     target_id: normalizedTargetID,
-    new_advertised_port: newAdvertisedPort,
     new_published_port: newPublishedPort,
     new_container_port: newContainerPort,
     expected_endpoint_revision: expectedEndpointRevision,
     idempotency_key: normalizedKey,
   };
+}
+
+function systemUpdatePortCreateIdentity(snapshotID: string, configRevision: number, fence: number, changed: boolean) {
+  const desired = configRevision + (changed ? 1 : 0);
+  if (!/^ps1:[a-f0-9]{64}$/.test(snapshotID) || !Number.isSafeInteger(configRevision) || configRevision < 1
+    || !Number.isSafeInteger(desired) || !Number.isSafeInteger(fence) || fence < 1) throw new Error("invalid_port_reconfigure_request");
+  return { protocol_version: 2 as const, port_contract_version: 2 as const, expected_snapshot_id: snapshotID,
+    desired_revision: desired, fence, required_capability: "host.port" as const };
+}
+
+function systemUpdatePortAdvertisedInput(mode: SystemUpdatePortMode, current: number, proposed: number | undefined, localChanged: boolean) {
+  if (!validPort(current, 1)) throw new Error("invalid_current_service_port");
+  if (mode === "local_only" && proposed === undefined) return { mode };
+  if (mode !== "local_and_advertised" || proposed === undefined || !validPort(proposed, 1)) throw new Error("invalid_system_update_port_mode");
+  if (!localChanged && proposed !== current) throw new Error("system_update_advertised_only_unsupported");
+  return { mode, new_advertised_port: proposed };
 }
 
 export function systemUpdatePortRequestMatchesJob(
@@ -823,14 +880,19 @@ export function systemUpdatePortRequestMatchesJob(
     job.idempotency_key !== request.idempotency_key
     || job.target_id !== request.target_id
     || job.operation !== "port_reconfigure"
-    || job.port_reconfigure?.expected_endpoint_revision !== request.expected_endpoint_revision
+    || job.port_reconfigure?.port_contract_version !== 2
+    || job.port_reconfigure.mode !== request.mode
+    || job.port_reconfigure.before?.snapshot_id !== request.expected_snapshot_id
+    || job.port_reconfigure.before.endpoint_revision !== request.expected_endpoint_revision
+    || job.port_reconfigure.target?.config_revision !== request.desired_revision
+    || job.ownership_epoch !== request.fence
   ) {
     return false;
   }
-  if ("new_port" in request) return job.port_reconfigure.new_port === request.new_port;
-  return job.port_reconfigure.new_port === request.new_advertised_port
-    && job.port_reconfigure.docker?.new_published_port === request.new_published_port
-    && job.port_reconfigure.docker?.new_container_port === request.new_container_port;
+  const target = job.port_reconfigure.target;
+  if (request.mode === "local_and_advertised" && target.advertised_port !== request.new_advertised_port) return false;
+  if ("new_local_listen_port" in request) return !target.docker && target.local_listen_port === request.new_local_listen_port;
+  return target.docker?.published_port === request.new_published_port && target.docker?.container_port === request.new_container_port;
 }
 
 export async function requestSystemUpdatePortReconfigureWithRecovery(
@@ -871,12 +933,19 @@ export function isSystemUpdateEndpointRevisionConflict(error: unknown) {
 
 export function systemUpdatePortReconfigureResultLabel(result?: SystemUpdatePortReconfigurationResult) {
   const labels: Record<SystemUpdatePortReconfigurationResult, string> = {
-    applied: "新しいポートを適用済み",
-    rolled_back: "以前のポートへロールバック済み",
-    unchanged: "ポート変更なし",
-    rollback_failed: "ロールバック失敗",
+    applied: "適用済み",
+    rolled_back: "復旧済み",
+    unchanged: "変更不要",
+    rollback_failed: "復旧未完了／要再照合",
   };
   return result ? labels[result] : "";
+}
+
+export function systemUpdatePortJobResultLabel(job?: SystemUpdateJob) {
+  if (!job || job.operation !== "port_reconfigure") return "";
+  if (job.recovery_required) return "復旧未完了／要再照合";
+  if (job.port_reconfigure?.port_contract_version === 2) return job.port_result ? systemUpdatePortReconfigureResultLabel(job.port_result.result) : "確認中";
+  return systemUpdatePortReconfigureResultLabel(job.port_reconfigure?.result);
 }
 
 export function pullUpdaterOwnershipActivationEligibility({
@@ -1442,6 +1511,15 @@ export function systemUpdateErrorMessage(error: unknown, fallback = "更新処�
     invalid_system_update_request: "更新要求の内容が正しくありません。一覧を再取得してから再試行してください。",
     invalid_system_update_response: "更新サービスから正しい応答を受け取れませんでした。一覧を再取得してください。",
     invalid_port_reconfigure_request: "ポート変更要求が現在のendpoint状態と一致しません。Node情報を再取得してください。",
+    invalid_system_update_port_mode: "変更する範囲とポートの入力を確認してください。",
+    system_update_port_contract_required: "Host AgentとLocal Executorのポート変更機能が揃うまで利用できません。",
+    system_update_port_policy_snapshot_unavailable: "現在の待受と設定を確認できていません。Host Agentの接続と設定反映を確認してください。",
+    system_update_port_snapshot_stale: "確認後に設定が変わりました。一覧を再取得して変更内容を確認してください。",
+    system_update_port_idempotency_conflict: "同じ要求IDで異なる変更が記録されています。既存ジョブを確認してください。",
+    system_update_advertised_only_unsupported: "広告endpointだけの変更はできません。local listenerの変更も指定してください。",
+    system_update_port_result_mismatch: "復旧結果と保存済み設定が一致していません。同じジョブの再照合を待ってください。",
+    system_update_port_recovery_required: "復旧が未完了です。同じジョブでの再照合が完了するまで新しい変更は開始できません。",
+    system_update_host_busy: "同じホストで変更または復旧処理が進行中です。",
     invalid_service_port: "ポートは1024〜65535の整数で指定してください。",
     service_port_reserved: "同じホストで指定したポートが既に使用または予約されています。",
     system_update_endpoint_revision_conflict: "Endpoint revisionが変わりました。Node情報を再取得してからやり直してください。",
@@ -1627,6 +1705,14 @@ function normalizeSystemUpdateTarget(value: unknown): SystemUpdateTarget {
   }
   return {
     target_id: stringValue(target.target_id),
+    port_contract_version: target.port_contract_version === 2 ? 2 : undefined,
+    port_policy_snapshot_id: stringValue(target.port_policy_snapshot_id) || undefined,
+    local_listen_port: optionalNonNegativeIntegerValue(target.local_listen_port),
+    endpoint_revision: optionalNonNegativeIntegerValue(target.endpoint_revision),
+    applied_endpoint_revision: optionalNonNegativeIntegerValue(target.applied_endpoint_revision),
+    applied_config_revision: optionalNonNegativeIntegerValue(target.applied_config_revision),
+    ownership_epoch: optionalNonNegativeIntegerValue(target.ownership_epoch),
+    port_modes: Array.isArray(target.port_modes) ? target.port_modes.filter((mode): mode is SystemUpdatePortMode => mode === "local_only" || mode === "local_and_advertised") : undefined,
     target_type: stringValue(target.target_type || target.service_type),
     name: stringValue(target.name || target.target_id),
     host_id: stringValue(target.host_id),
@@ -1835,6 +1921,8 @@ function normalizeSystemUpdateJob(value: unknown): SystemUpdateJob {
     ? job.operation
     : undefined;
   const portReconfigure = recordValue(job.port_reconfigure);
+  const portPlan = operation === "port_reconfigure" && Object.keys(portReconfigure).length > 0
+    ? normalizeSystemUpdatePortReconfiguration(portReconfigure) : undefined;
   return {
     id: stringValue(job.id),
     idempotency_key: stringValue(job.idempotency_key),
@@ -1846,9 +1934,9 @@ function normalizeSystemUpdateJob(value: unknown): SystemUpdateJob {
     policy_revision: optionalNonNegativeIntegerValue(job.policy_revision),
     updater_id: stringValue(job.updater_id),
     operation,
-    port_reconfigure: operation === "port_reconfigure" && Object.keys(portReconfigure).length > 0
-      ? normalizeSystemUpdatePortReconfiguration(portReconfigure)
-      : undefined,
+    port_reconfigure: portPlan,
+    port_result: normalizeSystemUpdatePortResult(job.port_result, portPlan, stringValue(job.status)),
+    last_recovery_observation: normalizeSystemUpdatePortRecoveryObservation(job.last_recovery_observation),
     current_version: stringValue(job.current_version),
     target_version: stringValue(job.target_version),
     deployment_mode: stringValue(job.deployment_mode),
@@ -1914,6 +2002,16 @@ function stringRecordValue(value: unknown) {
 }
 
 function normalizeSystemUpdatePortReconfiguration(value: Record<string, unknown>): SystemUpdatePortReconfiguration {
+  if (value.port_contract_version === 2) {
+    return {
+      port_contract_version: 2,
+      mode: value.mode === "local_only" || value.mode === "local_and_advertised" ? value.mode : undefined,
+      network_namespace: stringValue(value.network_namespace), protocol: value.protocol === "tcp" ? "tcp" : undefined,
+      before: normalizeSystemUpdatePortSnapshot(value.before), target: normalizeSystemUpdatePortSnapshot(value.target),
+      rollback: normalizeSystemUpdatePortSnapshot(value.rollback), port_plan_sha256: stringValue(value.port_plan_sha256),
+      docker_baseline: normalizeSystemUpdatePortDockerBaseline(value.docker_baseline),
+    };
+  }
   const result: SystemUpdatePortReconfigurationResult | undefined = value.result === "applied"
     || value.result === "rolled_back"
     || value.result === "unchanged"
@@ -1960,6 +2058,85 @@ function normalizeSystemUpdatePortReconfiguration(value: Record<string, unknown>
     docker,
     result,
   };
+}
+
+function normalizeSystemUpdatePortDockerBaseline(value: unknown): SystemUpdatePortReconfiguration["docker_baseline"] {
+  if (value === undefined) return undefined;
+  const raw = recordValue(value);
+  if (!/^[a-f0-9]{12,64}$/.test(stringValue(raw.expected_container_id)) || !/^[a-f0-9]{64}$/.test(stringValue(raw.approved_compose_config_sha256))
+    || !Number.isSafeInteger(raw.approved_compose_revision) || Number(raw.approved_compose_revision) < 1
+    || ["expected_image_id", "expected_repository_digest", "expected_version_env_sha256"].some((field) => !validSystemUpdateDigest(stringValue(raw[field])))) return undefined;
+  return { expected_container_id: stringValue(raw.expected_container_id), expected_image_id: stringValue(raw.expected_image_id),
+    expected_repository_digest: stringValue(raw.expected_repository_digest), expected_version_env_sha256: stringValue(raw.expected_version_env_sha256),
+    approved_compose_config_sha256: stringValue(raw.approved_compose_config_sha256), approved_compose_revision: Number(raw.approved_compose_revision) };
+}
+
+function normalizeSystemUpdatePortSnapshot(value: unknown): SystemUpdatePortSnapshotRef | undefined {
+  const raw = recordValue(value);
+  const digest = stringValue(raw.snapshot_sha256);
+  if (!validSystemUpdateDigest(digest) || raw.snapshot_id !== `ps1:${digest.slice(7)}`) return undefined;
+  for (const field of ["source_policy_revision", "projection_revision", "executor_policy_revision", "endpoint_revision", "applied_endpoint_revision", "config_revision"] as const) {
+    if (!Number.isSafeInteger(raw[field]) || Number(raw[field]) < 1) return undefined;
+  }
+  for (const field of ["executor_policy_sha256", "config_sha256", "advertised_endpoint_sha256"] as const) if (!validSystemUpdateDigest(stringValue(raw[field]))) return undefined;
+  if (!validPort(Number(raw.local_listen_port), 1024) || !validPort(Number(raw.advertised_port), 1)) return undefined;
+  const docker = recordValue(raw.docker);
+  if (raw.docker !== undefined && (docker.published_host_ip !== "127.0.0.1" || docker.published_port !== raw.local_listen_port
+    || docker.health_port !== docker.published_port || !validPort(Number(docker.container_port), 1024)
+    || !Number.isSafeInteger(docker.compose_revision) || Number(docker.compose_revision) < 1
+    || ["compose_policy_sha256", "version_env_sha256", "image_id", "repository_digest"].some((field) => !validSystemUpdateDigest(stringValue(docker[field]))))) return undefined;
+  return {
+    snapshot_id: stringValue(raw.snapshot_id), snapshot_sha256: digest,
+    source_policy_revision: Number(raw.source_policy_revision), projection_revision: Number(raw.projection_revision),
+    executor_policy_revision: Number(raw.executor_policy_revision), executor_policy_sha256: stringValue(raw.executor_policy_sha256),
+    endpoint_revision: Number(raw.endpoint_revision), applied_endpoint_revision: Number(raw.applied_endpoint_revision),
+    config_revision: Number(raw.config_revision), config_sha256: stringValue(raw.config_sha256),
+    advertised_port: Number(raw.advertised_port), advertised_endpoint_sha256: stringValue(raw.advertised_endpoint_sha256),
+    local_listen_port: Number(raw.local_listen_port),
+    docker: raw.docker === undefined ? undefined : {
+      published_host_ip: "127.0.0.1", published_port: Number(docker.published_port), container_port: Number(docker.container_port),
+      health_port: Number(docker.health_port), compose_policy_sha256: stringValue(docker.compose_policy_sha256),
+      compose_revision: Number(docker.compose_revision), version_env_sha256: stringValue(docker.version_env_sha256),
+      image_id: stringValue(docker.image_id), repository_digest: stringValue(docker.repository_digest),
+    },
+  };
+}
+
+function normalizeSystemUpdatePortObservation(value: unknown): SystemUpdatePortObservation | undefined {
+  const raw = recordValue(value);
+  const fields = ["policy_disk_verified", "policy_memory_verified", "agent_projection_verified", "listener_verified"] as const;
+  if (fields.some((field) => typeof raw[field] !== "boolean") || typeof raw.observed_at !== "string" || !Number.isFinite(Date.parse(raw.observed_at))) return undefined;
+  return { policy_disk_verified: raw.policy_disk_verified === true, policy_memory_verified: raw.policy_memory_verified === true,
+    agent_projection_verified: raw.agent_projection_verified === true, listener_verified: raw.listener_verified === true, observed_at: raw.observed_at };
+}
+
+function normalizeSystemUpdatePortRecoveryObservation(value: unknown): SystemUpdateJob["last_recovery_observation"] {
+  const raw = recordValue(value); const observation = normalizeSystemUpdatePortObservation(raw.observation);
+  if (raw.result !== "rollback_failed" || !observation) return undefined;
+  return { result: "rollback_failed", observation };
+}
+
+function normalizeSystemUpdatePortResult(value: unknown, plan: SystemUpdatePortReconfiguration | undefined, status: string): SystemUpdatePortResultV2 | undefined {
+  const raw = recordValue(value); const observation = normalizeSystemUpdatePortObservation(raw.observation);
+  if (plan?.port_contract_version !== 2 || !observation || !observation.policy_disk_verified || !observation.policy_memory_verified
+    || !observation.agent_projection_verified || !observation.listener_verified) return undefined;
+  const result = raw.result;
+  if (result !== "applied" && result !== "unchanged" && result !== "rolled_back") return undefined;
+  if (status !== (result === "rolled_back" ? "rolled_back" : "succeeded")) return undefined;
+  const noOp = Boolean(plan.before && plan.target && plan.rollback
+    && JSON.stringify(plan.before) === JSON.stringify(plan.target) && JSON.stringify(plan.before) === JSON.stringify(plan.rollback));
+  if (result === "unchanged" ? !noOp : noOp) return undefined;
+  const expected = result === "applied" ? plan.target : result === "rolled_back" ? plan.rollback : plan.before;
+  if (!expected) return undefined;
+  if (raw.observed_snapshot_id !== expected.snapshot_id || raw.observed_snapshot_sha256 !== expected.snapshot_sha256
+    || raw.observed_config_revision !== expected.config_revision || raw.observed_config_sha256 !== expected.config_sha256
+    || raw.observed_executor_policy_revision !== expected.executor_policy_revision || raw.observed_executor_policy_sha256 !== expected.executor_policy_sha256) return undefined;
+  const runtime = recordValue(raw.runtime_instance);
+  if (expected.docker && (!/^[a-f0-9]{12,64}$/.test(stringValue(runtime.container_id)) || runtime.image_id !== expected.docker.image_id || runtime.repository_digest !== expected.docker.repository_digest)) return undefined;
+  return { result, observed_snapshot_id: expected.snapshot_id, observed_snapshot_sha256: expected.snapshot_sha256,
+    observed_config_revision: expected.config_revision, observed_config_sha256: expected.config_sha256,
+    observed_executor_policy_revision: expected.executor_policy_revision, observed_executor_policy_sha256: expected.executor_policy_sha256,
+    observation, runtime_instance: expected.docker ? { container_id: stringValue(runtime.container_id), image_id: stringValue(runtime.image_id), repository_digest: stringValue(runtime.repository_digest) } : undefined };
 }
 
 function validSystemUpdateDigest(value: string) {

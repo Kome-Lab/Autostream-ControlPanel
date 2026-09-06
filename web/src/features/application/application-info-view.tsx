@@ -45,7 +45,7 @@ import {
   systemUpdatePortReconfigureEligibility,
   systemUpdatePortReconfigureRequest,
   systemUpdatePortRequestMatchesJob,
-  systemUpdatePortReconfigureResultLabel,
+  systemUpdatePortJobResultLabel,
   systemUpdateStrategyForTarget,
   systemUpdateSoftwareOperationEligibility,
   systemUpdateTargetBlockedReason,
@@ -55,17 +55,20 @@ import {
 import type { SystemUpdateRequestState } from "@/lib/system-updates";
 import { nodeEndpointState } from "@/lib/node-registration";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
-import type { AppVersion, ServiceUpdateInfo, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdatePortReconfigureCreateRequest, SystemUpdateTarget, SystemUpdatesResponse, WorkerNode } from "@/types/domain";
+import type { AppVersion, ServiceUpdateInfo, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdatePortMode, SystemUpdatePortReconfigureCreateRequest, SystemUpdateTarget, SystemUpdatesResponse, WorkerNode } from "@/types/domain";
 
 type Feedback = { tone: "success" | "error"; message: string };
 type SystemUpdateOperation = { target: SystemUpdateTarget; idempotencyKey: string };
 type PortReconfigureOperation = { request: SystemUpdatePortReconfigureCreateRequest };
 type PortReconfigureProposal = Readonly<{
   mode: "service";
+  portMode: SystemUpdatePortMode;
+  newAdvertisedPort?: number;
   newPort: number;
 }> | Readonly<{
   mode: "docker";
-  newAdvertisedPort: number;
+  portMode: SystemUpdatePortMode;
+  newAdvertisedPort?: number;
   newPublishedPort: number;
   newContainerPort: number;
 }>;
@@ -651,7 +654,7 @@ function SystemUpdatesCard({
                     const jobMessage = systemUpdateJobMessage(job);
                     const [jobMessageSummary, ...jobMessageDetails] = jobMessage.split("\n");
                     return (
-                      <TableRow key={job.id}>
+                      <TableRow key={job.id} data-system-update-job-id={job.id}>
                         <TableCell><div className="font-medium">{targetDisplayName(job, targets)}</div><div className="text-xs text-muted-foreground">{systemUpdateJobOperationLabel(job)} · {systemUpdateDeploymentLabel(job.deployment_mode)}</div></TableCell>
                         <TableCell className="whitespace-nowrap text-xs">{systemUpdateJobChangeSummary(job)}</TableCell>
                         <TableCell><Badge variant={systemUpdateJobTone(job.status)}>{systemUpdateJobDisplayStatus(job)}</Badge></TableCell>
@@ -1148,7 +1151,8 @@ function PortReconfigureControl({
   const advertisedInputID = `${inputID}-advertised`;
   const publishedInputID = `${inputID}-published`;
   const containerInputID = `${inputID}-container`;
-  const [newPort, setNewPort] = useState(String(node.applied_endpoint?.port || ""));
+  const [newPort, setNewPort] = useState(String(target?.local_listen_port || ""));
+  const [portMode, setPortMode] = useState<SystemUpdatePortMode>("local_only");
   const [newAdvertisedPort, setNewAdvertisedPort] = useState(String(target?.port_mapping?.advertised_port || node.applied_endpoint?.port || ""));
   const [newPublishedPort, setNewPublishedPort] = useState(String(target?.port_mapping?.published_port || ""));
   const [newContainerPort, setNewContainerPort] = useState(String(target?.port_mapping?.container_port || ""));
@@ -1174,20 +1178,25 @@ function PortReconfigureControl({
   const validAdvertisedPort = validPortInput(newAdvertisedPort, 1);
   const validPublishedPort = validPortInput(newPublishedPort, 1024);
   const validContainerPort = validPortInput(newContainerPort, 1024);
-  const validDockerPorts = validAdvertisedPort && validPublishedPort && validContainerPort;
+  const advertisedInputValid = portMode === "local_only" || validAdvertisedPort;
+  const validDockerPorts = advertisedInputValid && validPublishedPort && validContainerPort;
   const unchanged = dockerMode
     ? validDockerPorts
-      && parsedAdvertisedPort === eligibility.dockerMapping?.advertised_port
+      && (portMode === "local_only" || parsedAdvertisedPort === eligibility.dockerMapping?.advertised_port)
       && parsedPublishedPort === eligibility.dockerMapping?.published_port
       && parsedContainerPort === eligibility.dockerMapping?.container_port
-    : validPort && parsedPort === eligibility.currentPort;
+    : validPort && parsedPort === eligibility.currentLocalListenPort && (portMode === "local_only" || parsedAdvertisedPort === eligibility.currentPort);
+  const localUnchanged = dockerMode
+    ? parsedPublishedPort === eligibility.dockerMapping?.published_port && parsedContainerPort === eligibility.dockerMapping?.container_port
+    : parsedPort === eligibility.currentLocalListenPort;
+  const advertisedOnly = localUnchanged && portMode === "local_and_advertised" && parsedAdvertisedPort !== eligibility.currentPort;
   const reason = !canExecute
     ? "permission_denied"
     : !eligibility.ready
       ? eligibility.reason
       : dockerMode && !advancedOpen
         ? "advanced_mode_required"
-      : dockerMode && !validAdvertisedPort
+      : !advertisedInputValid
         ? "invalid_advertised_port"
       : dockerMode && !validPublishedPort
         ? "invalid_published_port"
@@ -1195,28 +1204,27 @@ function PortReconfigureControl({
         ? "invalid_container_port"
       : !dockerMode && !validPort
         ? "invalid_service_port"
-        : unchanged
-          ? "port_unchanged"
+        : advertisedOnly
+          ? "system_update_advertised_only_unsupported"
           : "";
   const submitting = requestState === "pending" || locallySubmitting;
   const ready = canExecute
     && eligibility.ready
-    && (dockerMode ? advancedOpen && validDockerPorts : validPort)
-    && !unchanged
+    && (dockerMode ? advancedOpen && validDockerPorts : validPort && advertisedInputValid)
+    && !advertisedOnly
     && !submitting;
   const reasonMessage = portReconfigureReasonMessage(reason);
-  const operationResult = latestJob?.operation === "port_reconfigure"
-    ? systemUpdatePortReconfigureResultLabel(latestJob.port_reconfigure?.result)
-    : "";
+  const operationResult = systemUpdatePortJobResultLabel(latestJob);
 
   const proposal: PortReconfigureProposal = dockerMode
     ? Object.freeze({
         mode: "docker" as const,
-        newAdvertisedPort: parsedAdvertisedPort,
+        portMode,
+        newAdvertisedPort: portMode === "local_and_advertised" ? parsedAdvertisedPort : undefined,
         newPublishedPort: parsedPublishedPort,
         newContainerPort: parsedContainerPort,
       })
-    : Object.freeze({ mode: "service" as const, newPort: parsedPort });
+    : Object.freeze({ mode: "service" as const, portMode, newPort: parsedPort, newAdvertisedPort: portMode === "local_and_advertised" ? parsedAdvertisedPort : undefined });
   const authoritySnapshot = portReconfigureAuthoritySnapshot({
     target,
     updater,
@@ -1240,13 +1248,18 @@ function PortReconfigureControl({
       || !target
       || eligibility.currentPort === undefined
       || eligibility.endpointRevision === undefined
+      || eligibility.currentLocalListenPort === undefined
+      || eligibility.appliedConfigRevision === undefined
+      || eligibility.fence === undefined
+      || !eligibility.snapshotID
     ) return;
     const idempotencyKey = newIdempotencyKey(`port-${target.target_id}`);
     const request = dockerMode && eligibility.dockerMapping
       ? systemUpdateDockerPortReconfigureRequest({
           targetID: target.target_id,
           currentMapping: eligibility.dockerMapping,
-          newAdvertisedPort: parsedAdvertisedPort,
+          mode: portMode, expectedSnapshotID: eligibility.snapshotID, appliedConfigRevision: eligibility.appliedConfigRevision, fence: eligibility.fence,
+          newAdvertisedPort: portMode === "local_and_advertised" ? parsedAdvertisedPort : undefined,
           newPublishedPort: parsedPublishedPort,
           newContainerPort: parsedContainerPort,
           expectedEndpointRevision: eligibility.endpointRevision,
@@ -1254,8 +1267,11 @@ function PortReconfigureControl({
         })
       : systemUpdatePortReconfigureRequest({
           targetID: target.target_id,
-          currentPort: eligibility.currentPort,
-          newPort: parsedPort,
+          mode: portMode, expectedSnapshotID: eligibility.snapshotID, appliedConfigRevision: eligibility.appliedConfigRevision, fence: eligibility.fence,
+          currentLocalListenPort: eligibility.currentLocalListenPort,
+          newLocalListenPort: parsedPort,
+          currentAdvertisedPort: eligibility.currentPort,
+          newAdvertisedPort: portMode === "local_and_advertised" ? parsedAdvertisedPort : undefined,
           expectedEndpointRevision: eligibility.endpointRevision,
           idempotencyKey,
         });
@@ -1277,8 +1293,16 @@ function PortReconfigureControl({
           {dockerMode ? <Badge variant={dockerPortMappingTone(target?.port_mapping?.state)}>{dockerPortMappingLabel(target?.port_mapping?.state)}</Badge> : null}
         </div>
         <p className="text-xs text-muted-foreground">
-          現在適用中: {eligibility.currentPort ?? "未報告"} · endpoint revision {eligibility.endpointRevision ?? "未報告"}
+          local listener: {eligibility.currentLocalListenPort ?? "未報告"} · 広告endpoint: {eligibility.currentPort ?? "未報告"}
         </p>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium" htmlFor={`${inputID}-mode`}>変更する範囲</label>
+        <select id={`${inputID}-mode`} value={portMode} onChange={(event) => setPortMode(event.target.value as SystemUpdatePortMode)}
+          className="block rounded-md border bg-background p-2 text-sm" disabled={!canExecute || !eligibility.ready || submitting}>
+          <option value="local_only">local listenerのみ</option>
+          <option value="local_and_advertised">local listenerと広告endpoint</option>
+        </select>
       </div>
       {dockerMode ? (
         <div className="space-y-2 rounded-md border border-blue-200 bg-blue-50/50 p-2 text-xs text-blue-950 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-100">
@@ -1304,20 +1328,13 @@ function PortReconfigureControl({
         </div>
       ) : null}
       <div id={`${inputID}-advanced`} className={dockerMode && !advancedOpen ? "hidden" : "space-y-2"}>
+        {portMode === "local_and_advertised" ? <PortInput id={advertisedInputID} label="広告endpointポート"
+          help="Host、TLS、URLのpathは維持します。広告だけの変更はできません。" value={newAdvertisedPort}
+          onChange={setNewAdvertisedPort} valid={validAdvertisedPort} minimum={1} describedBy={reasonID}
+          disabled={!canExecute || !eligibility.ready || submitting} /> : null}
         <div className={dockerMode ? "grid gap-2 sm:grid-cols-3" : "flex flex-wrap items-end gap-2"}>
           {dockerMode ? (
             <>
-              <PortInput
-                id={advertisedInputID}
-                label="公開endpointポート"
-                help="Control Panelと他サービスへ広告する到達先"
-                value={newAdvertisedPort}
-                onChange={setNewAdvertisedPort}
-                valid={validAdvertisedPort}
-                minimum={1}
-                describedBy={reasonID}
-                disabled={!canExecute || !eligibility.ready || submitting}
-              />
               <PortInput
                 id={publishedInputID}
                 label="localhost publishedポート"
@@ -1343,7 +1360,7 @@ function PortReconfigureControl({
             </>
           ) : (
             <div className="min-w-36 flex-1 space-y-1">
-              <label className="text-xs font-medium" htmlFor={inputID}>新しいサービスポート</label>
+              <label className="text-xs font-medium" htmlFor={inputID}>新しいlocal listenerポート</label>
               <Input
                 id={inputID}
                 type="number"
@@ -1372,7 +1389,7 @@ function PortReconfigureControl({
             })}
             refreshAuthority={() => onRefreshAuthority({ targetID: actionIntent.resourceId, proposal })}
             handler={submitPortReconfigure}
-            label="ポート変更"
+            label={unchanged ? "変更不要か確認" : "ポート変更"}
             icon={submitting ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
             disabled={!ready}
             aria-busy={submitting}
@@ -1381,7 +1398,7 @@ function PortReconfigureControl({
         ) : null}
       </div>
       <div id={reasonID} className={reason === "request_ambiguous" || reason === "recovery_required" ? "text-xs text-destructive" : "text-xs text-muted-foreground"} role="status" aria-live="polite">
-        {reasonMessage || "変更前に現在のendpoint revisionを固定して送信します。"}
+        {reasonMessage || "現在のsnapshotを固定して送信します。同じ値の場合も実状態を確認してから結果を表示します。"}
       </div>
       {operationResult ? <div className="text-xs font-medium">直近のポート変更結果: {operationResult}</div> : null}
     </div>
@@ -1613,22 +1630,22 @@ function portReconfigureAuthoritySnapshot({
   proposal: PortReconfigureProposal;
 }>) {
   const eligibility = systemUpdatePortReconfigureEligibility({ target, updater, node, latestJob, requestState });
-  const proposalApplicable = proposal.mode === "docker"
-    ? validPortNumber(proposal.newAdvertisedPort, 1)
-      && validPortNumber(proposal.newPublishedPort, 1024)
+  const localSame = proposal.mode === "docker"
+    ? proposal.newPublishedPort === eligibility.dockerMapping?.published_port && proposal.newContainerPort === eligibility.dockerMapping?.container_port
+    : proposal.newPort === eligibility.currentLocalListenPort;
+  const advertisedValid = proposal.portMode === "local_only" || (validPortNumber(Number(proposal.newAdvertisedPort), 1)
+    && (!localSame || proposal.newAdvertisedPort === eligibility.currentPort));
+  const proposalApplicable = advertisedValid && (proposal.mode === "docker"
+    ? validPortNumber(proposal.newPublishedPort, 1024)
       && validPortNumber(proposal.newContainerPort, 1024)
       && Boolean(eligibility.dockerMapping)
-      && (
-        proposal.newAdvertisedPort !== eligibility.dockerMapping?.advertised_port
-        || proposal.newPublishedPort !== eligibility.dockerMapping?.published_port
-        || proposal.newContainerPort !== eligibility.dockerMapping?.container_port
-      )
-    : validPortNumber(proposal.newPort, 1024)
-      && proposal.newPort !== eligibility.currentPort;
+    : validPortNumber(proposal.newPort, 1024));
   return {
     applicable: eligibility.ready && proposalApplicable,
     fingerprint: updaterAuthorityFingerprint([
       "UPD-05",
+      target?.port_policy_snapshot_id, target?.local_listen_port, target?.applied_config_revision, target?.ownership_epoch,
+      proposal.portMode, proposal.newAdvertisedPort,
       target?.target_id,
       target?.host_id,
       target?.updater_id,
@@ -1689,17 +1706,21 @@ function targetDisplayName(job: SystemUpdateJob, targets: SystemUpdateTarget[]) 
 function systemUpdateJobMessage(job: SystemUpdateJob) {
   const fallback = systemUpdateJobStatusLabel(job.status);
   const summary = job.code ? systemUpdateErrorMessage({ code: job.code }, fallback) : fallback;
-  const result = job.operation === "port_reconfigure" ? systemUpdatePortReconfigureResultLabel(job.port_reconfigure?.result) : "";
+  const result = systemUpdatePortJobResultLabel(job);
   return result ? `${summary} · ${result}` : summary;
 }
 function systemUpdateJobDisplayStatus(job: SystemUpdateJob) {
   const status = job.status === "queued" && job.strategy === "when_idle" ? "配信終了待ち" : systemUpdateJobStatusLabel(job.status);
-  const result = job.operation === "port_reconfigure" ? systemUpdatePortReconfigureResultLabel(job.port_reconfigure?.result) : "";
+  const result = systemUpdatePortJobResultLabel(job);
   return result ? `${status} · ${result}` : status;
 }
 function systemUpdateJobOperationLabel(job: SystemUpdateJob) { return job.operation === "port_reconfigure" ? "ポート変更" : "ソフトウェア更新"; }
 function systemUpdateJobChangeSummary(job: SystemUpdateJob) {
   if (job.operation === "port_reconfigure") {
+    if (job.port_reconfigure?.port_contract_version === 2) {
+      const { before, target } = job.port_reconfigure;
+      return `local ${before?.local_listen_port ?? "-"} → ${target?.local_listen_port ?? "-"} / 広告 ${before?.advertised_port ?? "-"} → ${target?.advertised_port ?? "-"}`;
+    }
     const docker = job.port_reconfigure?.docker;
     if (docker) {
       return `広告 ${job.port_reconfigure?.old_port ?? "-"} → ${job.port_reconfigure?.new_port ?? "-"} / published ${docker.old_published_port} → ${docker.new_published_port} / container ${docker.old_container_port} → ${docker.new_container_port}`;

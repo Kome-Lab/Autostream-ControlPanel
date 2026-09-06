@@ -257,6 +257,12 @@ export type SystemUpdatePortReconfigurationResult =
   | "rollback_failed";
 
 export type SystemUpdatePortReconfiguration = {
+	port_contract_version?: 2;
+	mode?: SystemUpdatePortMode;
+	before?: SystemUpdatePortSnapshotRef;
+	target?: SystemUpdatePortSnapshotRef;
+	rollback?: SystemUpdatePortSnapshotRef;
+	docker_baseline?: Omit<SystemUpdateDockerPortReconfiguration, "published_host_ip" | "old_published_port" | "new_published_port" | "old_container_port" | "new_container_port" | "old_health_port" | "new_health_port">;
   network_namespace?: string;
   protocol?: "tcp" | "udp";
   old_port?: number;
@@ -299,22 +305,80 @@ export type SystemUpdateSoftwareCreateRequest = {
   idempotency_key: string;
 };
 
-export type SystemUpdateSystemdPortReconfigureCreateRequest = {
+export type SystemUpdatePortMode = "local_only" | "local_and_advertised";
+
+export type SystemUpdatePortSnapshotRef = {
+  snapshot_id: string;
+  snapshot_sha256: string;
+  source_policy_revision: number;
+  projection_revision: number;
+  executor_policy_revision: number;
+  executor_policy_sha256: string;
+  endpoint_revision: number;
+  applied_endpoint_revision: number;
+  config_revision: number;
+  config_sha256: string;
+  advertised_port: number;
+  advertised_endpoint_sha256: string;
+  local_listen_port: number;
+  docker?: {
+    published_host_ip: string;
+    published_port: number;
+    container_port: number;
+    health_port: number;
+    compose_policy_sha256: string;
+    compose_revision: number;
+    version_env_sha256: string;
+    image_id: string;
+    repository_digest: string;
+  };
+};
+
+export type SystemUpdatePortObservation = {
+  policy_disk_verified: boolean;
+  policy_memory_verified: boolean;
+  agent_projection_verified: boolean;
+  listener_verified: boolean;
+  observed_at: string;
+};
+
+export type SystemUpdatePortResultV2 = {
+  result: "applied" | "unchanged" | "rolled_back";
+  observed_snapshot_id: string;
+  observed_snapshot_sha256: string;
+  observed_config_revision: number;
+  observed_config_sha256: string;
+  observed_executor_policy_revision: number;
+  observed_executor_policy_sha256: string;
+  observation: SystemUpdatePortObservation;
+  runtime_instance?: { container_id: string; image_id: string; repository_digest: string };
+};
+
+type SystemUpdatePortCreateBase = {
+  protocol_version: 2;
+  port_contract_version: 2;
+  mode: SystemUpdatePortMode;
   operation: "port_reconfigure";
   target_id: string;
-  new_port: number;
+  expected_snapshot_id: string;
   expected_endpoint_revision: number;
+  desired_revision: number;
+  fence: number;
+  required_capability: "host.port";
   idempotency_key: string;
 };
 
-export type SystemUpdateDockerPortReconfigureCreateRequest = {
-  operation: "port_reconfigure";
-  target_id: string;
-  new_advertised_port: number;
+type SystemUpdatePortAdvertisedInput =
+  | { mode: "local_only"; new_advertised_port?: never }
+  | { mode: "local_and_advertised"; new_advertised_port: number };
+
+export type SystemUpdateSystemdPortReconfigureCreateRequest = SystemUpdatePortCreateBase & SystemUpdatePortAdvertisedInput & {
+  new_local_listen_port: number;
+};
+
+export type SystemUpdateDockerPortReconfigureCreateRequest = SystemUpdatePortCreateBase & SystemUpdatePortAdvertisedInput & {
   new_published_port: number;
   new_container_port: number;
-  expected_endpoint_revision: number;
-  idempotency_key: string;
 };
 
 export type SystemUpdatePortReconfigureCreateRequest =
@@ -358,6 +422,14 @@ export type SystemUpdateHostStatus = {
 };
 
 export type SystemUpdateTarget = {
+  port_contract_version?: 2;
+  port_policy_snapshot_id?: string;
+  local_listen_port?: number;
+  endpoint_revision?: number;
+  applied_endpoint_revision?: number;
+  applied_config_revision?: number;
+  ownership_epoch?: number;
+  port_modes?: SystemUpdatePortMode[];
   target_id: string;
   target_type: string;
   name: string;
@@ -392,6 +464,8 @@ export type SystemUpdatePortMapping = {
 };
 
 export type SystemUpdateJob = {
+  port_result?: SystemUpdatePortResultV2;
+  last_recovery_observation?: { result: "rollback_failed"; observation: SystemUpdatePortObservation };
   id: string;
   idempotency_key?: string;
   target_id: string;

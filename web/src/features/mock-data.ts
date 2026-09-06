@@ -1,4 +1,4 @@
-import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, UpdaterHostBootstrapJob, UpdaterHostBootstrapRequest, UpdaterSettings, UpdaterSettingsUpdate, WorkerNode } from "@/types/domain";
+import type { AuditLog, CurrentUser, ManagedAppSettings, MFAStatus, MetricSnapshot, NodeRegistrationResponse, OAuthLoginProvider, OAuthUserLink, PasskeyCredential, SetupStatus, Stream, SystemUpdateAgentStatus, SystemUpdateHostStatus, SystemUpdateJob, SystemUpdateTarget, SystemUpdatePortReconfiguration, SystemUpdatePortSnapshotRef, UpdaterHostBootstrapJob, UpdaterHostBootstrapRequest, UpdaterSettings, UpdaterSettingsUpdate, WorkerNode } from "@/types/domain";
 
 const baseTime = "2026-07-02T09:00:00+09:00";
 
@@ -611,6 +611,51 @@ export const mockSystemUpdateHosts: SystemUpdateHostStatus[] = [
   { host_id: "host-observability", name: "監視ホスト", updater_id: "host-agent-observability", reachability: "reachable", reachability_checked_at: baseTime },
 ];
 
+function mockSystemUpdatePortPlan(target: SystemUpdateTarget, request: Record<string, unknown>): SystemUpdatePortReconfiguration {
+  if (request.protocol_version !== 2 || request.port_contract_version !== 2) throw new Error("system_update_port_contract_required");
+  if (request.expected_snapshot_id !== target.port_policy_snapshot_id || request.expected_endpoint_revision !== target.endpoint_revision || request.fence !== target.ownership_epoch) throw new Error("system_update_port_snapshot_stale");
+  if (request.mode !== "local_only" && request.mode !== "local_and_advertised" || request.required_capability !== "host.port"
+    || request.mode === "local_only" && request.new_advertised_port !== undefined || request.new_port !== undefined) throw new Error("invalid_system_update_port_mode");
+  const mapping = target.port_mapping;
+  const node = mockWorkers.find((item) => item.service_id === target.target_id);
+  const local = Number(target.local_listen_port);
+  const advertised = Number(mapping?.advertised_port ?? node?.applied_endpoint?.port);
+  const proposed = Number(mapping ? request.new_published_port : request.new_local_listen_port);
+  const container = mapping ? Number(request.new_container_port) : undefined;
+  const nextAdvertised = request.mode === "local_only" ? advertised : Number(request.new_advertised_port);
+  if (!Number.isInteger(proposed) || proposed < 1024 || proposed > 65535 || !Number.isInteger(nextAdvertised) || nextAdvertised < 1 || nextAdvertised > 65535
+    || mapping && (!Number.isInteger(container) || Number(container) < 1024 || Number(container) > 65535)) throw new Error("invalid_port_reconfigure_request");
+  const changed = proposed !== local || mapping && container !== mapping.container_port;
+  const adDelta = Number(nextAdvertised !== advertised);
+  if (!changed && adDelta) throw new Error("system_update_advertised_only_unsupported");
+  const revision = Number(target.applied_config_revision);
+  if (request.desired_revision !== revision + Number(Boolean(changed))) throw new Error("system_update_port_snapshot_stale");
+  const digest = (value: string) => `sha256:${value.repeat(64)}`;
+  const before: SystemUpdatePortSnapshotRef = { snapshot_id: target.port_policy_snapshot_id!, snapshot_sha256: digest("a"),
+    source_policy_revision: 11, projection_revision: 17, executor_policy_revision: 23, executor_policy_sha256: digest("b"),
+    endpoint_revision: target.endpoint_revision!, applied_endpoint_revision: target.applied_endpoint_revision!, config_revision: revision, config_sha256: digest("c"),
+    local_listen_port: local, advertised_port: advertised, advertised_endpoint_sha256: digest("d"),
+    docker: mapping ? { published_host_ip: "127.0.0.1", published_port: mapping.published_port!, container_port: mapping.container_port!, health_port: mapping.health_port!,
+      compose_policy_sha256: digest("7"), compose_revision: revision, version_env_sha256: digest("8"), image_id: digest("9"), repository_digest: digest("0") } : undefined };
+  const next = (step: number, snapshot: string, executor: string, config: string): SystemUpdatePortSnapshotRef => ({ ...structuredClone(before),
+    snapshot_id: `ps1:${snapshot.repeat(64)}`, snapshot_sha256: digest(snapshot),
+    source_policy_revision: before.source_policy_revision + step, projection_revision: before.projection_revision + step,
+    executor_policy_revision: before.executor_policy_revision + step, executor_policy_sha256: digest(executor),
+    config_revision: revision + step, config_sha256: digest(config), endpoint_revision: before.endpoint_revision + step * adDelta,
+    applied_endpoint_revision: before.applied_endpoint_revision + step * adDelta });
+  const after = changed ? next(1, "e", "f", "1") : structuredClone(before);
+  const rollback = changed ? next(2, "3", "4", "5") : structuredClone(before);
+  after.local_listen_port = proposed; after.advertised_port = nextAdvertised;
+  if (adDelta) after.advertised_endpoint_sha256 = digest("2");
+  if (changed && after.docker && rollback.docker) {
+    after.docker.published_port = proposed; after.docker.container_port = container!; after.docker.health_port = proposed;
+    after.docker.compose_revision++; rollback.docker.compose_revision += 2;
+  }
+  return { port_contract_version: 2, mode: request.mode, network_namespace: "host", protocol: "tcp", before, target: after, rollback, port_plan_sha256: "6".repeat(64),
+    docker_baseline: before.docker ? { expected_container_id: "c".repeat(64), expected_image_id: before.docker.image_id, expected_repository_digest: before.docker.repository_digest,
+      expected_version_env_sha256: before.docker.version_env_sha256, approved_compose_config_sha256: "7".repeat(64), approved_compose_revision: before.docker.compose_revision } : undefined };
+}
+
 export const mockSystemUpdateTargets: SystemUpdateTarget[] = [
   { target_id: "control-panel", target_type: "control_panel", name: "Control Panel", host_id: "host-control", current_version: "v1.2.3", latest_version: "v1.2.4", update_available: true, deployment_mode: "docker_compose", updater_id: "host-agent-control", updater_online: true, eligible: true },
   { target_id: "worker-main", target_type: "worker", name: "本社メインWorker", host_id: "host-main", current_version: "v1.2.0", latest_version: "v1.2.1", update_available: true, deployment_mode: "systemd", updater_id: "host-agent-control", updater_online: true, busy: true, current_stream_id: "stream-cable-morning", eligible: true },
@@ -630,6 +675,9 @@ export const mockSystemUpdateTargets: SystemUpdateTarget[] = [
     updater_online: true,
     eligible: true,
     eligible_operations: ["software_update", "port_reconfigure"],
+    port_contract_version: 2, port_policy_snapshot_id: `ps1:${"a".repeat(64)}`, local_listen_port: 18090,
+    endpoint_revision: 7, applied_endpoint_revision: 7, applied_config_revision: 5, ownership_epoch: 3,
+    port_modes: ["local_only", "local_and_advertised"],
     port_mapping: {
       mode: "docker",
       advertised_port: 443,
@@ -970,7 +1018,14 @@ export function mockPost(path: string, body?: unknown): unknown {
       strategy: string;
       idempotency_key: string;
       expected_endpoint_revision: number;
-      new_port: number;
+      protocol_version: number;
+      port_contract_version: number;
+      mode: "local_only" | "local_and_advertised";
+      expected_snapshot_id: string;
+      desired_revision: number;
+      fence: number;
+      required_capability: string;
+      new_local_listen_port: number;
       new_advertised_port: number;
       new_published_port: number;
       new_container_port: number;
@@ -978,9 +1033,7 @@ export function mockPost(path: string, body?: unknown): unknown {
     const target = mockSystemUpdateTargets.find((item) => item.target_id === request.target_id);
     if (!target) throw new Error("target_not_found");
     const now = new Date().toISOString();
-    const dockerPortRequest = request.operation === "port_reconfigure" && target.deployment_mode === "docker";
-    const systemdPortRequest = request.operation === "port_reconfigure" && target.deployment_mode === "systemd";
-    const currentMapping = target.port_mapping;
+    const portPlan = request.operation === "port_reconfigure" ? mockSystemUpdatePortPlan(target, request) : undefined;
     const job: SystemUpdateJob = {
       id: `update-demo-${Date.now()}`,
       idempotency_key: request.idempotency_key,
@@ -990,35 +1043,8 @@ export function mockPost(path: string, body?: unknown): unknown {
       target_version: target.latest_version,
       deployment_mode: target.deployment_mode,
       operation: request.operation || "software_update",
-      port_reconfigure: dockerPortRequest && currentMapping
-        ? {
-            old_port: currentMapping.advertised_port,
-            new_port: request.new_advertised_port,
-            expected_endpoint_revision: request.expected_endpoint_revision,
-            target_endpoint_revision: Number(request.expected_endpoint_revision || 0) + 1,
-            docker: {
-              published_host_ip: String(currentMapping.published_host_ip || ""),
-              old_published_port: Number(currentMapping.published_port),
-              new_published_port: Number(request.new_published_port),
-              old_container_port: Number(currentMapping.container_port),
-              new_container_port: Number(request.new_container_port),
-              old_health_port: Number(currentMapping.health_port),
-              new_health_port: Number(request.new_published_port),
-              approved_compose_config_sha256: "a".repeat(64),
-              approved_compose_revision: Number(currentMapping.config_revision),
-              expected_version_env_sha256: `sha256:${"b".repeat(64)}`,
-              expected_container_id: "c".repeat(64),
-              expected_image_id: `sha256:${"d".repeat(64)}`,
-              expected_repository_digest: `sha256:${"e".repeat(64)}`,
-            },
-          }
-          : systemdPortRequest
-          ? {
-              old_port: Number(mockWorkers.find((node) => node.service_id === target.target_id)?.applied_endpoint?.port || 0),
-              new_port: request.new_port,
-              expected_endpoint_revision: request.expected_endpoint_revision,
-            }
-          : undefined,
+      port_reconfigure: portPlan,
+      ownership_epoch: portPlan ? request.fence : undefined,
       strategy: request.strategy === "when_idle" ? "when_idle" : "maintenance",
       status: "queued",
       progress: 0,

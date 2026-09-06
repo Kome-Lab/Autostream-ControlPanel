@@ -22,6 +22,110 @@ const webRoot = fileURLToPath(new URL("../..", import.meta.url));
 const fixturePrefix = "autostream-confirmation-browser-";
 const fixtureBaseUrl = "http://127.0.0.1:3002";
 
+type ConfirmationInputState = Readonly<{
+  ready: boolean;
+  stable?: boolean;
+  rect: readonly number[] | null;
+  point: { x: number; y: number } | null;
+  dialogCount: number;
+  openDialogCount: number;
+  focusId: string;
+  fixtureState: string;
+  fixtureOpen: string;
+  disabled: boolean | null;
+  latched: boolean;
+  inert: boolean;
+  hit: boolean;
+  intentCount: number;
+  duplicateIntentCount: number;
+  triggerPointerdown: number;
+  triggerPointerup: number;
+  triggerClick: number;
+  triggerTrustedClick: number;
+  confirmPointerdown: number;
+  confirmPointerup: number;
+  confirmClick: number;
+  confirmTrustedClick: number;
+}>;
+
+const readConfirmationInputState = `(selector, allowDisabled = false) => {
+  const fixture = document.querySelector('[data-confirmation-fixture]');
+  const dialogs = [...document.querySelectorAll('[role=alertdialog]')];
+  const openDialogs = dialogs.filter((dialog) => dialog.getAttribute('data-state') === 'open');
+  const candidates = [...document.querySelectorAll(selector)];
+  const element = candidates.length === 1 && candidates[0] instanceof HTMLButtonElement ? candidates[0] : null;
+  const dialog = element?.closest('[role=alertdialog]');
+  const bounds = element?.getBoundingClientRect();
+  const style = element ? getComputedStyle(element) : null;
+  const point = bounds ? { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 } : null;
+  const visible = Boolean(element && bounds && bounds.width > 0 && bounds.height > 0
+    && element.getClientRects().length && style?.visibility === 'visible' && Number(style?.opacity) > 0
+    && point.x >= 0 && point.x < innerWidth && point.y >= 0 && point.y < innerHeight);
+  const hitElement = point ? document.elementFromPoint(point.x, point.y) : null;
+  const hit = Boolean(element && hitElement && (hitElement === element || element.contains(hitElement)));
+  const disabled = element ? element.disabled || element.getAttribute('aria-disabled') === 'true' : null;
+  const latched = element?.getAttribute('data-confirmation-intent-latched') === 'true';
+  const inert = Boolean(element?.closest('[inert]'));
+  const fixtureState = fixture?.getAttribute('data-fixture-state') || '';
+  const fixtureOpen = fixture?.getAttribute('data-fixture-open') || '';
+  const confirm = Boolean(element?.hasAttribute('data-confirm-action'));
+  const dialogReady = dialog
+    ? dialogs.length === 1 && openDialogs.length === 1 && dialog === openDialogs[0] && fixtureOpen === 'true'
+    : dialogs.length === 0 && fixtureOpen === 'false';
+  const count = (attribute) => Number(fixture?.getAttribute(attribute) || 0);
+  return {
+    ready: Boolean(fixture?.getAttribute('data-input-observer-ready') === 'true'
+      && visible && hit && dialogReady && disabled === allowDisabled && !inert && !latched
+      && (!confirm || fixtureState === 'ready')),
+    rect: bounds ? [bounds.x, bounds.y, bounds.width, bounds.height] : null, point,
+    dialogCount: dialogs.length, openDialogCount: openDialogs.length,
+    focusId: document.activeElement?.id || '', fixtureState, fixtureOpen, disabled, latched, inert, hit,
+    intentCount: Number(document.querySelector('[data-testid=intent-count]')?.textContent || 0),
+    duplicateIntentCount: Number(document.querySelector('[data-testid=duplicate-intent-count]')?.textContent || 0),
+    triggerPointerdown: count('data-trigger-pointerdown'), triggerPointerup: count('data-trigger-pointerup'),
+    triggerClick: count('data-trigger-click'), triggerTrustedClick: count('data-trigger-trusted-click'),
+    confirmPointerdown: count('data-confirm-pointerdown'), confirmPointerup: count('data-confirm-pointerup'),
+    confirmClick: count('data-confirm-click'), confirmTrustedClick: count('data-confirm-trusted-click'),
+  };
+}`;
+
+export async function nativeConfirmationClick(browser: BrowserHarness, selector: string, allowDisabled = false) {
+  const expression = `(async () => {
+    const read = (${readConfirmationInputState});
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (element instanceof HTMLButtonElement && !element.closest('[inert]')) {
+      const bounds = element.getBoundingClientRect();
+      if (bounds.top < 0 || bounds.bottom > innerHeight || bounds.left < 0 || bounds.right > innerWidth) {
+        element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+      }
+    }
+    await new Promise(requestAnimationFrame);
+    const first = read(${JSON.stringify(selector)}, ${allowDisabled});
+    await new Promise(requestAnimationFrame);
+    const second = read(${JSON.stringify(selector)}, ${allowDisabled});
+    return { ...second, stable: Boolean(first.ready && second.ready && first.rect && second.rect
+      && first.rect.every((value, index) => value === second.rect[index])) };
+  })()`;
+  const ready = await browser.waitFor<ConfirmationInputState>(expression,
+    (state) => state.ready && state.stable === true, `native input readiness for ${selector}`);
+  if (!ready.point) throw new Error(`native input point missing for ${selector}`);
+  await browser.clickAt(ready.point.x, ready.point.y);
+  return ready;
+}
+
+export async function waitForConfirmationClosed(browser: BrowserHarness, triggerId: string) {
+  return browser.waitFor<ConfirmationInputState>(
+    `(${readConfirmationInputState})(${JSON.stringify(`#${triggerId}`)})`,
+    (state) => state.dialogCount === 0 && state.fixtureOpen === 'false' && state.focusId === triggerId,
+    `confirmation closed and focus returned to ${triggerId}`,
+  );
+}
+
+export async function waitForConfirmationIntent(browser: BrowserHarness, description: string) {
+  return browser.waitFor<ConfirmationInputState>(`(${readConfirmationInputState})('[data-confirm-action]')`,
+    (state) => state.intentCount === 1 && state.duplicateIntentCount === 0, description);
+}
+
 export async function withConfirmationBrowserFixture(
   run: (fixture: ConfirmationBrowserFixture) => Promise<void>,
 ) {
@@ -142,7 +246,7 @@ function fixtureComponentSource() {
   return `
     "use client";
 
-    import { useState } from "react";
+    import { useEffect, useRef, useState } from "react";
     import {
       HighRiskConfirmation,
       type ConfirmationDialogState,
@@ -210,15 +314,43 @@ function fixtureComponentSource() {
     export function ConfirmationFixture({ scenario, locale }: { scenario: string; locale: Locale }) {
       const [open, setOpen] = useState(false);
       const [intentCount, setIntentCount] = useState(0);
+      const [duplicateIntentCount, setDuplicateIntentCount] = useState(0);
+      const intentCountRef = useRef(0);
+      const fixtureRef = useRef<HTMLElement>(null);
       const [runtimeState, setRuntimeState] = useState<ConfirmationDialogState>(() => stateFor(scenario));
+      useEffect(() => {
+        const fixture = fixtureRef.current;
+        if (!fixture) return;
+        const observe = (event: Event) => {
+          const target = event.target instanceof Element ? event.target.closest("button") : null;
+          if (!target) return;
+          const control = target.hasAttribute("data-confirm-action") ? "confirm"
+            : target.id === scenario + "-trigger" ? "trigger"
+            : target.getAttribute("data-slot") === "alert-dialog-cancel" ? "cancel" : null;
+          if (!control) return;
+          const attribute = "data-" + control + "-" + event.type;
+          fixture.setAttribute(attribute, String(Number(fixture.getAttribute(attribute) || 0) + 1));
+          if (event.isTrusted && event.type === "click") {
+            const trustedAttribute = "data-" + control + "-trusted-click";
+            fixture.setAttribute(trustedAttribute, String(Number(fixture.getAttribute(trustedAttribute) || 0) + 1));
+          }
+        };
+        for (const kind of ["pointerdown", "pointerup", "click"]) document.addEventListener(kind, observe, true);
+        fixture.setAttribute("data-input-observer-ready", "true");
+        return () => {
+          for (const kind of ["pointerdown", "pointerup", "click"]) document.removeEventListener(kind, observe, true);
+          fixture.removeAttribute("data-input-observer-ready");
+        };
+      }, [scenario]);
       const descriptor = scenario === "typed" ? typedDescriptor
         : scenario === "invalid" ? invalidDescriptor
         : consequenceDescriptor;
       const t = (key: TranslationKey, values?: TranslationValues) => translate(locale, key, values);
 
       return (
-        <main>
+        <main ref={fixtureRef} data-confirmation-fixture="" data-fixture-state={runtimeState.kind} data-fixture-open={String(open)}>
           <output data-testid="intent-count">{intentCount}</output>
+          <output data-testid="duplicate-intent-count">{duplicateIntentCount}</output>
           <HighRiskConfirmation
             descriptor={descriptor}
             open={open}
@@ -236,7 +368,9 @@ function fixtureComponentSource() {
             onOpenIntent={() => setOpen(true)}
             onCloseIntent={() => setOpen(false)}
             onConfirmIntent={() => {
-              setIntentCount((count) => count + 1);
+              intentCountRef.current += 1;
+              setIntentCount(intentCountRef.current);
+              if (intentCountRef.current > 1) setDuplicateIntentCount((count) => count + 1);
               if (scenario === "controller-close") {
                 setOpen(false);
                 return;

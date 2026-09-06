@@ -19,6 +19,7 @@
     "test:notifications": "node --no-warnings --test tests/notification-channel.test.mts",
     "test:observability-ui": "node --no-warnings --test tests/observability-ui-regressions.test.mts",
     "test:system-updates": "node --no-warnings --test tests/system-updates.test.mts",
+    "test:st-port-get-browser": "node --no-warnings tests/helpers/run-st-port-get-browser.mts",
     "test:bundle6-features": "node --no-warnings --test tests/node-foundation-migration.test.mts tests/account-archive-foundation-migration.test.mts tests/observability-actions.test.mts tests/updater-foundation-migration.test.mts",
     "test:ui-foundation-operations": "node --no-warnings tests/helpers/run-ui-foundation-operations.mts",
     "test:bundle6-witnesses": "node --no-warnings --test tests/bundle6-witness-gate.test.mts && node --no-warnings tests/helpers/run-bundle6-witnesses.mts",
