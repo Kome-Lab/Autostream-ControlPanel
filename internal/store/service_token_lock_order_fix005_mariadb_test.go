@@ -864,6 +864,29 @@ func deactivateMariaDBFIX005Params(
 	}
 }
 
+func prepareMariaDBFIX006ExistingHostActivation(t *testing.T, ctx context.Context, fixture *mariaDBFIX005PullFixture) {
+	t.Helper()
+	// Initial activation creates the ownership row only at its final write.
+	// These lock-pair tests probe an existing row before that write, so establish
+	// a committed, deactivated host through the normal ownership lifecycle.
+	activated, err := fixture.policies.ActivatePullUpdaterOwnership(ctx, fixture.auth, fixture.updates, fixture.params)
+	if err != nil {
+		t.Fatalf("prepare existing host activation: %v", err)
+	}
+	deactivated, err := fixture.policies.DeactivatePullUpdaterOwnership(ctx, fixture.auth, fixture.updates, deactivateMariaDBFIX005Params(activated))
+	if err != nil {
+		t.Fatalf("prepare existing host deactivation: %v", err)
+	}
+	fixture.params.ExpectedExecutionHostOwnershipEpoch = deactivated.Ownership.OwnershipEpoch
+	var persistedEpoch int64
+	if err := fixture.updates.db.QueryRowContext(ctx, `SELECT ownership_epoch FROM system_update_execution_hosts WHERE execution_host_id = ?`, fixture.params.ExecutionHostID).Scan(&persistedEpoch); err != nil {
+		t.Fatalf("read committed ownership before lock pair: %v", err)
+	}
+	if persistedEpoch != fixture.params.ExpectedExecutionHostOwnershipEpoch || deactivated.Service.OwnershipEpoch != 0 {
+		t.Fatal("existing host activation fixture did not commit its deactivated ownership")
+	}
+}
+
 func mariaDBFIX005RuntimeStageParams(
 	fixture mariaDBFIX005PullFixture,
 	activated ActivatePullUpdaterOwnershipResult,
@@ -1519,6 +1542,12 @@ func TestMariaDBFIX006PolicyCyclePairs(t *testing.T) {
 							firstFixture.targetToken.ID,
 							secondFixture.targetToken.ID,
 						)
+					}
+					if pair.first == "activate" {
+						prepareMariaDBFIX006ExistingHostActivation(t, ctx, &firstFixture)
+					}
+					if pair.second == "activate" {
+						prepareMariaDBFIX006ExistingHostActivation(t, ctx, &secondFixture)
 					}
 					firstPlan, err := firstFixture.policies.discoverMariaDBPullUpdaterOwnershipLockPlan(
 						ctx,
@@ -2527,6 +2556,9 @@ func TestMariaDBFIX006UpdaterOwnershipVsRuntimeRotationPairs(t *testing.T) {
 					ownershipFixture := newMariaDBFIX005PullFixtureWithCleanup(
 						t, ctx, db, cleanup, "ownership-", false, nil,
 					)
+					if ownershipOperation == "activate" {
+						prepareMariaDBFIX006ExistingHostActivation(t, ctx, &ownershipFixture)
+					}
 					var ownershipActivated ActivatePullUpdaterOwnershipResult
 					if ownershipOperation == "deactivate" {
 						ownershipActivated, err = ownershipFixture.policies.ActivatePullUpdaterOwnership(

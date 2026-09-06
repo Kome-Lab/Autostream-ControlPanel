@@ -86,6 +86,16 @@ func newMariaDBPullActivationFixture(t *testing.T, ctx context.Context, db *sql.
 	if _, err := auth.RegisterService(ctx, token, registration); err != nil {
 		t.Fatal(err)
 	}
+	return prepareMariaDBPullActivationPolicy(t, ctx, db, mariaDBPullActivationFixture{
+		auth: auth, agentToken: token, targetID: targetID, suffix: suffix,
+		params: store.ActivatePullUpdaterOwnershipParams{ServiceID: agentID, ExecutionHostID: hostID},
+	})
+}
+
+func prepareMariaDBPullActivationPolicy(t *testing.T, ctx context.Context, db *sql.DB, fixture mariaDBPullActivationFixture) mariaDBPullActivationFixture {
+	t.Helper()
+	auth, token := fixture.auth, fixture.agentToken
+	agentID, hostID, targetID, suffix := fixture.params.ServiceID, fixture.params.ExecutionHostID, fixture.targetID, fixture.suffix
 	updates := store.NewMariaDBSystemUpdateStore(db)
 	policies := store.NewMariaDBUpdaterPolicyAdminStore(db, "")
 	policy, err := policies.SavePullUpdaterPolicy(ctx, updates, agentID, 0, 0, store.UpdaterPolicy{

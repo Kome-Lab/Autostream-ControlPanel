@@ -21,6 +21,14 @@ func WithSystemUpdatePortLocksHeldForTest(ctx context.Context, held func()) cont
 	}))
 }
 
+func WithSystemUpdatePortCreatePhaseForTest(ctx context.Context, observe func(string)) context.Context {
+	return context.WithValue(ctx, mariaDBUpdaterPolicyLockObserverContextKey{}, mariaDBUpdaterPolicyLockObserver(func(operation string, phase mariaDBUpdaterPolicyLockPhase) {
+		if operation == "st_port_create" {
+			observe(string(phase))
+		}
+	}))
+}
+
 func WithSystemUpdateLifecycleHostLockForTest(ctx context.Context, held func()) context.Context {
 	ctx = context.WithValue(ctx, mariaDBUpdaterPolicyLockObserverContextKey{}, mariaDBUpdaterPolicyLockObserver(func(_ string, phase mariaDBUpdaterPolicyLockPhase) {
 		if phase == mariaDBUpdaterPolicyHostLockHeld {

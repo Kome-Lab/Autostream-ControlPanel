@@ -127,11 +127,9 @@ export function UpdaterHostBootstrapPanel({
   })), [
     activeBootstrapStatus,
     currentHosts,
-    currentTargets,
     expectedAppliedRevision,
     latestResults,
     savedHostsByID,
-    savedTargets,
     releaseTokenConfigured,
     updater,
   ]);

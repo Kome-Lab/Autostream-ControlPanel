@@ -2600,7 +2600,6 @@ function DeleteResourceButton({
   row,
   controller,
   disabled,
-  permission,
   onResult,
 }: {
   resource: ResourceDefinition;

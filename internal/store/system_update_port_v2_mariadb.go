@@ -373,6 +373,7 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	}
 	// Nonlocking lookup is only a discovery/replay optimization. New insertion
 	// repeats idempotency under the host lock before acquiring any policy lock.
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_replay_lookup")
 	if existing, err := s.GetSystemUpdateJobByIdempotency(ctx, params.RequestedByUserID, params.IdempotencyKey); err == nil {
 		if existing.portTransaction != nil && existing.portTransaction.RequestSHA256 == systemUpdatePortV2RequestDigest(params) {
 			return existing, false, nil
@@ -381,19 +382,23 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	} else if !errors.Is(err, ErrNotFound) {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_begin_tx")
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
 	defer tx.Rollback()
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_policy_discovery")
 	discovered, _, err := mariaDBPullPolicyForPortTarget(ctx, tx, params.TargetID, false)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", mariaDBUpdaterPolicyBeforeHostLock)
 	host, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, discovered.ExecutionHostID)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_idempotency_lock")
 	existing, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE requested_by_user_id = ? AND idempotency_key = ? FOR UPDATE`, params.RequestedByUserID, params.IdempotencyKey))
 	if err == nil {
 		if existing.portTransaction != nil && existing.portTransaction.RequestSHA256 == systemUpdatePortV2RequestDigest(params) {
@@ -404,9 +409,11 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_lane_locks")
 	if err := lockMariaDBPortHostLane(ctx, tx, host.ExecutionHostID, ""); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", mariaDBUpdaterPolicyBeforePolicyLocks)
 	policy, err := loadMariaDBSystemUpdatePortPolicy(ctx, tx, discovered.UpdaterID, true)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
@@ -420,10 +427,12 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 			target = candidate
 		}
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_service_token_locks")
 	all, err := loadMariaDBPortServices(ctx, tx, policy, true, params.ControlPanelTarget)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_snapshot_validation")
 	ordered, err := sortedPortServices(all, policy, params.ControlPanelTarget)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
@@ -440,6 +449,7 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	if err := validateSyntheticControlPanelHostPortFence(policy, params.TargetID, params.NewLocalListenPort, params.ControlPanelTarget); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_reservation_locks")
 	if err := validateMariaDBPortReservationsForUpdate(ctx, tx, host.ExecutionHostID, params.TargetID, before.Ref.LocalListenPort, params.NewLocalListenPort); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
@@ -447,15 +457,18 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_job_insert")
 	_, err = tx.ExecContext(ctx, `INSERT INTO system_update_jobs (id,target_id,target_service_type,operation,port_contract_version,agent_service_id,execution_host_id,transport_mode,ownership_epoch,policy_revision,deployment_mode,current_version,target_version,strategy,status,idempotency_key,requested_by_user_id,requested_by_username,sequence,progress,created_at,updated_at) VALUES (?,?,?,'port_reconfigure',2,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)`, job.ID, job.TargetID, job.TargetServiceType, job.AgentServiceID, job.ExecutionHostID, job.TransportMode, job.OwnershipEpoch, job.PolicyRevision, job.DeploymentMode, job.CurrentVersion, job.TargetVersion, job.Strategy, job.Status, job.IdempotencyKey, job.RequestedByUserID, job.RequestedByUsername, now, now)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_transaction_insert")
 	if err := insertMariaDBSystemUpdatePortTransaction(ctx, tx, job, now); err != nil {
 		return SystemUpdateJob{}, false, err
 	}
 	if !systemUpdatePortV2NoOp(job) {
 		if before.Ref.LocalListenPort != params.NewLocalListenPort {
+			observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_pending_reservation_insert")
 			_, err = tx.ExecContext(ctx, `INSERT INTO service_port_reservations (execution_host_id,network_namespace,protocol,port,service_id,service_role,created_at,updated_at) VALUES (?,'host','tcp',?,?,'api_pending',?,?)`, host.ExecutionHostID, params.NewLocalListenPort, params.TargetID, now, now)
 			if isDuplicateKeyError(err) {
 				return SystemUpdateJob{}, false, ErrServicePortReserved
@@ -466,6 +479,7 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 		}
 		for _, state := range job.portTransaction.Target.Snapshot.Targets {
 			if state.ServiceID == params.TargetID {
+				observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_endpoint_write")
 				_, err = tx.ExecContext(ctx, `UPDATE services SET desired_host=?,desired_port=?,desired_ssl_enabled=?,desired_public_url=?,endpoint_revision=?,endpoint_status='pending',updated_at=? WHERE service_id=?`, state.DesiredEndpoint.Host, state.DesiredEndpoint.Port, state.DesiredEndpoint.SSLEnabled, state.DesiredEndpoint.PublicURL, state.EndpointRevision, now, params.TargetID)
 				if err != nil {
 					return SystemUpdateJob{}, false, err
@@ -473,6 +487,7 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 			}
 		}
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_commit")
 	if err := tx.Commit(); err != nil {
 		return SystemUpdateJob{}, false, err
 	}

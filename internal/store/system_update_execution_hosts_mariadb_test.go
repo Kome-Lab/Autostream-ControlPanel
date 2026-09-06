@@ -31,33 +31,25 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 	}
 
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	hostID := "host-" + suffix
-	firstAgentID := "updater-host-" + suffix
-	secondAgentID := "updater-central-" + suffix
+	fixture := newMariaDBPullActivationFixture(t, ctx, db, false)
+	hostID := fixture.params.ExecutionHostID
+	firstAgentID := fixture.params.ServiceID
 	wrongHostAgentID := "updater-wrong-host-" + suffix
-	firstServiceID := "worker-a-" + suffix
+	firstServiceID := fixture.targetID
 	secondServiceID := "worker-b-" + suffix
-	auth := store.NewMariaDBAuthStore(db)
-	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
-		ServiceID: firstAgentID, ServiceType: "update_agent", ServiceName: firstAgentID,
-		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: hostID, OwnershipEpoch: 1,
-	})
-	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
-		ServiceID: secondAgentID, ServiceType: "update_agent", ServiceName: secondAgentID,
-		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: hostID, OwnershipEpoch: 1,
-	})
+	auth := fixture.auth
 	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
 		ServiceID: wrongHostAgentID, ServiceType: "update_agent", ServiceName: wrongHostAgentID,
 		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "other-" + hostID, OwnershipEpoch: 2,
 	})
-	for _, serviceID := range []string{firstServiceID, secondServiceID} {
+	for _, serviceID := range []string{secondServiceID} {
 		registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
 			ServiceID: serviceID, ServiceType: "worker", ServiceName: serviceID,
 			PublicURL: "https://worker.example.com:8081",
 		})
 	}
 
-	updates := store.NewMariaDBSystemUpdateStore(db)
+	updates := fixture.updates
 	missing, err := updates.GetSystemUpdateExecutionHost(ctx, hostID)
 	if err != nil {
 		t.Fatal(err)
@@ -66,17 +58,11 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		t.Fatalf("missing host = %#v", missing)
 	}
 
-	owned, err := updates.SwitchSystemUpdateExecutionHost(
-		ctx,
-		hostID,
-		0,
-		store.SystemUpdateTransportPullV2,
-		firstAgentID,
-		1,
-	)
+	activated, err := fixture.policies.ActivatePullUpdaterOwnership(ctx, auth, updates, fixture.params)
 	if err != nil {
 		t.Fatal(err)
 	}
+	owned := activated.Ownership
 	if owned.OwnershipEpoch != 1 || owned.AgentServiceID != firstAgentID {
 		t.Fatalf("owned host = %#v", owned)
 	}
@@ -85,7 +71,7 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		hostID,
 		0,
 		store.SystemUpdateTransportPullV2,
-		secondAgentID,
+		firstAgentID,
 		2,
 	); !errors.Is(err, store.ErrSystemUpdateExecutionHostStale) {
 		t.Fatalf("stale switch err = %v", err)
@@ -99,6 +85,10 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		2,
 	); !errors.Is(err, store.ErrSystemUpdateAgentBindingMismatch) {
 		t.Fatalf("wrong registered host switch err = %v", err)
+	}
+	beforeReservations, err := updates.ListServicePortReservations(ctx, hostID)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	reservation := store.ServicePortReservation{
@@ -122,7 +112,7 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		t.Fatalf("conflicting reserve err = %v", err)
 	}
 	list, err := updates.ListServicePortReservations(ctx, hostID)
-	if err != nil || len(list) != 1 {
+	if err != nil || len(list) != len(beforeReservations)+1 {
 		t.Fatalf("list reservations = %#v, err=%v", list, err)
 	}
 
@@ -146,15 +136,12 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		job.PolicyRevision != owned.PolicyRevision {
 		t.Fatalf("job ownership snapshot = %#v, ownership=%#v", job, owned)
 	}
-	if _, err := updates.SwitchSystemUpdateExecutionHost(
-		ctx,
-		hostID,
-		owned.OwnershipEpoch,
-		store.SystemUpdateTransportPullV2,
-		secondAgentID,
-		2,
-	); !errors.Is(err, store.ErrSystemUpdateExecutionHostBusy) {
-		t.Fatalf("busy switch err = %v", err)
+	if _, err := fixture.policies.DeactivatePullUpdaterOwnership(ctx, auth, updates, store.DeactivatePullUpdaterOwnershipParams{
+		ServiceID: firstAgentID, ExecutionHostID: hostID, ExpectedExecutionHostOwnershipEpoch: owned.OwnershipEpoch,
+		ExpectedSourcePolicyRevision: activated.Policy.Revision, ExpectedProjectionRevision: activated.Policy.ProjectionRevision,
+		ExpectedLocalExecutorPolicyRevision: activated.Policy.LocalExecutorPolicyRevision, ExpectedLocalExecutorPolicySHA256: activated.Policy.LocalExecutorPolicySHA256,
+	}); !errors.Is(err, store.ErrSystemUpdateExecutionHostBusy) {
+		t.Fatalf("busy ownership deactivation err = %v", err)
 	}
 	now := time.Now().UTC()
 	claim, _, err := updates.ClaimSystemUpdateJob(
@@ -193,9 +180,9 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 		SessionID:      "mariadb-ownership-" + suffix,
 	}
 	issued, err := updates.IssueSystemUpdateMutationGrant(ctx, job.ID, store.IssueSystemUpdateMutationGrantParams{
+		ProtocolVersion: 2,
 		AgentServiceID:  firstAgentID,
 		ExecutionHostID: hostID,
-		LeaseToken:      claim.LeaseToken,
 		LeaseGeneration: claim.LeaseGeneration,
 		Binding:         binding,
 	}, now.Add(2*time.Second), time.Minute)

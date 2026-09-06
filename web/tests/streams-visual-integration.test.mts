@@ -39,7 +39,7 @@ const panelSource = readFileSync(new URL("../src/features/streams/stream-control
 
 test("default create sends the complete v2 visual snapshot and edits retain explicit defaults", () => {
   const draft = defaultStreamVisualDraft();
-  assert.deepEqual(buildStreamCreateVisualExtension(draft, new Set()), {
+  assert.deepEqual(buildStreamCreateVisualExtension(draft), {
     visual_settings: {
       background_mode: "default",
       background_asset_id: null,
@@ -56,7 +56,7 @@ test("default create sends the complete v2 visual snapshot and edits retain expl
   });
   draft.headerTitleMode = "custom";
   draft.headerTitleValue = "Program title";
-  const extension = buildStreamCreateVisualExtension(draft, new Set(["title"]));
+  const extension = buildStreamCreateVisualExtension(draft);
   assert.deepEqual(extension, {
     visual_settings: {
       background_mode: "default",

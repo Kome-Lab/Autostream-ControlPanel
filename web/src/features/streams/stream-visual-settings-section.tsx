@@ -84,14 +84,14 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
 
   const validation = useMemo(() => validateStreamVisualDraft(draft), [draft]);
   const createState = useMemo<StreamCreateVisualState>(() => ({
-    extension: buildStreamCreateVisualExtension(draft, dirtySections),
+    extension: buildStreamCreateVisualExtension(draft),
     ready: validation.ready,
     discordTargetReady: draft.discordTargetMode === "preset"
       ? draft.discordTargetPresetID.trim() !== "" && draft.discordTargetPresetRevision > 0
       : draft.discordTargetMode === "manual"
         ? [draft.discordGuildID, draft.discordTextChannelID, draft.discordVoiceChannelID].every((value) => value.trim() !== "")
         : false,
-  }), [dirtySections, draft, validation.ready]);
+  }), [draft, validation.ready]);
   useEffect(() => { if (!editing) onCreateState(createState); }, [createState, editing, onCreateState]);
 
   const discordRows = useMemo(() => normalizeRows(discordPresets.data), [discordPresets.data]);

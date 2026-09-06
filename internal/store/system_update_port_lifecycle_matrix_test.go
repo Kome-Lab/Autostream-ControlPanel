@@ -175,7 +175,18 @@ func TestMariaDBSTPortV2DifferentHostRemainsAvailable(t *testing.T) {
 		t.Fatal("bounded host barrier timed out")
 	}
 	store.AssertSystemUpdatePortSourceLocksHeldForTest(t, ctx, f.db, f.policy.ExecutionHostID, f.policy.UpdaterID, f.sourceServices(t))
-	result := other.portCreateOperation(otherSnapshot, "host-b")(ctx)
+	if f.policy.ExecutionHostID == other.policy.ExecutionHostID || f.policy.UpdaterID == other.policy.UpdaterID {
+		t.Fatal("different-host fixture reused host or Agent identity")
+	}
+	started := time.Now()
+	phaseCount := 0
+	observed := store.WithSystemUpdatePortCreatePhaseForTest(ctx, func(phase string) {
+		phaseCount++
+		if phaseCount <= 16 {
+			t.Logf("unrelated host create phase=%s elapsed_ms=%d", phase, time.Since(started).Milliseconds())
+		}
+	})
+	result := other.portCreateOperation(otherSnapshot, "host-b")(observed)
 	if result.err != nil || !result.created {
 		t.Fatalf("unrelated host was blocked: %v", result.err)
 	}

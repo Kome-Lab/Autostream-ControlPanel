@@ -187,23 +187,29 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 	}); err != nil {
 		t.Fatalf("pre-rotation MariaDB heartbeat: %v", err)
 	}
-	outstandingConfigureToken := "mariadb-outstanding-configure-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	if _, err := auth.SetServiceConfigureToken(ctx, serviceID, security.HashToken(outstandingConfigureToken), time.Now().UTC().Add(time.Hour)); err != nil {
-		t.Fatalf("set outstanding MariaDB updater configure token: %v", err)
-	}
-	token, registered, err = auth.RotateServiceNodeToken(ctx, serviceID, token.ID, func(string) (string, string, error) {
-		return "mariadb-rotated-ciphertext", "mariadb-rotated-nonce", nil
+	configured := registered
+	rotationTargetID := serviceID + "-worker"
+	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
+		ServiceID: rotationTargetID, ServiceType: "worker", ServiceName: rotationTargetID,
+		PublicURL: "https://worker.example.com:18081",
 	})
+	fixture := prepareMariaDBPullActivationPolicy(t, ctx, db, mariaDBPullActivationFixture{
+		auth: auth, agentToken: token, targetID: rotationTargetID, suffix: serviceID,
+		params: store.ActivatePullUpdaterOwnershipParams{ServiceID: serviceID, ExecutionHostID: registration.ExecutionHostID},
+	})
+	owned, err := fixture.policies.ActivatePullUpdaterOwnership(ctx, auth, fixture.updates, fixture.params)
 	if err != nil {
-		t.Fatalf("rotate MariaDB updater runtime token: %v", err)
+		t.Fatalf("activate MariaDB updater before runtime rotation: %v", err)
 	}
-	if registered.ConfigureTokenExpiresAt != nil || registered.ConfigureTokenUsedAt != nil ||
-		registered.StagedNodeTokenID != "" || registered.LastHeartbeatAt != nil ||
-		len(registered.ReportedCapabilities) != 0 {
-		t.Fatalf("MariaDB runtime rotation retained configure/staging/heartbeat metadata: %s", formatSafeRegisteredServiceDiagnostic(registered))
+	token, registered = rotateMariaDBSmokeRuntimeToken(t, ctx, fixture, owned)
+	if registered.ConfigureTokenExpiresAt != nil || registered.ConfigureTokenUsedAt == nil ||
+		configured.ConfigureTokenUsedAt == nil || !registered.ConfigureTokenUsedAt.Equal(*configured.ConfigureTokenUsedAt) ||
+		registered.StagedNodeTokenID != "" || registered.LastHeartbeatAt == nil ||
+		len(registered.ReportedCapabilities) == 0 {
+		t.Fatalf("MariaDB staged runtime rotation lost consumed configure or heartbeat proof metadata: %s", formatSafeRegisteredServiceDiagnostic(registered))
 	}
-	if _, err := auth.ConsumeServiceConfigureToken(ctx, serviceID, outstandingConfigureToken, time.Now().UTC()); !errors.Is(err, store.ErrUnauthorized) {
-		t.Fatalf("MariaDB runtime rotation left configure token usable: %v", err)
+	if _, err := auth.ConsumeServiceConfigureToken(ctx, serviceID, configureToken, time.Now().UTC()); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("MariaDB runtime rotation made the consumed configure token usable: %v", err)
 	}
 	if _, err := auth.AssignServiceToStream(ctx, serviceID, "stream-not-used", "mariadb-smoke"); !errors.Is(err, store.ErrInvalidServiceAssignment) {
 		t.Fatalf("MariaDB update_agent assignment err = %v", err)
@@ -228,12 +234,12 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 		t.Fatalf("unbounded active stream lookup = %v, %v", active, err)
 	}
 
-	updates := store.NewMariaDBSystemUpdateStore(db)
+	updates := fixture.updates
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	eligible := map[string]string{"worker-a-" + suffix: "systemd", "worker-b-" + suffix: "systemd"}
 	for targetID := range eligible {
 		_, created, err := updates.CreateSystemUpdateJob(ctx, store.CreateSystemUpdateJobParams{
-			TargetID: targetID, TargetServiceType: "worker", AgentServiceID: serviceID,
+			TargetID: targetID, TargetServiceType: "worker", AgentServiceID: serviceID, ExecutionHostID: registration.ExecutionHostID,
 			DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle,
 			IdempotencyKey: "mariadb-claim-" + targetID, RequestedByUserID: "mariadb-smoke",
 		})
@@ -248,7 +254,7 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 	claimResults := make(chan claimResult, 2)
 	for range 2 {
 		go func() {
-			claim, _, err := updates.ClaimSystemUpdateJob(ctx, serviceID, "", "", eligible, time.Now().UTC(), 2*time.Minute)
+			claim, _, err := updates.ClaimSystemUpdateJob(ctx, serviceID, registration.ExecutionHostID, "", eligible, time.Now().UTC(), 2*time.Minute)
 			claimResults <- claimResult{claim: claim, err: err}
 		}()
 	}
@@ -270,15 +276,21 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 		t.Fatalf("parallel MariaDB claims = claimed %d, refused %d; want 1 each", claimed, refused)
 	}
 
-	hostTargets := map[string]string{
-		"host-a-" + suffix: "worker-host-a-" + suffix,
-		"host-b-" + suffix: "worker-host-b-" + suffix,
+	hostTargets := make(map[string]string, 2)
+	hostAgents := make(map[string]string, 2)
+	for range 2 {
+		hostFixture := newMariaDBPullActivationFixture(t, ctx, db, false)
+		if _, err := hostFixture.policies.ActivatePullUpdaterOwnership(ctx, hostFixture.auth, hostFixture.updates, hostFixture.params); err != nil {
+			t.Fatalf("activate independent host claim fixture: %v", err)
+		}
+		hostTargets[hostFixture.params.ExecutionHostID] = hostFixture.targetID
+		hostAgents[hostFixture.params.ExecutionHostID] = hostFixture.params.ServiceID
 	}
 	hostEligible := make(map[string]string, len(hostTargets))
 	for hostID, targetID := range hostTargets {
 		hostEligible[targetID] = "systemd"
 		_, created, err := updates.CreateSystemUpdateJob(ctx, store.CreateSystemUpdateJobParams{
-			TargetID: targetID, TargetServiceType: "worker", AgentServiceID: serviceID, ExecutionHostID: hostID,
+			TargetID: targetID, TargetServiceType: "worker", AgentServiceID: hostAgents[hostID], ExecutionHostID: hostID,
 			DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: store.SystemUpdateStrategyWhenIdle,
 			IdempotencyKey: "mariadb-host-claim-" + targetID, RequestedByUserID: "mariadb-smoke",
 		})
@@ -295,27 +307,27 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 	for hostID := range hostTargets {
 		hostID := hostID
 		go func() {
-			claim, _, err := updates.ClaimSystemUpdateJob(ctx, serviceID, hostID, "", hostEligible, time.Now().UTC(), 2*time.Minute)
+			claim, _, err := updates.ClaimSystemUpdateJob(ctx, hostAgents[hostID], hostID, "", hostEligible, time.Now().UTC(), 2*time.Minute)
 			hostClaimResults <- hostClaimResult{hostID: hostID, claim: claim, err: err}
 		}()
 	}
 	for range hostTargets {
 		result := <-hostClaimResults
 		if result.err != nil || result.claim.Job.ExecutionHostID != result.hostID || result.claim.Job.TargetID != hostTargets[result.hostID] {
-			t.Fatalf("parallel MariaDB host claim %q = %#v, err=%v", result.hostID, result.claim, result.err)
+			t.Fatalf("parallel MariaDB host claim: present=%v err=%v", result.claim != nil, result.err)
 		}
 		if _, applied, err := updates.ReportSystemUpdateJob(ctx, result.claim.Job.ID, store.SystemUpdateReport{
-			AgentServiceID: serviceID, LeaseToken: result.claim.LeaseToken, LeaseGeneration: result.claim.LeaseGeneration,
+			AgentServiceID: hostAgents[result.hostID], ExecutionHostID: result.hostID, LeaseToken: result.claim.LeaseToken, LeaseGeneration: result.claim.LeaseGeneration,
 			Sequence: result.claim.ReportSequence, Status: store.SystemUpdateStatusSucceeded, Progress: 100,
 		}, time.Now().UTC(), 5*time.Minute); err != nil || !applied {
 			t.Fatalf("complete MariaDB host claim %q: applied=%v err=%v", result.hostID, applied, err)
 		}
 	}
 	now := time.Now().UTC()
-	if _, _, err := updates.ReportSystemUpdateJob(ctx, successfulClaim.Job.ID, store.SystemUpdateReport{AgentServiceID: serviceID, LeaseToken: successfulClaim.LeaseToken, LeaseGeneration: successfulClaim.LeaseGeneration, Sequence: successfulClaim.ReportSequence, Status: store.SystemUpdateStatusInstalling, Progress: 70}, now, 5*time.Minute); err != nil {
+	if _, _, err := updates.ReportSystemUpdateJob(ctx, successfulClaim.Job.ID, store.SystemUpdateReport{AgentServiceID: serviceID, ExecutionHostID: registration.ExecutionHostID, LeaseToken: successfulClaim.LeaseToken, LeaseGeneration: successfulClaim.LeaseGeneration, Sequence: successfulClaim.ReportSequence, Status: store.SystemUpdateStatusInstalling, Progress: 70}, now, 5*time.Minute); err != nil {
 		t.Fatalf("move MariaDB job to installing: %v", err)
 	}
-	if err := updates.AuthorizeSystemUpdateMutation(ctx, successfulClaim.Job.ID, store.SystemUpdateAuthorization{AgentServiceID: serviceID, LeaseToken: successfulClaim.LeaseToken, LeaseGeneration: successfulClaim.LeaseGeneration, TargetID: successfulClaim.Job.TargetID, TargetVersion: successfulClaim.Job.TargetVersion, DeploymentMode: successfulClaim.Job.DeploymentMode}, now.Add(time.Second)); err != nil {
+	if err := updates.AuthorizeSystemUpdateMutation(ctx, successfulClaim.Job.ID, store.SystemUpdateAuthorization{AgentServiceID: serviceID, ExecutionHostID: registration.ExecutionHostID, LeaseToken: successfulClaim.LeaseToken, LeaseGeneration: successfulClaim.LeaseGeneration, TargetID: successfulClaim.Job.TargetID, TargetVersion: successfulClaim.Job.TargetVersion, DeploymentMode: successfulClaim.Job.DeploymentMode}, now.Add(time.Second)); err != nil {
 		t.Fatalf("authorize MariaDB installing mutation: %v", err)
 	}
 	for _, referencedServiceID := range []string{successfulClaim.Job.TargetID, serviceID} {
@@ -326,12 +338,13 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 
 	binding := store.SystemUpdateMutationGrantBinding{
 		HostID: successfulClaim.Job.ExecutionHostID, TargetID: successfulClaim.Job.TargetID,
+		TransportMode: successfulClaim.Job.TransportMode, OwnershipEpoch: successfulClaim.Job.OwnershipEpoch, PolicyRevision: successfulClaim.Job.PolicyRevision,
 		TargetVersion: successfulClaim.Job.TargetVersion, DeploymentMode: successfulClaim.Job.DeploymentMode,
 		Operation: store.SystemUpdateMutationOperationApply, PlanSHA256: strings.Repeat("a", 64),
 		SessionID: "mariadb-mutation-" + suffix,
 	}
 	issued, err := updates.IssueSystemUpdateMutationGrant(ctx, successfulClaim.Job.ID, store.IssueSystemUpdateMutationGrantParams{
-		AgentServiceID: serviceID, LeaseToken: successfulClaim.LeaseToken,
+		ProtocolVersion: 2, AgentServiceID: serviceID, ExecutionHostID: registration.ExecutionHostID,
 		LeaseGeneration: successfulClaim.LeaseGeneration, Binding: binding,
 	}, now.Add(time.Second), time.Minute)
 	if err != nil {
@@ -367,6 +380,90 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 	if firstConsume != 1 || replayedConsumes != consumers-1 {
 		t.Fatalf("parallel MariaDB grant consume first=%d replayed=%d", firstConsume, replayedConsumes)
 	}
+}
+
+func rotateMariaDBSmokeRuntimeToken(t *testing.T, ctx context.Context, fixture mariaDBPullActivationFixture, owned store.ActivatePullUpdaterOwnershipResult) (store.ServiceToken, store.RegisteredService) {
+	t.Helper()
+	params, seal, unseal := mariaDBRuntimeTokenRotationStageParams(t, fixture, owned, "smoke-runtime-"+fixture.suffix)
+	staged, err := fixture.updates.StageSystemUpdateRuntimeTokenRotation(ctx, fixture.auth, fixture.policies, params, seal)
+	if err != nil || !staged.Created || staged.Rotation.Revision != 1 || staged.Rotation.PreviousTokenID != fixture.agentToken.ID {
+		t.Fatalf("stage MariaDB smoke runtime token: created=%v revision=%d err=%v", staged.Created, staged.Rotation.Revision, err)
+	}
+	claimed, err := fixture.updates.ClaimSystemUpdateRuntimeTokenRotationStagedCredential(ctx, fixture.auth, fixture.policies, store.ClaimSystemUpdateRuntimeTokenRotationStagedCredentialParams{
+		RotationID: staged.Rotation.ID, ServiceID: params.ServiceID, ExecutionHostID: params.ExecutionHostID,
+		AuthenticatedPreviousTokenID: fixture.agentToken.ID, ClaimID: "10000000-0000-4000-8000-000000000001",
+		ExpectedRevision: 1, Now: time.Now().UTC(),
+	}, unseal)
+	if err != nil || !claimed.Claimed || claimed.Rotation.Revision != 2 || claimed.Token.ID != staged.Rotation.StagedTokenID {
+		t.Fatalf("claim MariaDB smoke runtime credential: claimed=%v revision=%d err=%v", claimed.Claimed, claimed.Rotation.Revision, err)
+	}
+	if _, err := fixture.auth.AuthenticateServiceToken(ctx, claimed.Token.RawToken, "updates.claim"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("MariaDB smoke staged runtime token authenticated early: %v", err)
+	}
+	local, applied, err := fixture.updates.MarkSystemUpdateRuntimeTokenRotationLocalStaged(ctx, fixture.auth, fixture.policies, store.MarkSystemUpdateRuntimeTokenRotationLocalStagedParams{
+		RotationID: staged.Rotation.ID, ExecutionHostID: params.ExecutionHostID, ExpectedRevision: 2,
+		RawStagedToken: claimed.Token.RawToken, Now: time.Now().UTC().Truncate(time.Microsecond),
+	})
+	if err != nil || !applied || local.Revision != 3 {
+		t.Fatalf("acknowledge MariaDB smoke local stage: applied=%v revision=%d err=%v", applied, local.Revision, err)
+	}
+	const runtimeVersion = "v1.7.8"
+	proof := store.ProveSystemUpdateRuntimeTokenRotationHeartbeatParams{
+		RotationID: local.ID, ServiceID: params.ServiceID, ExecutionHostID: params.ExecutionHostID,
+		ExpectedRevision: 3, RawStagedToken: claimed.Token.RawToken,
+		Phase:        store.SystemUpdateRuntimeTokenRotationHeartbeatProofPhase,
+		AgentVersion: runtimeVersion, ExecutorVersion: runtimeVersion,
+		AgentProtocolVersion: 2, ExecutorProtocolVersion: 1, MutationProtocolVersion: 1,
+		ExpectedOwnershipEpoch:              params.ExpectedOwnershipEpoch,
+		ExpectedSourcePolicyRevision:        params.ExpectedSourcePolicyRevision,
+		ExpectedProjectionRevision:          params.ExpectedProjectionRevision,
+		ExpectedLocalExecutorPolicyRevision: params.ExpectedLocalExecutorPolicyRevision,
+		ExpectedLocalExecutorPolicySHA256:   owned.Policy.LocalExecutorPolicySHA256,
+		LocalStageReceiptID:                 local.LocalStageReceiptID,
+	}
+	_, err = fixture.auth.Heartbeat(ctx, fixture.agentToken, store.ServiceHeartbeat{
+		ServiceID: params.ServiceID, Status: "online", Version: runtimeVersion,
+		Capabilities: map[string]any{
+			"host_agent": true, "update_executor": true, "mutation_enabled": true, "recovery_pending": false,
+			"agent_version": runtimeVersion, "executor_version": runtimeVersion,
+			"agent_protocol_version": 2, "executor_protocol_version": 1, "mutation_protocol_version": 1,
+			"execution_host_id": params.ExecutionHostID, "ownership_epoch": params.ExpectedOwnershipEpoch,
+			"source_policy_revision": params.ExpectedSourcePolicyRevision, "projection_revision": params.ExpectedProjectionRevision,
+			"local_executor_policy_revision": params.ExpectedLocalExecutorPolicyRevision,
+			"local_executor_policy_sha256":   owned.Policy.LocalExecutorPolicySHA256,
+			"local_stage_receipt_id":         local.LocalStageReceiptID, "local_phase": proof.Phase,
+		},
+	})
+	if err != nil {
+		t.Fatalf("heartbeat MariaDB smoke local stage: %v", err)
+	}
+	proof.Now = time.Now().UTC().Truncate(time.Microsecond)
+	proved, applied, err := fixture.updates.ProveSystemUpdateRuntimeTokenRotationHeartbeat(ctx, fixture.auth, fixture.policies, proof)
+	if err != nil || !applied || proved.Revision != 4 {
+		t.Fatalf("prove MariaDB smoke runtime heartbeat: applied=%v revision=%d err=%v", applied, proved.Revision, err)
+	}
+	rotation, applied, err := fixture.updates.ActivateSystemUpdateRuntimeTokenRotation(ctx, fixture.auth, store.ActivateSystemUpdateRuntimeTokenRotationParams{
+		RotationID: local.ID, ExecutionHostID: params.ExecutionHostID, ExpectedRevision: 4,
+		RawStagedToken: claimed.Token.RawToken, Now: time.Now().UTC(),
+	})
+	if err != nil || !applied || rotation.Revision != 5 || rotation.Status != store.SystemUpdateRuntimeTokenRotationActivated {
+		t.Fatalf("activate MariaDB smoke runtime token: applied=%v revision=%d err=%v", applied, rotation.Revision, err)
+	}
+	registered, err := fixture.auth.GetService(ctx, params.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.TokenID != claimed.Token.ID || registered.OwnershipEpoch != owned.Ownership.OwnershipEpoch ||
+		registered.LastHeartbeatAt == nil || proved.HeartbeatProvedAt == nil || !registered.LastHeartbeatAt.Equal(*proved.HeartbeatProvedAt) {
+		t.Fatal("MariaDB smoke runtime activation did not retain its exact ownership and heartbeat proof")
+	}
+	if _, err := fixture.auth.AuthenticateServiceToken(ctx, fixture.agentToken.RawToken, "updates.claim"); !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("MariaDB smoke previous runtime token survived activation: %v", err)
+	}
+	if _, err := fixture.auth.AuthenticateServiceToken(ctx, claimed.Token.RawToken, "updates.claim"); err != nil {
+		t.Fatalf("MariaDB smoke activated runtime token is unavailable: %v", err)
+	}
+	return claimed.Token, registered
 }
 
 func assertSystemdPortReconfigurationMariaDBSchema(t *testing.T, ctx context.Context, db *sql.DB) {

@@ -144,7 +144,7 @@ export function buildStreamVisualFields(
   };
 }
 
-export function buildStreamCreateVisualExtension(draft: StreamVisualDraft, _sections: ReadonlySet<StreamVisualSection>) {
+export function buildStreamCreateVisualExtension(draft: StreamVisualDraft) {
   return {
     ...(draft.uploadSessionID ? { upload_session_id: draft.uploadSessionID } : {}),
     visual_settings: buildStreamVisualFields(draft),
