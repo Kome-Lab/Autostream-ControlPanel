@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 75
     env:
       # Fixed signed application sources; workflow revisions are recorded separately.
-      ST_PORT_UPDATER_SHA: bb2fae807f634c2c4e6a9746612100cccab4639b
+      ST_PORT_UPDATER_SHA: ae9ae60d97a5c7e5ece9ee884e83a0a2cbdb48c7
       ST_PORT_CONTRACTS_SHA: 612ceb539ee74180beae682c4290aba54c49c389
       ST_PORT_WORKER_SHA: ba226489b037d5d29e47b72ab054484a57dea3ac
       GOMAXPROCS: "2"
@@ -680,7 +680,7 @@ jobs:
       - run: npm run build
       - name: Download actual ST-PORT GET evidence from the same source set
         if: always() && !cancelled()
-        uses: actions/download-artifact@96dc968c16b1e91bb81db51b7a8786906658a842 # v8.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: st-port-full-chain-evidence-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/st-port-full-chain-evidence
