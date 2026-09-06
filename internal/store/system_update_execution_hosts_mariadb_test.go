@@ -246,7 +246,7 @@ func registerMariaDBExecutionHostFixture(
 	t.Helper()
 	scopes := []string{"service.register", "service.heartbeat"}
 	if registration.ServiceType == "update_agent" {
-		scopes = append(scopes, "updates.claim", "updates.report", "updates.mutation_grant.issue")
+		scopes = append(scopes, "updates.claim", "updates.report", "updates.authorize")
 	}
 	token, err := auth.CreateServiceToken(ctx, registration.ServiceType, scopes)
 	if err != nil {

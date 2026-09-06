@@ -689,7 +689,7 @@ func newMariaDBFIX005PullFixtureWithCleanup(
 			HeartbeatIntervalSeconds:  30,
 			Targets: []UpdaterPolicyTarget{{
 				TargetID: targetID, ServiceID: targetID,
-				ServiceType: "worker", DeploymentMode: "systemd",
+				ServiceType: "worker", DeploymentMode: "systemd", LocalListenPort: 18081,
 			}},
 		},
 	)
@@ -2930,6 +2930,8 @@ WHERE service_id = ? AND stream_id = ?`, serviceID, stream.ID).Scan(&assignmentI
 			t.Fatal(err)
 		}
 		fixture.trackAssignmentID(assignmentID)
+		archiveStartedAt := time.Now().UTC()
+		archiveRunID := "cleanup-" + stream.ID
 		if err := streams.WriteStreamArtifactReport(
 			ctx,
 			token,
@@ -2939,8 +2941,9 @@ WHERE service_id = ? AND stream_id = ?`, serviceID, stream.ID).Scan(&assignmentI
 				EventType: "archive.artifacts.reported",
 			},
 			[]StreamArtifact{{
+				ArchiveRunID: archiveRunID, ArchiveStartedAt: &archiveStartedAt,
 				Kind: "archive", Name: "final.mp4",
-				RelativePath: "final/" + stream.ID + "/final.mp4",
+				RelativePath: "final/" + stream.ID + "/" + archiveRunID + "/final.mp4",
 				SizeBytes:    1,
 			}},
 		); err != nil {

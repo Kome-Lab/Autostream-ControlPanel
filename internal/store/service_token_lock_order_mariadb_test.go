@@ -2502,6 +2502,8 @@ func runMariaDBServiceTokenPairOperation(
 		})
 		return err
 	case "artifact_report":
+		archiveStartedAt := time.Now().UTC()
+		archiveRunID := "lock-pair-" + fixture.streamID
 		return fixture.streams.WriteStreamArtifactReport(
 			ctx,
 			fixture.token,
@@ -2511,8 +2513,9 @@ func runMariaDBServiceTokenPairOperation(
 				EventType: "archive.artifacts.reported",
 			},
 			[]StreamArtifact{{
+				ArchiveRunID: archiveRunID, ArchiveStartedAt: &archiveStartedAt,
 				Kind: "archive", Name: "final.mp4",
-				RelativePath: "final/" + fixture.streamID + "/final.mp4",
+				RelativePath: "final/" + fixture.streamID + "/" + archiveRunID + "/final.mp4",
 				SizeBytes:    1,
 			}},
 		)
@@ -2744,6 +2747,11 @@ func createMariaDBServiceTokenPairService(
 	registration := ServiceRegistration{
 		ServiceID: serviceID, ServiceType: serviceType, ServiceName: serviceID,
 		PublicURL: "https://" + serviceID + ".example.com", Port: 443, SSLEnabled: true,
+	}
+	if serviceType == "update_agent" {
+		registration.PublicURL, registration.Port, registration.SSLEnabled = "", 0, false
+		registration.TransportMode = SystemUpdateTransportPullV2
+		registration.ExecutionHostID = serviceID + "-host"
 	}
 	if _, err := auth.PrecreateService(ctx, token, registration); err != nil {
 		t.Fatal(err)

@@ -137,16 +137,26 @@ func TestSTPortFullChainControlPanelProcess(t *testing.T) {
 	}
 	defer input.Close()
 	defer output.Close()
+	setupPhase, setupReady := "control_pipes", false
+	defer func() {
+		if !setupReady {
+			// Only fixed phase codes cross the private pipe; process logs and
+			// database errors may contain credentials and remain private.
+			_ = json.NewEncoder(output).Encode(stPortChainCPResponse{ErrorCode: "cp_setup_" + setupPhase})
+		}
+	}()
 	for _, pipe := range []*os.File{input, output} {
 		info, err := pipe.Stat()
 		if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 			t.Fatal("control descriptor is not an inherited pipe")
 		}
 	}
+	setupPhase = "protected_config"
 	configBytes, err := stPortChainReadRootFile(os.Getenv("AUTOSTREAM_ST_PORT_CHAIN_CONFIG"), false)
 	if err != nil {
 		t.Fatal("read protected CP fixture configuration")
 	}
+	setupPhase = "bounded_config"
 	var config stPortChainCPConfig
 	if stPortChainDecode(configBytes, &config) != nil || config.PanelURL != "https://localhost:18443" || config.ListenAddr != "127.0.0.1:18443" ||
 		config.AgentUID == 0 || config.AgentGID == 0 || config.validateRuntime() != nil || !filepath.IsAbs(config.FixtureDir) {
@@ -154,8 +164,27 @@ func TestSTPortFullChainControlPanelProcess(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 34*time.Minute)
 	defer cancel()
+	setupPhase = "database_fixture"
 	f, err := stPortChainOpenCP(ctx, config)
 	if err != nil {
+		for message, phase := range map[string]string{
+			"prepare fixture database":         "prepare_database",
+			"create fixture operator":          "create_operator",
+			"register fixture target":          "register_target",
+			"register fixture agent":           "register_agent",
+			"save fixture bootstrap policy":    "save_policy",
+			"initialize bootstrap observation": "bootstrap_observation",
+			"activate fixture ownership":       "activate_ownership",
+			"seed target revisions":            "seed_target_revisions",
+			"seed bound listener":              "seed_listener",
+			"seed policy revisions":            "seed_policy_revisions",
+			"seed ownership projection":        "seed_ownership_projection",
+		} {
+			if err.Error() == message {
+				setupPhase = phase
+				break
+			}
+		}
 		t.Fatalf("initialize isolated CP database fixture: %v", err)
 	}
 	defer f.db.Close()
@@ -166,12 +195,14 @@ func TestSTPortFullChainControlPanelProcess(t *testing.T) {
 	for _, target := range append(append([]versionUpdateTarget{controlPanelVersionUpdateTarget}, nodeVersionUpdateTargets...), dockerVersionUpdateTarget) {
 		t.Setenv(target.latestVersionEnv, config.WorkerVersion)
 	}
+	setupPhase = "tls_identity"
 	certBytes, certErr := stPortChainReadRootFile(config.TLSCert, false)
 	keyBytes, keyErr := stPortChainReadRootFile(config.TLSKey, true)
 	certificate, tlsErr := tls.X509KeyPair(certBytes, keyBytes)
 	if certErr != nil || keyErr != nil || tlsErr != nil {
 		t.Fatal("load fixture TLS identity")
 	}
+	setupPhase = "https_listener"
 	listener, err := net.Listen("tcp", config.ListenAddr)
 	if err != nil {
 		t.Fatal("bind fixture HTTPS listener")
@@ -188,9 +219,11 @@ func TestSTPortFullChainControlPanelProcess(t *testing.T) {
 		_ = server.Shutdown(shutdown)
 		_ = server.Close()
 	}()
+	setupPhase = "operator_login"
 	if err := f.login(ctx); err != nil {
 		t.Fatal("authenticate fixture operator over verified HTTPS")
 	}
+	setupReady = true
 	commands := make(chan []byte)
 	go func() {
 		defer close(commands)
@@ -417,9 +450,13 @@ func (f *stPortChainCP) seed(ctx context.Context) error {
 	if err != nil {
 		return errors.New("register fixture agent")
 	}
+	bootstrapTarget := store.UpdaterPolicyTarget{TargetID: stPortChainTarget, ServiceID: stPortChainTarget, ServiceType: "worker", DeploymentMode: f.config.Mode}
+	if f.config.Mode == "systemd" {
+		bootstrapTarget.LocalListenPort = localPort
+	}
 	policy, err := f.policies.SavePullUpdaterPolicy(ctx, f.updates, stPortChainAgent, 0, 0, store.UpdaterPolicy{TransportMode: store.SystemUpdateTransportPullV2,
 		ExecutionHostID: stPortChainHost, LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("a", 64), PollIntervalSeconds: 15, HeartbeatIntervalSeconds: 30,
-		Targets: []store.UpdaterPolicyTarget{{TargetID: stPortChainTarget, ServiceID: stPortChainTarget, ServiceType: "worker", DeploymentMode: f.config.Mode}}})
+		Targets: []store.UpdaterPolicyTarget{bootstrapTarget}})
 	if err != nil {
 		return errors.New("save fixture bootstrap policy")
 	}

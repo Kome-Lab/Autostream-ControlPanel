@@ -69,7 +69,7 @@ func newMariaDBPullActivationFixture(t *testing.T, ctx context.Context, db *sql.
 	})
 	token, err := auth.CreateServiceToken(ctx, "update_agent", []string{
 		"service.register", "service.heartbeat", "service.config.read",
-		"updates.claim", "updates.report", "updates.mutation_grant.issue",
+		"updates.claim", "updates.report", "updates.authorize",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func newMariaDBPullActivationFixture(t *testing.T, ctx context.Context, db *sql.
 		PollIntervalSeconds:       15, HeartbeatIntervalSeconds: 30,
 		Targets: []store.UpdaterPolicyTarget{{
 			TargetID: targetID, ServiceID: targetID,
-			ServiceType: "worker", DeploymentMode: "systemd",
+			ServiceType: "worker", DeploymentMode: "systemd", LocalListenPort: 18081,
 		}},
 	})
 	if err != nil {

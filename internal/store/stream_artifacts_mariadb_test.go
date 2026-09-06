@@ -58,10 +58,13 @@ func TestMariaDBStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 	if _, err := auth.AssignServiceToStream(ctx, serviceID, stream.ID, ""); err != nil {
 		t.Fatal(err)
 	}
+	archiveStartedAt := time.Now().UTC()
+	archiveRunID := "rereport-" + suffix
 	artifact := store.StreamArtifact{
+		ArchiveRunID: archiveRunID, ArchiveStartedAt: &archiveStartedAt,
 		Kind:         "archive",
 		Name:         "final.mp4",
-		RelativePath: fmt.Sprintf("final/%s/final.mp4", stream.ID),
+		RelativePath: fmt.Sprintf("final/%s/%s/final.mp4", stream.ID, archiveRunID),
 		SizeBytes:    123,
 	}
 	event := store.ServiceStreamEvent{
@@ -108,9 +111,10 @@ func TestMariaDBStreamArtifactRereportPreservesIdentityAndShare(t *testing.T) {
 		t.Fatalf("artifact share no longer resolves: share=%#v err=%v", resolved, err)
 	}
 	if err := streams.UpsertStreamArtifacts(ctx, stream.ID, []store.StreamArtifact{{
+		ArchiveRunID: archiveRunID, ArchiveStartedAt: &archiveStartedAt,
 		Kind:         "metadata",
 		Name:         "metadata.json",
-		RelativePath: fmt.Sprintf("final/%s/metadata.json", stream.ID),
+		RelativePath: fmt.Sprintf("final/%s/%s/metadata.json", stream.ID, archiveRunID),
 		SizeBytes:    1,
 	}}); err != nil {
 		t.Fatal(err)

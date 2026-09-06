@@ -293,7 +293,9 @@ func assignMariaDBLockService(t *testing.T, ctx context.Context, auth store.Mari
 }
 
 func mariaDBLegacyArtifact(streamID string, size int64) store.StreamArtifact {
-	return store.StreamArtifact{Kind: "archive", Name: "final.mp4", RelativePath: fmt.Sprintf("final/%s/final.mp4", streamID), SizeBytes: size}
+	startedAt := time.Now().UTC()
+	runID := "lock-" + streamID
+	return store.StreamArtifact{ArchiveRunID: runID, ArchiveStartedAt: &startedAt, Kind: "archive", Name: "final.mp4", RelativePath: fmt.Sprintf("final/%s/%s/final.mp4", streamID, runID), SizeBytes: size}
 }
 
 func mariaDBLockSuffix(prefix string) string {

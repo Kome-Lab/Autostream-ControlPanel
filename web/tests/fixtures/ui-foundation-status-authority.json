@@ -20,18 +20,18 @@
     {
       "id": "control-panel-domain",
       "repository": "Autostream-ControlPanel",
-      "branch": "main",
-      "head": "b246e65508b552399f918e39b3948cf453cc1e32",
+      "branch": "codex/bundle8b-physical-eol-001",
+      "head": "d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee",
       "path": "web/src/types/domain.ts",
-      "sourceSha256": "385de9ec49f8d14b1800fa866f05a8c82b696590717b6f9eb1591374582a9802"
+      "sourceSha256": "d24c46caa22b3a3539eea452d9f3755fad12eb8c65a18cd161268507dedb7d38"
     },
     {
       "id": "control-panel-http",
       "repository": "Autostream-ControlPanel",
-      "branch": "main",
-      "head": "b246e65508b552399f918e39b3948cf453cc1e32",
+      "branch": "codex/bundle8b-physical-eol-001",
+      "head": "d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee",
       "path": "internal/httpapi/server.go",
-      "sourceSha256": "68e886e9cbe4192cc7fad7511d5654dfb35c98084a0c47eb6a556ad8702abfbf"
+      "sourceSha256": "ac20f9f92d188c6b50f73796932048cca584788d1131ebc21faf193c4d561d3a"
     },
     {
       "id": "control-panel-policy",
@@ -52,10 +52,10 @@
     {
       "id": "control-panel-auth-store",
       "repository": "Autostream-ControlPanel",
-      "branch": "main",
-      "head": "b246e65508b552399f918e39b3948cf453cc1e32",
+      "branch": "codex/bundle8b-physical-eol-001",
+      "head": "d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee",
       "path": "internal/store/auth.go",
-      "sourceSha256": "34bc6e53362859c628c429dcdf8ee2d976585de92ea29dc40cd2c85fe6f761f9"
+      "sourceSha256": "899ff70ea1e8991501889521029cdc399383e235c544d51f729a3a21e6b81f9f"
     }
   ],
   "vocabularies": [
