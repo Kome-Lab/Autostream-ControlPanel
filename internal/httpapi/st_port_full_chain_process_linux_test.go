@@ -164,6 +164,9 @@ func TestSTPortFullChainControlPanelProcess(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 34*time.Minute)
 	defer cancel()
+	// The isolated fixture registers this exact synthetic public identity.
+	// Keep the normal allowlist requirement and all transport boundaries.
+	t.Setenv("AUTOSTREAM_SERVICE_PUBLIC_ALLOWED_HOSTS", "worker.example.test")
 	setupPhase = "database_fixture"
 	f, err := stPortChainOpenCP(ctx, config)
 	if err != nil {

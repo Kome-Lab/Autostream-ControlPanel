@@ -69,7 +69,7 @@ func TestMariaDBUpdateAgentRegistrationSmoke(t *testing.T) {
 	}
 	serviceID := "updater-mariadb-smoke-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	capabilities := map[string]any{"managed_targets": []any{"control-panel"}, "deployment_modes": map[string]any{"control-panel": "systemd"}}
-	registration := store.ServiceRegistration{ServiceID: serviceID, ServiceType: "update_agent", ServiceName: "MariaDB smoke updater", PublicURL: "https://updater.example.com", Version: "v1.0.0", Capabilities: map[string]any{}}
+	registration := store.ServiceRegistration{ServiceID: serviceID, ServiceType: "update_agent", ServiceName: "MariaDB smoke updater", TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: serviceID + "-host", Version: "v1.0.0", Capabilities: map[string]any{}}
 	if _, err := auth.PrecreateService(ctx, token, registration); err != nil {
 		t.Fatalf("precreate update_agent after migration: %v", err)
 	}

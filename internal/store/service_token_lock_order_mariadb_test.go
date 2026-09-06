@@ -1428,12 +1428,11 @@ func TestMariaDBFIX010ExternalBindingWinsAgainstStageAndActivation(t *testing.T)
 
 					cleanup.trackServiceID(externalServiceID)
 					if _, err := auth.PrecreateService(ctx, oldToken, ServiceRegistration{
-						ServiceID:   externalServiceID,
-						ServiceType: "update_agent",
-						ServiceName: externalServiceID,
-						PublicURL:   "https://" + externalServiceID + ".example.com",
-						Port:        443,
-						SSLEnabled:  true,
+						ServiceID:       externalServiceID,
+						ServiceType:     "update_agent",
+						ServiceName:     externalServiceID,
+						TransportMode:   SystemUpdateTransportPullV2,
+						ExecutionHostID: externalServiceID + "-host",
 					}); err != nil {
 						close(release)
 						t.Fatal(err)

@@ -44,7 +44,7 @@ func TestMariaDBExecutionHostOwnershipAndPortReservation(t *testing.T) {
 	})
 	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
 		ServiceID: secondAgentID, ServiceType: "update_agent", ServiceName: secondAgentID,
-		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: "second-" + hostID, OwnershipEpoch: 1,
+		TransportMode: store.SystemUpdateTransportPullV2, ExecutionHostID: hostID, OwnershipEpoch: 1,
 	})
 	registerMariaDBExecutionHostFixture(t, ctx, auth, store.ServiceRegistration{
 		ServiceID: wrongHostAgentID, ServiceType: "update_agent", ServiceName: wrongHostAgentID,

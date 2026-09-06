@@ -203,6 +203,7 @@ func readyMariaDBDockerPortCoordinator(
 	for index := range policy.Targets {
 		if policy.Targets[index].ServiceID == fixture.targetID {
 			policy.Targets[index].DeploymentMode = "docker"
+			policy.Targets[index].LocalListenPort = 0
 		}
 	}
 	policy, err = fixture.policies.SavePullUpdaterPolicy(

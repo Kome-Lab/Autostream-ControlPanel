@@ -380,10 +380,13 @@ func (f *mariaDBSTPortV2Fixture) sourceServices(t *testing.T) []store.Registered
 }
 
 func TestMariaDBSTPortV2ProjectionKeepsBootstrapPolling(t *testing.T) {
-	f := newMariaDBSTPortV2Fixture(t)
-	f.exec(t, `UPDATE system_update_execution_hosts SET ownership_epoch=0,policy_revision=0 WHERE execution_host_id=?`, f.policy.ExecutionHostID)
-	f.policy.LocalExecutorPolicySHA256 = ""
-	if _, err := f.updates.GetSystemUpdatePortPolicyProjection(f.ctx, f.targetID, f.policy); !errors.Is(err, store.ErrNotFound) {
+	db, ctx := openMariaDBPullActivationTest(t)
+	f := newMariaDBPullActivationFixture(t, ctx, db, false)
+	policy, err := f.policies.GetUpdaterPolicy(ctx, f.params.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.updates.GetSystemUpdatePortPolicyProjection(ctx, f.targetID, policy); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("normal policy polling was blocked without a v2 transaction: %v", err)
 	}
 }
