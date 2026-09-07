@@ -171,17 +171,24 @@ func TestSTPortFullChainControlPanelProcess(t *testing.T) {
 	f, err := stPortChainOpenCP(ctx, config)
 	if err != nil {
 		for message, phase := range map[string]string{
-			"prepare fixture database":         "prepare_database",
-			"create fixture operator":          "create_operator",
-			"register fixture target":          "register_target",
-			"register fixture agent":           "register_agent",
-			"save fixture bootstrap policy":    "save_policy",
-			"initialize bootstrap observation": "bootstrap_observation",
-			"activate fixture ownership":       "activate_ownership",
-			"seed target revisions":            "seed_target_revisions",
-			"seed bound listener":              "seed_listener",
-			"seed policy revisions":            "seed_policy_revisions",
-			"seed ownership projection":        "seed_ownership_projection",
+			"prepare fixture database":               "prepare_database",
+			"create fixture operator":                "create_operator",
+			"register fixture target":                "register_target",
+			"register fixture agent":                 "register_agent",
+			"save fixture bootstrap policy":          "save_policy",
+			"initialize bootstrap observation":       "bootstrap_observation",
+			"activate fixture ownership":             "activate_ownership",
+			"seed target revisions":                  "seed_target_revisions",
+			"seed bound listener":                    "seed_listener",
+			"seed policy revisions":                  "seed_policy_revisions",
+			"seed ownership projection":              "seed_ownership_projection",
+			"materialize initial Docker mapping":     "docker_initial_mapping",
+			"align registered Docker fixture config": "docker_target_config",
+			"read registered Docker fixture":         "docker_registered_target",
+			"materialize Docker activation profile":  "docker_activation_profile",
+			"encode Docker activation policy":        "docker_policy_encoding",
+			"align Docker activation policy":         "docker_policy_persist",
+			"materialize Docker bootstrap mapping":   "docker_bootstrap_mapping",
 		} {
 			if err.Error() == message {
 				setupPhase = phase

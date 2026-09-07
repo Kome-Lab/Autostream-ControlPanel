@@ -83,7 +83,9 @@ func (f *stPortChainCP) primeDockerBootstrapTarget(ctx context.Context) error {
 	if err != nil {
 		return errors.New("materialize initial Docker mapping")
 	}
-	if _, err := f.db.ExecContext(ctx, `UPDATE services SET applied_config_revision=31,applied_config_sha256=? WHERE service_id=?`,
+	// The Docker activation projection is built before the final seed pass.
+	// Install the same fixed initial endpoint pair before reading that policy.
+	if _, err := f.db.ExecContext(ctx, `UPDATE services SET endpoint_revision=3,applied_endpoint_revision=3,applied_config_revision=31,applied_config_sha256=? WHERE service_id=?`,
 		contracts.ComputeSystemUpdatePortBytesSHA256(body), stPortChainTarget); err != nil {
 		return errors.New("align registered Docker fixture config")
 	}
