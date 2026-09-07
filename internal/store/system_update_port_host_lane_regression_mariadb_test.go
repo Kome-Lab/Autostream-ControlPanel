@@ -183,7 +183,7 @@ func TestMariaDBSTPortV2InsertConflictFreshReplayBoundary(t *testing.T) {
 				t.Fatal("conflict-boundary winner was not created")
 			}
 			canceled, err := f.updates.CancelSystemUpdateJob(f.ctx, winner.job.ID, params.RequestedByUserID)
-			if err != nil || canceled.Status != store.SystemUpdateStatusCanceled {
+			if err != nil || canceled.Status != store.SystemUpdateStatusCancelled {
 				t.Fatal("conflict-boundary winner was not terminal before replay")
 			}
 			if kind == "changed_payload" {
