@@ -178,15 +178,26 @@ func TestMariaDBSTPortV2DifferentHostRemainsAvailable(t *testing.T) {
 	if f.policy.ExecutionHostID == other.policy.ExecutionHostID || f.policy.UpdaterID == other.policy.UpdaterID {
 		t.Fatal("different-host fixture reused host or Agent identity")
 	}
+	store.LogSystemUpdatePortHostLanePlansForTest(t, ctx, other.db, other.policy.ExecutionHostID)
 	started := time.Now()
 	phaseCount := 0
 	observed := store.WithSystemUpdatePortCreatePhaseForTest(ctx, func(phase string) {
 		phaseCount++
-		if phaseCount <= 16 {
+		if phaseCount <= 20 {
 			t.Logf("unrelated host create phase=%s elapsed_ms=%d", phase, time.Since(started).Milliseconds())
 		}
 	})
-	result := other.portCreateOperation(otherSnapshot, "host-b")(observed)
+	otherDone := make(chan stPortConcurrentOutcome, 1)
+	go func() { otherDone <- other.portCreateOperation(otherSnapshot, "host-b")(observed) }()
+	var result stPortConcurrentOutcome
+	diagnosticTimer := time.NewTimer(2 * time.Second)
+	defer diagnosticTimer.Stop()
+	select {
+	case result = <-otherDone:
+	case <-diagnosticTimer.C:
+		store.LogSystemUpdatePortHostLaneWaitForTest(t, ctx, other.db)
+		result = <-otherDone
+	}
 	if result.err != nil || !result.created {
 		t.Fatalf("unrelated host was blocked: %v", result.err)
 	}

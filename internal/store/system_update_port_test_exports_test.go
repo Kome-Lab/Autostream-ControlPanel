@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/example/autostream-contracts/pkg/contracts"
 )
@@ -23,10 +25,99 @@ func WithSystemUpdatePortLocksHeldForTest(ctx context.Context, held func()) cont
 
 func WithSystemUpdatePortCreatePhaseForTest(ctx context.Context, observe func(string)) context.Context {
 	return context.WithValue(ctx, mariaDBUpdaterPolicyLockObserverContextKey{}, mariaDBUpdaterPolicyLockObserver(func(operation string, phase mariaDBUpdaterPolicyLockPhase) {
-		if operation == "st_port_create" {
+		if operation == "st_port_create" || operation == "st_port_host_lane" {
 			observe(string(phase))
 		}
 	}))
+}
+
+// Inspect the exact lane query plans without executing their locking reads.
+// Values, SQL text, row identifiers and lock_data are never logged.
+func LogSystemUpdatePortHostLanePlansForTest(t *testing.T, parent context.Context, db *sql.DB, hostID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	for _, lane := range []struct{ name, query string }{
+		{"jobs", mariaDBPortHostLaneJobsQuery},
+		{"rotation", mariaDBPortHostLaneRotationQuery},
+		{"self_update", mariaDBPortHostLaneSelfUpdateQuery},
+	} {
+		rows, err := db.QueryContext(ctx, "EXPLAIN "+lane.query, hostID)
+		if err != nil {
+			t.Logf("ST-PORT host lane plan: lane=%s available=false", lane.name)
+			continue
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			t.Logf("ST-PORT host lane plan: lane=%s columns_available=false", lane.name)
+			continue
+		}
+		for count := 0; count < 8 && rows.Next(); count++ {
+			values, dest := make([]sql.NullString, len(columns)), make([]any, len(columns))
+			for i := range values {
+				dest[i] = &values[i]
+			}
+			if rows.Scan(dest...) != nil {
+				break
+			}
+			fields := make(map[string]string, len(columns))
+			for i, column := range columns {
+				fields[column] = values[i].String
+			}
+			t.Logf("ST-PORT host lane plan: lane=%s table=%s access=%s index=%s filesort=%t", lane.name,
+				stPortDiagnosticClass(fields["table"], "system_update_jobs", "system_update_runtime_token_rotations", "system_update_host_self_updates", "p"),
+				stPortDiagnosticClass(fields["type"], "ALL", "index", "range", "ref", "eq_ref", "const", "system"),
+				stPortDiagnosticClass(fields["key"], "PRIMARY", "idx_system_update_jobs_execution_host_status_created", "uq_system_update_runtime_token_rotations_active_host", "uq_system_update_host_self_updates_active_host", "idx_port_transaction_host_hold"),
+				strings.Contains(fields["Extra"], "Using filesort"))
+		}
+		rows.Close()
+	}
+}
+
+// One bounded observation while the existing actual-lock barrier is held.
+// The CI database account may lack PROCESS; that remains unavailable evidence.
+func LogSystemUpdatePortHostLaneWaitForTest(t *testing.T, parent context.Context, db *sql.DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, `SELECT l.lock_table,l.lock_index,l.lock_type,l.lock_mode FROM information_schema.INNODB_LOCK_WAITS w JOIN information_schema.INNODB_LOCKS l ON l.lock_id=w.requested_lock_id WHERE l.lock_table IN (CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_jobs',CHAR(96)),CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_runtime_token_rotations',CHAR(96)),CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_host_self_updates',CHAR(96)),CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_port_transactions',CHAR(96))) LIMIT 8`)
+	if err != nil {
+		t.Log("ST-PORT host lane wait: available=false")
+		return
+	}
+	defer rows.Close()
+	count := 0
+	for count < 8 && rows.Next() {
+		var table, index, kind, mode sql.NullString
+		if rows.Scan(&table, &index, &kind, &mode) != nil {
+			break
+		}
+		name := "other"
+		for _, candidate := range []string{"system_update_jobs", "system_update_runtime_token_rotations", "system_update_host_self_updates", "system_update_port_transactions"} {
+			if strings.HasSuffix(table.String, ".`"+candidate+"`") {
+				name = candidate
+			}
+		}
+		t.Logf("ST-PORT host lane wait: table=%s index=%s type=%s mode=%s", name,
+			stPortDiagnosticClass(index.String, "PRIMARY", "idx_system_update_jobs_execution_host_status_created", "uq_system_update_jobs_idempotency", "uq_system_update_runtime_token_rotations_active_host", "uq_system_update_host_self_updates_active_host", "idx_port_transaction_host_hold"),
+			stPortDiagnosticClass(kind.String, "RECORD", "TABLE"),
+			stPortDiagnosticClass(mode.String, "S", "X", "S,GAP", "X,GAP", "IS", "IX", "AUTO_INC"))
+		count++
+	}
+	t.Logf("ST-PORT host lane wait: available=true rows=%d complete=%t", count, rows.Err() == nil)
+}
+
+func stPortDiagnosticClass(value string, allowed ...string) string {
+	if value == "" {
+		return "none"
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return candidate
+		}
+	}
+	return "other"
 }
 
 func WithSystemUpdateLifecycleHostLockForTest(ctx context.Context, held func()) context.Context {

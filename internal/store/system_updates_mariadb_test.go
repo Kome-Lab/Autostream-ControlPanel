@@ -404,8 +404,24 @@ func rotateMariaDBSmokeRuntimeToken(t *testing.T, ctx context.Context, fixture m
 		RotationID: staged.Rotation.ID, ExecutionHostID: params.ExecutionHostID, ExpectedRevision: 2,
 		RawStagedToken: claimed.Token.RawToken, Now: time.Now().UTC().Truncate(time.Microsecond),
 	})
-	if err != nil || !applied || local.Revision != 3 {
-		t.Fatalf("acknowledge MariaDB smoke local stage: applied=%v revision=%d err=%v", applied, local.Revision, err)
+	if err != nil || !applied || local.Revision != 3 || local.LocalStageAcknowledgedAt == nil {
+		t.Fatalf("acknowledge MariaDB smoke local stage: applied=%v revision=%d acknowledged=%t err=%v", applied, local.Revision, local.LocalStageAcknowledgedAt != nil, err)
+	}
+	// services.last_heartbeat_at is DATETIME(0), while the local-stage
+	// acknowledgement is DATETIME(6). Send a real heartbeat only after its
+	// persisted second can prove it occurred strictly after the acknowledgement.
+	heartbeatBoundary := local.LocalStageAcknowledgedAt.UTC().Truncate(time.Second).Add(time.Second)
+	if delay := time.Until(heartbeatBoundary); delay > 0 {
+		if delay > time.Second {
+			t.Fatal("MariaDB smoke local acknowledgement is ahead of the fixture clock")
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			t.Fatal("MariaDB smoke heartbeat boundary exceeded the fixture context")
+		}
 	}
 	const runtimeVersion = "v1.7.8"
 	proof := store.ProveSystemUpdateRuntimeTokenRotationHeartbeatParams{
@@ -421,7 +437,7 @@ func rotateMariaDBSmokeRuntimeToken(t *testing.T, ctx context.Context, fixture m
 		ExpectedLocalExecutorPolicySHA256:   owned.Policy.LocalExecutorPolicySHA256,
 		LocalStageReceiptID:                 local.LocalStageReceiptID,
 	}
-	_, err = fixture.auth.Heartbeat(ctx, fixture.agentToken, store.ServiceHeartbeat{
+	heartbeat, err := fixture.auth.Heartbeat(ctx, fixture.agentToken, store.ServiceHeartbeat{
 		ServiceID: params.ServiceID, Status: "online", Version: runtimeVersion,
 		Capabilities: map[string]any{
 			"host_agent": true, "update_executor": true, "mutation_enabled": true, "recovery_pending": false,
@@ -437,7 +453,12 @@ func rotateMariaDBSmokeRuntimeToken(t *testing.T, ctx context.Context, fixture m
 	if err != nil {
 		t.Fatalf("heartbeat MariaDB smoke local stage: %v", err)
 	}
-	proof.Now = time.Now().UTC().Truncate(time.Microsecond)
+	// Activation preserves this proof time in the same DATETIME(0) column.
+	proof.Now = time.Now().UTC().Truncate(time.Second)
+	heartbeatPresent := heartbeat.LastHeartbeatAt != nil
+	heartbeatAfterAck := heartbeatPresent && heartbeat.LastHeartbeatAt.After(local.LocalStageAcknowledgedAt.UTC())
+	proofNotBeforeHeartbeat := heartbeatPresent && !proof.Now.Before(heartbeat.LastHeartbeatAt.UTC())
+	t.Logf("MariaDB smoke runtime proof timing: heartbeat_present=%t heartbeat_after_ack=%t proof_not_before_heartbeat=%t", heartbeatPresent, heartbeatAfterAck, proofNotBeforeHeartbeat)
 	proved, applied, err := fixture.updates.ProveSystemUpdateRuntimeTokenRotationHeartbeat(ctx, fixture.auth, fixture.policies, proof)
 	if err != nil || !applied || proved.Revision != 4 {
 		t.Fatalf("prove MariaDB smoke runtime heartbeat: applied=%v revision=%d err=%v", applied, proved.Revision, err)

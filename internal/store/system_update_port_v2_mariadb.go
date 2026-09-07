@@ -268,8 +268,13 @@ func rejectMariaDBSystemUpdatePortHold(ctx context.Context, tx *sql.Tx, hostID s
 	return err
 }
 
+const mariaDBPortHostLaneJobsQuery = `SELECT id FROM system_update_jobs WHERE execution_host_id = ? AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions p WHERE p.job_id = system_update_jobs.id AND p.recovery_required = 1)) ORDER BY id FOR UPDATE`
+const mariaDBPortHostLaneRotationQuery = `SELECT id FROM system_update_runtime_token_rotations WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`
+const mariaDBPortHostLaneSelfUpdateQuery = `SELECT id FROM system_update_host_self_updates WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`
+
 func lockMariaDBPortHostLane(ctx context.Context, tx *sql.Tx, hostID, allowJobID string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM system_update_jobs WHERE execution_host_id = ? AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions p WHERE p.job_id = system_update_jobs.id AND p.recovery_required = 1)) ORDER BY id FOR UPDATE`, hostID)
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_host_lane", "before_lane_jobs")
+	rows, err := tx.QueryContext(ctx, mariaDBPortHostLaneJobsQuery, hostID)
 	if err != nil {
 		return err
 	}
@@ -292,9 +297,13 @@ func lockMariaDBPortHostLane(ctx context.Context, tx *sql.Tx, hostID, allowJobID
 	if busy {
 		return ErrSystemUpdateExecutionHostBusy
 	}
-	for _, query := range []string{`SELECT id FROM system_update_runtime_token_rotations WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`, `SELECT id FROM system_update_host_self_updates WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`} {
+	for _, lane := range []struct{ phase, query string }{
+		{"before_lane_rotation", mariaDBPortHostLaneRotationQuery},
+		{"before_lane_self_update", mariaDBPortHostLaneSelfUpdateQuery},
+	} {
+		observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_host_lane", mariaDBUpdaterPolicyLockPhase(lane.phase))
 		var id string
-		err := tx.QueryRowContext(ctx, query, hostID).Scan(&id)
+		err := tx.QueryRowContext(ctx, lane.query, hostID).Scan(&id)
 		if err == nil {
 			return ErrSystemUpdateExecutionHostBusy
 		}
