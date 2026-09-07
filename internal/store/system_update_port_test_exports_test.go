@@ -42,6 +42,8 @@ type mariaDBPortCreateGapKeyForTest struct {
 // the held create before the independent create. No key values are logged.
 func WithSystemUpdatePortCreateGapDiagnosticsForTest(t *testing.T, parent context.Context) (context.Context, context.Context) {
 	t.Helper()
+	transactions := &mariaDBPortDiagnosticTransactionsForTest{}
+	parent = context.WithValue(parent, mariaDBPortDiagnosticTransactionsContextKeyForTest{}, transactions)
 	var mu sync.Mutex
 	var heldKey mariaDBPortCreateGapKeyForTest
 	heldKeyAvailable := false
@@ -49,6 +51,7 @@ func WithSystemUpdatePortCreateGapDiagnosticsForTest(t *testing.T, parent contex
 		return func(parent context.Context, tx *sql.Tx, hostID, requestedByUserID, idempotencyKey string) {
 			ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 			defer cancel()
+			transactions.capture(t, ctx, tx, side)
 			key := mariaDBPortCreateGapKeyForTest{hostID: hostID, requestedByUserID: requestedByUserID, idempotencyKey: idempotencyKey}
 			if side == "held" {
 				mu.Lock()
@@ -221,36 +224,10 @@ func LogSystemUpdatePortHostLanePlansForTest(t *testing.T, parent context.Contex
 }
 
 // One bounded observation while the existing actual-lock barrier is held.
-// The CI database account may lack PROCESS; that remains unavailable evidence.
+// The context carries only this fixture's actual A/B transaction identities.
 func LogSystemUpdatePortHostLaneWaitForTest(t *testing.T, parent context.Context, db *sql.DB) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
-	defer cancel()
-	rows, err := db.QueryContext(ctx, `SELECT l.lock_table,l.lock_index,l.lock_type,l.lock_mode FROM information_schema.INNODB_LOCK_WAITS w JOIN information_schema.INNODB_LOCKS l ON l.lock_id=w.requested_lock_id WHERE l.lock_table IN (CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_jobs',CHAR(96)),CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_runtime_token_rotations',CHAR(96)),CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_host_self_updates',CHAR(96)),CONCAT(CHAR(96),DATABASE(),CHAR(96),'.',CHAR(96),'system_update_port_transactions',CHAR(96))) LIMIT 8`)
-	if err != nil {
-		t.Log("ST-PORT host lane wait: available=false")
-		return
-	}
-	defer rows.Close()
-	count := 0
-	for count < 8 && rows.Next() {
-		var table, index, kind, mode sql.NullString
-		if rows.Scan(&table, &index, &kind, &mode) != nil {
-			break
-		}
-		name := "other"
-		for _, candidate := range []string{"system_update_jobs", "system_update_runtime_token_rotations", "system_update_host_self_updates", "system_update_port_transactions"} {
-			if strings.HasSuffix(table.String, ".`"+candidate+"`") {
-				name = candidate
-			}
-		}
-		t.Logf("ST-PORT host lane wait: table=%s index=%s type=%s mode=%s", name,
-			stPortDiagnosticClass(index.String, "PRIMARY", "idx_system_update_jobs_execution_host_status_created", "uq_system_update_jobs_idempotency", "uq_system_update_runtime_token_rotations_active_host", "uq_system_update_host_self_updates_active_host", "idx_port_transaction_host_hold"),
-			stPortDiagnosticClass(kind.String, "RECORD", "TABLE"),
-			stPortDiagnosticClass(mode.String, "S", "X", "S,GAP", "X,GAP", "IS", "IX", "AUTO_INC"))
-		count++
-	}
-	t.Logf("ST-PORT host lane wait: available=true rows=%d complete=%t", count, rows.Err() == nil)
+	logMariaDBPortWaitEdgeForTest(t, parent, db)
 }
 
 func stPortDiagnosticClass(value string, allowed ...string) string {

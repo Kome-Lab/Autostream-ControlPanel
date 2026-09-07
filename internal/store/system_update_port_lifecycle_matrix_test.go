@@ -196,7 +196,7 @@ func TestMariaDBSTPortV2DifferentHostRemainsAvailable(t *testing.T) {
 	select {
 	case result = <-otherDone:
 	case <-diagnosticTimer.C:
-		store.LogSystemUpdatePortHostLaneWaitForTest(t, ctx, other.db)
+		store.LogSystemUpdatePortHostLaneWaitForTest(t, independentDiagnostics, other.db)
 		result = <-otherDone
 	}
 	if result.err != nil || !result.created {
