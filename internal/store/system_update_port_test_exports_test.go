@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +31,149 @@ func WithSystemUpdatePortCreatePhaseForTest(ctx context.Context, observe func(st
 			observe(string(phase))
 		}
 	}))
+}
+
+type mariaDBPortCreateGapKeyForTest struct {
+	hostID, requestedByUserID, idempotencyKey string
+}
+
+// Observe each actual create transaction after its host lock and before its
+// unchanged idempotency locking read. The existing source-lock barrier orders
+// the held create before the independent create. No key values are logged.
+func WithSystemUpdatePortCreateGapDiagnosticsForTest(t *testing.T, parent context.Context) (context.Context, context.Context) {
+	t.Helper()
+	var mu sync.Mutex
+	var heldKey mariaDBPortCreateGapKeyForTest
+	heldKeyAvailable := false
+	observer := func(side string) mariaDBPortCreateTransactionObserver {
+		return func(parent context.Context, tx *sql.Tx, hostID, requestedByUserID, idempotencyKey string) {
+			ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+			defer cancel()
+			key := mariaDBPortCreateGapKeyForTest{hostID: hostID, requestedByUserID: requestedByUserID, idempotencyKey: idempotencyKey}
+			if side == "held" {
+				mu.Lock()
+				heldKey, heldKeyAvailable = key, true
+				mu.Unlock()
+			}
+			var isolation string
+			err := tx.QueryRowContext(ctx, `SELECT @@tx_isolation`).Scan(&isolation)
+			t.Logf("ST-PORT create transaction: side=%s isolation_available=%t isolation=%s", side, err == nil,
+				stPortDiagnosticClass(isolation, "READ-UNCOMMITTED", "READ-COMMITTED", "REPEATABLE-READ", "SERIALIZABLE"))
+			logMariaDBPortCreateIdempotencyPlanForTest(t, ctx, tx, side, key)
+			if side != "independent" {
+				return
+			}
+			mu.Lock()
+			first, available := heldKey, heldKeyAvailable
+			mu.Unlock()
+			t.Logf("ST-PORT create gap keys: held_available=%t host_distinct=%t request_key_distinct=%t", available,
+				available && first.hostID != key.hostID,
+				available && (first.requestedByUserID != key.requestedByUserID || first.idempotencyKey != key.idempotencyKey))
+			if available {
+				logMariaDBPortCreateGapBoundsForTest(t, ctx, tx, first, key)
+			}
+		}
+	}
+	return context.WithValue(parent, mariaDBPortCreateTransactionObserverContextKey{}, observer("held")),
+		context.WithValue(parent, mariaDBPortCreateTransactionObserverContextKey{}, observer("independent"))
+}
+
+func logMariaDBPortCreateIdempotencyPlanForTest(t *testing.T, ctx context.Context, tx *sql.Tx, side string, key mariaDBPortCreateGapKeyForTest) {
+	t.Helper()
+	rows, err := tx.QueryContext(ctx, "EXPLAIN "+mariaDBPortCreateIdempotencyQuery, key.requestedByUserID, key.idempotencyKey)
+	if err != nil {
+		t.Logf("ST-PORT idempotency plan: side=%s available=false", side)
+		return
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		t.Logf("ST-PORT idempotency plan: side=%s columns_available=false", side)
+		return
+	}
+	for count := 0; count < 8 && rows.Next(); count++ {
+		values, dest := make([]sql.NullString, len(columns)), make([]any, len(columns))
+		for i := range values {
+			dest[i] = &values[i]
+		}
+		if rows.Scan(dest...) != nil {
+			break
+		}
+		fields := make(map[string]string, len(columns))
+		for i, column := range columns {
+			fields[column] = values[i].String
+		}
+		t.Logf("ST-PORT idempotency plan: side=%s table=%s access=%s index=%s filesort=%t", side,
+			stPortDiagnosticClass(fields["table"], "system_update_jobs", "p"),
+			stPortDiagnosticClass(fields["type"], "ALL", "index", "range", "ref", "eq_ref", "const", "system"),
+			stPortDiagnosticClass(fields["key"], "PRIMARY", "uq_system_update_jobs_idempotency", "idx_system_update_jobs_execution_host_status_created"),
+			strings.Contains(fields["Extra"], "Using filesort"))
+	}
+}
+
+// A consistent, nonlocking view of index neighbours establishes whether absent
+// logical keys lie in the same physical gap. It does not identify a live lock
+// wait, and no row identifier or indexed value is emitted.
+func logMariaDBPortCreateGapBoundsForTest(t *testing.T, ctx context.Context, tx *sql.Tx, first, second mariaDBPortCreateGapKeyForTest) {
+	t.Helper()
+	type probe struct {
+		index, exists, predecessor, successor string
+		args                                  func(mariaDBPortCreateGapKeyForTest) []any
+	}
+	probes := []probe{
+		{
+			index:       "uq_system_update_jobs_idempotency",
+			exists:      `SELECT id FROM system_update_jobs FORCE INDEX (uq_system_update_jobs_idempotency) WHERE requested_by_user_id=? AND idempotency_key=? LIMIT 1`,
+			predecessor: `SELECT id FROM system_update_jobs FORCE INDEX (uq_system_update_jobs_idempotency) WHERE (requested_by_user_id,idempotency_key)<(?,?) ORDER BY requested_by_user_id DESC,idempotency_key DESC LIMIT 1`,
+			successor:   `SELECT id FROM system_update_jobs FORCE INDEX (uq_system_update_jobs_idempotency) WHERE (requested_by_user_id,idempotency_key)>(?,?) ORDER BY requested_by_user_id,idempotency_key LIMIT 1`,
+			args: func(key mariaDBPortCreateGapKeyForTest) []any {
+				return []any{key.requestedByUserID, key.idempotencyKey}
+			},
+		},
+		{
+			index:       "idx_system_update_jobs_execution_host_status_created",
+			exists:      `SELECT id FROM system_update_jobs FORCE INDEX (idx_system_update_jobs_execution_host_status_created) WHERE execution_host_id=? LIMIT 1`,
+			predecessor: `SELECT id FROM system_update_jobs FORCE INDEX (idx_system_update_jobs_execution_host_status_created) WHERE execution_host_id<? ORDER BY execution_host_id DESC,status DESC,created_at DESC,id DESC LIMIT 1`,
+			successor:   `SELECT id FROM system_update_jobs FORCE INDEX (idx_system_update_jobs_execution_host_status_created) WHERE execution_host_id>? ORDER BY execution_host_id,status,created_at,id LIMIT 1`,
+			args: func(key mariaDBPortCreateGapKeyForTest) []any {
+				return []any{key.hostID}
+			},
+		},
+	}
+	read := func(query string, args []any) (sql.NullString, error) {
+		var id string
+		err := tx.QueryRowContext(ctx, query, args...).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return sql.NullString{}, nil
+		}
+		return sql.NullString{String: id, Valid: err == nil}, err
+	}
+	for _, current := range probes {
+		var values [2][3]sql.NullString
+		available := true
+		for i, key := range []mariaDBPortCreateGapKeyForTest{first, second} {
+			for j, query := range []string{current.exists, current.predecessor, current.successor} {
+				var err error
+				values[i][j], err = read(query, current.args(key))
+				if err != nil {
+					available = false
+					break
+				}
+			}
+			if !available {
+				break
+			}
+		}
+		if !available {
+			t.Logf("ST-PORT create gap bounds: index=%s available=false", current.index)
+			continue
+		}
+		a, b := values[0], values[1]
+		predecessorSame, successorSame := a[1] == b[1], a[2] == b[2]
+		t.Logf("ST-PORT create gap bounds: index=%s available=true a_key_exists=%t b_key_exists=%t a_predecessor_exists=%t b_predecessor_exists=%t a_successor_exists=%t b_successor_exists=%t predecessor_same=%t successor_same=%t same_missing_gap=%t", current.index,
+			a[0].Valid, b[0].Valid, a[1].Valid, b[1].Valid, a[2].Valid, b[2].Valid,
+			predecessorSame, successorSame, !a[0].Valid && !b[0].Valid && predecessorSame && successorSame)
+	}
 }
 
 // Inspect the exact lane query plans without executing their locking reads.

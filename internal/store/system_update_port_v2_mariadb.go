@@ -271,6 +271,10 @@ func rejectMariaDBSystemUpdatePortHold(ctx context.Context, tx *sql.Tx, hostID s
 const mariaDBPortHostLaneJobsQuery = `SELECT id FROM system_update_jobs WHERE execution_host_id = ? AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions p WHERE p.job_id = system_update_jobs.id AND p.recovery_required = 1)) ORDER BY id FOR UPDATE`
 const mariaDBPortHostLaneRotationQuery = `SELECT id FROM system_update_runtime_token_rotations WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`
 const mariaDBPortHostLaneSelfUpdateQuery = `SELECT id FROM system_update_host_self_updates WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`
+const mariaDBPortCreateIdempotencyQuery = systemUpdateSelect + ` WHERE requested_by_user_id = ? AND idempotency_key = ? FOR UPDATE`
+
+type mariaDBPortCreateTransactionObserverContextKey struct{}
+type mariaDBPortCreateTransactionObserver func(context.Context, *sql.Tx, string, string, string)
 
 func lockMariaDBPortHostLane(ctx context.Context, tx *sql.Tx, hostID, allowJobID string) error {
 	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_host_lane", "before_lane_jobs")
@@ -407,8 +411,11 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
+	if observe, ok := ctx.Value(mariaDBPortCreateTransactionObserverContextKey{}).(mariaDBPortCreateTransactionObserver); ok && observe != nil {
+		observe(ctx, tx, host.ExecutionHostID, params.RequestedByUserID, params.IdempotencyKey)
+	}
 	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_idempotency_lock")
-	existing, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, systemUpdateSelect+` WHERE requested_by_user_id = ? AND idempotency_key = ? FOR UPDATE`, params.RequestedByUserID, params.IdempotencyKey))
+	existing, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, mariaDBPortCreateIdempotencyQuery, params.RequestedByUserID, params.IdempotencyKey))
 	if err == nil {
 		if existing.portTransaction != nil && existing.portTransaction.RequestSHA256 == systemUpdatePortV2RequestDigest(params) {
 			return existing, false, nil

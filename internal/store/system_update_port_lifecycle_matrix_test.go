@@ -153,10 +153,11 @@ func TestMariaDBSTPortV2DifferentHostRemainsAvailable(t *testing.T) {
 	snapshot, otherSnapshot := f.snapshot(t), other.snapshot(t)
 	ctx, cancel := context.WithTimeout(f.ctx, 20*time.Second)
 	defer cancel()
+	heldDiagnostics, independentDiagnostics := store.WithSystemUpdatePortCreateGapDiagnosticsForTest(t, ctx)
 	held, release := make(chan struct{}), make(chan struct{})
 	var heldOnce, releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
-	blocked := store.WithSystemUpdatePortLocksHeldForTest(ctx, func() {
+	blocked := store.WithSystemUpdatePortLocksHeldForTest(heldDiagnostics, func() {
 		heldOnce.Do(func() {
 			close(held)
 			select {
@@ -181,7 +182,7 @@ func TestMariaDBSTPortV2DifferentHostRemainsAvailable(t *testing.T) {
 	store.LogSystemUpdatePortHostLanePlansForTest(t, ctx, other.db, other.policy.ExecutionHostID)
 	started := time.Now()
 	phaseCount := 0
-	observed := store.WithSystemUpdatePortCreatePhaseForTest(ctx, func(phase string) {
+	observed := store.WithSystemUpdatePortCreatePhaseForTest(independentDiagnostics, func(phase string) {
 		phaseCount++
 		if phaseCount <= 20 {
 			t.Logf("unrelated host create phase=%s elapsed_ms=%d", phase, time.Since(started).Milliseconds())
