@@ -314,7 +314,7 @@ WHERE token_id = ? OR staged_node_previous_token_id = ? OR staged_node_token_id 
 	for range hostTargets {
 		result := <-hostClaimResults
 		if result.err != nil || result.claim.Job.ExecutionHostID != result.hostID || result.claim.Job.TargetID != hostTargets[result.hostID] {
-			t.Fatalf("parallel MariaDB host claim: present=%v err=%v", result.claim != nil, result.err)
+			t.Fatalf("parallel MariaDB host claim: host_matches=%v target_matches=%v err=%v", result.claim.Job.ExecutionHostID == result.hostID, result.claim.Job.TargetID == hostTargets[result.hostID], result.err)
 		}
 		if _, applied, err := updates.ReportSystemUpdateJob(ctx, result.claim.Job.ID, store.SystemUpdateReport{
 			AgentServiceID: hostAgents[result.hostID], ExecutionHostID: result.hostID, LeaseToken: result.claim.LeaseToken, LeaseGeneration: result.claim.LeaseGeneration,
