@@ -382,6 +382,10 @@ func (s *MemorySystemUpdateStore) claimSystemUpdateJob(ctx context.Context, agen
 		job.Status = SystemUpdateStatusReconciling
 	}
 	expiresAt := now.Add(leaseTTL)
+	if v2 {
+		// Match the immutable lease precision of the MariaDB DATETIME(6) store.
+		expiresAt = expiresAt.Truncate(time.Microsecond)
+	}
 	job.AgentServiceID = agentServiceID
 	job.LeaseGeneration++
 	if v2 {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/example/autostream-contracts/pkg/contracts"
+	"github.com/go-sql-driver/mysql"
 )
 
 // The dependent record is the only v2 plan authority. This projection adds one
@@ -268,35 +269,73 @@ func rejectMariaDBSystemUpdatePortHold(ctx context.Context, tx *sql.Tx, hostID s
 	return err
 }
 
-const mariaDBPortHostLaneJobsQuery = `SELECT id FROM system_update_jobs WHERE execution_host_id = ? AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions p WHERE p.job_id = system_update_jobs.id AND p.recovery_required = 1)) ORDER BY id FOR UPDATE`
+const mariaDBPortHostLaneJobsQuery = `SELECT id FROM system_update_jobs WHERE execution_host_id = ? AND (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions p WHERE p.job_id = system_update_jobs.id AND p.recovery_required = 1)) ORDER BY id`
 const mariaDBPortHostLaneRotationQuery = `SELECT id FROM system_update_runtime_token_rotations WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`
 const mariaDBPortHostLaneSelfUpdateQuery = `SELECT id FROM system_update_host_self_updates WHERE active_execution_host_id = ? LIMIT 1 FOR UPDATE`
-const mariaDBPortCreateIdempotencyQuery = systemUpdateSelect + ` WHERE requested_by_user_id = ? AND idempotency_key = ? FOR UPDATE`
+const mariaDBPortCreateIdempotencyQuery = `SELECT id FROM system_update_jobs WHERE requested_by_user_id = ? AND idempotency_key = ?`
 
 type mariaDBPortCreateTransactionObserverContextKey struct{}
 type mariaDBPortCreateTransactionObserver func(context.Context, *sql.Tx, string, string, string)
 
-func lockMariaDBPortHostLane(ctx context.Context, tx *sql.Tx, hostID, allowJobID string) error {
-	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_host_lane", "before_lane_jobs")
+func discoverMariaDBPortHostLaneJobs(ctx context.Context, tx *sql.Tx, hostID string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, mariaDBPortHostLaneJobsQuery, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Use the same byte order as the other canonical ID lock sets, regardless
+	// of the database collation used by discovery.
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func lockMariaDBPortHostLane(ctx context.Context, tx *sql.Tx, hostID, allowJobID string) error {
+	// All callers acquire this host before their first consistent read. Job
+	// insert/status and port recovery-hold writers acquire the same host first,
+	// so this read view contains the complete, stable membership until commit.
+	// Lock only those existing rows by unique PK: a host-filtered locking scan
+	// can lock another host's records (or the shared missing-key gap) under RR.
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_host_lane", "before_lane_jobs")
+	ids, err := discoverMariaDBPortHostLaneJobs(ctx, tx, hostID)
 	if err != nil {
 		return err
 	}
 	busy := false
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+	for _, id := range ids {
+		var lockedHostID string
+		var member bool
+		err := tx.QueryRowContext(ctx, `SELECT execution_host_id, (status NOT IN ('succeeded','rolled_back','failed','canceled') OR EXISTS (SELECT 1 FROM system_update_port_transactions p WHERE p.job_id = system_update_jobs.id AND p.recovery_required = 1)) FROM system_update_jobs WHERE id = ? FOR UPDATE`, id).Scan(&lockedHostID, &member)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrSystemUpdatePortSnapshotStale
+		}
+		if err != nil {
 			return err
 		}
-		if id != allowJobID {
-			busy = true
+		if lockedHostID != hostID || !member {
+			return ErrSystemUpdatePortSnapshotStale
 		}
+		busy = busy || id != allowJobID
 	}
-	err = rows.Err()
-	rows.Close()
+	// Reconcile the locked IDs with discovery while the host fence still
+	// protects membership. This is not a claim that a second RR read alone
+	// refreshes a snapshot; the host-first transaction contract is required.
+	confirmed, err := discoverMariaDBPortHostLaneJobs(ctx, tx, hostID)
 	if err != nil {
 		return err
+	}
+	if !reflect.DeepEqual(ids, confirmed) {
+		return ErrSystemUpdatePortSnapshotStale
 	}
 	if busy {
 		return ErrSystemUpdateExecutionHostBusy
@@ -318,21 +357,43 @@ func lockMariaDBPortHostLane(ctx context.Context, tx *sql.Tx, hostID, allowJobID
 	return nil
 }
 
+func (s *MariaDBSystemUpdateStore) discoverSystemUpdatePortBaselinePolicy(ctx context.Context, updaterID string) (UpdaterPolicy, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	defer tx.Rollback()
+	return loadMariaDBSystemUpdatePortPolicy(ctx, tx, updaterID, false)
+}
+
+func (s *MariaDBSystemUpdateStore) discoverSystemUpdatePortTargetPolicy(ctx context.Context, targetID string) (UpdaterPolicy, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return UpdaterPolicy{}, err
+	}
+	defer tx.Rollback()
+	policy, _, err := mariaDBPullPolicyForPortTarget(ctx, tx, targetID, false)
+	return policy, err
+}
+
 func (s *MariaDBSystemUpdateStore) ConfirmSystemUpdatePortPolicyBaseline(ctx context.Context, services ServiceRegistryStore, policies UpdaterPolicyStore, params ConfirmSystemUpdatePortPolicyBaselineParams) error {
 	registry, ok := mariaDBFromServiceRegistryStore(services)
 	policyDB, pok := mariaDBFromUpdaterPolicyStore(policies)
 	if !ok || !pok || registry != s.db || policyDB != s.db {
 		return ErrSystemUpdatePortStoreMismatch
 	}
+	// Close discovery before starting the host-first mutation transaction: a
+	// waiter must see lane members committed while it was waiting for the host.
+	policy, err := s.discoverSystemUpdatePortBaselinePolicy(ctx, params.AgentServiceID)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	policy, err := loadMariaDBSystemUpdatePortPolicy(ctx, tx, params.AgentServiceID, false)
-	if err != nil {
-		return err
-	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_baseline", mariaDBUpdaterPolicyBeforeHostLock)
 	host, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, policy.ExecutionHostID)
 	if err != nil {
 		return err
@@ -343,6 +404,9 @@ func (s *MariaDBSystemUpdateStore) ConfirmSystemUpdatePortPolicyBaseline(ctx con
 	policy, err = loadMariaDBSystemUpdatePortPolicy(ctx, tx, params.AgentServiceID, true)
 	if err != nil {
 		return err
+	}
+	if policy.ExecutionHostID != host.ExecutionHostID {
+		return ErrSystemUpdateOwnershipConflict
 	}
 	all, err := loadMariaDBPortServices(ctx, tx, policy, true, params.ControlPanelTarget)
 	if err != nil {
@@ -395,17 +459,19 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	} else if !errors.Is(err, ErrNotFound) {
 		return SystemUpdateJob{}, false, err
 	}
+	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_policy_discovery")
+	discovered, err := s.discoverSystemUpdatePortTargetPolicy(ctx, params.TargetID)
+	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	// No consistent read from policy discovery survives into this transaction.
+	// The first read below locks the host; only then may lane discovery begin.
 	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_begin_tx")
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SystemUpdateJob{}, false, err
 	}
 	defer tx.Rollback()
-	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_policy_discovery")
-	discovered, _, err := mariaDBPullPolicyForPortTarget(ctx, tx, params.TargetID, false)
-	if err != nil {
-		return SystemUpdateJob{}, false, err
-	}
 	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", mariaDBUpdaterPolicyBeforeHostLock)
 	host, err := getSystemUpdateExecutionHostForUpdate(ctx, tx, discovered.ExecutionHostID)
 	if err != nil {
@@ -415,12 +481,26 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 		observe(ctx, tx, host.ExecutionHostID, params.RequestedByUserID, params.IdempotencyKey)
 	}
 	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_idempotency_lock")
-	existing, err := scanSystemUpdateJob(tx.QueryRowContext(ctx, mariaDBPortCreateIdempotencyQuery, params.RequestedByUserID, params.IdempotencyKey))
+	var existingID string
+	err = tx.QueryRowContext(ctx, mariaDBPortCreateIdempotencyQuery, params.RequestedByUserID, params.IdempotencyKey).Scan(&existingID)
 	if err == nil {
-		if existing.portTransaction != nil && existing.portTransaction.RequestSHA256 == systemUpdatePortV2RequestDigest(params) {
-			return existing, false, nil
+		var sameUser, sameKey bool
+		err := tx.QueryRowContext(ctx, `SELECT requested_by_user_id = ?,idempotency_key = ? FROM system_update_jobs WHERE id = ? FOR UPDATE`, params.RequestedByUserID, params.IdempotencyKey, existingID).Scan(&sameUser, &sameKey)
+		if errors.Is(err, sql.ErrNoRows) {
+			return SystemUpdateJob{}, false, ErrSystemUpdatePortSnapshotStale
 		}
-		return SystemUpdateJob{}, false, ErrSystemUpdatePortIdempotencyConflict
+		if err != nil {
+			return SystemUpdateJob{}, false, err
+		}
+		if !sameUser || !sameKey {
+			return SystemUpdateJob{}, false, ErrSystemUpdatePortSnapshotStale
+		}
+		if err := tx.Rollback(); err != nil {
+			return SystemUpdateJob{}, false, err
+		}
+		// A global key can belong to another host. Read its complete committed
+		// job/transaction together outside this transaction's RR snapshot.
+		return s.replaySystemUpdatePortV2(ctx, params)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return SystemUpdateJob{}, false, err
@@ -476,7 +556,7 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_job_insert")
 	_, err = tx.ExecContext(ctx, `INSERT INTO system_update_jobs (id,target_id,target_service_type,operation,port_contract_version,agent_service_id,execution_host_id,transport_mode,ownership_epoch,policy_revision,deployment_mode,current_version,target_version,strategy,status,idempotency_key,requested_by_user_id,requested_by_username,sequence,progress,created_at,updated_at) VALUES (?,?,?,'port_reconfigure',2,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)`, job.ID, job.TargetID, job.TargetServiceType, job.AgentServiceID, job.ExecutionHostID, job.TransportMode, job.OwnershipEpoch, job.PolicyRevision, job.DeploymentMode, job.CurrentVersion, job.TargetVersion, job.Strategy, job.Status, job.IdempotencyKey, job.RequestedByUserID, job.RequestedByUsername, now, now)
 	if err != nil {
-		return SystemUpdateJob{}, false, err
+		return s.resolveSystemUpdatePortV2InsertError(ctx, tx, params, err)
 	}
 	observeMariaDBUpdaterPolicyLockPhase(ctx, "st_port_create", "before_transaction_insert")
 	if err := insertMariaDBSystemUpdatePortTransaction(ctx, tx, job, now); err != nil {
@@ -508,6 +588,35 @@ func (s *MariaDBSystemUpdateStore) createSystemUpdatePortV2(ctx context.Context,
 		return SystemUpdateJob{}, false, err
 	}
 	return job, true, nil
+}
+
+func (s *MariaDBSystemUpdateStore) replaySystemUpdatePortV2(ctx context.Context, params CreateSystemdPortReconfigurationJobParams) (SystemUpdateJob, bool, error) {
+	existing, err := s.GetSystemUpdateJobByIdempotency(ctx, params.RequestedByUserID, params.IdempotencyKey)
+	if err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	if existing.portTransaction == nil || existing.portTransaction.RequestSHA256 != systemUpdatePortV2RequestDigest(params) {
+		return SystemUpdateJob{}, false, ErrSystemUpdatePortIdempotencyConflict
+	}
+	return existing, false, nil
+}
+
+func (s *MariaDBSystemUpdateStore) resolveSystemUpdatePortV2InsertError(ctx context.Context, tx *sql.Tx, params CreateSystemdPortReconfigurationJobParams, insertErr error) (SystemUpdateJob, bool, error) {
+	var duplicate *mysql.MySQLError
+	if !errors.As(insertErr, &duplicate) || duplicate.Number != 1062 {
+		return SystemUpdateJob{}, false, insertErr
+	}
+	// The global user/key UNIQUE constraint arbitrates different-host inserts.
+	// End the losing snapshot and release all its locks before reading the
+	// winner. Other unique constraints are not idempotency evidence.
+	if err := tx.Rollback(); err != nil {
+		return SystemUpdateJob{}, false, err
+	}
+	existing, created, err := s.replaySystemUpdatePortV2(ctx, params)
+	if errors.Is(err, ErrNotFound) {
+		return SystemUpdateJob{}, false, insertErr
+	}
+	return existing, created, err
 }
 
 func insertMariaDBSystemUpdatePortTransaction(ctx context.Context, tx *sql.Tx, job SystemUpdateJob, now time.Time) error {

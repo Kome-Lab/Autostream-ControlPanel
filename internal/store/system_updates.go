@@ -518,6 +518,11 @@ func (s *MariaDBSystemUpdateStore) claimSystemUpdateJob(ctx context.Context, age
 		return SystemUpdateClaim{}, false, err
 	}
 	leaseExpiresAt := now.Add(leaseTTL)
+	if v2 {
+		// The immutable v2 lease is compared with later DATETIME(6) reads.
+		// Persist and return the same expiry without extending its lifetime.
+		leaseExpiresAt = leaseExpiresAt.Truncate(time.Microsecond)
+	}
 	claimedAt := job.ClaimedAt
 	lastStatus := job.Status
 	recoveryRequired := lastStatus != SystemUpdateStatusQueued

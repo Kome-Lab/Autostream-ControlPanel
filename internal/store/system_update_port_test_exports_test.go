@@ -27,10 +27,14 @@ func WithSystemUpdatePortLocksHeldForTest(ctx context.Context, held func()) cont
 
 func WithSystemUpdatePortCreatePhaseForTest(ctx context.Context, observe func(string)) context.Context {
 	return context.WithValue(ctx, mariaDBUpdaterPolicyLockObserverContextKey{}, mariaDBUpdaterPolicyLockObserver(func(operation string, phase mariaDBUpdaterPolicyLockPhase) {
-		if operation == "st_port_create" || operation == "st_port_host_lane" {
+		if operation == "st_port_create" || operation == "st_port_baseline" || operation == "st_port_host_lane" {
 			observe(string(phase))
 		}
 	}))
+}
+
+func ResolveSystemUpdatePortV2InsertErrorForTest(ctx context.Context, updates *MariaDBSystemUpdateStore, tx *sql.Tx, params CreateSystemdPortReconfigurationJobParams, insertErr error) (SystemUpdateJob, bool, error) {
+	return updates.resolveSystemUpdatePortV2InsertError(ctx, tx, params, insertErr)
 }
 
 type mariaDBPortCreateGapKeyForTest struct {
@@ -38,7 +42,7 @@ type mariaDBPortCreateGapKeyForTest struct {
 }
 
 // Observe each actual create transaction after its host lock and before its
-// unchanged idempotency locking read. The existing source-lock barrier orders
+// idempotency discovery and existing-row lock. The source-lock barrier orders
 // the held create before the independent create. No key values are logged.
 func WithSystemUpdatePortCreateGapDiagnosticsForTest(t *testing.T, parent context.Context) (context.Context, context.Context) {
 	t.Helper()

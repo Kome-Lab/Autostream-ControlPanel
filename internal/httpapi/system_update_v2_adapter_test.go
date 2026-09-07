@@ -224,6 +224,36 @@ func TestSystemUpdateV2LeaseReportAndMutationGrantRoundTrip(t *testing.T) {
 		t.Fatalf("invented v2 lease = %d %s", mutatedRes.Code, mutatedRes.Body.String())
 	}
 
+	// A pre-persistence nanosecond expiry must still fail the exact binding
+	// check, even when both expiry fields agree with each other.
+	unrounded := binding
+	unrounded.Lease.LeaseExpiresAt = fixture.lease.LeaseExpiresAt.Add(789 * time.Nanosecond)
+	unrounded.Lease.Command.MutationAuthorization.ExpiresAt = unrounded.Lease.LeaseExpiresAt
+	if sameSystemUpdateV2Lease(fixture.lease, unrounded.Lease) {
+		t.Fatal("lease comparison ignored unpersistable expiry precision")
+	}
+	for _, suffix := range []string{"mutation-grants", "mutation-grants/consume"} {
+		payload, err := json.Marshal(contracts.UpdaterMutationGrantIssueRequest{Binding: unrounded})
+		if err != nil {
+			t.Fatal("encode precision mismatch request failed")
+		}
+		req := httptest.NewRequest(http.MethodPost, "/services/update-jobs/"+fixture.job.ID+"/"+suffix, bytes.NewReader(payload))
+		bearer := fixture.token.RawToken
+		if suffix == "mutation-grants/consume" {
+			bearer = grant.GrantToken
+		}
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set(systemUpdateContractMajorHeader, "2")
+		res := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(res, req)
+		var rejection struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(res.Body.Bytes(), &rejection) != nil || res.Code != http.StatusConflict || rejection.Code != "updater_v2_lease_binding_mismatch" {
+			t.Fatal("mutation grant endpoint accepted an unpersistable lease expiry")
+		}
+	}
+
 	result := contracts.UpdaterResultEnvelope{
 		ProtocolVersion:        2,
 		CommandID:              fixture.lease.Command.CommandID,
