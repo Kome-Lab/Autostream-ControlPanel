@@ -124,7 +124,7 @@ func mariaDBPortDiagnosticPoolForTest(t *testing.T, ctx context.Context, applica
 	}
 	// Suppress only this diagnostic connection's free-form driver messages.
 	// The application's connection, logger and permissions are unchanged.
-	management.Logger = mysql.NopLogger{}
+	management.Logger = &mysql.NopLogger{}
 	for _, duration := range []*time.Duration{&management.Timeout, &management.ReadTimeout, &management.WriteTimeout} {
 		if *duration <= 0 || *duration > 2*time.Second {
 			*duration = 2 * time.Second
