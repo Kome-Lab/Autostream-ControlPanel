@@ -195,7 +195,8 @@ func validateSystemUpdatePortV2Ready(policy UpdaterPolicy, target UpdaterPolicyT
 		// reported_ports describes the advertised endpoint. The independently
 		// observed published/container tuple is checked against the snapshot below.
 		baseline, ok := pullAgentReadyForDockerPortChange(agent, policy, service, now)
-		if !ok || baseline.PublishedPort != frozen.PublishedPort || baseline.ContainerPort != frozen.ContainerPort || baseline.HealthPort != frozen.HealthPort ||
+		_, observedCompose := systemUpdatePortDockerComposeConfigFromAgent(agent, target.ServiceID)
+		if !ok || !observedCompose || baseline.PublishedPort != frozen.PublishedPort || baseline.ContainerPort != frozen.ContainerPort || baseline.HealthPort != frozen.HealthPort ||
 			"sha256:"+baseline.ApprovedComposeConfigSHA256 != frozen.ComposePolicySHA256 || baseline.ApprovedComposeRevision != frozen.ComposeRevision || baseline.VersionEnvSHA256 != frozen.VersionEnvSHA256 || baseline.ImageID != frozen.ImageID || baseline.RepositoryDigest != frozen.RepositoryDigest {
 			return ErrSystemUpdateAgentNotReady
 		}

@@ -312,6 +312,21 @@ func systemUpdatePortDockerBaselineFromAgent(agent RegisteredService, targetID s
 	return nil, ErrSystemUpdatePortPolicySnapshotUnavailable
 }
 
+// DockerRoot describes the installed profile needed to reproduce policy bytes.
+// A new job instead freezes the resolved runtime digest from the same verified
+// heartbeat as its existing container/mapping observations. Never fall back to
+// the profile or policy digest when that runtime observation is absent.
+func systemUpdatePortDockerComposeConfigFromAgent(agent RegisteredService, targetID string) (string, bool) {
+	var digest string
+	switch values := agent.ReportedCapabilities["reported_docker_compose_config_sha256"].(type) {
+	case map[string]string:
+		digest = values[targetID]
+	case map[string]any:
+		digest, _ = values[targetID].(string)
+	}
+	return digest, systemUpdateMutationPlanPattern.MatchString(digest)
+}
+
 func systemUpdatePortTransitionSnapshot(before SystemUpdatePortPolicySnapshot, targetID string, localPort, advertisedPort, containerPort int, step int64) (SystemUpdatePortPolicySnapshot, error) {
 	body, _ := json.Marshal(before.Snapshot)
 	var snapshot contracts.SystemUpdatePortPolicySnapshot
@@ -478,13 +493,13 @@ func systemUpdatePortV2Job(params CreateSystemdPortReconfigurationJobParams, bef
 		deployment = "docker"
 		policy, _ := portSnapshotPolicy(before)
 		baseline, ok := systemUpdateDockerPortBaselineFromAgent(agent, policy, target)
-		observed, err := systemUpdatePortDockerBaselineFromAgent(agent, target.ServiceID)
-		if !ok || err != nil {
+		composeConfigSHA256, observed := systemUpdatePortDockerComposeConfigFromAgent(agent, target.ServiceID)
+		if !ok || !observed {
 			return SystemUpdateJob{}, ErrSystemUpdatePortPolicySnapshotUnavailable
 		}
 		// The legacy heartbeat digest is the stable non-port Compose policy.
-		// The v2 execution baseline requires the full resolved Compose digest.
-		plan.DockerBaseline = &contracts.SystemUpdatePortDockerBaseline{ExpectedContainerID: baseline.ContainerID, ExpectedImageID: baseline.ImageID, ExpectedRepositoryDigest: baseline.RepositoryDigest, ExpectedVersionEnvSHA256: baseline.VersionEnvSHA256, ApprovedComposeConfigSHA256: observed.DockerRoot.ComposeConfigSHA256, ApprovedComposeRevision: baseline.ApprovedComposeRevision}
+		// The execution baseline freezes the observed full resolved Compose model.
+		plan.DockerBaseline = &contracts.SystemUpdatePortDockerBaseline{ExpectedContainerID: baseline.ContainerID, ExpectedImageID: baseline.ImageID, ExpectedRepositoryDigest: baseline.RepositoryDigest, ExpectedVersionEnvSHA256: baseline.VersionEnvSHA256, ApprovedComposeConfigSHA256: composeConfigSHA256, ApprovedComposeRevision: baseline.ApprovedComposeRevision}
 	}
 	version := target.ReportedVersion
 	if version == "" {

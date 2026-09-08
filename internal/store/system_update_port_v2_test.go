@@ -163,9 +163,10 @@ func TestMemorySTPortV2DockerModesAndMappingDigest(t *testing.T) {
 				f := newSTPortV2DockerFixture(t)
 				before := f.snapshot(t)
 				baseline := f.registry.services["host-agent-a"].ReportedCapabilities["port_policy_baseline"].(contracts.UpdaterPortPolicyBaseline)
-				wantCompose := baseline.Targets[0].DockerRoot.ComposeConfigSHA256
-				if before.Ref.AdvertisedPort == before.Ref.Docker.PublishedPort || "sha256:"+wantCompose == before.Ref.Docker.ComposePolicySHA256 {
-					t.Fatal("fixture must distinguish advertised/published ports and full/policy Compose digests")
+				wantCompose := strings.Repeat("9", 64)
+				if before.Ref.AdvertisedPort == before.Ref.Docker.PublishedPort || "sha256:"+wantCompose == before.Ref.Docker.ComposePolicySHA256 ||
+					wantCompose == baseline.Targets[0].DockerRoot.ComposeConfigSHA256 {
+					t.Fatal("fixture must distinguish advertised/published ports and runtime/profile/policy Compose digests")
 				}
 				ad := 0
 				if mode == contracts.SystemUpdatePortModeLocalAndAdvertised {
@@ -372,6 +373,28 @@ func addSTPortV2Observability(t *testing.T, f *stPortV2Fixture) {
 	f.refresh(t)
 }
 
+func TestMemorySTPortV2DockerExecutionDigestRemainsFrozenAfterHeartbeat(t *testing.T) {
+	f := newSTPortV2DockerFixture(t)
+	before := f.snapshot(t)
+	params := CreateDockerPortReconfigurationJobParams{PortContractVersion: 2, Mode: contracts.SystemUpdatePortModeLocalOnly,
+		TargetID: "worker-a", NewPublishedPort: 18084, NewContainerPort: 8081, ExpectedSnapshotID: before.Ref.SnapshotID,
+		ExpectedEndpointRevision: 3, ExpectedDesiredRevision: 32, ExpectedFence: 1, IdempotencyKey: "frozen-runtime-compose", RequestedByUserID: "admin-a", BuildPolicySnapshot: stPortTestBuilder}
+	job, created, err := f.updates.CreateDockerPortReconfigurationJob(t.Context(), f.registry, f.policies, params)
+	if err != nil || !created || job.PortReconfigure.DockerBaseline.ApprovedComposeConfigSHA256 != strings.Repeat("9", 64) {
+		t.Fatal("new job did not freeze the verified runtime digest")
+	}
+	agent := f.registry.services["host-agent-a"]
+	agent.ReportedCapabilities["reported_docker_compose_config_sha256"] = map[string]any{"worker-a": strings.Repeat("8", 64)}
+	f.registry.services[agent.ServiceID] = agent
+	if digest, ok := systemUpdatePortDockerComposeConfigFromAgent(agent, "worker-a"); !ok || digest != strings.Repeat("8", 64) {
+		t.Fatal("wire-decoded heartbeat lost the new runtime observation")
+	}
+	replayed, created, err := f.updates.CreateDockerPortReconfigurationJob(t.Context(), f.registry, f.policies, params)
+	if err != nil || created || replayed.ID != job.ID || !reflect.DeepEqual(replayed.PortReconfigure, job.PortReconfigure) {
+		t.Fatal("later heartbeat rewrote an existing immutable job or its baseline")
+	}
+}
+
 func TestMemorySTPortV2DockerReadinessKeepsDistinctPortProofs(t *testing.T) {
 	mutations := map[string]func(map[string]any){
 		"published_as_advertised": func(c map[string]any) { c["reported_ports"] = map[string]int64{"worker-a": 18081} },
@@ -381,6 +404,20 @@ func TestMemorySTPortV2DockerReadinessKeepsDistinctPortProofs(t *testing.T) {
 		"full_digest_as_policy": func(c map[string]any) {
 			c["reported_docker_compose_sha256"] = map[string]string{"worker-a": strings.Repeat("f", 64)}
 		},
+		"runtime_digest_missing": func(c map[string]any) { delete(c, "reported_docker_compose_config_sha256") },
+		"runtime_digest_wrong_target": func(c map[string]any) {
+			c["reported_docker_compose_config_sha256"] = map[string]string{"different-worker": strings.Repeat("9", 64)}
+		},
+		"runtime_digest_invalid": func(c map[string]any) {
+			c["reported_docker_compose_config_sha256"] = map[string]string{"worker-a": "invalid"}
+		},
+		"runtime_digest_uppercase": func(c map[string]any) {
+			c["reported_docker_compose_config_sha256"] = map[string]string{"worker-a": strings.Repeat("A", 64)}
+		},
+		"runtime_digest_whitespace": func(c map[string]any) {
+			c["reported_docker_compose_config_sha256"] = map[string]string{"worker-a": " " + strings.Repeat("9", 64)}
+		},
+		"runtime_digest_wrong_type": func(c map[string]any) { c["reported_docker_compose_config_sha256"] = map[string]any{"worker-a": 9} },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -433,6 +470,7 @@ func newSTPortV2DockerFixture(t *testing.T) *stPortV2Fixture {
 	agent.ReportedCapabilities["reported_executor_policy_revisions"] = map[string]int64{"worker-a": 23}
 	agent.ReportedCapabilities["reported_ports"] = map[string]int64{"worker-a": int64(service.AppliedEndpoint.Port)}
 	agent.ReportedCapabilities["reported_docker_compose_revisions"] = map[string]int64{"worker-a": 23}
+	agent.ReportedCapabilities["reported_docker_compose_config_sha256"] = map[string]string{"worker-a": strings.Repeat("9", 64)}
 	agent.ReportedCapabilities["reported_config_revisions"] = map[string]int64{"worker-a": 31}
 	agent.ReportedCapabilities["reported_config_sha256"] = map[string]string{"worker-a": service.AppliedConfigSHA256}
 	agent.ReportedCapabilities["port_policy_baseline"] = baseline
