@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 75
     env:
       # Fixed signed application sources; workflow revisions are recorded separately.
-      ST_PORT_UPDATER_SHA: e11097a6b1b5f71317d075776913710e2bbd37bc
+      ST_PORT_UPDATER_SHA: b115306d74c2a3f8c1b7c893bb0cd7d734450fd6
       ST_PORT_CONTRACTS_SHA: 612ceb539ee74180beae682c4290aba54c49c389
       ST_PORT_WORKER_SHA: ba226489b037d5d29e47b72ab054484a57dea3ac
       GOMAXPROCS: "2"
