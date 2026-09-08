@@ -287,6 +287,15 @@ func systemUpdatePortSnapshotWithRef(snapshot contracts.SystemUpdatePortPolicySn
 }
 
 func systemUpdatePortDockerSnapshotFromAgent(agent RegisteredService, targetID string) (*contracts.SystemUpdatePortDockerSnapshot, error) {
+	target, err := systemUpdatePortDockerBaselineFromAgent(agent, targetID)
+	if err != nil {
+		return nil, err
+	}
+	value := *target.Docker
+	return &value, nil
+}
+
+func systemUpdatePortDockerBaselineFromAgent(agent RegisteredService, targetID string) (*contracts.UpdaterPortPolicyBaselineTarget, error) {
 	body, err := json.Marshal(agent.ReportedCapabilities["port_policy_baseline"])
 	if err != nil {
 		return nil, ErrSystemUpdatePortPolicySnapshotUnavailable
@@ -297,8 +306,7 @@ func systemUpdatePortDockerSnapshotFromAgent(agent RegisteredService, targetID s
 	}
 	for _, target := range baseline.Targets {
 		if target.ServiceID == targetID && target.Docker != nil {
-			value := *target.Docker
-			return &value, nil
+			return &target, nil
 		}
 	}
 	return nil, ErrSystemUpdatePortPolicySnapshotUnavailable
@@ -470,10 +478,13 @@ func systemUpdatePortV2Job(params CreateSystemdPortReconfigurationJobParams, bef
 		deployment = "docker"
 		policy, _ := portSnapshotPolicy(before)
 		baseline, ok := systemUpdateDockerPortBaselineFromAgent(agent, policy, target)
-		if !ok {
+		observed, err := systemUpdatePortDockerBaselineFromAgent(agent, target.ServiceID)
+		if !ok || err != nil {
 			return SystemUpdateJob{}, ErrSystemUpdatePortPolicySnapshotUnavailable
 		}
-		plan.DockerBaseline = &contracts.SystemUpdatePortDockerBaseline{ExpectedContainerID: baseline.ContainerID, ExpectedImageID: baseline.ImageID, ExpectedRepositoryDigest: baseline.RepositoryDigest, ExpectedVersionEnvSHA256: baseline.VersionEnvSHA256, ApprovedComposeConfigSHA256: baseline.ApprovedComposeConfigSHA256, ApprovedComposeRevision: baseline.ApprovedComposeRevision}
+		// The legacy heartbeat digest is the stable non-port Compose policy.
+		// The v2 execution baseline requires the full resolved Compose digest.
+		plan.DockerBaseline = &contracts.SystemUpdatePortDockerBaseline{ExpectedContainerID: baseline.ContainerID, ExpectedImageID: baseline.ImageID, ExpectedRepositoryDigest: baseline.RepositoryDigest, ExpectedVersionEnvSHA256: baseline.VersionEnvSHA256, ApprovedComposeConfigSHA256: observed.DockerRoot.ComposeConfigSHA256, ApprovedComposeRevision: baseline.ApprovedComposeRevision}
 	}
 	version := target.ReportedVersion
 	if version == "" {

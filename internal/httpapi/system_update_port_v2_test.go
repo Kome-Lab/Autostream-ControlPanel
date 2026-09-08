@@ -244,7 +244,7 @@ func TestSTPortHTTPPlanAndTypedResultProjection(t *testing.T) {
 			}
 		}
 	}
-	for _, value := range []contracts.SystemUpdatePortReconfigurationResult{contracts.SystemUpdatePortReconfigurationApplied, contracts.SystemUpdatePortReconfigurationRolledBack, contracts.SystemUpdatePortReconfigurationUnchanged} {
+	for _, value := range []contracts.SystemUpdatePortReconfigurationResult{contracts.SystemUpdatePortReconfigurationApplied, contracts.SystemUpdatePortReconfigurationRolledBack, contracts.SystemUpdatePortReconfigurationUnchanged, contracts.SystemUpdatePortReconfigurationRollbackFailed} {
 		handler, token, capture, _ := newPortReportHTTPFixture(t)
 		observed := time.Now().UTC()
 		localPort := 18084
@@ -281,6 +281,13 @@ func TestSTPortHTTPPlanAndTypedResultProjection(t *testing.T) {
 		if value == contracts.SystemUpdatePortReconfigurationRolledBack {
 			result.Evidence = append(result.Evidence, contracts.UpdaterEvidence{EvidenceCode: "rollback_verified", ObservedAt: observed, ObservedRevision: ref.ConfigRevision})
 		}
+		if value == contracts.SystemUpdatePortReconfigurationRollbackFailed {
+			result.Status, result.Outcome = contracts.SystemUpdateFailed, contracts.UpdaterOutcomeFailed
+			result.AppliedRevision = 0
+			result.SafeError = &contracts.V2UpdaterSafeError{Code: "execution_failed", Message: "updater execution failed", Retryable: false}
+			result.Evidence = []contracts.UpdaterEvidence{{EvidenceCode: "phase_observed", ObservedAt: observed, ObservedRevision: plan.Before.ConfigRevision}}
+			result.PortReconfigure = &contracts.SystemUpdatePortResultV2{Result: value, Observation: contracts.SystemUpdatePortObservation{ObservedAt: observed}}
+		}
 		payload, _ := json.Marshal(result)
 		var after contracts.UpdaterResultEnvelope
 		if json.Unmarshal(payload, &after) != nil || !contracts.EqualSystemUpdatePortResults(*result.PortReconfigure, *after.PortReconfigure) {
@@ -290,13 +297,23 @@ func TestSTPortHTTPPlanAndTypedResultProjection(t *testing.T) {
 		if err != nil || mapped.PortReconfigure != nil || mapped.PortResult == nil || !contracts.EqualSystemUpdatePortResults(*mapped.PortResult, *result.PortReconfigure) {
 			t.Fatal("v2 adapter lost the typed result")
 		}
+		wantCode := "port_reconfigure." + string(value)
+		if mapped.Code != wantCode || mapped.Status != string(result.Status) {
+			t.Fatal("typed report did not retain the Store result code and status")
+		}
 		response := postSystemUpdateV2JSON(t, handler, token.RawToken, "/services/update-jobs/port-job-1/report", result, http.StatusOK)
-		if capture.report.PortResult == nil || !contracts.EqualSystemUpdatePortResults(*capture.report.PortResult, *result.PortReconfigure) {
+		if capture.reportCalls != 1 || capture.report.Code != wantCode || capture.report.PortResult == nil || !contracts.EqualSystemUpdatePortResults(*capture.report.PortResult, *result.PortReconfigure) {
 			t.Fatal("HTTP discarded accepted result evidence")
 		}
 		var returned store.SystemUpdateJob
-		if json.Unmarshal(response.Body.Bytes(), &returned) != nil || returned.PortResult == nil || returned.PortReconfigure.Result != "" ||
-			!contracts.EqualSystemUpdatePortResults(*returned.PortResult, *result.PortReconfigure) {
+		if json.Unmarshal(response.Body.Bytes(), &returned) != nil || returned.Status != string(result.Status) || returned.PortReconfigure == nil || returned.PortReconfigure.Result != "" {
+			t.Fatal("public job changed its status or immutable plan")
+		}
+		if value == contracts.SystemUpdatePortReconfigurationRollbackFailed {
+			if returned.PortResult != nil {
+				t.Fatal("failed recovery filled the accepted result slot")
+			}
+		} else if returned.PortResult == nil || !contracts.EqualSystemUpdatePortResults(*returned.PortResult, *result.PortReconfigure) {
 			t.Fatal("public job did not keep separate immutable plan and result")
 		}
 	}

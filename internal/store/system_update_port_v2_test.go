@@ -162,6 +162,11 @@ func TestMemorySTPortV2DockerModesAndMappingDigest(t *testing.T) {
 			t.Run(string(mode)+"_"+string(result), func(t *testing.T) {
 				f := newSTPortV2DockerFixture(t)
 				before := f.snapshot(t)
+				baseline := f.registry.services["host-agent-a"].ReportedCapabilities["port_policy_baseline"].(contracts.UpdaterPortPolicyBaseline)
+				wantCompose := baseline.Targets[0].DockerRoot.ComposeConfigSHA256
+				if before.Ref.AdvertisedPort == before.Ref.Docker.PublishedPort || "sha256:"+wantCompose == before.Ref.Docker.ComposePolicySHA256 {
+					t.Fatal("fixture must distinguish advertised/published ports and full/policy Compose digests")
+				}
 				ad := 0
 				if mode == contracts.SystemUpdatePortModeLocalAndAdvertised {
 					ad = 8443
@@ -169,6 +174,9 @@ func TestMemorySTPortV2DockerModesAndMappingDigest(t *testing.T) {
 				job, created, err := f.updates.CreateDockerPortReconfigurationJob(t.Context(), f.registry, f.policies, CreateDockerPortReconfigurationJobParams{PortContractVersion: 2, Mode: mode, TargetID: "worker-a", NewPublishedPort: 18084, NewContainerPort: 8081, NewAdvertisedPort: ad, ExpectedSnapshotID: before.Ref.SnapshotID, ExpectedEndpointRevision: 3, ExpectedDesiredRevision: 32, ExpectedFence: 1, IdempotencyKey: "docker", RequestedByUserID: "admin-a", BuildPolicySnapshot: stPortTestBuilder})
 				if err != nil || !created {
 					t.Fatalf("Docker create: %v", err)
+				}
+				if job.PortReconfigure.DockerBaseline == nil || job.PortReconfigure.DockerBaseline.ApprovedComposeConfigSHA256 != wantCompose {
+					t.Fatal("Docker execution baseline lost the observed full Compose digest")
 				}
 				for _, ref := range []*contracts.SystemUpdatePortSnapshotRef{job.PortReconfigure.Target, job.PortReconfigure.Rollback} {
 					want, err := contracts.SystemUpdateDockerPortConfigSHA256(contracts.SystemUpdateTargetWorker, ref.Docker.PublishedPort, ref.Docker.ContainerPort, ref.ConfigRevision)
@@ -364,6 +372,36 @@ func addSTPortV2Observability(t *testing.T, f *stPortV2Fixture) {
 	f.refresh(t)
 }
 
+func TestMemorySTPortV2DockerReadinessKeepsDistinctPortProofs(t *testing.T) {
+	mutations := map[string]func(map[string]any){
+		"published_as_advertised": func(c map[string]any) { c["reported_ports"] = map[string]int64{"worker-a": 18081} },
+		"published_drift":         func(c map[string]any) { c["reported_docker_published_ports"] = map[string]int64{"worker-a": 18082} },
+		"container_drift":         func(c map[string]any) { c["reported_docker_container_ports"] = map[string]int64{"worker-a": 8081} },
+		"health_drift":            func(c map[string]any) { c["reported_docker_health_ports"] = map[string]int64{"worker-a": 18082} },
+		"full_digest_as_policy": func(c map[string]any) {
+			c["reported_docker_compose_sha256"] = map[string]string{"worker-a": strings.Repeat("f", 64)}
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			f := newSTPortV2DockerFixture(t)
+			policy := f.policies.policies["host-agent-a"]
+			agent := f.registry.services["host-agent-a"]
+			service := f.registry.services["worker-a"]
+			host := f.updates.executionHosts["host-a"]
+			params := CreateSystemdPortReconfigurationJobParams{TargetID: "worker-a"}
+			now := time.Now().UTC()
+			if err := validateSystemUpdatePortV2Ready(policy, policy.Targets[0], service, agent, host, params, now); err != nil {
+				t.Fatalf("valid independent Docker observations rejected: %v", err)
+			}
+			mutate(agent.ReportedCapabilities)
+			if err := validateSystemUpdatePortV2Ready(policy, policy.Targets[0], service, agent, host, params, now); !errors.Is(err, ErrSystemUpdateAgentNotReady) {
+				t.Fatalf("mismatched Docker observation was not rejected: %v", err)
+			}
+		})
+	}
+}
+
 func newSTPortV2DockerFixture(t *testing.T) *stPortV2Fixture {
 	t.Helper()
 	policies, registry, updates := readyMemoryDockerPortCoordinator(t)
@@ -387,12 +425,13 @@ func newSTPortV2DockerFixture(t *testing.T) *stPortV2Fixture {
 	service.AppliedConfigSHA256, _ = SystemUpdateDockerPortConfigSHA256("worker", 18081, 8080, 31)
 	registry.services[service.ServiceID] = service
 	docker := &contracts.SystemUpdatePortDockerSnapshot{PublishedHostIP: "127.0.0.1", PublishedPort: 18081, ContainerPort: 8080, HealthPort: 18081, ComposePolicySHA256: "sha256:" + strings.Repeat("d", 64), ComposeRevision: 23, VersionEnvSHA256: "sha256:" + strings.Repeat("e", 64), ImageID: "sha256:" + strings.Repeat("b", 64), RepositoryDigest: "sha256:" + strings.Repeat("c", 64)}
-	baseline := contracts.UpdaterPortPolicyBaseline{PortContractVersion: 2, PolicyTransitionVersion: 1, AgentUID: 1001, AgentGID: 1001, SourcePolicyRevision: 11, ProjectionRevision: 17, ExecutorPolicyRevision: 23, ExecutorPolicySHA256: p.LocalExecutorPolicySHA256, ObservedAt: time.Now().UTC(), Targets: []contracts.UpdaterPortPolicyBaselineTarget{{ServiceID: "worker-a", ServiceType: contracts.SystemUpdateTargetWorker, DeploymentMode: contracts.SystemUpdateDeploymentDocker, EndpointRevision: 3, ConfigRevision: 31, ConfigSHA256: service.AppliedConfigSHA256, LocalListenPort: 18081, Docker: docker, DockerRoot: &contracts.UpdaterPortDockerRootBaseline{ComposeConfigSHA256: strings.Repeat("d", 64), CurrentVersion: "v1.0.0"}}}}
+	baseline := contracts.UpdaterPortPolicyBaseline{PortContractVersion: 2, PolicyTransitionVersion: 1, AgentUID: 1001, AgentGID: 1001, SourcePolicyRevision: 11, ProjectionRevision: 17, ExecutorPolicyRevision: 23, ExecutorPolicySHA256: p.LocalExecutorPolicySHA256, ObservedAt: time.Now().UTC(), Targets: []contracts.UpdaterPortPolicyBaselineTarget{{ServiceID: "worker-a", ServiceType: contracts.SystemUpdateTargetWorker, DeploymentMode: contracts.SystemUpdateDeploymentDocker, EndpointRevision: 3, ConfigRevision: 31, ConfigSHA256: service.AppliedConfigSHA256, LocalListenPort: 18081, Docker: docker, DockerRoot: &contracts.UpdaterPortDockerRootBaseline{ComposeConfigSHA256: strings.Repeat("f", 64), CurrentVersion: "v1.0.0"}}}}
 	agent := registry.services["host-agent-a"]
 	agent.ReportedCapabilities["port_contract_version"] = 2
 	agent.ReportedCapabilities["policy_transition_version"] = 1
 	agent.ReportedCapabilities["policy_revision"] = 17
 	agent.ReportedCapabilities["reported_executor_policy_revisions"] = map[string]int64{"worker-a": 23}
+	agent.ReportedCapabilities["reported_ports"] = map[string]int64{"worker-a": int64(service.AppliedEndpoint.Port)}
 	agent.ReportedCapabilities["reported_docker_compose_revisions"] = map[string]int64{"worker-a": 23}
 	agent.ReportedCapabilities["reported_config_revisions"] = map[string]int64{"worker-a": 31}
 	agent.ReportedCapabilities["reported_config_sha256"] = map[string]string{"worker-a": service.AppliedConfigSHA256}

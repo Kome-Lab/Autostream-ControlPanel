@@ -435,6 +435,9 @@ func mapSystemUpdateV2Report(job store.SystemUpdateJob, lease contracts.UpdaterL
 				return store.SystemUpdateReport{}, errors.New("map updater v2 typed port result")
 			}
 			report.PortResult = &typed
+			// The wire SafeError uses generic updater codes; the Store's typed
+			// port report code is derived from the validated port result.
+			report.Code = "port_reconfigure." + string(typed.Result)
 		}
 		return report, nil
 	}
