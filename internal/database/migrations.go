@@ -55,10 +55,8 @@ func runMigrationsOS(ctx context.Context, db *sql.DB, dir string) error {
 		if err != nil {
 			return err
 		}
-		for _, stmt := range splitSQLStatements(string(body)) {
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("apply %s: %w", id, err)
-			}
+		if err := applyMigrationBody(ctx, db, id, string(body)); err != nil {
+			return err
 		}
 		if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations (id) VALUES (?)", id); err != nil {
 			return fmt.Errorf("record migration %s: %w", id, err)
@@ -91,13 +89,36 @@ func runMigrationsFS(ctx context.Context, db *sql.DB, source fs.FS, dir string) 
 		if err != nil {
 			return err
 		}
-		for _, stmt := range splitSQLStatements(string(body)) {
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("apply %s: %w", id, err)
-			}
+		if err := applyMigrationBody(ctx, db, id, string(body)); err != nil {
+			return err
 		}
 		if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations (id) VALUES (?)", id); err != nil {
 			return fmt.Errorf("record migration %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func applyMigrationBody(ctx context.Context, db *sql.DB, id, body string) error {
+	if id == "081_bundle8b_physical_eol.sql" || id == "083_archive_run_mapping_correction.sql" {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if id == "081_bundle8b_physical_eol.sql" {
+			err = applyBundle8BPhysicalEOL(ctx, conn, body)
+		} else {
+			err = correctArchiveMapping(ctx, conn)
+		}
+		if err != nil {
+			return fmt.Errorf("apply %s: %w", id, err)
+		}
+		return nil
+	}
+	for _, stmt := range splitSQLStatements(body) {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("apply %s: %w", id, err)
 		}
 	}
 	return nil

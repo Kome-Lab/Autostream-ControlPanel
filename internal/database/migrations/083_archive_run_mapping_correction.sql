@@ -1,0 +1,3 @@
+-- Forward correction for already-recorded 081. The runner invokes the same
+-- checked archive mapping used before 081, preserving immutable 080 backup
+-- identities and 081 original paths. No backup is regenerated.

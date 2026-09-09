@@ -155,6 +155,32 @@ jobs:
           echo "Bundle 4 semantic test witnesses PASS: 5/5, zero denominator=0"
       - name: Verify embedded Updater runtime is absent
         run: bash scripts/ci/verify-no-embedded-updater.sh
+      - name: Check out the exact Encoder archive migrator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Encoder-Recorder
+          ref: ccbf0c338979a2ad3d7a3b1e1e002adbdec9865d
+          path: .bundle8b-archive-encoder
+          persist-credentials: false
+      - name: Build the filesystem migration witness
+        working-directory: .bundle8b-archive-encoder
+        run: go build -p 1 -o "${RUNNER_TEMP}/archive-migrator" ./cmd/encoder-recorder
+      - name: Test archive mapping and EOL recovery in a fresh database per parent
+        timeout-minutes: 15
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_CI_CONTAINER: ${{ job.services.mariadb.id }}
+          AUTOSTREAM_MARIADB_CI_ROOT_PASSWORD: autostream-ci-root-password
+          AUTOSTREAM_ARCHIVE_MIGRATOR_BINARY: ${{ runner.temp }}/archive-migrator
+        run: bash scripts/ci/test-bundle8b-review-mariadb.sh
+      - name: Upload Bundle 8B repair regression evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundle8b-review-${{ github.sha }}
+          path: ${{ runner.temp }}/bundle8b-review/
+          if-no-files-found: error
+          retention-days: 14
       - name: Test Bundle 8B physical EOL migration against MariaDB
         shell: bash
         env:
@@ -234,7 +260,7 @@ jobs:
           set -euo pipefail
           mapfile -t migration_tests < <(
             go test ./internal/database -list '^TestMariaDB' |
-              LC_ALL=C grep '^TestMariaDB'
+              LC_ALL=C grep '^TestMariaDB' | grep -v '^TestMariaDBBundle8B'
           )
           if [[ "${#migration_tests[@]}" -eq 0 ]]; then
             echo "No MariaDB migration integration tests were discovered" >&2
@@ -242,8 +268,10 @@ jobs:
           fi
           printf 'Discovered MariaDB migration test: %s\n' "${migration_tests[@]}"
           result="${RUNNER_TEMP}/mariadb-migration-tests.json"
+          # Bundle 8B repair parents run above, each against their own empty DB.
+          migration_pattern="^($(IFS='|'; echo "${migration_tests[*]}"))$"
           go test ./internal/database \
-            -run '^TestMariaDB' \
+            -run "${migration_pattern}" \
             -count=1 \
             -json | tee "${result}"
           if jq -e \
