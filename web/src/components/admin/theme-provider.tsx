@@ -35,7 +35,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 	const pathname = usePathname();
   const bootstrapReady = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
   const bootstrap = useMemo(() => bootstrapReady
-    ? readThemeMirror(window.localStorage)
+    ? readThemeMirror(() => window.localStorage)
     : safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 }),
   [bootstrapReady]);
   const [preview, setPreview] = useState<SafeUserUIPreference | null>(null);
@@ -72,10 +72,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 		if (!bootstrapReady) return;
     if (pathname.startsWith("/admin")) {
 			if (!preferenceQuery.data) return;
-			writeThemeMirror(window.localStorage, persistedPreference);
+			writeThemeMirror(() => window.localStorage, persistedPreference);
 			return;
 		}
-		writeThemeMirror(window.localStorage, preference);
+		writeThemeMirror(() => window.localStorage, preference);
 	}, [bootstrapReady, pathname, persistedPreference, preference, preferenceQuery.data]);
 
   const previewPreference = useCallback((next: Partial<UserUIPreference>) => {

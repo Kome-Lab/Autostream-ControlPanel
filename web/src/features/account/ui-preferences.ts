@@ -58,8 +58,13 @@ export function safeUserUIPreference(value: Partial<UserUIPreference> | null | u
   };
 }
 
-export function readThemeMirror(storage: Pick<Storage, "getItem">): SafeUserUIPreference {
-  const raw = storage.getItem(themeMirrorStorageKey);
+export function readThemeMirror(storage: Pick<Storage, "getItem"> | (() => Pick<Storage, "getItem">)): SafeUserUIPreference {
+  let raw: string | null = null;
+  try {
+    raw = (typeof storage === "function" ? storage() : storage).getItem(themeMirrorStorageKey);
+  } catch {
+    // Browser storage is optional; an unavailable mirror uses the same default.
+  }
   if (raw) {
     try {
       return safeUserUIPreference(JSON.parse(raw) as UserUIPreference);
@@ -70,8 +75,13 @@ export function readThemeMirror(storage: Pick<Storage, "getItem">): SafeUserUIPr
   return safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 });
 }
 
-export function writeThemeMirror(storage: Pick<Storage, "setItem">, preference: SafeUserUIPreference) {
-  storage.setItem(themeMirrorStorageKey, JSON.stringify({ theme_id: preference.theme_id, color_mode: preference.color_mode }));
+export function writeThemeMirror(storage: Pick<Storage, "setItem"> | (() => Pick<Storage, "setItem">), preference: SafeUserUIPreference) {
+  const mirror = JSON.stringify({ theme_id: preference.theme_id, color_mode: preference.color_mode });
+  try {
+    (typeof storage === "function" ? storage() : storage).setItem(themeMirrorStorageKey, mirror);
+  } catch {
+    // A failed browser mirror must not change the authoritative DB preference.
+  }
 }
 
 export function resolvedDarkMode(mode: UserColorMode, systemDark: boolean) {

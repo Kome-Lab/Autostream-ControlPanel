@@ -15,7 +15,12 @@ const I18nContext = createContext<I18nContextValue | null>(null);
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(() => {
     if (typeof window === "undefined") return "ja";
-    const stored = window.localStorage.getItem(localeStorageKey) as Locale | null;
+    let stored: Locale | null = null;
+    try {
+      stored = window.localStorage.getItem(localeStorageKey) as Locale | null;
+    } catch {
+      // Browser storage is optional; keep the default locale when unavailable.
+    }
     return stored && supportedLocales.includes(stored) ? stored : "ja";
   });
 
@@ -26,7 +31,11 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<I18nContextValue>(() => {
     const setLocale = (nextLocale: Locale) => {
       setLocaleState(nextLocale);
-      window.localStorage.setItem(localeStorageKey, nextLocale);
+      try {
+        window.localStorage.setItem(localeStorageKey, nextLocale);
+      } catch {
+        // The selected locale still applies in memory when persistence fails.
+      }
       document.documentElement.lang = nextLocale;
     };
     return {
