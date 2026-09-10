@@ -159,7 +159,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Kome-Lab/Autostream-Encoder-Recorder
-          ref: ccbf0c338979a2ad3d7a3b1e1e002adbdec9865d
+          ref: 7b29346f0dd118323ce89ef4be7d82a1648ac87a
           path: .bundle8b-archive-encoder
           persist-credentials: false
       - name: Build the filesystem migration witness

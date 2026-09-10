@@ -746,9 +746,6 @@ func (c Client) RetryArchiveUpload(ctx context.Context, stream store.Stream, ser
 			"started_at":     stream.ArchiveStartedAt.UTC(),
 			"dry_run":        false,
 		}
-		if len(archiveConfig) > 0 {
-			payload["archive_config"] = archiveConfig
-		}
 		results = append(results, c.post(ctx, service, "/streams/package", payload))
 	}
 	return results
@@ -1431,9 +1428,6 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 		}
 		if len(req.YouTubeRuntime) > 0 {
 			payload["youtube_runtime"] = req.YouTubeRuntime
-		}
-		if len(req.ArchiveConfig) > 0 {
-			payload["archive_config"] = req.ArchiveConfig
 		}
 		if req.VideoCoverStart != nil && reportedCapabilityTrue(service.ReportedCapabilities, CapabilityLiveVideoCoverV1) {
 			payload["video_cover_start"] = req.VideoCoverStart

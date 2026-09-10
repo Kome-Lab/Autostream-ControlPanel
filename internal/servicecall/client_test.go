@@ -108,9 +108,8 @@ func TestStartDispatchesToAssignedServices(t *testing.T) {
 	if !ok || youtubeRuntime["broadcast_id"] != "dry-broadcast-01" || youtubeRuntime["dry_run"] != true {
 		t.Fatalf("encoder youtube runtime was not dispatched: %#v", payloads["encoder_recorder"])
 	}
-	archiveConfig, ok := payloads["encoder_recorder"]["archive_config"].(map[string]any)
-	if !ok || archiveConfig["folder_id"] != "drive-folder-id" || archiveConfig["shared_drive"] != true {
-		t.Fatalf("encoder archive config was not dispatched: %#v", payloads["encoder_recorder"])
+	if _, ok := payloads["encoder_recorder"]["archive_config"]; ok {
+		t.Fatal("encoder request must not contain internal archive config")
 	}
 	if payloads["discord_bot"]["encoder_audio_url"] != server.URL {
 		t.Fatalf("discord bot did not receive encoder audio URL: %#v", payloads["discord_bot"])
@@ -712,8 +711,10 @@ func TestRetryArchiveUploadDispatchesOnlyToEncoder(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		archiveConfig, _ := payload["archive_config"].(map[string]any)
-		if payload["stream_id"] != "stream-01" || payload["name"] != "Morning" || payload["archive_run_id"] != "run-01" || payload["started_at"] != "2026-08-18T05:06:29Z" || archiveConfig["folder_id_secret_name"] != "drive_destination:dest-01:folder_id" {
+		if _, ok := payload["archive_config"]; ok {
+			t.Error("package request must not contain internal archive config")
+		}
+		if payload["stream_id"] != "stream-01" || payload["name"] != "Morning" || payload["archive_run_id"] != "run-01" || payload["started_at"] != "2026-08-18T05:06:29Z" {
 			t.Fatalf("unexpected payload: %#v", payload)
 		}
 		w.WriteHeader(http.StatusAccepted)
