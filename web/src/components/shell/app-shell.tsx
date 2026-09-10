@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
@@ -35,13 +35,24 @@ export function AppShell({ children }: { children: ReactNode }) {
   const activeSectionKey = activeNavigationSectionKey(pathname);
   const { synchronizedNavigationSectionsState, toggleNavigationSectionByKey } = useNavigationSections(activeSectionKey);
   const { sessionExpired } = useShellSessionGuard(currentUser);
+  const logoutStarted = useRef(false);
+  const [logoutPending, setLogoutPending] = useState(false);
   const logout = useMutation({
     mutationFn: () => apiPost<{ status: string }>("/auth/logout"),
+    retry: false,
     onSettled: () => {
       clearCSRFToken();
       router.replace("/login");
     },
   });
+
+  function handleLogout() {
+    if (logoutStarted.current) return;
+    // Keep this Shell locked through settlement until navigation unmounts it.
+    logoutStarted.current = true;
+    setLogoutPending(true);
+    logout.mutate();
+  }
 
   if (currentUser.isLoading) return <ShellLoading />;
 
@@ -95,8 +106,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           canCreateStream={canCreateStream}
           canViewHealth={canViewHealth}
           healthStatus={healthStatus}
-          onLogout={() => logout.mutate()}
-          logoutPending={logout.isPending}
+          onLogout={handleLogout}
+          logoutPending={logoutPending}
         />
         <main className="mx-auto w-full max-w-[1600px] min-w-0 space-y-5 p-4 md:p-5 xl:p-6">{children}</main>
       </div>
