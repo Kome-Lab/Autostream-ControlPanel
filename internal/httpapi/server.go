@@ -9096,7 +9096,7 @@ var createStreamV2Fields = map[string]struct{}{
 
 func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	var fields map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+	if err := decodeSingleJSON(r, &fields); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
