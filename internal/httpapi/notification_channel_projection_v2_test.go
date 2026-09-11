@@ -13,36 +13,35 @@ import (
 
 func TestNotificationChannelProjectionV2Routes(t *testing.T) {
 	canonical := map[string]any{"id": "channel-v2", "name": "email", "type": "email", "enabled": true, "uses_global_smtp": true, "masked_email_target": "o***s@example.com", "masked_webhook_url": "https://example.com/<WEBHOOK_PATH>", "severity_filter": []any{"critical"}, "event_type_filter": []any{"incident.created"}, "created_at": "2026-09-11T00:00:00Z", "updated_at": "2026-09-11T01:00:00Z"}
-	var oldValue any
-	obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		row := map[string]any{}
-		for key, value := range canonical {
-			row[key] = value
-		}
-		row["smtp_password_configured"] = oldValue
-		row["smtp_password"] = "synthetic-hidden-password"
-		row["webhook_url"] = "https://example.com/private-webhook"
-		row["unrecognized_field"] = "must-not-pass"
-		if r.Method == http.MethodGet && r.URL.Path == "/notification-channels" {
-			_ = json.NewEncoder(w).Encode([]any{row})
-		} else {
-			_ = json.NewEncoder(w).Encode(row)
-		}
-	}))
-	defer obs.Close()
-	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"notification_channels.read", "notification_channels.create", "notification_channels.update"}); err != nil {
-		t.Fatal(err)
-	}
-	registerObservabilityNodeForTest(t, auth, "synthetic-observability-token", obs.URL)
-	server := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
-	cookie, csrf := loginForTest(t, server, "admin", "correct horse battery")
 	for _, tc := range []struct {
 		name  string
 		value any
 	}{{"true", true}, {"false", false}, {"null", nil}, {"string", "configured"}} {
 		t.Run(tc.name, func(t *testing.T) {
-			oldValue = tc.value
+			oldValue := tc.value
+			obs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				row := map[string]any{}
+				for key, value := range canonical {
+					row[key] = value
+				}
+				row["smtp_password_configured"] = oldValue
+				row["smtp_password"] = "synthetic-hidden-password"
+				row["webhook_url"] = "https://example.com/private-webhook"
+				row["unrecognized_field"] = "must-not-pass"
+				if r.Method == http.MethodGet && r.URL.Path == "/notification-channels" {
+					_ = json.NewEncoder(w).Encode([]any{row})
+				} else {
+					_ = json.NewEncoder(w).Encode(row)
+				}
+			}))
+			defer obs.Close()
+			auth := store.NewMemoryAuthStore()
+			if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"notification_channels.read", "notification_channels.create", "notification_channels.update"}); err != nil {
+				t.Fatal(err)
+			}
+			registerObservabilityNodeForTest(t, auth, "synthetic-observability-token", obs.URL)
+			server := NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+			cookie, csrf := loginForTest(t, server, "admin", "correct horse battery")
 			for _, route := range []struct {
 				method, path string
 				status       int
