@@ -10971,8 +10971,7 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		}
 		return s.validateYouTubeOutputReadiness(r.Context(), stream, &body)
 	}
-	// The Encoder declares whether it can receive direct output, an existing
-	// fixed stream-key relay, or the new claimed Live API static relay. Enforce
+	// The Encoder declares direct output or the claimed Live API static relay. Enforce
 	// that compatibility boundary before readiness can prepare dynamic output or
 	// before the static path can reserve its reusable binding.
 	if err := s.validateYouTubeLiveAPIOutputRelay(r.Context(), primaryAssignments, &body); err != nil {
@@ -11749,23 +11748,19 @@ func primaryServiceID(assignments []store.RegisteredService, serviceType string)
 type encoderOutputRelayMode string
 
 const (
-	encoderOutputRelayModeUnknown         encoderOutputRelayMode = ""
-	encoderOutputRelayModeDirect          encoderOutputRelayMode = "direct"
-	encoderOutputRelayModeLegacyStreamKey encoderOutputRelayMode = "legacy_stream_key"
-	encoderOutputRelayModeLiveAPIStatic   encoderOutputRelayMode = "live_api_static"
+	encoderOutputRelayModeUnknown            encoderOutputRelayMode = ""
+	encoderOutputRelayModeDirect             encoderOutputRelayMode = "direct"
+	encoderOutputRelayModeLiveAPIRelayStatic encoderOutputRelayMode = "live_api_relay_static"
 )
 
-// normalizedEncoderOutputRelayMode deliberately treats the historical
-// ambiguous "static" capability as the pre-existing stream-key relay. It must
-// never opt an existing fixed key into the newer reusable LiveStream contract.
+// normalizedEncoderOutputRelayMode accepts only the canonical v2 capabilities.
+// Missing or retired values never authorize a stream-key compatibility fallback.
 func normalizedEncoderOutputRelayMode(value string) encoderOutputRelayMode {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "direct":
 		return encoderOutputRelayModeDirect
-	case "legacy_stream_key", "static":
-		return encoderOutputRelayModeLegacyStreamKey
-	case "live_api_static":
-		return encoderOutputRelayModeLiveAPIStatic
+	case "live_api_relay_static":
+		return encoderOutputRelayModeLiveAPIRelayStatic
 	default:
 		return encoderOutputRelayModeUnknown
 	}
@@ -11785,7 +11780,7 @@ func (s *Server) validateYouTubeLiveAPIOutputRelay(ctx context.Context, assignme
 			if !primary || relayMode == encoderOutputRelayModeDirect {
 				continue
 			}
-			if relayMode == encoderOutputRelayModeLiveAPIStatic {
+			if relayMode == encoderOutputRelayModeLiveAPIRelayStatic {
 				return errYouTubeRelayStaticBindingUnavailable
 			}
 			return errYouTubeOutputInvalidConfig
@@ -11817,11 +11812,7 @@ func validateYouTubeLiveAPIOutputRelayProfile(assignments []store.RegisteredServ
 			if mode == "live_api_relay_static" {
 				return errYouTubeRelayStaticBindingUnavailable
 			}
-		case encoderOutputRelayModeLegacyStreamKey:
-			if mode != "stream_key" {
-				return youtubeOutputRelayModeUnsupportedError(mode)
-			}
-		case encoderOutputRelayModeLiveAPIStatic:
+		case encoderOutputRelayModeLiveAPIRelayStatic:
 			if mode != "live_api_relay_static" {
 				return errYouTubeRelayStaticBindingUnavailable
 			}
@@ -11833,13 +11824,7 @@ func validateYouTubeLiveAPIOutputRelayProfile(assignments []store.RegisteredServ
 				return errYouTubeRelayStaticBindingUnavailable
 			}
 		default:
-			// Older Encoders without a capability report retain only the established
-			// stream-key compatibility route. Dynamic and reusable-static modes
-			// require an explicit capability so the Panel never guesses how an
-			// encoder forwards output.
-			if mode != "stream_key" {
-				return youtubeOutputRelayModeUnsupportedError(mode)
-			}
+			return youtubeOutputRelayModeUnsupportedError(mode)
 		}
 	}
 	return nil
@@ -17878,7 +17863,6 @@ func publicNotificationChannelFromValue(row map[string]any) map[string]any {
 	copyAllowedJSONField(out, row, "enabled")
 	copyAllowedJSONField(out, row, "uses_global_smtp")
 	copyAllowedJSONField(out, row, "masked_webhook_url")
-	copyAllowedJSONField(out, row, "smtp_password_configured")
 	copyAllowedJSONField(out, row, "masked_email_target")
 	copyAllowedJSONField(out, row, "severity_filter")
 	copyAllowedJSONField(out, row, "event_type_filter")

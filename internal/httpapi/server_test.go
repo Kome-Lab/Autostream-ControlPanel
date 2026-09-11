@@ -4644,7 +4644,7 @@ func TestStartStreamRejectsDiscordConfigForDifferentPrimaryBot(t *testing.T) {
 	}
 }
 
-func TestStartStreamLegacyStaticRelayResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
+func TestStartStreamDirectRelayResolvesYouTubeOutputSecretForDispatch(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "streams.start", "streams.stop"}); err != nil {
 		t.Fatal(err)
@@ -4657,7 +4657,7 @@ func TestStartStreamLegacyStaticRelayResolvesYouTubeOutputSecretForDispatch(t *t
 	// Older Encoder releases report the ambiguous "static" capability whenever
 	// a local fixed relay URL is configured. That must stay on the established
 	// stream_key route until an operator explicitly moves it to live_api_static.
-	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{"output_relay_mode": "static"})
+	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{"output_relay_mode": "direct"})
 	registerServiceInstance(t, auth, "worker-01", "worker")
 	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
 	for _, serviceID := range []string{"encoder_recorder-01", "worker-01", "discord_bot-01"} {
@@ -5696,7 +5696,7 @@ func TestRuntimeYouTubeRelayStaticConfigRequiresExactEncoderBinding(t *testing.T
 		ServiceID:   assignment.ServiceID,
 		ServiceType: assignment.ServiceType,
 		Capabilities: map[string]any{
-			"output_relay_mode":       "live_api_static",
+			"output_relay_mode":       "live_api_relay_static",
 			"output_relay_binding_id": "relay-00000000-0000-4000-8000-000000000001",
 		},
 	}
@@ -5748,7 +5748,7 @@ func TestRuntimeYouTubeRelayStaticConfigRejectsAndRedactsNoncanonicalBinding(t *
 		ServiceID:   assignment.ServiceID,
 		ServiceType: assignment.ServiceType,
 		Capabilities: map[string]any{
-			"output_relay_mode":       "live_api_static",
+			"output_relay_mode":       "live_api_relay_static",
 			"output_relay_binding_id": "relay-00000000-0000-4000-8000-000000000001",
 		},
 	}
@@ -5775,7 +5775,7 @@ func TestRuntimeYouTubeRelayStaticConfigRejectsAndRedactsNoncanonicalBinding(t *
 	}
 }
 
-func TestRuntimeYouTubeLegacyStaticRelayKeepsStreamKeyReadyWithoutRawKey(t *testing.T) {
+func TestRuntimeYouTubeDirectRelayKeepsStreamKeyReadyWithoutRawKey(t *testing.T) {
 	streams := store.NewMemoryStreamStore()
 	stream, err := streams.CreateStream(t.Context(), "legacy fixed relay runtime")
 	if err != nil {
@@ -5803,7 +5803,7 @@ func TestRuntimeYouTubeLegacyStaticRelayKeepsStreamKeyReadyWithoutRawKey(t *test
 		ServiceID:   assignment.ServiceID,
 		ServiceType: assignment.ServiceType,
 		Capabilities: map[string]any{
-			"output_relay_mode": "static",
+			"output_relay_mode": "direct",
 		},
 	}
 	configs, err := server.runtimeYouTubeStreamConfigs(t.Context(), service, []store.StreamServiceAssignment{assignment})
@@ -5811,10 +5811,10 @@ func TestRuntimeYouTubeLegacyStaticRelayKeepsStreamKeyReadyWithoutRawKey(t *test
 		t.Fatal(err)
 	}
 	if len(configs) != 1 || !configs[0].Ready || configs[0].YouTubeConfig["mode"] != "stream_key" || configs[0].YouTubeConfig["stream_key_secret_name"] != "youtube_stream_key_legacy_runtime" {
-		t.Fatalf("legacy static relay did not preserve the stream-key runtime route: %#v", configs)
+		t.Fatalf("direct output did not preserve the stream-key runtime route: %#v", configs)
 	}
 	if _, leaked := configs[0].YouTubeConfig["stream_key"]; leaked {
-		t.Fatalf("legacy static relay runtime config leaked the raw stream key: %#v", configs[0].YouTubeConfig)
+		t.Fatalf("direct output runtime config leaked the raw stream key: %#v", configs[0].YouTubeConfig)
 	}
 }
 
@@ -5871,7 +5871,7 @@ func TestStartStreamPreparesRelayStaticYouTubeAndReleasesClaimOnlyAfterCompletio
 	const relayBindingID = "relay-00000000-0000-4000-8000-000000000001"
 	const reusableLiveStreamID = "youtube-live-stream-primary"
 	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{
-		"output_relay_mode":       "live_api_static",
+		"output_relay_mode":       "live_api_relay_static",
 		"output_relay_binding_id": relayBindingID,
 	})
 	registerServiceInstance(t, auth, "worker-01", "worker")
@@ -6045,7 +6045,7 @@ func newRelayStaticStartFixtureForTest(t *testing.T, dispatcher *fakeServiceDisp
 		t.Fatal(err)
 	}
 	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{
-		"output_relay_mode":       "live_api_static",
+		"output_relay_mode":       "live_api_relay_static",
 		"output_relay_binding_id": relayBindingID,
 	})
 	registerServiceInstance(t, auth, "worker-01", "worker")
@@ -7057,7 +7057,7 @@ func TestStartStreamRejectsRelayStaticBindingMismatchBeforeClaimReservePrepareOr
 		t.Fatal(err)
 	}
 	registerServiceInstanceWithCapabilities(t, auth, "encoder_recorder-01", "encoder_recorder", map[string]any{
-		"output_relay_mode":       "live_api_static",
+		"output_relay_mode":       "live_api_relay_static",
 		"output_relay_binding_id": "relay-00000000-0000-4000-8000-000000000002",
 	})
 	registerServiceInstance(t, auth, "worker-01", "worker")
@@ -11532,7 +11532,7 @@ func TestServiceRuntimeConfigIncludesEncoderYouTubeConfigWithoutRawStreamKey(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "encoder-youtube-01", ServiceType: "encoder_recorder", ServiceName: "Encoder YouTube 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{}})
+	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "encoder-youtube-01", ServiceType: "encoder_recorder", ServiceName: "Encoder YouTube 01", PublicURL: "https://encoder.example.com", Version: "0.1.0", Capabilities: map[string]any{"output_relay_mode": "direct"}})
 	if _, err := auth.AssignServiceToStream(t.Context(), "encoder-youtube-01", stream.ID, "operator"); err != nil {
 		t.Fatal(err)
 	}
@@ -19029,10 +19029,10 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"id":"ntf-1","event_type":"admin.audit","status":"success","target":"https://discord.com/api/webhooks/id/upstream-secret-token","message":"bearer upstream-secret-token","metadata":{"rule":"secrets.update","summary":"シークレットを更新\n実行者: ops"},"created_at":"2026-07-18T01:32:00Z"}]`))
 		case "/notification-channels":
 			if r.Method == http.MethodPost {
-				_, _ = w.Write([]byte(`{"id":"chn-1","name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/upstream-slack-token","masked_webhook_url":"https://hooks.slack.com/<WEBHOOK_PATH>","smtp_password":"raw-smtp-password","smtp_password_configured":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}`))
+				_, _ = w.Write([]byte(`{"id":"chn-1","name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/upstream-slack-token","masked_webhook_url":"https://hooks.slack.com/<WEBHOOK_PATH>","smtp_password":"raw-smtp-password","uses_global_smtp":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}`))
 				return
 			}
-			_, _ = w.Write([]byte(`[{"id":"chn-1","name":"discord","webhook_url":"https://discord.com/api/webhooks/id/upstream-secret-token","masked_webhook_url":"https://example.com/<WEBHOOK_PATH>"},{"id":"slack-1","name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/upstream-slack-token","masked_webhook_url":"https://hooks.slack.com/<WEBHOOK_PATH>"},{"id":"email-1","name":"email","type":"email","email_recipients":["ops@example.com"],"smtp_host":"smtp.example.com","smtp_port":587,"smtp_tls":true,"smtp_from":"autostream@example.com","smtp_username":"autostream","smtp_password":"raw-smtp-password","smtp_password_configured":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}]`))
+			_, _ = w.Write([]byte(`[{"id":"chn-1","name":"discord","webhook_url":"https://discord.com/api/webhooks/id/upstream-secret-token","masked_webhook_url":"https://example.com/<WEBHOOK_PATH>"},{"id":"slack-1","name":"slack","type":"slack","webhook_url":"https://hooks.slack.com/services/T000/B000/upstream-slack-token","masked_webhook_url":"https://hooks.slack.com/<WEBHOOK_PATH>"},{"id":"email-1","name":"email","type":"email","email_recipients":["ops@example.com"],"smtp_host":"smtp.example.com","smtp_port":587,"smtp_tls":true,"smtp_from":"autostream@example.com","smtp_username":"autostream","smtp_password":"raw-smtp-password","uses_global_smtp":true,"masked_email_target":"o***s@example.com","smtp_server":"smtp-bypass.example.com","recipient_list":["bypass@example.com"]}]`))
 		case "/notification-channels/chn-1":
 			if r.Method == http.MethodDelete {
 				_, _ = w.Write([]byte(`{"status":"deleted"}`))
@@ -19103,7 +19103,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 		if strings.Contains(res.Body.String(), "upstream-secret-token") || strings.Contains(res.Body.String(), "upstream-slack-token") || strings.Contains(res.Body.String(), "upstream-secret") || strings.Contains(res.Body.String(), "api_key=") || strings.Contains(res.Body.String(), "drive-folder-secret-id") || strings.Contains(res.Body.String(), `"webhook_url":"https://discord.com`) || strings.Contains(res.Body.String(), `"webhook_url":"https://hooks.slack.com`) || strings.Contains(res.Body.String(), "hooks.slack.com/services") || strings.Contains(res.Body.String(), "raw-smtp-password") || strings.Contains(res.Body.String(), "ops@example.com") || strings.Contains(res.Body.String(), "smtp.example.com") || strings.Contains(res.Body.String(), "autostream@example.com") || strings.Contains(res.Body.String(), "smtp-bypass.example.com") || strings.Contains(res.Body.String(), "bypass@example.com") || strings.Contains(res.Body.String(), `"smtp_host"`) || strings.Contains(res.Body.String(), `"email_recipients"`) || strings.Contains(res.Body.String(), `"smtp_from"`) || strings.Contains(res.Body.String(), `"smtp_username"`) || strings.Contains(res.Body.String(), `"smtp_server"`) || strings.Contains(res.Body.String(), `"recipient_list"`) {
 			t.Fatalf("observability proxy leaked upstream notification secret: %s", res.Body.String())
 		}
-		if path == "/observability/notification-channels" && (!strings.Contains(res.Body.String(), `"smtp_password_configured":true`) || !strings.Contains(res.Body.String(), `"masked_email_target":"o***s@example.com"`)) {
+		if path == "/observability/notification-channels" && (!strings.Contains(res.Body.String(), `"uses_global_smtp":true`) || !strings.Contains(res.Body.String(), `"masked_email_target":"o***s@example.com"`)) {
 			t.Fatalf("email notification public status was not preserved: %s", res.Body.String())
 		}
 		if path == "/observability/notification-channels" && !strings.Contains(res.Body.String(), `"masked_webhook_url":"https://hooks.slack.com/\u003cWEBHOOK_PATH\u003e"`) {
@@ -19130,7 +19130,7 @@ func TestObservabilityProxyEndpoints(t *testing.T) {
 	if !strings.Contains(createRes.Body.String(), `"type":"slack"`) || !strings.Contains(createRes.Body.String(), `"masked_webhook_url":"https://hooks.slack.com/\u003cWEBHOOK_PATH\u003e"`) {
 		t.Fatalf("create channel response lost public slack status: %s", createRes.Body.String())
 	}
-	if !strings.Contains(createRes.Body.String(), `"smtp_password_configured":true`) || !strings.Contains(createRes.Body.String(), `"masked_email_target":"o***s@example.com"`) {
+	if !strings.Contains(createRes.Body.String(), `"uses_global_smtp":true`) || !strings.Contains(createRes.Body.String(), `"masked_email_target":"o***s@example.com"`) {
 		t.Fatalf("create channel response lost public email status: %s", createRes.Body.String())
 	}
 	events := auth.AuditEvents()
