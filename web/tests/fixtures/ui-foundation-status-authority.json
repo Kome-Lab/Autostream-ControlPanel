@@ -29,9 +29,9 @@
       "id": "control-panel-http",
       "repository": "Autostream-ControlPanel",
       "branch": "codex/bundle8b-physical-eol-001",
-      "head": "d482ab2d41191f5ed6e200502e395eef80df1ab0",
+      "head": "0f8b48a713ac35795302569c25b3f6f011cda398",
       "path": "internal/httpapi/server.go",
-      "sourceSha256": "b548e1526d4b894409ab525d9ea88abb85a976bfea43d0a3b771401cd230d0c7"
+      "sourceSha256": "807710e68c56b6e26f77a1f762981edad94a75bcc0ce95d08018d1f9ce67b07d"
     },
     {
       "id": "control-panel-policy",
