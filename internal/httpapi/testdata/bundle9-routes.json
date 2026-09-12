@@ -1,0 +1,970 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "792c6c56506c26ffd81b18c1793211e8e78be44d",
+  "registrations": [
+    {
+      "statement": "s.mux.HandleFunc(\"GET /{$}\", s.rootRedirect)",
+      "pattern": "GET /{$}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /health\", s.health)",
+      "pattern": "GET /health"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /updater/version\", s.updaterVersion)",
+      "pattern": "GET /updater/version"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /setup/status\", s.setupStatus)",
+      "pattern": "GET /setup/status"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /setup/first-admin\", s.setupFirstAdmin)",
+      "pattern": "POST /setup/first-admin"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/login\", s.login)",
+      "pattern": "POST /auth/login"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /auth/oauth/providers\", s.listOAuthLoginProviders)",
+      "pattern": "GET /auth/oauth/providers"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/oauth/{id}/start\", s.startOAuthLogin)",
+      "pattern": "POST /auth/oauth/{id}/start"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /auth/oauth/callback\", s.oauthLoginRedirectCallback)",
+      "pattern": "GET /auth/oauth/callback"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/oauth/callback\", s.oauthLoginCallback)",
+      "pattern": "POST /auth/oauth/callback"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/register\", s.serviceRegister)",
+      "pattern": "POST /services/register"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /services/runtime-config\", s.serviceRuntimeConfig)",
+      "pattern": "GET /services/runtime-config"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/runtime-secrets/resolve\", s.serviceRuntimeSecretResolve)",
+      "pattern": "POST /services/runtime-secrets/resolve"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/heartbeat\", s.serviceHeartbeat)",
+      "pattern": "POST /services/heartbeat"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/streams/{id}/start\", s.serviceStartStream)",
+      "pattern": "POST /services/streams/{id}/start"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/streams/{id}/stop\", s.serviceStopStream)",
+      "pattern": "POST /services/streams/{id}/stop"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/observability/signals\", s.serviceObservabilitySignal)",
+      "pattern": "POST /services/observability/signals"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/stream-events\", s.serviceStreamEvent)",
+      "pattern": "POST /services/stream-events"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/stream-artifacts\", s.serviceStreamArtifacts)",
+      "pattern": "POST /services/stream-artifacts"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/notifications/email\", s.serviceEmailNotification)",
+      "pattern": "POST /services/notifications/email"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /services/notifications/email/readiness\", s.serviceEmailReadiness)",
+      "pattern": "GET /services/notifications/email/readiness"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/remediation-actions/execute\", s.serviceRemediationExecute)",
+      "pattern": "POST /services/remediation-actions/execute"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/policy\", s.serviceHostAgentPolicy)",
+      "pattern": "POST /services/host-agent/policy"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/runtime-token-rotations/{rotation_id}/credential/claim\", s.claimRuntimeTokenRotationCredential)",
+      "pattern": "POST /services/host-agent/runtime-token-rotations/{rotation_id}/credential/claim"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/runtime-token-rotations/{rotation_id}/local-staged\", s.acknowledgeRuntimeTokenRotationLocalStage)",
+      "pattern": "POST /services/host-agent/runtime-token-rotations/{rotation_id}/local-staged"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/runtime-token-rotations/{rotation_id}/heartbeat-proof\", s.proveRuntimeTokenRotationHeartbeat)",
+      "pattern": "POST /services/host-agent/runtime-token-rotations/{rotation_id}/heartbeat-proof"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/runtime-token-rotations/{rotation_id}/activate\", s.activateRuntimeTokenRotation)",
+      "pattern": "POST /services/host-agent/runtime-token-rotations/{rotation_id}/activate"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/self-updates/{id}/grants\", s.issueHostSelfUpdateGrant)",
+      "pattern": "POST /services/host-agent/self-updates/{id}/grants"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/self-update-grants/consume\", s.consumeHostSelfUpdateGrant)",
+      "pattern": "POST /services/host-agent/self-update-grants/consume"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/runtime-token-rotations/{rotation_id}/cancel-ack\", s.acknowledgeRuntimeTokenRotationCancel)",
+      "pattern": "POST /services/host-agent/runtime-token-rotations/{rotation_id}/cancel-ack"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/update-agent/bootstrap-jobs/claim\", s.serviceUpdateHostBootstrapClaim)",
+      "pattern": "POST /services/update-agent/bootstrap-jobs/claim"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/update-agent/bootstrap-jobs/{id}/accept\", s.serviceUpdateHostBootstrapAccept)",
+      "pattern": "POST /services/update-agent/bootstrap-jobs/{id}/accept"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/update-agent/bootstrap-jobs/{id}/report\", s.serviceUpdateHostBootstrapReport)",
+      "pattern": "POST /services/update-agent/bootstrap-jobs/{id}/report"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/update-jobs/claim\", s.serviceSystemUpdateClaim)",
+      "pattern": "POST /services/update-jobs/claim"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/update-jobs/{id}/report\", s.serviceSystemUpdateReport)",
+      "pattern": "POST /services/update-jobs/{id}/report"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/update-jobs/{id}/mutation-grants\", s.serviceSystemUpdateMutationGrantIssueV2)",
+      "pattern": "POST /services/update-jobs/{id}/mutation-grants"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/update-jobs/{id}/mutation-grants/consume\", s.serviceSystemUpdateMutationGrantConsumeV2)",
+      "pattern": "POST /services/update-jobs/{id}/mutation-grants/consume"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/runtime-identity/configuration\", s.runtimeIdentityConfiguration)",
+      "pattern": "POST /services/runtime-identity/configuration"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/runtime-identity/stage\", s.hostAgentRuntimeIdentityStage)",
+      "pattern": "POST /services/host-agent/runtime-identity/stage"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/host-agent/runtime-identity/activate\", s.hostAgentRuntimeIdentityActivate)",
+      "pattern": "POST /services/host-agent/runtime-identity/activate"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /api/node-agent/heartbeat\", s.nodeAgentHeartbeat)",
+      "pattern": "POST /api/node-agent/heartbeat"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /api/node-agent/report\", s.nodeAgentReport)",
+      "pattern": "POST /api/node-agent/report"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /api/node-agent/events\", s.serviceStreamEvent)",
+      "pattern": "POST /api/node-agent/events"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/logout\", s.requirePermission(\"\", s.logout))",
+      "pattern": "POST /auth/logout"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/session/refresh\", s.requirePermission(\"\", s.refreshSession))",
+      "pattern": "POST /auth/session/refresh"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /auth/me\", s.requirePermission(\"\", s.me))",
+      "pattern": "GET /auth/me"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /account/preferences/ui\", s.requirePermission(\"\", s.getUIPreference))",
+      "pattern": "GET /account/preferences/ui"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /account/preferences/ui\", s.requirePermission(\"\", s.updateUIPreference))",
+      "pattern": "PUT /account/preferences/ui"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /auth/avatar\", s.requirePermission(\"\", s.getCurrentUserAvatar))",
+      "pattern": "GET /auth/avatar"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /auth/avatar\", s.requirePermission(\"\", s.updateCurrentUserAvatar))",
+      "pattern": "PUT /auth/avatar"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /auth/avatar\", s.requirePermission(\"\", s.deleteCurrentUserAvatar))",
+      "pattern": "DELETE /auth/avatar"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /auth/email\", s.requirePermission(\"\", s.updateCurrentUserEmail))",
+      "pattern": "PUT /auth/email"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/email/confirm\", s.confirmCurrentUserEmail)",
+      "pattern": "POST /auth/email/confirm"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/change-password\", s.requirePermission(\"\", s.changePassword))",
+      "pattern": "POST /auth/change-password"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /auth/mfa/status\", s.requirePermission(\"\", s.mfaStatus))",
+      "pattern": "GET /auth/mfa/status"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/mfa/enroll\", s.requirePermission(\"\", s.mfaEnroll))",
+      "pattern": "POST /auth/mfa/enroll"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/mfa/verify\", s.mfaVerify)",
+      "pattern": "POST /auth/mfa/verify"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/mfa/disable\", s.requirePermission(\"\", s.mfaDisable))",
+      "pattern": "POST /auth/mfa/disable"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/recovery-codes/regenerate\", s.requirePermission(\"\", s.mfaRegenerateRecoveryCodes))",
+      "pattern": "POST /auth/recovery-codes/regenerate"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/passkeys/register/start\", s.requirePermission(\"\", s.startPasskeyRegistration))",
+      "pattern": "POST /auth/passkeys/register/start"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/passkeys/register/finish\", s.requirePermission(\"\", s.finishPasskeyRegistration))",
+      "pattern": "POST /auth/passkeys/register/finish"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/passkeys/login/start\", s.startPasskeyLogin)",
+      "pattern": "POST /auth/passkeys/login/start"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/passkeys/login/finish\", s.finishPasskeyLogin)",
+      "pattern": "POST /auth/passkeys/login/finish"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /auth/passkeys\", s.requirePermission(\"\", s.listPasskeys))",
+      "pattern": "GET /auth/passkeys"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /auth/passkeys/{id}\", s.requirePermission(\"\", s.deletePasskey))",
+      "pattern": "DELETE /auth/passkeys/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /auth/oauth-links\", s.requirePermission(\"\", s.listCurrentUserOAuthLinks))",
+      "pattern": "GET /auth/oauth-links"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /auth/oauth-links/{id}/start\", s.requirePermission(\"\", s.startCurrentUserOAuthLink))",
+      "pattern": "POST /auth/oauth-links/{id}/start"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /auth/oauth-links/{id}\", s.requirePermission(\"\", s.deleteCurrentUserOAuthLink))",
+      "pattern": "DELETE /auth/oauth-links/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /permissions\", s.requirePermission(\"roles.read\", s.listPermissions))",
+      "pattern": "GET /permissions"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /users\", s.requirePermission(\"users.read\", s.listUsers))",
+      "pattern": "GET /users"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /users\", s.requirePermission(\"users.create\", s.createUser))",
+      "pattern": "POST /users"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /users/{id}\", s.requirePermission(\"users.read\", s.getUser))",
+      "pattern": "GET /users/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /users/{id}\", s.requirePermission(\"users.update\", s.updateUser))",
+      "pattern": "PUT /users/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /users/{id}/disable\", s.requirePermission(\"users.disable\", s.disableUser))",
+      "pattern": "POST /users/{id}/disable"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /users/{id}/lock\", s.requirePermission(\"users.disable\", s.lockUser))",
+      "pattern": "POST /users/{id}/lock"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /users/{id}/unlock\", s.requirePermission(\"users.update\", s.unlockUser))",
+      "pattern": "POST /users/{id}/unlock"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /users/{id}/reset-password\", s.requirePermission(\"users.reset_password\", s.resetPassword))",
+      "pattern": "POST /users/{id}/reset-password"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /users/{id}/force-password-change\", s.requirePermission(\"users.reset_password\", s.forcePasswordChange))",
+      "pattern": "POST /users/{id}/force-password-change"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /users/{id}\", s.requirePermission(\"users.delete\", s.deleteUser))",
+      "pattern": "DELETE /users/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /users/{id}/oauth-links\", s.requirePermission(\"users.read\", s.listUserOAuthLinks))",
+      "pattern": "GET /users/{id}/oauth-links"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /users/{id}/oauth-links\", s.requirePermission(\"users.manage_mfa\", s.createUserOAuthLink))",
+      "pattern": "POST /users/{id}/oauth-links"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /users/{id}/oauth-links/{link_id}\", s.requirePermission(\"users.manage_mfa\", s.deleteUserOAuthLink))",
+      "pattern": "DELETE /users/{id}/oauth-links/{link_id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /roles\", s.requirePermission(\"roles.read\", s.listRoles))",
+      "pattern": "GET /roles"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /roles\", s.requirePermission(\"roles.create\", s.createRole))",
+      "pattern": "POST /roles"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /roles/{id}\", s.requirePermission(\"roles.read\", s.getRole))",
+      "pattern": "GET /roles/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /roles/{id}\", s.requirePermission(\"roles.update\", s.updateRole))",
+      "pattern": "PUT /roles/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /roles/{id}\", s.requirePermission(\"roles.delete\", s.deleteRole))",
+      "pattern": "DELETE /roles/{id}"
+    },
+    {
+      "statement": "s.registerProfileRoutes(\"/profiles/encoder\", store.ProfileEncoder, \"encoder_profiles\")",
+      "pattern": ""
+    },
+    {
+      "statement": "s.registerProfileRoutes(\"/profiles/archive\", store.ProfileArchive, \"archive_profiles\")",
+      "pattern": ""
+    },
+    {
+      "statement": "s.registerProfileRoutes(\"/profiles/caption\", store.ProfileCaption, \"caption_profiles\")",
+      "pattern": ""
+    },
+    {
+      "statement": "s.registerProfileRoutes(\"/profiles/overlay\", store.ProfileOverlay, \"overlay_profiles\")",
+      "pattern": ""
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /discord/configs\", s.requirePermission(\"discord_configs.read\", s.listDiscordConfigs))",
+      "pattern": "GET /discord/configs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /discord/configs\", s.requirePermission(\"discord_configs.create\", s.createDiscordConfig))",
+      "pattern": "POST /discord/configs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /discord/configs/{id}\", s.requirePermission(\"discord_configs.read\", s.getDiscordConfig))",
+      "pattern": "GET /discord/configs/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /discord/configs/{id}\", s.requirePermission(\"discord_configs.update\", s.updateDiscordConfig))",
+      "pattern": "PUT /discord/configs/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /discord/configs/{id}\", s.requirePermission(\"discord_configs.delete\", s.deleteDiscordConfig))",
+      "pattern": "DELETE /discord/configs/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /discord/target-presets\", s.requirePermission(\"discord_target_presets.read\", s.listDiscordTargetPresets))",
+      "pattern": "GET /discord/target-presets"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /discord/target-presets\", s.requirePermission(\"discord_target_presets.create\", s.createDiscordTargetPreset))",
+      "pattern": "POST /discord/target-presets"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /discord/target-presets/{id}\", s.requirePermission(\"discord_target_presets.read\", s.getDiscordTargetPreset))",
+      "pattern": "GET /discord/target-presets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /discord/target-presets/{id}\", s.requirePermission(\"discord_target_presets.update\", s.updateDiscordTargetPreset))",
+      "pattern": "PUT /discord/target-presets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /discord/target-presets/{id}\", s.requirePermission(\"discord_target_presets.delete\", s.deleteDiscordTargetPreset))",
+      "pattern": "DELETE /discord/target-presets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /youtube/outputs\", s.requirePermission(\"youtube_outputs.read\", s.listYouTubeOutputs))",
+      "pattern": "GET /youtube/outputs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /youtube/outputs\", s.requirePermission(\"youtube_outputs.create\", s.createYouTubeOutput))",
+      "pattern": "POST /youtube/outputs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /youtube/outputs/{id}\", s.requirePermission(\"youtube_outputs.read\", s.getYouTubeOutput))",
+      "pattern": "GET /youtube/outputs/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /youtube/outputs/{id}\", s.requirePermission(\"youtube_outputs.update\", s.updateYouTubeOutput))",
+      "pattern": "PUT /youtube/outputs/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /youtube/outputs/{id}\", s.requirePermission(\"youtube_outputs.delete\", s.deleteYouTubeOutput))",
+      "pattern": "DELETE /youtube/outputs/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /integrations/oauth-providers\", s.requirePermission(\"integrations.read\", s.listOAuthProviders))",
+      "pattern": "GET /integrations/oauth-providers"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /integrations/oauth-providers\", s.requirePermission(\"integrations.create\", s.createOAuthProvider))",
+      "pattern": "POST /integrations/oauth-providers"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /integrations/oauth-providers/{id}\", s.requirePermission(\"integrations.read\", s.getOAuthProvider))",
+      "pattern": "GET /integrations/oauth-providers/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /integrations/oauth-providers/{id}\", s.requirePermission(\"integrations.update\", s.updateOAuthProvider))",
+      "pattern": "PUT /integrations/oauth-providers/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /integrations/oauth-providers/{id}\", s.requirePermission(\"integrations.delete\", s.deleteOAuthProvider))",
+      "pattern": "DELETE /integrations/oauth-providers/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /integrations/oauth-accounts\", s.requirePermission(\"integrations.read\", s.listOAuthAccounts))",
+      "pattern": "GET /integrations/oauth-accounts"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /integrations/oauth-accounts/start\", s.requireAnyPermission([]string{\"integrations.create\", \"integrations.update\"}, s.startOAuthAccountConnection))",
+      "pattern": "POST /integrations/oauth-accounts/start"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /integrations/oauth-accounts/callback\", s.requireAnyPermission([]string{\"integrations.create\", \"integrations.update\"}, s.oauthAccountRedirectCallback))",
+      "pattern": "GET /integrations/oauth-accounts/callback"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /integrations/oauth-accounts/callback\", s.requireAnyPermission([]string{\"integrations.create\", \"integrations.update\"}, s.oauthAccountCallback))",
+      "pattern": "POST /integrations/oauth-accounts/callback"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /integrations/oauth-accounts/{id}\", s.requirePermission(\"integrations.read\", s.getOAuthAccount))",
+      "pattern": "GET /integrations/oauth-accounts/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /integrations/oauth-accounts/{id}\", s.requirePermission(\"integrations.update\", s.updateOAuthAccount))",
+      "pattern": "PUT /integrations/oauth-accounts/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /integrations/oauth-accounts/{id}\", s.requirePermission(\"integrations.delete\", s.deleteOAuthAccount))",
+      "pattern": "DELETE /integrations/oauth-accounts/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /archive/destinations\", s.requirePermission(\"integrations.read\", s.listDriveDestinations))",
+      "pattern": "GET /archive/destinations"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /archive/destinations\", s.requirePermission(\"integrations.create\", s.createDriveDestination))",
+      "pattern": "POST /archive/destinations"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /archive/destinations/{id}\", s.requirePermission(\"integrations.read\", s.getDriveDestination))",
+      "pattern": "GET /archive/destinations/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /archive/destinations/{id}\", s.requirePermission(\"integrations.update\", s.updateDriveDestination))",
+      "pattern": "PUT /archive/destinations/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /archive/destinations/{id}\", s.requirePermission(\"integrations.delete\", s.deleteDriveDestination))",
+      "pattern": "DELETE /archive/destinations/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /api-tokens\", s.requirePermission(\"api_tokens.read\", s.listServiceTokens))",
+      "pattern": "GET /api-tokens"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /api-tokens\", s.requirePermission(\"api_tokens.create\", s.createServiceToken))",
+      "pattern": "POST /api-tokens"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /api-tokens/{id}/rotate\", s.requirePermission(\"api_tokens.create\", s.rotateServiceToken))",
+      "pattern": "POST /api-tokens/{id}/rotate"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /api-tokens/{id}\", s.requirePermission(\"api_tokens.revoke\", s.revokeServiceToken))",
+      "pattern": "DELETE /api-tokens/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /nodes\", s.requirePermission(\"api_tokens.create\", s.listNodes))",
+      "pattern": "GET /nodes"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /nodes/action-permissions\", nodeActionProjectionBoundary(s.requirePermission(\"api_tokens.create\", s.nodeActionPermissionProjection)))",
+      "pattern": "GET /nodes/action-permissions"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /nodes/registration-tokens\", s.requirePermission(\"api_tokens.create\", s.createNodeRegistrationToken))",
+      "pattern": "POST /nodes/registration-tokens"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /nodes/{id}\", s.requirePermission(\"api_tokens.create\", s.updateNode))",
+      "pattern": "PUT /nodes/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /nodes/{id}/configuration\", s.requireAnyPermission([]string{\"service_health.read\", \"api_tokens.create\"}, s.nodeConfiguration))",
+      "pattern": "GET /nodes/{id}/configuration"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /nodes/{id}/configure-token\", s.requirePermission(\"api_tokens.create\", s.regenerateNodeConfigureToken))",
+      "pattern": "POST /nodes/{id}/configure-token"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /nodes/{id}/rotate-token\", s.requirePermission(\"api_tokens.create\", s.rotateNodeRuntimeToken))",
+      "pattern": "POST /nodes/{id}/rotate-token"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /service-health\", s.requirePermission(\"service_health.read\", s.listServices))",
+      "pattern": "GET /service-health"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /service-health/{id}/runtime-config\", s.requirePermission(\"service_health.read\", s.adminServiceRuntimeConfig))",
+      "pattern": "GET /service-health/{id}/runtime-config"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /services/{id}/assign\", s.requirePermission(\"services.assign\", s.assignService))",
+      "pattern": "POST /services/{id}/assign"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /services/{id}/assignment\", s.requirePermission(\"services.unassign\", s.unassignService))",
+      "pattern": "DELETE /services/{id}/assignment"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /services/{id}\", s.requirePermission(\"services.disable\", s.deleteService))",
+      "pattern": "DELETE /services/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /workers\", s.requirePermission(\"workers.read\", s.listWorkers))",
+      "pattern": "GET /workers"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /workers/{id}\", s.requirePermission(\"workers.read\", s.getWorker))",
+      "pattern": "GET /workers/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /workers/{id}/assign\", s.requirePermission(\"workers.assign\", s.assignWorker))",
+      "pattern": "POST /workers/{id}/assign"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /workers/{id}/assignment\", s.requirePermission(\"workers.unassign\", s.unassignWorker))",
+      "pattern": "DELETE /workers/{id}/assignment"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /workers/{id}/restart\", s.requirePermission(\"workers.restart\", s.restartWorker))",
+      "pattern": "POST /workers/{id}/restart"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams\", s.requirePermission(\"streams.read\", s.listStreams))",
+      "pattern": "GET /streams"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /archive/streams\", s.requirePermission(\"archives.read\", s.listArchiveStreams))",
+      "pattern": "GET /archive/streams"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /archive/processing-streams\", s.requirePermission(\"archives.read\", s.listArchiveProcessingStreams))",
+      "pattern": "GET /archive/processing-streams"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams\", s.requirePermission(\"streams.create\", s.createStream))",
+      "pattern": "POST /streams"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /media-assets/upload-sessions\", s.requireAnyPermission([]string{\"streams.create\", \"streams.update\"}, s.createMediaUploadSession))",
+      "pattern": "POST /media-assets/upload-sessions"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /media-assets\", s.requireAnyPermission([]string{\"streams.create\", \"streams.update\"}, s.uploadMediaAsset))",
+      "pattern": "POST /media-assets"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /media-assets/{id}\", s.requireAnyPermission([]string{\"streams.create\", \"streams.update\"}, s.getMediaAsset))",
+      "pattern": "GET /media-assets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /media-assets/{id}/variants\", s.requireAnyPermission([]string{\"streams.create\", \"streams.update\"}, s.createMediaAssetVariant))",
+      "pattern": "POST /media-assets/{id}/variants"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /media-assets/{id}\", s.requireAnyPermission([]string{\"streams.create\", \"streams.update\"}, s.deleteMediaAsset))",
+      "pattern": "DELETE /media-assets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /internal/streams/{stream_id}/media-assets/{variant_id}\", s.internalMediaAsset)",
+      "pattern": "GET /internal/streams/{stream_id}/media-assets/{variant_id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}\", s.requirePermission(\"streams.read\", s.getStream))",
+      "pattern": "GET /streams/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/visual-settings\", s.requirePermission(\"streams.read\", s.getStreamVisualSettings))",
+      "pattern": "GET /streams/{id}/visual-settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /streams/{id}/visual-settings\", s.requirePermission(\"streams.update\", s.updateStreamVisualSettings))",
+      "pattern": "PUT /streams/{id}/visual-settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/video-cover-state\", s.requirePermission(\"streams.read\", s.getVideoCoverState))",
+      "pattern": "GET /streams/{id}/video-cover-state"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /streams/{id}/video-cover-state\", s.requirePermission(\"\", s.updateVideoCoverState))",
+      "pattern": "PUT /streams/{id}/video-cover-state"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /video-cover-presets\", s.requirePermission(\"video_cover_presets.read\", s.listVideoCoverPresets))",
+      "pattern": "GET /video-cover-presets"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /video-cover-presets\", s.requirePermission(\"video_cover_presets.create\", s.createVideoCoverPreset))",
+      "pattern": "POST /video-cover-presets"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /video-cover-presets/{id}\", s.requirePermission(\"video_cover_presets.read\", s.getVideoCoverPreset))",
+      "pattern": "GET /video-cover-presets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /video-cover-presets/{id}\", s.requirePermission(\"video_cover_presets.update\", s.updateVideoCoverPreset))",
+      "pattern": "PUT /video-cover-presets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /video-cover-presets/{id}\", s.requirePermission(\"video_cover_presets.delete\", s.deleteVideoCoverPreset))",
+      "pattern": "DELETE /video-cover-presets/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /streams/{id}\", s.requirePermission(\"streams.delete\", s.deleteStream))",
+      "pattern": "DELETE /streams/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/external-e2e-config\", s.requirePermission(\"streams.read\", s.externalE2EConfig))",
+      "pattern": "GET /streams/{id}/external-e2e-config"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /streams/{id}/settings\", s.requirePermission(\"streams.update\", s.updateStreamSettings))",
+      "pattern": "PUT /streams/{id}/settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /streams/{id}/runtime-settings\", s.requirePermission(\"streams.update\", s.updateStreamRuntimeSettings))",
+      "pattern": "PUT /streams/{id}/runtime-settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/start-readiness\", s.requirePermission(\"streams.start\", s.startReadiness))",
+      "pattern": "POST /streams/{id}/start-readiness"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/start\", s.requirePermission(\"streams.start\", s.startStream))",
+      "pattern": "POST /streams/{id}/start"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/youtube-live-notification\", s.requirePermission(\"streams.read\", s.getDiscordYouTubeLiveNotification))",
+      "pattern": "GET /streams/{id}/youtube-live-notification"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/youtube-live-notifications/{notification_id}/recover\", s.requirePermission(\"streams.start\", s.recoverDiscordYouTubeLiveNotification))",
+      "pattern": "POST /streams/{id}/youtube-live-notifications/{notification_id}/recover"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/stop\", s.requirePermission(\"streams.stop\", s.stopStream))",
+      "pattern": "POST /streams/{id}/stop"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/force-stop\", s.requirePermission(\"streams.stop\", s.forceStopStream))",
+      "pattern": "POST /streams/{id}/force-stop"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/youtube/complete\", s.requirePermission(\"streams.stop\", s.completeYouTubeStream))",
+      "pattern": "POST /streams/{id}/youtube/complete"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/youtube/relay-static/recovery/resolve\", s.requirePermission(\"streams.stop\", s.resolveYouTubeRelayStaticRecovery))",
+      "pattern": "POST /streams/{id}/youtube/relay-static/recovery/resolve"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/mark-failed\", s.requirePermission(\"streams.update\", s.markStreamFailed))",
+      "pattern": "POST /streams/{id}/mark-failed"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/retry-upload\", s.requirePermission(\"streams.retry_upload\", s.retryUpload))",
+      "pattern": "POST /streams/{id}/retry-upload"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/encoder-preflight\", s.requirePermission(\"streams.read\", s.streamEncoderPreflight))",
+      "pattern": "GET /streams/{id}/encoder-preflight"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/preview/{name}\", s.requirePermission(\"streams.read\", s.streamPreviewAsset))",
+      "pattern": "GET /streams/{id}/preview/{name}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/preview-links\", s.requirePermission(\"streams.read\", s.createStreamPreviewLink))",
+      "pattern": "POST /streams/{id}/preview-links"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/audio-status\", s.requirePermission(\"streams.read\", s.streamAudioStatus))",
+      "pattern": "GET /streams/{id}/audio-status"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/worker-events\", s.requirePermission(\"streams.read\", s.streamWorkerEvents))",
+      "pattern": "GET /streams/{id}/worker-events"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/worker-events/test\", s.requirePermission(\"streams.update\", s.sendWorkerTestEvent))",
+      "pattern": "POST /streams/{id}/worker-events/test"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/logs\", s.requirePermission(\"logs.read\", s.streamLogs))",
+      "pattern": "GET /streams/{id}/logs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /stream-logs\", s.requirePermission(\"logs.read\", s.streamLogHistory))",
+      "pattern": "GET /stream-logs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/artifacts\", s.requirePermission(\"archives.read\", s.streamArtifacts))",
+      "pattern": "GET /streams/{id}/artifacts"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/artifacts/{artifact_id}/download\", s.requirePermission(\"archives.download\", s.downloadStreamArtifact))",
+      "pattern": "GET /streams/{id}/artifacts/{artifact_id}/download"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /streams/{id}/artifacts/{artifact_id}/shares\", s.requirePermission(\"archives.read\", s.listStreamArtifactShares))",
+      "pattern": "GET /streams/{id}/artifacts/{artifact_id}/shares"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /streams/{id}/artifacts/{artifact_id}/shares\", s.requirePermission(\"archives.download\", s.createStreamArtifactShare))",
+      "pattern": "POST /streams/{id}/artifacts/{artifact_id}/shares"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /streams/{id}/artifacts/{artifact_id}/shares/{share_id}\", s.requirePermission(\"archives.delete\", s.revokeStreamArtifactShare))",
+      "pattern": "DELETE /streams/{id}/artifacts/{artifact_id}/shares/{share_id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /streams/{id}/artifacts/{artifact_id}\", s.requirePermission(\"archives.delete\", s.deleteStreamArtifact))",
+      "pattern": "DELETE /streams/{id}/artifacts/{artifact_id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /streams/{id}/artifacts/{artifact_id}\", s.requirePermission(\"archives.delete\", s.renameStreamArtifact))",
+      "pattern": "PUT /streams/{id}/artifacts/{artifact_id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /archive-shares/{token}\", s.publicArchiveShare)",
+      "pattern": "GET /archive-shares/{token}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /archive-shares/{token}/download\", s.downloadPublicArchiveShare)",
+      "pattern": "GET /archive-shares/{token}/download"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /stream-previews/{token}/{name}\", s.publicStreamPreviewAsset)",
+      "pattern": "GET /stream-previews/{token}/{name}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /stream-previews/{token}/participants\", s.publicStreamPreviewParticipants)",
+      "pattern": "GET /stream-previews/{token}/participants"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /audit-logs\", s.requirePermission(\"audit_logs.read\", s.listAuditLogs))",
+      "pattern": "GET /audit-logs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /audit-logs/export\", s.requirePermission(\"audit_logs.export\", s.exportAuditLogs))",
+      "pattern": "GET /audit-logs/export"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /security/settings\", s.requirePermission(\"system_settings.read\", s.securitySettings))",
+      "pattern": "GET /security/settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /security/settings\", s.requirePermission(\"system_settings.update\", s.updateSecuritySettings))",
+      "pattern": "PUT /security/settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /settings/app\", s.appSettingsView)",
+      "pattern": "GET /settings/app"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /settings/app/manage\", s.requirePermission(\"system_settings.update\", s.managedAppSettingsView))",
+      "pattern": "GET /settings/app/manage"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /settings/app\", s.requirePermission(\"system_settings.update\", s.updateAppSettings))",
+      "pattern": "PUT /settings/app"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /settings/app/test-email\", s.requirePermission(\"system_settings.update\", s.sendAppSettingsTestEmail))",
+      "pattern": "POST /settings/app/test-email"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /version\", s.requirePermission(\"\", s.versionInfo))",
+      "pattern": "GET /version"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /system-updates\", s.requirePermission(\"system_updates.read\", s.listSystemUpdates))",
+      "pattern": "GET /system-updates"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates\", s.requirePermission(\"system_updates.execute\", s.createSystemUpdate))",
+      "pattern": "POST /system-updates"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/{id}/cancel\", s.requirePermission(\"system_updates.execute\", s.cancelSystemUpdate))",
+      "pattern": "POST /system-updates/{id}/cancel"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /system-updates/host-self-updates\", s.requirePermission(\"system_updates.read\", s.listHostSelfUpdates))",
+      "pattern": "GET /system-updates/host-self-updates"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/hosts/{host_id}/self-updates\", s.requirePermission(\"system_updates.execute\", s.createHostSelfUpdate))",
+      "pattern": "POST /system-updates/hosts/{host_id}/self-updates"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/host-self-updates/{id}/retry\", s.requirePermission(\"system_updates.execute\", s.retryHostSelfUpdate))",
+      "pattern": "POST /system-updates/host-self-updates/{id}/retry"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/host-self-updates/{id}/cancel\", s.requirePermission(\"system_updates.execute\", s.cancelHostSelfUpdate))",
+      "pattern": "POST /system-updates/host-self-updates/{id}/cancel"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /system-updates/updaters/{id}/settings\", s.requirePermission(\"system_updates.read\", s.getUpdaterPolicy))",
+      "pattern": "GET /system-updates/updaters/{id}/settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /system-updates/updaters/{id}/settings\", s.requirePermission(\"system_updates.execute\", s.updateUpdaterPolicy))",
+      "pattern": "PUT /system-updates/updaters/{id}/settings"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/updaters/{id}/pull-ownership/activate\", s.requirePermission(\"system_updates.execute\", s.activatePullUpdaterOwnership))",
+      "pattern": "POST /system-updates/updaters/{id}/pull-ownership/activate"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/updaters/{id}/pull-ownership/deactivate\", s.requirePermission(\"system_updates.execute\", s.deactivatePullUpdaterOwnership))",
+      "pattern": "POST /system-updates/updaters/{id}/pull-ownership/deactivate"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /system-updates/updaters/{id}/runtime-token-rotations/active\", s.requirePermission(\"system_updates.read\", s.getActiveRuntimeTokenRotation))",
+      "pattern": "GET /system-updates/updaters/{id}/runtime-token-rotations/active"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/updaters/{id}/runtime-token-rotations\", s.requirePermission(\"system_updates.execute\", s.stageRuntimeTokenRotation))",
+      "pattern": "POST /system-updates/updaters/{id}/runtime-token-rotations"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/updaters/{id}/runtime-token-rotations/{rotation_id}/cancel\", s.requirePermission(\"system_updates.execute\", s.cancelRuntimeTokenRotation))",
+      "pattern": "POST /system-updates/updaters/{id}/runtime-token-rotations/{rotation_id}/cancel"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/updaters/{id}/runtime-token-rotations/{rotation_id}/emergency-revoke\", s.requirePermission(\"system_updates.execute\", s.emergencyRevokeRuntimeTokenRotation))",
+      "pattern": "POST /system-updates/updaters/{id}/runtime-token-rotations/{rotation_id}/emergency-revoke"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /system-updates/updaters/{id}/bootstrap-jobs\", s.requirePermission(\"system_updates.read\", s.listUpdateHostBootstrapJobs))",
+      "pattern": "GET /system-updates/updaters/{id}/bootstrap-jobs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /system-updates/updaters/{id}/bootstrap-jobs\", s.requirePermission(\"system_updates.execute\", s.createUpdateHostBootstrapJob))",
+      "pattern": "POST /system-updates/updaters/{id}/bootstrap-jobs"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /secrets/status\", s.requirePermission(\"secrets.read_status\", s.secretStatus))",
+      "pattern": "GET /secrets/status"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /secrets/{name}\", s.requirePermission(\"secrets.update\", s.updateSecret))",
+      "pattern": "PUT /secrets/{name}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /observability/incidents\", s.requirePermission(\"incidents.read\", s.observabilityGet(\"/incidents\")))",
+      "pattern": "GET /observability/incidents"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /observability/diagnostics\", s.requirePermission(\"diagnostics.read\", s.observabilityGet(\"/diagnostics\")))",
+      "pattern": "GET /observability/diagnostics"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /observability/metrics\", s.requirePermission(\"metrics.read\", s.observabilityMetrics))",
+      "pattern": "GET /observability/metrics"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /observability/remediation-actions\", s.requirePermission(\"remediation.read\", s.observabilityGet(\"/remediation-actions\")))",
+      "pattern": "GET /observability/remediation-actions"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /observability/remediation-actions/{id}/approve\", s.requirePermission(\"remediation.approve\", s.observabilityPostAction(\"/remediation-actions/{id}/approve\")))",
+      "pattern": "POST /observability/remediation-actions/{id}/approve"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /observability/remediation-actions/{id}/execute\", s.requirePermission(\"remediation.execute\", s.observabilityPostAction(\"/remediation-actions/{id}/execute\")))",
+      "pattern": "POST /observability/remediation-actions/{id}/execute"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /observability/incidents/{id}/diagnostics/rerun\", s.requirePermission(\"diagnostics.run\", s.observabilityPostActionWithAudit(\"/incidents/{id}/diagnostics/rerun\", \"diagnostics.run\", \"incident\")))",
+      "pattern": "POST /observability/incidents/{id}/diagnostics/rerun"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /observability/incidents/{id}/acknowledge\", s.requirePermission(\"incidents.acknowledge\", s.observabilityPostActionWithAudit(\"/incidents/{id}/acknowledge\", \"incidents.acknowledge\", \"incident\")))",
+      "pattern": "POST /observability/incidents/{id}/acknowledge"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /observability/incidents/{id}/resolve\", s.requirePermission(\"incidents.resolve\", s.observabilityPostActionWithAudit(\"/incidents/{id}/resolve\", \"incidents.resolve\", \"incident\")))",
+      "pattern": "POST /observability/incidents/{id}/resolve"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /observability/notification-deliveries\", s.requirePermission(\"notification_channels.read\", s.observabilityGet(\"/notification-deliveries\")))",
+      "pattern": "GET /observability/notification-deliveries"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /observability/notification-channels\", s.requirePermission(\"notification_channels.read\", s.observabilityGet(\"/notification-channels\")))",
+      "pattern": "GET /observability/notification-channels"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /observability/notification-channels\", s.requirePermission(\"notification_channels.create\", s.observabilityNotificationChannelPostProxyStatus(\"/notification-channels\", \"notification_channels.create\", \"notification_channel\", http.StatusCreated)))",
+      "pattern": "POST /observability/notification-channels"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"GET /observability/notification-channels/{id}\", s.requirePermission(\"notification_channels.read\", s.observabilityGetAction(\"/notification-channels/{id}\")))",
+      "pattern": "GET /observability/notification-channels/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"PUT /observability/notification-channels/{id}\", s.requirePermission(\"notification_channels.update\", s.observabilityNotificationChannelPutProxy(\"/notification-channels/{id}\", \"notification_channels.update\", \"notification_channel\")))",
+      "pattern": "PUT /observability/notification-channels/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"DELETE /observability/notification-channels/{id}\", s.requirePermission(\"notification_channels.delete\", s.observabilityDeleteProxy(\"/notification-channels/{id}\", \"notification_channels.delete\", \"notification_channel\")))",
+      "pattern": "DELETE /observability/notification-channels/{id}"
+    },
+    {
+      "statement": "s.mux.HandleFunc(\"POST /observability/notification-channels/{id}/test\", s.requirePermission(\"notification_channels.test\", s.observabilityPostActionWithAuditStatus(\"/notification-channels/{id}/test\", \"notification_channels.test\", \"notification_channel\", http.StatusAccepted)))",
+      "pattern": "POST /observability/notification-channels/{id}/test"
+    }
+  ]
+}

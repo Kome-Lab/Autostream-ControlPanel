@@ -176,6 +176,32 @@ export class BrowserHarness {
     }
   }
 
+  async configureDeterministicDocument(options: Readonly<{ source: string; timezone: string; locale: string }>) {
+    await this.send("Emulation.setTimezoneOverride", { timezoneId: options.timezone });
+    await this.send("Emulation.setLocaleOverride", { locale: options.locale });
+    await this.send("Page.addScriptToEvaluateOnNewDocument", { source: options.source });
+  }
+
+  async browserVersion() {
+    return this.sendBrowser("Browser.getVersion");
+  }
+
+  async captureScreenshot() {
+    const layout = await this.send("Page.getLayoutMetrics");
+    const size = layout.cssContentSize as { width?: number; height?: number } | undefined;
+    const width = Math.ceil(size?.width ?? 0);
+    const height = Math.ceil(size?.height ?? 0);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width > 30_000 || height > 30_000) {
+      throw new Error("Invalid or unbounded product screenshot dimensions");
+    }
+    const screenshot = await this.send("Page.captureScreenshot", {
+      format: "png", fromSurface: true, captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width, height, scale: 1 },
+    });
+    if (typeof screenshot.data !== "string" || screenshot.data.length === 0) throw new Error("Product screenshot was empty");
+    return Buffer.from(screenshot.data, "base64");
+  }
+
   setRouteResolver(resolver: RouteResolver) {
     this.routeResolver = resolver;
   }
@@ -349,7 +375,7 @@ export class BrowserHarness {
   async pressNativeKey(key: BrowserNativeKey): Promise<void> {
     if (this.closed) throw new Error("Browser harness closed");
     this.assertNoFatalError();
-    const input = browserNativeKeyInputs[key];
+    const input: BrowserNativeKeyInput = browserNativeKeyInputs[key];
     const base = {
       key: input.key,
       code: input.code,
@@ -810,7 +836,7 @@ function waitForChildExit(process: ChildProcessWithoutNullStreams) {
 }
 
 function nextServerEnvironment() {
-  const environment = {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
     NEXT_PUBLIC_AUTOSTREAM_DEMO: "false",
     NEXT_TELEMETRY_DISABLED: "1",

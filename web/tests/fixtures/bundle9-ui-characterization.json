@@ -1,0 +1,2421 @@
+{
+  "beforeCommit": "792c6c56506c26ffd81b18c1793211e8e78be44d",
+  "clusters": [
+    {
+      "name": "Streams",
+      "sources": [
+        {
+          "path": "src/features/streams/streams-view.tsx",
+          "sourceSHA256": "24bf4ec8a37bb6ad634e6f10e11b6a5fa2ccfcfdb81123283a6e4ca5087d19e8",
+          "declarations": [
+            {
+              "name": "StreamsView",
+              "sha256": "3b115f150d78bd38faff271c14e1c505431101af1806b1705965935a0d89ac3e",
+              "occurrences": 1
+            },
+            {
+              "name": "formatDateTime",
+              "sha256": "ab646d1b9b09099b3007afe52f9bfa1285cee102af105ed25723085c2e0af5c7",
+              "occurrences": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Generic Resources",
+      "sources": [
+        {
+          "path": "src/features/resources/resource-page.tsx",
+          "sourceSHA256": "20d16f9e12349fc288ab22c6d809e47504a42b253d42eea4495ebf857b55573b",
+          "declarations": [
+            {
+              "name": "watermarkCanvasWidth",
+              "sha256": "6cdd53a58cbbad758121122a47adaaae2fac0d27539abba598880ad45ca4345d",
+              "occurrences": 1
+            },
+            {
+              "name": "watermarkCanvasHeight",
+              "sha256": "47ae9dcd69710ad63e9241d860b43c8b4a84b275aabd81abe5b8d7bc0c1774b7",
+              "occurrences": 1
+            },
+            {
+              "name": "watermarkMaxBytes",
+              "sha256": "883b5f8df5f609822b76e1022d7b3a4f8f081665667e00893347c4a9177714d8",
+              "occurrences": 1
+            },
+            {
+              "name": "ResourcePage",
+              "sha256": "7f7a033a002cdc3105ac77517bb9b372bc05c93e5c9a9ce6cd9b0932da5cee29",
+              "occurrences": 1
+            },
+            {
+              "name": "ResourcePanel",
+              "sha256": "4886eb77595d26445721cfaaea9864b946f4d903ab530ad053f6249eeae9b674",
+              "occurrences": 1
+            },
+            {
+              "name": "ResourceAccess",
+              "sha256": "4822fd697490bd074646d03ec9f4cd00afb2a6a7eaced4c22ce66ba13f024215",
+              "occurrences": 1
+            },
+            {
+              "name": "resourceAccess",
+              "sha256": "2d99e82392b17690c7a483827c33f2c7f3808b42661947985b8313032b598a42",
+              "occurrences": 1
+            },
+            {
+              "name": "requiredPermissionText",
+              "sha256": "cbe2cbf99ce512bc1eb8ceca326492a442e250900a03872b2174d441d3c01276",
+              "occurrences": 1
+            },
+            {
+              "name": "PermissionNotice",
+              "sha256": "a5669aac5f44c0b4dec3f728eea0010c688bb88725950481a79bafbb51c27dba",
+              "occurrences": 1
+            },
+            {
+              "name": "QueryErrorNotice",
+              "sha256": "2d0379bd7bdbfee280f35e9b98a7a0f019f328a998a31b67d9b0fbba2dc405f7",
+              "occurrences": 1
+            },
+            {
+              "name": "GenericResourcePanel",
+              "sha256": "2f774e1bade5e73df84b0be620d726dbe82cf74147c51a6e773b6ece7520fcab",
+              "occurrences": 1
+            },
+            {
+              "name": "ResourceRow",
+              "sha256": "b02aa3be244cb67bd2733acbbd410b4bc89a0c3e1fb284b622673b2f8eb417a5",
+              "occurrences": 1
+            },
+            {
+              "name": "resourceHistoryConfig",
+              "sha256": "ca2e43f760d5ef9724969c1996f55b9e99ef9573daf18fc471a2a6caba96676f",
+              "occurrences": 1
+            },
+            {
+              "name": "SelectOption",
+              "sha256": "ec0fd37d56bfaa37512c71bb162c87e3e53825a1e4b5514d4c1a72704eaec7f8",
+              "occurrences": 1
+            },
+            {
+              "name": "SubmitOptions",
+              "sha256": "459790923252c47338b5fd8d6578b98db9da4b755d9d4c568e4b595e7b81d637",
+              "occurrences": 1
+            },
+            {
+              "name": "Submission",
+              "sha256": "b0267ec9caa3148773b79a686eaa96451c7ccd79ccd9f2a49189039f232e5294",
+              "occurrences": 1
+            },
+            {
+              "name": "SubmitResource",
+              "sha256": "3695406626503de896a1af51e6642cec728710796e6c371c6071c4be0196514f",
+              "occurrences": 1
+            },
+            {
+              "name": "PendingResourceSubmission",
+              "sha256": "30d6e78780cafe2afb66953d17ab3732037728951a7143d585e90b8dbc826984",
+              "occurrences": 1
+            },
+            {
+              "name": "noneValue",
+              "sha256": "c4cf5b98cc1b685f4cc5e0be33491af04cae1386ea582f4258a7114a1ffdd1b2",
+              "occurrences": 1
+            },
+            {
+              "name": "resourcePayloadLabel",
+              "sha256": "3feaef284ee0dbbdfed9764657219bb3dfcc14421c37e6e4dadd195e2b9496cd",
+              "occurrences": 1
+            },
+            {
+              "name": "resourceActionResultMessage",
+              "sha256": "81ce5a0392abd29456b2ef11b1a464b2bb786c31bf55d22021f5317e6346eb1d",
+              "occurrences": 1
+            },
+            {
+              "name": "CreateResourceForm",
+              "sha256": "04d6869aa6ad7d0cca37bc72538e35e5719ee42e4e9d647e365ae199841d1772",
+              "occurrences": 1
+            },
+            {
+              "name": "ServiceHealthResourcePanel",
+              "sha256": "58b5c5c6079fafeaa10f5ba58b6a013040ab280e7d140b0fb016fe2952d18d5c",
+              "occurrences": 1
+            },
+            {
+              "name": "ResourceFormFields",
+              "sha256": "6bdce96b87ee882d0cca65c63dc8b4447f89953d407a47e67519fc89d61b9062",
+              "occurrences": 1
+            },
+            {
+              "name": "EncoderProfileForm",
+              "sha256": "3dd54edc50fdc64683cedf0e2918ec0dde9c34b7705684cdad85c922049f4283",
+              "occurrences": 1
+            },
+            {
+              "name": "DiscordConfigForm",
+              "sha256": "1177feb7f1e22a74f2f6220bd91dadafef9bf6bd1d21ab7ab19b6000532745e0",
+              "occurrences": 1
+            },
+            {
+              "name": "DiscordTargetPresetForm",
+              "sha256": "13eb4f9af9fd01a1ddd31f168315de1ca33e31da7ad3dddc9388d0901d7a4886",
+              "occurrences": 1
+            },
+            {
+              "name": "YouTubeOutputForm",
+              "sha256": "bd3c6b2bcb63f85c62c337e1ec1ba1a179e4b5d2c6a5e226b09f7f0266419048",
+              "occurrences": 1
+            },
+            {
+              "name": "CaptionProfileForm",
+              "sha256": "5269331fd34efd4ce6ae97c64c5b19083408689c76608a589da0bfb342ce570f",
+              "occurrences": 1
+            },
+            {
+              "name": "OverlayProfileForm",
+              "sha256": "35d47065abd938b58c2e5e97081083810ca5fad951ee61cd76873df151db737d",
+              "occurrences": 1
+            },
+            {
+              "name": "WatermarkPreview",
+              "sha256": "7e95c535510a4e7be4b60f7de72965325b7cea8abd049fa52bc3ff31278e77ad",
+              "occurrences": 1
+            },
+            {
+              "name": "ArchiveProfileForm",
+              "sha256": "c2a645c918bba074ae162e545fa890d8c788f5a69081da98031de73e2d9d81ee",
+              "occurrences": 1
+            },
+            {
+              "name": "DriveDestinationForm",
+              "sha256": "cfe18b7b4dab9bf0b1b787920a2c734d91db4b1f9995e374ede7f86e6bb3bb12",
+              "occurrences": 1
+            },
+            {
+              "name": "OAuthProviderForm",
+              "sha256": "26868f588222510a3660ccc6f04237d5dba799c922edb05e064d9a85f04dce5a",
+              "occurrences": 1
+            },
+            {
+              "name": "OAuthAccountConnectForm",
+              "sha256": "192834877189eb86eb0ec023d97821bdb3a9b89342157b1c641a1368be2cdcb3",
+              "occurrences": 1
+            },
+            {
+              "name": "OAuthAccountRenameForm",
+              "sha256": "82e3771e93e28119ad14fc66c1a5e86cb26c636b6e94776f85540d18163719df",
+              "occurrences": 1
+            },
+            {
+              "name": "UserForm",
+              "sha256": "5e5fa77da1e4e596b2c20246bbcfef1a57cfb000d2f4f88a3259f6571a537b87",
+              "occurrences": 1
+            },
+            {
+              "name": "RoleForm",
+              "sha256": "3f1e8a1f6d3e97beabee9c33186cefce3e3e037d288843a640b160873b724e8e",
+              "occurrences": 1
+            },
+            {
+              "name": "NotificationChannelForm",
+              "sha256": "2e98c5232cefc6aa607c79acb625bb62a57be6e086db616636bcd6f76fce3554",
+              "occurrences": 1
+            },
+            {
+              "name": "SecuritySettingsPayload",
+              "sha256": "ca38fc0327068e10e3710624a284cd29e470a4cbd9ef2626faa79efdb749e655",
+              "occurrences": 1
+            },
+            {
+              "name": "SecuritySettingsEditor",
+              "sha256": "3e764838ebb318f37ca392b0bb3f2aead0e527ff72d15daa892dcec3386723f8",
+              "occurrences": 1
+            },
+            {
+              "name": "SecurityPolicyCard",
+              "sha256": "18b84f82feef801a3d7f06d9da7fbbbc9b66fb44cd84d05161b4e738e7f0dbdf",
+              "occurrences": 1
+            },
+            {
+              "name": "securityMFAModeLabel",
+              "sha256": "3f5a97e5bcfe2f659879349de4e2cd9346e0d69f011d114fec717db22dca3064",
+              "occurrences": 1
+            },
+            {
+              "name": "Field",
+              "sha256": "05f5e3d124622317265a5fa6e79df25d27da8d1864e0568d55852badf790a7d9",
+              "occurrences": 1
+            },
+            {
+              "name": "TextField",
+              "sha256": "11cffa6cf4bb2c9d565f04106bedf24efee2c7194bc5976c718e0695816f5be2",
+              "occurrences": 1
+            },
+            {
+              "name": "NumberField",
+              "sha256": "3f26486ec735e7c7438cc78eed8fee64f5323f3eed3d4ffbb3f1440ad3a56f9e",
+              "occurrences": 1
+            },
+            {
+              "name": "SelectField",
+              "sha256": "615eff2ee7a8c24916c4b897983a39bd04fea21139eeb52f5b04f5eacb190395",
+              "occurrences": 1
+            },
+            {
+              "name": "SwitchField",
+              "sha256": "616364b837ad2dcd49762c638901b8c6cbeb10096fd3e00261e763157317b4ff",
+              "occurrences": 1
+            },
+            {
+              "name": "CheckboxList",
+              "sha256": "ed76806e5352d11919e80412f1951cf9fe89179e95a44fab912f7cb6940a4c70",
+              "occurrences": 1
+            },
+            {
+              "name": "GroupedCheckboxList",
+              "sha256": "3e9f1e6cff7c02032846690867ceae74483227944f2a6bdce6cc1a064c993e03",
+              "occurrences": 1
+            },
+            {
+              "name": "FormActions",
+              "sha256": "80acaa5db1f50f7283936873fa91f660ffe2996215000b2b113a65e55cb3989e",
+              "occurrences": 1
+            },
+            {
+              "name": "useResourceRows",
+              "sha256": "dd061904ad1118e5b312126f0a9d4baf898c22ada571259dfa646212e091de21",
+              "occurrences": 1
+            },
+            {
+              "name": "useResourceOptions",
+              "sha256": "3a32806856bba775156452f042230c4edf58db39d46e3afd6b9ea0177de393c1",
+              "occurrences": 1
+            },
+            {
+              "name": "useOAuthAccountOptions",
+              "sha256": "26673fac2df555a9203e92fe8094b186b53478d1aed72c1f61dfe453b7e1ea48",
+              "occurrences": 1
+            },
+            {
+              "name": "useRegisteredNodeOptions",
+              "sha256": "23ef2c7725b0205dfd1d29c94eae26a9cfc59cc910c24f502d84da92fa1e4de8",
+              "occurrences": 1
+            },
+            {
+              "name": "mergeServiceHealthRows",
+              "sha256": "90de7ff0966f8d1add525808662ca64f0cf7a087ae7e56c293767cc205163813",
+              "occurrences": 1
+            },
+            {
+              "name": "mergeServiceHealthRow",
+              "sha256": "31717274bce027f5b49fd6a91d023b2b8a223399fe1ff531aaf083eabceb41d7",
+              "occurrences": 1
+            },
+            {
+              "name": "serviceNodeIdentity",
+              "sha256": "64494fa63b148b0e39bd9633b0efca019a224fe8035e274b18257e70124a335f",
+              "occurrences": 1
+            },
+            {
+              "name": "compareServiceHealthRows",
+              "sha256": "67241f12a9b5ba928a39ec9a1cdcb25026d441d3bd7d4fea707831d66524ea28",
+              "occurrences": 1
+            },
+            {
+              "name": "permissionOptionFromRow",
+              "sha256": "77aa4d9c850adc33f69172540d2a400591f3337c68366f969754c4aacfaf8c91",
+              "occurrences": 1
+            },
+            {
+              "name": "permissionGroupLabels",
+              "sha256": "26133f7e9a7c9606595bb35bb286932f4f33d2b90cd72cdad54106fec1d1d40d",
+              "occurrences": 1
+            },
+            {
+              "name": "permissionGroupForValue",
+              "sha256": "dfa9b6ff8a622bbbae6e90a925c50916e5a6cd23ba92d8134a373a031e151672",
+              "occurrences": 1
+            },
+            {
+              "name": "permissionGroupLabel",
+              "sha256": "7ab24fc911d2c841792684b7c6862b29cff3b516a03f624c2aea615997578cda",
+              "occurrences": 1
+            },
+            {
+              "name": "permissionLabel",
+              "sha256": "28d88b20848cd29148b9fee1a7ad1857d0af826b2153dec1121f1dd2f6ed0fbb",
+              "occurrences": 1
+            },
+            {
+              "name": "permissionDescription",
+              "sha256": "74db01d5568ec06a4df32288075ae004fe7fca1a56dafeb88691bebd57db9bca",
+              "occurrences": 1
+            },
+            {
+              "name": "humanizePermissionText",
+              "sha256": "0cd8698e16a110903e1cbcd83047baad645379b42f46686fb64bf08f063e37f1",
+              "occurrences": 1
+            },
+            {
+              "name": "toggleListValue",
+              "sha256": "2a80bba869ca58ba732820f2dfd153d8be1c412ea82565263ff91c25718829c9",
+              "occurrences": 1
+            },
+            {
+              "name": "numberValue",
+              "sha256": "845360e708421574257ba4a6c277474634c8282e70e48e276f3df95dd26a97cc",
+              "occurrences": 1
+            },
+            {
+              "name": "numberSetting",
+              "sha256": "899ecd22e667aa55412b47a61f9dda78ef808f81429feed5f8fd9c9843526b73",
+              "occurrences": 1
+            },
+            {
+              "name": "stringSetting",
+              "sha256": "716dd1241c6477241f729aaa739527c0849bb0715f07c486deeb7802f7684e7f",
+              "occurrences": 1
+            },
+            {
+              "name": "stringListSetting",
+              "sha256": "373623cc6ec66fb9819440fbbf98ce762bb2f5a153a9b70e92a5585e0c74bb93",
+              "occurrences": 1
+            },
+            {
+              "name": "splitList",
+              "sha256": "8f65fa26ed9ea44aeff8bda8be21246ec3052b2d9219ad6b4a63a128c605dda3",
+              "occurrences": 1
+            },
+            {
+              "name": "compactRecord",
+              "sha256": "e96c323a8b7e40f0a8b4117feaaee2f1eb3495cc1547a2808cc629e09664310b",
+              "occurrences": 1
+            },
+            {
+              "name": "rowString",
+              "sha256": "b1f6e34ca2019899ddc70c47864e0517a16b7d818230948af4c0cf92b6e61970",
+              "occurrences": 1
+            },
+            {
+              "name": "rowBoolean",
+              "sha256": "64cb5f853c570c6e1676554438540b4e62ca7576cc3e9881a0d11153991db8ed",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeDeepgramLanguage",
+              "sha256": "23a65ebe253f95e32433f34f8fceec1234916d17462f79e31da7d3f177b7759f",
+              "occurrences": 1
+            },
+            {
+              "name": "firstNonEmpty",
+              "sha256": "92a17300f741b1fcab511762ef5a150ef30dc8a7e3c8bf4ccf737302f083071a",
+              "occurrences": 1
+            },
+            {
+              "name": "ResourceTable",
+              "sha256": "085c495f1d642a4c2f91fdc1f9dbee01dd4f8a40b2d43bda94c309d4eccb7451",
+              "occurrences": 1
+            },
+            {
+              "name": "CopyResourceIDButton",
+              "sha256": "f9cfc4707a57190f05170f78a3758e2a18c9bf70958d62249e6f2cc1b0522a2a",
+              "occurrences": 1
+            },
+            {
+              "name": "OAuthAccountRelinkButton",
+              "sha256": "ad62dfc07228ff8251a7931e4f2864464a3cc0feb75641e918508d0feafbbbd3",
+              "occurrences": 1
+            },
+            {
+              "name": "ObservabilityAction",
+              "sha256": "5b4def9a26f1526c83109e1301bb38485a6a50f2ebcbf4f17780372bf9fff5c9",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityActionButtons",
+              "sha256": "b26e2c39326cb6f578c1b35264447fb71a3b02a0a2ee30a05cdaee7b43193dd8",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityActionSuccessMessage",
+              "sha256": "c1a24ec029066003194d9dcb0251592ff0876f528289403c3309f62681c068ff",
+              "occurrences": 1
+            },
+            {
+              "name": "EditResourceButton",
+              "sha256": "628d95d1073fd2339bfd654aaba284fbbb6db040e255677004e26f291bd3f977",
+              "occurrences": 1
+            },
+            {
+              "name": "resourceCanEdit",
+              "sha256": "cf32c5299362193d1fbdf697e8ab6576d1f3aae1204c46acad3a55a932e88d4f",
+              "occurrences": 1
+            },
+            {
+              "name": "resourceWriteErrorMessage",
+              "sha256": "84b6d891ea1b74ed3d80fe3a29cb0935f2732b363b701f7bfe438da2ba7f055e",
+              "occurrences": 1
+            },
+            {
+              "name": "oauthAccountRelinkErrorMessage",
+              "sha256": "6f1266b1d3e880575f741655cbff82b8332b9b6a4a0fbed9ff098b4967f66bec",
+              "occurrences": 1
+            },
+            {
+              "name": "notificationChannelTestRequestError",
+              "sha256": "a3d3f988355c7efe25a10b0c2b0a49dc5028f03f1b546b6934df029af6cba3a6",
+              "occurrences": 1
+            },
+            {
+              "name": "DeleteResourceButton",
+              "sha256": "5342eb20f53f7cca22eb31630f910d5d491b59338fa5ba587415e35d77f66bd4",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeRows",
+              "sha256": "842407dc3610bf60e92f3de45a9489e6763aa18509ae57c85d73fe7fd61e0b03",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeRow",
+              "sha256": "031c25e678c58dc4911753d7c12002e3db4a96906f435d785b24947cb16a0f59",
+              "occurrences": 1
+            },
+            {
+              "name": "enrichResourceRow",
+              "sha256": "58fdb002052c5bc9f773806ca889edc016487d789a5bf63861848653a9f66cf8",
+              "occurrences": 1
+            },
+            {
+              "name": "profileSummary",
+              "sha256": "6f453c61552f426e93e4eb914bdfa686e4106a5d7f3302b5828e03309437b69d",
+              "occurrences": 1
+            },
+            {
+              "name": "visibleColumns",
+              "sha256": "805673fade6af4443b526556054fead0f09c1e075aa9f0d73d9956fe6bf633d6",
+              "occurrences": 1
+            },
+            {
+              "name": "resourcePreferredColumns",
+              "sha256": "d6c2b3ef96f120d3a9a762c0d5f4ae23787aa7b60d81ac6519268e8c9f74ee21",
+              "occurrences": 1
+            },
+            {
+              "name": "isInternalReferenceColumn",
+              "sha256": "515dea508f9073fb0556a9d2b39a32458822862ef3c89bbfc6f0b8e192a9d246",
+              "occurrences": 1
+            },
+            {
+              "name": "formatResourceCell",
+              "sha256": "d59eff2896032c8b953b2b0fafe6c92e5df698ccc0cb0e2b453cbc7b10814bc6",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityStatusLabel",
+              "sha256": "da78868e9eef08edef8b33cb38186d344b164b0eb0f5fcf8ae5db88768f159ee",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityActionLabel",
+              "sha256": "316ea8570f7731501deee8c52fee92f8d5bfbcc8860d0546d686fcae2fa4f747",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityModeLabel",
+              "sha256": "799b05de3ecec2b1fa68c0610af963cefec454f70dc006354601d3cc0443dc05",
+              "occurrences": 1
+            },
+            {
+              "name": "formatCell",
+              "sha256": "eb28f01f91f7850200990606daed3aae4c7f8cf6dd086c1f0ee99e0e2d29d0f2",
+              "occurrences": 1
+            },
+            {
+              "name": "formatNestedValue",
+              "sha256": "e13cc03f1385c12ec130e2e9b45195de97b8ff9269802462634c4373cbaf79a0",
+              "occurrences": 1
+            },
+            {
+              "name": "formatScalarValue",
+              "sha256": "60fd0f76f8d39fd2da37952be0438316fa2824cefc603ddf4157d509851bf2a4",
+              "occurrences": 1
+            },
+            {
+              "name": "rowValue",
+              "sha256": "e8c0fefc82367ac2bf6f0c73dad52e7cec0efa9bfb55ae839682fb999255e536",
+              "occurrences": 1
+            },
+            {
+              "name": "nestedRowValue",
+              "sha256": "95561a049ce7cc14be587dc399b02b86dfd7773c733d5143bbc7a283d7a9a7d7",
+              "occurrences": 1
+            },
+            {
+              "name": "labelValue",
+              "sha256": "965aace950dfdcdddc543d59912b1e30be4bc55befe1e96043fa78c852b7f45f",
+              "occurrences": 1
+            },
+            {
+              "name": "oauthAccountOptionDescription",
+              "sha256": "7b9ef9b90ec9727d90e5502095a27524e51410ac04e65f792b9a1b529927e599",
+              "occurrences": 1
+            },
+            {
+              "name": "OAuthRefreshStatus",
+              "sha256": "b21b4fe07df74acbd5fb1d8ae2ad09319c940089fc00bd975b0505dd61a16fa5",
+              "occurrences": 1
+            },
+            {
+              "name": "oauthRefreshFailureLabel",
+              "sha256": "b75a708f05353f949b6b7cd1cfa986378e3cd252d16f9c94c3a186c432816823",
+              "occurrences": 1
+            },
+            {
+              "name": "enabledLabel",
+              "sha256": "0cdf9167a4268a4c729edd8692c0c253cb264ae39443efe0ffd0b8141792ec61",
+              "occurrences": 1
+            },
+            {
+              "name": "compactList",
+              "sha256": "f974b57baebdd53dc05766c285fa5d8907b976d13f9b45fbbc49e7d46922852d",
+              "occurrences": 1
+            },
+            {
+              "name": "isSensitiveKey",
+              "sha256": "f40d546c17b965ed3d3e0a0fa8b12ea20609d34bfedcf08835427e03fb442d23",
+              "occurrences": 1
+            },
+            {
+              "name": "humanizeKey",
+              "sha256": "e9541907728e6377616b2d68bc3758e1b8b3fd78d634f26e542796119fa5c7d4",
+              "occurrences": 1
+            },
+            {
+              "name": "valueLabels",
+              "sha256": "712780586393ecae7075a531d018cbd425115d8e380db5d0bc3fa8361c0497db",
+              "occurrences": 1
+            },
+            {
+              "name": "columnLabels",
+              "sha256": "32f8af08e9148608ae7b877297babedb62da6e4968bdba7d1966c970823443c0",
+              "occurrences": 1
+            },
+            {
+              "name": "columnLabel",
+              "sha256": "0d7e9551c9b6cb199e1b1d8a895c66b6bb6b17f393a17c365ef006cef8567829",
+              "occurrences": 1
+            },
+            {
+              "name": "secretStatusSummary",
+              "sha256": "75b35af14405a639f8ef4d9ed119e368a915dfa8ee8ee672dccb0de07e6cb1e2",
+              "occurrences": 1
+            },
+            {
+              "name": "dynamicSecretPrefixes",
+              "sha256": "6cf241a8208a0d137a9f399d468199775adaf907b16338a736eca8c542dc6cea",
+              "occurrences": 1
+            },
+            {
+              "name": "resourceRowID",
+              "sha256": "77ada7090fb591c4aff9e7a6845028e9e8f5ded282717cb67ff78015c4971411",
+              "occurrences": 1
+            },
+            {
+              "name": "resourceRowLabel",
+              "sha256": "c29ddc0cbd54cf0c423682ec8e63d91b9227c0c69f1895bb87355341d131caea",
+              "occurrences": 1
+            },
+            {
+              "name": "isRecord",
+              "sha256": "27cde4c382062d8d9dc8fefb6abe549f34bcd6f248e565c4fffc246ebd40c1f6",
+              "occurrences": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Application / Updater",
+      "sources": [
+        {
+          "path": "src/features/application/application-info-view.tsx",
+          "sourceSHA256": "a618a7995eea3b09f015b2d6e7a338a77477b9aa5f13e0220590fd48eeceb274",
+          "declarations": [
+            {
+              "name": "Feedback",
+              "sha256": "f21d4fba02582ca5527ec2af4d7b2bfcd28f51272cef394201b14c119207f55c",
+              "occurrences": 1
+            },
+            {
+              "name": "SystemUpdateOperation",
+              "sha256": "5825ce7135db634d8d722603b22fafcc9786f1830f960b186f34d4b1917cfdf9",
+              "occurrences": 1
+            },
+            {
+              "name": "PortReconfigureOperation",
+              "sha256": "a2e390b240e736c91dc8a99870a1ec5200dc1bb19ffb9248d2b427f2f10623c5",
+              "occurrences": 1
+            },
+            {
+              "name": "PortReconfigureProposal",
+              "sha256": "679dd0569c25a23c1c54f5ef6f34000ca3537890cdff45da997b83e5d51cff3f",
+              "occurrences": 1
+            },
+            {
+              "name": "PortReconfigureAuthorityContext",
+              "sha256": "11aafcf9bb4a54e685d28c823ca8401256ba76ea6a7f0201e04ce30cbd114489",
+              "occurrences": 1
+            },
+            {
+              "name": "RegisteredServiceOperation",
+              "sha256": "9e5362ffc62d6ecd0b255b444b94ef9a8cf507c2ac9621ef173106268745a18b",
+              "occurrences": 1
+            },
+            {
+              "name": "ApplicationInfoView",
+              "sha256": "638e9c586a4aa10a2717a28e7f26647f8469fc7015af621944e345300ace2311",
+              "occurrences": 1
+            },
+            {
+              "name": "SystemUpdatesCard",
+              "sha256": "30f38d08ed73cddef390244f3ba5844fec298df6e760592b8d0f4f8dd7f9bdf9",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdateAgentStatus",
+              "sha256": "1a9ff3adb6fadfb985b81386e7c690d68d88a1b88917e6b16704fa077e6e1c9e",
+              "occurrences": 1
+            },
+            {
+              "name": "SystemUpdateTargetPanel",
+              "sha256": "31211e2da5c68c37a6f867b57584c9e94a4ba797bc8abf60e65f627d81b2fe59",
+              "occurrences": 1
+            },
+            {
+              "name": "RegisteredServicesCard",
+              "sha256": "6d54566778745c322e1a834efb0e65f4bbfcfd39c285795604dd553c954ea84a",
+              "occurrences": 1
+            },
+            {
+              "name": "mergeRegisteredNodeRows",
+              "sha256": "d52961d089c9684311b55b2e9428771e9e91cf2ce01e99416930f12b8fd50afc",
+              "occurrences": 1
+            },
+            {
+              "name": "mergeNodeRow",
+              "sha256": "2d0f4971dc1a4fc07868b5461aab16b856bf79ca488095c5a3c79248daad14ff",
+              "occurrences": 1
+            },
+            {
+              "name": "RegisteredServiceMobileCard",
+              "sha256": "deb7b02bd683c6686b5120863b43b8e5829468726422cf3e8ac1ad3fcf00e076",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeIdentity",
+              "sha256": "970d0502dfdfd51f28079310c0c88d96f4e801568d5dc2d99d908271e41645db",
+              "occurrences": 1
+            },
+            {
+              "name": "InfoItem",
+              "sha256": "a4c5b1bc96b1b5e3c12f3222a59be4f935fa0c44572d44e30cea0e4fc97768d3",
+              "occurrences": 1
+            },
+            {
+              "name": "SectionLabel",
+              "sha256": "ae77dc93699c91b22afdac5dab4d865f24c2801280b7d567f77794f8d59957ea",
+              "occurrences": 1
+            },
+            {
+              "name": "ServiceEndpointSummary",
+              "sha256": "c0dcb735dd35541f9954159c75ad1c58ce5aa3ed4a94c9e6dc0fc47b81dd7134",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterTransportSummary",
+              "sha256": "eedcdaca964ff3fdb86dc9a84fca1dad2438b76752bc9a0e6424bf00dbad2e13",
+              "occurrences": 1
+            },
+            {
+              "name": "EndpointStateLine",
+              "sha256": "bac167c0a471b3a1f2ed4c1246ee2bba211ee3a2b401631ebd4557347a44084d",
+              "occurrences": 1
+            },
+            {
+              "name": "PortReconfigureControl",
+              "sha256": "bb2ef1443dad3205b4ebccffb7da1c339e8fd9993ee79096283b458192f40cec",
+              "occurrences": 1
+            },
+            {
+              "name": "PortInput",
+              "sha256": "dc9f7c0e8d6f18b16cc0e4c4738ea4da182a46825ce37c0aba94220ffab801a4",
+              "occurrences": 1
+            },
+            {
+              "name": "PortMappingValue",
+              "sha256": "c3c66859daa01551431ca5825eb461667168701f5ff13072cf72746e1b3f0a13",
+              "occurrences": 1
+            },
+            {
+              "name": "validPortInput",
+              "sha256": "08178e7a6598c58a927ccdf36fdfaefb30377483c21c59f6428ce025d3820165",
+              "occurrences": 1
+            },
+            {
+              "name": "formatPort",
+              "sha256": "d1d58f717faa9ff25d70c7ac24a6ea4222bc2a2e577c8b26c1a224ac818525a7",
+              "occurrences": 1
+            },
+            {
+              "name": "dockerPortMappingLabel",
+              "sha256": "cc7386174bc9c3bd9b77f6a20ea91cab43848b9754f1b5a28d91407dce377866",
+              "occurrences": 1
+            },
+            {
+              "name": "dockerPortMappingTone",
+              "sha256": "3cc679aa4a3451b447b2c9553ac4f236a5411de88bf5fea7636be5698fcc8053",
+              "occurrences": 1
+            },
+            {
+              "name": "portReconfigureReasonMessage",
+              "sha256": "d8a39176854d170d652d051433c2420510a1f8ca044b4a4fb3419312759cc8fa",
+              "occurrences": 1
+            },
+            {
+              "name": "compareServiceRows",
+              "sha256": "d34d1aa13a2f0703abb8bc7471547f550f406ccc8ea7d076b54d5d10b0c61980",
+              "occurrences": 1
+            },
+            {
+              "name": "portControlKey",
+              "sha256": "8b3f40904f6f9db25e2961395896fc7e9a9cd85c2d6a0943b90745f6777bcfa7",
+              "occurrences": 1
+            },
+            {
+              "name": "compareUpdateJobs",
+              "sha256": "8adfda81846e78f4d9db74b60866e9a24a1ab023427c3fa9dd563d6a859cd99e",
+              "occurrences": 1
+            },
+            {
+              "name": "latestJobsByTarget",
+              "sha256": "c879e40a3df9f4248a93fe3229fd2ce100e3b83d866ffcdf0b6a6d98e210d977",
+              "occurrences": 1
+            },
+            {
+              "name": "updateCanStart",
+              "sha256": "c5ca9e563747c27bb7a7de1ae6b70f973d0b90cbafaed99c6d25972e9e2ccc77",
+              "occurrences": 1
+            },
+            {
+              "name": "orderBatchTargets",
+              "sha256": "cd9c7b0225fb31fef11332a7ddaca81decd2687647a0bd8c2b4a47bc85875329",
+              "occurrences": 1
+            },
+            {
+              "name": "availableSystemUpdateTargets",
+              "sha256": "123f96a5f98211741951d9db17792891f15c849291ade6b829633710ac07fad3",
+              "occurrences": 1
+            },
+            {
+              "name": "softwareUpdateAuthoritySnapshot",
+              "sha256": "b11209651c23b21096de67c533d82f3a72840c254a739e042f15e960c3d36181",
+              "occurrences": 1
+            },
+            {
+              "name": "batchUpdateAuthoritySnapshot",
+              "sha256": "2ba6a50b29d215ab6d2f7dbb4615be8494c5e8097179aec624d84c89766fced2",
+              "occurrences": 1
+            },
+            {
+              "name": "cancelUpdateAuthoritySnapshot",
+              "sha256": "791819764b6165801fef8902fcd184e1d5acecdd31ff2ce9006b86277b68edf1",
+              "occurrences": 1
+            },
+            {
+              "name": "portReconfigureAuthoritySnapshot",
+              "sha256": "0326d6c460d1c5ce68364675d206140d7d016cbaa109222e8bc5864b925f0ee2",
+              "occurrences": 1
+            },
+            {
+              "name": "validPortNumber",
+              "sha256": "64951cec0562ead338f5e8bf98761f6bd80737d59fe67bad552f069ba267c26e",
+              "occurrences": 1
+            },
+            {
+              "name": "freshUpdaterAuthority",
+              "sha256": "64278b847032ca1224181e576b68a3bc4a76ee285603d85a88dbc9fa4e53d218",
+              "occurrences": 1
+            },
+            {
+              "name": "unavailableUpdaterAuthority",
+              "sha256": "ba5521d9f93b84347315c66142be3d45e7922941e42e79d2a97ba0373c94b46e",
+              "occurrences": 2
+            },
+            {
+              "name": "targetDisplayName",
+              "sha256": "c0ee95d2d24017c75d68b09570a806343551cbd301f1fd5cd6baffeb319ac588",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateJobMessage",
+              "sha256": "f3be4ef54984c0cf36300bfbece7ace9a6cdd18445f6193f9249ebc398ff7ed3",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateJobDisplayStatus",
+              "sha256": "dd9828819b8cd3edb264972de6549d1ea31bef5e26665a3bb961ea073eebf33c",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateJobOperationLabel",
+              "sha256": "6df7f72a18e8653c8e730344c33beca6c9a0379949cf5958eea0d8491324d827",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateJobChangeSummary",
+              "sha256": "0684860c16b1701762cda92275426b0602bceafe3eb025ffcd27443fde09ba3b",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateSucceeded",
+              "sha256": "6890df8216db64253c5b13271e4e6fd660711e9d2c4f060058a2caaaaa9437c1",
+              "occurrences": 1
+            },
+            {
+              "name": "selfUpdateTerminalFeedback",
+              "sha256": "5ad2970418303fb2f88b1653a75df79b5764712c6fda12eac6be682588de479c",
+              "occurrences": 1
+            },
+            {
+              "name": "newIdempotencyKey",
+              "sha256": "11a9b5e63c78633136f13bff815d310834690ed4b9ea7c0752460fc01b6519da",
+              "occurrences": 1
+            },
+            {
+              "name": "mergeSystemUpdateJob",
+              "sha256": "635adbd70d4d744fd026f756d4526e1de609792bac2f42105e1dffa7fbdda4b6",
+              "occurrences": 1
+            },
+            {
+              "name": "shortCommit",
+              "sha256": "31a6068fa147bef75092df7f3941ffc6115b326fafe03daf1d62c1a9cc7fff58",
+              "occurrences": 1
+            },
+            {
+              "name": "formatOptionalDate",
+              "sha256": "b9f3ddcfa1fd91bc7018f318ee97551bc8e82b9cf359f1a27ddb41cd28c9ec63",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdateState",
+              "sha256": "4c429df2ef9a77f99983a1f25f18961bb5a36759de8dc10c8fb16eb19860beb6",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateTargetState",
+              "sha256": "c41334c63d82aa40cd9c23a7f629796907e66f4a21b2e6ffa5dcfe727b88fb5e",
+              "occurrences": 1
+            },
+            {
+              "name": "controlPanelUpdateState",
+              "sha256": "62f005edd2894e36b36cf081b27be9951c4fbe80b07880ec9b221ce277406d9b",
+              "occurrences": 1
+            },
+            {
+              "name": "serviceUpdateForNode",
+              "sha256": "75e24436a0fc04ec19812516da44c2cc00621681c0d52f1faed79da3764ac35d",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeUpdateState",
+              "sha256": "c959e96d513eed8295c8ed705cecde52fdf94d60e9af9bb720d0200deeeb2ec2",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdateStatusBadge",
+              "sha256": "9a9504d47799482e69d7d828575d2f53410602acadd0a15d592ac2a26fd00aba",
+              "occurrences": 1
+            },
+            {
+              "name": "serviceTypeLabel",
+              "sha256": "658ce7d59eaad222af8f543bd7b5f911268b5872d2e75638528dfb48aac04578",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "path": "src/features/application/updater-settings-panel.tsx",
+          "sourceSHA256": "f0d067425a8c620a3e12e886cb700f05fdfb1b9fdd58d1c0e6b975b0d3f00724",
+          "declarations": [
+            {
+              "name": "UpdaterSettingsPanelProps",
+              "sha256": "05905152a0b8500704b49fa3dc067b07d775ee0b2c4b7c4ccbc32da5be864536",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterSettingsFormState",
+              "sha256": "b970e83b32f7aea78c21e98485d79391563061809ea7ab86baffc6c7f248e407",
+              "occurrences": 1
+            },
+            {
+              "name": "PullOwnershipDeactivationAttempt",
+              "sha256": "00f0ee553bcf35dc15c552072057d992a4df97f2daaed1407fd843c91c689acd",
+              "occurrences": 1
+            },
+            {
+              "name": "serviceTypes",
+              "sha256": "e6c3fbebfcdd8a30362e576017f2d64dde2b4404b5101944a901dc48f36fdd07",
+              "occurrences": 1
+            },
+            {
+              "name": "deploymentModes",
+              "sha256": "f1b876fd4a13aa50d4643d7d3267547b1afe361cefed61cde0b7fa1341e2b63e",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterSettingsPanel",
+              "sha256": "09c2a7815ee8914f51e4171d176046ac0cd54ad98edad91e1f71ecc8de644e56",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterSettingsForm",
+              "sha256": "9f5e8ced7381cd819f496f74506202ca0886229b3b2352fb3202e6c720d6ba94",
+              "occurrences": 1
+            },
+            {
+              "name": "OwnershipStateItem",
+              "sha256": "107654f826542de944f9fb14f3a39d4b1e1acee0ca412affeae2bc798245d15c",
+              "occurrences": 1
+            },
+            {
+              "name": "ownershipActionAuthoritySnapshot",
+              "sha256": "5e9fe7b45a68d3e3d902e38b210d91e672fb874622d70daeb96a1474a6a6faa0",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsFormFingerprint",
+              "sha256": "acfe633a331ed0c4fe0effaf3f1063bfd16c90bed4121e239ed8f851b9dd3eaa",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsActionAuthoritySnapshot",
+              "sha256": "f310490d63b26590a2dd11ee056be6984049c2d2f022cb4545eddcead4d9ee4e",
+              "occurrences": 1
+            },
+            {
+              "name": "unavailableUpdaterAuthority",
+              "sha256": "ba5521d9f93b84347315c66142be3d45e7922941e42e79d2a97ba0373c94b46e",
+              "occurrences": 2
+            },
+            {
+              "name": "ownershipEligibilityMessage",
+              "sha256": "49890a56497e3813de787c5a3b00480f7be75ceddaf4e1a7261db77974b9bd93",
+              "occurrences": 1
+            },
+            {
+              "name": "pullOwnershipMutationErrorIsAmbiguous",
+              "sha256": "0ab11ef5d059307ca52712ba33f1ce706b486fc0f03908116d6e5d691bf3fb8b",
+              "occurrences": 1
+            },
+            {
+              "name": "Field",
+              "sha256": "ae856514e649249180019bf1ec406098308ddfa264af03e92afb997f9fe9a161",
+              "occurrences": 1
+            },
+            {
+              "name": "settingsToForm",
+              "sha256": "d0fba345545f6dc6da651d9649ac39b605c03c8e477d4b8d06ff0c507f3c23ca",
+              "occurrences": 1
+            },
+            {
+              "name": "buildUpdaterSettingsPayload",
+              "sha256": "150bd902e2a4785608e965abbac8353a2bae40c83e8f6e6cee46972698fb3615",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeHostForSave",
+              "sha256": "dec1f412980620e9515cfe04f06ebacad17880824251bcb11c4febc7505758d2",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeTargetForSave",
+              "sha256": "665f3516592e64b6fea352e4978e6a2c00bca3338f268920cfa2fef70b1def10",
+              "occurrences": 1
+            },
+            {
+              "name": "requiredText",
+              "sha256": "b8c23052edb9d1b1d12feb27e81ae231957dc63e7e9eaec83e2b0c1fff4b1730",
+              "occurrences": 1
+            },
+            {
+              "name": "validPolicyIdentifier",
+              "sha256": "bda18678e8b30df3ffe3a9105ef664facd8c7acb8d3a0604c9586698a2b8d363",
+              "occurrences": 1
+            },
+            {
+              "name": "requiredPort",
+              "sha256": "7a969093e75295e9992f7a120ed2f2deefa66b538140134ace960f0c2a24e95c",
+              "occurrences": 1
+            },
+            {
+              "name": "requiredInterval",
+              "sha256": "bfa8f441d8211c69bdbeddc64c4678b9eaaa410d71ea3d1d595b7cd530075be3",
+              "occurrences": 1
+            },
+            {
+              "name": "requiredHeartbeatInterval",
+              "sha256": "9f52942c3faae9d317e6985bd3e6b250ff22c49cc61d5842c50f3d954d7ebdae",
+              "occurrences": 1
+            },
+            {
+              "name": "newHost",
+              "sha256": "6736a44e3ea3c43b6ec37e2dfec40b7d6eac43d31593d014488be7f02f1ea70b",
+              "occurrences": 1
+            },
+            {
+              "name": "serviceTypeLabel",
+              "sha256": "8d51d807ae72933fe929bf8141a602bbd4f5cf209cb91486290aefeb11ac0a6c",
+              "occurrences": 1
+            },
+            {
+              "name": "selectOptionsWithCurrent",
+              "sha256": "e85ea9ded7f849f7a77b58a19cd96ae0aa85017d4a1a3a347e2e6004708e5f9c",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsErrorMessage",
+              "sha256": "33a89d3e7ebf0e9701d9184bbe4ad692a10c955ead28452c87a36a6faf6a1995",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "path": "src/features/nodes/node-registration-view.tsx",
+          "sourceSHA256": "2b0b2693571a5cf7e2d2301fcb66ebf32db4cb5938098e24bb62c2cd3f876cee",
+          "declarations": [
+            {
+              "name": "nodeTypes",
+              "sha256": "5c8bb37ff39139687b7c6ddbd5c4ca7e09b1a164fc219db2df05921837e34698",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeConfigurationResponse",
+              "sha256": "3636d70c95a10d5d1f82c56c54ab3a982b4d2e482dce5708459e44edda4bd750",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeEditForm",
+              "sha256": "dd7e351bfdd450178d3a6e1cdab7c554b465ff691c9f56c6705d864813385b02",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeRegistrationViewMode",
+              "sha256": "50476db332bfe2374579015f039cf983417c66bac68f0dbc82b206a6cb4130f2",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeRegistrationView",
+              "sha256": "cd7b5b68846dea98bc6669f640ec4956001a54209beabf2d8f3289da09b92ac6",
+              "occurrences": 1
+            },
+            {
+              "name": "LegacyNodeRegistrationView",
+              "sha256": "5c566fcbf803787a8aea44d81080c20a2a4af163d9ce580330683b6262e662e4",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeEndpointStateView",
+              "sha256": "fd1e8fb06bd7c2fbd4b829cbe53298cf4e0611e5123f925b66b327543d2f54e6",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterTransportStateView",
+              "sha256": "cde77ea8277d7e1a8a45f70ccbf9860eeee0b759ca1cd51b48e180aa83f11d1c",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeEndpointSnapshotRow",
+              "sha256": "614eda0717893cc92ffe69899e20ef18de54aacaf982d9edb902efae158c237f",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeTypeLabel",
+              "sha256": "9cdf8dc5dade28ca5da0753dca5f13313da48af08d928d73eeb6f1c2c6f9dfe1",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeTypeSummary",
+              "sha256": "f4621f1a81f73a4060529acfd2f7140103d25e9019aa6fd6b0a9b14b79ea90da",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeStatusSummary",
+              "sha256": "6311d02f23bbe0bbe4035b0da4d444f8f68845d3001ff56eb0976c1119b5d3d6",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeReportSummary",
+              "sha256": "6a0fbea64334f64716a00421757054fffc959ea1eec22bd7b52163afb596f531",
+              "occurrences": 1
+            },
+            {
+              "name": "RegisteredNodeGroup",
+              "sha256": "78aa0b44ed0b1696534862009251e6f60c84c9d8f992b64404a5946843afdd84",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeIdentity",
+              "sha256": "2202f76a37f5fa7cb22b2e1d61645441011d0410f640a44b64bd252fe88457e6",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeDisplayName",
+              "sha256": "7cbe04c6a655ade59c69e9e7ffe23ca0bc5253a10ed869a1811fc4dec7c2cc75",
+              "occurrences": 1
+            },
+            {
+              "name": "isPullNode",
+              "sha256": "a56c7dfdeb4af7f4ca44e7cca38dc53fe2f787baaca6e65131f187a8c537e549",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeEditDefaults",
+              "sha256": "96a23dc7068758a25e1e00ba6b8a3238756d3fdce0a535be88893d7a4bfc608c",
+              "occurrences": 1
+            },
+            {
+              "name": "parseNodePublicURL",
+              "sha256": "9d4270c43392638c222c55fe8642904449fcea8b9c64942f2fcafab638aae6c7",
+              "occurrences": 1
+            },
+            {
+              "name": "editNodeApiURL",
+              "sha256": "96fa9fceb553447d88d27c58929943fb8a532973a5c66e052335e4680e823e53",
+              "occurrences": 1
+            },
+            {
+              "name": "formatHeartbeat",
+              "sha256": "ca3549017f0918d1ad575c04805ffba59c5f716a4673c878633f4f6637c32128",
+              "occurrences": 1
+            },
+            {
+              "name": "formatNodeDateTime",
+              "sha256": "952bd9f4116223b38b8d160f74519569121e75d6a2038c066d49760d8ddaed63",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeReportedPlatform",
+              "sha256": "43e6a70a22566a6a39bc1400639bd193f8f0c787d00bb12b4e370448d6f60871",
+              "occurrences": 1
+            },
+            {
+              "name": "NodeMetricsSummary",
+              "sha256": "06257e40eae085ffa1a97621fba4eb6b353b5bf14c877b1abc39349eb3cda7fc",
+              "occurrences": 1
+            },
+            {
+              "name": "metricValue",
+              "sha256": "601306ccfba4d148c1d4084756708b8159222df3023c5c3b335a95d7ea912563",
+              "occurrences": 1
+            },
+            {
+              "name": "formatMetricPercent",
+              "sha256": "1722a07d3be4eca9850e1584ce687ab382431ac41d208fa9cb27098efddd6a00",
+              "occurrences": 1
+            },
+            {
+              "name": "formatMetricCount",
+              "sha256": "054f28603717c2820d2de7522ce23a3e41516532e142365bbe2b245a014919ff",
+              "occurrences": 1
+            },
+            {
+              "name": "formatMetricDuration",
+              "sha256": "30cd512853c0c0123722fad39e9d1db44eec9148b84aae041e605a88bdc313b1",
+              "occurrences": 1
+            },
+            {
+              "name": "formatMetricBytes",
+              "sha256": "a4e9498e8ea63db9716ae03a34dcdeb6abb9cd40f49a5e883e15756f3b39fdc3",
+              "occurrences": 1
+            },
+            {
+              "name": "nodeRegistrationErrorMessage",
+              "sha256": "8ea7d0a006e9c7553a83df1952b200c9484cb54bf83f79ff019707c5f0d3b390",
+              "occurrences": 1
+            },
+            {
+              "name": "SecretBlock",
+              "sha256": "4ee4eef9c773571252c68066d34fd290cb46c341c40dd0aa1a72e6e8d08cfd6f",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "path": "src/lib/system-updates.ts",
+          "sourceSHA256": "fc2ecc5bcf2fb8f7edfe7410b3ee95b9b67a90843f4cebe82f84fc2b7324b093",
+          "declarations": [
+            {
+              "name": "activeStatuses",
+              "sha256": "972cdddbbe3636fe14e2f4a6c3ccaf2c76f0f040f921f14e47e9c63ceebaaca7",
+              "occurrences": 1
+            },
+            {
+              "name": "cancellableStatuses",
+              "sha256": "1d2465bb4fb4490e54f8b40e97c13f3c9aa5ac675f4ca64b66e34c9bdfecb070",
+              "occurrences": 1
+            },
+            {
+              "name": "activeBootstrapStatuses",
+              "sha256": "2c09d9c9a393531414f32114a4e96fe7c76a59b635936264c67b6095b8ffc0ff",
+              "occurrences": 1
+            },
+            {
+              "name": "terminalBootstrapStatuses",
+              "sha256": "dec12440381659e7997da5f127050ba1489cc698d03da0f570ce390041433830",
+              "occurrences": 1
+            },
+            {
+              "name": "terminalBootstrapHostStatuses",
+              "sha256": "0075bea419dc64f7ab5cadd020ff078bde8f5abfa02026fc9177a4a2b45a8c6f",
+              "occurrences": 1
+            },
+            {
+              "name": "supportedUpdaterServiceTypes",
+              "sha256": "f3d3fadc778a23ee72d9d6c1f5635a56d32af40c4f8d4c9369ccc3f72f5e87e8",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterDatabaseOwnerServiceTypes",
+              "sha256": "d2c6cd77a37ec9e3444b7dcb759967f939a87e8a6181eae8ef981d98870696b4",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterDatabaseNamePattern",
+              "sha256": "d671e2ad794dcfa74df4641254218d5241728c13f7a9b6aa12dc2ef625496350",
+              "occurrences": 1
+            },
+            {
+              "name": "standardSystemdLocalListenPorts",
+              "sha256": "c32178a9102a347c340375fe2f2dd12db7e82514d1da0599018647ebd041a841",
+              "occurrences": 1
+            },
+            {
+              "name": "isControlPanelUpdateTarget",
+              "sha256": "fb4e44476483410c9170a81e8368edfb1518a9b1359d6cc38321029aa6b14207",
+              "occurrences": 1
+            },
+            {
+              "name": "isUpdaterPolicyHostID",
+              "sha256": "b38cbd9a3269b0d052a7a5853bc33565a622bb5755919987e723cc49f110d360",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsTargetRequiresDatabase",
+              "sha256": "d805d1815875e74b3bc4976e1b4f98d6c6cd5f1eaed1ee97d0a53297de017904",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsTargetRequiresLocalListenPort",
+              "sha256": "01c229bdccec1c468b0336e8056dbb25df528b629d47397883f59d025a515a78",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeUpdaterSettingsTargetLocalListenPort",
+              "sha256": "4fcd60a9d1154d62443b9f4fded12d6b4e3178f51ee5e45e0837b9f0aee1fbaf",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeUpdaterSettingsTargetDatabaseName",
+              "sha256": "88ba417840c332164f1affd43b217c1eb7b6b107d221bdd79923c0242965d4cb",
+              "occurrences": 1
+            },
+            {
+              "name": "applyUpdaterSettingsTargetPatch",
+              "sha256": "7a6e5c156acba85f849b41a6e664c3455e2d5f5bc5c98aba6c1ce40a295595a2",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterSettingsTargetOption",
+              "sha256": "2a8c362b6a3556619b3055a43841d910e2da05c62c0fe4f4d6f581f7b9f5f569",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsTargetOptions",
+              "sha256": "af8fd48194a399ab09577b7fd7045dac7290dbcb01e3a41b482d15b5c034711f",
+              "occurrences": 1
+            },
+            {
+              "name": "firstUnusedUpdaterSettingsTarget",
+              "sha256": "cbb9c0f310daf8a288c16a3a583b7c5b9985aa32f69e65cd22b9b699734e249b",
+              "occurrences": 1
+            },
+            {
+              "name": "applyUpdaterSettingsTargetSelection",
+              "sha256": "526d9fe0adf0854f9f8b68f49bc2fa81dbb37ebbc4838ad7546f1267c3069d6e",
+              "occurrences": 1
+            },
+            {
+              "name": "selectableUpdaterSettingsTargets",
+              "sha256": "4a7b9cbdec46be93961ef46a9a8b054a577a69531640ab2ce0f6b469d203171e",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsTargetID",
+              "sha256": "53b3417e1adc0c77d59bb7908fb199890e12c05ff3cd9391551817252d84a956",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterSettingsTargetIDs",
+              "sha256": "90decf5d4855b2f2004e2e9209c6d4a35a45bc0f0b76a2a9be2f3a25eed1d823",
+              "occurrences": 1
+            },
+            {
+              "name": "isSystemUpdateJobActive",
+              "sha256": "0195cb2569772b99966e74a6aac6c298257dc3d821f78cd3a67d6ecb8fca5b44",
+              "occurrences": 1
+            },
+            {
+              "name": "isSystemUpdateJobCancellable",
+              "sha256": "3e97db2fe123399705d1e024350ba74e0251c9455579da510bf905155e832d06",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateMayDisconnectPanel",
+              "sha256": "fe844a4e1917ca6741da379b9435516e68c02ae7c8d72da04f2e701a11a9ecdb",
+              "occurrences": 1
+            },
+            {
+              "name": "SemanticVersion",
+              "sha256": "18006285a80e2bf74e44e9b7b6778f1197078c0c46dd3bccb833827eb4735adc",
+              "occurrences": 1
+            },
+            {
+              "name": "compareSystemUpdateVersions",
+              "sha256": "40f02d8a9c257d4bb469340ff5e3cdffccb764c91e4140740c456a54ae8d9b5f",
+              "occurrences": 1
+            },
+            {
+              "name": "parseSemanticVersion",
+              "sha256": "7501b0cf75464cc9725b7fa561ba805c9f342920727c6655a010122c16244583",
+              "occurrences": 1
+            },
+            {
+              "name": "compareNumericIdentifier",
+              "sha256": "0b864ee8a2819b65ee7622ebac10555147b13e2ed1504db580b345c129dddd09",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateStrategyForTarget",
+              "sha256": "c5c5d1155f4181e068d37e20b1e75691cd9988e8d541f87bf788da101147f096",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateConnectivity",
+              "sha256": "3304dce2dbffcff1bcf48f5aa58207974aaddbc698d525234d343a7ddc120668",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateUpdaterPolicyState",
+              "sha256": "d0289fcfe467d76b927802b0fc6640aca3989b5dd85abf87fd835bb51f2b3d2a",
+              "occurrences": 1
+            },
+            {
+              "name": "isUpdaterHostBootstrapJobActive",
+              "sha256": "58a4ce1bda0b94fbf40ebbd4e13ad318c7ac2bbed0c8893911aa62a1c2ffda14",
+              "occurrences": 1
+            },
+            {
+              "name": "activeUpdaterHostBootstrapStatus",
+              "sha256": "bc1585afac0ef4274ca3aa3b7e90c36b2dca2a229cffa8b648fb17daa9814b4e",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateHostBootstrapStatusLabel",
+              "sha256": "f4c821198c98ae435000584c5915d8e375258606b33d1ba4efa5cb8b26034e33",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterHostBootstrapEligibilityReason",
+              "sha256": "9451f92ed846133b82f595a067224969e974651d8652cb0cca264b6ed411fad8",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterHostBootstrapConfirmationContext",
+              "sha256": "b907906844db674f4f311b4df0b5adef88c596c5bb10e3e3c6440a1c6461f9ea",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterHostBootstrapEligibility",
+              "sha256": "22cc009509870e7e31814dffd5fc80e8bca62a06f43449a0cfffbd80b244bc21",
+              "occurrences": 1
+            },
+            {
+              "name": "isUpdaterHostBootstrapBulkCandidate",
+              "sha256": "0f7b667110de591c134a7ffa6bc3341ca8d520042b66b1758153e4e877e3f7f2",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterHostBootstrapEligibilityMessage",
+              "sha256": "902662fb3bbbcbfeef3993ad98ecd9b946f55a4cd81c86c708975e486771956b",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePolicyErrorMessage",
+              "sha256": "5efc108c419cc4c8be463b76eed037b7077472b481fbdc119bc778cee6283c7d",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateHostReachabilityLabel",
+              "sha256": "5e938b8a3f4e2375e986fe73833247fd93d78ca56a6928531158a9dc23c5f954",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateHostReachabilityMessage",
+              "sha256": "6b017f0f5bad3f783cb38f40bccb43ca07b3f70ae7d34aa5ae6d6992b7418f83",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateRequest",
+              "sha256": "57551a50404f74b70b98b5224575ec6a67363ee6be3206d62c91bd7982264d63",
+              "occurrences": 1
+            },
+            {
+              "name": "SystemUpdateRequestState",
+              "sha256": "295b196961035e61a2e35467a9b0f2af756a0941738c31a7debec8ca6741bf99",
+              "occurrences": 1
+            },
+            {
+              "name": "SystemUpdateTargetOperationEligibility",
+              "sha256": "77ea92114214af7491d06fe4fc1dfc7c7fb6b1b8969d145247fa6a1232f96c77",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateTargetOperationEligibility",
+              "sha256": "373ad950f7f1912de8c061233a498a9f4234178164a2f7d38b725548ef4bede3",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateSoftwareOperationEligibility",
+              "sha256": "1c52751d14d1365108e579b3d6068d4e5ca3980ab6f585f7d406a1baf3fa8991",
+              "occurrences": 1
+            },
+            {
+              "name": "acquireSystemUpdateTargetRequestLock",
+              "sha256": "e0ed76548cf82052e734312859ae1a45b10b3ab03322f6bd4af88fadd8188636",
+              "occurrences": 1
+            },
+            {
+              "name": "SystemUpdatePortReconfigureEligibility",
+              "sha256": "4c431c50f2a29c47cc8fe374e2f7ff79bc10a74612c90f4fb845430ac9831d4b",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePortReconfigureEligibility",
+              "sha256": "11b3f7dbd9f4aeb0d5b11b09976a8fc24fb5d3aef8a9d9b8575bc5bc9dd098a8",
+              "occurrences": 1
+            },
+            {
+              "name": "validAppliedDockerPortMapping",
+              "sha256": "291175c44c402510fba10fdad7695a22b5706c1ff2ed7539343fab4e4b80284f",
+              "occurrences": 1
+            },
+            {
+              "name": "validPort",
+              "sha256": "0cba27f1f499b43034a127c93d71394beca38b06c0bc5219fef62882d0d4b62b",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePortReconfigureRequest",
+              "sha256": "71726e4e997f76a4c62dd514919dfcf21920088fa0887c55467c2a19ae5a2b42",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateDockerPortReconfigureRequest",
+              "sha256": "e6a81ffb4fa22c1a3550701b7612ac145fb89c862460275700a0918035d58e27",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePortCreateIdentity",
+              "sha256": "6aac26bb2b49b23e4669a14c21182cc959ab74c9d3c58b567d1a89cb21fb2e81",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePortAdvertisedInput",
+              "sha256": "164ef8e58605c5fdc916b6af919d451e3136d6414a855f2aa27f90c09cefbf63",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePortRequestMatchesJob",
+              "sha256": "b0aa16db716540ce67337170d6728fbe67a1fb079c8a45cb7d8ebf1f2fd2897d",
+              "occurrences": 1
+            },
+            {
+              "name": "requestSystemUpdatePortReconfigureWithRecovery",
+              "sha256": "a0036175e878bb3cdb227ba7e12e5e84b424a4b5a18715d2a54dc58ed84f94ca",
+              "occurrences": 1
+            },
+            {
+              "name": "SystemUpdateRequestAmbiguousError",
+              "sha256": "58cd397f4c88f067fecf28e098412586e38725b14cacb83be1bb906db9a601e1",
+              "occurrences": 1
+            },
+            {
+              "name": "isSystemUpdateEndpointRevisionConflict",
+              "sha256": "e1c7d828701011ca12e08de5e568e8e481aa30eef9ea4ca8c8c93c9381bbff0c",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePortReconfigureResultLabel",
+              "sha256": "656ae2a217160a3c973d1874caa93620beeaa1e708b502b638110881105fd23e",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdatePortJobResultLabel",
+              "sha256": "a98ee24b5775cccca32b0e9f87ef168610643a09ae66ac2998b2a6f4844ce7c1",
+              "occurrences": 1
+            },
+            {
+              "name": "pullUpdaterOwnershipActivationEligibility",
+              "sha256": "c7dedee62b9087bd3513a5793a7d6ed07c150bb80e9e702424c35bdcb6fc1dcf",
+              "occurrences": 1
+            },
+            {
+              "name": "pullUpdaterOwnershipActivationRequest",
+              "sha256": "aeb36737f3b74da718093dd322ff2aebdb5c9a57a88da8e1d205a746309af83b",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizePullUpdaterOwnershipActivationResponse",
+              "sha256": "f092bb3043341e3901e097cbb6f1c11b865cc2a1e3745b8c24779c63b5cec466",
+              "occurrences": 1
+            },
+            {
+              "name": "pullUpdaterOwnershipActivationContract",
+              "sha256": "c343db6bfb40fc75bb9aea5b8a324c47b8b95edc8a7a56224fdba80e23960d99",
+              "occurrences": 1
+            },
+            {
+              "name": "pullOwnershipMutationFenceAdvanced",
+              "sha256": "9b64c255eda84f5bc317002bb5283ab50e02a2dede7a7cc3a1cfe49e5d087395",
+              "occurrences": 1
+            },
+            {
+              "name": "pullUpdaterOwnershipDeactivationEligibility",
+              "sha256": "7d998b3ac59cb6b4d0648c401f6bea9d2add44194286202f1c486f1f965069da",
+              "occurrences": 1
+            },
+            {
+              "name": "pullUpdaterOwnershipDeactivationRequest",
+              "sha256": "007ddbcf6a62daa86d589cc7abe48b243df092782506f37dfdb2133b06a46bfa",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizePullUpdaterOwnershipDeactivationResponse",
+              "sha256": "f9638455bd909dc321fbb0d360f5fd7271d46c11c910827f9cf83814c5d31469",
+              "occurrences": 1
+            },
+            {
+              "name": "pullUpdaterOwnershipDeactivationContract",
+              "sha256": "5eb0ea62bc253c632e9ea58392d895f7c953cd52274b36f006c364b05d839220",
+              "occurrences": 1
+            },
+            {
+              "name": "requestSystemUpdateWithRecovery",
+              "sha256": "0398bb5a8e8ae7e5a5ce9e800310fd3ec70db80a0efcfe8c4ed3af0feb6ac040",
+              "occurrences": 1
+            },
+            {
+              "name": "requestUpdaterHostBootstrapWithRecovery",
+              "sha256": "a777e905b76703ba55827677a2b8f1e6b8552126a936aab32f1c2d8c60df6ef2",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterHostBootstrapRequestIdentity",
+              "sha256": "30e916e0fd634f0fc396033db15cafb14e23c896021b3a30cb1b84d253f8c75e",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterHostBootstrapRequestIdentity",
+              "sha256": "bee7a5e86e94e75b48345fe5f19c4ffa189f17cb6b32e0bab6988407b626b9b8",
+              "occurrences": 1
+            },
+            {
+              "name": "recoverUpdaterHostBootstrapRequest",
+              "sha256": "7973fdfed3d3558471093ccdf023f5c24e6d25ed949e6211761069ab74132b48",
+              "occurrences": 1
+            },
+            {
+              "name": "UpdaterHostBootstrapRequestAmbiguousError",
+              "sha256": "a9986fb7b1daef4590d7040809e282207a127b3797df3297d8dae6e7173de995",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatesResponse",
+              "sha256": "0cd428eff2c3d4327af48ea4d9a1f7a02115b1c450cf723c6763256d619e9eae",
+              "occurrences": 1
+            },
+            {
+              "name": "emptyUpdaterSettings",
+              "sha256": "46f2853ccdd972eff6fc0183643a1d3e6b045200d66cb009ba44b995a1387ced",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeUpdaterSettingsResponse",
+              "sha256": "9fabdd1ff6299bba30b015f535464de72cadabda615e9e862857b79f05c8c1da",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeUpdaterHostBootstrapJobsResponse",
+              "sha256": "d3eda8fadfea02cd30dcb51d2f6a055f29444a3c457f8aa55051cdf3767ffdd1",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateJobFromResponse",
+              "sha256": "423ab9a144dd0a300f0bd5520f34709eaff0b15ba462c06d26857cdd5ae99be2",
+              "occurrences": 1
+            },
+            {
+              "name": "runSystemUpdatesSequentially",
+              "sha256": "6066925b4da6f12cda54776a9f1aff875593a9aa580ceb69b8e9719a52fed929",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateTargetBlockedReason",
+              "sha256": "c0c2142097f3c975f5deb44aacaed38d14aea98a75d0b4bded7ff387da7d39b6",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateErrorMessage",
+              "sha256": "2bbf3ab33b9556e9399257a62b988beaae554dbc1f06cb711850d7209efcd681",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateJobStatusLabel",
+              "sha256": "d97eaf67a7a5b01262841cbb7003b941e392ecfd818bb4383d6eb5a40a20881c",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateJobTone",
+              "sha256": "e36161a1439dd17426a54a329ea62bd668a1117af47155d5e10b8ffeb77d910c",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateDeploymentLabel",
+              "sha256": "89eebb32c905b6f95523d1018740b5fa732c9b4e4dd5ea3d33e1575bdd2771d3",
+              "occurrences": 1
+            },
+            {
+              "name": "systemUpdateProgress",
+              "sha256": "042d003d92ba3a97ca77037cd722febd1702d50a0cc7191ccdf1ef06eb247b82",
+              "occurrences": 1
+            },
+            {
+              "name": "normalize",
+              "sha256": "4b6feca3dbfdcdfc596fad2e3215be3f435c5746c3777017b78ad62382500378",
+              "occurrences": 1
+            },
+            {
+              "name": "safeErrorDetail",
+              "sha256": "55e74a0c53b3b3d90eaefc24c120f1660750dc9d57aac9a452fb73818bb86497",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdateTarget",
+              "sha256": "2158b7b0c2f01c952fdb756e00bf69a7343cde95b67479237fc5d04900c8d9f2",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatePortMapping",
+              "sha256": "4f97ad82bef1402483697e38255b0a01d83a8bb57c8dc7e4deef51591606f005",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdateAgent",
+              "sha256": "b9effebf9679d0b0bbf8c7a5db9446197661f88da88a9f56707bb85b705eff87",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeUpdaterHostBootstrapJob",
+              "sha256": "e3a5dcc07f3669fb3d5e4325f5dd661e4b38db9f19d7972aede45df3711bd853",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeUpdaterHostBootstrapHostResult",
+              "sha256": "2ec60967776e66de25825fc4255de60356ec861141109b41217aa3695bf2ac68",
+              "occurrences": 1
+            },
+            {
+              "name": "sameUpdaterSettingsHost",
+              "sha256": "53131ff010415807f7a3c77018013df84bab89b2c9af173874e25f81f2a06ebb",
+              "occurrences": 1
+            },
+            {
+              "name": "sameStringSet",
+              "sha256": "01a7f2ea55dbf65ce6e1c27110c612acaba452d41047ae37fc5df0b7f7d70df6",
+              "occurrences": 1
+            },
+            {
+              "name": "bootstrapResponseForRequest",
+              "sha256": "6122ece204475d8a039929224b8d95ceb35eb9b0b894e70b3c2c754c58946b00",
+              "occurrences": 1
+            },
+            {
+              "name": "recoverUpdaterHostBootstrapJob",
+              "sha256": "d5f9d25b2c76d6392a3fcd7c7f0f56d25c5627e9d0049f2d0c364f34a14b3f5d",
+              "occurrences": 1
+            },
+            {
+              "name": "updaterHostBootstrapJobMatchesRequest",
+              "sha256": "691b22f671d44321a183c5386f20632a7f728a558c6b0ca35052987191211c61",
+              "occurrences": 1
+            },
+            {
+              "name": "ambiguousUpdaterHostBootstrapCreateError",
+              "sha256": "f0e36c9e600685d72ce8c12ec321a222eb898793bf77dce85b75859607efd83e",
+              "occurrences": 1
+            },
+            {
+              "name": "ambiguousSystemUpdateCreateError",
+              "sha256": "a838343671233beae3a61eabd65f636325c5abbda4f8869833293c7243fefe69",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdateHost",
+              "sha256": "e1cd834e399ff3490c4c20810126c2461ed940092a0ab8ed78dd30562797fdeb",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdateReachability",
+              "sha256": "bbda81652bf89504ad9bd785aa3bec15b2ef4c9f1e2d5b5641d4f23b778d22f1",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdateJob",
+              "sha256": "cec625c898dcfcb2cc9b91d820412b61be0bd2bcf7c10511d03129cc8b1446be",
+              "occurrences": 1
+            },
+            {
+              "name": "recordValue",
+              "sha256": "a3e2e87bbdb41d9af05d23bd18529666ef46b098ae4b1a73189c11d2222851f4",
+              "occurrences": 1
+            },
+            {
+              "name": "stringValue",
+              "sha256": "723f854215562b650a5dc2bb76543ef3e5c679519603dba3791e7e6f6261b050",
+              "occurrences": 1
+            },
+            {
+              "name": "numberValue",
+              "sha256": "8603b51f81d00f168e551ef9be7fe4c4035e631302d6837c1c4c73de028229a5",
+              "occurrences": 1
+            },
+            {
+              "name": "optionalNumberValue",
+              "sha256": "eb1d1d846846a3a1fe7f0a24a31e0345522dda04f43f6145aea7e61efe311a8b",
+              "occurrences": 1
+            },
+            {
+              "name": "optionalNonNegativeIntegerValue",
+              "sha256": "2ef1c6492b3ad232fabf8447d672498d93bb1feda5955f906d3bad2d0b2f635c",
+              "occurrences": 1
+            },
+            {
+              "name": "positiveIntegerValue",
+              "sha256": "36ce3462356bf55abff360949fc86d0d7ab73a195c6ff1247ebcd0e9933dec19",
+              "occurrences": 1
+            },
+            {
+              "name": "nonNegativeIntegerValue",
+              "sha256": "29547525886f590ddef3b5bb8e093383931d500a238b2c88e40976e1c581f93d",
+              "occurrences": 1
+            },
+            {
+              "name": "stringRecordValue",
+              "sha256": "9abab0bc3b495dab14fb43c25f68e89f0847f925d0c44d693df4b3d99377cb31",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatePortReconfiguration",
+              "sha256": "eaa8bc031ed99e1e07c42471729cbf5b89e7339de0fed03cc621f79aff9b71e0",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatePortDockerBaseline",
+              "sha256": "a046b2d6915dbf7136bc6f5f7cbdda6bdb53d09a2ccbd7f6df93a73168a2acd4",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatePortSnapshot",
+              "sha256": "2a9d38dec1860dd6fefb0064e7b88f404159beb5a3abc6800d23cfc752353365",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatePortObservation",
+              "sha256": "3a562583893fb4d1d43d56634f05d8e80ac8f078e43e8d2b501e86c2c9e0a772",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatePortRecoveryObservation",
+              "sha256": "03b54f24db1f3ebb91533692b55c1557dda740abd71eb214143fdbdb7d329515",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizeSystemUpdatePortResult",
+              "sha256": "ed5c7e6d7ab83dc0030fca839a645d82cacb28bbbed6b82c453f2edf3f41845c",
+              "occurrences": 1
+            },
+            {
+              "name": "validSystemUpdateDigest",
+              "sha256": "df0334c9b810452608c27a1f7bfd966b6a05fb2724dce5cc1fec5183689ff285",
+              "occurrences": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Account / Archive",
+      "sources": [
+        {
+          "path": "src/features/account/account-view.tsx",
+          "sourceSHA256": "b8266d06d01812e9c4a595ae259804cccc2ace1129f403cf7301ff263d1ed8a1",
+          "declarations": [
+            {
+              "name": "AccountNotice",
+              "sha256": "014d5d2832eeb291bb54a542fa90e06d0c00c5bdd77788e1295cd983f1da92a4",
+              "occurrences": 1
+            },
+            {
+              "name": "AvatarResponse",
+              "sha256": "c5584254a58e58680ac9e7663b97f76d9d227caf2b030b2568e75a5954a636ce",
+              "occurrences": 1
+            },
+            {
+              "name": "maxAvatarBytes",
+              "sha256": "f3fe9933534013fed77c85b3ff1d88c31664573645096951fa1b764462f4a0ca",
+              "occurrences": 1
+            },
+            {
+              "name": "minAvatarDimension",
+              "sha256": "923d115ef5fe3d02608d186fdfe24347236eb58ec89dea995987ddafd6aff8db",
+              "occurrences": 1
+            },
+            {
+              "name": "maxAvatarDimension",
+              "sha256": "16dbd42ab0ed3be21a0aac98e0a61d30c4e23fc7058b6b8f8591928593db7da1",
+              "occurrences": 1
+            },
+            {
+              "name": "AccountView",
+              "sha256": "67af15d1d211dc5fe09caa403c66093e84185bf7da758d73a0515a442d2e4c60",
+              "occurrences": 1
+            },
+            {
+              "name": "AccountSummaryMetric",
+              "sha256": "6d3052bfee3c7e4a5bed1fd5bccd5744c3fee420351cbe4afdc49e55732b3243",
+              "occurrences": 1
+            },
+            {
+              "name": "AvatarPanel",
+              "sha256": "5b3ee4ab06418ba080d8265180c41615c298adff0dddb5aaec0025a3de371517",
+              "occurrences": 1
+            },
+            {
+              "name": "PasswordPanel",
+              "sha256": "0e839d4c2be11fd4dc97bd6c4c12ca5fcc1d2dd9e9e3ff99a66a58150b37e604",
+              "occurrences": 1
+            },
+            {
+              "name": "EmailPanel",
+              "sha256": "14724f9c070a6bf94c853c0196c17556f14ec6c7735595a5799ef24634c9b1b3",
+              "occurrences": 1
+            },
+            {
+              "name": "MFAPanel",
+              "sha256": "a0791d18af9ba30ec4937b6137b9bc1d5ef2abf581e8c92bc68fcdc267dab8a8",
+              "occurrences": 1
+            },
+            {
+              "name": "RecoveryCodesBlock",
+              "sha256": "81431779455f2538b1e863610c9174b1a1ca60d0769ed2572cd441c3122ef8ce",
+              "occurrences": 1
+            },
+            {
+              "name": "mfaPolicyLabel",
+              "sha256": "400d6a7490449127e2c359187039da305a621dcfe94f69466610b42f97da3a6e",
+              "occurrences": 1
+            },
+            {
+              "name": "mfaUnavailableMessage",
+              "sha256": "8b92d74985267e51dbcc0be8ede485216e97924f768e103c3a620ddb62bc108c",
+              "occurrences": 1
+            },
+            {
+              "name": "PasskeyPanel",
+              "sha256": "cc1cc3903af1f07997dea891e4fd879b2b4571b85de1e2a276b2d11aad411f1e",
+              "occurrences": 1
+            },
+            {
+              "name": "readAccountAuthority",
+              "sha256": "8511f357bd8fd586f867cbb190c5e36be67926fb52eccec8a77061aa342f6fb9",
+              "occurrences": 1
+            },
+            {
+              "name": "accountAuthorityRevision",
+              "sha256": "9c492a7ab838476e8ab62883a7b68023601daca67bd3a42d8fe0b7afc60f923b",
+              "occurrences": 1
+            },
+            {
+              "name": "providerLabel",
+              "sha256": "f738d424fe27712125d5b4b6ed5cd45f3b32a9b2a28eba305515de9ebb09b660",
+              "occurrences": 1
+            },
+            {
+              "name": "formatDateTime",
+              "sha256": "a10402063e1052b0e227b78222e08f9e097ccb63cb5de11b407df6a140a84d14",
+              "occurrences": 1
+            },
+            {
+              "name": "accountStatusLabel",
+              "sha256": "b7879f6e4891a00b39a3971aa666ae1da2180bda143033d318e5115410095e08",
+              "occurrences": 1
+            },
+            {
+              "name": "roleLabel",
+              "sha256": "876c73232c69af06d56461dbacfa4e8efa1c45bb01132afa68db43458bb906a7",
+              "occurrences": 1
+            },
+            {
+              "name": "readImageDimensions",
+              "sha256": "98252ad743b96e781b757f5cd3c1a2bb3e635188688a55bd8c95bde30607a7c8",
+              "occurrences": 1
+            },
+            {
+              "name": "formatFileSize",
+              "sha256": "0d26dbc676e368851fcf2ebbe145bf03a9fc03d52e34f4acf97815019fe9e432",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "path": "src/features/archive/archive-view.tsx",
+          "sourceSHA256": "72363b63cf3f9a5496a2ce0b02152a49cf5d6980ef478cbaaae50013f87d8c45",
+          "declarations": [
+            {
+              "name": "StreamArtifact",
+              "sha256": "e6ddae5c3bfafb2ace272b6aa6d106ff87fcf3467a659f21c21c6fc7dcdcbdd4",
+              "occurrences": 1
+            },
+            {
+              "name": "StreamArtifactShare",
+              "sha256": "33fdd27cbed2ef0377fbe6b21d38d7a87e028fbfcb0c2a95c0a4796f78600d86",
+              "occurrences": 1
+            },
+            {
+              "name": "ArchiveView",
+              "sha256": "557adc1c38a9d068bd49701a492409d5b3b89c3c7ba974b12bf53a9538bbf3d5",
+              "occurrences": 1
+            },
+            {
+              "name": "ArchiveProcessingNotice",
+              "sha256": "9b00b6ffc8743190380029538e236d97a84cccdf97384a31c2e5b7e1fba26c8d",
+              "occurrences": 1
+            },
+            {
+              "name": "StreamSelect",
+              "sha256": "4d7aa0ed5e491c45dce9434ec84d22d9fcac3e54ada90ea9149b078501295b53",
+              "occurrences": 1
+            },
+            {
+              "name": "ArchiveArtifacts",
+              "sha256": "5d807346cb47f21c00714cdc4fcc59cb2f59c21d0002cb169f7ad957ee1868a1",
+              "occurrences": 1
+            },
+            {
+              "name": "ArchiveArtifactRow",
+              "sha256": "26503a2edaf0414b31dabdc2ed3bbca03035b020120bf03fd8649dfd7c5aea43",
+              "occurrences": 1
+            },
+            {
+              "name": "ArchiveActionController",
+              "sha256": "1e54dd12260e76ef66fdbad60e7d69a4d5136c95fecd7f618c90bee3e23ac02d",
+              "occurrences": 1
+            },
+            {
+              "name": "ArchiveActionConfirmation",
+              "sha256": "e4112ea4aa49305def743f8e5a9700108f6bb6be0ed4abe110bd906d7b076d8f",
+              "occurrences": 1
+            },
+            {
+              "name": "archiveEvaluation",
+              "sha256": "0277006a3384bd84a1c66baf2af2015a868d42bc1e07374583d78197794123a2",
+              "occurrences": 1
+            },
+            {
+              "name": "archiveArtifactRevision",
+              "sha256": "266c92d33e445755a2d888d9ccdcb2d7ae07df1f208f0cb37d770b2eb7613b1d",
+              "occurrences": 1
+            },
+            {
+              "name": "archiveListErrorMessage",
+              "sha256": "486f3c4393c9514b429926fb53d81851e1f880996acbd25d15bad226cbccbf98",
+              "occurrences": 1
+            },
+            {
+              "name": "archiveProcessingStateLabel",
+              "sha256": "85fd8ee1b59c0596a713531d7bf609118b6ef5411a2872eec707d7a302f9fc9e",
+              "occurrences": 1
+            },
+            {
+              "name": "artifactKindLabel",
+              "sha256": "3e73197a7b2d0f00d3ae9fd6bc6ab0776dc4187c18e36d6658149e3441961db5",
+              "occurrences": 1
+            },
+            {
+              "name": "formatBytes",
+              "sha256": "a58f03e30b45dbff09ddcfc73242bf4d4b48b888cedff667a6d022b2eb7cb32a",
+              "occurrences": 1
+            },
+            {
+              "name": "formatDateTime",
+              "sha256": "edd9e8fb01edf97d9fec58d258af01f8519642f2ca8af5052a34695160afd93f",
+              "occurrences": 1
+            },
+            {
+              "name": "normalizedShareHours",
+              "sha256": "9ffdd7a1badec0fb0fe1e2f79ca5d7b3ca3bdf12aa891ab1224103605ab299d9",
+              "occurrences": 1
+            },
+            {
+              "name": "shareStatus",
+              "sha256": "ee481253119c0ed57e8a1e9d81a0e2c811eb20f828b43d22ca9a8b6ffdc7de8a",
+              "occurrences": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Observability / Monitoring",
+      "sources": [
+        {
+          "path": "src/features/queries.ts",
+          "sourceSHA256": "641aa7e201e9f3feac212e4f3f67af710894c223035b5d90312cd4f35eebcf05",
+          "declarations": [
+            {
+              "name": "liveStatusQueryOptions",
+              "sha256": "319d9cf483bd7ede1ef0f0bfee727ee74aa2c37e6329570ff060ccbd76925a01",
+              "occurrences": 1
+            },
+            {
+              "name": "useCurrentUser",
+              "sha256": "e4a636d401c72412fb42092110e8f0a78602147b4f6c3742ee9fb2117876feee",
+              "occurrences": 1
+            },
+            {
+              "name": "useSetupStatus",
+              "sha256": "4cb2074895a04a0af47bb66fe052335a996579e498f29b2fd2b72514bf08767e",
+              "occurrences": 1
+            },
+            {
+              "name": "useAppSettings",
+              "sha256": "476fabc73eae78e4f332d38b20fd2deb275a9ee1a576963294567e6273185000",
+              "occurrences": 1
+            },
+            {
+              "name": "useManagedAppSettings",
+              "sha256": "96b7a5ca38e1e4b015ae90166f14a156cffb28f768ba7bd8c79d6f7612ed256f",
+              "occurrences": 1
+            },
+            {
+              "name": "useVersion",
+              "sha256": "fdf376aef8a1d9840679ea2bc2e37965ae30d13ab5739fb8d56cd7269aff76a8",
+              "occurrences": 1
+            },
+            {
+              "name": "useSystemUpdates",
+              "sha256": "dea43b0bc0eea3eb12243c3e6f93f3ac103fca8761e0c66149fe84e5f59c7acf",
+              "occurrences": 1
+            },
+            {
+              "name": "useUpdaterSettings",
+              "sha256": "bfed5328e0cf4fa81986bd7dd51f246b9eaa35c29ff4614967f6b47d63339348",
+              "occurrences": 1
+            },
+            {
+              "name": "useUpdaterHostBootstrapJobs",
+              "sha256": "9f47297d214d50c584afe578591f11ecfc80935b5ed1a1322dadfd941a6b75cc",
+              "occurrences": 1
+            },
+            {
+              "name": "useStreams",
+              "sha256": "5ab67c7b84469efdaa33eb7f03cd2935a95b2ef67387355493d529613418661e",
+              "occurrences": 1
+            },
+            {
+              "name": "useArchiveStreams",
+              "sha256": "c25362fbc814a19ce749c26310b45ac656217af86efb3f17540a654c4ad838ca",
+              "occurrences": 1
+            },
+            {
+              "name": "useArchiveProcessingStreams",
+              "sha256": "ac991977fa8880caec17b5fb73dc4b66680f382385c4479c48b525d292125564",
+              "occurrences": 1
+            },
+            {
+              "name": "useWorkers",
+              "sha256": "c707f7592e6612552d522f38fefc8174c67be3f437388c2e5880ba7b8aa3601b",
+              "occurrences": 1
+            },
+            {
+              "name": "useServiceHealth",
+              "sha256": "3c586d39887791eb64c8b1281260bd37973997684850e86d39f1eabc33e784ef",
+              "occurrences": 1
+            },
+            {
+              "name": "useNodes",
+              "sha256": "7df00ebb6b2a0a4abfb1047f70e97bea3a480b9f61a03378dfb8feb986c54a57",
+              "occurrences": 1
+            },
+            {
+              "name": "useAuditLogs",
+              "sha256": "e0ca5680ef4878b449a9717d2dab3cc1dda46504a970d3dfb188dc1d6e6da1d8",
+              "occurrences": 1
+            },
+            {
+              "name": "useWorkerMetrics",
+              "sha256": "820bdf04ca4ecdaace4b73200b8fd6d5fec0a022f590aa0c2a143ed0b322c18b",
+              "occurrences": 1
+            },
+            {
+              "name": "useResourceData",
+              "sha256": "9ca9670be32c91445c9829efe95b1532e57a1f7aa9c42a855c7f67226f3b9556",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "path": "src/features/observability/action-policy.ts",
+          "sourceSHA256": "b6254d8f98296669a39f6666c815fcc9c489f4cb39b56442abcd78cce5d1920d",
+          "declarations": [
+            {
+              "name": "ObservabilityActionID",
+              "sha256": "b29a7a22834635bb209e41b887a85e03025c92e60578963035d04011a3feccd9",
+              "occurrences": 1
+            },
+            {
+              "name": "ObservabilityActionPlan",
+              "sha256": "c5a74f2dcd092f480e8b26ab25227a18d9f96e9f8ca8e6ddde9200224f984903",
+              "occurrences": 1
+            },
+            {
+              "name": "ObservabilityActionSnapshot",
+              "sha256": "6b2bd530ee63e1572bf73994e95aca1ef3173d779d6c6e4a90d4525368ee79ca",
+              "occurrences": 1
+            },
+            {
+              "name": "ObservabilityActionExecutionResult",
+              "sha256": "0eb2f5c6ecf93c9860580d9991d2fee29b41a61d8a574a79544fe9049a540026",
+              "occurrences": 1
+            },
+            {
+              "name": "ObservabilityActionController",
+              "sha256": "a9ff58c26d5b12c9845684811266421c493407dd702e8d859f51400111c10dc9",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityActionPlans",
+              "sha256": "d7dee3d982a9e7362d8e32ce90ba607cc3eddf4b805da56960d3b769c640d3bb",
+              "occurrences": 1
+            },
+            {
+              "name": "createObservabilityActionController",
+              "sha256": "4db66372bded25faba8b6bb75fc23467c50b0b4923f150906c0320b6349f63e6",
+              "occurrences": 1
+            },
+            {
+              "name": "buildObservabilityActionDescriptor",
+              "sha256": "9ad1f1d6f05ab47b449c0200929fe8b97f70d5087c9650680b55bd6fddb442b0",
+              "occurrences": 1
+            },
+            {
+              "name": "findRefreshedObservabilityPlan",
+              "sha256": "1fa8088844b6079bfa656786fb7c6172bd63bf10ba9d4a88ed6689012b0a740d",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityRows",
+              "sha256": "e4846b9f066a336b2637759eac557e35f08d3dbbce00fe8b8098b7e6b0fbbd47",
+              "occurrences": 1
+            },
+            {
+              "name": "diagnosticsPlan",
+              "sha256": "86164159c0a9bfd2f2a5931582c5386c056f29d6466f14bc33dd4745ebdfe5d3",
+              "occurrences": 1
+            },
+            {
+              "name": "plan",
+              "sha256": "0fdfd72e3b7cbaacb6a34ed7a109f8e3f5a5923476d12cce0a12d5e8bd1901d8",
+              "occurrences": 1
+            },
+            {
+              "name": "sameAuthority",
+              "sha256": "846d0b666d203dee462e53c56289d0e9ba30b6a5b687fda04431db8a160ba596",
+              "occurrences": 1
+            },
+            {
+              "name": "actionScope",
+              "sha256": "6b552a4602808c8ce1f4406ac968571c0f3710d1c5cb21783b9d4c0a7923dd3b",
+              "occurrences": 1
+            },
+            {
+              "name": "observabilityRowKey",
+              "sha256": "4961b24374f7264bb48673dac221e7137741b99091030ed681daf1d6415d0e50",
+              "occurrences": 1
+            },
+            {
+              "name": "plainRecord",
+              "sha256": "e30c141ae6d11b7ee0bd6789fe30ae2b13f6fd9ecf9622e3c7ccbc7c2f772795",
+              "occurrences": 1
+            },
+            {
+              "name": "authorityFingerprint",
+              "sha256": "e2af6ed04874763120998a3c3192c2250c0c4ba482cfe97b1811f1a48c8fefbb",
+              "occurrences": 1
+            },
+            {
+              "name": "scalar",
+              "sha256": "dd2cc20d1b9b2c66d168ab3eb1f82e8373cc80c783ec36685dca5c466737d0cc",
+              "occurrences": 1
+            },
+            {
+              "name": "firstSafePublicLabel",
+              "sha256": "723aa5d1502774baae49df26b5daaffbfba2356f476d7c0e3fc63d8ddaf70354",
+              "occurrences": 1
+            },
+            {
+              "name": "approvedRemediationLabel",
+              "sha256": "b1cfcee558beba4487b449db13a4d4f2f885b0e161fdf7bbb5200bb6672f695e",
+              "occurrences": 1
+            },
+            {
+              "name": "isSafePublicLabel",
+              "sha256": "b6d85e339dbfc3280bd72bccf80709b287814ba6d60201c18d21b077219a47ce",
+              "occurrences": 1
+            },
+            {
+              "name": "rowString",
+              "sha256": "a378ea561594fdb19fa7b22a57415a5f2d19343b3906af3c2c992a8551b2c42d",
+              "occurrences": 1
+            },
+            {
+              "name": "rowBoolean",
+              "sha256": "e6e6e9c90a3f973b200f6d2fd0c59aec40d6d5277f43961cb402ab914855213d",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "path": "src/features/monitoring/monitoring-view.tsx",
+          "sourceSHA256": "c13b9fe86b62d902c691fd91d101a9ac53ccef5fc37758f3902ebc17c07167c7",
+          "declarations": [
+            {
+              "name": "MonitoringRow",
+              "sha256": "d5c6a7a53119fc7d4fa2fc93bf05cf838ebf9d6c369978af155e9d13883dfdfe",
+              "occurrences": 1
+            },
+            {
+              "name": "MonitoringView",
+              "sha256": "a7eee7bbc330265d7290d3c8c5ce954a679c39477dddbc185c4d53f600ea9478",
+              "occurrences": 1
+            },
+            {
+              "name": "ServiceHealthPanel",
+              "sha256": "8a4b7c1f1b5ad2872afaec6790f9130389e82e69391745684c0a23a9e8e13ee6",
+              "occurrences": 1
+            },
+            {
+              "name": "IncidentPanel",
+              "sha256": "e8ae85946fce97f7cf70651823b31d351af5d040cc61da2ef8258baf60175acb",
+              "occurrences": 1
+            },
+            {
+              "name": "DiagnosticsPanel",
+              "sha256": "d6c429305fc35030eb480c34c56b88c8ae332e1f95bf7776f20c1f8540c5449c",
+              "occurrences": 1
+            },
+            {
+              "name": "OperationalFocus",
+              "sha256": "16d4177af95a557692ac3d37e864dbac69b8c9280bbc1fde384d11edf44802ce",
+              "occurrences": 1
+            },
+            {
+              "name": "AttentionRow",
+              "sha256": "fddc63508ecbb8851b04fc33fe1fdcfe21b97c138d77ae0e530a89f971dd4f01",
+              "occurrences": 1
+            },
+            {
+              "name": "EmptyState",
+              "sha256": "56b8be5a971cdaf82febe82a3d3da3fe6a3f21772c1f7e811b2bf8517edb3df0",
+              "occurrences": 1
+            },
+            {
+              "name": "ErrorState",
+              "sha256": "fd05c14580ae3d8fc38fa29490901ca3e3335a12488f67b3b682e0931be2adb6",
+              "occurrences": 1
+            },
+            {
+              "name": "StaleState",
+              "sha256": "ae6f12d017d9e08901b2049d096c716a1340c20b0bc2a9eba259649401aa04b6",
+              "occurrences": 1
+            },
+            {
+              "name": "rowString",
+              "sha256": "3b491b83971a9bd024d3fc4cb2d9c51c71a056a11d59ffd6da1a4d0fa650db2f",
+              "occurrences": 1
+            },
+            {
+              "name": "buildEntityLabels",
+              "sha256": "9eec778348eb03ff646a4fe3eee791ebff112b008ef5985c2e4afc9095833307",
+              "occurrences": 1
+            },
+            {
+              "name": "displayReference",
+              "sha256": "5639ae00e97d04558fb93d2067ee004f4dae6c0537d614f12699b594dce681b6",
+              "occurrences": 1
+            },
+            {
+              "name": "looksLikeInternalID",
+              "sha256": "5c7d6cf41c2780fc587fbc64d535937b61f24d665f270310b8ceb828ce6bb16f",
+              "occurrences": 1
+            },
+            {
+              "name": "serviceTypeLabel",
+              "sha256": "a03c5d010bc8133a9b8be860f39bace3176d5de898b0d5153d9b1fc4d7c8cebf",
+              "occurrences": 1
+            },
+            {
+              "name": "diagnosticLabel",
+              "sha256": "4c560eeca326551c30d6717b9dfff8c48da151643d2e197ddb3d9c65cb412fb0",
+              "occurrences": 1
+            },
+            {
+              "name": "formatHeartbeat",
+              "sha256": "595f4acbbe40d59b5a3f15a89658d796049c28567be74add84b3f022f1a41068",
+              "occurrences": 1
+            },
+            {
+              "name": "formatTimestamp",
+              "sha256": "82fb3cfde2aa5e345f8d716ab97781c5f3eb495e3ab095fa90417b1d1492a5ae",
+              "occurrences": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -677,7 +677,7 @@ jobs:
 
   web:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 55
     needs: go
     if: always() && !cancelled()
     defaults:
@@ -685,6 +685,8 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
@@ -708,6 +710,24 @@ jobs:
       - run: npm run test:stream-regressions
       - run: npm run lint
       - run: npm run build
+      - name: Characterize Bundle 9 UI source responsibilities
+        run: npm run test:bundle9-ui-characterization
+      - name: Test Bundle 9 browser comparison contracts
+        run: npm run test:bundle9-browser-contracts
+      - name: Compare Bundle 9 fixed before and actual after
+        timeout-minutes: 35
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+          AUTOSTREAM_BUNDLE9_BROWSER_OUTPUT: ${{ runner.temp }}/bundle9-ui-comparison
+        run: npm run test:bundle9-ui-comparison
+      - name: Upload Bundle 9 separate before and after observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundle9-ui-comparison-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bundle9-ui-comparison/
+          if-no-files-found: error
+          retention-days: 14
       - name: Download actual ST-PORT GET evidence from the same source set
         if: always() && !cancelled()
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
