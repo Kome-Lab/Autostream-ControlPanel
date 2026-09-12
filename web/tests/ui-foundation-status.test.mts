@@ -96,7 +96,7 @@ test("source-derived authority exactly owns every mapping value and every mappin
       ["Autostream-Contracts", "e96ac056e73e00a04f0c22c73122b9f6e18e8b52"],
       ["Autostream-Observability", "2cbaccd05854a9ff2db9a8f5af6904be6be45494"],
       ["Autostream-ControlPanel", "d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee"],
-      ["Autostream-ControlPanel", "0f8b48a713ac35795302569c25b3f6f011cda398"],
+      ["Autostream-ControlPanel", "ac69c3d0fa318797514484f012defb66a3e10178"],
       ["Autostream-ControlPanel", "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b"],
       ["Autostream-ControlPanel", "b246e65508b552399f918e39b3948cf453cc1e32"],
       ["Autostream-ControlPanel", "d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee"],

@@ -3,6 +3,14 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
+import { readMovedSource } from "./helpers/moved-source.mts";
+import {
+  nodeResidualEntry,
+  orderedNodeResidualEvidence,
+  validateNodeResidualRecords,
+  verifyNodeResidualSources,
+  type NodeResidualSourceAuthority,
+} from "./helpers/wave3c-residual-source.mts";
 
 const resolverSource = [
   "let webRootURL;",
@@ -207,8 +215,42 @@ test("the residual validator rejects the required expected-count-zero mutant", (
   );
 });
 
+test("Node residual source migration rejects omitted evidence, stale hashes, and disconnected imports", () => {
+  const inventory = JSON.parse(readFileSync(new URL("./fixtures/ui-foundation-wave3c-residual-inventory.json", import.meta.url), "utf8")) as ResidualInventory;
+  const authority = inventory.nodeSourceAuthority;
+  assert.ok(authority, "Node residual source migration requires fixed code authority");
+  assert.throws(() => validateResidualInventory({ ...inventory, nodeSourceAuthority: undefined }), /count/);
+  assert.throws(() => validateResidualInventory({
+    ...inventory, nodeSourceAuthority: { ...authority, sources: authority.sources.slice(1) },
+  }), /exact residual source inventory/);
+  assert.throws(() => validateResidualInventory({
+    ...inventory, nodeSourceAuthority: { ...authority, sources: authority.sources.map((source, index) => index === 0 ? { ...source, sourceSha256: "0".repeat(64) } : source) },
+  }), /raw source digest/);
+  const segments = authority.evidenceOrder["japanese-line"];
+  assert.throws(() => validateResidualInventory({
+    ...inventory, nodeSourceAuthority: { ...authority, evidenceOrder: { ...authority.evidenceOrder, "japanese-line": [...segments, segments[0]] } },
+  }), /consumed twice/);
+  assert.throws(() => validateResidualInventory({
+    ...inventory, nodeSourceAuthority: { ...authority, evidenceOrder: { ...authority.evidenceOrder, "japanese-line": segments.slice(1) } },
+  }), /all residual source lines/);
+  assert.throws(() => validateResidualInventory({
+    ...inventory, records: inventory.records.map((record) => record.id === "W3C-NODES-HARDCODED-COPY" ? { ...record, ownerTask: "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION" } : record),
+  }), /later owner/);
+  const entry = readResidualSource(authority.entryPath).toString("utf8");
+  const disconnected = entry.replace(/^import \{ RegisteredNodeGroup \} from "\.\/registered-node-group";\r?\n/mu, "");
+  assert.notEqual(disconnected, entry, "import-disconnection mutant reached the real owner edge");
+  const mutatedBytes = Buffer.from(disconnected, "utf8");
+  const mutatedAuthority = {
+    ...authority,
+    sources: authority.sources.map((source) => source.path === authority.entryPath
+      ? { ...source, sourceSha256: createHash("sha256").update(mutatedBytes).digest("hex") }
+      : source),
+  };
+  assert.throws(() => verifyNodeResidualSources(mutatedAuthority, (path) => path === authority.entryPath ? mutatedBytes : readResidualSource(path)), /disconnected from entry imports/);
+});
+
 function source(relativePath: string) {
-  return readFileSync(new URL(`../src/features/${relativePath}`, import.meta.url), "utf8");
+  return readMovedSource(new URL(`../src/features/${relativePath}`, import.meta.url));
 }
 
 function success(data: readonly unknown[], isFetching = false): Snapshot {
@@ -242,6 +284,7 @@ type ResidualInventory = Readonly<{
   reviewedLaterOwnerRecordCount: number;
   expectedEvidenceRecordCount: number;
   records: readonly ResidualRecord[];
+  nodeSourceAuthority?: NodeResidualSourceAuthority;
 }>;
 
 function validateResidualInventory(inventory: ResidualInventory) {
@@ -251,18 +294,27 @@ function validateResidualInventory(inventory: ResidualInventory) {
   assert.equal(inventory.expectedEvidenceRecordCount, inventory.records.length);
   assert.equal(inventory.reviewedLaterOwnerRecordCount, inventory.records.length);
   assert.equal(new Set(inventory.records.map(({ id }) => id)).size, inventory.records.length);
+  validateNodeResidualRecords(inventory.records);
+  const nodeSources = inventory.nodeSourceAuthority
+    ? verifyNodeResidualSources(inventory.nodeSourceAuthority, readResidualSource)
+    : undefined;
   for (const record of inventory.records) {
     assert.equal(record.disposition, "reviewed-later-owner", record.id);
     assert.ok(record.ownerTask && record.ownerMilestone, `${record.id} owner`);
     assert.ok(inventory.scope.includes(record.path), `${record.id} scope`);
-    const sourceText = readFileSync(new URL(record.path.slice("web/".length), new URL("../", import.meta.url)), "utf8");
-    const evidence = sourceText
-      .split(/\r?\n/u)
-      .filter((line) => residualMatcher(record.matcher).test(line))
-      .map((line) => line.trim());
+    const evidence = nodeSources && inventory.nodeSourceAuthority && record.path === nodeResidualEntry
+      ? orderedNodeResidualEvidence(record.matcher, inventory.nodeSourceAuthority, nodeSources, residualMatcher(record.matcher))
+      : readResidualSource(record.path).toString("utf8")
+        .split(/\r?\n/u)
+        .filter((line) => residualMatcher(record.matcher).test(line))
+        .map((line) => line.trim());
     assert.equal(evidence.length, record.matchCount, `${record.id} count`);
     assert.equal(createHash("sha256").update(evidence.join("\n"), "utf8").digest("hex"), record.sha256, `${record.id} hash`);
   }
+}
+
+function readResidualSource(path: string) {
+  return readFileSync(new URL(path.slice("web/".length), new URL("../", import.meta.url)));
 }
 
 function residualMatcher(matcher: ResidualRecord["matcher"]) {
