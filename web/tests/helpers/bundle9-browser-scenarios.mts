@@ -102,13 +102,13 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       assert.ok(typeof observation.text === "string" && observation.text.length > 20, `${name}: empty product page`);
       assert.equal(observation.hiddenDiagnostic, false, `${name}: diagnostic disclosure`);
       assert.equal(observation.secretLeak, false, `${name}: concealed/disposed secret must not leak`);
-      const evidence = {
+      const evidence = structuredClone({
         ...observation,
         api: apiObservationSummary(fixture.trace),
         statuses: [...browser.responseStatuses].filter(([path]) => fixture.trace.some((request) => new URL(request.path, baseURL).pathname === path)).sort(([a], [b]) => a.localeCompare(b, "en")),
         navigations: browser.navigationCount,
         consoleErrors: browser.consoleErrorCount,
-      };
+      });
       const png = await browser.captureScreenshot();
       writeFileSync(resolve(output, `${name}.png`), png, { flag: "wx" });
       writeJSON(resolve(output, `${name}.json`), evidence);
@@ -339,10 +339,12 @@ const observationExpression = `(() => {
   }));
   const markup = document.documentElement.outerHTML;
   const stores = JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } });
+  const focus = describe(document.activeElement);
+  if (focus && document.activeElement === document.body) focus.text = document.body.innerText.trim();
   return {
     route: location.pathname + location.search + location.hash,
     title: document.title, text: document.body.innerText, controls,
-    focus: describe(document.activeElement), focusReturnedToExactTrigger: globalThis.__bundle9FocusTarget ? document.activeElement === globalThis.__bundle9FocusTarget : null,
+    focus, focusReturnedToExactTrigger: globalThis.__bundle9FocusTarget ? document.activeElement === globalThis.__bundle9FocusTarget : null,
     dialogs: [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].filter(visible).map(describe),
     permissionStates: [...document.querySelectorAll('[data-action-availability]')].map((element) => element.getAttribute('data-action-availability')),
     viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
