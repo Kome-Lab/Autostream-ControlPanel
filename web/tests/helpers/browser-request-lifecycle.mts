@@ -135,6 +135,29 @@ export class FetchRequestLifecycle {
     return { cancelled: true } as const;
   }
 
+  settlementFailureDiagnostic(attempt: FetchSettlementAttempt, error: unknown) {
+    const request = this.activeRequests.get(attempt.requestId);
+    const reason = request?.cancellationContext?.reason;
+    return {
+      stage: "fetch-settlement",
+      command: attempt.command === "Fetch.continueRequest" ? "continue"
+        : attempt.command === "Fetch.fulfillRequest" ? "fulfill" : "unknown",
+      method: diagnosticMethod(request?.method),
+      route_class: request?.pathname === "/account/preferences/ui" ? "account-preferences-ui"
+        : request?.pathname === "/auth" || request?.pathname.startsWith("/auth/") ? "auth"
+        : request?.pathname === "/setup" || request?.pathname.startsWith("/setup/") ? "setup" : "other",
+      request_known: request !== undefined,
+      required_response: typeof request?.requiredResponse === "boolean" ? request.requiredResponse : "unknown",
+      request_generation: request ? diagnosticCounter(request.generation) : "unknown",
+      current_generation: diagnosticCounter(this.navigationGeneration),
+      cancellation_context_present: request?.cancellationContext !== undefined,
+      navigation_reason: reason === undefined ? "none"
+        : ["navigate", "reload", "top-level-navigation", "teardown", "close"].includes(reason) ? reason : "unknown",
+      settlement_attempt: diagnosticCounter(attempt.attempt),
+      error_category: error instanceof Error && error.message === invalidInterceptionIdMessage ? "invalid_interception_id" : "other",
+    };
+  }
+
   fail(error: unknown) {
     if (this.fatalError) return this.fatalError;
     this.fatalError = asError(error);
@@ -310,4 +333,13 @@ function matchesFilter(request: ActiveFetchRequest, filter: RequestHandlerFilter
 
 function asError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function diagnosticCounter(value: number) {
+  return Number.isFinite(value) ? Math.min(1_000_000, Math.max(0, Math.trunc(value))) : 0;
+}
+
+function diagnosticMethod(value: string | undefined) {
+  return (["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const)
+    .find((method) => method === value) ?? "other";
 }

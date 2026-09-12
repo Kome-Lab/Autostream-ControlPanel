@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -44,6 +44,531 @@ const helperRoot = dirname(fileURLToPath(import.meta.url));
 const browserHarnessPath = join(helperRoot, "browser-harness.mts");
 const uiBrowserTestPath = join(helperRoot, "..", "ui-foundation-browser.test.mts");
 const browserRunnerPath = join(helperRoot, "run-ui-foundation-browser.mts");
+
+const accountScenarioName = "Account appearance persists 12 themes and 3 modes with DB fallback and save rollback";
+const preferencePath = "/account/preferences/ui";
+
+test("Next readiness accepts one HTTP response after 1 second within the original deadline", async () => {
+  const fixture = createNextReadinessFixture({ probe: () => ({ afterMs: 1_500, status: 200 }) });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.advance(1_001);
+  assert.equal(outcome.state, "pending");
+  assert.equal(fixture.probes.length, 1);
+  assert.equal(fixture.probes[0].signal.aborted, false, "the in-flight HTTP request was cut off at one second");
+  await fixture.clock.advance(499);
+  const server = assertNextReady(fixture, outcome);
+  assert.equal(fixture.clock.now, 1_500);
+  assert.equal(fixture.probes.length, 1);
+  assert.equal(fixture.maximumConcurrentProbes, 1);
+  assert.deepEqual(fixture.preflightTimeouts, [1_000]);
+  await assertNextCloseRestores(fixture, server);
+});
+
+test("Next readiness keeps the first successful response without a confirmation GET", async () => {
+  const fixture = createNextReadinessFixture({ probe: (index) => ({ status: index === 0 ? 200 : 503 }) });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  const server = assertNextReady(fixture, outcome);
+  assert.equal(fixture.probes.length, 1, "a successful probe must not be replaced by a later failure");
+  await assertNextCloseRestores(fixture, server);
+});
+
+test("Next readiness retries connection refusal sequentially without respawning or resetting the deadline", async () => {
+  const fixture = createNextReadinessFixture({
+    probe: (index) => index === 0 ? { error: new Error("controlled connection refusal") } : { afterMs: 1_500, status: 200 },
+  });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.advance(1_600);
+  const server = assertNextReady(fixture, outcome);
+  assert.deepEqual(fixture.probes.map((probe) => probe.startedAt), [0, 100]);
+  assert.equal(fixture.spawns.length, 1);
+  assert.equal(fixture.maximumConcurrentProbes, 1);
+  await assertNextCloseRestores(fixture, server);
+});
+
+for (const mode of ["never-response", "continuous-5xx"] as const) {
+  test(`Next readiness ${mode} fails at the fixed deadline without a final probe`, async () => {
+    const fixture = createNextReadinessFixture({ probe: () => mode === "never-response" ? {} : { status: 503 } });
+    const outcome = observeNextStartup(fixture.start());
+    await fixture.clock.advance(29_999);
+    assert.equal(outcome.state, "pending");
+    await fixture.clock.advance(1);
+    const failure = assertNextFailed(fixture, outcome, "deadline");
+    assert.match(failure.message, /Next server did not become ready/);
+    assert.equal(fixture.clock.now, 30_000);
+    assert.equal(fixture.probes.length, mode === "never-response" ? 1 : 300);
+    assert.ok(fixture.probes.every((probe) => probe.startedAt < 30_000));
+    assert.equal(fixture.maximumConcurrentProbes, 1);
+    const count = fixture.probes.length;
+    await fixture.clock.advance(30_000);
+    assert.equal(fixture.probes.length, count);
+    assert.equal(outcome.error, failure);
+    assert.equal(outcome.settlements, 1);
+  });
+}
+
+test("Next readiness rejects a late success when the deadline callback has not run yet", async () => {
+  const fixture = createNextReadinessFixture();
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  fixture.clock.elapseWithoutCallbacks(30_001);
+  fixture.probes[0].respond(200);
+  await fixture.clock.flush();
+  assertNextFailed(fixture, outcome, "deadline");
+  assert.equal(fixture.probes.length, 1);
+  await fixture.clock.advance(0);
+  assert.equal(outcome.settlements, 1);
+});
+
+test("Next readiness does not resettle when an aborted HTTP request resolves late", async () => {
+  const fixture = createNextReadinessFixture({ probe: () => ({ afterMs: 30_001, status: 200, ignoreAbort: true }) });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.advance(30_000);
+  const failure = assertNextFailed(fixture, outcome, "deadline");
+  assert.equal(fixture.probes[0].abortCount, 1);
+  await fixture.clock.advance(1);
+  assert.equal(outcome.error, failure);
+  assert.equal(outcome.settlements, 1);
+  assert.equal(fixture.probes.length, 1);
+  assert.equal(fixture.clock.pendingCount, 0);
+});
+
+test("Next readiness requires HTTP despite Ready output and retains only the existing bounded output tail", async () => {
+  const fixture = createNextReadinessFixture();
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  fixture.child.stdout.emit("data", Buffer.from(`DISCARDED_OUTPUT_START${"x".repeat(8_200)}\nReady in 1ms\n`));
+  fixture.child.stderr.emit("data", Buffer.from("CONTROLLED_PRIVATE_OUTPUT_END"));
+  await fixture.clock.advance(30_000);
+  const failure = assertNextFailed(fixture, outcome, "deadline");
+  assert.match(failure.message, /Ready in 1ms/);
+  assert.match(failure.message, /CONTROLLED_PRIVATE_OUTPUT_END/);
+  assert.doesNotMatch(failure.message, /DISCARDED_OUTPUT_START/);
+  assert.ok(failure.message.length <= 8_100);
+  assert.equal(fixture.probes.length, 1);
+});
+
+for (const event of ["error", "exit", "signal"] as const) {
+  test(`Next readiness rejects child ${event} during pending HTTP and restores owned files immediately`, async () => {
+    const fixture = createNextReadinessFixture();
+    const outcome = observeNextStartup(fixture.start());
+    await fixture.clock.advance(250);
+    const original = new Error("CONTROLLED_PRIVATE_CHILD_ERROR");
+    if (event === "error") fixture.child.emit("error", original);
+    else fixture.child.finish(event === "exit" ? 23 : null, event === "signal" ? "SIGTERM" : null);
+    await fixture.clock.flush();
+    const failure = assertNextFailed(fixture, outcome, `child_${event}`);
+    if (event === "error") assert.equal(failure, original, "spawn error identity was replaced");
+    assert.equal(fixture.clock.now, 250, "child failure waited for the readiness deadline");
+    assert.equal(fixture.probes[0].abortCount, 1);
+    assert.equal(fixture.child.kills.length, event === "error" ? 1 : 0);
+    fixture.child.finish(0, null);
+    await fixture.clock.advance(30_000);
+    assert.equal(outcome.error, failure);
+    assert.equal(outcome.settlements, 1);
+    assert.equal(fixture.lines.length, 1);
+  });
+}
+
+test("Next readiness preserves the original failure if startup diagnostics throw", async () => {
+  const fixture = createNextReadinessFixture({ diagnosticError: new Error("controlled diagnostic sink failure") });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  const original = new Error("CONTROLLED_PRIVATE_ORIGINAL_ERROR");
+  fixture.child.emit("error", original);
+  await fixture.clock.flush();
+  assert.equal(assertNextFailed(fixture, outcome, "child_error"), original);
+  assert.equal(fixture.lines.length, 1);
+});
+
+test("Next readiness preserves startup and cleanup failures together and removes wait resources", async () => {
+  const cleanupError = new Error("controlled termination failure");
+  const original = new Error("controlled original startup failure");
+  const fixture = createNextReadinessFixture({ killError: cleanupError });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  fixture.child.emit("error", original);
+  await fixture.clock.flush();
+  assert.equal(outcome.state, "rejected");
+  assert.ok(outcome.error instanceof AggregateError);
+  assert.equal(outcome.error.cause, original);
+  assert.deepEqual(outcome.error.errors, [original, cleanupError]);
+  assertNextRestored(fixture);
+  assertNextFailureDiagnostic(fixture, "child_error");
+  assert.equal(outcome.settlements, 1);
+});
+
+test("Next server close shares its cleanup failure without repeating termination or losing file restoration", async () => {
+  const cleanupError = new Error("controlled close failure");
+  const fixture = createNextReadinessFixture({ probe: () => ({ status: 200 }), killError: cleanupError });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  const server = assertNextReady(fixture, outcome);
+  const first = server.close();
+  assert.equal(server.close(), first);
+  const closed = observeNextStartup(first);
+  await fixture.clock.flush();
+  assert.equal(closed.state, "rejected");
+  assert.equal(closed.error, cleanupError);
+  assert.equal(server.close(), first);
+  assert.equal(fixture.child.kills.length, 1);
+  assertNextRestored(fixture);
+});
+
+test("Next server close reports generated-file restoration failures", async () => {
+  const restoreError = new Error("controlled generated-file restoration failure");
+  const fixture = createNextReadinessFixture({ probe: () => ({ status: 200 }), restoreError });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  const server = assertNextReady(fixture, outcome);
+  const closed = observeNextStartup(server.close());
+  await fixture.clock.flush();
+  assert.equal(closed.state, "rejected");
+  assert.equal(closed.error, restoreError);
+  assert.equal(fixture.clock.harnessTimerCount, 0);
+  assertNextListenersRemoved(fixture);
+});
+
+test("Next readiness cleanup keeps the existing termination budgets and reports a child that never exits", async () => {
+  const fixture = createNextReadinessFixture({ blockTermination: true });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.advance(30_000);
+  assert.equal(outcome.state, "pending", "the owned child cleanup is still pending");
+  assert.deepEqual(fixture.child.kills, ["SIGTERM"]);
+  await fixture.clock.advance(2_999);
+  assert.deepEqual(fixture.child.kills, ["SIGTERM"]);
+  await fixture.clock.advance(1);
+  assert.deepEqual(fixture.child.kills, ["SIGTERM", "SIGKILL"]);
+  await fixture.clock.advance(2_000);
+  assert.equal(outcome.state, "rejected");
+  assert.ok(outcome.error instanceof AggregateError);
+  assert.ok(outcome.error.cause instanceof Error);
+  assert.match(outcome.error.cause.message, /Next server did not become ready/);
+  assert.equal(outcome.error.errors.length, 2);
+  assertNextRestored(fixture);
+  assertNextFailureDiagnostic(fixture, "deadline");
+});
+
+test("Next readiness reuses the existing server without creating, stopping, or changing files", async () => {
+  const fixture = createNextReadinessFixture({ preflightStatus: 200 });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  assert.equal(outcome.state, "fulfilled");
+  assert.ok(outcome.value);
+  await outcome.value.close();
+  assert.equal(fixture.spawns.length, 0);
+  assert.equal(fixture.taskkills.length, 0);
+  assert.equal(fixture.child.kills.length, 0);
+  assert.equal(fixture.probes.length, 0);
+  assertNextRestored(fixture);
+});
+
+test("Next readiness preserves the missing-binary failure without spawning or altering generated files", async () => {
+  const fixture = createNextReadinessFixture({ missingNext: true });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  assert.equal(outcome.state, "rejected");
+  assert.ok(outcome.error instanceof Error);
+  assert.match(outcome.error.message, /Next binary is missing:/);
+  assert.equal(fixture.spawns.length, 0);
+  assert.equal(fixture.probes.length, 0);
+  assert.equal(fixture.lines.length, 0, "preflight is outside spawned readiness diagnostics");
+  assertNextRestored(fixture);
+});
+
+test("Next readiness retains HTTP status below 500 and the existing command, environment, and Windows ownership boundary", async () => {
+  const fixture = createNextReadinessFixture({ platform: "win32", probe: () => ({ status: 404 }) });
+  const outcome = observeNextStartup(fixture.start());
+  await fixture.clock.flush();
+  const server = assertNextReady(fixture, outcome);
+  assert.deepEqual(fixture.spawns, [{
+    command: "controlled-node",
+    args: [resolve(fixture.webRoot, "node_modules", "next", "dist", "bin", "next"), "dev", "--hostname", "127.0.0.1", "--port", "3002"],
+    options: { cwd: fixture.webRoot, env: { PATH: "CONTROLLED_PATH", NEXT_PUBLIC_AUTOSTREAM_DEMO: "false", NEXT_TELEMETRY_DISABLED: "1" }, stdio: "pipe", windowsHide: true },
+  }]);
+  const closed = observeNextStartup(server.close());
+  await fixture.clock.flush();
+  assert.equal(closed.state, "fulfilled");
+  assert.deepEqual(fixture.taskkills, [{ command: "taskkill.exe", args: ["/PID", "9001", "/T", "/F"], options: { stdio: "ignore", windowsHide: true, timeout: 3_000 } }]);
+  assert.deepEqual(fixture.child.kills, []);
+  assertNextRestored(fixture);
+});
+
+for (const status of [200, 409]) {
+  for (const boundary of ["settled", "arrival-only", "UI-only", "unawaited", "wrong-method", "empty-idle"] as const) {
+    test(`Account PUT ${status}: ${boundary} boundary uses the real harness and scenario helper`, async (t) => {
+      const { harness, socket } = createHarnessFixture();
+      t.after(() => harness.close());
+      const methods: string[] = [];
+      const waitForPreferenceSettlement = accountSettlementHelper(harness, methods);
+      let fixture = { status, body: { theme_id: "violet", color_mode: "light" } };
+      harness.setRouteResolver(({ method }) => { methods.push(method); return fixture; });
+      socket.hold("Fetch.fulfillRequest");
+      socket.hold("Runtime.evaluate");
+      const emptyIdle = boundary === "empty-idle"
+        ? harness.waitForRequestHandlersIdle({ pathname: preferencePath, method: "PUT" }) : undefined;
+      socket.emitEvent("Fetch.requestPaused", {
+        requestId: "account-save", request: { method: "PUT", url: `http://fixture.test${preferencePath}` },
+      });
+      const fulfill = await socket.waitForCommand("Fetch.fulfillRequest");
+      assert.equal(fulfill.params.responseCode, status);
+      await harness.waitForRequestCount(preferencePath, 1);
+      if (boundary !== "arrival-only") {
+        const ui = harness.waitFor("document.documentElement.dataset.theme === 'violet'", Boolean, "controlled UI result missing");
+        socket.respond(await socket.waitForCommand("Runtime.evaluate"), { result: { result: { value: true } } });
+        await ui;
+      }
+      let changed = false;
+      let unawaited: Promise<void> | undefined;
+      const nextPhase = (async () => {
+        if (boundary === "settled") await waitForPreferenceSettlement("PUT", 1);
+        if (boundary === "unawaited") unawaited = waitForPreferenceSettlement("PUT", 1);
+        if (boundary === "wrong-method") await harness.waitForRequestHandlersIdle({ pathname: preferencePath, method: "GET" });
+        if (boundary === "empty-idle") await emptyIdle;
+        fixture = { status: 200, body: { theme_id: "ocean", color_mode: "dark" } };
+        changed = true;
+        await harness.navigate("http://fixture.test/admin/account/");
+      })();
+      // Deliver the helper's request-observation evaluation without acknowledging Fetch.
+      for (const evaluation of socket.commandsFor("Runtime.evaluate").slice(1)) {
+        socket.respond(evaluation, { result: { result: { value: true } } });
+      }
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      assert.equal(changed, boundary !== "settled");
+      assert.equal(socket.commandsFor("Page.navigate").length, boundary === "settled" ? 0 : 1);
+      assert.equal(harness.responses.get(preferencePath) || 0, 0);
+      socket.respond(fulfill, { result: {} });
+      await nextPhase;
+      await unawaited;
+      await harness.waitForRequestHandlersIdle({ pathname: preferencePath, method: "PUT" });
+      assert.equal(changed, true);
+      assert.equal(socket.commandsFor("Page.navigate").length, 1);
+      assert.equal(harness.responses.get(preferencePath), 1);
+      assert.deepEqual(harness.responseStatuses.get(preferencePath), [status]);
+      assert.equal(harness.safeFetchCancellationCount, 0);
+      harness.assertNoFatalError();
+    });
+  }
+}
+
+test("Account settlement helper waits for a new request before accepting idle", async (t) => {
+  const { harness, socket } = createHarnessFixture();
+  t.after(() => harness.close());
+  socket.hold("Runtime.evaluate");
+  socket.hold("Fetch.fulfillRequest");
+  const methods: string[] = [];
+  const wait = accountSettlementHelper(harness, methods);
+  await assert.rejects(wait("GET", 0), /observed request phase/);
+  let completed = false;
+  const pending = wait("GET", 1).then(() => { completed = true; });
+  const observation = await socket.waitForCommand("Runtime.evaluate");
+  assert.equal(completed, false);
+  harness.setRouteResolver(({ method }) => { methods.push(method); return { body: {} }; });
+  socket.emitEvent("Fetch.requestPaused", { requestId: "fresh-get", request: { method: "GET", url: `http://fixture.test${preferencePath}` } });
+  const fulfill = await socket.waitForCommand("Fetch.fulfillRequest");
+  socket.respond(observation, { result: { result: { value: true } } });
+  await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  assert.equal(completed, false, "arrival must not complete the phase before its Fetch acknowledgement");
+  socket.respond(fulfill, { result: {} });
+  await pending;
+  assert.equal(completed, true);
+});
+
+test("actual Account scenario connects awaited settlement after UI and before every phase change", () => {
+  const source = readFileSync(uiBrowserTestPath, "utf8");
+  assertAccountSettlementConnections(source);
+  const { body } = accountScenario(source);
+  const barriers = body.statements.filter(ts.isExpressionStatement)
+    .filter((statement) => callsWithin(statement).some((call) => identifierCall(call, "waitForPreferenceSettlement")));
+  for (const statement of barriers) {
+    const start = statement.getStart();
+    assert.throws(() => assertAccountSettlementConnections(source.slice(0, start) + source.slice(statement.end)), /Account/);
+    assert.throws(() => assertAccountSettlementConnections(source.slice(0, start) + statement.getText().replace(/^await /, "") + source.slice(statement.end)), /Account/);
+  }
+  const saved = barriers.find((statement) => statement.getText().includes('("PUT", 1)'))!;
+  const conflictFixture = body.statements.find((statement) => statement.getText().startsWith("uiPreferenceWriteResponse = { status: 409"))!;
+  const without = source.slice(0, saved.getStart()) + source.slice(saved.end);
+  const mutated = without.replace(conflictFixture.getText(), conflictFixture.getText() + "\n" + saved.getText());
+  assert.throws(() => assertAccountSettlementConnections(mutated), /Account/);
+  assert.throws(() => assertAccountSettlementConnections(source.replace('waitForPreferenceSettlement("PUT", 1)', 'waitForPreferenceSettlement("GET", 1)')), /Account/);
+  assert.throws(() => assertAccountSettlementConnections(source.replace('const savedGet = preferenceRequestCount("GET") + 1', 'const savedGet = 1')), /Account/);
+  assert.throws(() => assertAccountSettlementConnections(source.replace('pathname: "/account/preferences/ui", method', 'pathname: "/wrong", method')), /Account/);
+  assert.throws(() => assertAccountSettlementConnections(`// ${source.replaceAll("\n", "\n// ")}`), /Account/);
+  assert.throws(() => assertAccountSettlementConnections(""), /Account/);
+});
+
+for (const stale of [false, true]) {
+  for (const diagnosticFailure of [false, true]) {
+    test(`fatal Account diagnostic retains original error, counts and waiters: stale=${stale}, diagnosticFailure=${diagnosticFailure}`, async (t) => {
+      const { harness, socket } = createHarnessFixture();
+      t.after(() => harness.close());
+      const lines: string[] = [];
+      t.mock.method(console, "error", (line: string) => { lines.push(line); });
+      const lifecycle = Reflect.get(harness, "requestLifecycle") as FetchRequestLifecycle;
+      const diagnostic = lifecycle.settlementFailureDiagnostic.bind(lifecycle);
+      t.mock.method(lifecycle, "settlementFailureDiagnostic", (...args: Parameters<typeof diagnostic>) => {
+        const before = lifecycle.diagnostics();
+        if (diagnosticFailure) throw new Error("diagnostic sentinel must not replace fatal");
+        const result = diagnostic(...args);
+        assert.equal(lifecycle.diagnostics(), before);
+        assert.equal(lifecycle.activeCount, 2);
+        assert.equal(lifecycle.safeCancellationCount, 0);
+        return result;
+      });
+      socket.hold("Fetch.fulfillRequest");
+      socket.autoLoadEvent = false;
+      const navigations = [harness.navigate("http://fixture.test/pending")];
+      harness.setRouteResolver(() => ({ body: { secret: "BODY_SENTINEL" }, requiredResponse: true }));
+      for (const id of ["ID_SENTINEL_ONE", "ID_SENTINEL_TWO"]) {
+        socket.emitEvent("Fetch.requestPaused", { requestId: id, request: { method: "PUT", url: `http://URL_SENTINEL.test${preferencePath}?token=TOKEN_SENTINEL#HASH_SENTINEL`, postData: "POST_SENTINEL" } });
+      }
+      if (stale) navigations.push(harness.navigate("http://fixture.test/next"));
+      const idle = harness.waitForRequestHandlersIdle({ pathname: preferencePath, method: "PUT" });
+      const navigationOutcomes = Promise.all(navigations.map(settlePromptly));
+      const idleOutcome = settlePromptly(idle);
+      for (const command of socket.commandsFor("Fetch.fulfillRequest")) socket.respond(command, { error: { message: invalidInterceptionIdMessage } });
+      const outcomes = await navigationOutcomes;
+      const fatal = outcomes[0];
+      assert.ok(fatal instanceof Error);
+      assert.equal(fatal.message, invalidInterceptionIdMessage);
+      assert.equal(await idleOutcome, fatal);
+      assert.ok(outcomes.every((outcome) => outcome === fatal));
+      assert.throws(() => harness.assertNoFatalError(), (error) => error === fatal);
+      await assert.rejects(harness.evaluate("true"), (error) => error === fatal);
+      assert.equal(harness.requests.get(preferencePath), 2);
+      assert.equal(harness.responses.size, 0);
+      assert.equal(harness.responseStatuses.size, 0);
+      assert.equal(harness.safeFetchCancellationCount, 0);
+      assert.equal(lines.length, diagnosticFailure ? 0 : 1);
+      for (const line of lines) {
+        assert.ok(Buffer.byteLength(line) <= 2_048);
+        assert.doesNotMatch(line, /SENTINEL|fixture\.test|Invalid InterceptionId\.|requestId|pathname|postData/);
+        const data = JSON.parse(line.slice("BROWSER_FETCH_FAILURE ".length));
+        assert.equal(data.route_class, "account-preferences-ui");
+        assert.equal(data.required_response, true);
+        assert.equal(data.command, "fulfill");
+        assert.equal(data.error_category, "invalid_interception_id");
+        assert.equal(data.cancellation_context_present, stale);
+        assert.equal(data.request_generation < data.current_generation, stale);
+      }
+    });
+  }
+}
+
+test("safe diagnostic classifies unknown inputs and clamps numbers without changing lifecycle results", () => {
+  const lifecycle = new FetchRequestLifecycle();
+  const unknown = lifecycle.settlementFailureDiagnostic({ requestId: "SECRET_ID", command: "SECRET_COMMAND" as "Fetch.continueRequest", attempt: Infinity }, new Error("SECRET_ERROR"));
+  assert.deepEqual(unknown, { stage: "fetch-settlement", command: "unknown", method: "other", route_class: "other", request_known: false, required_response: "unknown", request_generation: "unknown", current_generation: 0, cancellation_context_present: false, navigation_reason: "none", settlement_attempt: 0, error_category: "other" });
+  for (const [pathname, routeClass] of [["/auth/SECRET", "auth"], ["/setup/SECRET", "setup"], ["/SECRET", "other"]]) {
+    const id = pathname;
+    lifecycle.register({ requestId: id, method: "SECRET_METHOD", pathname, requiredResponse: false });
+    const attempt = lifecycle.beginSettlement(id, "Fetch.continueRequest");
+    lifecycle.beginNavigation("reload");
+    const before = lifecycle.diagnostics();
+    const data = lifecycle.settlementFailureDiagnostic({ ...attempt, attempt: Number.MAX_SAFE_INTEGER }, new Error(invalidInterceptionIdMessage));
+    assert.equal(data.route_class, routeClass);
+    assert.equal(data.method, "other");
+    assert.equal(data.navigation_reason, "reload");
+    assert.equal(data.settlement_attempt, 1_000_000);
+    assert.doesNotMatch(JSON.stringify(data), /SECRET/);
+    assert.equal(lifecycle.diagnostics(), before);
+    assert.deepEqual(lifecycle.handleSettlementError(attempt, new Error(invalidInterceptionIdMessage)), { cancelled: true });
+  }
+  assert.equal(lifecycle.safeCancellationCount, 3);
+  assert.equal(lifecycle.activeCount, 0);
+  const missing = { requestId: "missing", command: "Fetch.continueRequest" as const, attempt: 1 };
+  assert.throws(() => lifecycle.handleSettlementError(missing, new Error(invalidInterceptionIdMessage)), /Unknown Fetch request ID/);
+  lifecycle.register({ requestId: "duplicate", method: "PUT", pathname: preferencePath, requiredResponse: true });
+  const attempt = lifecycle.beginSettlement("duplicate", "Fetch.fulfillRequest");
+  lifecycle.settlementFailureDiagnostic(attempt, new Error("other"));
+  assert.throws(() => lifecycle.beginSettlement("duplicate", "Fetch.fulfillRequest"), /Duplicate Fetch settlement/);
+  const original = new Error("other CDP failure");
+  assert.throws(() => lifecycle.handleSettlementError(attempt, original), (error) => error === original);
+  lifecycle.close();
+});
+
+function accountScenario(source: string) {
+  const file = ts.createSourceFile("account.mts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const matches: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && propertyCall(node, "test") && stringArgument(node, 0) === accountScenarioName) matches.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  assert.equal(matches.length, 1, "Account scenario must exist exactly once");
+  const callback = matches[0].arguments.find(ts.isArrowFunction);
+  assert.ok(callback && ts.isBlock(callback.body), "Account scenario body missing");
+  return { file, body: callback.body };
+}
+
+function accountSettlementHelper(browser: BrowserHarness, uiPreferenceMethods: string[]) {
+  const source = readFileSync(uiBrowserTestPath, "utf8");
+  assertAccountSettlementConnections(source);
+  const { body } = accountScenario(source);
+  const declarations = body.statements.filter(ts.isVariableStatement).filter((statement) =>
+    statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && ["preferenceRequestCount", "waitForPreferenceSettlement"].includes(declaration.name.text)));
+  assert.equal(declarations.length, 2);
+  const javascript = ts.transpileModule(declarations.map((statement) => statement.getText()).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return new Function("browser", "uiPreferenceMethods", "assert", javascript + "\nreturn waitForPreferenceSettlement;")(browser, uiPreferenceMethods, assert) as (method: "GET" | "PUT", count: number) => Promise<void>;
+}
+
+function assertAccountSettlementConnections(source: string) {
+  const { body } = accountScenario(source);
+  const printer = ts.createPrinter({ removeComments: true });
+  const expressionText = (node: ts.Node) => printer.printNode(ts.EmitHint.Unspecified, node, node.getSourceFile()).replace(/\s/g, "");
+  const events: string[] = [];
+  for (const statement of body.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        const initializer = declaration.initializer;
+        if (initializer && ts.isAwaitExpression(initializer) && ts.isCallExpression(initializer.expression)
+          && ts.isPropertyAccessExpression(initializer.expression.expression)
+          && isIdentifierText(initializer.expression.expression.expression, "browser")
+          && propertyCall(initializer.expression, "waitFor")) events.push("waitFor");
+        if (ts.isIdentifier(declaration.name) && ["savedGet", "fallbackGet", "translatedGet"].includes(declaration.name.text)) {
+          assert.equal(declaration.initializer && expressionText(declaration.initializer), 'preferenceRequestCount("GET")+1', "Account reload must require a fresh GET");
+          events.push(`next:${declaration.name.text}`);
+        }
+      }
+    }
+    if (!ts.isExpressionStatement(statement)) continue;
+    const expression = statement.expression;
+    if (ts.isBinaryExpression(expression) && ts.isIdentifier(expression.left) && ["uiPreferenceResponse", "uiPreferenceWriteResponse", "uiPreferenceMethods"].includes(expression.left.text)) events.push(expression.left.text);
+    const call = ts.isAwaitExpression(expression) ? expression.expression : expression;
+    if (!ts.isCallExpression(call)) continue;
+    if (identifierCall(call, "waitForPreferenceSettlement")) {
+      assert.ok(ts.isAwaitExpression(expression), "Account settlement must be awaited directly");
+      events.push(`settle:${expressionText(call.arguments[0])}:${expressionText(call.arguments[1])}`);
+    }
+    if (ts.isPropertyAccessExpression(call.expression) && isIdentifierText(call.expression.expression, "browser")) {
+      if (["navigate", "reload", "waitFor"].includes(call.expression.name.text)) {
+        assert.ok(ts.isAwaitExpression(expression), "Account observation/navigation must be awaited");
+        events.push(call.expression.name.text);
+      }
+    }
+  }
+  assert.deepEqual(events, [
+    "uiPreferenceMethods", "navigate", "waitFor", "uiPreferenceResponse", "uiPreferenceWriteResponse", "navigate", "waitFor", "waitFor", 'settle:"GET":1',
+    "uiPreferenceResponse", "uiPreferenceWriteResponse", "uiPreferenceMethods", "navigate", "waitFor", 'settle:"GET":1', "uiPreferenceResponse",
+    "waitFor", "waitFor", "waitFor", 'settle:"PUT":1', "uiPreferenceWriteResponse", "waitFor", 'settle:"PUT":2', 'settle:"GET":preferenceRequestCount("GET")',
+    "uiPreferenceResponse", "next:savedGet", "reload", "waitFor", 'settle:"GET":savedGet',
+    "uiPreferenceResponse", "next:fallbackGet", "reload", "waitFor", 'settle:"GET":fallbackGet',
+    "uiPreferenceResponse", "next:translatedGet", "reload", "waitFor", "waitFor", 'settle:"GET":translatedGet',
+    "waitFor", "waitFor", 'settle:"GET":translatedGet', 'settle:"PUT":2',
+  ], "Account UI/settlement/fixture ordering changed");
+  const helpers = body.statements.filter(ts.isVariableStatement).flatMap((statement) => [...statement.declarationList.declarations]);
+  const helper = helpers.find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "waitForPreferenceSettlement");
+  assert.ok(helper?.initializer && ts.isArrowFunction(helper.initializer) && ts.isBlock(helper.initializer.body), "Account settlement helper missing");
+  const helperCalls = helper.initializer.body.statements.filter(ts.isExpressionStatement).map((statement) => statement.expression);
+  assert.equal(helperCalls.length, 3, "Account helper requires positive count, arrival, then settlement");
+  assert.equal(expressionText(helperCalls[0]), 'assert.ok(minimumRequests>0,"settlementneedsanobservedrequestphase")', "Account cannot use an empty idle as completion");
+  assert.equal(expressionText(helperCalls[1]), 'awaitbrowser.waitFor("true",()=>preferenceRequestCount(method)>=minimumRequests,"UIpreferencerequestdidnotarrive")', "Account must observe request arrival before idle");
+  assert.equal(expressionText(helperCalls[2]), 'awaitbrowser.waitForRequestHandlersIdle({pathname:"/account/preferences/ui",method})', "Account must await the exact method/path settlement");
+  const firstMutation = body.statements.findIndex((statement) => ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression));
+  const drain = body.statements.slice(0, firstMutation).find(ts.isForOfStatement);
+  assert.ok(drain && expressionText(drain.expression) === '["GET","PUT"]asconst', "Account must drain observed prior phases before the first fixture switch");
+  assert.ok(containsAwaitedIdentifierCall(drain, "waitForPreferenceSettlement"), "Account prior-phase drain must be awaited");
+}
 
 test("UI browser runner import is inert and its exact 35-test inventory accepts only the complete fixture", () => {
   assert.equal(EXPECTED_UI_FOUNDATION_BROWSER_TESTS, 35);
@@ -2493,4 +3018,319 @@ function createHarnessFixture() {
     [browserProcess, profile, socket as unknown as WebSocket, "test-session"],
   ) as BrowserHarness;
   return { harness, profile, socket };
+}
+
+type NextReadyServer = { baseUrl: string; close: () => Promise<void> };
+type NextProbePlan = { status?: number; error?: Error; afterMs?: number; ignoreAbort?: boolean };
+type NextProbe = {
+  startedAt: number;
+  signal: AbortSignal;
+  abortCount: number;
+  pending: boolean;
+  respond: (status: number) => void;
+};
+type NextReadinessOptions = {
+  probe?: (index: number) => NextProbePlan;
+  preflightStatus?: number;
+  platform?: "linux" | "win32";
+  missingNext?: boolean;
+  killError?: Error;
+  restoreError?: Error;
+  diagnosticError?: Error;
+  blockTermination?: boolean;
+};
+type NextTimerOwner = "harness" | "response" | "preflight";
+type NextTimerHandle = { id: number; unref: () => NextTimerHandle };
+
+class NextReadinessClock {
+  now = 0;
+  private nextTimerId = 0;
+  private readonly timers = new Map<number, { due: number; owner: NextTimerOwner; callback: () => void }>();
+
+  setTimeout(callback: () => void, milliseconds: number, owner: NextTimerOwner = "harness"): NextTimerHandle {
+    assert.ok(Number.isFinite(milliseconds) && milliseconds >= 0, "readiness timer must be finite and nonnegative");
+    const id = ++this.nextTimerId;
+    this.timers.set(id, { due: this.now + milliseconds, owner, callback });
+    return { id, unref() { return this; } };
+  }
+
+  clearTimeout(handle: NextTimerHandle | undefined) {
+    if (handle) this.timers.delete(handle.id);
+  }
+
+  get harnessTimerCount() {
+    return [...this.timers.values()].filter((timer) => timer.owner === "harness").length;
+  }
+
+  get pendingCount() {
+    return this.timers.size;
+  }
+
+  async flush() {
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  }
+
+  elapseWithoutCallbacks(milliseconds: number) {
+    this.now += milliseconds;
+  }
+
+  async advance(milliseconds: number) {
+    await this.flush();
+    const target = this.now + milliseconds;
+    let callbacks = 0;
+    while (true) {
+      const next = [...this.timers.entries()].filter(([, timer]) => timer.due <= target)
+        .sort(([leftId, left], [rightId, right]) => left.due - right.due || leftId - rightId)[0];
+      if (!next) break;
+      assert.ok(++callbacks <= 2_000, "controlled clock detected an unbounded timer loop");
+      this.now = Math.max(this.now, next[1].due);
+      this.timers.delete(next[0]);
+      next[1].callback();
+      await this.flush();
+    }
+    this.now = Math.max(this.now, target);
+    await this.flush();
+  }
+}
+
+class NextReadinessChild extends EventEmitter {
+  readonly pid = 9001;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  readonly kills: NodeJS.Signals[] = [];
+  private readonly options: NextReadinessOptions;
+
+  constructor(options: NextReadinessOptions) {
+    super();
+    this.options = options;
+  }
+
+  kill(signal: NodeJS.Signals) {
+    this.kills.push(signal);
+    if (this.options.killError) throw this.options.killError;
+    if (!this.options.blockTermination) queueMicrotask(() => this.finish(null, signal));
+    return true;
+  }
+
+  finish(code: number | null, signal: NodeJS.Signals | null) {
+    this.exitCode = code;
+    this.signalCode = signal;
+    this.emit("exit", code, signal);
+  }
+}
+
+let nextReadinessHarnessJavascript: string | undefined;
+
+function createNextReadinessFixture(options: NextReadinessOptions = {}) {
+  // Execute the complete checked-in harness, including ensureWebServer's real calls.
+  // Only OS, HTTP and clock boundaries are controlled; there is no alternate readiness algorithm.
+  nextReadinessHarnessJavascript ??= ts.transpileModule(readFileSync(browserHarnessPath, "utf8"), {
+    fileName: "browser-harness.ts",
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const clock = new NextReadinessClock();
+  const child = new NextReadinessChild(options);
+  const webRoot = resolve("controlled-next-readiness-web");
+  const baseUrl = "http://127.0.0.1:3002";
+  const nextBin = resolve(webRoot, "node_modules", "next", "dist", "bin", "next");
+  const files = new Map<string, Buffer>([
+    [resolve(webRoot, "next-env.d.ts"), Buffer.from([0xef, 0xbb, 0xbf, 0x61, 0x0d, 0x0a])],
+    [resolve(webRoot, "AGENTS.md"), Buffer.from("controlled pre-existing file\r\n")],
+  ]);
+  if (!options.missingNext) files.set(nextBin, Buffer.from("controlled existing Next binary"));
+  const fingerprint = () => [...files].map(([path, bytes]) => [path, bytes.toString("hex")]).sort(([left], [right]) => left.localeCompare(right));
+  const originalFiles = fingerprint();
+  const spawns: Array<{ command: string; args: string[]; options: unknown }> = [];
+  const taskkills: Array<{ command: string; args: string[]; options: unknown }> = [];
+  const probes: NextProbe[] = [];
+  const preflightTimeouts: number[] = [];
+  const lines: string[] = [];
+  let activeProbes = 0;
+  let maximumConcurrentProbes = 0;
+  const mockFetch = (url: string, request: { signal: AbortSignal }) => {
+    assert.equal(url, baseUrl, "the actual helper changed the requested readiness URL");
+    const spawned = spawns.length !== 0;
+    const plan = spawned ? options.probe?.(probes.length) || {} : options.preflightStatus === undefined
+      ? { error: new Error("controlled preflight refusal") } : { status: options.preflightStatus };
+    let resolveResponse!: (value: { status: number }) => void;
+    let rejectResponse!: (error: unknown) => void;
+    let responseTimer: NextTimerHandle | undefined;
+    const promise = new Promise<{ status: number }>((resolveFetch, rejectFetch) => {
+      resolveResponse = resolveFetch;
+      rejectResponse = rejectFetch;
+    });
+    const probe: NextProbe = {
+      startedAt: clock.now, signal: request.signal, abortCount: 0, pending: true,
+      respond: (status) => complete(undefined, status),
+    };
+    const complete = (error: unknown, status?: number) => {
+      if (!probe.pending) return;
+      probe.pending = false;
+      clock.clearTimeout(responseTimer);
+      request.signal.removeEventListener("abort", aborted);
+      if (spawned) activeProbes -= 1;
+      if (status === undefined) rejectResponse(error);
+      else resolveResponse({ status });
+    };
+    const aborted = () => {
+      probe.abortCount += 1;
+      if (!plan.ignoreAbort) complete(request.signal.reason);
+    };
+    if (spawned) {
+      probes.push(probe);
+      activeProbes += 1;
+      maximumConcurrentProbes = Math.max(maximumConcurrentProbes, activeProbes);
+    }
+    request.signal.addEventListener("abort", aborted);
+    if (request.signal.aborted) aborted();
+    else if (plan.error || plan.status !== undefined) {
+      const respond = () => complete(plan.error, plan.status);
+      if (plan.afterMs) responseTimer = clock.setTimeout(respond, plan.afterMs, "response");
+      else queueMicrotask(respond);
+    }
+    return promise;
+  };
+  const dependencies: Record<string, unknown> = {
+    "node:child_process": {
+      spawn: (command: string, args: string[], spawnOptions: unknown) => {
+        spawns.push({ command, args, options: spawnOptions });
+        for (const name of ["next-env.d.ts", "AGENTS.md", "CLAUDE.md"]) files.set(resolve(webRoot, name), Buffer.from("controlled generated content\n"));
+        return child;
+      },
+      spawnSync: (command: string, args: string[], spawnOptions: unknown) => {
+        taskkills.push({ command, args, options: spawnOptions });
+        if (!options.blockTermination) queueMicrotask(() => child.finish(null, "SIGKILL"));
+        return { status: 0, signal: null };
+      },
+    },
+    "node:fs": {
+      existsSync: (path: string) => files.has(path),
+      readFileSync: (path: string) => {
+        const content = files.get(path);
+        assert.ok(content, "unexpected controlled file read");
+        return Buffer.from(content);
+      },
+      writeFileSync: (path: string, content: Buffer) => {
+        if (options.restoreError) throw options.restoreError;
+        files.set(path, Buffer.from(content));
+      },
+      rmSync: (path: string) => { files.delete(path); },
+    },
+    "node:os": { tmpdir },
+    "node:path": { basename, dirname, resolve },
+    "./browser-request-lifecycle.mts": { FetchRequestLifecycle, RejectableEventWaiters },
+    "./browser-process-attempt.mts": {},
+    "./browser-launch-profile.mts": {},
+  };
+  const exported: { ensureWebServer?: (root: string, url: string) => Promise<NextReadyServer> } = {};
+  new Function("require", "exports", "process", "Date", "fetch", "AbortSignal", "setTimeout", "clearTimeout", "console", nextReadinessHarnessJavascript)(
+    (name: string) => {
+      assert.ok(Object.hasOwn(dependencies, name), `unexpected harness dependency: ${name}`);
+      return dependencies[name];
+    },
+    exported,
+    { execPath: "controlled-node", platform: options.platform || "linux", env: { PATH: "CONTROLLED_PATH" } },
+    { now: () => clock.now },
+    mockFetch,
+    { timeout: (milliseconds: number) => {
+      preflightTimeouts.push(milliseconds);
+      const controller = new AbortController();
+      clock.setTimeout(() => controller.abort(new Error("controlled preflight timeout")), milliseconds, "preflight");
+      return controller.signal;
+    } },
+    (callback: () => void, milliseconds: number) => clock.setTimeout(callback, milliseconds),
+    (handle: NextTimerHandle | undefined) => clock.clearTimeout(handle),
+    { ...console, error: (line: string) => {
+      lines.push(line);
+      if (options.diagnosticError) throw options.diagnosticError;
+    } },
+  );
+  assert.equal(typeof exported.ensureWebServer, "function");
+  return {
+    clock, child, webRoot, baseUrl, spawns, taskkills, probes, preflightTimeouts, lines,
+    fingerprint, originalFiles,
+    get maximumConcurrentProbes() { return maximumConcurrentProbes; },
+    start: () => exported.ensureWebServer!(webRoot, baseUrl),
+  };
+}
+
+type NextReadinessFixture = ReturnType<typeof createNextReadinessFixture>;
+
+function observeNextStartup<T>(promise: Promise<T>) {
+  const outcome: { state: "pending" | "fulfilled" | "rejected"; value?: T; error?: unknown; settlements: number } = { state: "pending", settlements: 0 };
+  void promise.then((value) => {
+    outcome.state = "fulfilled";
+    outcome.value = value;
+    outcome.settlements += 1;
+  }, (error: unknown) => {
+    outcome.state = "rejected";
+    outcome.error = error;
+    outcome.settlements += 1;
+  });
+  return outcome;
+}
+
+function assertNextListenersRemoved(fixture: NextReadinessFixture) {
+  for (const name of ["error", "exit"]) assert.equal(fixture.child.listenerCount(name), 0, `retained child ${name} listener`);
+  assert.equal(fixture.child.stdout.listenerCount("data"), 0);
+  assert.equal(fixture.child.stderr.listenerCount("data"), 0);
+}
+
+function assertNextRestored(fixture: NextReadinessFixture) {
+  assert.deepEqual(fixture.fingerprint(), fixture.originalFiles, "generated-file bytes were not restored");
+  assert.equal(fixture.clock.harnessTimerCount, 0, "startup or cleanup retained a timer");
+  assertNextListenersRemoved(fixture);
+}
+
+function assertNextReady(fixture: NextReadinessFixture, outcome: ReturnType<typeof observeNextStartup<NextReadyServer>>) {
+  assert.equal(outcome.state, "fulfilled", String(outcome.error || "readiness is still pending"));
+  assert.ok(outcome.value);
+  assert.equal(outcome.value.baseUrl, fixture.baseUrl);
+  assert.equal(outcome.settlements, 1);
+  assert.equal(fixture.spawns.length, 1);
+  assert.equal(fixture.clock.harnessTimerCount, 0);
+  assertNextListenersRemoved(fixture);
+  assert.equal(fixture.lines.length, 0);
+  return outcome.value;
+}
+
+async function assertNextCloseRestores(fixture: NextReadinessFixture, server: NextReadyServer) {
+  const first = server.close();
+  assert.equal(server.close(), first, "close must share the same cleanup promise");
+  const outcome = observeNextStartup(first);
+  await fixture.clock.flush();
+  assert.equal(outcome.state, "fulfilled", String(outcome.error || "cleanup is still pending"));
+  assert.equal(server.close(), first);
+  assert.equal(fixture.child.kills.length, 1);
+  assertNextRestored(fixture);
+}
+
+function assertNextFailureDiagnostic(fixture: NextReadinessFixture, reason: string) {
+  assert.equal(fixture.lines.length, 1, "startup failure diagnostics must be emitted once");
+  const line = fixture.lines[0];
+  assert.ok(Buffer.byteLength(line) <= 2_048);
+  assert.match(line, /^NEXT_SERVER_READINESS_FAILURE /);
+  assert.doesNotMatch(line, /CONTROLLED_|127\.0\.0\.1|http:|controlled-next|Next server|Ready|BROWSER_FETCH_FAILURE/);
+  const data = JSON.parse(line.slice("NEXT_SERVER_READINESS_FAILURE ".length));
+  assert.deepEqual(Object.keys(data).sort(), ["child_exit_seen", "child_signal_seen", "deadline_expired", "http_response_seen", "last_status_class", "phase", "probe_count", "reason_class"]);
+  assert.equal(data.phase, "spawned");
+  assert.equal(data.reason_class, reason);
+  assert.ok(Number.isInteger(data.probe_count) && data.probe_count >= 0 && data.probe_count <= 65_535);
+  assert.equal(data.probe_count, Math.min(fixture.probes.length, 65_535));
+  for (const key of ["http_response_seen", "deadline_expired", "child_exit_seen", "child_signal_seen"]) assert.equal(typeof data[key], "boolean");
+  assert.ok(["none", "1xx", "2xx", "3xx", "4xx", "5xx", "other"].includes(data.last_status_class));
+  assert.equal(data.deadline_expired, reason === "deadline");
+  assert.equal(data.child_exit_seen, reason === "child_exit" || reason === "child_signal");
+  assert.equal(data.child_signal_seen, reason === "child_signal");
+}
+
+function assertNextFailed(fixture: NextReadinessFixture, outcome: ReturnType<typeof observeNextStartup<NextReadyServer>>, reason: string) {
+  assert.equal(outcome.state, "rejected", "readiness did not reject within its fixed deadline or child event");
+  assert.ok(outcome.error instanceof Error);
+  assert.equal(outcome.settlements, 1);
+  assertNextRestored(fixture);
+  assertNextFailureDiagnostic(fixture, reason);
+  return outcome.error;
 }
