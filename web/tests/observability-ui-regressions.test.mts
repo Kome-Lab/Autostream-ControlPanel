@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readMovedSource } from "./helpers/moved-source.mts";
 
 const queriesSource = readFileSync(new URL("../src/features/queries.ts", import.meta.url), "utf8");
 const metricsSource = readFileSync(new URL("../src/features/metrics/metrics-view.tsx", import.meta.url), "utf8");
 const auditSource = readFileSync(new URL("../src/features/audit/audit-logs-view.tsx", import.meta.url), "utf8");
 const resourcesSource = readFileSync(new URL("../src/features/resources/resource-config.ts", import.meta.url), "utf8");
-const resourcePageSource = readFileSync(new URL("../src/features/resources/resource-page.tsx", import.meta.url), "utf8");
+const resourcePageSource = readMovedSource(new URL("../src/features/resources/resource-page.tsx", import.meta.url));
 
 test("metric range is requested from the server and participates in the query key", () => {
   assert.match(queriesSource, /range_sec/);

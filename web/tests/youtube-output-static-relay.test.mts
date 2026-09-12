@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
 
-const source = readFileSync(new URL("../src/features/resources/resource-page.tsx", import.meta.url), "utf8");
-const componentStart = source.indexOf("function YouTubeOutputForm");
-const componentEnd = source.indexOf("function CaptionProfileForm");
+const source = readFileSync(new URL("../src/features/resources/resource-stream-forms.tsx", import.meta.url), "utf8");
+const sourceFile = ts.createSourceFile("resource-stream-forms.tsx", source, ts.ScriptTarget.Latest, true);
+const components = sourceFile.statements.filter((statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === "YouTubeOutputForm");
+assert.equal(components.length, 1, "YouTube output form must have exactly one owner");
+const componentStart = components[0].getStart(sourceFile);
+const componentEnd = components[0].getEnd();
 const formSource = source.slice(componentStart, componentEnd);
 
 test("fixed Relay Live API output asks for only nonsecret binding fields", () => {

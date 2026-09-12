@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { readMovedSource } from "./helpers/moved-source.mts";
 import test from "node:test";
 import {
   ARCHIVE_ARTIFACT_EMPTY_BACKGROUND_POLL_INTERVAL_MS,
@@ -27,9 +28,8 @@ const queriesSource = fs.readFileSync(
   new URL("../src/features/queries.ts", import.meta.url),
   "utf8",
 );
-const resourcePageSource = fs.readFileSync(
+const resourcePageSource = readMovedSource(
   new URL("../src/features/resources/resource-page.tsx", import.meta.url),
-  "utf8",
 );
 
 test("empty archive results poll quickly and then continue at a low background rate", () => {

@@ -10,7 +10,8 @@
       ],
       "production_sources": [
         "src/features/observability/action-policy.ts",
-        "src/features/resources/resource-page.tsx"
+        "src/features/resources/resource-page.tsx",
+        "src/features/resources/generic-resource-panel.tsx"
       ],
       "behaviors": [
         "exact permission and state applicability for OBS-01 through OBS-05",
@@ -35,7 +36,15 @@
         "src/lib/system-updates.ts",
         "src/features/application/application-info-view.tsx",
         "src/features/application/updater-settings-panel.tsx",
-        "src/features/application/updater-host-bootstrap-panel.tsx"
+        "src/features/application/updater-host-bootstrap-panel.tsx",
+        "src/lib/system-update-target-policy.ts",
+        "src/lib/updater-bootstrap.ts",
+        "src/lib/updater-settings-model.ts",
+        "src/lib/system-update-version.ts",
+        "src/lib/system-update-port-requests.ts",
+        "src/lib/updater-ownership.ts",
+        "src/lib/system-update-requests.ts",
+        "src/lib/system-update-presentation.ts"
       ],
       "behaviors": [
         "partial and unavailable independent Updater state is fail closed",

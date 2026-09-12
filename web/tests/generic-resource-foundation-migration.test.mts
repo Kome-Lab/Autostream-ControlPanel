@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readMovedSource } from "./helpers/moved-source.mts";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -235,7 +236,7 @@ test("hostile secret or transport text cannot enter safe failure or audit presen
 });
 
 test("desktop and mobile rows share one guarded action factory and cached rows survive refresh errors", () => {
-  const source = readFileSync(new URL("../src/features/resources/resource-page.tsx", import.meta.url), "utf8");
+  const source = readMovedSource(new URL("../src/features/resources/resource-page.tsx", import.meta.url));
   assert.match(source, /const rowActions = \(row: ResourceRow\) =>/);
   assert.equal((source.match(/\{rowActions\(row\)\}/g) || []).length, 2);
   assert.match(source, /query\.isLoading && rows\.length === 0/);

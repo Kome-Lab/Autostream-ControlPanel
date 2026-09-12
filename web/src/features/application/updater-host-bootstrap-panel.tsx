@@ -22,24 +22,10 @@ import {
 } from "@/lib/bootstrap-envelope";
 import { apiGet, apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
-import {
-  activeUpdaterHostBootstrapStatus,
-  isUpdaterHostBootstrapJobActive,
-  isUpdaterHostBootstrapBulkCandidate,
-  normalizeUpdaterHostBootstrapJobsResponse,
-  normalizeSystemUpdatesResponse,
-  normalizeUpdaterSettingsResponse,
-  recoverUpdaterHostBootstrapRequest,
-  requestUpdaterHostBootstrapWithRecovery,
-  systemUpdateErrorMessage,
-  systemUpdateHostBootstrapStatusLabel,
-  updaterHostBootstrapConfirmationContext,
-  updaterHostBootstrapEligibility,
-  updaterHostBootstrapEligibilityMessage,
-  updaterHostBootstrapRequestIdentity,
-  type UpdaterHostBootstrapRequestIdentity,
-  UpdaterHostBootstrapRequestAmbiguousError,
-} from "@/lib/system-updates";
+import { activeUpdaterHostBootstrapStatus, isUpdaterHostBootstrapJobActive, isUpdaterHostBootstrapBulkCandidate, normalizeUpdaterHostBootstrapJobsResponse, recoverUpdaterHostBootstrapRequest, requestUpdaterHostBootstrapWithRecovery, systemUpdateHostBootstrapStatusLabel, updaterHostBootstrapConfirmationContext, updaterHostBootstrapEligibility, updaterHostBootstrapEligibilityMessage, updaterHostBootstrapRequestIdentity, type UpdaterHostBootstrapRequestIdentity, UpdaterHostBootstrapRequestAmbiguousError } from "@/lib/updater-bootstrap";
+import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
+import { normalizeUpdaterSettingsResponse } from "@/lib/updater-settings-model";
+import { systemUpdateErrorMessage } from "@/lib/system-update-presentation";
 import type {
   SystemUpdateAgentStatus,
   UpdaterHostBootstrapHostResult,

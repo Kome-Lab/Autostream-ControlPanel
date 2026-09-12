@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
+import { readMovedSource } from "./helpers/moved-source.mts";
 
 const resolverSource = [
   "let webRootURL;",
@@ -174,8 +175,8 @@ test("Updater authority fingerprint is stable, bounded, and changes with revisio
 });
 
 test("Updater UI wraps Bundle 5 controllers without embedded fallback or raw response rendering", () => {
-  const application = readFileSync(new URL("../src/features/application/application-info-view.tsx", import.meta.url), "utf8");
-  const settings = readFileSync(new URL("../src/features/application/updater-settings-panel.tsx", import.meta.url), "utf8");
+  const application = readMovedSource(new URL("../src/features/application/application-info-view.tsx", import.meta.url));
+  const settings = readMovedSource(new URL("../src/features/application/updater-settings-panel.tsx", import.meta.url));
   const bootstrap = readFileSync(new URL("../src/features/application/updater-host-bootstrap-panel.tsx", import.meta.url), "utf8");
   const source = `${application}\n${settings}\n${bootstrap}`;
 

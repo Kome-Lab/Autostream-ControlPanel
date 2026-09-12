@@ -7,69 +7,19 @@ import {
   buildBootstrapEnvelopeAAD,
   encryptBootstrapCredentials,
 } from "../src/lib/bootstrap-envelope.ts";
-import {
-  acquireSystemUpdateTargetRequestLock,
-  activeUpdaterHostBootstrapStatus,
-  applyUpdaterSettingsTargetSelection,
-  applyUpdaterSettingsTargetPatch,
-  compareSystemUpdateVersions,
-  isSystemUpdateEndpointRevisionConflict,
-  isControlPanelUpdateTarget,
-  isSystemUpdateJobActive,
-  isSystemUpdateJobCancellable,
-  isUpdaterHostBootstrapBulkCandidate,
-  isUpdaterHostBootstrapJobActive,
-  isUpdaterPolicyHostID,
-  firstUnusedUpdaterSettingsTarget,
-  normalizeUpdaterHostBootstrapJobsResponse,
-  normalizeUpdaterSettingsResponse,
-  normalizeSystemUpdatesResponse,
-  normalizePullUpdaterOwnershipActivationResponse,
-  normalizePullUpdaterOwnershipDeactivationResponse,
-  pullUpdaterOwnershipActivationEligibility,
-  pullUpdaterOwnershipActivationRequest,
-  pullUpdaterOwnershipDeactivationEligibility,
-  pullUpdaterOwnershipDeactivationRequest,
-  pullOwnershipMutationFenceAdvanced,
-  recoverUpdaterHostBootstrapRequest,
-  requestSystemUpdatePortReconfigureWithRecovery,
-  requestSystemUpdateWithRecovery,
-  requestUpdaterHostBootstrapWithRecovery,
-  runSystemUpdatesSequentially,
-  systemUpdateDeploymentLabel,
-  systemUpdateDockerPortReconfigureRequest,
-  systemUpdateErrorMessage,
-  systemUpdateConnectivity,
-  systemUpdateHostReachabilityLabel,
-  systemUpdateHostReachabilityMessage,
-  systemUpdateJobStatusLabel,
-  systemUpdateMayDisconnectPanel,
-  systemUpdatePolicyErrorMessage,
-  systemUpdateJobFromResponse,
-  systemUpdateUpdaterPolicyState,
-  normalizeUpdaterSettingsTargetDatabaseName,
-  normalizeUpdaterSettingsTargetLocalListenPort,
-  systemUpdateProgress,
-  systemUpdatePortReconfigureEligibility,
-  systemUpdatePortReconfigureRequest,
-  systemUpdatePortReconfigureResultLabel,
-  systemUpdatePortJobResultLabel,
-  systemUpdatePortRequestMatchesJob,
-  systemUpdateRequest,
-  systemUpdateSoftwareOperationEligibility,
-  systemUpdateStrategyForTarget,
-  systemUpdateTargetOperationEligibility,
-  systemUpdateTargetBlockedReason,
-  updaterSettingsTargetRequiresDatabase,
-  updaterSettingsTargetRequiresLocalListenPort,
-  updaterSettingsTargetOptions,
-  SystemUpdateRequestAmbiguousError,
-  updaterHostBootstrapConfirmationContext,
-  updaterHostBootstrapEligibility,
-  updaterHostBootstrapEligibilityMessage,
-  updaterHostBootstrapRequestIdentity,
-  UpdaterHostBootstrapRequestAmbiguousError,
-} from "../src/lib/system-updates.ts";
+import { readMovedSource, registerSourceResolution } from "./helpers/moved-source.mts";
+
+registerSourceResolution();
+
+const { acquireSystemUpdateTargetRequestLock, isControlPanelUpdateTarget, isSystemUpdateJobActive, isSystemUpdateJobCancellable, systemUpdateMayDisconnectPanel, systemUpdateSoftwareOperationEligibility, systemUpdateStrategyForTarget, systemUpdateTargetOperationEligibility } = await import("../src/lib/system-update-target-policy.ts");
+const { activeUpdaterHostBootstrapStatus, isUpdaterHostBootstrapBulkCandidate, isUpdaterHostBootstrapJobActive, normalizeUpdaterHostBootstrapJobsResponse, recoverUpdaterHostBootstrapRequest, requestUpdaterHostBootstrapWithRecovery, updaterHostBootstrapConfirmationContext, updaterHostBootstrapEligibility, updaterHostBootstrapEligibilityMessage, updaterHostBootstrapRequestIdentity, UpdaterHostBootstrapRequestAmbiguousError } = await import("../src/lib/updater-bootstrap.ts");
+const { applyUpdaterSettingsTargetSelection, applyUpdaterSettingsTargetPatch, isUpdaterPolicyHostID, firstUnusedUpdaterSettingsTarget, normalizeUpdaterSettingsResponse, normalizeUpdaterSettingsTargetDatabaseName, normalizeUpdaterSettingsTargetLocalListenPort, updaterSettingsTargetRequiresDatabase, updaterSettingsTargetRequiresLocalListenPort, updaterSettingsTargetOptions } = await import("../src/lib/updater-settings-model.ts");
+const { compareSystemUpdateVersions } = await import("../src/lib/system-update-version.ts");
+const { isSystemUpdateEndpointRevisionConflict, requestSystemUpdatePortReconfigureWithRecovery, systemUpdateDockerPortReconfigureRequest, systemUpdatePortReconfigureEligibility, systemUpdatePortReconfigureRequest, systemUpdatePortReconfigureResultLabel, systemUpdatePortJobResultLabel, systemUpdatePortRequestMatchesJob } = await import("../src/lib/system-update-port-requests.ts");
+const { normalizeSystemUpdatesResponse, systemUpdateJobFromResponse } = await import("../src/lib/system-updates.ts");
+const { normalizePullUpdaterOwnershipActivationResponse, normalizePullUpdaterOwnershipDeactivationResponse, pullUpdaterOwnershipActivationEligibility, pullUpdaterOwnershipActivationRequest, pullUpdaterOwnershipDeactivationEligibility, pullUpdaterOwnershipDeactivationRequest, pullOwnershipMutationFenceAdvanced } = await import("../src/lib/updater-ownership.ts");
+const { requestSystemUpdateWithRecovery, runSystemUpdatesSequentially, systemUpdateRequest, SystemUpdateRequestAmbiguousError } = await import("../src/lib/system-update-requests.ts");
+const { systemUpdateDeploymentLabel, systemUpdateErrorMessage, systemUpdateConnectivity, systemUpdateHostReachabilityLabel, systemUpdateHostReachabilityMessage, systemUpdateJobStatusLabel, systemUpdatePolicyErrorMessage, systemUpdateUpdaterPolicyState, systemUpdateProgress, systemUpdateTargetBlockedReason } = await import("../src/lib/system-update-presentation.ts");
 import type {
   SystemUpdateAgentStatus,
   SystemUpdateHostStatus,
@@ -2254,11 +2204,11 @@ test("mock bootstrap encryption fingerprint matches its P-256 public key", async
 });
 
 test("system update UI manages updater policy in the panel and never instructs manual trust files", () => {
-  const applicationSource = readFileSync(new URL("../src/features/application/application-info-view.tsx", import.meta.url), "utf8");
-  const settingsSource = readFileSync(new URL("../src/features/application/updater-settings-panel.tsx", import.meta.url), "utf8");
+  const applicationSource = readMovedSource(new URL("../src/features/application/application-info-view.tsx", import.meta.url));
+  const settingsSource = readMovedSource(new URL("../src/features/application/updater-settings-panel.tsx", import.meta.url));
   const bootstrapSource = readFileSync(new URL("../src/features/application/updater-host-bootstrap-panel.tsx", import.meta.url), "utf8");
   const queriesSource = readFileSync(new URL("../src/features/queries.ts", import.meta.url), "utf8");
-  const nodeSource = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+  const nodeSource = readMovedSource(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url));
   const buttonSource = readFileSync(new URL("../src/components/ui/button.tsx", import.meta.url), "utf8");
 
   assert.match(applicationSource, /canManageUpdaterSecrets=\{hasPermission\(currentUser\.data, "secrets\.update"\)\}/);
@@ -2795,7 +2745,7 @@ test("pull host agent registration is endpointless and ordinary node ports use t
 });
 
 test("updater configure failure guidance requires a fresh token before restart", () => {
-  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+  const source = readMovedSource(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url));
 
   assert.match(source, /設定処理が失敗または結果不確定の場合は、対象サービスを再起動しないでください。/);
   assert.match(source, /新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行/);
@@ -2804,7 +2754,7 @@ test("updater configure failure guidance requires a fresh token before restart",
 });
 
 test("Host Agent configure delegates managed policy to the system update screen", () => {
-  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+  const source = readMovedSource(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url));
 
   assert.match(source, /このHost Agentを稼働させる対象ホストで1回実行/);
   assert.match(source, /Host Agentの実行対象とpolicyは「アプリケーション情報」で設定/);
@@ -2813,7 +2763,7 @@ test("Host Agent configure delegates managed policy to the system update screen"
 });
 
 test("updater node description identifies its portless per-host responsibility", () => {
-  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+  const source = readMovedSource(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url));
 
   assert.match(source, /value: "update_agent"[^{}\r\n]*description: "ホスト単位の更新状態をControl Panelへ外向き接続で報告するHost Agent"/);
   assert.match(source, /受信listenerは作成しません/);
@@ -2836,7 +2786,7 @@ test("updater node description identifies its portless per-host responsibility",
 });
 
 test("registered node lists use responsive cards instead of forced-width tables", () => {
-  const source = readFileSync(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url), "utf8");
+  const source = readMovedSource(new URL("../src/features/nodes/node-registration-view.tsx", import.meta.url));
   const tableSource = readFileSync(new URL("../src/components/tables/data-table.tsx", import.meta.url), "utf8");
 
   assert.match(source, /<DataTable[\s\S]*?responsive\s*\/>/);

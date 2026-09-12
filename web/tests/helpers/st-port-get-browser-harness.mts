@@ -3,9 +3,12 @@ import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { normalizeSystemUpdatesResponse } from "../../src/lib/system-updates.ts";
+import { registerSourceResolution } from "./moved-source.mts";
 import type { SystemUpdateJob } from "../../src/types/domain.ts";
 import { BrowserHarness, ensureWebServer } from "./browser-harness.mts";
+
+registerSourceResolution();
+const { normalizeSystemUpdatesResponse } = await import("../../src/lib/system-updates.ts");
 
 export const stPortAcceptedGetCases = Object.freeze([
   { scenario_id: "B1_local_only", result: "applied", label: "適用済み" },

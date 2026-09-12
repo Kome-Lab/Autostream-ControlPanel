@@ -1,14 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { APIError, apiGet } from "@/lib/api/client";
 import { isLiveResourcePath, liveStatusRefreshIntervalMs } from "@/lib/resource-query-refresh";
-import {
-  activeUpdaterHostBootstrapStatus,
-  emptyUpdaterSettings,
-  isSystemUpdateJobActive,
-  normalizeSystemUpdatesResponse,
-  normalizeUpdaterHostBootstrapJobsResponse,
-  normalizeUpdaterSettingsResponse,
-} from "@/lib/system-updates";
+import { activeUpdaterHostBootstrapStatus, normalizeUpdaterHostBootstrapJobsResponse } from "@/lib/updater-bootstrap";
+import { emptyUpdaterSettings, normalizeUpdaterSettingsResponse } from "@/lib/updater-settings-model";
+import { isSystemUpdateJobActive } from "@/lib/system-update-target-policy";
+import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
 import type { AppSettings, AppVersion, AuditLog, CurrentUser, ManagedAppSettings, MetricSnapshot, SetupStatus, Stream, WorkerNode } from "@/types/domain";
 
 const liveStatusQueryOptions = {

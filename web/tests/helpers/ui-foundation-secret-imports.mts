@@ -151,8 +151,8 @@ export function assertSecretFoundationBoundaries(
       .filter((statement) => isSecretFoundationImport(statement.moduleSpecifier.text))
       .map(() => path)))].sort();
   assert.deepEqual(consumers, [
+    "src/features/account/account-mfa-panel.tsx",
     "src/features/account/account-one-time-secret.ts",
-    "src/features/account/account-view.tsx",
     "src/features/archive/archive-share-capability.ts",
     "src/features/archive/archive-view.tsx",
     "src/features/nodes/node-foundation-artifact.tsx",

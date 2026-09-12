@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const resourceSource = readFileSync(new URL("../src/features/resources/resource-page.tsx", import.meta.url), "utf8");
+const resourceSource = readFileSync(new URL("../src/features/resources/generic-resource-panel.tsx", import.meta.url), "utf8");
 const policySource = readFileSync(new URL("../src/features/observability/action-policy.ts", import.meta.url), "utf8");
 
 function sourceSection(source: string, startMarker: string, endMarker: string) {

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(new URL("../src/features/resources/resource-page.tsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("../src/features/resources/edit-resource-button.tsx", import.meta.url), "utf8")
+  + readFileSync(new URL("../src/features/resources/resource-action-feedback.tsx", import.meta.url), "utf8");
 
 test("caption profile edit explains saved settings when live apply fails and refreshes the list", () => {
   assert.match(source, /caption_profile_saved_runtime_apply_failed/);
