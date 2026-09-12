@@ -198,7 +198,6 @@ func TestFIX010IncidentOwnedDiagnosticsRejectSensitiveWholeValues(t *testing.T) 
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
 	relativePaths := []string{
 		"internal/httpapi/host_agent_configure_policy_e2e_test.go",
-		"internal/httpapi/server_test.go",
 		"internal/httpapi/stream_assignment_guard_test.go",
 		"internal/httpapi/stream_create_isolation_test.go",
 		"internal/httpapi/streams_management_test.go",
@@ -211,6 +210,21 @@ func TestFIX010IncidentOwnedDiagnosticsRejectSensitiveWholeValues(t *testing.T) 
 		"internal/store/service_token_lock_order_mariadb_test.go",
 		"internal/store/streams_test.go",
 		"internal/store/system_updates_mariadb_test.go",
+	}
+
+	// The original server_test.go diagnostics now live with their HTTP domains.
+	// Parse every extracted matching test and shared helper, so moving a test
+	// never removes its sensitive-value flow from this oracle.
+	serverTestPaths, err := filepath.Glob(filepath.Join(repositoryRoot, "internal", "httpapi", "server*_test.go"))
+	if err != nil || len(serverTestPaths) == 0 {
+		t.Fatalf("resolve extracted HTTP diagnostic inventory: count=%d err=%v", len(serverTestPaths), err)
+	}
+	for _, path := range serverTestPaths {
+		relativePath, err := filepath.Rel(repositoryRoot, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		relativePaths = append(relativePaths, filepath.ToSlash(relativePath))
 	}
 
 	fileSet := token.NewFileSet()

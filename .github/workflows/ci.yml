@@ -80,7 +80,7 @@ jobs:
       # Fixed signed application sources; workflow revisions are recorded separately.
       ST_PORT_UPDATER_SHA: 794d0cd69dd1b3ca130101f7769aaf8ac1274ac8
       ST_PORT_CONTRACTS_SHA: 612ceb539ee74180beae682c4290aba54c49c389
-      ST_PORT_WORKER_SHA: 956bd3464f2e91c0f4c7080b726f4e6e7e3fd30d
+      ST_PORT_WORKER_SHA: 6f9c714ab8ed4bc8604157f1dc883c3f98ff2d8f
       GOMAXPROCS: "2"
     outputs:
       st_port_source_set: ${{ steps.st_port_sources.outputs.source_set }}
@@ -512,7 +512,7 @@ jobs:
           set -euo pipefail
           authority_sha="86261a2e8b839bcf24f8b360d21b3a6c7cfc51da"
           authority_dir="${GITHUB_WORKSPACE}/authority-source"
-          current_test="${GITHUB_WORKSPACE}/internal/httpapi/server_test.go"
+          current_test="${GITHUB_WORKSPACE}/internal/httpapi/server_observability_proxy_test.go"
           authority_test="${authority_dir}/internal/httpapi/server_test.go"
           proof_dir="${RUNNER_TEMP}/observability-proxy-race-pre-fix"
           proof_log="${proof_dir}/proof.txt"
