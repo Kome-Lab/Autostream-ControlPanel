@@ -89,7 +89,7 @@ export function createBundle9Fixture(baseURL: string) {
     }
     // Pass only same-origin export documents/assets to the owned static server.
     // An unknown API or a non-GET asset request is a failing observation.
-    if ((method === "GET" || method === "HEAD") && (pathname.startsWith("/admin/") || pathname.startsWith("/_next/") || pathname === "/login" || pathname === "/" || /\.(?:js|css|svg|png|ico|woff2?|txt)$/.test(pathname))) return null;
+    if ((method === "GET" || method === "HEAD") && (pathname === "/admin" || pathname.startsWith("/admin/") || pathname.startsWith("/_next/") || pathname === "/login" || pathname === "/" || /\.(?:js|css|svg|png|ico|woff2?|txt)$/.test(pathname))) return null;
     unexpected.push(`${method} ${parsed.pathname}${parsed.search}`);
     return { status: 404, body: { code: "bundle9_unexpected_request" }, requiredResponse: true };
   };

@@ -80,7 +80,7 @@ jobs:
       # Fixed signed application sources; workflow revisions are recorded separately.
       ST_PORT_UPDATER_SHA: 794d0cd69dd1b3ca130101f7769aaf8ac1274ac8
       ST_PORT_CONTRACTS_SHA: 612ceb539ee74180beae682c4290aba54c49c389
-      ST_PORT_WORKER_SHA: 6f9c714ab8ed4bc8604157f1dc883c3f98ff2d8f
+      ST_PORT_WORKER_SHA: 93b78305c9436e752fbad8c110c3bf5c78da4449
       GOMAXPROCS: "2"
     outputs:
       st_port_source_set: ${{ steps.st_port_sources.outputs.source_set }}

@@ -13,6 +13,26 @@ import {
 
 export type Bundle9Capture = Readonly<{ name: string; observation: unknown; pngSHA256: string }>;
 
+export async function navigateBundle9Document(
+  browser: BrowserHarness,
+  fixture: Pick<ReturnType<typeof createBundle9Fixture>, "resetTrace">,
+  url: string,
+  prepareNextPhase: () => void = () => {},
+) {
+  // The caller has observed the current page's required GETs and operations.
+  // Viewport changes can still cause paint and Fetch work on that document.
+  await paintBarrier(browser);
+  browser.assertNoFatalError();
+  await browser.navigate("about:blank");
+  await browser.waitForRequestHandlersIdle();
+  prepareNextPhase();
+  fixture.resetTrace();
+  browser.clearRequestCounts();
+  browser.clearNavigationCount();
+  browser.clearConsoleErrors();
+  await browser.navigate(url);
+}
+
 export async function captureBundle9Source(baseURL: string, output: string) {
   mkdirSync(output, { recursive: false });
   const browser = await BrowserHarness.launch();
@@ -48,15 +68,9 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       writeJSON(resolve(output, `${name}.json`), evidence);
       captures.push({ name, observation: evidence, pngSHA256: sha256(png) });
     };
-    const navigate = async (surfaceID: (typeof bundle9BrowserSurfaces)[number]["id"], text?: string) => {
+    const navigate = async (surfaceID: (typeof bundle9BrowserSurfaces)[number]["id"], text?: string, prepareNextPhase?: () => void) => {
       const surface = bundle9BrowserSurfaces.find((candidate) => candidate.id === surfaceID)!;
-      await browser.navigate("about:blank");
-      await browser.waitForRequestHandlersIdle();
-      fixture.resetTrace();
-      browser.clearRequestCounts();
-      browser.clearNavigationCount();
-      browser.clearConsoleErrors();
-      await browser.navigate(`${baseURL}${surface.route}`);
+      await navigateBundle9Document(browser, fixture, `${baseURL}${surface.route}`, prepareNextPhase);
       await browser.waitFor("Boolean(document.querySelector('main') && document.querySelector('button[aria-label=\"アカウントメニュー\"]'))", Boolean, `${surfaceID}: protected shell`);
       for (const path of ["/auth/me", "/settings/app", "/version", ...surface.required]) {
         await browser.waitForResponseCount(path, 1);
@@ -73,15 +87,15 @@ export async function captureBundle9Source(baseURL: string, output: string) {
         // denominator and source result cannot become PASS after any failure.
         failures.push({ name, error: error instanceof Error ? error.message : String(error) });
         writeJSON(resolve(output, `${name}.failure.json`), failures.at(-1));
+        browser.assertNoFatalError();
       }
     };
 
     for (const surface of bundle9BrowserSurfaces) {
       for (const viewport of bundle9Viewports) {
         await scenario(`${surface.id}-${viewport.width}`, async () => {
-          fixture.state.permissions = ["*"];
           await browser.setViewport(viewport.width, viewport.height);
-          await navigate(surface.id);
+          await navigate(surface.id, undefined, () => { fixture.state.permissions = ["*"]; });
           assert.equal(fixture.trace.filter((call) => call.method === "GET" && call.path === "/auth/me").length, 1, "fresh document shares auth query");
           for (const path of surface.required) assert.equal(fixture.trace.filter((call) => call.method === "GET" && call.path === path).length, 1, `${surface.id}: shared GET ${path}`);
           await record(`${surface.id}-${viewport.width}`);
@@ -90,8 +104,7 @@ export async function captureBundle9Source(baseURL: string, output: string) {
     }
     await browser.setViewport(1440, 900);
     await scenario("streams-interactions", async () => {
-      fixture.state.permissions = ["*"];
-      await navigate("streams");
+      await navigate("streams", undefined, () => { fixture.state.permissions = ["*"]; });
       await rememberFocusTarget(browser, bundle9ReadinessSelector);
       await browser.clickSelector(bundle9ReadinessSelector);
       await waitForDialog(browser, true);
@@ -111,9 +124,8 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       await record("streams-one-mutation");
     });
     await scenario("streams-error", async () => {
-      fixture.state.readinessError = true;
       try {
-        await navigate("streams");
+        await navigate("streams", undefined, () => { fixture.state.readinessError = true; });
         await browser.clickSelector(bundle9ReadinessSelector);
         await waitForDialog(browser, true);
         await confirmOnce(browser);
@@ -122,18 +134,17 @@ export async function captureBundle9Source(baseURL: string, output: string) {
         await browser.waitForRequestHandlersIdle();
         assert.equal(fixture.trace.filter((call) => call.path === bundle9ReadinessPath).length, 1, "403 must not resend");
         await record("streams-error");
-      } finally { fixture.state.readinessError = false; }
+      } finally { await paintBarrier(browser); fixture.state.readinessError = false; }
     });
     await scenario("streams-permission-denied", async () => {
-      fixture.state.permissions = ["streams.read"];
       try {
-        await navigate("streams");
+        await navigate("streams", undefined, () => { fixture.state.permissions = ["streams.read"]; });
         assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(bundle9ReadinessSelector)})?.disabled`), true);
         await browser.clickSelector(bundle9ReadinessSelector);
         await paintBarrier(browser);
         assert.equal(fixture.trace.some((call) => call.path === bundle9ReadinessPath), false);
         await record("streams-permission-denied");
-      } finally { fixture.state.permissions = ["*"]; }
+      } finally { await paintBarrier(browser); fixture.state.permissions = ["*"]; }
     });
     await scenario("streams-detail-preview", async () => {
       await navigate("streams");
@@ -165,12 +176,11 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       await record("resources-cancel-focus");
     });
     await scenario("resources-permission-denied", async () => {
-      fixture.state.permissions = ["encoder_profiles.read"];
       try {
-        await navigate("resources");
+        await navigate("resources", undefined, () => { fixture.state.permissions = ["encoder_profiles.read"]; });
         assert.equal(await browser.evaluate("[...document.querySelectorAll('button')].filter((button) => button.textContent.trim() === '新規作成' && !button.disabled).length"), 0);
         await record("resources-permission-denied");
-      } finally { fixture.state.permissions = ["*"]; }
+      } finally { await paintBarrier(browser); fixture.state.permissions = ["*"]; }
     });
     await scenario("updater-settings", async () => {
       await navigate("application");
@@ -213,31 +223,26 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       await record("archive-local");
     });
     await scenario("archive-permission-denied", async () => {
-      fixture.state.permissions = ["archive_profiles.read"];
       try {
         // The default profile remains readable; archive queries must stay disabled.
-        await browser.navigate("about:blank");
-        await browser.waitForRequestHandlersIdle();
-        fixture.resetTrace(); browser.clearRequestCounts(); browser.clearNavigationCount(); browser.clearConsoleErrors();
-        await browser.navigate(`${baseURL}${bundle9BrowserSurfaces.find((surface) => surface.id === "archive")!.route}`);
+        await navigateBundle9Document(browser, fixture, `${baseURL}${bundle9BrowserSurfaces.find((surface) => surface.id === "archive")!.route}`, () => { fixture.state.permissions = ["archive_profiles.read"]; });
         await browser.waitForResponseCount("/profiles/archive", 1);
         await browser.clickRoleWithText("tab", "ローカル録画アーカイブ");
         await browser.waitFor("document.body.textContent || ''", (value: string) => value.includes("録画成果物を確認する権限がありません"), "archive permission notice");
         await browser.waitForRequestHandlersIdle();
         assert.equal(fixture.trace.some((call) => call.path.startsWith("/archive/streams") || call.path.startsWith("/archive/processing-streams")), false);
         await record("archive-permission-denied");
-      } finally { fixture.state.permissions = ["*"]; }
+      } finally { await paintBarrier(browser); fixture.state.permissions = ["*"]; }
     });
     await scenario("monitoring-error-and-recovery", async () => {
-      fixture.state.healthError = true;
       try {
-        await navigate("monitoring", "一部の情報を取得できません");
+        await navigate("monitoring", "一部の情報を取得できません", () => { fixture.state.healthError = true; });
         await record("monitoring-error");
         fixture.state.healthError = false;
         await clickButtonText(browser, "再試行");
         await browser.waitFor("document.querySelector('main')?.textContent || ''", (value: string) => value.includes("監視情報は正常に取得済み"), "monitoring retry recovery");
         await record("monitoring-recovered");
-      } finally { fixture.state.healthError = false; }
+      } finally { await paintBarrier(browser); fixture.state.healthError = false; }
     });
     await scenario("mobile-navigation", async () => {
       await browser.setViewport(390, 844);
