@@ -695,6 +695,12 @@ jobs:
       - run: npm ci
       - name: Test Bundle 4 Web semantic witnesses
         run: npm run test:control-platform
+      - name: Prepare and verify Japanese browser fonts
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y fontconfig fonts-noto-cjk=1:20230817+repack1-3
+          fc-list -q ':lang=ja'
       - name: Test Bundle 4 browser witnesses and UI Foundation behavior
         timeout-minutes: 8
         env:

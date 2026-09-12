@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { BrowserHarness } from "./browser-harness.mts";
 import {
   BUNDLE9_BROWSER_CLOCK, apiObservationSummary, assertCaptureInventory,
-  bundle9BrowserSurfaces, bundle9Viewports, sha256,
+  bundle9BrowserSurfaces, bundle9Viewports, sha256, type APIObservation,
 } from "./bundle9-browser-contract.mts";
 import {
   bundle9ReadinessPath, bundle9ReadinessSelector, bundle9Stream,
@@ -12,6 +12,52 @@ import {
 } from "./bundle9-browser-fixtures.mts";
 
 export type Bundle9Capture = Readonly<{ name: string; observation: unknown; pngSHA256: string }>;
+
+export function assertBundle9CancelledMutations(trace: readonly APIObservation[]) {
+  assert.deepEqual(trace.filter((call) => call.method !== "GET"), [
+    { method: "POST", path: "/auth/session/refresh", body: null, status: 200 },
+  ], "cancel permits exactly one unchanged session refresh and no business mutation");
+}
+
+const monitoringRetryExpression = `(() => {
+  const sections = [...document.querySelectorAll('main section')].filter((section) => section.querySelector('h2')?.textContent.trim() === '現在の問題・Node稼働・診断を分けて確認');
+  if (sections.length !== 1 || !sections[0].textContent.includes('一部の情報を取得できません')) return false;
+  const buttons = [...sections[0].querySelectorAll('button')].filter((button) => button.getClientRects().length > 0 && getComputedStyle(button).visibility !== 'hidden' && button.textContent.trim() === '再試行');
+  if (buttons.length !== 1 || buttons[0].disabled) return false;
+  const button = buttons[0];
+  if (globalThis.__bundle9MonitoringRetry && globalThis.__bundle9MonitoringRetry !== button) return false;
+  globalThis.__bundle9MonitoringRetry = button;
+  button.setAttribute('data-bundle9-monitoring-retry', 'target');
+  button.scrollIntoView({ block: 'center' });
+  return true;
+})()`;
+
+export async function retryBundle9Monitoring(
+  browser: BrowserHarness,
+  fixture: Pick<ReturnType<typeof createBundle9Fixture>, "state">,
+  record: (name: string) => Promise<void>,
+) {
+  assert.equal(fixture.state.healthError, true, "observe the failed queries before normalizing the fixture");
+  await browser.waitFor(monitoringRetryExpression, Boolean, "unique visible enabled Monitoring summary retry");
+  await record("monitoring-error"); // Includes safe-detail, paint and real response settlement checks.
+  assert.equal(await browser.evaluate(monitoringRetryExpression), true, "the same summary retry must remain enabled in the error state");
+  const completed = ["/service-health", "/observability/incidents", "/observability/diagnostics", "/streams"].map((path) => {
+    const count = browser.responses.get(path) || 0;
+    assert.ok(count > 0, `initial Monitoring GET must complete: ${path}`);
+    assert.equal(browser.responseStatuses.get(path)?.length, count, `completed Monitoring statuses: ${path}`);
+    return { path, count };
+  });
+  assert.equal(browser.responseStatuses.get("/service-health")?.at(-1), 503, "observe the actual failed health response before retry");
+  fixture.state.healthError = false;
+  await browser.clickSelector('[data-bundle9-monitoring-retry="target"]');
+  for (const { path, count } of completed) {
+    await browser.waitForResponseCount(path, count + 1);
+    assert.equal(browser.responseStatuses.get(path)?.[count], 200, `new successful Monitoring GET after the one retry click: ${path}`);
+  }
+  await browser.waitFor("document.querySelector('main')?.textContent || ''", (value: string) => value.includes("監視情報は正常に取得済み"), "monitoring retry recovery");
+  await browser.evaluate("globalThis.__bundle9MonitoringRetry?.removeAttribute('data-bundle9-monitoring-retry'); delete globalThis.__bundle9MonitoringRetry; true");
+  await record("monitoring-recovered");
+}
 
 export async function navigateBundle9Document(
   browser: BrowserHarness,
@@ -172,7 +218,7 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       await browser.pressNativeKey("Escape");
       await waitForDialog(browser, false);
       await waitForExactFocus(browser);
-      assert.equal(fixture.trace.filter((call) => call.method !== "GET").length, 0);
+      assertBundle9CancelledMutations(fixture.trace);
       await record("resources-cancel-focus");
     });
     await scenario("resources-permission-denied", async () => {
@@ -194,7 +240,7 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       await browser.pressNativeKey("Escape");
       await waitForDialog(browser, false);
       await waitForExactFocus(browser);
-      assert.equal(fixture.trace.filter((call) => call.method !== "GET").length, 0);
+      assertBundle9CancelledMutations(fixture.trace);
       await record("updater-cancel-focus");
     });
     await scenario("account-secret-owner", async () => {
@@ -237,11 +283,7 @@ export async function captureBundle9Source(baseURL: string, output: string) {
     await scenario("monitoring-error-and-recovery", async () => {
       try {
         await navigate("monitoring", "一部の情報を取得できません", () => { fixture.state.healthError = true; });
-        await record("monitoring-error");
-        fixture.state.healthError = false;
-        await clickButtonText(browser, "再試行");
-        await browser.waitFor("document.querySelector('main')?.textContent || ''", (value: string) => value.includes("監視情報は正常に取得済み"), "monitoring retry recovery");
-        await record("monitoring-recovered");
+        await retryBundle9Monitoring(browser, fixture, record);
       } finally { await paintBarrier(browser); fixture.state.healthError = false; }
     });
     await scenario("mobile-navigation", async () => {

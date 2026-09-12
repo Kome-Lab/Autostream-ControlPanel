@@ -68,7 +68,8 @@ async function main() {
     runner: { os: platform(), arch: arch(), release: release(), imageOS: process.env.ImageOS || "", imageVersion: process.env.ImageVersion || "" },
     node: process.version, dependencyLockSHA256: sha256(baselineLock),
     harness, harnessSHA256: sha256(canonicalJSON(harness)),
-    fonts, fontsSHA256: sha256(canonicalJSON(fonts)),
+    fonts: fonts.all, fontsSHA256: sha256(canonicalJSON(fonts.all)),
+    japaneseFonts: fonts.japanese, japaneseFontPattern: ":lang=ja",
     clock: BUNDLE9_BROWSER_CLOCK, timezone: "Asia/Tokyo", locale: "ja-JP",
     viewports: bundle9Viewports, deviceScaleFactor: 1,
     buildCommand: ["node", "node_modules/next/dist/bin/next", "build", "--webpack"],
@@ -211,10 +212,29 @@ async function staticExportServer(initialRoot: string) {
   };
 }
 
-function fontInventory() {
-  const files = [...new Set(execFileSync("fc-list", ["--format", "%{file}\n"], { encoding: "utf8", timeout: 30_000 }).split("\n").filter(Boolean))].sort();
+type FontFile = Readonly<{ path: string; sha256: string }>;
+
+export function assertJapaneseFonts(fonts: readonly FontFile[], japanesePaths: readonly string[]) {
+  assert.ok(fonts.length > 0, "same-run font inventory must be nonempty");
+  for (const font of fonts) {
+    assert.ok(isAbsolute(font.path) && statSync(font.path).isFile(), "font inventory requires real absolute font files");
+    assert.equal(sha256(readFileSync(font.path)), font.sha256, `font inventory hash mismatch: ${font.path}`);
+  }
+  const paths = [...new Set(japanesePaths)].sort();
+  assert.ok(paths.length > 0, "fc-list :lang=ja must match real Japanese fonts");
+  return paths.map((path) => {
+    const font = fonts.find((candidate) => candidate.path === path);
+    assert.ok(font, `Japanese font must be registered in the full font inventory: ${path}`);
+    return font;
+  });
+}
+
+export function fontInventory(listFiles = (pattern?: string) => execFileSync("fc-list", [...(pattern ? [pattern] : []), "--format", "%{file}\n"], { encoding: "utf8", timeout: 30_000 }).split("\n").filter(Boolean)) {
+  const files = [...new Set(listFiles())].sort();
   assert.ok(files.length > 0, "same-run font inventory must be nonempty");
-  return files.map((path) => ({ path, sha256: sha256(readFileSync(path)) }));
+  const all = files.map((path) => ({ path, sha256: sha256(readFileSync(path)) }));
+  const japanese = assertJapaneseFonts(all, listFiles(":lang=ja"));
+  return { all, japanese };
 }
 function gitBytes(args: string[]) { return execFileSync("git", args, { cwd: repositoryRoot, maxBuffer: 32 * 1024 * 1024 }); }
 function gitText(args: string[]) { return gitBytes(args).toString("utf8").trim(); }
