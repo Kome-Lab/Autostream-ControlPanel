@@ -2,6 +2,10 @@ package store
 
 import (
 	"bytes"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 )
 
@@ -59,4 +63,86 @@ func readStoreLockOrderSources(paths ...string) ([]byte, error) {
 		source.WriteByte('\n')
 	}
 	return source.Bytes(), nil
+}
+
+var runtimeTokenLockOrderOwners = []string{
+	"system_update_runtime_token_rotations_mariadb.go",
+	"runtime_token_rotation_activation_mariadb.go",
+	"runtime_token_rotation_cancel_ack_mariadb.go",
+	"runtime_token_rotation_claim_mariadb.go",
+	"runtime_token_rotation_emergency_mariadb.go",
+	"runtime_token_rotation_proof_mariadb.go",
+	"runtime_token_rotation_rows_mariadb.go",
+	"runtime_token_rotation_stage_mariadb.go",
+}
+
+var runtimeTokenLockOrderMethods = []string{
+	"stageSystemUpdateRuntimeTokenRotationOnce",
+	"ClaimSystemUpdateRuntimeTokenRotationStagedCredential",
+	"MarkSystemUpdateRuntimeTokenRotationLocalStaged",
+	"ProveSystemUpdateRuntimeTokenRotationHeartbeat",
+	"ActivateSystemUpdateRuntimeTokenRotation",
+	"CancelSystemUpdateRuntimeTokenRotation",
+	"AcknowledgeSystemUpdateRuntimeTokenRotationCancel",
+	"EmergencyRevokeSystemUpdateRuntimeToken",
+}
+
+// Resolve each method inside its actual owner, without depending on a following
+// declaration that may now live in another file. readFile permits memory-only
+// mutants of these same production sources in the reader's direct regressions.
+func readRuntimeTokenLockOrderSource(readFile func(string) ([]byte, error)) (map[string]string, error) {
+	bodies := make(map[string]string, len(runtimeTokenLockOrderMethods))
+	for _, name := range runtimeTokenLockOrderMethods {
+		bodies[name] = ""
+	}
+	for _, path := range runtimeTokenLockOrderOwners {
+		source, err := readFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("runtime token owner %s: %w", path, err)
+		}
+		positions := token.NewFileSet()
+		parsed, err := parser.ParseFile(positions, path, source, 0)
+		if err != nil {
+			return nil, fmt.Errorf("runtime token owner %s: %w", path, err)
+		}
+		if parsed.Name.Name != "store" {
+			return nil, fmt.Errorf("runtime token owner %s has package %s, want store", path, parsed.Name.Name)
+		}
+		for _, declaration := range parsed.Decls {
+			method, ok := declaration.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			name := method.Name.Name
+			body, wanted := bodies[name]
+			if !wanted {
+				continue
+			}
+			if method.Recv == nil || len(method.Recv.List) != 1 {
+				return nil, fmt.Errorf("runtime token method %s must have receiver *MariaDBSystemUpdateStore", name)
+			}
+			pointer, ok := method.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				return nil, fmt.Errorf("runtime token method %s must have receiver *MariaDBSystemUpdateStore", name)
+			}
+			receiver, ok := pointer.X.(*ast.Ident)
+			if !ok || receiver.Name != "MariaDBSystemUpdateStore" {
+				return nil, fmt.Errorf("runtime token method %s must have receiver *MariaDBSystemUpdateStore", name)
+			}
+			if body != "" {
+				return nil, fmt.Errorf("duplicate runtime token method %s", name)
+			}
+			if method.Body == nil {
+				return nil, fmt.Errorf("runtime token method %s has no body", name)
+			}
+			file := positions.File(method.Pos())
+			bodies[name] = string(source[file.Offset(method.Body.Pos()):file.Offset(method.Body.End())])
+		}
+	}
+	for _, name := range runtimeTokenLockOrderMethods {
+		if bodies[name] == "" {
+			return nil, fmt.Errorf("runtime token method %s not found", name)
+		}
+	}
+	return bodies, nil
 }

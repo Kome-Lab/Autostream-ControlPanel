@@ -9,6 +9,7 @@ import type {
   APIErrorRegistryEntry,
 } from "../src/lib/foundation/api-errors/registry.ts";
 import type { TranslationKey } from "../src/lib/i18n.ts";
+import { registerSourceResolution } from "./helpers/moved-source.mts";
 import { assertUIFoundationContractBoundaries } from "./helpers/ui-foundation-contract-imports.mts";
 
 const resolverSource = [
@@ -28,6 +29,8 @@ register(`data:text/javascript,${encodeURIComponent(resolverSource)}`, {
   parentURL: import.meta.url,
   data: { webRootURL: new URL("../", import.meta.url).href },
 });
+
+registerSourceResolution();
 
 const [adapterModule, registryModule, clientModule, i18nModule] = await Promise.all([
   import("../src/lib/foundation/api-errors/adapter.ts"),

@@ -4,6 +4,7 @@ import { register } from "node:module";
 import test from "node:test";
 
 import type { AppSettingsActionIntent, AppSettingsActionState } from "../src/features/settings/app-settings-action-policy.ts";
+import { registerSourceResolution } from "./helpers/moved-source.mts";
 
 const resolverSource = [
   "let webRootURL;",
@@ -22,6 +23,8 @@ register(`data:text/javascript,${encodeURIComponent(resolverSource)}`, {
   parentURL: import.meta.url,
   data: { webRootURL: new URL("../", import.meta.url).href },
 });
+
+registerSourceResolution();
 
 const {
   appSettingsActionDefinitions,

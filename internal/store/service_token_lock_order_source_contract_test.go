@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -95,43 +96,35 @@ func TestFIX009GenericTokenMutationsUseOnlyDiscoveredServiceRows(t *testing.T) {
 }
 
 func TestMariaDBRuntimeTokenMutationsLockServiceBeforeToken(t *testing.T) {
-	sourceBytes, err := os.ReadFile("system_update_runtime_token_rotations_mariadb.go")
+	bodies, err := readRuntimeTokenLockOrderSource(os.ReadFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(sourceBytes)
-
-	for _, test := range []struct {
-		name string
-		next string
-	}{
-		{name: "stageSystemUpdateRuntimeTokenRotationOnce", next: "isMariaDBRuntimeTokenRotationDeadlock"},
-		{name: "ClaimSystemUpdateRuntimeTokenRotationStagedCredential", next: "mariaDBRuntimeTokenRotationPolicyForUpdate"},
-		{name: "MarkSystemUpdateRuntimeTokenRotationLocalStaged", next: "ProveSystemUpdateRuntimeTokenRotationHeartbeat"},
-		{name: "ProveSystemUpdateRuntimeTokenRotationHeartbeat", next: "ActivateSystemUpdateRuntimeTokenRotation"},
-		{name: "ActivateSystemUpdateRuntimeTokenRotation", next: "CancelSystemUpdateRuntimeTokenRotation"},
-		{name: "CancelSystemUpdateRuntimeTokenRotation", next: "AcknowledgeSystemUpdateRuntimeTokenRotationCancel"},
-		{name: "AcknowledgeSystemUpdateRuntimeTokenRotationCancel", next: "EmergencyRevokeSystemUpdateRuntimeToken"},
-		{name: "EmergencyRevokeSystemUpdateRuntimeToken", next: "mariaDBRuntimeTokenRotationForTransition"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			body := mariaDBRuntimeTokenFunctionSource(t, source, test.name, test.next)
-			lockPhase := strings.Index(body, "lockMariaDBRuntimeTokenRotationPlan(")
-			if lockPhase < 0 {
-				t.Fatalf("%s does not use the canonical runtime service-token lock plan", test.name)
-			}
-			if tokenPhase := firstSourceIndex(
-				body,
-				"selectActiveServiceTokenForUpdate(",
-				"mariaDBRuntimeServiceTokenForUpdate(",
-				"mariaDBRuntimeTokenServiceReferencesForUpdate(",
-				"INSERT INTO service_tokens",
-				"UPDATE service_tokens",
-			); tokenPhase >= 0 && lockPhase >= tokenPhase {
-				t.Fatalf("%s reaches a token phase before the canonical runtime lock plan", test.name)
+	for _, name := range runtimeTokenLockOrderMethods {
+		t.Run(name, func(t *testing.T) {
+			if err := runtimeTokenLockOrderError(name, bodies[name]); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
+}
+
+func runtimeTokenLockOrderError(name, body string) error {
+	lockPhase := strings.Index(body, "lockMariaDBRuntimeTokenRotationPlan(")
+	if lockPhase < 0 {
+		return fmt.Errorf("%s does not use the canonical runtime service-token lock plan", name)
+	}
+	if tokenPhase := firstSourceIndex(
+		body,
+		"selectActiveServiceTokenForUpdate(",
+		"mariaDBRuntimeServiceTokenForUpdate(",
+		"mariaDBRuntimeTokenServiceReferencesForUpdate(",
+		"INSERT INTO service_tokens",
+		"UPDATE service_tokens",
+	); tokenPhase >= 0 && lockPhase >= tokenPhase {
+		return fmt.Errorf("%s reaches a token phase before the canonical runtime lock plan", name)
+	}
+	return nil
 }
 
 func TestMariaDBPrecreateServiceEstablishesServiceBeforeTokenAndRevalidatesBinding(t *testing.T) {
@@ -421,27 +414,6 @@ func mariaDBServiceTokenFunctionSource(t *testing.T, source, name, next string) 
 		t.Fatalf("function following %s (%s) not found", name, next)
 	}
 	return source[start : start+len(startMarker)+endOffset]
-}
-
-func mariaDBRuntimeTokenFunctionSource(t *testing.T, source, name, next string) string {
-	t.Helper()
-	startMarkers := []string{
-		"func (s *MariaDBSystemUpdateStore) " + name + "(",
-		"func " + name + "(",
-	}
-	nextMarkers := []string{
-		"func (s *MariaDBSystemUpdateStore) " + next + "(",
-		"func " + next + "(",
-	}
-	start := firstSourceIndex(source, startMarkers...)
-	if start < 0 {
-		t.Fatalf("runtime token function %s not found", name)
-	}
-	nextOffset := firstSourceIndex(source[start+1:], nextMarkers...)
-	if nextOffset < 0 {
-		t.Fatalf("runtime token function following %s (%s) not found", name, next)
-	}
-	return source[start : start+1+nextOffset]
 }
 
 func firstSourceIndex(source string, needles ...string) int {

@@ -20,6 +20,7 @@ import type {
   ActionControlRenderProps,
 } from "../src/components/foundation/permissions/action-availability-boundary.ts";
 import { assertPermissionFoundationBoundaries } from "./helpers/ui-foundation-permission-imports.mts";
+import { registerSourceResolution } from "./helpers/moved-source.mts";
 
 const resolverSource = [
   "let webRootURL;",
@@ -38,6 +39,8 @@ register(`data:text/javascript,${encodeURIComponent(resolverSource)}`, {
   parentURL: import.meta.url,
   data: { webRootURL: new URL("../", import.meta.url).href },
 });
+
+registerSourceResolution();
 
 type EvaluatorModule = typeof import("../src/lib/foundation/permissions/evaluator.ts");
 type BoundaryModule = typeof import("../src/components/foundation/permissions/action-availability-boundary.ts");

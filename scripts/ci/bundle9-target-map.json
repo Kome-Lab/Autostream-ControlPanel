@@ -567,7 +567,7 @@
       },
       {
         "path": "internal/store/service_token_lock_order_source_contract_test.go",
-        "sha256": "94769fa34d9897b3e37dd24a152362eddb1ebbbc504fa85dd336a186f47c14b1",
+        "sha256": "a5715cc38fbaaf70c8d8557628b654b323d62519a130ff0866a040049406907a",
         "symbols": [
           "TestFIX009GenericTokenMutationsUseOnlyDiscoveredServiceRows",
           "TestMariaDBActivatePullUpdaterOwnershipLocksAllServicesBeforeTokens",
@@ -583,10 +583,10 @@
           "TestMariaDBUnreferencedTokenCleanupDoesNotLockServiceAfterToken",
           "TestMariaDBUpdaterPolicyLockObserverNilIsNoOp",
           "firstSourceIndex",
-          "mariaDBRuntimeTokenFunctionSource",
-          "mariaDBServiceTokenFunctionSource"
+          "mariaDBServiceTokenFunctionSource",
+          "runtimeTokenLockOrderError"
         ],
-        "physical_lines": 455
+        "physical_lines": 427
       },
       {
         "path": "internal/store/system_updates_mariadb_test.go",
