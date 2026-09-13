@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import ts from "typescript";
+import { projectNodeResidualBindings } from "./node-residual-bindings.mts";
 
 export type ResidualMatcher = "japanese-line" | "danger-confirm-line" | "legacy-write-line";
 export type ResidualEvidenceSegment = Readonly<{ path: string; start: number; count: number }>;
@@ -22,6 +23,10 @@ export const nodeResidualSourcePaths = Object.freeze([
   "web/src/features/nodes/node-endpoint-state-view.tsx",
   "web/src/features/nodes/node-configuration-secret-block.tsx",
   "web/src/features/nodes/registered-node-group.tsx",
+  "web/src/features/nodes/node-configuration-card.tsx",
+  "web/src/features/nodes/node-edit-dialog.tsx",
+  "web/src/features/nodes/registered-node-columns.tsx",
+  "web/src/features/nodes/use-node-registration-mutations.ts",
 ]);
 
 // The original residual identities, evidence and later-owner fence stay fixed.
@@ -90,7 +95,8 @@ export function verifyNodeResidualSources(authority: NodeResidualSourceAuthority
 // order without changing its hash. Every actual matching line must be consumed
 // exactly once, including duplicates; omitted or newly introduced lines fail.
 export function orderedNodeResidualEvidence(matcher: ResidualMatcher, authority: NodeResidualSourceAuthority, sources: ReadonlyMap<string, string>, pattern: RegExp) {
-  const rows = new Map([...sources].map(([path, source]) => [path, source.split(/\r?\n/u).filter((line) => pattern.test(line)).map((line) => line.trim())]));
+  const boundSources = projectNodeResidualBindings(sources);
+  const rows = new Map([...boundSources].map(([path, source]) => [path, source.split(/\r?\n/u).filter((line) => pattern.test(line)).map((line) => line.trim())]));
   const total = [...rows.values()].reduce((count, evidence) => count + evidence.length, 0);
   const consumed = new Set<string>();
   const evidence: string[] = [];

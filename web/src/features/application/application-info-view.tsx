@@ -2,12 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Activity, Download, LoaderCircle, RefreshCcw, XCircle } from "lucide-react";
+import { Activity, Download, LoaderCircle, RefreshCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppSettings, useCurrentUser, useNodes, useServiceHealth, useSystemUpdates, useVersion } from "@/features/queries";
 import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
-import { createUpdaterActionController, updaterAuthorityFingerprint, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
+import { createUpdaterActionController, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
 import { apiPost } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { acquireSystemUpdateTargetRequestLock, isControlPanelUpdateTarget, isSystemUpdateJobActive, systemUpdateMayDisconnectPanel, systemUpdateStrategyForTarget } from "@/lib/system-update-target-policy";
@@ -15,18 +15,19 @@ import { isSystemUpdateEndpointRevisionConflict, requestSystemUpdatePortReconfig
 import { requestSystemUpdateWithRecovery, runSystemUpdatesSequentially, SystemUpdateRequestAmbiguousError } from "@/lib/system-update-requests";
 import { systemUpdateErrorMessage } from "@/lib/system-update-presentation";
 import { systemUpdateJobFromResponse } from "@/lib/system-updates";
-import type { SystemUpdateRequestState } from "@/lib/system-update-target-policy";
 import type { SystemUpdateJob, SystemUpdatePortReconfigureCreateRequest, SystemUpdateTarget, SystemUpdatesResponse } from "@/types/domain";
 import { type Feedback, type SystemUpdateOperation, type PortReconfigureOperation, type PortReconfigureAuthorityContext } from "./application-operation-types";
-import { mergeRegisteredNodeRows, compareServiceRows, nodeIdentity } from "./registered-services-model";
-import { compareUpdateJobs, latestJobsByTarget, orderBatchTargets, updateCanStart, availableSystemUpdateTargets } from "./system-update-selection";
+import { mergeRegisteredNodeRows, compareServiceRows } from "./registered-services-model";
+import { compareUpdateJobs, latestJobsByTarget, orderBatchTargets, updateCanStart } from "./system-update-selection";
 import { selfUpdateTerminalFeedback, systemUpdateSucceeded } from "./system-update-job-presentation";
 import { mergeSystemUpdateJob, newIdempotencyKey } from "./system-update-cache";
-import { unavailableUpdaterAuthority, softwareUpdateAuthoritySnapshot, freshUpdaterAuthority, batchUpdateAuthoritySnapshot, cancelUpdateAuthoritySnapshot, portReconfigureAuthoritySnapshot } from "./port-reconfigure-authority";
+import { batchUpdateAuthoritySnapshot } from "./port-reconfigure-authority";
 import { SystemUpdatesCard } from "./system-updates-card";
 import { InfoItem } from "./service-endpoint-summary";
 import { shortCommit, formatOptionalDate, UpdateStatusBadge, controlPanelUpdateState } from "./service-update-presentation";
 import { RegisteredServicesCard } from "./registered-services-card";
+import { createApplicationAuthorityReaders, refreshApplicationPortAuthority } from "./application-authority-readers";
+import { createApplicationActionRenderers } from "./application-action-renderers";
 
 export function ApplicationInfoView() {
   const currentUser = useCurrentUser();
@@ -237,130 +238,22 @@ export function ApplicationInfoView() {
     applicability: applicable ? "applicable" : "not-applicable",
     authorityFingerprint,
   });
-  const refreshTargetAuthority = async (actionID: "UPD-01" | "UPD-02", targetID: string): Promise<UpdaterActionAuthority> => {
-    const [refreshedUpdates, refreshedUser] = await Promise.all([systemUpdates.refetch(), currentUser.refetch()]);
-    if (refreshedUpdates.isError || !refreshedUpdates.data || refreshedUser.isError || !refreshedUser.data) {
-      return unavailableUpdaterAuthority(updaterAuthorityFingerprint([actionID, targetID, "unavailable"]));
-    }
-    const target = refreshedUpdates.data.targets.find((candidate) => candidate.target_id === targetID);
-    const snapshot = target
-      ? softwareUpdateAuthoritySnapshot(actionID, target, refreshedUpdates.data)
-      : { applicable: false, fingerprint: updaterAuthorityFingerprint([actionID, targetID, "missing"]) };
-    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
-  };
-  const refreshBatchAuthority = async (): Promise<UpdaterActionAuthority> => {
-    const [refreshedUpdates, refreshedUser] = await Promise.all([systemUpdates.refetch(), currentUser.refetch()]);
-    if (refreshedUpdates.isError || !refreshedUpdates.data || refreshedUser.isError || !refreshedUser.data) {
-      return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-03", "fleet", "unavailable"]));
-    }
-    const refreshedTargets = availableSystemUpdateTargets(refreshedUpdates.data);
-    const snapshot = batchUpdateAuthoritySnapshot(refreshedTargets, refreshedUpdates.data);
-    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
-  };
-  const refreshCancelAuthority = async (jobID: string): Promise<UpdaterActionAuthority> => {
-    const [refreshedUpdates, refreshedUser] = await Promise.all([systemUpdates.refetch(), currentUser.refetch()]);
-    if (refreshedUpdates.isError || !refreshedUpdates.data || refreshedUser.isError || !refreshedUser.data) {
-      return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-04", jobID, "unavailable"]));
-    }
-    const job = refreshedUpdates.data.jobs.find((candidate) => candidate.id === jobID);
-    const snapshot = cancelUpdateAuthoritySnapshot(jobID, job);
-    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
-  };
-  const refreshPortAuthority = async (context: PortReconfigureAuthorityContext): Promise<UpdaterActionAuthority> => {
-    const [refreshedUpdates, refreshedUser, refreshedRegisteredNodes, refreshedServiceHealth] = await Promise.all([
-      systemUpdates.refetch(),
-      currentUser.refetch(),
-      canReadRegisteredNodes ? registeredNodes.refetch() : Promise.resolve(undefined),
-      canReadServiceHealth ? serviceHealth.refetch() : Promise.resolve(undefined),
-    ]);
-    if (
-      refreshedUpdates.isError
-      || !refreshedUpdates.data
-      || refreshedUser.isError
-      || !refreshedUser.data
-      || refreshedRegisteredNodes?.isError
-      || refreshedServiceHealth?.isError
-    ) {
-      return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-05", context.targetID, "unavailable"]));
-    }
-    const refreshedNodeRows = mergeRegisteredNodeRows(
-      refreshedRegisteredNodes?.data || [],
-      refreshedServiceHealth?.data || [],
-    );
-    const target = refreshedUpdates.data.targets.find((candidate) => candidate.target_id === context.targetID);
-    const updater = target?.updater_id
-      ? refreshedUpdates.data.updaters.find((candidate) => candidate.updater_id === target.updater_id)
-      : undefined;
-    const node = refreshedNodeRows.find((candidate) => nodeIdentity(candidate) === context.targetID);
-    const latestJob = latestJobsByTarget([...refreshedUpdates.data.jobs].sort(compareUpdateJobs)).get(context.targetID);
-    const requestState: SystemUpdateRequestState = activePortRequestTargets.current.has(context.targetID)
-      ? "pending"
-      : unresolvedAmbiguousPortRequest?.target_id === context.targetID
-        ? "ambiguous"
-        : "idle";
-    const snapshot = portReconfigureAuthoritySnapshot({
-      target,
-      updater,
-      node,
-      latestJob,
-      requestState,
-      proposal: context.proposal,
-    });
-    return freshUpdaterAuthority(hasPermission(refreshedUser.data, "system_updates.execute"), snapshot.applicable, snapshot.fingerprint);
-  };
+  const { refreshTargetAuthority, refreshBatchAuthority, refreshCancelAuthority } = createApplicationAuthorityReaders({ systemUpdates, currentUser });
+  const refreshPortAuthority = (context: PortReconfigureAuthorityContext) => refreshApplicationPortAuthority(context, {
+    systemUpdates, currentUser, registeredNodes, serviceHealth, canReadRegisteredNodes, canReadServiceHealth,
+    hasActivePortRequestTarget: (targetID) => activePortRequestTargets.current.has(targetID), unresolvedAmbiguousPortRequest,
+  });
   const batchAuthoritySnapshot = batchUpdateAuthoritySnapshot(availableTargets, systemUpdates.data);
   const batchIntent: UpdaterActionIntent = Object.freeze({
     id: "UPD-03",
     resourceId: "fleet",
     authorityFingerprint: batchAuthoritySnapshot.fingerprint,
   });
-  const renderTargetAction = (target: SystemUpdateTarget, disabled: boolean) => {
-    const actionID = isControlPanelUpdateTarget(target) ? "UPD-02" as const : "UPD-01" as const;
-    const snapshot = softwareUpdateAuthoritySnapshot(actionID, target, systemUpdates.data);
-    const intent: UpdaterActionIntent = Object.freeze({
-      id: actionID,
-      resourceId: target.target_id,
-      ...(actionID === "UPD-02" ? { publicLabel: target.name || target.target_id } : {}),
-      authorityFingerprint: snapshot.fingerprint,
-    });
-    const strategy = systemUpdateStrategyForTarget(target);
-    return (
-      <UpdaterActionConfirmation
-        controller={updaterActionController}
-        intent={intent}
-        authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
-        refreshAuthority={() => refreshTargetAuthority(actionID, target.target_id)}
-        handler={() => executeTarget(target)}
-        label={strategy === "when_idle" ? "空き次第更新" : "更新"}
-        icon={createUpdate.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-        className="mt-3 w-full"
-        disabled={disabled}
-        title={!canExecuteSystemUpdates ? "system_updates.execute 権限が必要です。" : undefined}
-      />
-    );
-  };
-  const renderCancelAction = (job: SystemUpdateJob) => {
-    const snapshot = cancelUpdateAuthoritySnapshot(job.id, job);
-    const intent: UpdaterActionIntent = Object.freeze({
-      id: "UPD-04",
-      resourceId: job.id,
-      authorityFingerprint: snapshot.fingerprint,
-    });
-    return (
-      <UpdaterActionConfirmation
-        controller={updaterActionController}
-        intent={intent}
-        authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
-        refreshAuthority={() => refreshCancelAuthority(job.id)}
-        handler={() => executeCancel(job)}
-        label="キャンセル"
-        icon={cancelUpdate.isPending && cancelUpdate.variables?.id === job.id ? <LoaderCircle className="size-4 animate-spin" /> : <XCircle className="size-4" />}
-        variant="outline"
-        disabled={cancelUpdate.isPending && cancelUpdate.variables?.id === job.id}
-        title={!canExecuteSystemUpdates ? "system_updates.execute 権限が必要です。" : undefined}
-      />
-    );
-  };
+  const { renderTargetAction, renderCancelAction } = createApplicationActionRenderers({
+    updaterActionController, currentUpdaterAuthority, updates: systemUpdates.data,
+    refreshTargetAuthority, executeTarget, creating: createUpdate.isPending, canExecuteSystemUpdates,
+    refreshCancelAuthority, executeCancel, cancelling: cancelUpdate.isPending, cancellingJobID: cancelUpdate.variables?.id,
+  });
 
   const refreshInformation = () => {
     void appVersion.refetch();

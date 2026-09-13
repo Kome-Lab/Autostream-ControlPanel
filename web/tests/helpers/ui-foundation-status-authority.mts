@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { verifyStatusAuthoritySourceLocators } from "./status-authority-locators.mts";
 
 export function readStatusAuthority(webRoot) {
   return JSON.parse(readFileSync(
@@ -110,7 +112,7 @@ export function verifyStatusAuthoritySources(webRoot, authority) {
   const controlPanelRoot = resolve(webRoot, "..");
   const repositoryRoots = Object.freeze({
     "Autostream-ControlPanel": controlPanelRoot,
-    "Autostream-Contracts": resolve(controlPanelRoot, "..", "Autostream-Contracts"),
+    "Autostream-Contracts": process.env.AUTOSTREAM_STATUS_CONTRACTS_ROOT || resolve(controlPanelRoot, "..", "Autostream-Contracts"),
     "Autostream-Observability": resolve(controlPanelRoot, "..", "Autostream-Observability"),
   });
   let verifiedSources = 0;
@@ -119,6 +121,20 @@ export function verifyStatusAuthoritySources(webRoot, authority) {
   for (const source of authority.authorities) {
     const root = repositoryRoots[source.repository];
     assert.equal(typeof root, "string", `unknown authority repository ${source.repository}`);
+    if (["contracts", "control-panel-stream-store", "control-panel-auth-store"].includes(source.id)) {
+      assert.equal(source.currentSource?.objectKind, "commit", `${source.id}: current code-commit source metadata is required after responsibility extraction`);
+      assert.match(source.currentSource.revision, /^[a-f0-9]{40}$/);
+      const commit = execFileSync("git", ["-C", root, "rev-parse", "--verify", `${source.currentSource.revision}^{commit}`], { encoding: "utf8" }).trim();
+      assert.equal(commit, source.currentSource.revision, `${source.id}: current authority must name the exact code commit`);
+      verifyStatusAuthoritySourceLocators(root, source.id, commit, source.currentSource.locators, authority.vocabularies);
+      for (const locator of source.currentSource.locators) {
+        const current = execFileSync("git", ["-C", root, "cat-file", "blob", `HEAD:${locator.path}`]);
+        assert.equal(sha256(current), locator.sourceSha256, `${source.id}:${locator.path} current product source digest`);
+      }
+      verifiedSources += 1;
+      if (source.repository === "Autostream-ControlPanel") verifiedControlPanelSources += 1;
+      continue;
+    }
     const path = join(root, ...source.path.split("/"));
     if (!existsSync(path)) {
       unavailableSources.push(`${source.repository}:${source.path}`);

@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
 // Preserve the existing source oracles while following the extracted owners.
-// Only relative imports are traversed; unrelated application domains are excluded.
+// Only relative imports and re-exports are traversed; unrelated application domains are excluded.
 export function readMovedSource(entry: URL) {
   const sources = new Map<string, string>();
   const visit = (file: string) => {
@@ -14,7 +14,7 @@ export function readMovedSource(entry: URL) {
     sources.set(file, source);
     const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
     for (const statement of tree.statements) {
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      if ((!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) || !statement.moduleSpecifier || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
       if (!statement.moduleSpecifier.text.startsWith("./")) continue;
       const base = resolve(dirname(file), statement.moduleSpecifier.text);
       const target = [base, `${base}.ts`, `${base}.tsx`].find((candidate) => /\.tsx?$/.test(candidate) && existsSync(candidate));

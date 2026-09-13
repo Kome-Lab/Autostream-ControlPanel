@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import ts from "typescript";
+import { readBrowserSuiteSource } from "./read-browser-suite-source.mts";
 
 export function assertWorkerFoundationBoundaries(webRoot: string) {
   const descriptorPath = join(webRoot, "src", "features", "workers", "workers-action-descriptors.ts");
@@ -56,7 +57,7 @@ export function assertWorkerFoundationBoundaries(webRoot: string) {
   assert.equal(controllerSource.includes("workers-wire-normalizer"), true, "restart controller does not use the canonical Worker normalizer");
   assert.equal(configurationSource.includes("workers-wire-normalizer"), true, "Configuration controller does not use the canonical Worker normalizer");
 
-  const browserTest = parse(browserTestPath);
+  const browserTest = ts.createSourceFile(browserTestPath, readBrowserSuiteSource(browserTestPath), ts.ScriptTarget.Latest, true);
   for (const properties of workerPilotFixtureProperties(browserTest)) {
     assert.equal(properties.includes("service_id"), true, "primary browser Worker fixture omits service_id");
     assert.equal(properties.includes("id"), false, "primary browser Worker fixture hides the server wire with an artificial id");

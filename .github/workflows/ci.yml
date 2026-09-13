@@ -35,6 +35,15 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify Bundle 9 authored sources and raw distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/ci -p 'test_artifact_assembly.py' -v
+          python3 -m unittest discover -s scripts/ci -p 'test_verify_bundle9_sources.py' -v
+          python3 scripts/ci/verify_bundle9_sources.py \
+            --repository Autostream-ControlPanel --tree "$(git rev-parse HEAD)"
+          for script in release/installer-tests/*/*.sh; do bash -n "${script}"; done
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -78,9 +87,9 @@ jobs:
     timeout-minutes: 75
     env:
       # Fixed signed application sources; workflow revisions are recorded separately.
-      ST_PORT_UPDATER_SHA: 794d0cd69dd1b3ca130101f7769aaf8ac1274ac8
-      ST_PORT_CONTRACTS_SHA: 612ceb539ee74180beae682c4290aba54c49c389
-      ST_PORT_WORKER_SHA: 93b78305c9436e752fbad8c110c3bf5c78da4449
+      ST_PORT_UPDATER_SHA: e45afad3bc1debc67065b40b8ea96ce89f71e48f
+      ST_PORT_CONTRACTS_SHA: 1550fab9220f3a5d706543e5caad3ec57d078531
+      ST_PORT_WORKER_SHA: feb5b8f2705bc6feb4c4b7599e2f302a73a36f54
       GOMAXPROCS: "2"
     outputs:
       st_port_source_set: ${{ steps.st_port_sources.outputs.source_set }}
@@ -680,6 +689,8 @@ jobs:
     timeout-minutes: 55
     needs: go
     if: always() && !cancelled()
+    env:
+      AUTOSTREAM_STATUS_CONTRACTS_ROOT: ${{ github.workspace }}/status-authority-contracts
     defaults:
       run:
         working-directory: web
@@ -693,6 +704,28 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - name: Read the fixed current Contracts authority commit
+        id: status-authority
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          authority = json.loads(Path("tests/fixtures/ui-foundation-status-authority.json").read_text(encoding="utf-8"))
+          current = next(source for source in authority["authorities"] if source["id"] == "contracts")["currentSource"]
+          assert current["objectKind"] == "commit" and re.fullmatch(r"[0-9a-f]{40}", current["revision"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("contracts_sha=" + current["revision"] + "\n")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Contracts
+          ref: ${{ steps.status-authority.outputs.contracts_sha }}
+          path: status-authority-contracts
+          persist-credentials: false
+      - name: Verify unchanged status vocabularies against current raw source locators
+        run: node --no-warnings --test tests/ui-foundation-status.test.mts
       - name: Test Bundle 4 Web semantic witnesses
         run: npm run test:control-platform
       - name: Prepare and verify Japanese browser fonts
@@ -717,7 +750,7 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - name: Characterize Bundle 9 UI source responsibilities
-        run: npm run test:bundle9-ui-characterization
+        run: npm run test:bundle9-ui-characterization && npm run test:bundle9-source-composition
       - name: Test Bundle 9 browser comparison contracts
         run: npm run test:bundle9-browser-contracts
       - name: Compare Bundle 9 fixed before and actual after

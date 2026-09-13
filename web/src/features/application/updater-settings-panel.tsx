@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { KeyRound, LoaderCircle, Settings2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,15 +9,16 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
 import { createUpdaterActionController, updaterAuthorityFingerprint, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
 import { useCurrentUser, useUpdaterSettings } from "@/features/queries";
-import { apiGet, apiPost } from "@/lib/api/client";
+import { apiGet } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
-import { normalizePullUpdaterOwnershipActivationResponse, normalizePullUpdaterOwnershipDeactivationResponse, pullUpdaterOwnershipActivationEligibility, pullUpdaterOwnershipActivationRequest, pullUpdaterOwnershipDeactivationEligibility, pullUpdaterOwnershipDeactivationRequest, pullOwnershipMutationFenceAdvanced } from "@/lib/updater-ownership";
+import { pullUpdaterOwnershipActivationEligibility, pullUpdaterOwnershipActivationRequest, pullUpdaterOwnershipDeactivationEligibility, pullUpdaterOwnershipDeactivationRequest, pullOwnershipMutationFenceAdvanced } from "@/lib/updater-ownership";
 import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
 import { systemUpdateErrorMessage, systemUpdatePolicyErrorMessage, systemUpdateUpdaterPolicyState } from "@/lib/system-update-presentation";
-import type { PullUpdaterOwnershipActivationRequest, PullUpdaterOwnershipActivationResponse, PullUpdaterOwnershipDeactivationResponse, SystemUpdateAgentStatus, SystemUpdateJob, SystemUpdateTarget } from "@/types/domain";
+import type { PullUpdaterOwnershipActivationRequest, SystemUpdateAgentStatus, SystemUpdateJob, SystemUpdateTarget } from "@/types/domain";
 import { type PullOwnershipDeactivationAttempt } from "./updater-settings-form-model";
-import { pullOwnershipMutationErrorIsAmbiguous, ownershipActionAuthoritySnapshot, unavailableUpdaterAuthority, ownershipEligibilityMessage } from "./updater-settings-authority";
+import { ownershipActionAuthoritySnapshot, unavailableUpdaterAuthority, ownershipEligibilityMessage } from "./updater-settings-authority";
 import { OwnershipStateItem, UpdaterSettingsForm } from "./updater-settings-form";
+import { usePullOwnershipMutations } from "./use-pull-ownership-mutations";
 
 type UpdaterSettingsPanelProps = {
   updater: SystemUpdateAgentStatus;
@@ -81,101 +82,9 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
     ),
   );
   const resolvedOwnershipTransitionObserved = ownershipTransitionObserved || deactivationTransitionObserved;
-  const activateOwnership = useMutation<
-    PullUpdaterOwnershipActivationResponse,
-    Error,
-    PullUpdaterOwnershipActivationRequest
-  >({
-    mutationFn: async (request) => {
-      const response = normalizePullUpdaterOwnershipActivationResponse(await apiPost<unknown>(
-        `/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/pull-ownership/activate`,
-        request,
-      ));
-      if (
-        response.updater_id !== updater.updater_id
-        || response.execution_host_id !== request.expected_execution_host_id
-        || response.agent_service_id !== updater.updater_id
-        || response.ownership_epoch <= request.expected_ownership_epoch
-        || response.source_policy_revision !== request.expected_source_policy_revision
-        || response.projection_revision !== request.expected_projection_revision
-        || response.local_executor_policy_revision !== request.expected_local_executor_policy_revision
-        || response.local_executor_policy_sha256 !== request.expected_local_executor_policy_sha256
-      ) {
-        throw new Error("invalid_pull_ownership_activation_response");
-      }
-      return response;
-    },
-    retry: false,
-    onSuccess: async (response) => {
-      setAmbiguousOwnershipRequest(null);
-      setAmbiguousDeactivationAttempt(null);
-      setOwnershipFeedback({ tone: "success", message: `実行権限をHost Agentへ切り替えました。Ownership epoch: ${response.ownership_epoch}` });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
-        queryClient.invalidateQueries({ queryKey: ["system-updates", "updaters", updater.updater_id, "settings"] }),
-      ]);
-    },
-    onError: (error, request) => {
-      if (pullOwnershipMutationErrorIsAmbiguous(error)) {
-        setAmbiguousOwnershipRequest(request);
-        setOwnershipFeedback({ tone: "error", message: "切替結果を確認できません。安全のため再送せず、Updater状態を再取得してください。" });
-        return;
-      }
-      setOwnershipFeedback({ tone: "error", message: systemUpdateErrorMessage(error, "実行権限を切り替えられませんでした。最新状態を再取得して確認してください。") });
-    },
-  });
-  const deactivateOwnership = useMutation<
-    PullUpdaterOwnershipDeactivationResponse,
-    Error,
-    PullOwnershipDeactivationAttempt
-  >({
-    mutationFn: async (attempt) => {
-      const response = normalizePullUpdaterOwnershipDeactivationResponse(await apiPost<unknown>(
-        `/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/pull-ownership/deactivate`,
-        attempt.request,
-      ));
-      if (
-        response.updater_id !== updater.updater_id
-        || response.execution_host_id !== attempt.request.expected_execution_host_id
-        || response.agent_service_id !== updater.updater_id
-        || response.ownership_epoch <= attempt.request.expected_ownership_epoch
-        || response.agent_ownership_epoch !== 0
-        || response.source_policy_revision !== attempt.request.expected_source_policy_revision
-        || response.projection_revision !== attempt.request.expected_projection_revision
-        || response.local_executor_policy_revision !== attempt.request.expected_local_executor_policy_revision
-        || response.local_executor_policy_sha256 !== attempt.request.expected_local_executor_policy_sha256
-      ) {
-        throw new Error("invalid_pull_ownership_deactivation_response");
-      }
-      return response;
-    },
-    retry: false,
-    onSuccess: async (response) => {
-      setAmbiguousDeactivationAttempt(null);
-      setAmbiguousOwnershipRequest(null);
-      setOwnershipFeedback({
-        tone: "success",
-        message: `Host Agentの更新実行権限を解除しました。Ownership epoch: ${response.ownership_epoch} / Agent epoch: ${response.agent_ownership_epoch}`,
-      });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
-        queryClient.invalidateQueries({ queryKey: ["system-updates", "updaters", updater.updater_id, "settings"] }),
-      ]);
-    },
-    onError: (error, attempt) => {
-      if (pullOwnershipMutationErrorIsAmbiguous(error)) {
-        setAmbiguousDeactivationAttempt(attempt);
-        setOwnershipFeedback({
-          tone: "error",
-          message: "実行権限解除の結果を確認できません。安全のため再送せず、Updater状態を再取得してください。",
-        });
-        return;
-      }
-      setOwnershipFeedback({
-        tone: "error",
-        message: systemUpdateErrorMessage(error, "実行権限を解除できませんでした。最新状態を再取得してください。"),
-      });
-    },
+  const { activateOwnership, deactivateOwnership } = usePullOwnershipMutations({
+    updaterID: updater.updater_id, queryClient,
+    setAmbiguousOwnershipRequest, setAmbiguousDeactivationAttempt, setOwnershipFeedback,
   });
   const ownershipRequestState = activateOwnership.isPending
     ? "pending"

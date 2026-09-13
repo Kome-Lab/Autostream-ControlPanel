@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
@@ -236,7 +237,7 @@ test("Node residual source migration rejects omitted evidence, stale hashes, and
   assert.throws(() => validateResidualInventory({
     ...inventory, records: inventory.records.map((record) => record.id === "W3C-NODES-HARDCODED-COPY" ? { ...record, ownerTask: "UI-FOUNDATION-001C-C01-STRUCTURAL-DECOMPOSITION" } : record),
   }), /later owner/);
-  const entry = readResidualSource(authority.entryPath).toString("utf8");
+  const entry = readResidualSource(authority.entryPath, authority.head).toString("utf8");
   const disconnected = entry.replace(/^import \{ RegisteredNodeGroup \} from "\.\/registered-node-group";\r?\n/mu, "");
   assert.notEqual(disconnected, entry, "import-disconnection mutant reached the real owner edge");
   const mutatedBytes = Buffer.from(disconnected, "utf8");
@@ -246,7 +247,7 @@ test("Node residual source migration rejects omitted evidence, stale hashes, and
       ? { ...source, sourceSha256: createHash("sha256").update(mutatedBytes).digest("hex") }
       : source),
   };
-  assert.throws(() => verifyNodeResidualSources(mutatedAuthority, (path) => path === authority.entryPath ? mutatedBytes : readResidualSource(path)), /disconnected from entry imports/);
+  assert.throws(() => verifyNodeResidualSources(mutatedAuthority, (path) => path === authority.entryPath ? mutatedBytes : readResidualSource(path, authority.head)), /disconnected from entry imports/);
 });
 
 function source(relativePath: string) {
@@ -296,7 +297,7 @@ function validateResidualInventory(inventory: ResidualInventory) {
   assert.equal(new Set(inventory.records.map(({ id }) => id)).size, inventory.records.length);
   validateNodeResidualRecords(inventory.records);
   const nodeSources = inventory.nodeSourceAuthority
-    ? verifyNodeResidualSources(inventory.nodeSourceAuthority, readResidualSource)
+    ? verifyNodeResidualSources(inventory.nodeSourceAuthority, (path) => readResidualSource(path, inventory.nodeSourceAuthority!.head))
     : undefined;
   for (const record of inventory.records) {
     assert.equal(record.disposition, "reviewed-later-owner", record.id);
@@ -313,7 +314,17 @@ function validateResidualInventory(inventory: ResidualInventory) {
   }
 }
 
-function readResidualSource(path: string) {
+function readResidualSource(path: string, codeCommit?: string) {
+  if (codeCommit) {
+    assert.match(codeCommit, /^[a-f0-9]{40}$/, "fixed Node code commit");
+    const root = new URL("../../", import.meta.url);
+    const commit = execFileSync("git", ["rev-parse", "--verify", `${codeCommit}^{commit}`], { cwd: root, encoding: "utf8" }).trim();
+    assert.equal(commit, codeCommit, "Node source authority requires an exact code commit");
+    const fixed = execFileSync("git", ["cat-file", "blob", `${codeCommit}:${path}`], { cwd: root });
+    const current = execFileSync("git", ["cat-file", "blob", `HEAD:${path}`], { cwd: root });
+    assert.deepEqual(current, fixed, `${path}: Node code source changed after authority commit`);
+    return fixed;
+  }
   return readFileSync(new URL(path.slice("web/".length), new URL("../", import.meta.url)));
 }
 

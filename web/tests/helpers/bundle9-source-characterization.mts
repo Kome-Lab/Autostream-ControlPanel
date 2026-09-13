@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
+import { composeResponsibilitySource } from "./bundle9-responsibility-composition.mts";
 
 export function declarations(source: string, file: string) {
   source = source.replace(/\r\n/g, "\n");
@@ -27,7 +28,7 @@ export function sourceGraph(webRoot: string, entry: string) {
   const visit = (file: string) => {
     if (files.has(file)) return;
     const source = readFileSync(file, "utf8");
-    files.set(file, declarations(source, file));
+    files.set(file, declarations(composeResponsibilitySource(file), file));
     const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
     for (const statement of tree.statements) {
       if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
