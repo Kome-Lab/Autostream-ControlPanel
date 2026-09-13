@@ -7,7 +7,37 @@
       "branch": "main",
       "head": "e96ac056e73e00a04f0c22c73122b9f6e18e8b52",
       "path": "pkg/contracts/types.go",
-      "sourceSha256": "ff499e7d7f8435af84744a6d9df827fc14d1b3aa965c3e0a882d61afbcf4cf26"
+      "sourceSha256": "ff499e7d7f8435af84744a6d9df827fc14d1b3aa965c3e0a882d61afbcf4cf26",
+      "currentSource": {
+        "objectKind": "commit",
+        "revision": "1550fab9220f3a5d706543e5caad3ec57d078531",
+        "locators": [
+          {
+            "path": "pkg/contracts/types.go",
+            "sourceSha256": "d56fd28e6186d865e0199074d1dbcc2205dbc7c8dbb486cc543e0597b18e3dfa",
+            "vocabularyIds": [
+              "contracts-stream-status",
+              "contracts-service-status"
+            ]
+          },
+          {
+            "path": "pkg/contracts/types_system_updates.go",
+            "sourceSha256": "72b6c62c75bc67236735b11851eee2d8b80bab917eed6b8e9baf425ec53995d6",
+            "vocabularyIds": [
+              "contracts-system-update-reachability",
+              "contracts-system-update-status"
+            ]
+          },
+          {
+            "path": "pkg/contracts/types_observability.go",
+            "sourceSha256": "225b3a020fbe419f179786f92f8325f79f4d5a004a5127fc9b2b232c915cb7a6",
+            "vocabularyIds": [
+              "contracts-incident-status",
+              "contracts-diagnostic-rerun-outcome"
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "observability",
@@ -47,7 +77,20 @@
       "branch": "main",
       "head": "b246e65508b552399f918e39b3948cf453cc1e32",
       "path": "internal/store/streams.go",
-      "sourceSha256": "1a4ebde472e3dfd05426f4f85e75235eefcda6e6d8c4ce1395eefb0d285b39ab"
+      "sourceSha256": "1a4ebde472e3dfd05426f4f85e75235eefcda6e6d8c4ce1395eefb0d285b39ab",
+      "currentSource": {
+        "objectKind": "commit",
+        "revision": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+        "locators": [
+          {
+            "path": "internal/store/stream_queries_mariadb.go",
+            "sourceSha256": "56bbe63fde2fe30b8f2c23e257c7c95542bf9fab55d8c72fcd683d8db76c2eae",
+            "vocabularyIds": [
+              "control-panel-archive-processing"
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "control-panel-auth-store",
@@ -55,7 +98,20 @@
       "branch": "codex/bundle8b-physical-eol-001",
       "head": "d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee",
       "path": "internal/store/auth.go",
-      "sourceSha256": "899ff70ea1e8991501889521029cdc399383e235c544d51f729a3a21e6b81f9f"
+      "sourceSha256": "899ff70ea1e8991501889521029cdc399383e235c544d51f729a3a21e6b81f9f",
+      "currentSource": {
+        "objectKind": "commit",
+        "revision": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+        "locators": [
+          {
+            "path": "internal/store/audit_events_mariadb.go",
+            "sourceSha256": "47e35b9fef6cf78ed32c0266af4431ff472f1f8175fd865cef9be03454cd0857",
+            "vocabularyIds": [
+              "control-panel-audit-result"
+            ]
+          }
+        ]
+      }
     }
   ],
   "vocabularies": [

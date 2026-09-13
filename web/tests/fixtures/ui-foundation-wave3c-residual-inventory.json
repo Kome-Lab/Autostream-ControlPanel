@@ -124,6 +124,145 @@
   ],
   "nodeSourceAuthority": {
     "baselineHead": "792c6c56506c26ffd81b18c1793211e8e78be44d",
+    "head": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+    "entryPath": "web/src/features/nodes/node-registration-view.tsx",
+    "sources": [
+      {
+        "path": "web/src/features/nodes/node-registration-view.tsx",
+        "sourceSha256": "8c0cae526270934d817414187be6d056d21b47b9e532ff946d0292563ee5deb7"
+      },
+      {
+        "path": "web/src/features/nodes/node-registration-model.tsx",
+        "sourceSha256": "1122556f8790a780eed6325e84cda6827f4a56bcad01cce83a10ba548c7185e9"
+      },
+      {
+        "path": "web/src/features/nodes/node-status-summary.tsx",
+        "sourceSha256": "b3e66810cf28474199ce2a5d7402dec7350393336d183aa3d9eae90941943bc1"
+      },
+      {
+        "path": "web/src/features/nodes/node-metrics-summary.tsx",
+        "sourceSha256": "ccdc0bb5593da6ded041f22a5ec0a7b0774cc00c7f74a9a721d39e9543a7bea6"
+      },
+      {
+        "path": "web/src/features/nodes/node-endpoint-state-view.tsx",
+        "sourceSha256": "ed6451bd3100399325df370c31b774494bf34a9e258c9ccf241e54b4f596a666"
+      },
+      {
+        "path": "web/src/features/nodes/node-configuration-secret-block.tsx",
+        "sourceSha256": "de2450796ccca5068a0793784bf35d31c83a0dee14ef498100d4596108c8bab2"
+      },
+      {
+        "path": "web/src/features/nodes/registered-node-group.tsx",
+        "sourceSha256": "f2c5390d47d5ffee961f182321e9f98a4eca6e6732c6f36849d8f8603bfc2d17"
+      },
+      {
+        "path": "web/src/features/nodes/node-configuration-card.tsx",
+        "sourceSha256": "7caca63f06f406aa7ffe55b423a94f51269e211a546ca8df649041a59f19d335"
+      },
+      {
+        "path": "web/src/features/nodes/node-edit-dialog.tsx",
+        "sourceSha256": "b391c2be3c0c8d0d4c30531b06d584d98f0384f6d8cffe8462ec214ab4de89fb"
+      },
+      {
+        "path": "web/src/features/nodes/registered-node-columns.tsx",
+        "sourceSha256": "cd8b2ad59aa0ec0862ba519baf59137ade331e4c6e3a973c9bdc340c0e531f3c"
+      },
+      {
+        "path": "web/src/features/nodes/use-node-registration-mutations.ts",
+        "sourceSha256": "69b49bb7b5bfc1d336068deafa81f2404ee6a3f4a1c5b67f05d0abde790d4b2c"
+      }
+    ],
+    "evidenceOrder": {
+      "japanese-line": [
+        {
+          "path": "web/src/features/nodes/node-registration-model.tsx",
+          "start": 0,
+          "count": 5
+        },
+        {
+          "path": "web/src/features/nodes/node-registration-view.tsx",
+          "start": 0,
+          "count": 2
+        },
+        {
+          "path": "web/src/features/nodes/registered-node-columns.tsx",
+          "start": 0,
+          "count": 27
+        },
+        {
+          "path": "web/src/features/nodes/node-registration-view.tsx",
+          "start": 2,
+          "count": 15
+        },
+        {
+          "path": "web/src/features/nodes/node-configuration-card.tsx",
+          "start": 0,
+          "count": 20
+        },
+        {
+          "path": "web/src/features/nodes/node-registration-view.tsx",
+          "start": 17,
+          "count": 9
+        },
+        {
+          "path": "web/src/features/nodes/node-edit-dialog.tsx",
+          "start": 0,
+          "count": 7
+        },
+        {
+          "path": "web/src/features/nodes/node-endpoint-state-view.tsx",
+          "start": 0,
+          "count": 19
+        },
+        {
+          "path": "web/src/features/nodes/node-status-summary.tsx",
+          "start": 0,
+          "count": 7
+        },
+        {
+          "path": "web/src/features/nodes/registered-node-group.tsx",
+          "start": 0,
+          "count": 3
+        },
+        {
+          "path": "web/src/features/nodes/node-registration-model.tsx",
+          "start": 5,
+          "count": 1
+        },
+        {
+          "path": "web/src/features/nodes/node-metrics-summary.tsx",
+          "start": 0,
+          "count": 4
+        },
+        {
+          "path": "web/src/features/nodes/node-registration-model.tsx",
+          "start": 6,
+          "count": 25
+        },
+        {
+          "path": "web/src/features/nodes/node-configuration-secret-block.tsx",
+          "start": 0,
+          "count": 1
+        }
+      ],
+      "danger-confirm-line": [
+        {
+          "path": "web/src/features/nodes/registered-node-columns.tsx",
+          "start": 0,
+          "count": 5
+        }
+      ],
+      "legacy-write-line": [
+        {
+          "path": "web/src/features/nodes/use-node-registration-mutations.ts",
+          "start": 0,
+          "count": 5
+        }
+      ]
+    }
+  },
+  "historicalNodeSourceAuthority": {
+    "baselineHead": "792c6c56506c26ffd81b18c1793211e8e78be44d",
     "head": "ac69c3d0fa318797514484f012defb66a3e10178",
     "entryPath": "web/src/features/nodes/node-registration-view.tsx",
     "sources": [
