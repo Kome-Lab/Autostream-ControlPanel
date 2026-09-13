@@ -2,7 +2,7 @@ import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_proce
 import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
-import { FetchRequestLifecycle, RejectableEventWaiters, type FetchSettlementCommand, type RequestHandlerIdleOptions } from "./browser-request-lifecycle.mts";
+import { FetchRequestLifecycle, RejectableEventWaiters, type FetchDiagnosticContext, type FetchSettlementCommand, type RequestHandlerIdleOptions } from "./browser-request-lifecycle.mts";
 import { BrowserLaunchError, launchBrowserProcessWithRetry, type BrowserLaunchSession } from "./browser-process-attempt.mts";
 import { collectBrowserLaunchFacts } from "./browser-launch-profile.mts";
 import { asError, delay, withTimeout } from "./browser-process-timing.mts";
@@ -96,6 +96,10 @@ export class BrowserHarness {
   private readonly sessionId: string;
   private readonly browserLaunchSession: BrowserLaunchSession | undefined;
   private nextCommandId = 0;
+  private diagnosticNavigateId: number | undefined;
+  private diagnosticNavigateResponded = false;
+  private generationFailureReported = false;
+  private generationFailureJSON: string | undefined;
   private routeResolver: RouteResolver = () => null;
   private readonly pendingCommands = new Map<number, PendingCommand>();
   private readonly eventWaiters = new RejectableEventWaiters();
@@ -196,6 +200,38 @@ export class BrowserHarness {
 
   setRouteResolver(resolver: RouteResolver) {
     this.routeResolver = resolver;
+  }
+
+  setFetchDiagnosticContext(context: FetchDiagnosticContext) {
+    try { this.requestLifecycle.setDiagnosticContext(context); }
+    catch { /* Diagnostic labels cannot interrupt the scenario. */ }
+  }
+
+  get fetchFailureDiagnosticJSON() {
+    return this.generationFailureJSON;
+  }
+
+  private fetchNavigationObservation() {
+    return {
+      page_navigate_sent: this.diagnosticNavigateId !== undefined,
+      page_navigate_response_received: this.diagnosticNavigateResponded,
+      top_level_navigation_pending: this.topLevelNavigationPending,
+    };
+  }
+
+  private reportFetchGenerationFailure(requestId?: string, legacy?: ReturnType<FetchRequestLifecycle["settlementFailureDiagnostic"]>) {
+    if (this.closed || this.fatalError || this.generationFailureReported) return;
+    this.generationFailureReported = true;
+    try {
+      let generation;
+      try { generation = this.requestLifecycle.generationFailureDiagnostic(requestId, this.fetchNavigationObservation()); }
+      catch { /* Preserve the established diagnostic if the extra collection fails. */ }
+      const json = JSON.stringify({ ...legacy, generation_diagnostic: generation });
+      const line = `${legacy ? "BROWSER_FETCH_FAILURE" : "BROWSER_FETCH_GENERATION_DIAGNOSTIC"} ${json}`;
+      if (Buffer.byteLength(line + "\n", "utf8") > 4096) return;
+      this.generationFailureJSON = json;
+      console.error(line);
+    } catch { /* Diagnostics must never replace the original Fetch failure. */ }
   }
 
   clearRequestCounts(pathname?: string) {
@@ -424,6 +460,10 @@ export class BrowserHarness {
     const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
     return new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {
       this.pendingCommands.set(id, { resolve: resolveCommand, reject: rejectCommand });
+      if (method === "Page.navigate") {
+        this.diagnosticNavigateId = id;
+        this.diagnosticNavigateResponded = false;
+      }
       this.socket.send(JSON.stringify(payload));
     });
   }
@@ -433,6 +473,7 @@ export class BrowserHarness {
     if (message.id) {
       const command = this.pendingCommands.get(message.id);
       if (!command) return;
+      if (message.id === this.diagnosticNavigateId) this.diagnosticNavigateResponded = true;
       this.pendingCommands.delete(message.id);
       if (message.error) command.reject(new Error(message.error.message || "CDP command failed"));
       else command.resolve(message.result || {});
@@ -460,7 +501,10 @@ export class BrowserHarness {
       }
     }
     if (message.method === "Fetch.requestPaused") {
-      void this.handleRequest(message.params || {}).catch((error) => this.recordFatalError(error));
+      void this.handleRequest(message.params || {}).catch((error) => {
+        if (!this.fetchFailureReported) this.reportFetchGenerationFailure();
+        this.recordFatalError(error);
+      });
     }
     this.eventWaiters.resolve(message.method, message.params || {});
   }
@@ -475,6 +519,7 @@ export class BrowserHarness {
       pathname,
       requiredResponse: false,
     });
+    this.requestLifecycle.observeRegistration(requestId, params, this.mainFrameId, this.fetchNavigationObservation());
     this.requests.set(pathname, (this.requests.get(pathname) || 0) + 1);
 		const response = this.routeResolver({ method: request.method, url: request.url, postData: request.postData });
     this.requestLifecycle.setRequiredResponse(requestId, response !== null && response.requiredResponse !== false);
@@ -507,6 +552,7 @@ export class BrowserHarness {
     params: Record<string, unknown>,
   ) {
     const attempt = this.requestLifecycle.beginSettlement(requestId, command);
+    this.requestLifecycle.observeSettlement(requestId, this.fetchNavigationObservation());
     try {
       await this.send(command, params);
     } catch (error) {
@@ -516,7 +562,7 @@ export class BrowserHarness {
         if (!this.closed && !this.fatalError && !this.fetchFailureReported) {
           this.fetchFailureReported = true;
           try {
-            console.error(`BROWSER_FETCH_FAILURE ${JSON.stringify(this.requestLifecycle.settlementFailureDiagnostic(attempt, fatalError))}`);
+            this.reportFetchGenerationFailure(attempt.requestId, this.requestLifecycle.settlementFailureDiagnostic(attempt, fatalError));
           } catch {
             // Diagnostics must never replace the original settlement failure.
           }

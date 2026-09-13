@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { BrowserHarness } from "./browser-harness.mts";
 import {
   BUNDLE9_BROWSER_CLOCK, apiObservationSummary, assertCaptureInventory,
@@ -67,21 +67,27 @@ export async function navigateBundle9Document(
 ) {
   // The caller has observed the current page's required GETs and operations.
   // Viewport changes can still cause paint and Fetch work on that document.
+  browser.setFetchDiagnosticContext?.({ phase: "paint-before-leave" });
   await paintBarrier(browser);
   browser.assertNoFatalError();
+  browser.setFetchDiagnosticContext?.({ phase: "to-blank" });
   await browser.navigate("about:blank");
+  browser.setFetchDiagnosticContext?.({ phase: "old-handlers-drain" });
   await browser.waitForRequestHandlersIdle();
+  browser.setFetchDiagnosticContext?.({ phase: "phase-reset" });
   prepareNextPhase();
   fixture.resetTrace();
   browser.clearRequestCounts();
   browser.clearNavigationCount();
   browser.clearConsoleErrors();
+  browser.setFetchDiagnosticContext?.({ phase: "to-product" });
   await browser.navigate(url);
 }
 
 export async function captureBundle9Source(baseURL: string, output: string) {
   mkdirSync(output, { recursive: false });
   const browser = await BrowserHarness.launch();
+  browser.setFetchDiagnosticContext?.({ side: basename(resolve(output)) });
   const fixture = createBundle9Fixture(baseURL);
   browser.setRouteResolver(fixture.resolver);
   const captures: Bundle9Capture[] = [];
@@ -93,6 +99,7 @@ export async function captureBundle9Source(baseURL: string, output: string) {
     const browserVersion = await browser.browserVersion();
     writeJSON(resolve(output, "browser-version.json"), browserVersion);
     const record = async (name: string) => {
+      browser.setFetchDiagnosticContext?.({ phase: "capture" });
       await paintBarrier(browser);
       await browser.waitForRequestHandlersIdle();
       assert.deepEqual(fixture.unexpected, [], `${name}: unfixtureed API or external request`);
@@ -117,6 +124,7 @@ export async function captureBundle9Source(baseURL: string, output: string) {
     const navigate = async (surfaceID: (typeof bundle9BrowserSurfaces)[number]["id"], text?: string, prepareNextPhase?: () => void) => {
       const surface = bundle9BrowserSurfaces.find((candidate) => candidate.id === surfaceID)!;
       await navigateBundle9Document(browser, fixture, `${baseURL}${surface.route}`, prepareNextPhase);
+      browser.setFetchDiagnosticContext?.({ phase: "required-responses" });
       await browser.waitFor("Boolean(document.querySelector('main') && document.querySelector('button[aria-label=\"アカウントメニュー\"]'))", Boolean, `${surfaceID}: protected shell`);
       for (const path of ["/auth/me", "/settings/app", "/version", ...surface.required]) {
         await browser.waitForResponseCount(path, 1);
@@ -127,6 +135,7 @@ export async function captureBundle9Source(baseURL: string, output: string) {
       await browser.waitForRequestHandlersIdle();
     };
     const scenario = async (name: string, execute: () => Promise<void>) => {
+      browser.setFetchDiagnosticContext?.({ scenario: name, phase: "other" });
       try { await execute(); }
       catch (error) {
         // Preserve the failure and continue independent observations; the
@@ -306,6 +315,10 @@ export async function captureBundle9Source(baseURL: string, output: string) {
     writeJSON(resolve(output, "execution.json"), { status: "pass", captures: captures.length, failed: 0, skipped: 0, cancelled: 0, browserVersion });
     return { captures, browserVersion };
   } catch (error) {
+    try {
+      const diagnostic = browser.fetchFailureDiagnosticJSON;
+      if (diagnostic !== undefined) writeFileSync(resolve(output, "fetch-failure-diagnostic.json"), diagnostic + "\n", { flag: "wx" });
+    } catch { /* Separate diagnostic I/O must preserve the original failure. */ }
     writeJSON(resolve(output, "execution.json"), { status: "fail", captures: captures.length, failures, skipped: 0, cancelled: 0 });
     throw error;
   } finally { await browser.close(); }

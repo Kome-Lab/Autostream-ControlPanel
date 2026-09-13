@@ -753,6 +753,9 @@ jobs:
         run: npm run test:bundle9-ui-characterization && npm run test:bundle9-source-composition
       - name: Test Bundle 9 browser comparison contracts
         run: npm run test:bundle9-browser-contracts
+      - name: Test Bundle 9 Fetch generation diagnostics
+        timeout-minutes: 2
+        run: node --no-warnings --test tests/helpers/browser-fetch-generation-diagnostics.test.mts
       - name: Compare Bundle 9 fixed before and actual after
         timeout-minutes: 35
         env:

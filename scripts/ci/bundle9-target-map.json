@@ -214,9 +214,9 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "080b810464264db58ec05221506967d579b460cbdf807732320f516435b30b2a",
+        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
         "symbols": [],
-        "physical_lines": 645
+        "physical_lines": 691
       },
       {
         "path": "web/tests/helpers/browser-lifecycle-source-paths.mts",
@@ -1327,9 +1327,9 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "080b810464264db58ec05221506967d579b460cbdf807732320f516435b30b2a",
+        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
         "symbols": [],
-        "physical_lines": 645
+        "physical_lines": 691
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5061,7 +5061,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "080b810464264db58ec05221506967d579b460cbdf807732320f516435b30b2a",
+        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5077,6 +5077,7 @@
           "configureDeterministicDocument",
           "createCommandSender",
           "evaluate",
+          "fetchNavigationObservation",
           "fillSelector",
           "handleRequest",
           "handleSocketClose",
@@ -5088,10 +5089,12 @@
           "recordFatalError",
           "reload",
           "removeOwnedBrowserDirectory",
+          "reportFetchGenerationFailure",
           "resolveBrowserPath",
           "send",
           "sendBrowser",
           "sendCommand",
+          "setFetchDiagnosticContext",
           "setMediaFeatures",
           "setRouteResolver",
           "setViewport",
@@ -5104,7 +5107,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 645
+        "physical_lines": 691
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5239,9 +5242,9 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "080b810464264db58ec05221506967d579b460cbdf807732320f516435b30b2a",
+        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
         "symbols": [],
-        "physical_lines": 645
+        "physical_lines": 691
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",

@@ -3,6 +3,37 @@ export const invalidInterceptionIdMessage = "Invalid InterceptionId.";
 export type FetchSettlementCommand = "Fetch.continueRequest" | "Fetch.fulfillRequest";
 export type NavigationCancellationReason = "navigate" | "reload" | "top-level-navigation" | "teardown" | "close";
 
+const fetchDiagnosticPhases = ["paint-before-leave", "to-blank", "old-handlers-drain", "phase-reset", "to-product", "required-responses", "capture", "other"] as const;
+const fetchDiagnosticScenarios = [
+  ...["streams", "resources", "application", "account", "archive", "monitoring", "incidents", "diagnostics", "remediation", "notifications"]
+    .flatMap((surface) => [1440, 390].map((width) => `${surface}-${width}`)),
+  "streams-interactions", "streams-error", "streams-permission-denied", "streams-detail-preview",
+  "resources-editor", "resources-permission-denied", "updater-settings", "account-secret-owner",
+  "archive-local", "archive-permission-denied", "monitoring-error-and-recovery", "mobile-navigation",
+];
+export type FetchDiagnosticContext = { scenario?: unknown; side?: unknown; phase?: unknown };
+export type FetchNavigationObservation = {
+  page_navigate_sent?: boolean;
+  page_navigate_response_received?: boolean;
+  top_level_navigation_pending?: boolean;
+};
+export type FetchResourceObservation = {
+  resourceType?: unknown; frameId?: unknown; networkId?: unknown;
+  request?: unknown; responseStatusCode?: unknown; responseErrorReason?: unknown;
+};
+
+function fetchResourceDiagnostic(params: FetchResourceObservation = {}, mainFrameId?: string) {
+  const present = (value: unknown) => typeof value === "string" && value.length > 0;
+  return {
+    resource_type: ["Document", "Stylesheet", "Image", "Media", "Font", "Script", "TextTrack", "XHR", "Fetch", "Prefetch", "EventSource", "WebSocket", "Manifest", "SignedExchange", "Ping", "CSPViolationReport", "Preflight", "Other"].find((value) => value === params.resourceType) ?? "unknown",
+    frame_id_present: present(params.frameId), main_frame_known: present(mainFrameId),
+    matches_main_frame: present(params.frameId) && present(mainFrameId) && params.frameId === mainFrameId,
+    network_id_present: present(params.networkId),
+    request_stage_present: params.request !== null && typeof params.request === "object" && !Array.isArray(params.request),
+    response_stage_present: params.responseStatusCode !== undefined || params.responseErrorReason !== undefined,
+  };
+}
+
 export type FetchRequestRegistration = {
   requestId: string;
   method: string;
@@ -34,6 +65,11 @@ type ActiveFetchRequest = FetchRequestRegistration & {
     reason: NavigationCancellationReason;
   };
   terminalState: "active" | "settling";
+  diagnostic?: {
+    resource: ReturnType<typeof fetchResourceDiagnostic>;
+    paused: ReturnType<FetchRequestLifecycle["diagnosticSnapshot"]>;
+    settlement?: ReturnType<FetchRequestLifecycle["diagnosticSnapshot"]>;
+  };
 };
 
 type TerminalFetchRequest = Omit<ActiveFetchRequest, "terminalState"> & {
@@ -55,6 +91,52 @@ export class FetchRequestLifecycle {
   private navigationGeneration = 0;
   private cancellationCount = 0;
   private fatalError: Error | undefined;
+  private diagnosticOrder = 0;
+  private navigationBeginOrder = 0;
+  private diagnosticContext = { scenario: "unknown", side: "unknown", phase: "other" };
+
+  setDiagnosticContext(context: FetchDiagnosticContext) {
+    if (context.scenario !== undefined) this.diagnosticContext.scenario = fetchDiagnosticScenarios.find((value) => value === context.scenario) ?? "unknown";
+    if (context.side !== undefined) this.diagnosticContext.side = context.side === "before" || context.side === "after" ? context.side : "unknown";
+    if (context.phase !== undefined) this.diagnosticContext.phase = fetchDiagnosticPhases.find((value) => value === context.phase) ?? "other";
+  }
+
+  diagnosticSnapshot(observation: FetchNavigationObservation = {}) {
+    this.diagnosticOrder = diagnosticCounter(this.diagnosticOrder + 1);
+    return {
+      phase: this.diagnosticContext.phase, order: this.diagnosticOrder,
+      navigation_begin_order: this.navigationBeginOrder,
+      order_saturated: this.diagnosticOrder === 1_000_000,
+      page_navigate_sent: observation.page_navigate_sent === true,
+      page_navigate_response_received: observation.page_navigate_response_received === true,
+      top_level_navigation_pending: observation.top_level_navigation_pending === true,
+    };
+  }
+
+  observeRegistration(requestId: string, params: FetchResourceObservation, mainFrameId: string | undefined, navigation: FetchNavigationObservation) {
+    try {
+      const request = this.activeRequests.get(requestId);
+      if (request) request.diagnostic = { resource: fetchResourceDiagnostic(params, mainFrameId), paused: this.diagnosticSnapshot(navigation) };
+    } catch { /* Observations cannot change request registration or settlement. */ }
+  }
+
+  observeSettlement(requestId: string, navigation: FetchNavigationObservation) {
+    try {
+      const diagnostic = this.activeRequests.get(requestId)?.diagnostic;
+      if (diagnostic) diagnostic.settlement = this.diagnosticSnapshot(navigation);
+    } catch { /* Keep the original settlement outcome even if observation fails. */ }
+  }
+
+  generationFailureDiagnostic(requestId: string | undefined, navigation: FetchNavigationObservation) {
+    const diagnostic = requestId === undefined ? undefined : this.activeRequests.get(requestId)?.diagnostic;
+    return {
+      schema: "browser-fetch-generation-v1", origin: "unknown",
+      context: { scenario: this.diagnosticContext.scenario, side: this.diagnosticContext.side },
+      resource: diagnostic?.resource ?? fetchResourceDiagnostic(),
+      paused: diagnostic?.paused ?? null, settlement: diagnostic?.settlement ?? null,
+      failure: this.diagnosticSnapshot(navigation),
+    };
+  }
 
   get activeCount() {
     return this.activeRequests.size;
@@ -65,6 +147,8 @@ export class FetchRequestLifecycle {
   }
 
   beginNavigation(reason: NavigationCancellationReason) {
+    this.diagnosticOrder = diagnosticCounter(this.diagnosticOrder + 1);
+    this.navigationBeginOrder = this.diagnosticOrder;
     this.navigationGeneration += 1;
     for (const request of this.activeRequests.values()) {
       request.cancellationContext = { generation: this.navigationGeneration, reason };
